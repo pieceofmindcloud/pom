@@ -1,0 +1,167 @@
+/// Pipeline planner for distributed layer-pipeline inference.
+///
+/// Given a set of peers (each covering a contiguous layer range), this module
+/// selects the optimal ordered sequence of peers that covers layers 0..total_layers,
+/// tracks per-peer request load, and exposes the plan to the gateway.
+use crate::network::PeerInfo;
+use std::collections::HashMap;
+use std::sync::{
+    atomic::{AtomicU32, Ordering},
+    Arc,
+};
+use tokio::sync::RwLock;
+
+// ── Load tracking ─────────────────────────────────────────────────────────────
+
+/// Tracks in-flight inference requests per peer node.
+/// RAII guards via `acquire()` ensure counts are always decremented.
+#[derive(Clone, Default)]
+pub struct LoadTracker(Arc<RwLock<HashMap<String, Arc<AtomicU32>>>>);
+
+impl LoadTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Current in-flight count for a node (0 if unseen).
+    pub async fn load(&self, node_id: &str) -> u32 {
+        self.0
+            .read()
+            .await
+            .get(node_id)
+            .map(|c| c.load(Ordering::Relaxed))
+            .unwrap_or(0)
+    }
+
+    /// Increment the counter and return a guard that decrements on drop.
+    pub async fn acquire(&self, node_id: &str) -> LoadGuard {
+        let counter = {
+            let mut map = self.0.write().await;
+            map.entry(node_id.to_string())
+                .or_insert_with(|| Arc::new(AtomicU32::new(0)))
+                .clone()
+        };
+        counter.fetch_add(1, Ordering::Relaxed);
+        LoadGuard { counter }
+    }
+}
+
+/// Decrements the peer load counter when dropped (RAII).
+pub struct LoadGuard {
+    counter: Arc<AtomicU32>,
+}
+
+impl Drop for LoadGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+// ── Pipeline types ────────────────────────────────────────────────────────────
+
+/// A single peer step within the inference pipeline.
+#[derive(Debug, Clone)]
+pub struct PipelineStep {
+    pub node_id: String,
+    /// Full HTTP base URL, e.g. "http://192.168.1.5:8181"
+    pub inference_url: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+/// Ordered pipeline plan for a single inference request.
+#[derive(Debug, Clone)]
+pub struct PipelinePlan {
+    /// Steps in order from first layer to last.
+    pub steps: Vec<PipelineStep>,
+    pub total_layers: u32,
+}
+
+impl PipelinePlan {
+    /// Comma-separated "ip:port" string for llama.cpp `--rpc` flag.
+    pub fn rpc_workers_string(&self) -> String {
+        self.steps
+            .iter()
+            .map(|s| s.inference_url.trim_start_matches("http://").to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// Human-readable hop chain: "abc123→def456→…"
+    pub fn hop_chain(&self) -> String {
+        self.steps
+            .iter()
+            .map(|s| s.node_id[..s.node_id.len().min(8)].to_string())
+            .collect::<Vec<_>>()
+            .join("→")
+    }
+}
+
+// ── Planner ───────────────────────────────────────────────────────────────────
+
+/// Select the optimal inference pipeline for a given model.
+///
+/// Scoring: `layers_count * 100 - current_load * 10`
+/// — prefers peers that cover more layers and are less busy.
+///
+/// Returns `None` if there is any gap in layer coverage (0..total_layers).
+pub async fn plan_pipeline(
+    peers: &[PeerInfo],
+    total_layers: u32,
+    tracker: &LoadTracker,
+) -> Option<PipelinePlan> {
+    // Only peers that expose an inference server
+    let mut candidates: Vec<&PeerInfo> = peers
+        .iter()
+        .filter(|p| p.inference_port.is_some() && p.is_alive())
+        .collect();
+
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // Sort ascending by start_layer for the greedy sweep
+    candidates.sort_by_key(|p| p.start_layer);
+
+    let mut steps: Vec<PipelineStep> = Vec::new();
+    let mut pos: u32 = 0; // next layer we need covered
+
+    while pos < total_layers {
+        // Peers whose range includes `pos`
+        let reachable: Vec<&PeerInfo> = candidates
+            .iter()
+            .copied()
+            .filter(|p| p.start_layer <= pos && p.end_layer >= pos)
+            .collect();
+
+        if reachable.is_empty() {
+            return None; // gap — no peer covers layer `pos`
+        }
+
+        // Pick the best-scoring candidate
+        let mut best: Option<(&PeerInfo, i64)> = None;
+        for peer in reachable {
+            let load = tracker.load(&peer.node_id).await as i64;
+            let layers = (peer.end_layer - peer.start_layer + 1) as i64;
+            let score = layers * 100 - load * 10;
+            if best.map(|(_, s)| score > s).unwrap_or(true) {
+                best = Some((peer, score));
+            }
+        }
+
+        let chosen = best.unwrap().0;
+        let port = chosen.inference_port.unwrap();
+        let ip = chosen.addr.split(':').next().unwrap_or("127.0.0.1");
+
+        steps.push(PipelineStep {
+            node_id: chosen.node_id.clone(),
+            inference_url: format!("http://{}:{}", ip, port),
+            start_layer: chosen.start_layer,
+            end_layer: chosen.end_layer,
+        });
+
+        pos = chosen.end_layer + 1;
+    }
+
+    Some(PipelinePlan { steps, total_layers })
+}

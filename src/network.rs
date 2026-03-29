@@ -33,6 +33,8 @@ pub enum P2PMessage {
         /// Other nodes can build the URL as http://<peer_ip>:<ollama_port>.
         #[serde(default)]
         ollama_port: Option<u16>,
+        #[serde(default)]
+        inference_port: Option<u16>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -60,6 +62,10 @@ pub struct PeerInfo {
     pub last_seen: DateTime<Utc>,
     #[serde(default)]
     pub ollama_port: Option<u16>,
+    /// Port of the llama-cpp-python inference server on this peer.
+    /// Used by the gateway pipeline to POST hidden states.
+    #[serde(default)]
+    pub inference_port: Option<u16>,
 }
 
 impl PeerInfo {
@@ -77,9 +83,17 @@ impl PeerInfo {
         diff.num_seconds() < PEER_TIMEOUT_SECS
     }
 
-    /// Build the Ollama HTTP URL for this peer using its P2P address IP.
+    /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
     pub fn ollama_url(&self) -> Option<String> {
         self.ollama_port.map(|port| {
+            let ip = self.addr.split(':').next().unwrap_or("127.0.0.1");
+            format!("http://{}:{}", ip, port)
+        })
+    }
+
+    /// Full inference server URL for pipeline calls (None if not running).
+    pub fn inference_url(&self) -> Option<String> {
+        self.inference_port.map(|port| {
             let ip = self.addr.split(':').next().unwrap_or("127.0.0.1");
             format!("http://{}:{}", ip, port)
         })
@@ -94,6 +108,8 @@ pub struct Network {
     pub bootstrap_nodes: Vec<String>,
     /// Port of the local Ollama instance, advertised in P2P messages.
     pub ollama_port: Option<u16>,
+    /// Port of the local llama-cpp-python inference server.
+    pub inference_port: Option<u16>,
     socket: Arc<UdpSocket>,
 }
 
@@ -104,6 +120,7 @@ impl Network {
         port: u16,
         bootstrap_nodes: Vec<String>,
         ollama_port: Option<u16>,
+        inference_port: Option<u16>,
     ) -> Result<Self> {
         let bind_addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
         let socket = UdpSocket::bind(bind_addr).await?;
@@ -118,6 +135,7 @@ impl Network {
             peers: Arc::new(RwLock::new(HashMap::new())),
             bootstrap_nodes,
             ollama_port,
+            inference_port,
             socket: Arc::new(socket),
         })
     }
@@ -154,6 +172,7 @@ impl Network {
             memory_mb: assignment.memory_used_mb,
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
+            inference_port: self.inference_port,
         };
 
         // Announce to bootstrap nodes
@@ -267,6 +286,7 @@ impl Network {
                 memory_mb,
                 timestamp,
                 ollama_port,
+                inference_port,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -289,6 +309,7 @@ impl Network {
                     memory_mb,
                     last_seen: timestamp,
                     ollama_port,
+                    inference_port,
                 };
 
                 let is_new = {
@@ -338,6 +359,7 @@ impl Network {
                             memory_mb: a.memory_used_mb,
                             timestamp: Utc::now(),
                             ollama_port: self.ollama_port,
+                            inference_port: self.inference_port,
                         };
                         let _ = self.send_to(&announce, &src.to_string()).await;
                     }

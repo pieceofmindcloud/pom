@@ -5,6 +5,7 @@ mod memory;
 mod model;
 mod network;
 mod ollama;
+mod pipeline;
 
 use anyhow::Result;
 use clap::Parser;
@@ -13,6 +14,7 @@ use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::Network;
 use ollama::OllamaClient;
+use pipeline::LoadTracker;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
@@ -71,6 +73,12 @@ struct Args {
     /// Example: --start-layer 10  means this node owns layers 10..N.
     #[arg(long)]
     start_layer: Option<u32>,
+
+    /// Port for the llama-cpp-python inference server on this node.
+    /// When set, this node participates in pipeline inference.
+    /// Run inference_server.py --port <N> --model <path> --start-layer S --end-layer E
+    #[arg(long)]
+    inference_port: Option<u16>,
 }
 
 #[tokio::main]
@@ -228,6 +236,7 @@ async fn main() -> Result<()> {
             args.port,
             bootstrap_nodes,
             ollama_port,
+            args.inference_port,
         )
         .await?,
     );
@@ -281,10 +290,15 @@ async fn main() -> Result<()> {
 
     // ── Gateway HTTP server (optional) ───────────────────────────────────────
     if args.gateway {
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(600))
+            .build()?;
         let gw_state = GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
             default_model: profile.name.clone(),
+            loads: Arc::new(LoadTracker::new()),
+            http: Arc::new(http_client),
         };
         let gw_port = args.gateway_port;
         tokio::spawn(async move {
@@ -309,18 +323,24 @@ async fn main() -> Result<()> {
 
         if let Some(ref a) = *asgn {
             let gateway_tag = if args.gateway {
-                format!(" │ 🌐 gateway:{}",  args.gateway_port)
+                format!(" │ 🌐 gateway:{}", args.gateway_port)
+            } else {
+                String::new()
+            };
+            let infer_tag = if let Some(p) = args.inference_port {
+                format!(" │ ⚡ infer:{}", p)
             } else {
                 String::new()
             };
 
             println!(
-                "\x1b[1m rdma-p2p\x1b[0m  node:{} │ {}  │ peers:{} │ {}{}",
+                "\x1b[1m rdma-p2p\x1b[0m  node:{} │ {}  │ peers:{} │ {}{}{}",
                 &node_id[..12],
                 chrono::Utc::now().format("%H:%M:%S"),
                 peers.len(),
                 if peers.is_empty() { "🔍 discovering..." } else { "🟢 connected" },
                 gateway_tag,
+                infer_tag,
             );
             println!();
 

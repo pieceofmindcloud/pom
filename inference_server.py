@@ -305,75 +305,53 @@ def infer(req: InferRequest) -> InferResponse:
     try:
         return _infer_impl(req)
     except Exception as e:
-        print(f"ERROR in infer: {e}", flush=True)
-        traceback.print_exc()
+        # Only print full traceback for real errors
+        if not isinstance(e, HTTPException):
+            traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 def _infer_impl(req: InferRequest) -> InferResponse:
     assert _llama is not None
 
-    # Determine tokens to process at this node
+    # Determine tokens/embeddings to process
     tokens = None
     if req.prompt is not None:
-        print(f"📥 Received prompt (len={len(req.prompt)}) for layers {req.start_layer}–{req.end_layer}")
         tokens = _llama.tokenize(req.prompt.encode("utf-8"), add_bos=True, special=False)
     elif req.tokens is not None:
-        print(f"📥 Received tokens {req.tokens} for layers {req.start_layer}–{req.end_layer}")
         tokens = req.tokens
 
+    # Session state: track n_past
+    if not hasattr(_llama, "_distributed_n_past"):
+        _llama._distributed_n_past = 0
+
+    if req.reset:
+        _llama.reset()
+        _llama._distributed_n_past = 0
+
+    n_past = _llama._distributed_n_past
+
     if tokens is not None:
-        if req.is_last:
-            # Last node receiving tokens directly (sampling ONE token)
-            with _lock:
-                if req.reset: 
-                    _llama.reset()
-                    _llama._distributed_n_past = 0
-                
-                pos_offset = getattr(_llama, "_distributed_n_past", 0)
-                batch = _make_token_batch(tokens, pos_offset=pos_offset, logits_mode="last")
-                try:
-                    rc = lc.llama_decode(_llama.ctx, batch)
-                    if rc != 0:
-                        raise RuntimeError(f"llama_decode failed rc={rc}")
-
-                    # Sample the LAST token in the batch
-                    next_id = _argmax_logits_for_output_token(n_tokens - 1)
-                    text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
-
-                    _llama._distributed_n_past = pos_offset + len(tokens)
-                    
-                    print(f"📤 Sampled token {next_id} ('{text}')")
-                    return InferResponse(text=text, token_id=next_id, done=(next_id == int(_llama.token_eos())))
-                finally:
-                    lc.llama_batch_free(batch)
-
-        if not tokens:
-            print("📤 Sending empty response (no tokens)")
-            return InferResponse(hidden_state=None, hidden_shape=None, done=False)
-        
         n_tokens = len(tokens)
-        if n_tokens > int(_args.n_batch):
-            raise HTTPException(400, f"Prompt too long for n_batch: {n_tokens} > {_args.n_batch}")
+        if n_tokens == 0:
+            return InferResponse(done=False)
 
         with _lock:
-            if req.reset: 
-                _llama.reset()
-                _llama._distributed_n_past = 0
-            
-            pos_offset = getattr(_llama, "_distributed_n_past", 0)
-            
-            batch = _make_token_batch(tokens, pos_offset=pos_offset, logits_mode="all")
+            # First node processing tokens
+            batch = _make_token_batch(tokens, pos_offset=n_past, logits_mode="all")
             try:
                 rc = lc.llama_decode(_llama.ctx, batch)
-                if rc != 0:
-                    raise RuntimeError(f"llama_decode failed rc={rc}")
+                if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
+
                 hidden = _extract_hidden_all_tokens(n_tokens)
-                _llama._distributed_n_past = pos_offset + n_tokens
+                _llama._distributed_n_past += n_tokens
+
+                # Calculate RMS for diagnostics
+                rms = float(np.sqrt(np.mean(np.square(hidden))))
+                print(f"PROMPT -> P1 (n={n_tokens}, pos={n_past}, RMS={rms:.2f}) -> [Activations]")
             finally:
                 lc.llama_batch_free(batch)
 
         b64, shape = _encode_hidden(hidden)
-        print(f"📤 Sending hidden state {shape} for {n_tokens} tokens")
         return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
 
     # Hidden state path
@@ -382,52 +360,44 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
     hidden = _decode_hidden(req.hidden_state, req.hidden_shape, req.scale)
     n_tokens = int(hidden.shape[0])
-    
-    # Calculate RMS for diagnostics
-    rms = float(np.sqrt(np.mean(np.square(hidden))))
-    print(f"📥 Received hidden state {req.hidden_shape} (RMS={rms:.3f}, scale={req.scale}) for layers {req.start_layer}–{req.end_layer}")
 
     with _lock:
-        if req.reset: 
-            _llama.reset()
-            _llama._distributed_n_past = 0
-            
-        pos_offset = getattr(_llama, "_distributed_n_past", 0)
-
         if req.is_last:
-            batch = _make_embd_batch(hidden, pos_offset=pos_offset, logits_mode="last")
+            # Last node: process hidden state and sample ONE token
+            batch = _make_embd_batch(hidden, pos_offset=n_past, logits_mode="last")
             try:
                 rc = lc.llama_decode(_llama.ctx, batch)
-                if rc != 0:
-                    raise RuntimeError(f"llama_decode failed rc={rc}")
+                if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
 
-                # Sample the LAST token in the batch
                 next_id = _argmax_logits_for_output_token(n_tokens - 1)
                 text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
-                _llama._distributed_n_past = pos_offset + n_tokens
+                _llama._distributed_n_past += n_tokens
 
-                
-                print(f"📤 Sampled token {next_id} ('{text}')")
+                rms = float(np.sqrt(np.mean(np.square(hidden))))
+                print(f"[Activations] -> P2 (n={n_tokens}, pos={n_past}, RMS={rms:.2f}) -> TOKEN '{text}'")
+
                 return InferResponse(text=text, token_id=next_id, done=(next_id == int(_llama.token_eos())))
             finally:
                 lc.llama_batch_free(batch)
+        else:
+            # Middle node: process hidden state and return new hidden state
+            batch = _make_embd_batch(hidden, pos_offset=n_past, logits_mode="all")
+            try:
+                rc = lc.llama_decode(_llama.ctx, batch)
+                if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
 
-        if n_tokens > int(_args.n_batch):
-            raise HTTPException(400, f"Hidden sequence too long for n_batch: {n_tokens} > {_args.n_batch}")
+                new_hidden = _extract_hidden_all_tokens(n_tokens)
+                _llama._distributed_n_past += n_tokens
 
-        batch = _make_embd_batch(hidden, pos_offset=pos_offset, logits_mode="all")
-        try:
-            rc = lc.llama_decode(_llama.ctx, batch)
-            if rc != 0:
-                raise RuntimeError(f"llama_decode failed rc={rc}")
-            new_hidden = _extract_hidden_all_tokens(n_tokens)
-            _llama._distributed_n_past = pos_offset + n_tokens
-        finally:
-            lc.llama_batch_free(batch)
+                rms_in = float(np.sqrt(np.mean(np.square(hidden))))
+                rms_out = float(np.sqrt(np.mean(np.square(new_hidden))))
+                print(f"[Activations] -> P_MID (n={n_tokens}, pos={n_past}, RMS_in={rms_in:.2f}, RMS_out={rms_out:.2f})")
 
-    b64, shape = _encode_hidden(new_hidden)
-    print(f"📤 Sending hidden state {shape} for {n_tokens} tokens")
-    return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
+                b64, shape = _encode_hidden(new_hidden)
+                return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
+            finally:
+                lc.llama_batch_free(batch)
+
 
 
 # ── Health endpoint ───────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ import argparse
 import base64
 import threading
 import ctypes
+import traceback
 from typing import Optional
 
 import numpy as np
@@ -52,17 +53,20 @@ _lock = threading.Lock()
 class InferRequest(BaseModel):
     model: str
     prompt: Optional[str] = None
+    tokens: Optional[list[int]] = None        # token IDs for continuing generation
     hidden_state: Optional[str] = None        # base64 float32
     hidden_shape: Optional[list[int]] = None  # [n_tokens, hidden_dim]
     start_layer: int = 0
     end_layer: int = 31
     is_last: bool = False
+    reset: bool = False                       # Whether to clear KV cache before this step
 
 
 class InferResponse(BaseModel):
     hidden_state: Optional[str] = None
     hidden_shape: Optional[list[int]] = None
     text: Optional[str] = None
+    token_id: Optional[int] = None
     done: bool = False
 
 
@@ -96,6 +100,7 @@ def _make_token_batch(tokens: list[int], *, pos_offset: int, logits_mode: str) -
     n_tokens = len(tokens)
     batch = lc.llama_batch_init(n_tokens, 0, 1)
     batch.n_tokens = n_tokens  # llama_batch_init leaves fields uninitialized
+    batch.embd = None # Ensure we are using tokens
 
     for i in range(n_tokens):
         batch.token[i] = int(tokens[i])
@@ -126,7 +131,8 @@ def _make_embd_batch(
 
     n_tokens, hidden_dim = int(embd.shape[0]), int(embd.shape[1])
     batch = lc.llama_batch_init(n_tokens, hidden_dim, 1)
-    batch.n_tokens = n_tokens  # llama_batch_init leaves fields uninitialized
+    batch.n_tokens = n_tokens
+    batch.token = None # Signal that we are using batch.embd
 
     # Copy embeddings into the batch-allocated buffer.
     flat = embd.reshape(-1)
@@ -162,12 +168,12 @@ def _extract_hidden_all_tokens(n_tokens: int) -> np.ndarray:
     return hidden
 
 
-def _argmax_logits_for_output_token() -> int:
+def _argmax_logits_for_output_token(idx: int = 0) -> int:
     assert _llama is not None
     assert _n_vocab is not None
-    ptr = lc.llama_get_logits_ith(_llama.ctx, 0)
+    ptr = lc.llama_get_logits_ith(_llama.ctx, idx)
     if ptr is None:
-        raise RuntimeError("llama_get_logits_ith returned NULL")
+        raise RuntimeError(f"llama_get_logits_ith returned NULL for index {idx}")
     logits = np.ctypeslib.as_array(ptr, shape=(_n_vocab,))
     return int(np.argmax(logits))
 
@@ -261,7 +267,7 @@ def _generate_greedy_from_hidden(hidden: np.ndarray) -> str:
         finally:
             lc.llama_batch_free(batch)
 
-        next_id = _argmax_logits_for_output_token()
+        next_id = _argmax_logits_for_output_token(prefill_len - 1)
 
         generated: list[int] = []
         for step in range(max_new_tokens):
@@ -281,7 +287,7 @@ def _generate_greedy_from_hidden(hidden: np.ndarray) -> str:
             finally:
                 lc.llama_batch_free(tok_batch)
 
-            next_id = _argmax_logits_for_output_token()
+            next_id = _argmax_logits_for_output_token(0)
 
         out = _llama.detokenize(generated, special=False).decode("utf-8", errors="ignore")
         return out
@@ -291,59 +297,128 @@ def _generate_greedy_from_hidden(hidden: np.ndarray) -> str:
 
 @app.post("/v1/infer", response_model=InferResponse)
 def infer(req: InferRequest) -> InferResponse:
+    try:
+        return _infer_impl(req)
+    except Exception as e:
+        print(f"ERROR in infer: {e}", flush=True)
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+def _infer_impl(req: InferRequest) -> InferResponse:
     assert _llama is not None
 
+    # Determine tokens to process at this node
+    tokens = None
     if req.prompt is not None:
-        if req.is_last:
-            text = _generate_greedy_from_prompt(req.prompt)
-            return InferResponse(text=text, done=True)
-
+        print(f"📥 Received prompt (len={len(req.prompt)}) for layers {req.start_layer}–{req.end_layer}")
         tokens = _llama.tokenize(req.prompt.encode("utf-8"), add_bos=True, special=False)
+    elif req.tokens is not None:
+        print(f"📥 Received tokens {req.tokens} for layers {req.start_layer}–{req.end_layer}")
+        tokens = req.tokens
+
+    if tokens is not None:
+        if req.is_last:
+            # Last node receiving tokens directly (sampling ONE token)
+            with _lock:
+                if req.reset: 
+                    _llama.reset()
+                    _llama._distributed_n_past = 0
+                
+                pos_offset = getattr(_llama, "_distributed_n_past", 0)
+                batch = _make_token_batch(tokens, pos_offset=pos_offset, logits_mode="last")
+                try:
+                    rc = lc.llama_decode(_llama.ctx, batch)
+                    if rc != 0:
+                        raise RuntimeError(f"llama_decode failed rc={rc}")
+
+                    # Sample the LAST token in the batch
+                    next_id = _argmax_logits_for_output_token(n_tokens - 1)
+                    text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
+
+                    _llama._distributed_n_past = pos_offset + len(tokens)
+                    
+                    print(f"📤 Sampled token {next_id} ('{text}')")
+                    return InferResponse(text=text, token_id=next_id, done=(next_id == int(_llama.token_eos())))
+                finally:
+                    lc.llama_batch_free(batch)
+
         if not tokens:
+            print("📤 Sending empty response (no tokens)")
             return InferResponse(hidden_state=None, hidden_shape=None, done=False)
+        
         n_tokens = len(tokens)
         if n_tokens > int(_args.n_batch):
             raise HTTPException(400, f"Prompt too long for n_batch: {n_tokens} > {_args.n_batch}")
 
         with _lock:
-            _llama.reset()
-            batch = _make_token_batch(tokens, pos_offset=0, logits_mode="all")
+            if req.reset: 
+                _llama.reset()
+                _llama._distributed_n_past = 0
+            
+            pos_offset = getattr(_llama, "_distributed_n_past", 0)
+            
+            batch = _make_token_batch(tokens, pos_offset=pos_offset, logits_mode="all")
             try:
                 rc = lc.llama_decode(_llama.ctx, batch)
                 if rc != 0:
                     raise RuntimeError(f"llama_decode failed rc={rc}")
                 hidden = _extract_hidden_all_tokens(n_tokens)
+                _llama._distributed_n_past = pos_offset + n_tokens
             finally:
                 lc.llama_batch_free(batch)
 
         b64, shape = _encode_hidden(hidden)
+        print(f"📤 Sending hidden state {shape} for {n_tokens} tokens")
         return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
 
+    # Hidden state path
     if req.hidden_state is None or req.hidden_shape is None:
-        raise HTTPException(400, "Provide 'prompt' or both 'hidden_state' and 'hidden_shape'")
+        raise HTTPException(400, "Provide 'prompt', 'tokens' or both 'hidden_state' and 'hidden_shape'")
 
     hidden = _decode_hidden(req.hidden_state, req.hidden_shape)
-
-    if req.is_last:
-        text = _generate_greedy_from_hidden(hidden)
-        return InferResponse(text=text, done=True)
-
     n_tokens = int(hidden.shape[0])
-    if n_tokens > int(_args.n_batch):
-        raise HTTPException(400, f"Hidden sequence too long for n_batch: {n_tokens} > {_args.n_batch}")
+    print(f"📥 Received hidden state {req.hidden_shape} for layers {req.start_layer}–{req.end_layer}")
 
     with _lock:
-        _llama.reset()
-        batch = _make_embd_batch(hidden, pos_offset=0, logits_mode="all")
+        if req.reset: 
+            _llama.reset()
+            _llama._distributed_n_past = 0
+            
+        pos_offset = getattr(_llama, "_distributed_n_past", 0)
+
+        if req.is_last:
+            batch = _make_embd_batch(hidden, pos_offset=pos_offset, logits_mode="last")
+            try:
+                rc = lc.llama_decode(_llama.ctx, batch)
+                if rc != 0:
+                    raise RuntimeError(f"llama_decode failed rc={rc}")
+
+                # Sample the LAST token in the batch
+                next_id = _argmax_logits_for_output_token(n_tokens - 1)
+                text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
+                _llama._distributed_n_past = pos_offset + n_tokens
+
+                
+                print(f"📤 Sampled token {next_id} ('{text}')")
+                return InferResponse(text=text, token_id=next_id, done=(next_id == int(_llama.token_eos())))
+            finally:
+                lc.llama_batch_free(batch)
+
+        if n_tokens > int(_args.n_batch):
+            raise HTTPException(400, f"Hidden sequence too long for n_batch: {n_tokens} > {_args.n_batch}")
+
+        batch = _make_embd_batch(hidden, pos_offset=pos_offset, logits_mode="all")
         try:
             rc = lc.llama_decode(_llama.ctx, batch)
             if rc != 0:
                 raise RuntimeError(f"llama_decode failed rc={rc}")
             new_hidden = _extract_hidden_all_tokens(n_tokens)
+            _llama._distributed_n_past = pos_offset + n_tokens
         finally:
             lc.llama_batch_free(batch)
 
     b64, shape = _encode_hidden(new_hidden)
+    print(f"📤 Sending hidden state {shape} for {n_tokens} tokens")
     return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
 
 
@@ -388,12 +463,12 @@ def main():
     args = parser.parse_args()
     _args = args
 
-    print(f"Loading model : {args.model}")
-    print(f"Layers        : {args.start_layer}–{args.end_layer}")
-    print(f"Server        : http://{args.host}:{args.port}")
-    print(f"n_ctx          : {args.n_ctx}")
-    print(f"n_batch        : {args.n_batch}")
-    print(f"max_new_tokens: {args.max_new_tokens}")
+    print(f"Loading model : {args.model}", flush=True)
+    print(f"Layers        : {args.start_layer}–{args.end_layer}", flush=True)
+    print(f"Server        : http://{args.host}:{args.port}", flush=True)
+    print(f"n_ctx          : {args.n_ctx}", flush=True)
+    print(f"n_batch        : {args.n_batch}", flush=True)
+    print(f"max_new_tokens: {args.max_new_tokens}", flush=True)
 
     n_threads = int(args.threads)
     kwargs = dict(
@@ -407,7 +482,9 @@ def main():
     if n_threads > 0:
         kwargs["n_threads"] = n_threads
 
+    print("Initializing Llama model (this may take a few seconds)...", flush=True)
     _llama = Llama(args.model, **kwargs)
+    print("Llama model initialized. Resetting...", flush=True)
     _llama.reset()
 
     # Ensure context outputs embeddings and causal attention is enabled.
@@ -417,9 +494,15 @@ def main():
     _n_embd = int(_llama.n_embd())
     _n_vocab = int(_llama.n_vocab())
 
-    print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}")
+    print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}", flush=True)
+    print(f"Starting server on {args.host}:{args.port}...", flush=True)
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+    except Exception as e:
+        print(f"FATAL: Failed to start uvicorn server: {e}", flush=True)
+        import sys
+        sys.exit(1)
 
 
 if __name__ == "__main__":

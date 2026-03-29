@@ -1,4 +1,5 @@
-use crate::network::Network;
+use crate::model::LayerAssignment;
+use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline, LoadTracker};
 use anyhow::Result;
@@ -21,6 +22,8 @@ pub struct GatewayState {
     pub network: Arc<Network>,
     pub ollama: Arc<OllamaClient>,
     pub default_model: String,
+    /// Current assignment of the local node.
+    pub local_assignment: Arc<tokio::sync::RwLock<Option<LayerAssignment>>>,
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
     /// Shared HTTP client with long timeout for pipeline calls.
@@ -33,10 +36,13 @@ pub struct GatewayState {
 #[derive(Debug, Serialize)]
 struct PeerInferRequest<'a> {
     model: &'a str,
-    /// Raw prompt text — only set for the FIRST peer in the pipeline.
+    /// Raw prompt text — only set for the FIRST peer in the pipeline (first step).
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<&'a str>,
-    /// Base64-encoded float32 hidden-state tensor — set for all peers except the first.
+    /// Token IDs — set for subsequent steps in the generation loop.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tokens: Option<&'a [u32]>,
+    /// Base64-encoded float32 hidden-state tensor.
     #[serde(skip_serializing_if = "Option::is_none")]
     hidden_state: Option<&'a str>,
     /// Shape [n_tokens, hidden_dim] of hidden_state.
@@ -44,8 +50,10 @@ struct PeerInferRequest<'a> {
     hidden_shape: Option<[usize; 2]>,
     start_layer: u32,
     end_layer: u32,
-    /// True only for the last peer in the pipeline — it should decode and return text.
+    /// True only for the last peer in the pipeline.
     is_last: bool,
+    /// Whether to clear KV cache.
+    reset: bool,
 }
 
 /// Response from each peer's /v1/infer endpoint.
@@ -56,6 +64,7 @@ struct PeerInferResponse {
     hidden_shape: Option<[usize; 2]>,
     /// Populated by the last peer.
     text: Option<String>,
+    token_id: Option<u32>,
     done: bool,
 }
 
@@ -121,17 +130,24 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
 
 // ── Pipeline execution ────────────────────────────────────────────────────────
 
-/// Execute a planned pipeline: call each peer in sequence, threading the
-/// hidden-state tensor through until the last peer returns decoded text.
-async fn execute_pipeline(
+#[derive(Debug)]
+struct StepResult {
+    text: String,
+    token_id: u32,
+    done: bool,
+}
+
+/// Execute a single forward pass through the pipeline.
+async fn execute_pipeline_step(
     plan: &crate::pipeline::PipelinePlan,
     model: &str,
-    prompt: &str,
+    prompt: Option<&str>,
+    tokens: Option<&[u32]>,
+    reset: bool,
     http: &reqwest::Client,
     loads: &LoadTracker,
-) -> Result<String> {
+) -> Result<StepResult> {
     let n = plan.steps.len();
-    // hidden_state and its shape are passed between peers
     let mut hidden_state: Option<String> = None;
     let mut hidden_shape: Option<[usize; 2]> = None;
 
@@ -139,28 +155,21 @@ async fn execute_pipeline(
         let is_first = i == 0;
         let is_last = i == n - 1;
 
-        // Acquire load slot — dropped at end of iteration (or on error)
         let _guard = loads.acquire(&step.node_id).await;
 
         let req = PeerInferRequest {
             model,
-            prompt: if is_first { Some(prompt) } else { None },
+            prompt: if is_first { prompt } else { None },
+            tokens: if is_first { tokens } else { None },
             hidden_state: hidden_state.as_deref(),
             hidden_shape,
             start_layer: step.start_layer,
             end_layer: step.end_layer,
             is_last,
+            reset,
         };
 
         let url = format!("{}/v1/infer", step.inference_url);
-        info!(
-            "  → peer {} layers {}-{} ({})",
-            &step.node_id[..step.node_id.len().min(8)],
-            step.start_layer,
-            step.end_layer,
-            if is_last { "final" } else { "hidden" }
-        );
-
         let resp = http
             .post(&url)
             .json(&req)
@@ -180,31 +189,23 @@ async fn execute_pipeline(
             .map_err(|e| anyhow::anyhow!("peer {} bad JSON: {}", &step.node_id[..8], e))?;
 
         if is_last {
-            return peer_resp
-                .text
-                .ok_or_else(|| anyhow::anyhow!("last peer returned no text"));
+            return Ok(StepResult {
+                text: peer_resp.text.unwrap_or_default(),
+                token_id: peer_resp.token_id.unwrap_or(0),
+                done: peer_resp.done,
+            });
         }
 
         hidden_state = peer_resp.hidden_state;
         hidden_shape = peer_resp.hidden_shape;
-
-        if hidden_state.is_none() {
-            return Err(anyhow::anyhow!(
-                "peer {} (layers {}-{}) returned no hidden_state",
-                &step.node_id[..8],
-                step.start_layer,
-                step.end_layer,
-            ));
-        }
     }
 
-    Err(anyhow::anyhow!("pipeline completed without a final text response"))
+    Err(anyhow::anyhow!("pipeline completed without a final response"))
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.
-/// `curl -d '{"prompt":"hi"}'` works without any extra headers.
 async fn handle_generate(
     State(state): State<GatewayState>,
     body: Bytes,
@@ -231,78 +232,99 @@ async fn handle_generate(
 
     info!("📨 /api/generate model={} prompt_len={}", model, req.prompt.len());
 
-    let peers = state.network.alive_peers().await;
-    let total_layers = peers.first().map(|p| p.total_layers).unwrap_or(32);
+    let mut peers = state.network.alive_peers().await;
+    
+    // Include local node if it has an assignment and inference port
+    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
+        if local_asgn.model == model {
+            peers.push(PeerInfo {
+                node_id: state.network.node_id.clone(),
+                pubkey: state.network.pubkey.clone(),
+                addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
+                model: local_asgn.model,
+                start_layer: local_asgn.start_layer,
+                end_layer: local_asgn.end_layer,
+                total_layers: local_asgn.total_layers,
+                memory_mb: local_asgn.memory_used_mb,
+                last_seen: chrono::Utc::now(),
+                ollama_port: state.network.ollama_port,
+                inference_port: state.network.inference_port,
+            });
+        }
+    }
+
+    // Find total layers for THIS model from peers that have it
+    let total_layers = peers.iter()
+        .find(|p| p.model == model)
+        .map(|p| p.total_layers)
+        .unwrap_or(32);
 
     // ── 1. Try distributed pipeline (peers with inference_port) ──────────────
-    if let Some(plan) = plan_pipeline(&peers, total_layers, &state.loads).await {
+    let mut pipeline_error = None;
+    if let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await {
         info!(
             "🔀 Pipeline planned: {} hops [{}]",
             plan.steps.len(),
             plan.hop_chain()
         );
-        match execute_pipeline(&plan, &model, &req.prompt, &state.http, &state.loads).await {
-            Ok(text) => {
-                info!("✅ Pipeline complete via {}", plan.hop_chain());
-                return (
-                    StatusCode::OK,
-                    Json(GenerateResponse {
-                        response: text,
-                        source: format!("pipeline:{}", plan.hop_chain()),
-                    }),
-                )
-                    .into_response();
+        
+        let mut full_text = String::new();
+        let mut current_prompt: Option<&str> = Some(&req.prompt);
+        let mut current_tokens: Option<Vec<u32>> = None;
+        let mut reset = true;
+        let max_tokens = 512;
+
+        for i in 0..max_tokens {
+            let res = execute_pipeline_step(
+                &plan,
+                &model,
+                current_prompt,
+                current_tokens.as_deref(),
+                reset,
+                &state.http,
+                &state.loads
+            ).await;
+
+            match res {
+                Ok(step) => {
+                    full_text.push_str(&step.text);
+                    if step.done || i == max_tokens - 1 {
+                        info!("✅ Pipeline complete after {} steps", i + 1);
+                        return (
+                            StatusCode::OK,
+                            Json(GenerateResponse {
+                                response: full_text,
+                                source: format!("pipeline:{}", plan.hop_chain()),
+                            }),
+                        )
+                            .into_response();
+                    }
+                    // For next steps:
+                    current_prompt = None;
+                    current_tokens = Some(vec![step.token_id]);
+                    reset = false;
+                }
+                Err(e) => {
+                    let err_msg = format!("Pipeline failed at step {}: {}", i, e);
+                    warn!("{}", err_msg);
+                    pipeline_error = Some(err_msg);
+                    break;
+                }
             }
-            Err(e) => warn!("Pipeline failed ({}), falling back to Ollama", e),
         }
+    } else {
+        pipeline_error = Some(format!("No valid pipeline plan for model '{}' (check layer coverage)", model));
     }
 
     // ── 2. Fallback: local Ollama ─────────────────────────────────────────────
-    if state.ollama.is_available().await {
-        match state.ollama.generate(&model, &req.prompt).await {
-            Ok(resp) => {
-                info!("✅ Served locally via Ollama");
-                return (
-                    StatusCode::OK,
-                    Json(GenerateResponse {
-                        response: resp.response,
-                        source: "local".to_string(),
-                    }),
-                )
-                    .into_response();
-            }
-            Err(e) => warn!("Local Ollama failed: {}", e),
-        }
-    }
-
-    // ── 3. Fallback: any peer Ollama ──────────────────────────────────────────
-    for peer in peers.iter().filter(|p| p.model == model) {
-        if let Some(url) = peer.ollama_url() {
-            let remote = OllamaClient::new(&url);
-            match remote.generate(&model, &req.prompt).await {
-                Ok(resp) => {
-                    info!("✅ Served by peer Ollama {}", &peer.node_id[..8]);
-                    return (
-                        StatusCode::OK,
-                        Json(GenerateResponse {
-                            response: resp.response,
-                            source: format!("peer:{}", &peer.node_id[..8]),
-                        }),
-                    )
-                        .into_response();
-                }
-                Err(e) => warn!("Peer Ollama {} failed: {}", &peer.node_id[..8], e),
-            }
-        }
-    }
+    // ... (commented out by user)
 
     (
         StatusCode::SERVICE_UNAVAILABLE,
         Json(GenerateResponse {
             response: format!(
-                "No inference backend available for model '{}'. \
-                 Start peers with --inference-port or --ollama-url.",
-                model
+                "Inference failed. Error: {}. Start peers with --inference-port.",
+                pipeline_error.unwrap_or_else(|| "Unknown error".to_string())
             ),
             source: "none".to_string(),
         }),
@@ -311,7 +333,25 @@ async fn handle_generate(
 }
 
 async fn handle_peers(State(state): State<GatewayState>) -> Json<PeersResponse> {
-    let peers = state.network.alive_peers().await;
+    let mut peers = state.network.alive_peers().await;
+    
+    // Include local node
+    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
+        peers.push(PeerInfo {
+            node_id: state.network.node_id.clone(),
+            pubkey: state.network.pubkey.clone(),
+            addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
+            model: local_asgn.model,
+            start_layer: local_asgn.start_layer,
+            end_layer: local_asgn.end_layer,
+            total_layers: local_asgn.total_layers,
+            memory_mb: local_asgn.memory_used_mb,
+            last_seen: chrono::Utc::now(),
+            ollama_port: state.network.ollama_port,
+            inference_port: state.network.inference_port,
+        });
+    }
+
     let mut summaries = Vec::new();
     for p in &peers {
         let load = state.loads.load(&p.node_id).await;
@@ -331,7 +371,25 @@ async fn handle_peers(State(state): State<GatewayState>) -> Json<PeersResponse> 
 
 async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse> {
     let ollama_available = state.ollama.is_available().await;
-    let peers = state.network.alive_peers().await;
+    let mut peers = state.network.alive_peers().await;
+    
+    // Include local node
+    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
+        peers.push(PeerInfo {
+            node_id: state.network.node_id.clone(),
+            pubkey: state.network.pubkey.clone(),
+            addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
+            model: local_asgn.model,
+            start_layer: local_asgn.start_layer,
+            end_layer: local_asgn.end_layer,
+            total_layers: local_asgn.total_layers,
+            memory_mb: local_asgn.memory_used_mb,
+            last_seen: chrono::Utc::now(),
+            ollama_port: state.network.ollama_port,
+            inference_port: state.network.inference_port,
+        });
+    }
+
     let peer_count = peers.len();
     let pipeline_peers = peers.iter().filter(|p| p.inference_port.is_some()).count();
     Json(HealthResponse {

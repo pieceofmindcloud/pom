@@ -18,8 +18,10 @@ use pipeline::LoadTracker;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
-use tracing::{error, info};
+use tokio::process::Command;
+use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
+use std::process::Stdio;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -79,6 +81,36 @@ struct Args {
     /// Run inference_server.py --port <N> --model <path> --start-layer S --end-layer E
     #[arg(long)]
     inference_port: Option<u16>,
+}
+
+/// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
+fn parse_layers_from_filename(path: &str) -> Option<(u32, u32)> {
+    let filename = std::path::Path::new(path)
+        .file_stem()?
+        .to_str()?;
+    
+    // Look for patterns like _0_20 at the end or middle
+    let parts: Vec<&str> = filename.split('_').collect();
+    if parts.len() >= 3 {
+        // Try last two parts first
+        let end_idx = parts.len() - 1;
+        let start_idx = parts.len() - 2;
+        
+        if let (Ok(s), Ok(e)) = (parts[start_idx].parse::<u32>(), parts[end_idx].parse::<u32>()) {
+            return Some((s, e));
+        }
+        
+        // Try searching for any two adjacent numeric parts
+        for i in 0..parts.len()-1 {
+            if let (Ok(s), Ok(e)) = (parts[i].parse::<u32>(), parts[i+1].parse::<u32>()) {
+                // Heuristic: start < end and end - start < 200 (sanity check)
+                if s < e && e - s < 200 {
+                    return Some((s, e));
+                }
+            }
+        }
+    }
+    None
 }
 
 #[tokio::main]
@@ -151,20 +183,32 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── Resolve model profile ────────────────────────────────────────────────
     // Priority: (1) built-in profile, (2) Ollama size-based profile,
     // (3) name-based estimate — so any Ollama model always works.
-    let profile = if let Some(p) = ModelProfile::find(&model_name) {
+    
+    // If it's a path, use the filename for profile lookup
+    let profile_lookup_name = if model_name.contains('/') || model_name.contains('\\') {
+        std::path::Path::new(&model_name)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&model_name)
+            .to_string()
+    } else {
+        model_name.clone()
+    };
+
+    let mut profile = if let Some(p) = ModelProfile::find(&profile_lookup_name) {
+        p
+    } else if let Some(p) = ModelProfile::find(&model_name) {
         p
     } else {
         // Try Ollama to get exact file size for a better estimate
         let ollama = OllamaClient::new(&args.ollama_url);
         match ollama.list_models().await {
             Ok(models) => {
-                let lower = model_name.to_lowercase();
+                let lower = profile_lookup_name.to_lowercase();
                 if let Some(om) = models.iter().find(|m| {
                     let n = m.name.to_lowercase();
-                    // Match "qwen3:8b" == "qwen3:8b", or "qwen3" starts "qwen3:8b"
                     n == lower || lower.starts_with(&n) || n.starts_with(&lower)
                 }) {
                     info!(
@@ -172,28 +216,21 @@ async fn main() -> Result<()> {
                         om.name,
                         om.size as f64 / 1_048_576.0
                     );
-                    ModelProfile::from_ollama_model(&model_name, om.size)
+                    ModelProfile::from_ollama_model(&profile_lookup_name, om.size)
                 } else {
-                    // Model not in Ollama list (yet / different tag) — estimate from name
-                    let p = ModelProfile::guess_from_name(&model_name);
-                    info!(
-                        "'{}' not in Ollama list — using name-based estimate: {} layers",
-                        model_name, p.total_layers
-                    );
-                    p
+                    ModelProfile::guess_from_name(&model_name)
                 }
             }
             Err(_) => {
-                // Ollama unreachable — still proceed with name-based estimate
-                let p = ModelProfile::guess_from_name(&model_name);
-                info!(
-                    "Ollama unreachable — estimated profile for '{}': {} layers, {:.0}MB/layer",
-                    model_name, p.total_layers, p.memory_per_layer_mb
-                );
-                p
+                ModelProfile::guess_from_name(&model_name)
             }
         }
     };
+
+    // Force profile name to be consistent if we found a match
+    if let Some(p) = ModelProfile::find(&profile.name) {
+        profile.name = p.name;
+    }
 
     info!("Model: {} ({})", profile.name, profile.description);
     info!("Memory allocated: {:.0}MB ({:.1}GB)", memory_mb, memory_mb / 1024.0);
@@ -258,7 +295,22 @@ async fn main() -> Result<()> {
         info!("Network already covers layers: {:?}", &covered[..covered.len().min(10)]);
     }
 
-    let assignment = calculate_assignment(&profile, memory_mb, &covered, args.start_layer);
+    // Try to extract layers from filename, otherwise calculate
+    let assignment = if let Some((s, e)) = parse_layers_from_filename(&model_name) {
+        info!("Parsed layers {}-{} from filename '{}'", s, e, model_name);
+        let actual_count = e - s + 1;
+        model::LayerAssignment {
+            model: profile.name.clone(),
+            total_layers: profile.total_layers,
+            start_layer: s,
+            end_layer: e,
+            layers_count: actual_count,
+            memory_used_mb: actual_count as f64 * profile.memory_per_layer_mb + profile.overhead_mb,
+            memory_allocated_mb: memory_mb,
+        }
+    } else {
+        calculate_assignment(&profile, memory_mb, &covered, args.start_layer)
+    };
 
     info!(
         "📦 Assigned layers {}-{} ({} layers, {:.0}MB)",
@@ -288,6 +340,77 @@ async fn main() -> Result<()> {
 
     net.announce(&assignment).await?;
 
+    // ── Start Inference Server (if port provided) ────────────────────────────
+    if let Some(port) = args.inference_port {
+        let model_path = model_name.clone();
+        let start_l = assignment.start_layer;
+        let end_l = assignment.end_layer;
+        
+        info!("Starting inference server on port {} for layers {}-{}...", port, start_l, end_l);
+        
+        // Find python executable (prefer pyenv if available, fallback to python3)
+        let python_exe = "/Users/jairpereira/.pyenv/versions/email/bin/python";
+        let python_exe = if std::path::Path::new(python_exe).exists() {
+            python_exe.to_string()
+        } else {
+            "python3".to_string()
+        };
+
+        // Get absolute path to inference_server.py
+        let server_script = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("inference_server.py");
+
+        info!("Inference command: {} {} --model {} --start-layer {} --end-layer {} --port {}", 
+            python_exe, server_script.display(), model_path, start_l, end_l, port);
+
+        let mut child = Command::new(python_exe)
+            .env("PYTHONUNBUFFERED", "1")
+            .arg(server_script)
+            .arg("--model")
+            .arg(&model_path)
+            .arg("--start-layer")
+            .arg(start_l.to_string())
+            .arg("--end-layer")
+            .arg(end_l.to_string())
+            .arg("--port")
+            .arg(port.to_string())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to start inference_server.py");
+
+        // Log output in background
+        let node_id_log = node_id.clone();
+        let mut stdout = child.stdout.take().expect("Failed to open stdout");
+        let mut stderr = child.stderr.take().expect("Failed to open stderr");
+
+        // Task for stdout
+        let nid1 = node_id_log.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stdout).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                println!("\x1b[36m[InfServer {}]\x1b[0m {}", &nid1[..8], line);
+            }
+        });
+
+        // Task for stderr
+        let nid2 = node_id_log.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                eprintln!("\x1b[31m[InfServer {} ERR]\x1b[0m {}", &nid2[..8], line);
+            }
+        });
+
+        tokio::spawn(async move {
+            let status = child.wait().await;
+            warn!("Inference server {} exited with status: {:?}", &node_id_log[..8], status);
+        });
+    }
+
     // ── Gateway HTTP server (optional) ───────────────────────────────────────
     if args.gateway {
         let http_client = reqwest::Client::builder()
@@ -297,6 +420,7 @@ async fn main() -> Result<()> {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
             default_model: profile.name.clone(),
+            local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(http_client),
         };
@@ -347,7 +471,7 @@ async fn main() -> Result<()> {
             display::print_assignment(a, &mem_source);
             display::print_layer_map(a.total_layers, a.start_layer, a.end_layer, &peers);
             display::print_peers(&peers);
-            display::print_network_health(a.total_layers, &peers, &a.model);
+            display::print_network_health(a.total_layers, a.start_layer, a.end_layer, &peers, &a.model);
 
             let covered_now = net.get_covered_layers(&profile.name).await;
             let gap_exists = (0..a.start_layer).any(|l| !covered_now.contains(&l));

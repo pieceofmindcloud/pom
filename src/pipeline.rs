@@ -10,6 +10,7 @@ use std::sync::{
     Arc,
 };
 use tokio::sync::RwLock;
+use tracing::{debug, info};
 
 // ── Load tracking ─────────────────────────────────────────────────────────────
 
@@ -107,21 +108,20 @@ impl PipelinePlan {
 /// Returns `None` if there is any gap in layer coverage (0..total_layers).
 pub async fn plan_pipeline(
     peers: &[PeerInfo],
+    model_name: &str,
     total_layers: u32,
     tracker: &LoadTracker,
 ) -> Option<PipelinePlan> {
-    // Only peers that expose an inference server
-    let mut candidates: Vec<&PeerInfo> = peers
+    // Only peers that expose an inference server AND match the model name
+    let candidates: Vec<&PeerInfo> = peers
         .iter()
-        .filter(|p| p.inference_port.is_some() && p.is_alive())
+        .filter(|p| p.inference_port.is_some() && p.is_alive() && p.model == model_name)
         .collect();
 
     if candidates.is_empty() {
+        debug!("Pipeline plan failed: No alive peers for model '{}' with inference_port", model_name);
         return None;
     }
-
-    // Sort ascending by start_layer for the greedy sweep
-    candidates.sort_by_key(|p| p.start_layer);
 
     let mut steps: Vec<PipelineStep> = Vec::new();
     let mut pos: u32 = 0; // next layer we need covered
@@ -135,6 +135,7 @@ pub async fn plan_pipeline(
             .collect();
 
         if reachable.is_empty() {
+            info!("Pipeline plan failed: Gap at layer {} for model '{}'", pos, model_name);
             return None; // gap — no peer covers layer `pos`
         }
 

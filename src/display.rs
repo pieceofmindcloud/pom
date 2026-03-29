@@ -126,20 +126,26 @@ pub fn print_peers(peers: &[PeerInfo]) {
     println!("  └──────────────┴──────────────┴───────────┴───────────────┘");
 }
 
-pub fn print_network_health(total_layers: u32, peers: &[PeerInfo], model: &str) {
-    let covered: Vec<u32> = {
-        let mut v = Vec::new();
-        for peer in peers {
-            if peer.model == model {
-                for l in peer.start_layer..=peer.end_layer {
-                    if !v.contains(&l) {
-                        v.push(l);
-                    }
+pub fn print_network_health(total_layers: u32, my_start: u32, my_end: u32, peers: &[PeerInfo], model: &str) {
+    let mut covered: Vec<u32> = Vec::new();
+    
+    // Add local layers
+    for l in my_start..=my_end {
+        if l < total_layers && !covered.contains(&l) {
+            covered.push(l);
+        }
+    }
+
+    // Add peer layers
+    for peer in peers {
+        if peer.model == model {
+            for l in peer.start_layer..=peer.end_layer {
+                if l < total_layers && !covered.contains(&l) {
+                    covered.push(l);
                 }
             }
         }
-        v
-    };
+    }
 
     let coverage_pct = (covered.len() as f32 / total_layers as f32 * 100.0) as u32;
     let bar = make_bar(coverage_pct, 20);
@@ -163,6 +169,7 @@ pub fn print_network_health(total_layers: u32, peers: &[PeerInfo], model: &str) 
 }
 
 fn make_bar(pct: u32, width: u32) -> String {
+    let pct = pct.min(100);
     let filled = (pct * width / 100) as usize;
     let empty = width as usize - filled;
     format!("[{}{}]", "█".repeat(filled), "░".repeat(empty))

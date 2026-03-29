@@ -15,6 +15,13 @@ impl ModelProfile {
     pub fn known_models() -> Vec<ModelProfile> {
         vec![
             ModelProfile {
+                name: "gemma2".into(),
+                total_layers: 42,
+                memory_per_layer_mb: 380.0,
+                overhead_mb: 800.0,
+                description: "Google Gemma 2 9B".into(),
+            },
+            ModelProfile {
                 name: "gemma3".into(),
                 total_layers: 28,
                 memory_per_layer_mb: 180.0,
@@ -77,7 +84,10 @@ impl ModelProfile {
         let lower = name.to_lowercase();
         Self::known_models()
             .into_iter()
-            .find(|m| m.name == lower || m.name.starts_with(&lower))
+            .find(|m| {
+                let m_lower = m.name.to_lowercase();
+                lower == m_lower || lower.starts_with(&m_lower)
+            })
     }
 
     /// Build a ModelProfile from an Ollama model's file size (best-effort estimate).
@@ -100,29 +110,42 @@ impl ModelProfile {
     /// Parses parameter counts like "8b", "70b", etc. from the name.
     pub fn guess_from_name(name: &str) -> ModelProfile {
         let lower = name.to_lowercase();
-        let (total_layers, mb_per_layer, overhead_mb) = if lower.contains("671b") {
-            (128, 4000.0, 8000.0)
-        } else if lower.contains("70b") || lower.contains("72b") || lower.contains("65b") {
-            (80, 1600.0, 3000.0)
-        } else if lower.contains("34b") || lower.contains("32b") {
-            (64, 980.0, 2000.0)
-        } else if lower.contains("14b") || lower.contains("13b") {
-            (40, 600.0, 1200.0)
-        } else if lower.contains("8b") || lower.contains("7b") {
-            (32, 380.0, 700.0)
-        } else if lower.contains("3b") || lower.contains("4b") {
-            (32, 200.0, 400.0)
-        } else if lower.contains("1b") || lower.contains("2b") {
-            (28, 130.0, 300.0)
+        // Extract filename from path if needed
+        let filename = std::path::Path::new(&lower)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(&lower);
+
+        let (clean_name, total_layers, mb_per_layer, overhead_mb) = if filename.contains("gemma2") {
+            ("gemma2", 42, 380.0, 800.0)
+        } else if filename.contains("gemma3") {
+            ("gemma3", 32, 420.0, 800.0)
+        } else if filename.contains("llama3") {
+            ("llama3", 32, 380.0, 700.0)
+        } else if filename.contains("671b") {
+            ("deepseek-v3", 128, 4000.0, 8000.0)
+        } else if filename.contains("70b") || filename.contains("72b") || filename.contains("65b") {
+            ("large-llm", 80, 1600.0, 3000.0)
+        } else if filename.contains("34b") || filename.contains("32b") {
+            ("medium-llm", 64, 980.0, 2000.0)
+        } else if filename.contains("14b") || filename.contains("13b") {
+            ("small-llm", 40, 600.0, 1200.0)
+        } else if filename.contains("8b") || filename.contains("7b") {
+            ("7b-llm", 32, 380.0, 700.0)
+        } else if filename.contains("3b") || filename.contains("4b") {
+            ("3b-llm", 32, 200.0, 400.0)
+        } else if filename.contains("1b") || filename.contains("2b") {
+            ("1b-llm", 28, 130.0, 300.0)
         } else {
-            (32, 300.0, 600.0) // unknown → assume ~7B
+            ("unknown-llm", 32, 300.0, 600.0) // unknown → assume ~7B
         };
+
         ModelProfile {
-            name: name.to_string(),
+            name: clean_name.to_string(),
             total_layers,
             memory_per_layer_mb: mb_per_layer,
             overhead_mb,
-            description: format!("estimated profile ({})", name),
+            description: format!("estimated profile ({})", filename),
         }
     }
 }

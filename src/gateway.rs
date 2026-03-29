@@ -54,6 +54,8 @@ struct PeerInferRequest<'a> {
     is_last: bool,
     /// Whether to clear KV cache.
     reset: bool,
+    /// Activation scale factor.
+    scale: f32,
 }
 
 /// Response from each peer's /v1/infer endpoint.
@@ -144,6 +146,7 @@ async fn execute_pipeline_step(
     prompt: Option<&str>,
     tokens: Option<&[u32]>,
     reset: bool,
+    scale: f32,
     http: &reqwest::Client,
     loads: &LoadTracker,
 ) -> Result<StepResult> {
@@ -167,6 +170,7 @@ async fn execute_pipeline_step(
             end_layer: step.end_layer,
             is_last,
             reset,
+            scale: if is_first { 1.0 } else { scale },
         };
 
         let url = format!("{}/v1/infer", step.inference_url);
@@ -281,6 +285,7 @@ async fn handle_generate(
                 current_prompt,
                 current_tokens.as_deref(),
                 reset,
+                1.0, // Bypass hack handles normalization now
                 &state.http,
                 &state.loads
             ).await;

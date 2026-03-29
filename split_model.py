@@ -220,24 +220,33 @@ def _get_tensor_info(gguf: GGUFFile, name: str) -> TensorInfo | None:
             return t
     return None
 
-def _fake_output_norm(gguf: GGUFFile, hidden_dim: int) -> FakeTensor:
-    """Identity RMS-norm weights: all 1.0."""
+def _fake_output_norm(gguf: GGUFFile, hidden_dim: int, scale: float = 1.0) -> FakeTensor:
+    """Identity RMS-norm weights: all scale (default 1.0)."""
     # Try to match the dtype of the original output_norm if it exists
     orig = _get_tensor_info(gguf, "output_norm.weight")
     dtype = orig.dtype if orig else 0  # default to F32
     
     if dtype == 0: # F32
-        data = struct.pack(f"<{hidden_dim}f", *([1.0] * hidden_dim))
+        data = struct.pack(f"<{hidden_dim}f", *([scale] * hidden_dim))
     elif dtype == 16: # BF16
-        # Minimal BF16 conversion (just the top 16 bits of F32)
-        # 1.0 in F32 is 0x3f800000. In BF16 it's 0x3f80.
-        data = struct.pack(f"<{hidden_dim}H", *([0x3f80] * hidden_dim))
+        # To make it easy, we'll just pack the hex for common scales if needed.
+        # For scale=1.0, hex is 0x3f80. For scale=100000.0, hex is 0x47c3.
+        val = 0x3f80 if scale == 1.0 else 0x47c3 if scale == 100000.0 else 0x0000
+        data = struct.pack(f"<{hidden_dim}H", *([val] * hidden_dim))
     elif dtype == 1: # F16
-        # 1.0 in F16 is 0x3c00
-        data = struct.pack(f"<{hidden_dim}H", *([0x3c00] * hidden_dim))
+        # 1.0 is 0x3c00. 100000.0 is too large for F16 (overflows).
+        # We'll fallback to F32 for large scales.
+        if scale > 65504.0:
+            data = struct.pack(f"<{hidden_dim}f", *([scale] * hidden_dim))
+            dtype = 0
+        else:
+            # 1.0 in F16 is 0x3c00
+            import numpy as np
+            val = np.float16(scale).view(np.uint16)
+            data = struct.pack(f"<{hidden_dim}H", *([val] * hidden_dim))
     else:
-        # Fallback to F32 and hope llama.cpp accepts it
-        data = struct.pack(f"<{hidden_dim}f", *([1.0] * hidden_dim))
+        # Fallback to F32
+        data = struct.pack(f"<{hidden_dim}f", *([scale] * hidden_dim))
         dtype = 0
 
     return FakeTensor("output_norm.weight", [hidden_dim], dtype, data)
@@ -322,20 +331,11 @@ def split_model(
             real_tensors.append(t)
 
     # ── Fake tensors for non-last nodes ────────────────────────────────────────
-    # output_norm.weight and output.weight MUST exist for llama.cpp to load the model.
-    # For non-last slices we inject identity/fake tensors.
     extra_tensors: list[FakeTensor] = []
     if not is_last:
-        extra_tensors.append(_fake_output_norm(gguf, hidden_dim))
-        
-        # Check if output.weight exists in source, and inject a fake if needed
-        if _get_tensor_info(gguf, "output.weight"):
-            # If vocab_size is known, we can make a small zero head or identity head.
-            # But making it large consumes RAM. Let's try to see if a tiny one works.
-            # Actually, most models are fine if we just provide something.
-            # For now, let's skip fake output.weight and see if llama.cpp complains.
-            # Gemma2 DOES have output.weight usually.
-            pass
+        scale = 100000.0 # sqrt(BYPASS_EPS)
+        extra_tensors.append(_fake_output_norm(gguf, hidden_dim, scale=scale))
+        print(f"Injecting BYPASS fake output_norm.weight (scale={scale})")
 
     all_tensors: list[TensorInfo | FakeTensor] = real_tensors + extra_tensors
 
@@ -356,10 +356,19 @@ def split_model(
     # ── Update KV metadata ─────────────────────────────────────────────────────
     new_kv: list[KVEntry] = []
     updated_block_count = False
+    
+    # We use a huge epsilon for non-last nodes to make RMSNorm an identity.
+    # output = input * weight / sqrt(RMS(input)^2 + eps)
+    # If eps=1e10 and weight=100000.0, output = input * 100000 / 100000 = input.
+    BYPASS_EPS = 1e10
+    BYPASS_SCALE = 100000.0
+
     for entry in gguf.kv:
         if entry.key.endswith(".block_count"):
             new_kv.append(KVEntry(entry.key, entry.vtype, n_split_layers))
             updated_block_count = True
+        elif not is_last and entry.key == f"{arch}.attention.layer_norm_rms_epsilon":
+            new_kv.append(KVEntry(entry.key, entry.vtype, BYPASS_EPS))
         else:
             new_kv.append(entry)
     
@@ -368,6 +377,7 @@ def split_model(
         new_kv.append(KVEntry(f"{arch}.block_count", GGUF_VAL_UINT32, n_split_layers))
 
     # ── Pre-calculate header size to find data_offset ──────────────────────────
+    # ... rest of logic remains same, but we use BYPASS_SCALE for fake norm ...
     ALIGN = 32
     
     # Calculate metadata size

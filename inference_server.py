@@ -60,6 +60,7 @@ class InferRequest(BaseModel):
     end_layer: int = 31
     is_last: bool = False
     reset: bool = False                       # Whether to clear KV cache before this step
+    scale: float = 1.0                        # Scale factor for input hidden states
 
 
 class InferResponse(BaseModel):
@@ -80,7 +81,7 @@ def _encode_hidden(hidden: np.ndarray) -> tuple[str, list[int]]:
     return base64.b64encode(arr.tobytes()).decode("ascii"), shape
 
 
-def _decode_hidden(b64: str, shape: list[int]) -> np.ndarray:
+def _decode_hidden(b64: str, shape: list[int], scale: float = 1.0) -> np.ndarray:
     if len(shape) != 2:
         raise HTTPException(400, f"hidden_shape must be [n_tokens, hidden_dim], got: {shape}")
     n_tokens, hidden_dim = int(shape[0]), int(shape[1])
@@ -90,7 +91,10 @@ def _decode_hidden(b64: str, shape: list[int]) -> np.ndarray:
             400,
             f"hidden_state size mismatch: got {arr.size} floats, expected {n_tokens*hidden_dim}",
         )
-    return arr.reshape((n_tokens, hidden_dim))
+    arr = arr.reshape((n_tokens, hidden_dim))
+    if scale != 1.0:
+        arr *= scale
+    return arr
 
 
 # ── Low-level llama helpers (llama_batch + decode) ───────────────────────────
@@ -130,6 +134,7 @@ def _make_embd_batch(
         raise ValueError(f"embd must be 2D [n_tokens, hidden_dim], got shape={embd.shape}")
 
     n_tokens, hidden_dim = int(embd.shape[0]), int(embd.shape[1])
+    # The second arg is n_embd (the dimension), NOT a boolean.
     batch = lc.llama_batch_init(n_tokens, hidden_dim, 1)
     batch.n_tokens = n_tokens
     batch.token = None # Signal that we are using batch.embd
@@ -375,9 +380,12 @@ def _infer_impl(req: InferRequest) -> InferResponse:
     if req.hidden_state is None or req.hidden_shape is None:
         raise HTTPException(400, "Provide 'prompt', 'tokens' or both 'hidden_state' and 'hidden_shape'")
 
-    hidden = _decode_hidden(req.hidden_state, req.hidden_shape)
+    hidden = _decode_hidden(req.hidden_state, req.hidden_shape, req.scale)
     n_tokens = int(hidden.shape[0])
-    print(f"📥 Received hidden state {req.hidden_shape} for layers {req.start_layer}–{req.end_layer}")
+    
+    # Calculate RMS for diagnostics
+    rms = float(np.sqrt(np.mean(np.square(hidden))))
+    print(f"📥 Received hidden state {req.hidden_shape} (RMS={rms:.3f}, scale={req.scale}) for layers {req.start_layer}–{req.end_layer}")
 
     with _lock:
         if req.reset: 

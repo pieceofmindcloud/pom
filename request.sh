@@ -2,7 +2,7 @@
 # request.sh — Send a /api/generate request to the local dev gateway.
 # Usage: ./request.sh [prompt] [gateway-port]
 
-PROMPT="${1:-Tell me a fun fact about distributed systems.}"
+PROMPT="${1:-Hello.}"
 PORT="${2:-8080}"
 
 curl -s "http://localhost:$PORT/api/generate" \

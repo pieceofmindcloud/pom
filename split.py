@@ -146,18 +146,32 @@ def detect_layers(model_path: Path) -> int:
 
 # ── Chunk calculation ─────────────────────────────────────────────────────────
 
-def compute_chunks(total_layers: int, qtd: int) -> list[tuple[int, int]]:
+def compute_chunks(total_layers: int, qtd: int, is_gemma2: bool = False) -> list[tuple[int, int]]:
     """Divide [0, total_layers-1] into qtd roughly-equal chunks."""
     if qtd > total_layers:
         raise ValueError(f"Cannot split {total_layers} layers into {qtd} chunks")
+    
     base = total_layers // qtd
     remainder = total_layers % qtd
     chunks = []
     start = 0
     for i in range(qtd):
-        # Distribute the remainder across the first chunks (one extra each)
-        size = base + (1 if i < remainder else 0)
-        end = start + size - 1
+        if i == qtd - 1:
+            end = total_layers - 1
+        else:
+            # Distribute the remainder across the first chunks
+            size = base + (1 if i < remainder else 0)
+            end = start + size - 1
+            
+            # CRITICAL for Gemma 2: Preserve attention parity (Even=SWA, Odd=Global)
+            # If we remap, the NEXT slice's start index (which will become its layer 0)
+            # MUST have the same parity as the original start index.
+            # Since we remap original layer L to new layer 0, parity(L) MUST be Even (0).
+            # So the next slice MUST start on an EVEN layer.
+            if is_gemma2 and (end + 1) % 2 != 0:
+                # If next start is odd, extend this slice by 1 layer
+                end += 1
+        
         chunks.append((start, end))
         start = end + 1
     return chunks
@@ -184,14 +198,20 @@ def main():
     stem = output_base.stem   # e.g. "gemma2"
     ext  = output_base.suffix or ".gguf"
 
-    # ── Detect layer count ────────────────────────────────────────────────────
+    # ── Detect layer count & arch ─────────────────────────────────────────────
     print(f"Reading model metadata: {model_path}")
+    kv = _read_gguf_kv(model_path)
+    arch = str(kv.get("general.architecture", "llama")).lower()
+    is_gemma2 = "gemma2" in arch
     total_layers = detect_layers(model_path)
-    print(f"Detected {total_layers} layers — splitting into {args.qtd} slice(s)")
-    print()
-
+    
+    if is_gemma2:
+        print("Gemma 2 detected — ensuring even layer boundaries for parity.")
+        
     # ── Compute layer ranges ──────────────────────────────────────────────────
-    chunks = compute_chunks(total_layers, args.qtd)
+    chunks = compute_chunks(total_layers, args.qtd, is_gemma2=is_gemma2)
+    print(f"Detected {total_layers} layers — splitting into {len(chunks)} slice(s)")
+    print()
     n = len(chunks)
 
     # ── Run split_model.py for each chunk ─────────────────────────────────────

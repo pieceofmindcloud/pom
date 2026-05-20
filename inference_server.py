@@ -55,7 +55,7 @@ _lock = threading.Lock()   # serializes individual GPU decode steps (one at a ti
 # seq_id (KV cache slot) and generation position so parallel requests don't
 # corrupt each other's state. The GPU is still time-shared via _lock.
 
-_MAX_SESSIONS = 64  # max concurrent conversations
+_MAX_SESSIONS = 8   # max concurrent sessions; n_ctx_seq = n_ctx / _MAX_SESSIONS
 
 class _Session:
     __slots__ = ("seq_id", "n_past", "recent_tokens")
@@ -94,6 +94,40 @@ def _clear_seq_kv(seq_id: int) -> None:
             lc.llama_memory_seq_rm(mem, seq_id, 0, -1)
     except Exception as e:
         print(f"WARNING: _clear_seq_kv(seq={seq_id}): {e}", flush=True)
+
+
+def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
+    """Replace the llama context so n_seq_max == _MAX_SESSIONS.
+
+    llama.cpp / the model metadata often sets n_seq_max to 256 which limits
+    each KV-cache sequence to only n_ctx/256 tokens.  By recreating the context
+    with n_seq_max = _MAX_SESSIONS we get n_ctx / _MAX_SESSIONS tokens per
+    session — enough for long generations with a small number of parallel requests.
+    """
+    assert _args is not None
+    need_embeddings = not _args.single_peer
+
+    ctx_params = lc.llama_context_default_params()
+    ctx_params.n_ctx     = int(_args.n_ctx)
+    ctx_params.n_batch   = int(_args.n_batch)
+    ctx_params.n_ubatch  = int(_args.n_batch)
+    ctx_params.n_seq_max = _MAX_SESSIONS
+    ctx_params.offload_kqv = True
+    ctx_params.embeddings  = need_embeddings
+    if int(_args.threads) > 0:
+        ctx_params.n_threads       = int(_args.threads)
+        ctx_params.n_threads_batch = int(_args.threads)
+
+    lc.llama_free(llama_obj._ctx.ctx)
+    new_ctx = lc.llama_new_context_with_model(llama_obj._model.model, ctx_params)
+    if not new_ctx:
+        raise RuntimeError(f"llama_new_context_with_model failed (n_seq_max={_MAX_SESSIONS})")
+    llama_obj._ctx.ctx = new_ctx
+    lc.llama_set_causal_attn(new_ctx, True)
+
+    actual_n_ctx = int(lc.llama_n_ctx(new_ctx))
+    n_ctx_seq = actual_n_ctx // _MAX_SESSIONS
+    print(f"Context recreated: n_seq_max={_MAX_SESSIONS} n_ctx={actual_n_ctx} n_ctx_seq={n_ctx_seq}", flush=True)
 
 
 def _get_or_create_session(session_id: str, reset: bool) -> "_Session":
@@ -432,7 +466,7 @@ def infer(req: InferRequest) -> InferResponse:
 
 def _reinit_llama() -> None:
     """Recreate Llama context when GPU state is unrecoverable. Frees VRAM first."""
-    global _llama, _n_embd, _n_vocab, _seq_id
+    global _llama, _n_embd, _n_vocab
     assert _args is not None
     import gc
     print("Reinitializing Llama context (freeing VRAM first)...", flush=True)
@@ -444,7 +478,6 @@ def _reinit_llama() -> None:
         pass
     gc.collect()
 
-    _seq_id = 0
     need_embeddings = not _args.single_peer
     kwargs = dict(
         n_ctx=int(_args.n_ctx),
@@ -458,9 +491,8 @@ def _reinit_llama() -> None:
     if int(_args.threads) > 0:
         kwargs["n_threads"] = int(_args.threads)
     _llama = Llama(_args.model, **kwargs)
-    lc.llama_set_causal_attn(_llama.ctx, True)
-    _llama._distributed_n_past = 0
-    _llama._recent_tokens = []
+    _llama.reset()
+    _recreate_ctx_with_seq_max(_llama)
     _n_embd = int(_llama.n_embd())
     _n_vocab = int(_llama.n_vocab())
     print("Llama context reinitialized.", flush=True)
@@ -675,11 +707,9 @@ def main():
 
     print("Initializing Llama model (this may take a few seconds)...", flush=True)
     _llama = Llama(args.model, **kwargs)
-    print("Llama model initialized. Resetting...", flush=True)
+    print("Llama model initialized. Recreating context with n_seq_max...", flush=True)
     _llama.reset()
-
-    # Always ensure causal attention is on for correct autoregressive generation.
-    lc.llama_set_causal_attn(_llama.ctx, True)
+    _recreate_ctx_with_seq_max(_llama)
 
     _n_embd = int(_llama.n_embd())
     _n_vocab = int(_llama.n_vocab())

@@ -130,7 +130,9 @@ impl ModelProfile {
             ("medium-llm", 64, 980.0, 2000.0)
         } else if filename.contains("14b") || filename.contains("13b") {
             ("small-llm", 40, 600.0, 1200.0)
-        } else if filename.contains("8b") || filename.contains("7b") {
+        } else if filename.contains("qwen") {
+            ("qwen35", 32, 380.0, 700.0)
+        } else if filename.contains("9b") || filename.contains("8b") || filename.contains("7b") {
             ("7b-llm", 32, 380.0, 700.0)
         } else if filename.contains("3b") || filename.contains("4b") {
             ("3b-llm", 32, 200.0, 400.0)

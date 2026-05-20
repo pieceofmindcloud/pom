@@ -310,9 +310,18 @@ async fn handle_generate(
                     reset = false;
                 }
                 Err(e) => {
-                    let err_msg = format!("Pipeline failed at step {}: {}", i, e);
-                    warn!("{}", err_msg);
-                    pipeline_error = Some(err_msg);
+                    warn!("Pipeline step {} error: {}", i, e);
+                    if !full_text.is_empty() {
+                        info!("Returning {} chars of partial output", full_text.len());
+                        return (
+                            StatusCode::OK,
+                            Json(GenerateResponse {
+                                response: full_text,
+                                source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                            }),
+                        ).into_response();
+                    }
+                    pipeline_error = Some(format!("Pipeline failed at step {}: {}", i, e));
                     break;
                 }
             }

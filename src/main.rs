@@ -77,10 +77,47 @@ struct Args {
     start_layer: Option<u32>,
 
     /// Port for the llama-cpp-python inference server on this node.
-    /// When set, this node participates in pipeline inference.
-    /// Run inference_server.py --port <N> --model <path> --start-layer S --end-layer E
+    /// When set, rdma-p2p auto-starts inference_server.py on this port.
     #[arg(long)]
     inference_port: Option<u16>,
+
+    /// GPU layers to offload to VRAM (passed to inference_server.py --n-gpu-layers).
+    /// Use 99 to offload all layers. Default 0 = CPU only.
+    #[arg(long, default_value = "0")]
+    n_gpu_layers: u32,
+
+    /// KV cache context length for the inference server (tokens).
+    #[arg(long, default_value = "8192")]
+    n_ctx: u32,
+
+    /// Max new tokens to generate per request.
+    #[arg(long, default_value = "512")]
+    max_new_tokens: u32,
+
+    /// Sampling temperature for inference (0 = greedy).
+    #[arg(long, default_value = "0.7")]
+    temperature: f32,
+
+    /// Top-p nucleus sampling cutoff.
+    #[arg(long, default_value = "0.9")]
+    top_p: f32,
+
+    /// Top-k sampling (0 = disabled).
+    #[arg(long, default_value = "40")]
+    top_k: u32,
+
+    /// Repetition penalty (1.0 = off).
+    #[arg(long, default_value = "1.15")]
+    repeat_penalty: f32,
+
+    /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
+    #[arg(long)]
+    no_thinking: bool,
+
+    /// Single-peer mode: loads model without embedding extraction (correct causal attention).
+    /// Enable when one node covers all layers.
+    #[arg(long)]
+    single_peer: bool,
 }
 
 /// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
@@ -348,37 +385,50 @@ async fn main() -> Result<()> {
         
         info!("Starting inference server on port {} for layers {}-{}...", port, start_l, end_l);
         
-        // Find python executable (prefer pyenv if available, fallback to python3)
-        let python_exe = "/Users/jairpereira/.pyenv/versions/email/bin/python";
-        let python_exe = if std::path::Path::new(python_exe).exists() {
-            python_exe.to_string()
+        // Prefer venv python if present alongside the binary, else fall back to python3.
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let venv_python = cwd.join("venv/bin/python3");
+        let python_exe = if venv_python.exists() {
+            venv_python.to_string_lossy().to_string()
         } else {
             "python3".to_string()
         };
 
-        // Get absolute path to inference_server.py
-        let server_script = std::env::current_dir()
-            .unwrap_or_else(|_| std::path::PathBuf::from("."))
-            .join("inference_server.py");
+        let server_script = cwd.join("inference_server.py");
 
-        info!("Inference command: {} {} --model {} --start-layer {} --end-layer {} --port {}", 
-            python_exe, server_script.display(), model_path, start_l, end_l, port);
+        let n_gpu_layers = args.n_gpu_layers;
+        let n_ctx = args.n_ctx;
+        let max_new_tokens = args.max_new_tokens;
+        let temperature = args.temperature;
+        let top_p = args.top_p;
+        let top_k = args.top_k;
+        let repeat_penalty = args.repeat_penalty;
+        let no_thinking = args.no_thinking;
+        let single_peer = args.single_peer;
 
-        let mut child = Command::new(python_exe)
-            .env("PYTHONUNBUFFERED", "1")
-            .arg(server_script)
-            .arg("--model")
-            .arg(&model_path)
-            .arg("--start-layer")
-            .arg(start_l.to_string())
-            .arg("--end-layer")
-            .arg(end_l.to_string())
-            .arg("--port")
-            .arg(port.to_string())
+        info!("Starting inference_server.py: layers={}-{} port={} gpu_layers={} n_ctx={} single_peer={}",
+            start_l, end_l, port, n_gpu_layers, n_ctx, single_peer);
+
+        let mut cmd = Command::new(&python_exe);
+        cmd.env("PYTHONUNBUFFERED", "1")
+            .arg(&server_script)
+            .arg("--model").arg(&model_path)
+            .arg("--start-layer").arg(start_l.to_string())
+            .arg("--end-layer").arg(end_l.to_string())
+            .arg("--port").arg(port.to_string())
+            .arg("--n-gpu-layers").arg(n_gpu_layers.to_string())
+            .arg("--n-ctx").arg(n_ctx.to_string())
+            .arg("--max-new-tokens").arg(max_new_tokens.to_string())
+            .arg("--temperature").arg(temperature.to_string())
+            .arg("--top-p").arg(top_p.to_string())
+            .arg("--top-k").arg(top_k.to_string())
+            .arg("--repeat-penalty").arg(repeat_penalty.to_string())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Failed to start inference_server.py");
+            .stderr(Stdio::piped());
+        if no_thinking { cmd.arg("--no-thinking"); }
+        if single_peer { cmd.arg("--single-peer"); }
+
+        let mut child = cmd.spawn().expect("Failed to start inference_server.py");
 
         // Log output in background
         let node_id_log = node_id.clone();

@@ -363,7 +363,7 @@ def _do_reset() -> None:
     old_seq = _seq_id
     _seq_id = (old_seq + 1) % 32768
     try:
-        lc.llama_kv_cache_seq_rm(_llama.ctx, old_seq, 0, -1)
+        lc.llama_memory_seq_rm(_llama.ctx, old_seq, 0, -1)
     except Exception as e:
         print(f"WARNING: seq_rm(seq={old_seq}) failed: {e}", flush=True)
     _llama._distributed_n_past = 0

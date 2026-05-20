@@ -520,7 +520,6 @@ async fn main() -> Result<()> {
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(http_client),
-            pipeline_sem: Arc::new(tokio::sync::Semaphore::new(1)),
         };
         let gw_port = args.gateway_port;
         tokio::spawn(async move {

@@ -48,15 +48,84 @@ _llama: Optional[Llama] = None
 _args = None
 _n_embd: Optional[int] = None
 _n_vocab: Optional[int] = None
-_lock = threading.Lock()          # serializes individual GPU decode steps
-_request_lock = threading.Lock()  # serializes entire requests (one conversation at a time)
-_seq_id: int = 0  # rotates on each reset to avoid stale SSM state in VRAM
+_lock = threading.Lock()   # serializes individual GPU decode steps (one at a time)
+
+# ── Per-session state ─────────────────────────────────────────────────────────
+# Each gateway request gets a unique session_id. Sessions track their own
+# seq_id (KV cache slot) and generation position so parallel requests don't
+# corrupt each other's state. The GPU is still time-shared via _lock.
+
+_MAX_SESSIONS = 64  # max concurrent conversations
+
+class _Session:
+    __slots__ = ("seq_id", "n_past", "recent_tokens")
+    def __init__(self, seq_id: int):
+        self.seq_id = seq_id
+        self.n_past = 0
+        self.recent_tokens: list[int] = []
+
+_sessions: dict[str, _Session] = {}
+_sessions_lock = threading.Lock()
+_seq_pool: list[int] = list(range(_MAX_SESSIONS))
+_seq_pool_lock = threading.Lock()
+
+
+def _alloc_seq() -> int:
+    with _seq_pool_lock:
+        if not _seq_pool:
+            raise RuntimeError(f"Seq pool exhausted (max {_MAX_SESSIONS} concurrent sessions)")
+        return _seq_pool.pop(0)
+
+
+def _free_seq(seq_id: int) -> None:
+    with _seq_pool_lock:
+        if seq_id not in _seq_pool:
+            _seq_pool.append(seq_id)
+
+
+def _clear_seq_kv(seq_id: int) -> None:
+    if _llama is None:
+        return
+    try:
+        if hasattr(lc, "llama_kv_cache_seq_rm"):
+            lc.llama_kv_cache_seq_rm(_llama.ctx, seq_id, 0, -1)
+        elif hasattr(lc, "llama_get_memory") and hasattr(lc, "llama_memory_seq_rm"):
+            mem = lc.llama_get_memory(_llama.ctx)
+            lc.llama_memory_seq_rm(mem, seq_id, 0, -1)
+    except Exception as e:
+        print(f"WARNING: _clear_seq_kv(seq={seq_id}): {e}", flush=True)
+
+
+def _get_or_create_session(session_id: str, reset: bool) -> "_Session":
+    with _sessions_lock:
+        if reset:
+            if session_id in _sessions:
+                old = _sessions.pop(session_id)
+                _clear_seq_kv(old.seq_id)
+                _free_seq(old.seq_id)
+            seq = _alloc_seq()
+            session = _Session(seq)
+            _sessions[session_id] = session
+            return session
+        session = _sessions.get(session_id)
+        if session is None:
+            raise HTTPException(400, f"Unknown session '{session_id}' — send reset=true first")
+        return session
+
+
+def _finish_session(session_id: str) -> None:
+    with _sessions_lock:
+        session = _sessions.pop(session_id, None)
+        if session is not None:
+            _clear_seq_kv(session.seq_id)
+            _free_seq(session.seq_id)
 
 
 # ── Request / Response ────────────────────────────────────────────────────────
 
 class InferRequest(BaseModel):
     model: str
+    session_id: str = ""                       # unique per gateway request; empty = legacy
     prompt: Optional[str] = None
     tokens: Optional[list[int]] = None        # token IDs for continuing generation
     hidden_state: Optional[str] = None        # base64 float32
@@ -352,41 +421,13 @@ def _generate_greedy_from_hidden(hidden: np.ndarray) -> str:
 
 @app.post("/v1/infer", response_model=InferResponse)
 def infer(req: InferRequest) -> InferResponse:
-    # Hold the request lock for the entire call so that concurrent requests queue
-    # up rather than interleaving token steps and corrupting KV cache / seq state.
-    with _request_lock:
-        try:
-            return _infer_impl(req)
-        except HTTPException:
-            raise
-        except Exception as e:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
-
-def _do_reset() -> None:
-    """Rotate seq_id and remove old sequence to get fresh SSM state in VRAM."""
-    global _seq_id
-    assert _llama is not None
-    old_seq = _seq_id
-    _seq_id = (old_seq + 1) % 32768
     try:
-        if hasattr(lc, 'llama_kv_cache_seq_rm'):
-            # llama.cpp < b4000: context pointer goes directly
-            lc.llama_kv_cache_seq_rm(_llama.ctx, old_seq, 0, -1)
-        elif hasattr(lc, 'llama_get_memory') and hasattr(lc, 'llama_memory_seq_rm'):
-            # llama.cpp >= b4000: first arg must be llama_memory_t*, not llama_context*
-            mem = lc.llama_get_memory(_llama.ctx)
-            lc.llama_memory_seq_rm(mem, old_seq, 0, -1)
-        else:
-            _llama.reset()
+        return _infer_impl(req)
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"WARNING: seq_rm(seq={old_seq}) failed: {e} — using reset()", flush=True)
-        try:
-            _llama.reset()
-        except Exception as e2:
-            print(f"WARNING: reset() also failed: {e2}", flush=True)
-    _llama._distributed_n_past = 0
-    _llama._recent_tokens = []
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 def _reinit_llama() -> None:
@@ -442,27 +483,21 @@ def _apply_chat_template(prompt: str) -> str:
 def _infer_impl(req: InferRequest) -> InferResponse:
     assert _llama is not None
 
+    # Resolve session (creates/resets if req.reset=True, else looks up existing).
+    # Falls back to a fixed legacy session_id when the caller doesn't send one.
+    sid_key = req.session_id if req.session_id else "__legacy__"
+    session = _get_or_create_session(sid_key, req.reset)
+    n_past = session.n_past
+    sid = session.seq_id
+
     # Determine tokens/embeddings to process
     tokens = None
     if req.prompt is not None:
         use_template = bool(_args and _args.chat_template)
         text = _apply_chat_template(req.prompt) if use_template else req.prompt
-        # Chat template already starts with <|im_start|> — adding BOS confuses the model.
         tokens = _llama.tokenize(text.encode("utf-8"), add_bos=not use_template, special=True)
     elif req.tokens is not None:
         tokens = req.tokens
-
-    # Session state: track n_past and recent tokens for repeat penalty
-    if not hasattr(_llama, "_distributed_n_past"):
-        _llama._distributed_n_past = 0
-    if not hasattr(_llama, "_recent_tokens"):
-        _llama._recent_tokens = []
-
-    if req.reset:
-        _do_reset()
-
-    n_past = _llama._distributed_n_past
-    sid = _seq_id  # snapshot for this call; _seq_id only changes on reset
 
     if tokens is not None:
         n_tokens = len(tokens)
@@ -471,43 +506,38 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
         with _lock:
             if req.is_last:
-                # Single-peer mode (this node is first AND last): prefill then sample.
                 batch = _make_token_batch(tokens, pos_offset=n_past, logits_mode="last", seq_id=sid)
                 try:
                     rc = lc.llama_decode(_llama.ctx, batch)
                     if rc != 0 and n_past == 0:
-                        # SSM state still dirty — reinit and retry once.
                         lc.llama_batch_free(batch)
                         _reinit_llama()
-                        batch = _make_token_batch(tokens, pos_offset=0, logits_mode="last", seq_id=_seq_id)
+                        batch = _make_token_batch(tokens, pos_offset=0, logits_mode="last", seq_id=sid)
                         rc = lc.llama_decode(_llama.ctx, batch)
-                    if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
-
-                    next_id = _sample_next_token(n_tokens - 1, _llama._recent_tokens)
+                    if rc != 0:
+                        raise RuntimeError(f"llama_decode failed rc={rc}")
+                    next_id = _sample_next_token(n_tokens - 1, session.recent_tokens)
                     text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
-                    _llama._distributed_n_past += n_tokens
-                    _llama._recent_tokens.extend(tokens)
-                    _llama._recent_tokens.append(next_id)
-                    print(f"SINGLE seq={sid} (n={n_tokens}, pos={n_past}) -> '{text}'")
-                    return InferResponse(
-                        text=text,
-                        token_id=next_id,
-                        done=(next_id == int(_llama.token_eos())),
-                    )
+                    session.n_past += n_tokens
+                    session.recent_tokens.extend(tokens)
+                    session.recent_tokens.append(next_id)
+                    done = next_id == int(_llama.token_eos())
+                    print(f"SINGLE seq={sid} sess={sid_key[:8]} (n={n_tokens}, pos={n_past}) -> '{text}'")
+                    if done:
+                        _finish_session(sid_key)
+                    return InferResponse(text=text, token_id=next_id, done=done)
                 finally:
                     lc.llama_batch_free(batch)
             else:
-                # First/middle peer: extract hidden state to pass to next peer.
                 batch = _make_token_batch(tokens, pos_offset=n_past, logits_mode="all", seq_id=sid)
                 try:
                     rc = lc.llama_decode(_llama.ctx, batch)
-                    if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
-
+                    if rc != 0:
+                        raise RuntimeError(f"llama_decode failed rc={rc}")
                     hidden = _extract_hidden_all_tokens(n_tokens)
-                    _llama._distributed_n_past += n_tokens
-
+                    session.n_past += n_tokens
                     rms = float(np.sqrt(np.mean(np.square(hidden))))
-                    print(f"PROMPT seq={sid} (n={n_tokens}, pos={n_past}, RMS={rms:.2f}) -> [Activations]")
+                    print(f"PROMPT seq={sid} sess={sid_key[:8]} (n={n_tokens}, pos={n_past}, RMS={rms:.2f})")
                 finally:
                     lc.llama_batch_free(batch)
 
@@ -523,37 +553,34 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
     with _lock:
         if req.is_last:
-            # Last peer: inject hidden state and sample one token.
             batch = _make_embd_batch(hidden, pos_offset=n_past, logits_mode="last", seq_id=sid)
             try:
                 rc = lc.llama_decode(_llama.ctx, batch)
-                if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
-
-                next_id = _sample_next_token(n_tokens - 1, _llama._recent_tokens)
+                if rc != 0:
+                    raise RuntimeError(f"llama_decode failed rc={rc}")
+                next_id = _sample_next_token(n_tokens - 1, session.recent_tokens)
                 text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
-                _llama._distributed_n_past += n_tokens
-                _llama._recent_tokens.append(next_id)
-
+                session.n_past += n_tokens
+                session.recent_tokens.append(next_id)
                 rms = float(np.sqrt(np.mean(np.square(hidden))))
-                print(f"[Hidden] seq={sid} (n={n_tokens}, pos={n_past}, RMS={rms:.2f}) -> '{text}'")
-
-                return InferResponse(text=text, token_id=next_id, done=(next_id == int(_llama.token_eos())))
+                done = next_id == int(_llama.token_eos())
+                print(f"[Hidden] seq={sid} sess={sid_key[:8]} (n={n_tokens}, pos={n_past}, RMS={rms:.2f}) -> '{text}'")
+                if done:
+                    _finish_session(sid_key)
+                return InferResponse(text=text, token_id=next_id, done=done)
             finally:
                 lc.llama_batch_free(batch)
         else:
-            # Middle peer: pass hidden state through and return new hidden state.
             batch = _make_embd_batch(hidden, pos_offset=n_past, logits_mode="all", seq_id=sid)
             try:
                 rc = lc.llama_decode(_llama.ctx, batch)
-                if rc != 0: raise RuntimeError(f"llama_decode failed rc={rc}")
-
+                if rc != 0:
+                    raise RuntimeError(f"llama_decode failed rc={rc}")
                 new_hidden = _extract_hidden_all_tokens(n_tokens)
-                _llama._distributed_n_past += n_tokens
-
+                session.n_past += n_tokens
                 rms_in = float(np.sqrt(np.mean(np.square(hidden))))
                 rms_out = float(np.sqrt(np.mean(np.square(new_hidden))))
-                print(f"[Hidden] seq={sid} MID (n={n_tokens}, pos={n_past}, RMS {rms_in:.2f}->{rms_out:.2f})")
-
+                print(f"[Hidden] seq={sid} sess={sid_key[:8]} MID (n={n_tokens}, pos={n_past}, RMS {rms_in:.2f}->{rms_out:.2f})")
                 b64, shape = _encode_hidden(new_hidden)
                 return InferResponse(hidden_state=b64, hidden_shape=shape, done=False)
             finally:

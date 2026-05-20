@@ -4,6 +4,7 @@ use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline, LoadTracker};
 use anyhow::Result;
 use std::time::Instant;
+use uuid::Uuid;
 use axum::{
     body::Bytes,
     extract::State,
@@ -29,9 +30,6 @@ pub struct GatewayState {
     pub loads: Arc<LoadTracker>,
     /// Shared HTTP client with long timeout for pipeline calls.
     pub http: Arc<reqwest::Client>,
-    /// Serializes pipeline executions: inference server nodes hold shared KV cache
-    /// state across tokens, so only one conversation can run at a time.
-    pub pipeline_sem: Arc<tokio::sync::Semaphore>,
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
@@ -40,6 +38,8 @@ pub struct GatewayState {
 #[derive(Debug, Serialize)]
 struct PeerInferRequest<'a> {
     model: &'a str,
+    /// Unique per /api/generate call; inference server uses it to track KV cache per session.
+    session_id: &'a str,
     /// Raw prompt text — only set for the FIRST peer in the pipeline (first step).
     #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<&'a str>,
@@ -150,6 +150,7 @@ struct StepResult {
 async fn execute_pipeline_step(
     plan: &crate::pipeline::PipelinePlan,
     model: &str,
+    session_id: &str,
     prompt: Option<&str>,
     tokens: Option<&[u32]>,
     reset: bool,
@@ -169,6 +170,7 @@ async fn execute_pipeline_step(
 
         let req = PeerInferRequest {
             model,
+            session_id,
             prompt: if is_first { prompt } else { None },
             tokens: if is_first { tokens } else { None },
             hidden_state: hidden_state.as_deref(),
@@ -274,17 +276,18 @@ async fn handle_generate(
         .unwrap_or(32);
 
     // ── 1. Try distributed pipeline (peers with inference_port) ──────────────
-    // Acquire the pipeline semaphore for the ENTIRE generation loop.
-    // Inference server nodes share KV cache state across per-token calls, so
-    // concurrent conversations would corrupt each other's sequence state.
-    let _pipeline_permit = state.pipeline_sem.acquire().await;
+    // Each request gets a unique session_id passed to every inference server call.
+    // The inference server tracks per-session KV cache state so parallel requests
+    // stay isolated while sharing the GPU (serialized by _lock inside the server).
+    let session_id = Uuid::new_v4().to_string();
 
     let mut pipeline_error = None;
     if let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await {
         info!(
-            "🔀 Pipeline planned: {} hops [{}]",
+            "🔀 Pipeline planned: {} hops [{}] session={}",
             plan.steps.len(),
-            plan.hop_chain()
+            plan.hop_chain(),
+            &session_id[..8],
         );
 
         let gen_start = Instant::now();
@@ -299,6 +302,7 @@ async fn handle_generate(
             let res = execute_pipeline_step(
                 &plan,
                 &model,
+                &session_id,
                 current_prompt,
                 current_tokens.as_deref(),
                 reset,

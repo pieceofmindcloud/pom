@@ -8,7 +8,7 @@ MODEL="./models/qwen/qwen_0_15.gguf"
 
 ./target/release/rdma-p2p \
     --model "$MODEL" \
-    --memory 7000MB \
+    --memory 1000MB \
     --port 42777 \
     --gateway \
     --gateway-port 8080 \

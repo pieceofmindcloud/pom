@@ -48,7 +48,8 @@ _llama: Optional[Llama] = None
 _args = None
 _n_embd: Optional[int] = None
 _n_vocab: Optional[int] = None
-_lock = threading.Lock()
+_lock = threading.Lock()          # serializes individual GPU decode steps
+_request_lock = threading.Lock()  # serializes entire requests (one conversation at a time)
 _seq_id: int = 0  # rotates on each reset to avoid stale SSM state in VRAM
 
 
@@ -351,13 +352,16 @@ def _generate_greedy_from_hidden(hidden: np.ndarray) -> str:
 
 @app.post("/v1/infer", response_model=InferResponse)
 def infer(req: InferRequest) -> InferResponse:
-    try:
-        return _infer_impl(req)
-    except Exception as e:
-        # Only print full traceback for real errors
-        if not isinstance(e, HTTPException):
+    # Hold the request lock for the entire call so that concurrent requests queue
+    # up rather than interleaving token steps and corrupting KV cache / seq state.
+    with _request_lock:
+        try:
+            return _infer_impl(req)
+        except HTTPException:
+            raise
+        except Exception as e:
             traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
 
 def _do_reset() -> None:
     """Rotate seq_id and remove old sequence to get fresh SSM state in VRAM."""

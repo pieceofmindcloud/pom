@@ -29,6 +29,9 @@ pub struct GatewayState {
     pub loads: Arc<LoadTracker>,
     /// Shared HTTP client with long timeout for pipeline calls.
     pub http: Arc<reqwest::Client>,
+    /// Serializes pipeline executions: inference server nodes hold shared KV cache
+    /// state across tokens, so only one conversation can run at a time.
+    pub pipeline_sem: Arc<tokio::sync::Semaphore>,
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
@@ -271,6 +274,11 @@ async fn handle_generate(
         .unwrap_or(32);
 
     // ── 1. Try distributed pipeline (peers with inference_port) ──────────────
+    // Acquire the pipeline semaphore for the ENTIRE generation loop.
+    // Inference server nodes share KV cache state across per-token calls, so
+    // concurrent conversations would corrupt each other's sequence state.
+    let _pipeline_permit = state.pipeline_sem.acquire().await;
+
     let mut pipeline_error = None;
     if let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await {
         info!(

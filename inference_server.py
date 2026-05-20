@@ -18,10 +18,13 @@ Usage:
 
 import argparse
 import base64
+import faulthandler
 import threading
 import ctypes
 import traceback
 from typing import Optional
+
+faulthandler.enable()  # print C-level traceback on SIGSEGV/SIGABRT
 
 import numpy as np
 import uvicorn
@@ -363,9 +366,21 @@ def _do_reset() -> None:
     old_seq = _seq_id
     _seq_id = (old_seq + 1) % 32768
     try:
-        lc.llama_memory_seq_rm(_llama.ctx, old_seq, 0, -1)
+        if hasattr(lc, 'llama_kv_cache_seq_rm'):
+            # llama.cpp < b4000: context pointer goes directly
+            lc.llama_kv_cache_seq_rm(_llama.ctx, old_seq, 0, -1)
+        elif hasattr(lc, 'llama_get_memory') and hasattr(lc, 'llama_memory_seq_rm'):
+            # llama.cpp >= b4000: first arg must be llama_memory_t*, not llama_context*
+            mem = lc.llama_get_memory(_llama.ctx)
+            lc.llama_memory_seq_rm(mem, old_seq, 0, -1)
+        else:
+            _llama.reset()
     except Exception as e:
-        print(f"WARNING: seq_rm(seq={old_seq}) failed: {e}", flush=True)
+        print(f"WARNING: seq_rm(seq={old_seq}) failed: {e} — using reset()", flush=True)
+        try:
+            _llama.reset()
+        except Exception as e2:
+            print(f"WARNING: reset() also failed: {e2}", flush=True)
     _llama._distributed_n_past = 0
     _llama._recent_tokens = []
 

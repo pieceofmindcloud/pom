@@ -382,10 +382,6 @@ async fn main() -> Result<()> {
         let model_path = model_name.clone();
         let start_l = assignment.start_layer;
         let end_l = assignment.end_layer;
-        
-        info!("Starting inference server on port {} for layers {}-{}...", port, start_l, end_l);
-        
-        // Prefer venv python if present alongside the binary, else fall back to python3.
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let venv_python = cwd.join("venv/bin/python3");
         let python_exe = if venv_python.exists() {
@@ -393,9 +389,7 @@ async fn main() -> Result<()> {
         } else {
             "python3".to_string()
         };
-
         let server_script = cwd.join("inference_server.py");
-
         let n_gpu_layers = args.n_gpu_layers;
         let n_ctx = args.n_ctx;
         let max_new_tokens = args.max_new_tokens;
@@ -405,59 +399,95 @@ async fn main() -> Result<()> {
         let repeat_penalty = args.repeat_penalty;
         let no_thinking = args.no_thinking;
         let single_peer = args.single_peer;
+        let log_path = format!("inference_server_{}.log", port);
+        let node_id_log = node_id.clone();
 
         info!("Starting inference_server.py: layers={}-{} port={} gpu_layers={} n_ctx={} single_peer={}",
             start_l, end_l, port, n_gpu_layers, n_ctx, single_peer);
+        info!("Inference server log: {}", log_path);
 
-        let mut cmd = Command::new(&python_exe);
-        cmd.env("PYTHONUNBUFFERED", "1")
-            .arg(&server_script)
-            .arg("--model").arg(&model_path)
-            .arg("--start-layer").arg(start_l.to_string())
-            .arg("--end-layer").arg(end_l.to_string())
-            .arg("--port").arg(port.to_string())
-            .arg("--n-gpu-layers").arg(n_gpu_layers.to_string())
-            .arg("--n-ctx").arg(n_ctx.to_string())
-            .arg("--max-new-tokens").arg(max_new_tokens.to_string())
-            .arg("--temperature").arg(temperature.to_string())
-            .arg("--top-p").arg(top_p.to_string())
-            .arg("--top-k").arg(top_k.to_string())
-            .arg("--repeat-penalty").arg(repeat_penalty.to_string())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        if no_thinking { cmd.arg("--no-thinking"); }
-        if single_peer { cmd.arg("--single-peer"); }
-
-        let mut child = cmd.spawn().expect("Failed to start inference_server.py");
-
-        // Log output in background
-        let node_id_log = node_id.clone();
-        let mut stdout = child.stdout.take().expect("Failed to open stdout");
-        let mut stderr = child.stderr.take().expect("Failed to open stderr");
-
-        // Task for stdout
-        let nid1 = node_id_log.clone();
         tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                println!("\x1b[36m[InfServer {}]\x1b[0m {}", &nid1[..8], line);
+            let mut attempts = 0u32;
+            loop {
+                attempts += 1;
+                if attempts > 1 {
+                    warn!("Restarting inference server (attempt {}/10)...", attempts);
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+
+                let mut cmd = Command::new(&python_exe);
+                cmd.env("PYTHONUNBUFFERED", "1")
+                    .arg(&server_script)
+                    .arg("--model").arg(&model_path)
+                    .arg("--start-layer").arg(start_l.to_string())
+                    .arg("--end-layer").arg(end_l.to_string())
+                    .arg("--port").arg(port.to_string())
+                    .arg("--n-gpu-layers").arg(n_gpu_layers.to_string())
+                    .arg("--n-ctx").arg(n_ctx.to_string())
+                    .arg("--max-new-tokens").arg(max_new_tokens.to_string())
+                    .arg("--temperature").arg(temperature.to_string())
+                    .arg("--top-p").arg(top_p.to_string())
+                    .arg("--top-k").arg(top_k.to_string())
+                    .arg("--repeat-penalty").arg(repeat_penalty.to_string())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped());
+                if no_thinking { cmd.arg("--no-thinking"); }
+                if single_peer { cmd.arg("--single-peer"); }
+
+                let mut child = match cmd.spawn() {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Failed to spawn inference server: {}", e);
+                        if attempts >= 10 {
+                            error!("Inference server failed to start 10 times, giving up");
+                            break;
+                        }
+                        continue;
+                    }
+                };
+
+                let short_id = node_id_log[..8].to_string();
+
+                if let Some(stdout) = child.stdout.take() {
+                    let nid = short_id.clone();
+                    let lp = log_path.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncBufReadExt, BufReader};
+                        use std::io::Write;
+                        let mut reader = BufReader::new(stdout).lines();
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            println!("\x1b[36m[InfServer {}]\x1b[0m {}", nid, line);
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&lp) {
+                                let _ = writeln!(f, "[OUT] {}", line);
+                            }
+                        }
+                    });
+                }
+
+                if let Some(stderr) = child.stderr.take() {
+                    let nid = short_id.clone();
+                    let lp = log_path.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::{AsyncBufReadExt, BufReader};
+                        use std::io::Write;
+                        let mut reader = BufReader::new(stderr).lines();
+                        while let Ok(Some(line)) = reader.next_line().await {
+                            eprintln!("\x1b[31m[InfServer {} ERR]\x1b[0m {}", nid, line);
+                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&lp) {
+                                let _ = writeln!(f, "[ERR] {}", line);
+                            }
+                        }
+                    });
+                }
+
+                let status = child.wait().await;
+                warn!("Inference server {} exited (attempt {}): {:?}", short_id, attempts, status);
+
+                if attempts >= 10 {
+                    error!("Inference server crashed 10 times, giving up. Check {}", log_path);
+                    break;
+                }
             }
-        });
-
-        // Task for stderr
-        let nid2 = node_id_log.clone();
-        tokio::spawn(async move {
-            use tokio::io::{AsyncBufReadExt, BufReader};
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                eprintln!("\x1b[31m[InfServer {} ERR]\x1b[0m {}", &nid2[..8], line);
-            }
-        });
-
-        tokio::spawn(async move {
-            let status = child.wait().await;
-            warn!("Inference server {} exited with status: {:?}", &node_id_log[..8], status);
         });
     }
 

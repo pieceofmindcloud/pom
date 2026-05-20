@@ -11,7 +11,7 @@ MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
     --port 42777 \
     --gateway \
     --gateway-port 8080 \
-    --inference-port 8181 \
+    --inference-port 8180 \
     --n-gpu-layers 99 \
     --n-ctx 4096 \
     --max-new-tokens 512 \

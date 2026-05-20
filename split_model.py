@@ -30,22 +30,24 @@ GGUF_MAGIC     = 0x46554747
 GGUF_VERSION_2 = 2
 GGUF_VERSION_3 = 3
 
-# dtype → (bytes_per_element_or_block, elements_per_block)
+# dtype → (bytes_per_block, elements_per_block)
+# Verified against ggml-quants.h struct sizes (llama.cpp).
+# K-quant super-block size is always QK_K=256 elements.
 _GGML_TYPE_INFO: dict[int, tuple[int, int]] = {
-    0:  (4,  1),    # F32
-    1:  (2,  1),    # F16
-    2:  (18, 32),   # Q4_0
-    3:  (20, 32),   # Q4_1
-    6:  (18, 32),   # Q5_0
-    7:  (20, 32),   # Q5_1
-    8:  (34, 32),   # Q8_0
-    10: (18, 256),  # Q2_K
-    11: (12, 256),  # Q3_K_S
-    12: (52, 256),  # Q4_K_S / Q4_K_M
-    13: (36, 256),  # Q5_K_S / Q5_K_M
-    14: (210, 256), # Q6_K
-    15: (34, 256),  # Q8_K
-    16: (2,  1),    # BF16
+    0:  (4,   1),    # F32
+    1:  (2,   1),    # F16
+    2:  (18,  32),   # Q4_0  = {half d; u8 qs[16]}
+    3:  (20,  32),   # Q4_1  = {half d,m; u8 qs[16]}
+    6:  (22,  32),   # Q5_0  = {half d; u8 qh[4]; u8 qs[16]}
+    7:  (24,  32),   # Q5_1  = {half d,m; u8 qh[4]; u8 qs[16]}
+    8:  (34,  32),   # Q8_0  = {half d; i8 qs[32]}
+    10: (84,  256),  # Q2_K  = {u8 scales[16]; u8 qs[64]; half2 dm}
+    11: (110, 256),  # Q3_K  = {u8 hmask[32]; u8 qs[64]; u8 scales[12]; half d}
+    12: (144, 256),  # Q4_K  = {half2 dm; u8 scales[12]; u8 qs[128]}
+    13: (112, 256),  # Q5_K  = {half2 dm; u8 scales[12]; u8 qh[32]; u8 qs[64]}
+    14: (210, 256),  # Q6_K  = {u8 ql[128]; u8 qh[64]; i8 scales[16]; half d}
+    15: (292, 256),  # Q8_K  = {float d; i8 qs[256]; i16 bsums[16]}
+    16: (2,   1),    # BF16
 }
 
 # GGUFValueType codes
@@ -171,9 +173,23 @@ class GGUFFile:
         alignment = 32
         self.data_offset = (r.pos + alignment - 1) & ~(alignment - 1)
 
+        # Precompute actual aligned tensor sizes from offset differences.
+        # More reliable than the type table — handles unknown quant types and
+        # catches any table errors. Weight-tied tensors sharing an offset get
+        # the same size entry.
+        total_data = len(self._raw) - self.data_offset
+        unique_offsets = sorted(set(t.offset for t in self.tensors))
+        self._offset_sizes: dict[int, int] = {}
+        for i, off in enumerate(unique_offsets):
+            next_off = unique_offsets[i + 1] if i + 1 < len(unique_offsets) else total_data
+            self._offset_sizes[off] = next_off - off
+
     def tensor_data(self, t: TensorInfo) -> bytes:
         start = self.data_offset + t.offset
-        return self._raw[start:start + t.byte_size()]
+        # Prefer offset-based size (includes alignment padding, writer won't double-pad).
+        # Fall back to byte_size() only if offset lookup fails.
+        size = self._offset_sizes.get(t.offset, t.byte_size())
+        return self._raw[start:start + size]
 
     def kv_dict(self) -> dict:
         return {e.key: e.value for e in self.kv}

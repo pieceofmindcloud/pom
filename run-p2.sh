@@ -4,17 +4,19 @@
 # apenas suas layers para o P2P. Para inferência distribuída real, use split_model.py.
 
 MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
+MODEL="./models/qwen/qwen_16_31.gguf"
 
 ./target/release/rdma-p2p \
     --model "$MODEL" \
     --memory 7000MB \
     --port 42778 \
-    --bootstrap 127.0.0.1:42777 \
+    --bootstrap 192.168.100.210:42777 \
     --inference-port 8182 \
     --n-gpu-layers 99 \
     --n-ctx 4096 \
     --max-new-tokens 512 \
     --temperature 0.7 \
+    --start-layer 16 \
     --top-p 0.9 \
     --top-k 40 \
     --repeat-penalty 1.15 \

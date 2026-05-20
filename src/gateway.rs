@@ -3,6 +3,7 @@ use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline, LoadTracker};
 use anyhow::Result;
+use std::time::Instant;
 use axum::{
     body::Bytes,
     extract::State,
@@ -83,6 +84,9 @@ pub struct GenerateResponse {
     pub response: String,
     /// "pipeline:<hop-chain>" | "local" | "peer:<node_id>" | "error"
     pub source: String,
+    pub tokens_generated: u32,
+    pub tokens_per_sec: f64,
+    pub duration_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -222,6 +226,9 @@ async fn handle_generate(
                 Json(GenerateResponse {
                     response: format!("Invalid JSON: {}", e),
                     source: "error".to_string(),
+                    tokens_generated: 0,
+                    tokens_per_sec: 0.0,
+                    duration_ms: 0,
                 }),
             )
                 .into_response();
@@ -271,8 +278,10 @@ async fn handle_generate(
             plan.steps.len(),
             plan.hop_chain()
         );
-        
+
+        let gen_start = Instant::now();
         let mut full_text = String::new();
+        let mut tokens_generated: u32 = 0;
         let mut current_prompt: Option<&str> = Some(&req.prompt);
         let mut current_tokens: Option<Vec<u32>> = None;
         let mut reset = true;
@@ -285,7 +294,7 @@ async fn handle_generate(
                 current_prompt,
                 current_tokens.as_deref(),
                 reset,
-                1.0, // Bypass hack handles normalization now
+                1.0,
                 &state.http,
                 &state.loads
             ).await;
@@ -293,18 +302,29 @@ async fn handle_generate(
             match res {
                 Ok(step) => {
                     full_text.push_str(&step.text);
+                    tokens_generated += 1;
                     if step.done || i == max_tokens - 1 {
-                        info!("✅ Pipeline complete after {} steps", i + 1);
+                        let elapsed = gen_start.elapsed();
+                        let duration_ms = elapsed.as_millis() as u64;
+                        let tokens_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                            tokens_generated as f64 / elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        };
+                        info!("✅ Pipeline complete: {} tokens in {:.1}s ({:.1} tok/s)",
+                            tokens_generated, elapsed.as_secs_f64(), tokens_per_sec);
                         return (
                             StatusCode::OK,
                             Json(GenerateResponse {
                                 response: full_text,
                                 source: format!("pipeline:{}", plan.hop_chain()),
+                                tokens_generated,
+                                tokens_per_sec,
+                                duration_ms,
                             }),
                         )
                             .into_response();
                     }
-                    // For next steps:
                     current_prompt = None;
                     current_tokens = Some(vec![step.token_id]);
                     reset = false;
@@ -312,12 +332,22 @@ async fn handle_generate(
                 Err(e) => {
                     warn!("Pipeline step {} error: {}", i, e);
                     if !full_text.is_empty() {
-                        info!("Returning {} chars of partial output", full_text.len());
+                        let elapsed = gen_start.elapsed();
+                        let duration_ms = elapsed.as_millis() as u64;
+                        let tokens_per_sec = if elapsed.as_secs_f64() > 0.0 {
+                            tokens_generated as f64 / elapsed.as_secs_f64()
+                        } else {
+                            0.0
+                        };
+                        info!("Returning {} tokens of partial output", tokens_generated);
                         return (
                             StatusCode::OK,
                             Json(GenerateResponse {
                                 response: full_text,
                                 source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                                tokens_generated,
+                                tokens_per_sec,
+                                duration_ms,
                             }),
                         ).into_response();
                     }
@@ -341,6 +371,9 @@ async fn handle_generate(
                 pipeline_error.unwrap_or_else(|| "Unknown error".to_string())
             ),
             source: "none".to_string(),
+            tokens_generated: 0,
+            tokens_per_sec: 0.0,
+            duration_ms: 0,
         }),
     )
         .into_response()

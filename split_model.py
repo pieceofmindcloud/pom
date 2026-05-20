@@ -329,9 +329,12 @@ def split_model(
             return True
         
         # Output norm & head
-        if name in ("output_norm.weight", "output_norm.bias", "output.weight"):
-            # Only include REAL tensors for the last node.
-            # For other nodes, we'll inject fake ones in extra_tensors.
+        if name == "output_norm.weight":
+            # Include the real output_norm for ALL nodes so internal norms are not affected.
+            # P1 sends normalized(h_k); P2's first pre_attn_norm is mathematically equivalent
+            # to what the original model would compute at that layer.
+            return True
+        if name in ("output_norm.bias", "output.weight"):
             return is_last
             
         # Positional / RoPE tables — shared across all nodes
@@ -346,12 +349,8 @@ def split_model(
         if _want(t):
             real_tensors.append(t)
 
-    # ── Fake tensors for non-last nodes ────────────────────────────────────────
+    # No fake tensors needed — real output_norm.weight is included for all nodes.
     extra_tensors: list[FakeTensor] = []
-    if not is_last:
-        scale = 100000.0 # sqrt(BYPASS_EPS)
-        extra_tensors.append(_fake_output_norm(gguf, hidden_dim, scale=scale))
-        print(f"Injecting BYPASS fake output_norm.weight (scale={scale})")
 
     all_tensors: list[TensorInfo | FakeTensor] = real_tensors + extra_tensors
 
@@ -372,19 +371,11 @@ def split_model(
     # ── Update KV metadata ─────────────────────────────────────────────────────
     new_kv: list[KVEntry] = []
     updated_block_count = False
-    
-    # We use a huge epsilon for non-last nodes to make RMSNorm an identity.
-    # output = input * weight / sqrt(RMS(input)^2 + eps)
-    # If eps=1e10 and weight=100000.0, output = input * 100000 / 100000 = input.
-    BYPASS_EPS = 1e10
-    BYPASS_SCALE = 100000.0
 
     for entry in gguf.kv:
         if entry.key.endswith(".block_count"):
             new_kv.append(KVEntry(entry.key, entry.vtype, n_split_layers))
             updated_block_count = True
-        elif not is_last and entry.key == f"{arch}.attention.layer_norm_rms_epsilon":
-            new_kv.append(KVEntry(entry.key, entry.vtype, BYPASS_EPS))
         else:
             new_kv.append(entry)
     

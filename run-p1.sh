@@ -4,6 +4,7 @@
 # apenas suas layers para o P2P. Para inferência distribuída real, use split_model.py.
 
 MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
+MODEL="./models/qwen/qwen_0_15.gguf"
 
 ./target/release/rdma-p2p \
     --model "$MODEL" \

@@ -1,3 +1,4 @@
+mod discovery;
 mod display;
 mod gateway;
 mod identity;
@@ -9,10 +10,11 @@ mod pipeline;
 
 use anyhow::Result;
 use clap::Parser;
+use discovery::Discovery;
 use gateway::{GatewayState, start_gateway};
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
-use network::Network;
+use network::{Network, P2PMessage};
 use ollama::OllamaClient;
 use pipeline::LoadTracker;
 use std::sync::Arc;
@@ -63,11 +65,12 @@ struct Args {
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
-    /// Enable gateway HTTP API — exposes POST /generate, GET /peers, GET /health
+    /// Deprecated — every node now serves the HTTP API. Accepted for backwards compatibility;
+    /// only effect remaining is advertising the Ollama port to peers.
     #[arg(long)]
     gateway: bool,
 
-    /// HTTP port for the gateway server
+    /// HTTP port for the gateway/API server (served by every node)
     #[arg(long, default_value = "8080")]
     gateway_port: u16,
 
@@ -317,7 +320,7 @@ async fn main() -> Result<()> {
             node_id.clone(),
             pubkey.clone(),
             args.port,
-            bootstrap_nodes,
+            bootstrap_nodes.clone(),
             ollama_port,
             args.inference_port,
         )
@@ -508,8 +511,8 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── Gateway HTTP server (optional) ───────────────────────────────────────
-    if args.gateway {
+    // ── HTTP API server — every node serves it ───────────────────────────────
+    {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()?;
@@ -524,7 +527,55 @@ async fn main() -> Result<()> {
         let gw_port = args.gateway_port;
         tokio::spawn(async move {
             if let Err(e) = start_gateway(gw_state, gw_port).await {
-                error!("Gateway error: {}", e);
+                error!("HTTP API server error: {}", e);
+            }
+        });
+    }
+
+    // ── libp2p discovery (LAN mDNS + global Kademlia + gossipsub) ────────────
+    // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777).
+    // Announce messages are published to gossipsub every 5 s so internet peers
+    // learn our layer assignment without needing a shared signalling server.
+    let disc_announce_tx = match Discovery::new(args.port, &bootstrap_nodes, net.clone()) {
+        Ok(disc) => {
+            let tx = disc.announce_tx.clone();
+            tokio::spawn(async move { disc.run().await });
+            Some(tx)
+        }
+        Err(e) => {
+            warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
+            None
+        }
+    };
+
+    // Publish our own Announce to gossipsub every 5 s so newly-connected
+    // libp2p peers learn our model/layer assignment.
+    if let Some(tx) = disc_announce_tx {
+        let net_disc = net.clone();
+        let asgn_disc = assignment_shared.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                let asgn = asgn_disc.read().await;
+                if let Some(ref a) = *asgn {
+                    let msg = P2PMessage::Announce {
+                        node_id: net_disc.node_id.clone(),
+                        pubkey: net_disc.pubkey.clone(),
+                        addr: format!("0.0.0.0:{}", net_disc.bind_addr.port()),
+                        model: a.model.clone(),
+                        start_layer: a.start_layer,
+                        end_layer: a.end_layer,
+                        total_layers: a.total_layers,
+                        memory_mb: a.memory_used_mb,
+                        timestamp: chrono::Utc::now(),
+                        ollama_port: net_disc.ollama_port,
+                        inference_port: net_disc.inference_port,
+                    };
+                    if let Ok(data) = serde_json::to_vec(&msg) {
+                        let _ = tx.send(data).await;
+                    }
+                }
             }
         });
     }
@@ -543,11 +594,7 @@ async fn main() -> Result<()> {
         let asgn = assignment_shared.read().await;
 
         if let Some(ref a) = *asgn {
-            let gateway_tag = if args.gateway {
-                format!(" │ 🌐 gateway:{}", args.gateway_port)
-            } else {
-                String::new()
-            };
+            let gateway_tag = format!(" │ 🌐 http:{}", args.gateway_port);
             let infer_tag = if let Some(p) = args.inference_port {
                 format!(" │ ⚡ infer:{}", p)
             } else {

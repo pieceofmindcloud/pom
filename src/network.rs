@@ -419,6 +419,25 @@ impl Network {
         }
     }
 
+    /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
+    pub async fn insert_peer(&self, peer: PeerInfo) {
+        let node_id = peer.node_id.clone();
+        if node_id == self.node_id {
+            return;
+        }
+        let is_new = !self.peers.read().await.contains_key(&node_id);
+        if is_new {
+            info!(
+                "🆕 Peer via libp2p: {} model={} layers={}-{}",
+                &node_id[..node_id.len().min(12)],
+                peer.model,
+                peer.start_layer,
+                peer.end_layer
+            );
+        }
+        self.peers.write().await.insert(node_id, peer);
+    }
+
     pub async fn peer_count(&self) -> usize {
         self.peers.read().await.len()
     }

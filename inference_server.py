@@ -406,7 +406,7 @@ def _reinit_llama() -> None:
         n_batch=int(_args.n_batch),
         n_gpu_layers=int(_args.n_gpu_layers),
         embedding=need_embeddings,
-        logits_all=need_embeddings,
+        logits_all=False,
         verbose=False,
     )
     if int(_args.threads) > 0:
@@ -634,7 +634,7 @@ def main():
         n_batch=int(args.n_batch),
         n_gpu_layers=int(args.n_gpu_layers),
         embedding=need_embeddings,
-        logits_all=need_embeddings,
+        logits_all=False,  # per-token logit flags in the batch are sufficient; True wastes n_batch*vocab*4 bytes
         verbose=False,
     )
     if n_threads > 0:

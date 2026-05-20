@@ -8,12 +8,12 @@ MODEL="./models/qwen/qwen_16_31.gguf"
 
 ./target/release/rdma-p2p \
     --model "$MODEL" \
-    --memory 7000MB \
     --port 42778 \
     --bootstrap 192.168.100.210:42777 \
     --inference-port 8182 \
     --n-gpu-layers 99 \
-    --n-ctx 4096 \
+    --n-ctx 2048 \
+    --n-batch 512 \
     --max-new-tokens 512 \
     --temperature 0.7 \
     --start-layer 16 \

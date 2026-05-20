@@ -90,6 +90,11 @@ struct Args {
     #[arg(long, default_value = "8192")]
     n_ctx: u32,
 
+    /// Maximum batch size for prompt processing (tokens). Directly controls
+    /// logit buffer size: lower = much less RAM (n_batch * vocab * 4 bytes).
+    #[arg(long, default_value = "512")]
+    n_batch: u32,
+
     /// Max new tokens to generate per request.
     #[arg(long, default_value = "512")]
     max_new_tokens: u32,
@@ -203,20 +208,24 @@ async fn main() -> Result<()> {
         }
     };
 
-    // ── require --memory for normal operation ────────────────────────────────
-    if args.memory.is_empty() {
-        error!("--memory is required (e.g. --memory 8GB).");
+    // ── require --memory unless inference_port handles model loading ─────────
+    if args.memory.is_empty() && args.inference_port.is_none() {
+        error!("--memory is required (e.g. --memory 8GB) unless --inference-port is set.");
         std::process::exit(1);
     }
 
     display::print_banner();
 
     // ── Parse memory ─────────────────────────────────────────────────────────
-    let memory_mb = match parse_memory(&args.memory) {
-        Ok(mb) => mb,
-        Err(_) => {
-            error!("Invalid memory format '{}'. Use e.g. 10GB or 4096MB", args.memory);
-            std::process::exit(1);
+    let memory_mb = if args.memory.is_empty() {
+        0.0
+    } else {
+        match parse_memory(&args.memory) {
+            Ok(mb) => mb,
+            Err(_) => {
+                error!("Invalid memory format '{}'. Use e.g. 10GB or 4096MB", args.memory);
+                std::process::exit(1);
+            }
         }
     };
 
@@ -357,18 +366,24 @@ async fn main() -> Result<()> {
         assignment.memory_used_mb
     );
 
-    // Actually load (or reserve) the layer data into physical memory.
-    // The buffer must stay alive for the entire process.
-    let layer_buf = load_layer_memory(
-        &profile.name,
-        assignment.start_layer,
-        assignment.end_layer,
-        assignment.total_layers,
-        assignment.memory_used_mb,
-    );
-    let mem_source = layer_buf.source.to_string();
+    // When inference_server.py manages the model, skip RAM reservation —
+    // the Python process owns the model memory.
+    let (layer_buf, mem_source) = if args.inference_port.is_none() {
+        let buf = load_layer_memory(
+            &profile.name,
+            assignment.start_layer,
+            assignment.end_layer,
+            assignment.total_layers,
+            assignment.memory_used_mb,
+        );
+        let src = buf.source.to_string();
+        (Some(buf), src)
+    } else {
+        (None, "inference_server".to_string())
+    };
 
     display::print_assignment(&assignment, &mem_source);
+    let _layer_buf = layer_buf; // keep alive for process lifetime
 
     {
         let mut a = assignment_shared.write().await;
@@ -392,6 +407,7 @@ async fn main() -> Result<()> {
         let server_script = cwd.join("inference_server.py");
         let n_gpu_layers = args.n_gpu_layers;
         let n_ctx = args.n_ctx;
+        let n_batch = args.n_batch;
         let max_new_tokens = args.max_new_tokens;
         let temperature = args.temperature;
         let top_p = args.top_p;
@@ -424,6 +440,7 @@ async fn main() -> Result<()> {
                     .arg("--port").arg(port.to_string())
                     .arg("--n-gpu-layers").arg(n_gpu_layers.to_string())
                     .arg("--n-ctx").arg(n_ctx.to_string())
+                    .arg("--n-batch").arg(n_batch.to_string())
                     .arg("--max-new-tokens").arg(max_new_tokens.to_string())
                     .arg("--temperature").arg(temperature.to_string())
                     .arg("--top-p").arg(top_p.to_string())

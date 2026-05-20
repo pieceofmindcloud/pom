@@ -407,6 +407,7 @@ def _reinit_llama() -> None:
         n_gpu_layers=int(_args.n_gpu_layers),
         embedding=need_embeddings,
         logits_all=False,
+        offload_kqv=False,
         verbose=False,
     )
     if int(_args.threads) > 0:
@@ -635,6 +636,7 @@ def main():
         n_gpu_layers=int(args.n_gpu_layers),
         embedding=need_embeddings,
         logits_all=False,  # per-token logit flags in the batch are sufficient; True wastes n_batch*vocab*4 bytes
+        offload_kqv=False, # keep KV cache in CPU RAM; embedding=True forces large n_ctx on Metal, this avoids GPU allocation
         verbose=False,
     )
     if n_threads > 0:

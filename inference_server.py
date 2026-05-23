@@ -624,15 +624,14 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
 @app.get("/health")
 def health():
-    hidden_dim = _n_embd
-    vocab_size = _n_vocab
     return {
         "status": "ok",
         "model_loaded": _llama is not None,
         "start_layer": _args.start_layer if _args else None,
         "end_layer": _args.end_layer if _args else None,
-        "hidden_dim": hidden_dim,
-        "vocab_size": vocab_size,
+        "original_block_count": getattr(_args, "original_block_count", None) if _args else None,
+        "hidden_dim": _n_embd,
+        "vocab_size": _n_vocab,
     }
 
 
@@ -644,8 +643,10 @@ def main():
     parser = argparse.ArgumentParser(description="rdma-p2p inference node (transformers backend)")
     parser.add_argument("--model",       required=True,
                         help="Path to GGUF model slice")
-    parser.add_argument("--start-layer", type=int, default=0)
-    parser.add_argument("--end-layer",   type=int, default=31)
+    parser.add_argument("--start-layer", type=int, default=None,
+                        help="First layer this node owns (auto-detected from GGUF if omitted)")
+    parser.add_argument("--end-layer",   type=int, default=None,
+                        help="Last layer this node owns (auto-detected from GGUF if omitted)")
     parser.add_argument("--port",        type=int, default=8181)
     parser.add_argument("--host",        default="0.0.0.0")
     parser.add_argument("--n-gpu-layers", type=int, default=0,
@@ -681,7 +682,10 @@ def main():
     _args = args
 
     print(f"Loading model : {args.model}", flush=True)
-    print(f"Layers        : {args.start_layer}–{args.end_layer}", flush=True)
+    if args.start_layer is not None and args.end_layer is not None:
+        print(f"Layers        : {args.start_layer}–{args.end_layer}", flush=True)
+    else:
+        print(f"Layers        : auto-detect from GGUF metadata", flush=True)
     print(f"Server        : http://{args.host}:{args.port}", flush=True)
     print(f"n_ctx (req)    : {args.n_ctx}", flush=True)
     print(f"n_batch        : {args.n_batch}", flush=True)
@@ -715,8 +719,27 @@ def main():
     _n_vocab = int(_llama.n_vocab())
     actual_n_ctx = int(lc.llama_n_ctx(_llama.ctx))
 
+    # Auto-detect layer range from GGUF KV metadata embedded by split_model.py.
+    meta = getattr(_llama, "metadata", {}) or {}
+    if args.start_layer is None:
+        v = meta.get("rdmap2p.original_block_start")
+        args.start_layer = int(v) if v is not None else 0
+        if v is not None:
+            print(f"Auto-detected start_layer={args.start_layer} from GGUF metadata", flush=True)
+    if args.end_layer is None:
+        v = meta.get("rdmap2p.original_block_end")
+        args.end_layer = int(v) if v is not None else 31
+        if v is not None:
+            print(f"Auto-detected end_layer={args.end_layer} from GGUF metadata", flush=True)
+    args.original_block_count = None
+    v = meta.get("rdmap2p.original_block_count")
+    if v is not None:
+        args.original_block_count = int(v)
+
     print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'multi-peer (embedding extraction)'}", flush=True)
     print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}", flush=True)
+    print(f"Layers (final): {args.start_layer}–{args.end_layer}"
+          + (f" of {args.original_block_count}" if args.original_block_count else ""), flush=True)
     print(f"n_ctx (actual): {actual_n_ctx} tokens (llama.cpp allocated)", flush=True)
     if actual_n_ctx < args.n_ctx:
         print(f"WARNING: llama.cpp reduced n_ctx {args.n_ctx}→{actual_n_ctx} (memory constraint)", flush=True)

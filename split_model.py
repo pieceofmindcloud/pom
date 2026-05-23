@@ -321,6 +321,7 @@ def split_model(
     output_path: Path,
     is_first: bool,
     is_last: bool,
+    original_block_count: int | None = None,
 ) -> None:
     print(f"Reading {src_path} ...")
     gguf = GGUFFile(src_path)
@@ -331,6 +332,12 @@ def split_model(
     # ── Architecture params ────────────────────────────────────────────────────
     kv = gguf.kv_dict()
     arch       = kv.get("general.architecture", "llama")
+
+    # Detect original total layers from the source file if not provided
+    if original_block_count is None:
+        orig_bc = kv.get(f"{arch}.block_count")
+        if orig_bc is not None:
+            original_block_count = int(orig_bc)
     hidden_dim = int(kv.get(f"{arch}.embedding_length", 4096))
     vocab_size = 0
     if "tokenizer.ggml.tokens" in kv:
@@ -416,6 +423,13 @@ def split_model(
     # If we didn't find a .block_count key to update, and we know the arch, try to add it
     if not updated_block_count:
         new_kv.append(KVEntry(f"{arch}.block_count", GGUF_VAL_UINT32, n_split_layers))
+
+    # Store original model metadata so rdma-p2p peers can self-describe their
+    # layer range and reconstruct total_layers without the original file.
+    if original_block_count is not None:
+        new_kv.append(KVEntry("rdmap2p.original_block_count", GGUF_VAL_UINT32, original_block_count))
+    new_kv.append(KVEntry("rdmap2p.original_block_start", GGUF_VAL_UINT32, start_layer))
+    new_kv.append(KVEntry("rdmap2p.original_block_end",   GGUF_VAL_UINT32, end_layer))
 
     ALIGN = 32
 

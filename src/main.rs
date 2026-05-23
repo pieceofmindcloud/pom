@@ -511,6 +511,50 @@ async fn main() -> Result<()> {
         });
     }
 
+    // ── Sync total_layers from inference server GGUF metadata ───────────────
+    // When --model is a GGUF slice path, profile.total_layers is a guess.
+    // The inference server embeds rdmap2p.original_block_count in the GGUF KV
+    // and exposes it via /health — read it back and correct the shared assignment
+    // so the display and gossip announces use the real value.
+    if let Some(inf_port) = args.inference_port {
+        let asgn_shared2 = assignment_shared.clone();
+        let health_http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        tokio::spawn(async move {
+            let url = format!("http://127.0.0.1:{}/health", inf_port);
+            for attempt in 0u32..30 {
+                // First attempt after 5 s (model loading); subsequent every 10 s.
+                tokio::time::sleep(Duration::from_secs(if attempt == 0 { 5 } else { 10 })).await;
+                let resp = health_http.get(&url).send().await;
+                if let Ok(r) = resp {
+                    if r.status().is_success() {
+                        if let Ok(body) = r.json::<serde_json::Value>().await {
+                            if let Some(obc) = body
+                                .get("original_block_count")
+                                .and_then(|v| v.as_u64())
+                            {
+                                let obc = obc as u32;
+                                let mut w = asgn_shared2.write().await;
+                                if let Some(ref mut a) = *w {
+                                    if a.total_layers != obc {
+                                        info!(
+                                            "Corrected total_layers: {} → {} (from GGUF metadata)",
+                                            a.total_layers, obc
+                                        );
+                                        a.total_layers = obc;
+                                    }
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
         let http_client = reqwest::Client::builder()

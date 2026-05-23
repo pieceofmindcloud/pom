@@ -59,79 +59,75 @@ _SCALAR_FMT = {
 
 
 def _read_gguf_kv(path: Path) -> dict[str, object]:
-    """Read only the KV metadata section of a GGUF file."""
+    """Read only the KV metadata section of a GGUF file (sequential, no full-file load)."""
     with path.open("rb") as f:
-        raw = f.read()
 
-    pos = 0
+        def read(n):
+            data = f.read(n)
+            if len(data) != n:
+                raise EOFError(f"Need {n} bytes at offset {f.tell() - len(data)}, got {len(data)}")
+            return data
 
-    def read(n):
-        nonlocal pos
-        chunk = raw[pos:pos + n]
-        pos += n
-        return chunk
+        def unpack(fmt, size):
+            return struct.unpack(fmt, read(size))[0]
 
-    def unpack(fmt, size):
-        return struct.unpack(fmt, read(size))[0]
-
-    def read_string():
-        length = unpack("<Q", 8)
-        return read(length).decode("utf-8")
-
-    def skip_value(vtype):
-        if vtype in _SCALAR_FMT:
-            fmt, size = _SCALAR_FMT[vtype]
-            read(size)
-        elif vtype == GGUF_VAL_STRING:
+        def read_string():
             length = unpack("<Q", 8)
-            read(length)
-        elif vtype == GGUF_VAL_ARRAY:
-            elem_type = unpack("<I", 4)
-            count = unpack("<Q", 8)
-            for _ in range(count):
-                skip_value(elem_type)
-        else:
-            raise ValueError(f"Unknown GGUF value type {vtype}")
+            return read(length).decode("utf-8")
 
-    def read_value(vtype):
-        if vtype in _SCALAR_FMT:
-            fmt, size = _SCALAR_FMT[vtype]
-            return unpack(fmt, size)
-        elif vtype == GGUF_VAL_STRING:
-            return read_string()
-        elif vtype == GGUF_VAL_ARRAY:
-            elem_type = unpack("<I", 4)
-            count = unpack("<Q", 8)
-            items = []
-            for _ in range(count):
-                items.append(read_value(elem_type))
-            return items
-        else:
-            raise ValueError(f"Unknown GGUF value type {vtype}")
+        def skip_value(vtype):
+            if vtype in _SCALAR_FMT:
+                _, size = _SCALAR_FMT[vtype]
+                f.seek(size, 1)
+            elif vtype == GGUF_VAL_STRING:
+                f.seek(unpack("<Q", 8), 1)
+            elif vtype == GGUF_VAL_ARRAY:
+                elem_type = unpack("<I", 4)
+                count = unpack("<Q", 8)
+                if elem_type in _SCALAR_FMT:
+                    _, elem_size = _SCALAR_FMT[elem_type]
+                    f.seek(count * elem_size, 1)
+                else:
+                    for _ in range(count):
+                        skip_value(elem_type)
+            else:
+                raise ValueError(f"Unknown GGUF value type {vtype}")
 
-    magic = unpack("<I", 4)
-    if magic != GGUF_MAGIC:
-        raise ValueError(f"Not a GGUF file (magic={magic:#x})")
-    _version  = unpack("<I", 4)
-    _n_tensors = unpack("<Q", 8)
-    n_kv      = unpack("<Q", 8)
+        def read_value(vtype):
+            if vtype in _SCALAR_FMT:
+                fmt, size = _SCALAR_FMT[vtype]
+                return unpack(fmt, size)
+            elif vtype == GGUF_VAL_STRING:
+                return read_string()
+            elif vtype == GGUF_VAL_ARRAY:
+                elem_type = unpack("<I", 4)
+                count = unpack("<Q", 8)
+                return [read_value(elem_type) for _ in range(count)]
+            else:
+                raise ValueError(f"Unknown GGUF value type {vtype}")
 
-    kv: dict[str, object] = {}
-    for _ in range(n_kv):
-        key   = read_string()
-        vtype = unpack("<I", 4)
-        value = read_value(vtype)
-        kv[key] = value
+        magic = unpack("<I", 4)
+        if magic != GGUF_MAGIC:
+            raise ValueError(f"Not a GGUF file (magic={magic:#x})")
+        unpack("<I", 4)   # version
+        unpack("<Q", 8)   # n_tensors
+        n_kv = unpack("<Q", 8)
 
-    return kv
+        kv: dict[str, object] = {}
+        for _ in range(n_kv):
+            key   = read_string()
+            vtype = unpack("<I", 4)
+            value = read_value(vtype)
+            kv[key] = value
+
+        return kv
 
 
-def detect_layers(model_path: Path) -> int:
-    kv = _read_gguf_kv(model_path)
+def detect_layers(kv: dict) -> int:
+    """Extract layer count from an already-parsed KV dict (avoids re-reading the file)."""
     arch = kv.get("general.architecture", "llama")
     block_count = kv.get(f"{arch}.block_count")
     if block_count is None:
-        # Fallback: scan all keys for anything ending in .block_count
         for k, v in kv.items():
             if k.endswith(".block_count"):
                 block_count = v
@@ -203,7 +199,7 @@ def main():
     kv = _read_gguf_kv(model_path)
     arch = str(kv.get("general.architecture", "llama")).lower()
     is_gemma2 = "gemma2" in arch
-    total_layers = detect_layers(model_path)
+    total_layers = detect_layers(kv)  # reuse already-parsed KV — don't re-read the file
     
     if is_gemma2:
         print("Gemma 2 detected — ensuring even layer boundaries for parity.")

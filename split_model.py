@@ -20,6 +20,8 @@ Notes:
 """
 
 import argparse
+import mmap
+import os
 import struct
 import sys
 from pathlib import Path
@@ -71,7 +73,7 @@ _SCALAR_FMT = {
 # ── Low-level reader ───────────────────────────────────────────────────────────
 
 class Reader:
-    def __init__(self, data: bytes):
+    def __init__(self, data):
         self._d = data
         self._p = 0
 
@@ -140,8 +142,9 @@ class FakeTensor:
 
 class GGUFFile:
     def __init__(self, path: Path):
-        self._raw = path.read_bytes()
-        r = Reader(self._raw)
+        self._file = open(path, "rb")
+        self._mm = mmap.mmap(self._file.fileno(), 0, access=mmap.ACCESS_READ)
+        r = Reader(self._mm)
 
         magic   = r.unpack("<I")
         if magic != GGUF_MAGIC:
@@ -177,19 +180,49 @@ class GGUFFile:
         # More reliable than the type table — handles unknown quant types and
         # catches any table errors. Weight-tied tensors sharing an offset get
         # the same size entry.
-        total_data = len(self._raw) - self.data_offset
+        total_data = len(self._mm) - self.data_offset
         unique_offsets = sorted(set(t.offset for t in self.tensors))
         self._offset_sizes: dict[int, int] = {}
         for i, off in enumerate(unique_offsets):
             next_off = unique_offsets[i + 1] if i + 1 < len(unique_offsets) else total_data
             self._offset_sizes[off] = next_off - off
 
+    def close(self):
+        self._mm.close()
+        self._file.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        self.close()
+
+    def tensor_size(self, t: TensorInfo) -> int:
+        return self._offset_sizes.get(t.offset, t.byte_size())
+
+    def stream_tensor_to(self, f, t: TensorInfo, chunk: int = 8 << 20) -> int:
+        """Write tensor data directly to f in chunks. Returns bytes written."""
+        start = self.data_offset + t.offset
+        size = self.tensor_size(t)
+        pos, remaining = start, size
+        mv = memoryview(self._mm)
+        while remaining > 0:
+            n = min(chunk, remaining)
+            # memoryview slice: zero-copy read — no 8 MB bytes object on the Python heap
+            f.write(mv[pos:pos + n])
+            # Drop source pages from page cache after reading — prevents RAM buildup
+            try:
+                self._mm.madvise(mmap.MADV_DONTNEED, pos, n)
+            except (AttributeError, OSError):
+                pass
+            pos += n
+            remaining -= n
+        return size
+
     def tensor_data(self, t: TensorInfo) -> bytes:
         start = self.data_offset + t.offset
-        # Prefer offset-based size (includes alignment padding, writer won't double-pad).
-        # Fall back to byte_size() only if offset lookup fails.
-        size = self._offset_sizes.get(t.offset, t.byte_size())
-        return self._raw[start:start + size]
+        size = self.tensor_size(t)
+        return bytes(self._mm[start:start + size])
 
     def kv_dict(self) -> dict:
         return {e.key: e.value for e in self.kv}
@@ -291,6 +324,7 @@ def split_model(
 ) -> None:
     print(f"Reading {src_path} ...")
     gguf = GGUFFile(src_path)
+    print(f"File size    : {src_path.stat().st_size / (1024**3):.2f} GB (mmap — not loaded into RAM)")
 
     n_split_layers = end_layer - start_layer + 1
 
@@ -383,42 +417,29 @@ def split_model(
     if not updated_block_count:
         new_kv.append(KVEntry(f"{arch}.block_count", GGUF_VAL_UINT32, n_split_layers))
 
-    # ── Pre-calculate header size to find data_offset ──────────────────────────
-    # ... rest of logic remains same, but we use BYPASS_SCALE for fake norm ...
     ALIGN = 32
-    
-    # Calculate metadata size
-    meta_size = 4 + 4 + 8 + 8 # magic, version, n_tensors, n_kv
-    for entry in new_kv:
-        meta_size += len(_pack_kv(entry))
-    
-    # Calculate tensor info size
-    for t in all_tensors:
-        # name, n_dims, dims, dtype, offset
-        name = _remap(t.name)
-        meta_size += 8 + len(name.encode("utf-8")) # string length + bytes
-        meta_size += 4 # n_dims
-        meta_size += 8 * len(t.dims)
-        meta_size += 4 # dtype
-        meta_size += 8 # offset
-    
-    data_offset = (meta_size + ALIGN - 1) & ~(ALIGN - 1)
 
-    # ── Build data section (32-byte aligned) ───────────────────────────────────
-    data_parts: list[bytes] = []
+    # ── Pre-calculate tensor sizes and output offsets (no data loaded) ─────────
+    tensor_sizes: list[int] = []
     new_offsets: list[int]  = []
     cur_offset = 0
 
     for t in all_tensors:
         new_offsets.append(cur_offset)
-        if isinstance(t, FakeTensor):
-            blob = t._data
-        else:
-            blob = gguf.tensor_data(t)
-        data_parts.append(blob)
-        pad = (ALIGN - (len(blob) % ALIGN)) % ALIGN
-        data_parts.append(b"\x00" * pad)
-        cur_offset += len(blob) + pad
+        size = len(t._data) if isinstance(t, FakeTensor) else gguf.tensor_size(t)
+        tensor_sizes.append(size)
+        cur_offset += (size + ALIGN - 1) & ~(ALIGN - 1)
+
+    # ── Calculate header/metadata size to find data_offset ────────────────────
+    meta_size = 4 + 4 + 8 + 8  # magic, version, n_tensors, n_kv
+    for entry in new_kv:
+        meta_size += len(_pack_kv(entry))
+    for t in all_tensors:
+        name = _remap(t.name)
+        meta_size += 8 + len(name.encode("utf-8"))
+        meta_size += 4 + 8 * len(t.dims) + 4 + 8
+
+    data_offset = (meta_size + ALIGN - 1) & ~(ALIGN - 1)
 
     # ── Assemble header ────────────────────────────────────────────────────────
     header  = struct.pack("<I", GGUF_MAGIC)
@@ -432,16 +453,39 @@ def split_model(
     for t, off in zip(all_tensors, new_offsets):
         header += _pack_tensor_header(_remap(t.name), t.dims, t.dtype, off)
 
-    pad_len  = data_offset - len(header)
-    header  += b"\x00" * pad_len
+    header += b"\x00" * (data_offset - len(header))
 
-    # ── Write output ───────────────────────────────────────────────────────────
+    # ── Stream output (one tensor at a time — no full model in RAM) ────────────
     output_path.parent.mkdir(parents=True, exist_ok=True)
     print(f"Writing {output_path} ...")
+    written_bytes = 0
+    total_data_bytes = sum((s + ALIGN - 1) & ~(ALIGN - 1) for s in tensor_sizes)
+
     with output_path.open("wb") as f:
         f.write(header)
-        for part in data_parts:
-            f.write(part)
+        for i, (t, size) in enumerate(zip(all_tensors, tensor_sizes)):
+            name = _remap(t.name)
+            file_pos_before = data_offset + written_bytes
+            if isinstance(t, FakeTensor):
+                f.write(t._data)
+            else:
+                gguf.stream_tensor_to(f, t)
+            pad = (ALIGN - (size % ALIGN)) % ALIGN
+            f.write(b"\x00" * pad)
+            written_bytes += size + pad
+            # Flush Python buffer → OS, then drop dirty output pages from page cache.
+            # Without this, the OS accumulates dirty pages for the entire output file
+            # (up to several GB) in RAM before writing to disk.
+            f.flush()
+            try:
+                os.posix_fadvise(f.fileno(), file_pos_before, size + pad, os.POSIX_FADV_DONTNEED)
+            except (AttributeError, OSError):
+                pass
+            print(f"  [{i+1}/{len(all_tensors)}] {name}  {size / (1024**2):.1f} MB"
+                  f"  ({100 * written_bytes / total_data_bytes:.0f}%)", end="\r")
+
+    print()
+    gguf.close()
 
     size_mb = output_path.stat().st_size / (1024 * 1024)
     print(f"Done — {output_path}  ({size_mb:.0f} MB)\n")

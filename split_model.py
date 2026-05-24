@@ -369,19 +369,15 @@ def split_model(
         if name == "token_embd.weight":
             return True
         
-        # Output norm & head
-        if name == "output_norm.weight":
-            # Include the real output_norm for ALL nodes so internal norms are not affected.
-            # P1 sends normalized(h_k); P2's first pre_attn_norm is mathematically equivalent
-            # to what the original model would compute at that layer.
-            return True
-        if name in ("output_norm.bias", "output.weight"):
+        # Output norm & head — only real tensors on the last node.
+        # Non-last nodes get a fake all-ones output_norm injected below.
+        if name in ("output_norm.weight", "output_norm.bias", "output.weight"):
             return is_last
-            
+
         # Positional / RoPE tables — shared across all nodes
         if "rope" in name or "pos_embd" in name:
             return True
-            
+
         return False
 
     # ── Tensor selection (Preserving source order) ─────────────────────────────
@@ -390,8 +386,18 @@ def split_model(
         if _want(t):
             real_tensors.append(t)
 
-    # No fake tensors needed — real output_norm.weight is included for all nodes.
+    # Non-last nodes need a fake identity output_norm so that llama_get_embeddings_ith
+    # returns h_k/RMS(h_k).  When the next peer applies its own pre_attn_norm:
+    #   pre_attn_norm(h_k/RMS(h_k), w) = w ⊙ (h_k/RMS(h_k)) / RMS(h_k/RMS(h_k))
+    #                                   = w ⊙ (h_k/RMS(h_k))   [since RMS=1]
+    # which equals pre_attn_norm(h_k, w) — mathematically identical to the
+    # original model.  Using the real output_norm instead would distort the
+    # direction of h_k (non-uniform w_out ≠ constant), causing garbage on
+    # models where output_norm weights deviate significantly from 1.0.
     extra_tensors: list[FakeTensor] = []
+    if not is_last:
+        extra_tensors.append(_fake_output_norm(gguf, hidden_dim, scale=1.0))
+        print(f"Injecting fake identity output_norm.weight (all-ones, hidden_dim={hidden_dim})")
 
     all_tensors: list[TensorInfo | FakeTensor] = real_tensors + extra_tensors
 

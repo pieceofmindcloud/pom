@@ -5,7 +5,7 @@
 //! Ed25519 keypair.  Peers can be resolved by looking up their public key.
 
 use anyhow::Result;
-use pkarr::{Client, Keypair, PublicKey, SignedPacket};
+use pkarr::{Client, Keypair, SignedPacket};
 use serde::{Deserialize, Serialize};
 use std::net::UdpSocket;
 use std::path::Path;
@@ -20,6 +20,7 @@ pub struct PkarrNode {
 }
 
 /// A peer that has been resolved from the DHT.
+#[derive(Debug, Clone)]
 pub struct ResolvedPeer {
     pub multiaddr: String,
     pub inference_port: Option<u16>,
@@ -33,7 +34,7 @@ pub struct ResolvedPeer {
 
 /// Compact JSON payload stored in the `_rdmap2p` TXT record.
 /// Field names are kept short to stay within the 1000-byte DNS packet limit.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct TxtPayload {
     /// Multiaddr / address string (e.g. "192.168.1.5:42777")
     a: String,
@@ -61,12 +62,13 @@ impl PkarrNode {
                 info!("Loaded existing pkarr keypair from {}", key_path.display());
                 kp
             }
-            Err(_) => {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let kp = Keypair::random();
                 kp.write_secret_key_file(key_path)?;
-                info!("Generated new pkarr keypair; saved to {}", key_path.display());
+                info!("Generated new pkarr identity → {}", key_path.display());
                 kp
             }
+            Err(e) => return Err(e.into()),
         };
 
         let client = Client::builder().build()?;
@@ -115,68 +117,71 @@ impl PkarrNode {
         Ok(())
     }
 
-    /// Resolve a list of peer public keys and return any successfully decoded peers.
+    /// Resolve a list of peer public keys concurrently and return any successfully decoded peers.
     pub async fn resolve_peers(&self, pubkeys: &[String]) -> Vec<ResolvedPeer> {
-        let mut results = Vec::new();
-
-        for key_str in pubkeys {
-            let pk = match PublicKey::try_from(key_str.as_str()) {
-                Ok(pk) => pk,
-                Err(e) => {
-                    warn!("Failed to parse public key '{}': {}", key_str, e);
-                    continue;
-                }
-            };
-
-            match self.client.resolve(&pk).await {
-                Some(sp) => {
-                    match Self::parse_signed_packet(&sp) {
-                        Some(peer) => {
-                            info!(
-                                "Resolved peer {} layers={}-{} model={}",
-                                key_str, peer.start_layer, peer.end_layer, peer.model
-                            );
-                            results.push(peer);
-                        }
-                        None => {
-                            warn!("Resolved packet for '{}' but could not parse payload", key_str);
-                        }
-                    }
-                }
-                None => {
-                    warn!("No pkarr record found for '{}'", key_str);
-                }
-            }
-        }
-
-        results
-    }
-
-    /// Parse a [SignedPacket] into a [ResolvedPeer] by reading the first valid
-    /// `_rdmap2p` TXT record.
-    fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
-        for rr in sp.resource_records("_rdmap2p") {
-            if let pkarr::dns::rdata::RData::TXT(txt) = &rr.rdata {
-                let raw: Result<String, _> = txt.clone().try_into();
-                if let Ok(json) = raw {
-                    if let Ok(payload) = serde_json::from_str::<TxtPayload>(&json) {
-                        return Some(ResolvedPeer {
-                            multiaddr: payload.a,
-                            inference_port: payload.i,
-                            model: payload.m,
-                            start_layer: payload.s,
-                            end_layer: payload.e,
-                            total_layers: payload.t,
-                        });
-                    }
-                }
-            }
-        }
-        None
+        let futs: Vec<_> = pubkeys
+            .iter()
+            .map(|k| resolve_one(&self.client, k))
+            .collect();
+        futures::future::join_all(futs)
+            .await
+            .into_iter()
+            .flatten()
+            .collect()
     }
 }
 
 // ── Free functions ────────────────────────────────────────────────────────────
+
+/// Parse a [SignedPacket] into a [ResolvedPeer] by reading the first valid
+/// `_rdmap2p` TXT record.
+fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
+    for rr in sp.resource_records("_rdmap2p") {
+        if let pkarr::dns::rdata::RData::TXT(txt) = &rr.rdata {
+            let raw: Result<String, _> = txt.clone().try_into();
+            if let Ok(json) = raw {
+                if let Ok(payload) = serde_json::from_str::<TxtPayload>(&json) {
+                    return Some(ResolvedPeer {
+                        multiaddr: payload.a,
+                        inference_port: payload.i,
+                        model: payload.m,
+                        start_layer: payload.s,
+                        end_layer: payload.e,
+                        total_layers: payload.t,
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Resolve a single pkarr public key to a [ResolvedPeer], returning `None` on
+/// any failure (parse error, DHT miss, missing record).
+async fn resolve_one(client: &pkarr::Client, key_str: &str) -> Option<ResolvedPeer> {
+    let pk: pkarr::PublicKey = match key_str.try_into() {
+        Ok(pk) => pk,
+        Err(e) => {
+            warn!("Invalid pkarr key '{}': {}", key_str, e);
+            return None;
+        }
+    };
+    match client.resolve(&pk).await {
+        Some(sp) => {
+            if let Some(peer) = parse_signed_packet(&sp) {
+                info!("Resolved pkarr peer {}: {}", key_str, peer.multiaddr);
+                Some(peer)
+            } else {
+                warn!("No _rdmap2p TXT record for {}", key_str);
+                None
+            }
+        }
+        None => {
+            warn!("Could not resolve pkarr key {}", key_str);
+            None
+        }
+    }
+}
 
 /// Detect the local machine's outbound IP address by connecting a UDP socket
 /// to a public address (no data is sent).
@@ -195,7 +200,7 @@ mod tests {
     #[test]
     fn roundtrip_txt_payload() {
         let payload = TxtPayload {
-            a: "192.168.1.5:42777".to_string(),
+            a: "/ip4/1.2.3.4/tcp/52777".to_string(),
             i: Some(8181),
             m: "llama3:8b".to_string(),
             s: 0,
@@ -206,7 +211,7 @@ mod tests {
         let json = serde_json::to_string(&payload).expect("serialize");
         let decoded: TxtPayload = serde_json::from_str(&json).expect("deserialize");
 
-        assert_eq!(decoded.a, "192.168.1.5:42777");
+        assert_eq!(decoded.a, "/ip4/1.2.3.4/tcp/52777");
         assert_eq!(decoded.i, Some(8181));
         assert_eq!(decoded.m, "llama3:8b");
         assert_eq!(decoded.s, 0);
@@ -243,6 +248,8 @@ mod tests {
     fn detect_local_ip_returns_something() {
         let ip = detect_local_ip();
         assert!(ip.is_some(), "should detect local IP");
-        assert!(!ip.unwrap().is_empty());
+        let ip = ip.unwrap();
+        assert!(!ip.is_empty());
+        assert!(ip.contains('.'), "IP should be IPv4: {}", ip);
     }
 }

@@ -127,6 +127,15 @@ struct Args {
     /// Enable when one node covers all layers.
     #[arg(long)]
     single_peer: bool,
+
+    /// Pkarr public keys of known peers to dial on startup (comma-separated, format: pk:zbase32...).
+    #[arg(long, default_value = "")]
+    pkarr_peers: String,
+
+    /// External address to publish to pkarr DHT (HOST:PORT). Auto-detected if not set.
+    /// PORT here is the UDP port; libp2p TCP port will be UDP+10000.
+    #[arg(long, default_value = "")]
+    public_addr: String,
 }
 
 /// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
@@ -291,6 +300,41 @@ async fn main() -> Result<()> {
     let pubkey = identity.public_key_hex();
 
     display::print_node_info(&node_id, &pubkey, args.port);
+
+    // ── Pkarr identity (stable across restarts) ──────────────────────────────
+    let key_path = std::path::Path::new(".rdma-p2p.key");
+    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(key_path) {
+        Ok(n) => {
+            info!("🔑 Pkarr address: {}", n.public_key_uri());
+            Some(n)
+        }
+        Err(e) => {
+            warn!("pkarr init failed (discovery disabled): {}", e);
+            None
+        }
+    };
+
+    // ── Compute pkarr multiaddr to publish ───────────────────────────────────
+    let pkarr_multiaddr = {
+        let tcp_port = args.port.saturating_add(10000);
+        if !args.public_addr.is_empty() {
+            if let Some((host, _)) = args.public_addr.split_once(':') {
+                format!("/ip4/{}/tcp/{}", host, tcp_port)
+            } else {
+                format!("/ip4/{}/tcp/{}", args.public_addr, tcp_port)
+            }
+        } else {
+            let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
+            format!("/ip4/{}/tcp/{}", ip, tcp_port)
+        }
+    };
+
+    let pkarr_peer_keys: Vec<String> = args
+        .pkarr_peers
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
 
     // ── Bootstrap nodes ──────────────────────────────────────────────────────
     let bootstrap_nodes: Vec<String> = args
@@ -581,15 +625,16 @@ async fn main() -> Result<()> {
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777).
     // Announce messages are published to gossipsub every 5 s so internet peers
     // learn our layer assignment without needing a shared signalling server.
-    let disc_announce_tx = match Discovery::new(args.port, &bootstrap_nodes, net.clone()) {
+    let (disc_announce_tx, disc_dial_tx) = match Discovery::new(args.port, &bootstrap_nodes, net.clone()) {
         Ok(disc) => {
-            let tx = disc.announce_tx.clone();
+            let ann_tx = disc.announce_tx.clone();
+            let dial_tx = disc.dial_tx.clone();
             tokio::spawn(async move { disc.run().await });
-            Some(tx)
+            (Some(ann_tx), Some(dial_tx))
         }
         Err(e) => {
             warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
-            None
+            (None, None)
         }
     };
 
@@ -620,6 +665,66 @@ async fn main() -> Result<()> {
                     if let Ok(data) = serde_json::to_vec(&msg) {
                         let _ = tx.send(data).await;
                     }
+                }
+            }
+        });
+    }
+
+    // ── Resolve pkarr peers and dial on startup ──────────────────────────────
+    if let (Some(ref pn), Some(ref dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
+        if !pkarr_peer_keys.is_empty() {
+            let peers = pn.resolve_peers(&pkarr_peer_keys).await;
+            for peer in &peers {
+                if let Ok(ma) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
+                    let _ = dtx.send(ma).await;
+                }
+            }
+        }
+    }
+
+    // ── Publish pkarr record and schedule 30-min republish ───────────────────
+    if let Some(pn) = pkarr_node {
+        let pn = std::sync::Arc::new(pn);
+        let addr = pkarr_multiaddr.clone();
+        let inf_port = args.inference_port;
+        let model_name_pk = profile.name.clone();
+        let asgn_pk = assignment_shared.clone();
+
+        // Initial publish (best-effort, does not block startup)
+        {
+            let pn2 = pn.clone();
+            let addr2 = addr.clone();
+            let mn2 = model_name_pk.clone();
+            let asgn2 = asgn_pk.clone();
+            tokio::spawn(async move {
+                let (start_l, end_l, total_l) = {
+                    let a = asgn2.read().await;
+                    match *a {
+                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
+                        None => return,
+                    }
+                }; // guard dropped here
+                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l).await {
+                    warn!("pkarr initial publish failed: {}", e);
+                }
+            });
+        }
+
+        // Republish every 30 minutes to keep record alive
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30 * 60));
+            ticker.tick().await; // skip first immediate tick
+            loop {
+                ticker.tick().await;
+                let (start_l, end_l, total_l) = {
+                    let a = asgn_pk.read().await;
+                    match *a {
+                        Some(ref asgn) => (asgn.start_layer, asgn.end_layer, asgn.total_layers),
+                        None => continue,
+                    }
+                }; // guard dropped here
+                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l).await {
+                    warn!("pkarr republish failed: {}", e);
                 }
             }
         });

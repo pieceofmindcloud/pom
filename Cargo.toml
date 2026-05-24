@@ -29,3 +29,4 @@ libp2p = { version = "0.56", features = [
     "tokio", "tcp", "dns", "noise", "yamux",
     "identify", "kad", "mdns", "gossipsub", "macros",
 ] }
+pkarr = "6"

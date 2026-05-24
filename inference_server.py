@@ -19,6 +19,7 @@ Usage:
 import argparse
 import base64
 import faulthandler
+import struct
 import threading
 import ctypes
 import traceback
@@ -49,6 +50,53 @@ _args = None
 _n_embd: Optional[int] = None
 _n_vocab: Optional[int] = None
 _lock = threading.Lock()   # serializes individual GPU decode steps (one at a time)
+
+# ── Minimal GGUF KV reader (no deps, reads metadata before model load) ────────
+
+def _skip_gguf_value(f, vtype: int) -> None:
+    """Skip one GGUF value in the binary stream."""
+    if vtype in (0, 1, 7):   f.read(1)           # UINT8/INT8/BOOL
+    elif vtype in (2, 3):    f.read(2)            # UINT16/INT16
+    elif vtype in (4, 5, 6): f.read(4)            # UINT32/INT32/FLOAT32
+    elif vtype in (10, 11, 12): f.read(8)         # UINT64/INT64/FLOAT64
+    elif vtype == 8:                               # STRING
+        f.read(struct.unpack("<Q", f.read(8))[0])
+    elif vtype == 9:                               # ARRAY
+        elem_type = struct.unpack("<I", f.read(4))[0]
+        count     = struct.unpack("<Q", f.read(8))[0]
+        for _ in range(count):
+            _skip_gguf_value(f, elem_type)
+    else:
+        raise ValueError(f"Unknown GGUF vtype {vtype}")
+
+
+def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
+    """Parse rdmap2p.* UINT32 KV entries from a GGUF file without loading tensors.
+
+    Returns a dict with keys like 'rdmap2p.original_block_count'. Called before
+    Llama() so the values are available immediately in /health.
+    """
+    result: dict = {}
+    try:
+        with open(model_path, "rb") as f:
+            magic = struct.unpack("<I", f.read(4))[0]
+            if magic != 0x46554747:
+                return result
+            f.read(4)  # version
+            f.read(8)  # n_tensors
+            n_kv = struct.unpack("<Q", f.read(8))[0]
+            for _ in range(n_kv):
+                key_len = struct.unpack("<Q", f.read(8))[0]
+                key = f.read(key_len).decode("utf-8")
+                vtype = struct.unpack("<I", f.read(4))[0]
+                if vtype == 4 and key.startswith("rdmap2p."):  # UINT32
+                    result[key] = struct.unpack("<I", f.read(4))[0]
+                else:
+                    _skip_gguf_value(f, vtype)
+    except Exception as e:
+        print(f"WARNING: _read_gguf_rdmap2p_meta: {e}", flush=True)
+    return result
+
 
 # ── Per-session state ─────────────────────────────────────────────────────────
 # Each gateway request gets a unique session_id. Sessions track their own
@@ -679,13 +727,26 @@ def main():
     args = parser.parse_args()
     if args.no_thinking:
         args.chat_template = True
+
+    # Read rdmap2p.* metadata from the GGUF file BEFORE the heavy Llama() load
+    # so /health returns original_block_count immediately (Rust polls after 5 s).
+    gguf_meta = _read_gguf_rdmap2p_meta(args.model)
+    if args.start_layer is None:
+        v = gguf_meta.get("rdmap2p.original_block_start")
+        args.start_layer = int(v) if v is not None else 0
+    if args.end_layer is None:
+        v = gguf_meta.get("rdmap2p.original_block_end")
+        args.end_layer = int(v) if v is not None else 31
+    args.original_block_count = None
+    v = gguf_meta.get("rdmap2p.original_block_count")
+    if v is not None:
+        args.original_block_count = int(v)
+
     _args = args
 
     print(f"Loading model : {args.model}", flush=True)
-    if args.start_layer is not None and args.end_layer is not None:
-        print(f"Layers        : {args.start_layer}–{args.end_layer}", flush=True)
-    else:
-        print(f"Layers        : auto-detect from GGUF metadata", flush=True)
+    print(f"Layers        : {args.start_layer}–{args.end_layer}"
+          + (f" of {args.original_block_count}" if args.original_block_count else ""), flush=True)
     print(f"Server        : http://{args.host}:{args.port}", flush=True)
     print(f"n_ctx (req)    : {args.n_ctx}", flush=True)
     print(f"n_batch        : {args.n_batch}", flush=True)
@@ -718,23 +779,6 @@ def main():
     _n_embd = int(_llama.n_embd())
     _n_vocab = int(_llama.n_vocab())
     actual_n_ctx = int(lc.llama_n_ctx(_llama.ctx))
-
-    # Auto-detect layer range from GGUF KV metadata embedded by split_model.py.
-    meta = getattr(_llama, "metadata", {}) or {}
-    if args.start_layer is None:
-        v = meta.get("rdmap2p.original_block_start")
-        args.start_layer = int(v) if v is not None else 0
-        if v is not None:
-            print(f"Auto-detected start_layer={args.start_layer} from GGUF metadata", flush=True)
-    if args.end_layer is None:
-        v = meta.get("rdmap2p.original_block_end")
-        args.end_layer = int(v) if v is not None else 31
-        if v is not None:
-            print(f"Auto-detected end_layer={args.end_layer} from GGUF metadata", flush=True)
-    args.original_block_count = None
-    v = meta.get("rdmap2p.original_block_count")
-    if v is not None:
-        args.original_block_count = int(v)
 
     print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'multi-peer (embedding extraction)'}", flush=True)
     print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}", flush=True)

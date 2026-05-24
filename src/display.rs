@@ -29,7 +29,11 @@ pub fn print_node_info(node_id: &str, pubkey: &str, port: u16) {
 }
 
 pub fn print_assignment(a: &LayerAssignment, mem_source: &str) {
-    let used_pct = (a.memory_used_mb / a.memory_allocated_mb * 100.0) as u32;
+    let used_pct = if a.memory_allocated_mb > 0.0 {
+        (a.memory_used_mb / a.memory_allocated_mb * 100.0).min(100.0) as u32
+    } else {
+        0
+    };
     let bar = make_bar(used_pct, 30);
 
     println!();
@@ -41,12 +45,13 @@ pub fn print_assignment(a: &LayerAssignment, mem_source: &str) {
         a.start_layer, a.end_layer, a.layers_count,
         ""
     );
-    println!("│  Memory     : {:.0}MB / {:.0}MB  {}{}% │",
-        a.memory_used_mb,
-        a.memory_allocated_mb,
-        bar,
-        used_pct
-    );
+    if a.memory_allocated_mb > 0.0 {
+        println!("│  Memory     : {:.0}MB / {:.0}MB  {}{}% │",
+            a.memory_used_mb, a.memory_allocated_mb, bar, used_pct);
+    } else {
+        println!("│  Memory     : {:.0}MB (managed by inference server){:<13} │",
+            a.memory_used_mb, "");
+    }
     println!("│  Mem loaded : {:<43} │", mem_source);
     println!("└─────────────────────────────────────────────────────────┘");
 }

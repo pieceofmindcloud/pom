@@ -7,6 +7,7 @@ mod model;
 mod network;
 mod ollama;
 mod pipeline;
+mod pkarr_node;
 
 use anyhow::Result;
 use clap::Parser;

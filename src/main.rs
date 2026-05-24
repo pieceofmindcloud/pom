@@ -316,16 +316,17 @@ async fn main() -> Result<()> {
 
     // ── Compute pkarr multiaddr to publish ───────────────────────────────────
     let pkarr_multiaddr = {
-        let tcp_port = args.port.saturating_add(10000);
+        let default_tcp_port = args.port.saturating_add(10000);
         if !args.public_addr.is_empty() {
-            if let Some((host, _)) = args.public_addr.split_once(':') {
-                format!("/ip4/{}/tcp/{}", host, tcp_port)
+            if let Some((host, port_str)) = args.public_addr.split_once(':') {
+                let udp_port = port_str.parse::<u16>().unwrap_or(args.port);
+                format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
             } else {
-                format!("/ip4/{}/tcp/{}", args.public_addr, tcp_port)
+                format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
             }
         } else {
             let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
-            format!("/ip4/{}/tcp/{}", ip, tcp_port)
+            format!("/ip4/{}/tcp/{}", ip, default_tcp_port)
         }
     };
 
@@ -673,7 +674,10 @@ async fn main() -> Result<()> {
     // ── Resolve pkarr peers and dial on startup ──────────────────────────────
     if let (Some(ref pn), Some(ref dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
         if !pkarr_peer_keys.is_empty() {
-            let peers = pn.resolve_peers(&pkarr_peer_keys).await;
+            let peers = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                pn.resolve_peers(&pkarr_peer_keys),
+            ).await.unwrap_or_default();
             for peer in &peers {
                 if let Ok(ma) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
                     let _ = dtx.send(ma).await;

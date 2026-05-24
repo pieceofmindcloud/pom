@@ -33,10 +33,13 @@ struct DiscBehaviour {
 pub struct Discovery {
     /// Send serialised `P2PMessage::Announce` bytes here to publish them via gossipsub.
     pub announce_tx: mpsc::Sender<Vec<u8>>,
+    /// Send a `Multiaddr` here to have the swarm dial it (used by pkarr resolver).
+    pub dial_tx: mpsc::Sender<libp2p::Multiaddr>,
     swarm: Swarm<DiscBehaviour>,
     topic: gossipsub::IdentTopic,
     network: Arc<Network>,
     announce_rx: mpsc::Receiver<Vec<u8>>,
+    dial_rx: mpsc::Receiver<libp2p::Multiaddr>,
 }
 
 impl Discovery {
@@ -104,11 +107,12 @@ impl Discovery {
         }
 
         let (announce_tx, announce_rx) = mpsc::channel(64);
-        Ok(Discovery { announce_tx, swarm, topic, network, announce_rx })
+        let (dial_tx, dial_rx) = mpsc::channel(64);
+        Ok(Discovery { announce_tx, dial_tx, swarm, topic, network, announce_rx, dial_rx })
     }
 
     pub async fn run(self) {
-        let Discovery { announce_tx: _, mut swarm, topic, network, mut announce_rx } = self;
+        let Discovery { announce_tx: _, dial_tx: _, mut swarm, topic, network, mut announce_rx, mut dial_rx } = self;
         loop {
             tokio::select! {
                 event = swarm.next() => {
@@ -119,6 +123,13 @@ impl Discovery {
                     let Some(data) = msg else { break };
                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), data) {
                         debug!("gossipsub publish: {:?}", e);
+                    }
+                }
+                ma = dial_rx.recv() => {
+                    let Some(addr) = ma else { break };
+                    info!("pkarr: dialling {}", addr);
+                    if let Err(e) = swarm.dial(addr) {
+                        warn!("pkarr dial: {}", e);
                     }
                 }
             }

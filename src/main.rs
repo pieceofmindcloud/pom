@@ -136,6 +136,18 @@ struct Args {
     /// PORT here is the UDP port; libp2p TCP port will be UDP+10000.
     #[arg(long, default_value = "")]
     public_addr: String,
+
+    /// Pkarr keys of relay nodes to use for NAT traversal (comma-separated, format: pk:zbase32...).
+    #[arg(long, default_value = "")]
+    relay_peers: String,
+
+    /// Run a relay server that accepts circuit connections from other peers (requires public IP).
+    #[arg(long)]
+    serve_relay: bool,
+
+    /// Disable the built-in public IPFS relay nodes.
+    #[arg(long)]
+    no_default_relays: bool,
 }
 
 /// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
@@ -337,6 +349,13 @@ async fn main() -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
+    let relay_peer_keys: Vec<String> = args
+        .relay_peers
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+
     // ── Bootstrap nodes ──────────────────────────────────────────────────────
     let bootstrap_nodes: Vec<String> = args
         .bootstrap
@@ -351,6 +370,27 @@ async fn main() -> Result<()> {
     } else {
         info!("Bootstrap nodes: {:?}", bootstrap_nodes);
     }
+
+    // ── Resolve relay peers via pkarr ────────────────────────────────────────
+    let resolved_relay_addrs: Vec<String> = if let Some(ref pn) = pkarr_node {
+        if !relay_peer_keys.is_empty() {
+            let peers = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                pn.resolve_peers(&relay_peer_keys),
+            )
+            .await
+            .unwrap_or_default();
+            peers
+                .into_iter()
+                .filter(|p| p.is_relay)
+                .map(|p| p.multiaddr)
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
 
     // ── Determine Ollama port to advertise ───────────────────────────────────
     // Only advertise when --gateway is set so other nodes can route requests here.
@@ -626,7 +666,14 @@ async fn main() -> Result<()> {
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777).
     // Announce messages are published to gossipsub every 5 s so internet peers
     // learn our layer assignment without needing a shared signalling server.
-    let (disc_announce_tx, disc_dial_tx) = match Discovery::new(args.port, &bootstrap_nodes, net.clone()) {
+    let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
+        args.port,
+        &bootstrap_nodes,
+        &resolved_relay_addrs,
+        args.serve_relay,
+        !args.no_default_relays,
+        net.clone(),
+    ) {
         Ok(disc) => {
             let ann_tx = disc.announce_tx.clone();
             let dial_tx = disc.dial_tx.clone();
@@ -687,6 +734,7 @@ async fn main() -> Result<()> {
     }
 
     // ── Publish pkarr record and schedule 30-min republish ───────────────────
+    let serve_relay = args.serve_relay;
     if let Some(pn) = pkarr_node {
         let pn = std::sync::Arc::new(pn);
         let addr = pkarr_multiaddr.clone();
@@ -708,7 +756,7 @@ async fn main() -> Result<()> {
                         None => return,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, false).await {
+                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, serve_relay).await {
                     warn!("pkarr initial publish failed: {}", e);
                 }
             });
@@ -727,7 +775,7 @@ async fn main() -> Result<()> {
                         None => continue,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l, false).await {
+                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l, serve_relay).await {
                     warn!("pkarr republish failed: {}", e);
                 }
             }

@@ -708,7 +708,7 @@ async fn main() -> Result<()> {
                         None => return,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l).await {
+                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, false).await {
                     warn!("pkarr initial publish failed: {}", e);
                 }
             });
@@ -727,7 +727,7 @@ async fn main() -> Result<()> {
                         None => continue,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l).await {
+                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l, false).await {
                     warn!("pkarr republish failed: {}", e);
                 }
             }

@@ -28,6 +28,7 @@ pub struct ResolvedPeer {
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
+    pub is_relay: bool,
 }
 
 // ── Private helper ────────────────────────────────────────────────────────────
@@ -49,6 +50,9 @@ struct TxtPayload {
     e: u32,
     /// Total layers in the full model
     t: u32,
+    /// Relay capability (true if this node accepts relay connections)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    r: Option<bool>,
 }
 
 // ── PkarrNode impl ────────────────────────────────────────────────────────────
@@ -90,6 +94,7 @@ impl PkarrNode {
         start_layer: u32,
         end_layer: u32,
         total_layers: u32,
+        is_relay: bool,
     ) -> Result<()> {
         let payload = TxtPayload {
             a: addr.to_string(),
@@ -98,6 +103,7 @@ impl PkarrNode {
             s: start_layer,
             e: end_layer,
             t: total_layers,
+            r: if is_relay { Some(true) } else { None },
         };
 
         let json = serde_json::to_string(&payload)?;
@@ -148,6 +154,7 @@ fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
                         start_layer: payload.s,
                         end_layer: payload.e,
                         total_layers: payload.t,
+                        is_relay: payload.r.unwrap_or(false),
                     });
                 }
             }
@@ -206,6 +213,7 @@ mod tests {
             s: 0,
             e: 15,
             t: 32,
+            r: None,
         };
 
         let json = serde_json::to_string(&payload).expect("serialize");
@@ -228,6 +236,7 @@ mod tests {
             s: 16,
             e: 31,
             t: 32,
+            r: None,
         };
 
         let json = serde_json::to_string(&payload).expect("serialize");
@@ -251,5 +260,34 @@ mod tests {
         let ip = ip.unwrap();
         assert!(!ip.is_empty());
         assert!(ip.contains('.'), "IP should be IPv4: {}", ip);
+    }
+
+    #[test]
+    fn roundtrip_relay_field() {
+        let with_relay = TxtPayload {
+            a: "1.2.3.4:42777".to_string(),
+            i: None,
+            m: "llama3:8b".to_string(),
+            s: 0,
+            e: 15,
+            t: 32,
+            r: Some(true),
+        };
+        let json = serde_json::to_string(&with_relay).expect("serialize");
+        assert!(json.contains("\"r\":true"), "relay flag should be in JSON: {}", json);
+        let decoded: TxtPayload = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.r, Some(true));
+
+        let no_relay = TxtPayload {
+            a: "1.2.3.4:42777".to_string(),
+            i: None,
+            m: "llama3:8b".to_string(),
+            s: 0,
+            e: 15,
+            t: 32,
+            r: None,
+        };
+        let json2 = serde_json::to_string(&no_relay).expect("serialize");
+        assert!(!json2.contains("\"r\""), "relay flag should be absent: {}", json2);
     }
 }

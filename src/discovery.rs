@@ -289,9 +289,12 @@ async fn handle_event(
                 swarm.behaviour_mut().kademlia.add_address(&peer_id, addr);
             }
             if connected_relays.contains(&peer_id) {
-                let relay_circuit: Multiaddr =
-                    format!("/p2p/{}/p2p-circuit", peer_id).parse().unwrap();
-                swarm.listen_on(relay_circuit).ok();
+                if let Some(relay_addr) = relay_peer_addrs.iter().find(|ma| {
+                    ma.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(pid) if pid == peer_id))
+                }) {
+                    let relay_circuit = relay_addr.clone().with(libp2p::multiaddr::Protocol::P2pCircuit);
+                    swarm.listen_on(relay_circuit).ok();
+                }
             }
         }
 

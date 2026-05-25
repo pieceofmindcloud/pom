@@ -3,7 +3,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -122,11 +122,25 @@ impl Network {
         ollama_port: Option<u16>,
         inference_port: Option<u16>,
     ) -> Result<Self> {
-        let bind_addr: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
-        let socket = UdpSocket::bind(bind_addr).await?;
-        socket.set_broadcast(true)?;
-
-        info!("UDP socket bound to {}", bind_addr);
+        // Bind dual-stack IPv6 so peers on IPv6 (including link-local fe80::) can be reached.
+        // Falls back to IPv4-only if the OS has IPv6 disabled.
+        let (socket, bind_addr) = {
+            let v6: SocketAddr = format!("[::]:{}",  port).parse()?;
+            match UdpSocket::bind(v6).await {
+                Ok(s) => {
+                    let _ = s.set_broadcast(true); // no-op on pure IPv6, ignored
+                    info!("UDP socket bound to [::]:{} (dual-stack)", port);
+                    (s, v6)
+                }
+                Err(_) => {
+                    let v4: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
+                    let s = UdpSocket::bind(v4).await?;
+                    s.set_broadcast(true)?;
+                    info!("UDP socket bound to 0.0.0.0:{} (IPv4)", port);
+                    (s, v4)
+                }
+            }
+        };
 
         Ok(Network {
             node_id,
@@ -293,7 +307,11 @@ impl Network {
                 }
 
                 let peer_addr = if addr.starts_with("0.0.0.0") {
-                    format!("{}:{}", src.ip(), src.port())
+                    // to_canonical() converts IPv4-mapped IPv6 (::ffff:x.x.x.x) back to IPv4
+                    match src.ip().to_canonical() {
+                        IpAddr::V4(v4) => format!("{}:{}", v4, src.port()),
+                        IpAddr::V6(v6) => format!("[{}]:{}", v6, src.port()),
+                    }
                 } else {
                     addr.clone()
                 };

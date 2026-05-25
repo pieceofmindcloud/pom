@@ -47,6 +47,7 @@ pub struct Discovery {
     announce_rx:      mpsc::Receiver<Vec<u8>>,
     dial_rx:          mpsc::Receiver<Multiaddr>,
     relay_peer_addrs: HashSet<Multiaddr>,
+    relay_peer_ids:   HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
 }
 
@@ -161,6 +162,19 @@ impl Discovery {
             }
         }
 
+        let relay_peer_ids: HashSet<PeerId> = relay_peer_addrs
+            .iter()
+            .filter_map(|ma| {
+                ma.iter().find_map(|p| {
+                    if let libp2p::multiaddr::Protocol::P2p(pid) = p {
+                        Some(pid)
+                    } else {
+                        None
+                    }
+                })
+            })
+            .collect();
+
         for ma in &relay_peer_addrs {
             info!("libp2p: dialling relay {}", ma);
             swarm.dial(ma.clone()).ok();
@@ -177,6 +191,7 @@ impl Discovery {
             announce_rx,
             dial_rx,
             relay_peer_addrs,
+            relay_peer_ids,
             connected_relays: HashSet::new(),
         })
     }
@@ -191,13 +206,14 @@ impl Discovery {
             mut announce_rx,
             mut dial_rx,
             relay_peer_addrs,
+            relay_peer_ids,
             mut connected_relays,
         } = self;
         loop {
             tokio::select! {
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &mut connected_relays).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
@@ -222,6 +238,7 @@ async fn handle_event(
     network: &Network,
     event: SwarmEvent<DiscBehaviourEvent>,
     relay_peer_addrs: &HashSet<Multiaddr>,
+    relay_peer_ids: &HashSet<PeerId>,
     connected_relays: &mut HashSet<PeerId>,
 ) {
     match event {
@@ -302,8 +319,8 @@ async fn handle_event(
             info!("libp2p listening on {}", address);
         }
 
-        SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
-            if relay_peer_addrs.contains(endpoint.get_remote_address()) {
+        SwarmEvent::ConnectionEstablished { peer_id, .. } => {
+            if relay_peer_ids.contains(&peer_id) {
                 connected_relays.insert(peer_id);
             }
             debug!("libp2p: connected to {}", peer_id);

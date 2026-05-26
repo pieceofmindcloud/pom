@@ -150,6 +150,9 @@ impl Discovery {
 
         let listen_addr: Multiaddr = format!("/ip4/0.0.0.0/tcp/{}", libp2p_port).parse()?;
         swarm.listen_on(listen_addr)?;
+        if let Ok(v6_addr) = format!("/ip6/::/tcp/{}", libp2p_port).parse::<Multiaddr>() {
+            swarm.listen_on(v6_addr).ok();
+        }
 
         swarm.behaviour_mut().gossipsub.subscribe(&topic).ok();
 

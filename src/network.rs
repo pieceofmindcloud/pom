@@ -68,6 +68,20 @@ pub struct PeerInfo {
     pub inference_port: Option<u16>,
 }
 
+/// Extract the host part of an addr string for use in HTTP URLs.
+/// IPv4 `"1.2.3.4:port"` → `"1.2.3.4"`, IPv6 `"[::1]:port"` → `"[::1]"`.
+fn ip_host(addr: &str) -> &str {
+    if addr.starts_with('[') {
+        // "[::1]:port" — keep the brackets so the URL is valid
+        match addr.find(']') {
+            Some(i) => &addr[..=i],
+            None => "127.0.0.1",
+        }
+    } else {
+        addr.split(':').next().unwrap_or("127.0.0.1")
+    }
+}
+
 impl PeerInfo {
     pub fn layer_range(&self) -> String {
         format!("{}-{}", self.start_layer, self.end_layer)
@@ -86,16 +100,14 @@ impl PeerInfo {
     /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
     pub fn ollama_url(&self) -> Option<String> {
         self.ollama_port.map(|port| {
-            let ip = self.addr.split(':').next().unwrap_or("127.0.0.1");
-            format!("http://{}:{}", ip, port)
+            format!("http://{}:{}", ip_host(&self.addr), port)
         })
     }
 
     /// Full inference server URL for pipeline calls (None if not running).
     pub fn inference_url(&self) -> Option<String> {
         self.inference_port.map(|port| {
-            let ip = self.addr.split(':').next().unwrap_or("127.0.0.1");
-            format!("http://{}:{}", ip, port)
+            format!("http://{}:{}", ip_host(&self.addr), port)
         })
     }
 }
@@ -132,7 +144,8 @@ impl Network {
                     info!("UDP socket bound to [::]:{} (dual-stack)", port);
                     (s, v6)
                 }
-                Err(_) => {
+                Err(e) => {
+                    info!("{}",e);
                     let v4: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
                     let s = UdpSocket::bind(v4).await?;
                     s.set_broadcast(true)?;
@@ -416,7 +429,10 @@ impl Network {
 
             P2PMessage::LocalDiscover { from, port } => {
                 if from != self.node_id {
-                    let reply_addr = format!("{}:{}", src.ip(), port);
+                    let reply_addr = match src.ip() {
+                        IpAddr::V4(v4) => format!("{}:{}", v4, port),
+                        IpAddr::V6(v6) => format!("[{}]:{}", v6, port),
+                    };
                     info!("📡 Local discovery from {} — responding", src.ip());
                     let req = P2PMessage::PeerRequest {
                         from: self.node_id.clone(),

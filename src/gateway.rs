@@ -128,7 +128,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/health", get(handle_health))
         .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", port)).await?;
+    let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
     info!(
         "🌐 Gateway HTTP on http://localhost:{port}\
          — POST /api/generate  GET /peers  GET /health"

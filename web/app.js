@@ -110,7 +110,8 @@ function setConn(live, text) {
 
 function renderTop(cluster) {
   const me = cluster.peers.find((p) => p.is_self);
-  $("#stat-node").textContent = me?.node?.hostname || me?.short_id || "—";
+  $("#stat-node").textContent =
+    me?.node?.hostname ? shortHost(me.node.hostname) : me?.short_id || "—";
   $("#stat-peers").textContent = String(cluster.peers.length);
   $("#stat-model").textContent = cluster.active_model || "—";
 }

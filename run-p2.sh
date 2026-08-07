@@ -23,9 +23,9 @@ exec ./target/release/rdma-p2p \
     --gateway-port "$GATEWAY_PORT" \
     --inference-port 8181 \
     --n-gpu-layers 99 \
-    --n-ctx 8192 \
-    --n-batch 512 \
-    --max-new-tokens 256 \
+    --n-ctx "${N_CTX:-8192}" \
+    --n-batch "${N_BATCH:-512}" \
+    --max-new-tokens "${MAX_NEW_TOKENS:-256}" \
     --temperature 0.7 \
     --top-p 0.9 \
     --top-k 40 \

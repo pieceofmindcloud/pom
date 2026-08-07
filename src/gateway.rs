@@ -22,6 +22,16 @@ use tracing::{info, warn};
 /// Tokens `/api/generate` will produce before stopping on its own.
 const DEFAULT_MAX_TOKENS: u32 = 512;
 
+/// `_MAX_SESSIONS` in `inference_server.py`: the context is divided into this
+/// many concurrent session slots, so one request only gets `n_ctx / 8` tokens.
+const INFERENCE_SESSION_SLOTS: u32 = 8;
+
+/// Characters per token, used only to size up a prompt before sending it.
+/// Deliberately pessimistic — the real tokenizer lives in the first peer's
+/// llama.cpp context, and under-estimating here would let through the very
+/// request this guard exists to stop.
+const CHARS_PER_TOKEN: usize = 3;
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -45,6 +55,22 @@ impl GatewayState {
     /// Model label the pipeline planner matches on right now.
     pub async fn active_model(&self) -> String {
         self.runtime.model_label(&self.default_model).await
+    }
+
+    /// Largest prompt this node's inference server can take, in tokens.
+    ///
+    /// llama.cpp aborts the *whole process* on
+    /// `GGML_ASSERT(n_tokens_all <= cparams.n_batch)`, so an oversized prompt
+    /// does not fail one request — it kills the peer and every request in
+    /// flight on it. Coding harnesses send multi-thousand-token system prompts,
+    /// which makes that trivially reachable from the public API. Refusing early
+    /// keeps the node up; the caller gets a message naming the flags to raise.
+    pub async fn prompt_token_budget(&self) -> Option<u32> {
+        let cfg = self.runtime.config().await?;
+        let per_session_ctx = cfg.n_ctx / INFERENCE_SESSION_SLOTS.max(1);
+        // Room has to be left for the tokens we are about to generate.
+        let usable_ctx = per_session_ctx.saturating_sub(cfg.max_new_tokens);
+        Some(cfg.n_batch.min(usable_ctx))
     }
 
     /// Alive peers plus this node, so the local assignment participates in
@@ -271,6 +297,22 @@ pub async fn generate_stream(
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
+    // Size the prompt up before any peer sees it — see `prompt_token_budget`.
+    if let Some(budget) = state.prompt_token_budget().await {
+        let estimated = estimate_tokens(&prompt);
+        if estimated > budget {
+            let _ = tx
+                .send(GenEvent::Failed(format!(
+                    "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
+                     {budget}. O limite é o menor entre --n-batch e (--n-ctx / {INFERENCE_SESSION_SLOTS} \
+                     sessões) menos --max-new-tokens. Suba --n-ctx e --n-batch nos peers, ou \
+                     encurte o prompt."
+                )))
+                .await;
+            return;
+        }
+    }
+
     let peers = state.all_peers().await;
 
     // Total layers for THIS model, as reported by a peer that serves it.
@@ -379,6 +421,11 @@ pub async fn generate_stream(
             }
         }
     }
+}
+
+/// Pessimistic token count for a prompt, used only by the size guard.
+fn estimate_tokens(prompt: &str) -> u32 {
+    prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
 }
 
 fn rate(tokens: u32, secs: f64) -> f64 {
@@ -520,4 +567,30 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
         pipeline_peers,
         default_model: state.active_model().await,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_estimate_is_pessimistic() {
+        // 3 chars per token errs high, which is what a crash guard needs.
+        assert_eq!(estimate_tokens(""), 0);
+        assert_eq!(estimate_tokens("abc"), 1);
+        assert_eq!(estimate_tokens("abcd"), 2);
+        assert_eq!(estimate_tokens(&"a".repeat(3000)), 1000);
+    }
+
+    #[test]
+    fn token_estimate_counts_characters_not_bytes() {
+        // Accented Portuguese must not inflate the count through UTF-8 bytes.
+        assert_eq!(estimate_tokens("ção"), 1);
+    }
+
+    #[test]
+    fn rate_is_zero_for_an_instant_generation() {
+        assert_eq!(rate(10, 0.0), 0.0);
+        assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);
+    }
 }

@@ -14,6 +14,7 @@ const POLL_MS = 2000;
 const SPARK_POINTS = 40;
 
 const state = {
+  role: 'node',
   cluster: null,
   clusterModels: null,
   /** node_id -> [{ram, vram}] */
@@ -94,6 +95,14 @@ async function pollCluster() {
     renderCoverage(cluster);
     renderPeers(cluster);
     renderConnectInfo(cluster);
+    // Update role badge
+    const roleBadge = document.getElementById('role-badge');
+    if (roleBadge && cluster.node) {
+      const role = cluster.node.role || 'node';
+      roleBadge.textContent = role.charAt(0).toUpperCase() + role.slice(1);
+      roleBadge.dataset.role = role.toLowerCase();
+      state.role = role.toLowerCase();
+    }
   } catch (e) {
     setConn(false, "sem resposta");
   } finally {
@@ -963,3 +972,61 @@ $("#chat-form").addEventListener("submit", async (ev) => {
 // ── Início ───────────────────────────────────────────────────────────────────
 
 pollCluster();
+
+// Notification polling
+async function pollNotifications() {
+  try {
+    const r = await fetch('/admin/transfer-offers', { headers: authHeaders() });
+    if (!r.ok) return;
+    const data = await r.json();
+    updateNotificationBell(data.offers || []);
+  } catch(e) {}
+}
+
+function updateNotificationBell(offers) {
+  const count = document.getElementById('notif-count');
+  const dropdown = document.getElementById('notif-dropdown');
+  if (!count || !dropdown) return;
+
+  if (offers.length > 0) {
+    count.textContent = offers.length;
+    count.classList.remove('hidden');
+    dropdown.innerHTML = offers.map(o => `
+      <div class="notif-item">
+        <strong>Transferencia pendente</strong><br>
+        ${o.shard_name} (${o.total_size_mb} MB)<br>
+        Camadas ${o.start_layer}-${o.end_layer}<br>
+        Espaco disponivel: ${o.disk_free_mb} MB
+        <div class="notif-actions">
+          <button onclick="respondTransfer('${o.id}', true)">Aceitar</button>
+          <button onclick="respondTransfer('${o.id}', false)" style="background:#999">Recusar</button>
+        </div>
+      </div>
+    `).join('');
+  } else {
+    count.classList.add('hidden');
+    dropdown.innerHTML = '<div class="notif-item" style="color:var(--muted)">Nenhuma notificacao</div>';
+  }
+}
+
+async function respondTransfer(id, accept) {
+  try {
+    await fetch('/admin/transfer-offer/' + id, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accept })
+    });
+    pollNotifications();
+  } catch(e) {}
+}
+
+function authHeaders() {
+  return { 'Authorization': 'Bearer ' + (state.connectionKey || '') };
+}
+
+document.getElementById('notif-bell')?.addEventListener('click', () => {
+  document.getElementById('notif-dropdown').classList.toggle('hidden');
+});
+
+pollNotifications();
+setInterval(pollNotifications, 5000);

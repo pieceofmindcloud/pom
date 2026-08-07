@@ -8,7 +8,7 @@
 //! works by asking each peer's own `/api/ui/node`, which is why `PeerInfo`
 //! carries `gateway_port`.
 
-use crate::auth::AuthState;
+use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
 use crate::config::Role;
 use crate::gateway::GatewayState;
@@ -351,6 +351,7 @@ pub struct PlanRequest {
 
 /// Work out asymmetric layer ranges from each peer's declared memory budget.
 async fn plan_split_endpoint(
+    _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<PlanRequest>,
 ) -> Response {
@@ -537,7 +538,11 @@ async fn job_status(Path(id): Path<String>) -> Response {
 }
 
 /// Slice locally if needed, then reconfigure this node onto the result.
-async fn apply(State(state): State<GatewayState>, Json(req): Json<ApplyRequest>) -> Response {
+async fn apply(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ApplyRequest>,
+) -> Response {
     if !std::path::Path::new(&req.source_model_path).exists() {
         return bad_request(format!(
             "modelo não encontrado neste peer: {}",
@@ -697,7 +702,11 @@ pub struct LaunchRequest {
 }
 
 /// Dispatch the planned configuration to every peer, including this one.
-async fn launch(State(state): State<GatewayState>, Json(req): Json<LaunchRequest>) -> Response {
+async fn launch(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<LaunchRequest>,
+) -> Response {
     if req.targets.is_empty() {
         return bad_request("nenhum peer selecionado");
     }
@@ -722,7 +731,7 @@ async fn launch(State(state): State<GatewayState>, Json(req): Json<LaunchRequest
         };
 
         if target.node_id == self_id {
-            let resp = apply(State(state.clone()), Json(apply_req)).await;
+            let resp = apply(ConnectionAuth, State(state.clone()), Json(apply_req)).await;
             results.push(json!({
                 "node_id": target.node_id,
                 "dispatched": resp.status().is_success(),

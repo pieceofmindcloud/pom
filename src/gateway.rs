@@ -4,6 +4,7 @@ use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline, LoadTracker};
 use crate::runtime::NodeRuntime;
+use crate::{admin, session};
 use anyhow::Result;
 use std::time::Instant;
 use uuid::Uuid;
@@ -475,13 +476,16 @@ pub async fn generate_blocking(
 // ── Server startup ────────────────────────────────────────────────────────────
 
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
+    let admin = admin::admin_routes().with_state(state.auth.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
+        .route("/handshake", post(session::handle_handshake))
         .merge(crate::openai::routes())
         .merge(crate::webui::routes())
+        .nest("/", admin)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;

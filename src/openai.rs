@@ -11,6 +11,7 @@
 //! Endpoints: `GET /v1/models`, `GET /v1/models/{id}`,
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
+use crate::auth::ApiKeyAuth;
 use crate::gateway::{generate_stream, GatewayState, GenEvent};
 use axum::{
     extract::{Path, State},
@@ -229,7 +230,10 @@ async fn model_ids(state: &GatewayState) -> Vec<String> {
     ids
 }
 
-async fn list_models(State(state): State<GatewayState>) -> impl IntoResponse {
+async fn list_models(
+    _auth: ApiKeyAuth,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
     let created = chrono::Utc::now().timestamp();
     let data: Vec<ModelObject> = model_ids(&state)
         .await
@@ -249,6 +253,7 @@ async fn list_models(State(state): State<GatewayState>) -> impl IntoResponse {
 }
 
 async fn get_model(
+    _auth: ApiKeyAuth,
     State(state): State<GatewayState>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
@@ -271,6 +276,7 @@ async fn get_model(
 // ── Chat completions ─────────────────────────────────────────────────────────
 
 async fn chat_completions(
+    _auth: ApiKeyAuth,
     State(state): State<GatewayState>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
@@ -308,6 +314,7 @@ async fn chat_completions(
 }
 
 async fn completions(
+    _auth: ApiKeyAuth,
     State(state): State<GatewayState>,
     Json(req): Json<CompletionRequest>,
 ) -> Response {

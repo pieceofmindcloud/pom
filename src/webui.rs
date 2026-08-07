@@ -8,7 +8,9 @@
 //! works by asking each peer's own `/api/ui/node`, which is why `PeerInfo`
 //! carries `gateway_port`.
 
+use crate::auth::AuthState;
 use crate::catalog::{self, Catalog};
+use crate::config::Role;
 use crate::gateway::GatewayState;
 use crate::gguf;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
@@ -23,6 +25,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -47,6 +50,8 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/jobs/:id", get(job_status))
+        .route("/api/setup/key", get(get_setup_key))
+        .route("/api/setup/save", post(save_setup))
 }
 
 // ── Static assets ────────────────────────────────────────────────────────────
@@ -767,6 +772,82 @@ async fn launch(State(state): State<GatewayState>, Json(req): Json<LaunchRequest
     }
 
     Json(json!({ "results": results })).into_response()
+}
+
+// ── Setup API ────────────────────────────────────────────────────────────────
+
+#[derive(Serialize)]
+pub struct SetupKeyResponse {
+    pub connection_key: String,
+    pub addresses: Vec<String>,
+}
+
+pub async fn get_setup_key(
+    State(config): State<AuthState>,
+) -> impl IntoResponse {
+    let raw = format!("{}-{}", uuid::Uuid::new_v4(), std::process::id());
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+    let key = hex::encode(hasher.finalize());
+
+    {
+        let mut cfg = config.write().await;
+        cfg.connection_key = key.clone();
+    }
+
+    let mut addresses = Vec::new();
+    if let Ok(socket) = std::net::UdpSocket::bind("0.0.0.0:0") {
+        if let Ok(()) = socket.connect("8.8.8.8:80") {
+            if let Ok(addr) = socket.local_addr() {
+                addresses.push(format!("IPv4: {}:42777", addr.ip()));
+            }
+        }
+    }
+
+    Json(SetupKeyResponse {
+        connection_key: key,
+        addresses,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct SaveSetupRequest {
+    pub role: String,
+    #[serde(default)]
+    pub bootstrap: String,
+    #[serde(default)]
+    pub connection_key: String,
+}
+
+pub async fn save_setup(
+    State(config): State<AuthState>,
+    Json(req): Json<SaveSetupRequest>,
+) -> impl IntoResponse {
+    let role = if req.role == "principal" {
+        Role::Principal
+    } else {
+        Role::Node
+    };
+
+    let mut cfg = config.write().await;
+    cfg.role = role.clone();
+
+    if role == Role::Node {
+        if !req.connection_key.is_empty() {
+            cfg.connection_key = req.connection_key.clone();
+        }
+        if !req.bootstrap.is_empty() {
+            cfg.bootstrap_nodes = req.bootstrap.split(',').map(|s| s.trim().to_string()).collect();
+        }
+    }
+
+    match cfg.save() {
+        Ok(()) => Json(json!({"saved": true, "message": "Configuracao salva. Reiniciando..."})).into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({"error": e.to_string()}))
+        ).into_response(),
+    }
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

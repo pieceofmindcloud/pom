@@ -1,3 +1,4 @@
+use crate::auth::AuthState;
 use crate::model::LayerAssignment;
 use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
@@ -49,6 +50,14 @@ pub struct GatewayState {
     pub runtime: Arc<NodeRuntime>,
     /// HTTP port this node serves the API and UI on.
     pub gateway_port: u16,
+    /// Setup-level configuration (role, connection key, bootstrap nodes).
+    pub auth: AuthState,
+}
+
+impl axum::extract::FromRef<GatewayState> for AuthState {
+    fn from_ref(state: &GatewayState) -> Self {
+        state.auth.clone()
+    }
 }
 
 impl GatewayState {

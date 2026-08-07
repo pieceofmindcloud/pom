@@ -22,6 +22,7 @@ mod webui;
 
 use anyhow::Result;
 use clap::Parser;
+use config::Config;
 use discovery::Discovery;
 use gateway::{GatewayState, start_gateway};
 use memory::load_layer_memory;
@@ -546,6 +547,17 @@ async fn main() -> Result<()> {
 
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
+        let auth_config = Arc::new(RwLock::new(Config {
+            role: config::Role::Node,
+            connection_key: String::new(),
+            gateway_port: args.gateway_port,
+            p2p_port: args.port,
+            inference_port: args.inference_port,
+            bootstrap_nodes: vec![],
+            api_keys: vec![],
+            blocked_nodes: vec![],
+        }));
+
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()?;
@@ -558,6 +570,7 @@ async fn main() -> Result<()> {
             http: Arc::new(http_client),
             runtime: node_runtime.clone(),
             gateway_port: args.gateway_port,
+            auth: auth_config,
         };
         let gw_port = args.gateway_port;
         tokio::spawn(async move {

@@ -257,14 +257,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ── When config exists, --model is optional: start headless (UI only) ────
-    let model_name = match args.model {
-        Some(ref m) => m.clone(),
-        None => {
-            info!("No --model provided — starting in headless mode (UI + admin only)");
-            return start_headless_mode(gateway_port, app_config.clone()).await;
-        }
-    };
+    // ── Branch: with model = full stack; without = gateway only (UI + admin) ──
+    let model_name = args.model.as_ref().map(|m| m.clone());
+
+    if model_name.is_none() {
+        info!("No --model provided — starting gateway without model binding");
+        return start_gateway_only(gateway_port, app_config.clone(), args.ollama_url).await;
+    }
+
+    let model_name = model_name.unwrap();
 
     // ── require --memory unless inference_port handles model loading ─────────
     if args.memory.is_empty() && inference_port.is_none() {
@@ -805,70 +806,62 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     Ok(())
 }
 
-/// Start the HTTP gateway without model/network — serves only the web UI and
-/// admin routes so the user can configure the model through the dashboard.
-async fn start_headless_mode(gateway_port: u16, app_config: config::Config) -> Result<()> {
-    use crate::admin;
-    use crate::session;
-    use axum::{routing::get, Router};
-    use axum::http::header;
-    use axum::response::{Html, IntoResponse};
-    use std::net::SocketAddr;
+/// Start the gateway with real routes but without model/network binding.
+/// The dashboard, admin, and handshake routes all work so the user can
+/// configure the model through the web UI.
+async fn start_gateway_only(
+    gateway_port: u16,
+    app_config: config::Config,
+    ollama_url: String,
+) -> Result<()> {
+    use crate::gateway::{GatewayState, start_gateway};
+    use crate::pipeline::LoadTracker;
+
+    let identity = identity::Identity::generate();
+    let node_id = identity.node_id.0.clone();
+    let pubkey = identity.public_key_hex();
+
+    let net = Arc::new(
+        Network::new(
+            node_id.clone(),
+            pubkey.clone(),
+            app_config.p2p_port,
+            app_config.bootstrap_nodes.clone(),
+            None,
+            app_config.inference_port,
+            Some(gateway_port),
+        )
+        .await?,
+    );
+
+    let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
+        Arc::new(RwLock::new(None));
+
+    net.clone().start(assignment_shared.clone()).await?;
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
+
+    let http_client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(600))
+        .build()?;
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
 
-    let app = Router::new()
-        .route("/", get(|| async { Html(include_str!("../web/index.html")) }))
-        .route("/ui/app.css", get(|| async {
-            ([(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-             include_str!("../web/app.css")).into_response()
-        }))
-        .route("/ui/app.js", get(|| async {
-            ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-             include_str!("../web/app.js")).into_response()
-        }))
-        .route("/health", get(|| async {
-            axum::Json(serde_json::json!({
-                "status": "ok",
-                "configured": false,
-                "message": "Modelo nao configurado — use a aba Configurar"
-            }))
-        }))
-        .route("/api/ui/node", get(|| async {
-            axum::Json(serde_json::json!({
-                "hostname": gethostname(),
-                "configured": false
-            }))
-        }))
-        .route("/api/ui/cluster", get(|| async {
-            axum::Json(serde_json::json!({
-                "peers": [],
-                "coverage": [],
-                "total_layers": 0,
-                "complete": false,
-                "configured": false
-            }))
-        }))
-        .route("/api/ui/cluster/models", get(|| async {
-            axum::Json(serde_json::json!({ "peers": [] }))
-        }))
-        .route("/api/ui/models", get(|| async {
-            axum::Json(serde_json::json!([]))
-        }))
-        .route("/admin/transfer-offers", get(|| async {
-            axum::Json(serde_json::json!({ "offers": [] }))
-        }))
-        .route("/handshake", axum::routing::post(session::handle_handshake))
-        .route("/api/setup/key", get(webui::get_setup_key))
-        .route("/api/setup/save", axum::routing::post(webui::save_setup))
-        .merge(admin::admin_routes())
-        .with_state(auth_state);
+    let gw_state = GatewayState {
+        network: net.clone(),
+        ollama: Arc::new(OllamaClient::new(&ollama_url)),
+        default_model: String::new(),
+        local_assignment: assignment_shared.clone(),
+        loads: Arc::new(LoadTracker::new()),
+        http: Arc::new(http_client),
+        runtime: node_runtime.clone(),
+        gateway_port,
+        auth: auth_state,
+    };
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
-    info!("Headless mode — dashboard at http://localhost:{}", gateway_port);
-
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    axum::serve(listener, app).await?;
+    info!("Gateway running at http://localhost:{} (model not yet configured)", gateway_port);
+    start_gateway(gw_state, gateway_port).await?;
     Ok(())
 }
 

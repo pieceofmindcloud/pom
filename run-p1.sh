@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
-# Node 1: layers 0-15 + gateway HTTP :8080
-# NOTA: sem split_model.py, cada peer carrega o modelo completo mas anuncia
-# apenas suas layers para o P2P. Para inferência distribuída real, use split_model.py.
+# Peer 1 - MacBook (Apple Silicon / Metal): shard camadas 0-15 + gateway HTTP :8080
+#
+# As camadas 0-15 saem do nome do arquivo (`..._0_15.gguf`), e o binario Rust
+# sobe o inference_server.py sozinho usando ./venv/bin/python3 na --inference-port.
+#
+# Pre-requisitos e procedimento completo: ver CLAUDE.md, secao
+# "Subindo o cluster de dois peers".
 
-#MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
-#MODEL="./models/qwen/qwen_0_15.gguf"
-MODEL="/mnt/d/models/qwen3.6/Qwen3.6-35B-A3B-Q4_K_M_0_19.gguf"
+set -euo pipefail
+cd "$(dirname "$0")"
 
-./target/release/rdma-p2p \
+MODEL="${MODEL:-./models/qwen/qwen_0_15.gguf}"
+
+exec ./target/release/rdma-p2p \
     --model "$MODEL" \
-    --memory 1000MB \
     --port 42777 \
     --gateway \
     --gateway-port 8080 \
-    --inference-port 8180 \
+    --inference-port 8181 \
     --n-gpu-layers 99 \
-    --n-ctx 4096 \
-    --max-new-tokens 512 \
+    --n-ctx 8192 \
+    --n-batch 512 \
+    --max-new-tokens 256 \
     --temperature 0.7 \
     --top-p 0.9 \
     --top-k 40 \

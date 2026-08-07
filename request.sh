@@ -1,22 +1,20 @@
 #!/usr/bin/env bash
-# request.sh — Send a /api/generate request to the local dev gateway.
-# Usage: ./request.sh [prompt] [gateway-port]
+# request.sh — Envia uma requisicao POST /api/generate para o gateway do peer 1.
+#
+# Uso:
+#   ./request.sh "seu prompt"                 # usa os defaults abaixo
+#   ./request.sh "seu prompt" 192.168.100.138 # outro host de gateway
+#   ./request.sh "seu prompt" ksia 8080       # host + porta
+#   GATEWAY=127.0.0.1 PORT=8080 ./request.sh "seu prompt"
+#
+# Defaults: o peer 1 (MacBook) e quem roda o gateway HTTP.
+# Qualquer no serve a API, entao GATEWAY pode apontar para o peer 2 tambem.
 
-PROMPT="
-<system-reminder>
-As you answer the user's questions, you can use the following context:
-## important-instruction-reminders
-Do what has been asked; nothing more, nothing less.
-NEVER create files unless they're absolutely necessary for achieving your goal.
-ALWAYS prefer editing an existing file to creating a new one.
-NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+set -uo pipefail
 
-</system-reminder>
-
-$1
-"
-GATEWAY="127.0.0.1"
-PORT="${2:-8080}"
+PROMPT="${1:-Explique em uma frase o que e RDMA.}"
+GATEWAY="${2:-${GATEWAY:-192.168.100.240}}"
+PORT="${3:-${PORT:-8080}}"
 
 curl -s "http://$GATEWAY:$PORT/api/generate" \
   -H "Content-Type: application/json" \

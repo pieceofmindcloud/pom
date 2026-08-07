@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
-# Node 2: layers 16-31, bootstrap para p1 em :42777
-# NOTA: sem split_model.py, cada peer carrega o modelo completo mas anuncia
-# apenas suas layers para o P2P. Para inferência distribuída real, use split_model.py.
+# Peer 2 - ksia (Ubuntu 24.04 + RTX 5060 Ti / CUDA): shard camadas 16-31
+#
+# As camadas 16-31 saem do nome do arquivo (`..._16_31.gguf`).
+# BOOTSTRAP aponta para o peer 1 (MacBook) em <ip>:<porta-udp>.
+#
+# Pre-requisitos e procedimento completo: ver CLAUDE.md, secao
+# "Subindo o cluster de dois peers".
 
-MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
-MODEL="./models/qwen/qwen_16_31.gguf"
+set -euo pipefail
+cd "$(dirname "$0")"
 
-./target/release/rdma-p2p \
+MODEL="${MODEL:-./models/qwen/qwen_16_31.gguf}"
+BOOTSTRAP="${BOOTSTRAP:-192.168.100.240:42777}"
+
+exec ./target/release/rdma-p2p \
     --model "$MODEL" \
-    --port 42778 \
-    --bootstrap 192.168.100.210:42777 \
-    --inference-port 8182 \
+    --port 42777 \
+    --bootstrap "$BOOTSTRAP" \
+    --gateway-port 8080 \
+    --inference-port 8181 \
     --n-gpu-layers 99 \
-    --n-ctx 2048 \
+    --n-ctx 8192 \
     --n-batch 512 \
-    --max-new-tokens 512 \
+    --max-new-tokens 256 \
     --temperature 0.7 \
-    --start-layer 16 \
     --top-p 0.9 \
     --top-k 40 \
     --repeat-penalty 1.15 \

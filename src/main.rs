@@ -1,6 +1,7 @@
 mod catalog;
 mod config;
 mod auth;
+mod session;
 mod discovery;
 mod display;
 mod gateway;

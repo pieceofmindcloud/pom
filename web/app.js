@@ -1099,13 +1099,19 @@ async function loadNodesTab() {
     if (keysR.ok) {
       const keys = await keysR.json();
       document.getElementById('api-keys-list').innerHTML = keys.map(k => `
-        <div style="padding:8px;border-bottom:1px solid var(--border);font-size:.8rem;display:flex;align-items:center;gap:8px">
-          <code style="font-size:.7rem">${(k.key||'').substring(0,24)}...</code>
-          <span>${k.label}</span>
-          ${k.active ? '<span class="tag is-ready">ativa</span>' : '<span class="tag">inativa</span>'}
-          <button onclick="revokeApiKey('${k.key}')" style="margin-left:auto;width:auto;padding:4px 8px;font-size:.7rem">Revogar</button>
+        <div class="node-row">
+          <div class="node-row-main">
+            <strong>${esc(k.label)}</strong>
+            <span class="node-row-sub">${esc((k.key || '').substring(0, 24))}…</span>
+          </div>
+          <div class="tagrow">${k.active
+            ? '<span class="tag is-ready">ativa</span>'
+            : '<span class="tag">inativa</span>'}</div>
+          <div class="node-row-actions">
+            <button class="btn-slim" onclick="revokeApiKey('${esc(k.key)}')">Revogar</button>
+          </div>
         </div>
-      `).join('') || '<p style="color:var(--muted)">Nenhuma chave</p>';
+      `).join('') || '<p class="muted-note">Nenhuma chave</p>';
     }
 
   } catch(e) {

@@ -321,6 +321,13 @@ Ao diagnosticar: `RUST_LOG=info` já mostra `Contacting bootstrap node`,
 `🆕 New peer`, `Failed to send to` e `🧹 Removed N timed-out peers`. A ausência
 de `Contacting bootstrap node` significa que o nó não transmite nada.
 
+### Identidade do nó
+
+`node_id` é como o cluster nomeia uma máquina, e é a chave de `blocked_nodes`.
+Ele vive em `<project_root>/.rdma-p2p-node.key` (`identity::load_or_create`);
+apagar esse arquivo cria uma máquina nova aos olhos dos outros peers. Não
+confunda com `.rdma-p2p.key`, que é a chave do pkarr.
+
 ### Diretório de trabalho: nunca lance o binário por caminho absoluto e pronto
 
 `models/`, `rdma-p2p.json` e `venv/` saem do **project root**

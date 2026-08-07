@@ -12,12 +12,15 @@ cd "$(dirname "$0")"
 
 MODEL="${MODEL:-./models/qwen/qwen_16_31.gguf}"
 BOOTSTRAP="${BOOTSTRAP:-192.168.100.240:42777}"
+# 8080 esta ocupada pelo code-server no ksia; o peer anuncia a porta que usa,
+# entao o painel de qualquer maquina encontra este no sozinho.
+GATEWAY_PORT="${GATEWAY_PORT:-8090}"
 
 exec ./target/release/rdma-p2p \
     --model "$MODEL" \
     --port 42777 \
     --bootstrap "$BOOTSTRAP" \
-    --gateway-port 8080 \
+    --gateway-port "$GATEWAY_PORT" \
     --inference-port 8181 \
     --n-gpu-layers 99 \
     --n-ctx 8192 \

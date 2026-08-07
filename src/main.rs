@@ -118,6 +118,11 @@ struct Args {
     #[arg(long, default_value = "512")]
     max_new_tokens: u32,
 
+    /// Generations allowed in flight at once. The KV cache is split evenly
+    /// between them, so the window one request sees is n_ctx / max_sessions.
+    #[arg(long, default_value = "1")]
+    max_sessions: u32,
+
     /// Sampling temperature for inference (0 = greedy).
     #[arg(long, default_value = "0.7")]
     temperature: f32,
@@ -558,6 +563,7 @@ inference_port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             n_batch: args.n_batch,
+            max_sessions: args.max_sessions,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,
             top_p: args.top_p,

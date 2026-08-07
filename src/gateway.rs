@@ -2,11 +2,11 @@ use crate::auth::AuthState;
 use crate::model::LayerAssignment;
 use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
-use crate::pipeline::{plan_pipeline, LoadTracker};
+use crate::pipeline::{plan_pipeline, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
 use crate::{admin, session};
 use anyhow::Result;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 use axum::{
     body::Bytes,
@@ -24,9 +24,6 @@ use tracing::{info, warn};
 /// Tokens `/api/generate` will produce before stopping on its own.
 const DEFAULT_MAX_TOKENS: u32 = 512;
 
-/// `_MAX_SESSIONS` in `inference_server.py`: the context is divided into this
-/// many concurrent session slots, so one request only gets `n_ctx / 8` tokens.
-const INFERENCE_SESSION_SLOTS: u32 = 8;
 
 /// Characters per token, used only to size up a prompt before sending it.
 /// Deliberately pessimistic — the real tokenizer lives in the first peer's
@@ -76,11 +73,7 @@ impl GatewayState {
     /// which makes that trivially reachable from the public API. Refusing early
     /// keeps the node up; the caller gets a message naming the flags to raise.
     pub async fn prompt_token_budget(&self) -> Option<u32> {
-        let cfg = self.runtime.config().await?;
-        let per_session_ctx = cfg.n_ctx / INFERENCE_SESSION_SLOTS.max(1);
-        // Room has to be left for the tokens we are about to generate.
-        let usable_ctx = per_session_ctx.saturating_sub(cfg.max_new_tokens);
-        Some(cfg.n_batch.min(usable_ctx))
+        Some(prompt_budget(&self.runtime.config().await?))
     }
 
     /// Alive peers plus this node, so the local assignment participates in
@@ -115,6 +108,19 @@ impl GatewayState {
         }
         peers
     }
+}
+
+/// Prompt tokens a peer running `cfg` can accept.
+///
+/// The KV cache is split evenly across `max_sessions` slots, so the window one
+/// request sees is `n_ctx / max_sessions` — this divisor used to be hardcoded
+/// to 8, which silently cut the configured context to an eighth and produced
+/// "contexto insuficiente" no matter how high `--n-ctx` was set.
+pub fn prompt_budget(cfg: &crate::runtime::NodeConfig) -> u32 {
+    let per_session_ctx = cfg.n_ctx / cfg.max_sessions.max(1);
+    // Room has to be left for the tokens we are about to generate.
+    let usable_ctx = per_session_ctx.saturating_sub(cfg.max_new_tokens);
+    cfg.n_batch.min(usable_ctx)
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
@@ -318,15 +324,20 @@ pub async fn generate_stream(
     tx: mpsc::Sender<GenEvent>,
 ) {
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
-    if let Some(budget) = state.prompt_token_budget().await {
+    if let Some(cfg) = state.runtime.config().await {
+        let budget = prompt_budget(&cfg);
         let estimated = estimate_tokens(&prompt);
         if estimated > budget {
             let _ = tx
                 .send(GenEvent::Failed(format!(
                     "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-                     {budget}. O limite é o menor entre --n-batch e (--n-ctx / {INFERENCE_SESSION_SLOTS} \
-                     sessões) menos --max-new-tokens. Suba --n-ctx e --n-batch nos peers, ou \
-                     encurte o prompt."
+                     {budget}. O limite é o menor entre n_batch ({}) e n_ctx/{} ({}) menos \
+                     max_new_tokens ({}). Aumente a janela em Configurar → ajustes avançados, \
+                     ou reduza as requisições simultâneas.",
+                    cfg.n_batch,
+                    cfg.max_sessions.max(1),
+                    cfg.n_ctx / cfg.max_sessions.max(1),
+                    cfg.max_new_tokens,
                 )))
                 .await;
             return;
@@ -370,6 +381,11 @@ pub async fn generate_stream(
     let mut reset = true;
     let max_tokens = max_tokens.max(1);
 
+    // Whatever ends this generation — EOS, the token limit, the client hanging
+    // up, or a peer erroring — every peer has to get its KV slot back. Only the
+    // sampling peer used to free anything, and only on EOS, so the first peer
+    // leaked a slot per request and died after eight of them.
+    async {
     for i in 0..max_tokens {
         let res = execute_pipeline_step(
             &plan,
@@ -439,6 +455,30 @@ pub async fn generate_stream(
                 }
                 return;
             }
+        }
+    }
+    }
+    .await;
+
+    release_sessions(&plan, &session_id, &state.http).await;
+}
+
+/// Hand every peer in the plan its KV slot back. Best effort: a peer that is
+/// already gone has nothing to release, and failing here must not turn a good
+/// answer into an error.
+async fn release_sessions(plan: &PipelinePlan, session_id: &str, http: &reqwest::Client) {
+    for step in &plan.steps {
+        let url = format!("{}/v1/session/release", step.inference_url);
+        match http
+            .post(&url)
+            .json(&serde_json::json!({ "session_id": session_id }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => warn!("release de sessão em {} respondeu {}", step.node_id, r.status()),
+            Err(e) => warn!("release de sessão em {} falhou: {e}", step.node_id),
         }
     }
 }
@@ -615,5 +655,63 @@ mod tests {
     fn rate_is_zero_for_an_instant_generation() {
         assert_eq!(rate(10, 0.0), 0.0);
         assert!((rate(10, 2.0) - 5.0).abs() < 1e-9);
+    }
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use super::*;
+    use crate::runtime::NodeConfig;
+
+    fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
+        NodeConfig {
+            model_path: String::new(),
+            model_label: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            peer_count: 1,
+            peer_index: 0,
+            primary: true,
+            inference_port: 8181,
+            n_gpu_layers: 99,
+            n_ctx,
+            n_batch,
+            max_sessions,
+            max_new_tokens: max_new,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.15,
+            repeat_last_n: 64,
+            no_thinking: true,
+            single_peer: false,
+        }
+    }
+
+    /// The whole point of the fix: one session means the configured context is
+    /// the window, instead of an eighth of it.
+    #[test]
+    fn a_single_session_gets_the_whole_context() {
+        let c = cfg(262_144, 262_144, 1024, 1);
+        assert_eq!(prompt_budget(&c), 262_144 - 1024);
+    }
+
+    #[test]
+    fn concurrency_divides_the_window() {
+        let c = cfg(262_144, 262_144, 1024, 8);
+        assert_eq!(prompt_budget(&c), 262_144 / 8 - 1024);
+    }
+
+    #[test]
+    fn n_batch_still_caps_the_prompt() {
+        let c = cfg(262_144, 4096, 1024, 1);
+        assert_eq!(prompt_budget(&c), 4096);
+    }
+
+    #[test]
+    fn zero_sessions_does_not_divide_by_zero() {
+        let c = cfg(8192, 8192, 256, 0);
+        assert_eq!(prompt_budget(&c), 8192 - 256);
     }
 }

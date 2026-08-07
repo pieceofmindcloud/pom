@@ -21,6 +21,7 @@ import base64
 import faulthandler
 import struct
 import threading
+import time
 import ctypes
 import traceback
 from typing import Optional
@@ -103,19 +104,37 @@ def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
 # seq_id (KV cache slot) and generation position so parallel requests don't
 # corrupt each other's state. The GPU is still time-shared via _lock.
 
-_MAX_SESSIONS = 8   # max concurrent sessions; n_ctx_seq = n_ctx / _MAX_SESSIONS
+# How many generations may be in flight at once. The context is split evenly
+# between the slots, so this is also the divisor of the usable window:
+# n_ctx_seq = n_ctx / _MAX_SESSIONS. Set with --max-sessions.
+_MAX_SESSIONS = 8
+
+# A session whose last use is older than this is reclaimed. Sessions are freed
+# explicitly by the gateway; this only covers a gateway that died mid-request,
+# so that a peer can never be wedged forever by a crash.
+_SESSION_IDLE_TIMEOUT_S = 900.0
 
 class _Session:
-    __slots__ = ("seq_id", "n_past", "recent_tokens")
+    __slots__ = ("seq_id", "n_past", "recent_tokens", "last_used")
     def __init__(self, seq_id: int):
         self.seq_id = seq_id
         self.n_past = 0
         self.recent_tokens: list[int] = []
+        self.last_used = time.time()
+
+# Context actually allocated by llama.cpp, filled in once the context exists.
+_n_ctx_total = 0
 
 _sessions: dict[str, _Session] = {}
 _sessions_lock = threading.Lock()
-_seq_pool: list[int] = list(range(_MAX_SESSIONS))
+_seq_pool: list[int] = []
 _seq_pool_lock = threading.Lock()
+
+
+def _init_seq_pool() -> None:
+    global _seq_pool
+    with _seq_pool_lock:
+        _seq_pool = list(range(_MAX_SESSIONS))
 
 
 def _alloc_seq() -> int:
@@ -123,6 +142,21 @@ def _alloc_seq() -> int:
         if not _seq_pool:
             raise RuntimeError(f"Seq pool exhausted (max {_MAX_SESSIONS} concurrent sessions)")
         return _seq_pool.pop(0)
+
+
+def _reap_idle_sessions_locked() -> int:
+    """Reclaim sessions abandoned by a gateway that never released them.
+
+    Caller must hold _sessions_lock.
+    """
+    cutoff = time.time() - _SESSION_IDLE_TIMEOUT_S
+    stale = [sid for sid, s in _sessions.items() if s.last_used < cutoff]
+    for sid in stale:
+        session = _sessions.pop(sid)
+        print(f"Reclaiming idle session {sid[:8]} (seq={session.seq_id})", flush=True)
+        _clear_seq_kv(session.seq_id)
+        _free_seq(session.seq_id)
+    return len(stale)
 
 
 def _free_seq(seq_id: int) -> None:
@@ -173,7 +207,9 @@ def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
     llama_obj._ctx.ctx = new_ctx
     lc.llama_set_causal_attn(new_ctx, True)
 
+    global _n_ctx_total
     actual_n_ctx = int(lc.llama_n_ctx(new_ctx))
+    _n_ctx_total = actual_n_ctx
     n_ctx_seq = actual_n_ctx // _MAX_SESSIONS
     print(f"Context recreated: n_seq_max={_MAX_SESSIONS} n_ctx={actual_n_ctx} n_ctx_seq={n_ctx_seq}", flush=True)
 
@@ -185,13 +221,20 @@ def _get_or_create_session(session_id: str, reset: bool) -> "_Session":
                 old = _sessions.pop(session_id)
                 _clear_seq_kv(old.seq_id)
                 _free_seq(old.seq_id)
-            seq = _alloc_seq()
+            try:
+                seq = _alloc_seq()
+            except RuntimeError:
+                # Last resort before refusing: take back anything abandoned.
+                if _reap_idle_sessions_locked() == 0:
+                    raise
+                seq = _alloc_seq()
             session = _Session(seq)
             _sessions[session_id] = session
             return session
         session = _sessions.get(session_id)
         if session is None:
             raise HTTPException(400, f"Unknown session '{session_id}' — send reset=true first")
+        session.last_used = time.time()
         return session
 
 
@@ -670,6 +713,27 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
 
+class ReleaseRequest(BaseModel):
+    session_id: str
+
+
+@app.post("/v1/session/release")
+def release_session(req: ReleaseRequest):
+    """Give a session's KV slot back.
+
+    The gateway calls this when a generation ends, however it ends — EOS, token
+    limit, client disconnect or error. Without it the first and middle peers
+    never released anything (only the sampling peer freed, and only on EOS), so
+    eight requests exhausted the pool and the whole network stopped answering.
+    """
+    with _sessions_lock:
+        existed = req.session_id in _sessions
+    _finish_session(req.session_id)
+    with _seq_pool_lock:
+        free = len(_seq_pool)
+    return {"released": existed, "free_slots": free, "max_sessions": _MAX_SESSIONS}
+
+
 @app.get("/health")
 def health():
     return {
@@ -680,6 +744,13 @@ def health():
         "original_block_count": getattr(_args, "original_block_count", None) if _args else None,
         "hidden_dim": _n_embd,
         "vocab_size": _n_vocab,
+        "max_sessions": _MAX_SESSIONS,
+        "sessions_in_use": len(_sessions),
+        "free_slots": len(_seq_pool),
+        # The window a single request actually gets: the context is split
+        # evenly across the session slots.
+        "n_ctx_total": _n_ctx_total,
+        "n_ctx_per_session": (_n_ctx_total // _MAX_SESSIONS) if _n_ctx_total else None,
     }
 
 
@@ -701,6 +772,9 @@ def main():
                         help="Number of layers to offload to GPU (llama-cpp-python)")
     parser.add_argument("--n-ctx", type=int, default=4096,
                         help="KV cache context length (must fit prompt token count)")
+    parser.add_argument("--max-sessions", type=int, default=8,
+                        help="concurrent generations; the context is split between "
+                             "them, so the usable window is n_ctx / max_sessions")
     parser.add_argument("--n-batch", type=int, default=4096,
                         help="Maximum batch size for prompt embeddings injection")
     parser.add_argument("--max-new-tokens", type=int, default=512,
@@ -769,6 +843,11 @@ def main():
     )
     if n_threads > 0:
         kwargs["n_threads"] = n_threads
+
+    global _MAX_SESSIONS
+    _MAX_SESSIONS = max(1, int(args.max_sessions))
+    _init_seq_pool()
+    print(f"Session slots : {_MAX_SESSIONS} (janela por requisicao = n_ctx / {_MAX_SESSIONS})", flush=True)
 
     print("Initializing Llama model (this may take a few seconds)...", flush=True)
     _llama = Llama(args.model, **kwargs)

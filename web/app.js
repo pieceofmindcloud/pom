@@ -396,6 +396,42 @@ function drawSpark(peer) {
   line("vram", hue || "#888", [3, 3]);
 }
 
+/** A janela que o usuário vai realmente ter com os ajustes atuais.
+ *
+ *  Mesma conta de `gateway::prompt_budget`: o cache é dividido entre as
+ *  sessões, então errar isso e só descobrir na hora da requisição foi
+ *  exatamente o que irritou o captain.
+ */
+function usableWindow() {
+  const nCtx = Number($("#p-ctx")?.value || 0);
+  const nBatch = Number($("#p-batch")?.value || 0);
+  const maxNew = Number($("#p-maxnew")?.value || 0);
+  const sessions = Math.max(1, Number($("#p-sessions")?.value || 1));
+  const perSession = Math.floor(nCtx / sessions);
+  const prompt = Math.max(0, Math.min(nBatch, perSession - maxNew));
+  return { nCtx, nBatch, maxNew, sessions, perSession, prompt };
+}
+
+function renderWindowNote() {
+  const el = $("#window-note");
+  if (!el) return;
+  const w = usableWindow();
+  const limiter = w.nBatch <= w.perSession - w.maxNew
+    ? "o lote (n_batch)"
+    : "o contexto por sessão (n_ctx ÷ requisições simultâneas)";
+  el.className = w.prompt > 0 ? "notice notice-ok" : "notice notice-error";
+  el.textContent = w.prompt > 0
+    ? `Com estes ajustes, cada requisição aceita até ${w.prompt.toLocaleString("pt-BR")} tokens de prompt `
+      + `(${w.perSession.toLocaleString("pt-BR")} de janela por sessão, menos ${w.maxNew} de resposta). `
+      + `Quem limita é ${limiter}. Cada peer precisa ter memória para esse cache.`
+    : `Estes ajustes não deixam espaço para prompt nenhum: a janela por sessão `
+      + `(${w.perSession.toLocaleString("pt-BR")}) não cobre os ${w.maxNew} tokens de resposta.`;
+}
+
+["#p-ctx", "#p-batch", "#p-maxnew", "#p-sessions"].forEach((sel) =>
+  document.querySelector(sel)?.addEventListener("input", renderWindowNote));
+renderWindowNote();
+
 function renderConnectInfo(cluster) {
   $("#base-url").textContent = `${location.origin}/v1`;
   $("#base-model").textContent = cluster.active_model || "—";
@@ -888,6 +924,7 @@ $("#btn-launch").addEventListener("click", async () => {
       n_ctx: Number($("#p-ctx").value),
       n_batch: Number($("#p-batch").value),
       max_new_tokens: Number($("#p-maxnew").value),
+      max_sessions: Number($("#p-sessions").value),
       temperature: Number($("#p-temp").value),
       top_p: Number($("#p-topp").value),
       top_k: Number($("#p-topk").value),

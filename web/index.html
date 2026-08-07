@@ -171,6 +171,8 @@
     </div>
     <div id="plan-warnings"></div>
 
+    <p class="notice" id="window-note"></p>
+
     <details class="advanced">
       <summary>Ajustes avançados</summary>
       <div class="params">
@@ -178,6 +180,7 @@
         <label>Contexto (n_ctx)<input type="number" id="p-ctx" value="8192" min="512" step="512"></label>
         <label>Lote (n_batch)<input type="number" id="p-batch" value="512" min="32" step="32"></label>
         <label>Máx. tokens novos<input type="number" id="p-maxnew" value="256" min="16"></label>
+        <label>Requisições simultâneas<input type="number" id="p-sessions" value="1" min="1" max="16"></label>
         <label>Temperatura<input type="number" id="p-temp" value="0.7" min="0" max="2" step="0.05"></label>
         <label>top_p<input type="number" id="p-topp" value="0.9" min="0" max="1" step="0.05"></label>
         <label>top_k<input type="number" id="p-topk" value="40" min="0"></label>

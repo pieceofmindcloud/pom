@@ -49,6 +49,9 @@ pub struct NodeConfig {
     pub n_gpu_layers: u32,
     pub n_ctx: u32,
     pub n_batch: u32,
+    /// Concurrent generations; the context is split between them.
+    #[serde(default = "default_max_sessions")]
+    pub max_sessions: u32,
     pub max_new_tokens: u32,
     pub temperature: f32,
     pub top_p: f32,
@@ -58,6 +61,8 @@ pub struct NodeConfig {
     pub no_thinking: bool,
     pub single_peer: bool,
 }
+
+fn default_max_sessions() -> u32 { 1 }
 
 impl NodeConfig {
     pub fn layers_count(&self) -> u32 {
@@ -307,6 +312,7 @@ impl NodeRuntime {
                     .arg("--n-gpu-layers").arg(cfg.n_gpu_layers.to_string())
                     .arg("--n-ctx").arg(cfg.n_ctx.to_string())
                     .arg("--n-batch").arg(cfg.n_batch.to_string())
+                    .arg("--max-sessions").arg(cfg.max_sessions.max(1).to_string())
                     .arg("--max-new-tokens").arg(cfg.max_new_tokens.to_string())
                     .arg("--temperature").arg(cfg.temperature.to_string())
                     .arg("--top-p").arg(cfg.top_p.to_string())
@@ -535,6 +541,7 @@ mod tests {
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,
+            max_sessions: 1,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,

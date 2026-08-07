@@ -321,6 +321,24 @@ Ao diagnosticar: `RUST_LOG=info` já mostra `Contacting bootstrap node`,
 `🆕 New peer`, `Failed to send to` e `🧹 Removed N timed-out peers`. A ausência
 de `Contacting bootstrap node` significa que o nó não transmite nada.
 
+### Transferência de fatias entre máquinas
+
+`src/transfer.rs`. Dois sentidos, ambos terminando no mesmo download: **puxar**
+(o nó pede) e **oferecer** (o dono manda uma oferta, que aparece no sino do
+outro lado e só começa depois de aceita — nunca se escreve no disco alheio sem
+convite). Os bytes vão pelo gateway HTTP com `Range`, não pelo bitswap do
+libp2p, porque é o caminho já comprovado entre as máquinas e é o que dá
+retomada.
+
+O que não é acabamento e sim requisito, porque uma fatia de 10 GB leva ~17 min
+no enlace real: arquivo `.part` com retomada por `Range`, MD5 conferido antes
+de o arquivo tomar o nome final (se não bater, o parcial é apagado), progresso
+com velocidade e tempo restante, checagem de espaço em disco antes de começar,
+e leitura/escrita em blocos de 1 MB. Caminho pedido por outra máquina é
+resolvido dentro de `models/` e recusado se escapar — há teste para isso.
+
+Chegada dos arquivos: `models/recebidos/`.
+
 ### Identidade do nó
 
 `node_id` é como o cluster nomeia uma máquina, e é a chave de `blocked_nodes`.

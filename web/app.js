@@ -80,6 +80,7 @@ $$(".tab").forEach((tab) => {
     $$(".view").forEach((v) =>
       v.classList.toggle("is-active", v.id === `view-${tab.dataset.view}`));
     if (tab.dataset.view === "configurar") loadClusterModels();
+    if (tab.dataset.view === "nos") loadNodesTab();
   });
 });
 
@@ -1020,6 +1021,57 @@ async function respondTransfer(id, accept) {
   } catch(e) {}
 }
 
+async function loadNodesTab() {
+  const view = document.getElementById('view-nos');
+  if (!view || !view.classList.contains('is-active')) return;
+
+  try {
+    const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
+    const localNodeR = await fetch('/api/ui/node');
+
+    if (keysR.ok) {
+      const keys = await keysR.json();
+      document.getElementById('api-keys-list').innerHTML = keys.map(k => `
+        <div style="padding:8px;border-bottom:1px solid var(--border);font-size:.8rem;display:flex;align-items:center;gap:8px">
+          <code style="font-size:.7rem">${(k.key||'').substring(0,24)}...</code>
+          <span>${k.label}</span>
+          ${k.active ? '<span class="tag is-ready">ativa</span>' : '<span class="tag">inativa</span>'}
+          <button onclick="revokeApiKey('${k.key}')" style="margin-left:auto;width:auto;padding:4px 8px;font-size:.7rem">Revogar</button>
+        </div>
+      `).join('') || '<p style="color:var(--muted)">Nenhuma chave</p>';
+    }
+
+    if (localNodeR.ok) {
+      const node = await localNodeR.json();
+      const connKey = node.connection_key || '***';
+      document.getElementById('display-conn-key').textContent = connKey;
+      state.connectionKey = connKey !== '***' ? connKey : '';
+    }
+  } catch(e) {
+    console.error('Failed to load nodes tab', e);
+  }
+}
+
+async function revokeApiKey(key) {
+  await fetch('/admin/api-keys/' + key, { method: 'DELETE', headers: authHeaders() });
+  loadNodesTab();
+}
+
+async function blockNode(id) {
+  await fetch('/admin/nodes/' + id + '/block', { method: 'POST', headers: authHeaders() });
+  loadNodesTab();
+}
+
+async function unblockNode(id) {
+  await fetch('/admin/nodes/' + id + '/unblock', { method: 'POST', headers: authHeaders() });
+  loadNodesTab();
+}
+
+async function removeNode(id) {
+  await fetch('/admin/nodes/' + id, { method: 'DELETE', headers: authHeaders() });
+  loadNodesTab();
+}
+
 function authHeaders() {
   return { 'Authorization': 'Bearer ' + (state.connectionKey || '') };
 }
@@ -1030,3 +1082,23 @@ document.getElementById('notif-bell')?.addEventListener('click', () => {
 
 pollNotifications();
 setInterval(pollNotifications, 5000);
+
+document.getElementById('btn-regenerate-key')?.addEventListener('click', async () => {
+  const r = await fetch('/admin/regenerate-key', { method: 'POST', headers: authHeaders() });
+  const d = await r.json();
+  document.getElementById('display-conn-key').textContent = d.connection_key || '***';
+  alert('Nova chave gerada. Todos os nos precisarao reconfigurar.');
+});
+
+document.getElementById('btn-generate-api-key')?.addEventListener('click', async () => {
+  const label = prompt('Rotulo para a chave (ex: opencode):', 'default');
+  if (!label) return;
+  const r = await fetch('/admin/api-keys', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ label })
+  });
+  const d = await r.json();
+  alert('Nova chave gerada:\n' + d.key);
+  loadNodesTab();
+});

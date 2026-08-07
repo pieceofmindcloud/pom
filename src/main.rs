@@ -1,4 +1,5 @@
 mod admin;
+mod bitswap;
 mod catalog;
 mod config;
 mod auth;

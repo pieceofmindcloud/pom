@@ -96,13 +96,16 @@ async function pollCluster() {
     renderCoverage(cluster);
     renderPeers(cluster);
     renderConnectInfo(cluster);
-    // Update role badge
+    // Update role badge and connection key
     const roleBadge = document.getElementById('role-badge');
     if (roleBadge && cluster.node) {
       const role = cluster.node.role || 'node';
       roleBadge.textContent = role.charAt(0).toUpperCase() + role.slice(1);
       roleBadge.dataset.role = role.toLowerCase();
       state.role = role.toLowerCase();
+    }
+    if (cluster.node && cluster.node.connection_key) {
+      state.connectionKey = cluster.node.connection_key;
     }
   } catch (e) {
     setConn(false, "sem resposta");

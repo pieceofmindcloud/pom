@@ -81,6 +81,8 @@ pub struct NodeInfo {
     pub node_id: String,
     pub short_id: String,
     pub hostname: String,
+    pub role: String,
+    pub connection_key: String,
     pub p2p_port: u16,
     pub gateway_port: u16,
     pub inference_port: Option<u16>,
@@ -88,17 +90,22 @@ pub struct NodeInfo {
     pub status: RuntimeStatus,
     pub system: SystemLoad,
     pub peer_count: usize,
-    /// In-flight pipeline requests routed to this node.
     pub load: u32,
     pub active_model: String,
 }
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     let system = sysmon::sample().await;
+    let (role, conn_key) = {
+        let cfg = state.auth.read().await;
+        (cfg.role.to_string(), cfg.connection_key.clone())
+    };
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
         hostname: system.hostname.clone(),
+        role,
+        connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),
         gateway_port: state.gateway_port,
         inference_port: state.network.inference_port,

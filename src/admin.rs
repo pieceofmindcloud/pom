@@ -21,6 +21,13 @@ pub fn admin_routes() -> Router<AuthState> {
         .route("/admin/regenerate-key", post(regenerate_key))
         .route("/admin/api-keys", get(list_api_keys).post(generate_api_key))
         .route("/admin/api-keys/{key}", delete(revoke_api_key))
+        .route("/admin/transfer-offers", get(transfer_offers))
+}
+
+async fn transfer_offers(
+    State(_config): State<AuthState>,
+) -> impl IntoResponse {
+    Json(json!({ "offers": [] }))
 }
 
 async fn list_nodes(

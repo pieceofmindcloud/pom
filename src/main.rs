@@ -15,6 +15,7 @@ mod network;
 mod ollama;
 mod openai;
 mod pipeline;
+mod prefill;
 mod pkarr_node;
 mod plan;
 mod runtime;
@@ -124,6 +125,10 @@ struct Args {
     /// between them, so the window one request sees is n_ctx / max_sessions.
     #[arg(long, default_value = "1")]
     max_sessions: u32,
+
+    /// Prompt tokens pushed through the pipeline per round trip.
+    #[arg(long, default_value = "512")]
+    prefill_chunk_tokens: u32,
 
     /// Sampling temperature for inference (0 = greedy).
     #[arg(long, default_value = "0.7")]
@@ -566,6 +571,7 @@ inference_port,
             n_ctx: args.n_ctx,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
+            prefill_chunk_tokens: args.prefill_chunk_tokens,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,
             top_p: args.top_p,

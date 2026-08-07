@@ -378,32 +378,72 @@ pub async fn generate_stream(
 
     let gen_start = Instant::now();
     let mut tokens_generated: u32 = 0;
-    let mut current_prompt: Option<&str> = Some(&prompt);
-    let mut current_tokens: Option<Vec<u32>> = None;
-    let mut reset = true;
     let max_tokens = max_tokens.max(1);
+
+    // Chunk size and wire precision come from the node's configuration, so
+    // both are operator knobs rather than constants baked into the protocol.
+    let (chunk_tokens, dtype) = {
+        let cfg = state.runtime.config().await;
+        (
+            cfg.as_ref().map(|c| c.prefill_chunk_tokens).unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
+            crate::wire::WireDtype::F16,
+        )
+    };
 
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
     // sampling peer used to free anything, and only on EOS, so the first peer
     // leaked a slot per request and died after eight of them.
     async {
+    // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
+    // back the first token once the whole prompt is in.
+    let first = match crate::prefill::run(
+        &plan, &session_id, &prompt, chunk_tokens, dtype, &state.http,
+    )
+    .await
+    {
+        Ok(o) => {
+            info!(
+                "📥 prompt de {} tokens em {} pedaço(s) · {:.1}s até a primeira palavra",
+                o.prompt_tokens,
+                o.chunks,
+                gen_start.elapsed().as_secs_f64(),
+            );
+            o
+        }
+        Err(e) => {
+            let _ = tx.send(GenEvent::Failed(format!("Prefill falhou: {e}"))).await;
+            return;
+        }
+    };
+
+    let mut next_token = first.token_id;
+    tokens_generated += 1;
+    if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
+        info!("cliente desconectou logo após o prompt");
+        return;
+    }
+    if first.done {
+        let elapsed = gen_start.elapsed();
+        let _ = tx
+            .send(GenEvent::Done(GenSummary {
+                source: format!("pipeline:{}", plan.hop_chain()),
+                tokens_generated,
+                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                duration_ms: elapsed.as_millis() as u64,
+                partial: false,
+            }))
+            .await;
+        return;
+    }
+
     for i in 0..max_tokens {
-        let res = execute_pipeline_step(
-            &plan,
-            &model,
-            &session_id,
-            current_prompt,
-            current_tokens.as_deref(),
-            reset,
-            1.0,
-            &state.http,
-            &state.loads,
-        )
-        .await;
+        let res = crate::prefill::step(&plan, &session_id, next_token, dtype, &state.http).await;
 
         match res {
-            Ok(step) => {
+            Ok((token_id, text, done)) => {
+                next_token = token_id;
+                let step = StepResult { text, token_id, done };
                 tokens_generated += 1;
                 if !step.text.is_empty() && tx.send(GenEvent::Token(step.text)).await.is_err() {
                     // Client hung up; stop burning GPU time on a dead request.
@@ -431,9 +471,6 @@ pub async fn generate_stream(
                     return;
                 }
 
-                current_prompt = None;
-                current_tokens = Some(vec![step.token_id]);
-                reset = false;
             }
             Err(e) => {
                 warn!("Erro no passo {i} do pipeline: {e}");
@@ -681,6 +718,7 @@ mod budget_tests {
             n_ctx,
             n_batch,
             max_sessions,
+            prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             max_new_tokens: max_new,
             temperature: 0.7,
             top_p: 0.9,

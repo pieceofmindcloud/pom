@@ -415,23 +415,34 @@ function usableWindow() {
   return { nCtx, nBatch, maxNew, sessions, perSession, prompt };
 }
 
+/** Bytes por token de prompt que atravessam cada hop, com a precisão de fio
+ *  em uso. hidden_dim 4096 × 2 bytes (f16) = 8 KiB. */
+const BYTES_POR_TOKEN_POR_HOP = 4096 * 2;
+
 function renderWindowNote() {
   const el = $("#window-note");
   if (!el) return;
   const w = usableWindow();
-  const limiter = w.nBatch <= w.perSession - w.maxNew
-    ? "o lote (n_batch)"
-    : "o contexto por sessão (n_ctx ÷ requisições simultâneas)";
-  el.className = w.prompt > 0 ? "notice notice-ok" : "notice notice-error";
-  el.textContent = w.prompt > 0
-    ? `Com estes ajustes, cada requisição aceita até ${w.prompt.toLocaleString("pt-BR")} tokens de prompt `
+  // Com o prompt em pedaços a janela deixa de ser limitada pelo lote: o lote
+  // passa a valer por pedaço, não pelo prompt inteiro.
+  const janela = Math.max(0, w.perSession - w.maxNew);
+  const hops = Math.max(1, (state.plan?.plan?.shards?.length || state.cluster?.peers?.length || 2) - 1);
+  const segundos = (janela * BYTES_POR_TOKEN_POR_HOP * hops) / MEDIDA_BYTES_POR_S;
+
+  el.className = janela > 0 ? "notice notice-ok" : "notice notice-error";
+  el.innerHTML = janela > 0
+    ? `Cada requisição aceita até <b>${janela.toLocaleString("pt-BR")} tokens</b> de prompt `
       + `(${w.perSession.toLocaleString("pt-BR")} de janela por sessão, menos ${w.maxNew} de resposta). `
-      + `Quem limita é ${limiter}. Cada peer precisa ter memória para esse cache.`
+      + `O prompt entra em pedaços de ${Number($("#p-chunk")?.value || 512)} tokens, então o lote `
+      + `(n_batch ${w.nBatch.toLocaleString("pt-BR")}) limita o pedaço, não o prompt.<br>`
+      + `Um prompt desse tamanho leva <b>~${fmtDuration(segundos)}</b> até a primeira palavra, `
+      + `porque ${fmtBytes(janela * BYTES_POR_TOKEN_POR_HOP * hops)} de estado oculto atravessam `
+      + `${hops} hop(s) a ${fmtBytes(MEDIDA_BYTES_POR_S)}/s medidos. Cada peer precisa de memória para esse cache.`
     : `Estes ajustes não deixam espaço para prompt nenhum: a janela por sessão `
       + `(${w.perSession.toLocaleString("pt-BR")}) não cobre os ${w.maxNew} tokens de resposta.`;
 }
 
-["#p-ctx", "#p-batch", "#p-maxnew", "#p-sessions"].forEach((sel) =>
+["#p-ctx", "#p-batch", "#p-maxnew", "#p-sessions", "#p-chunk"].forEach((sel) =>
   document.querySelector(sel)?.addEventListener("input", renderWindowNote));
 renderWindowNote();
 
@@ -928,6 +939,7 @@ $("#btn-launch").addEventListener("click", async () => {
       n_batch: Number($("#p-batch").value),
       max_new_tokens: Number($("#p-maxnew").value),
       max_sessions: Number($("#p-sessions").value),
+      prefill_chunk_tokens: Number($("#p-chunk").value),
       temperature: Number($("#p-temp").value),
       top_p: Number($("#p-topp").value),
       top_k: Number($("#p-topk").value),

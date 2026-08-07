@@ -908,6 +908,78 @@ async def prefill(request: Request):
             lc.llama_batch_free(batch)
 
 
+@app.post("/v1/step")
+async def step(request: Request):
+    """One token of generation, in the same framed format as the prefill.
+
+    Same protocol for both phases: one place decides precision and encoding,
+    so switching either is a change in `_pack_hidden`/`_unpack_hidden` and
+    nowhere else.
+    """
+    raw = await request.body()
+    try:
+        meta, hidden = _unpack_hidden(raw)
+    except Exception as e:
+        raise HTTPException(400, f"quadro invalido: {e}")
+
+    sid_key = meta.get("session_id") or "__legacy__"
+    is_last = bool(meta.get("is_last", False))
+    wire_dtype = meta.get("dtype", "f16")
+    scale = float(meta.get("scale", 1.0))
+    token_id = meta.get("token_id")
+
+    with _lock:
+        with _sessions_lock:
+            session = _sessions.get(sid_key)
+            if session is None:
+                raise HTTPException(400, f"sessao '{sid_key}' desconhecida — faca o prefill antes")
+            session.last_used = time.time()
+        sid = session.seq_id
+        n_past = session.n_past
+
+        if hidden is not None:
+            if scale != 1.0:
+                hidden = hidden * scale
+            n_tokens = hidden.shape[0]
+            batch = _make_embd_batch(
+                hidden, pos_offset=n_past, logits_mode="last" if is_last else "all", seq_id=sid
+            )
+        else:
+            if token_id is None:
+                raise HTTPException(400, "primeiro peer precisa de token_id")
+            n_tokens = 1
+            batch = _make_token_batch(
+                [int(token_id)], pos_offset=n_past,
+                logits_mode="last" if is_last else "all", seq_id=sid,
+            )
+
+        try:
+            rc = lc.llama_decode(_llama.ctx, batch)
+            if rc != 0:
+                raise HTTPException(500, f"llama_decode falhou rc={rc}")
+            session.n_past += n_tokens
+
+            if is_last:
+                next_id = _sample_next_token(n_tokens - 1, session.recent_tokens)
+                text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
+                session.recent_tokens.append(next_id)
+                done = next_id == int(_llama.token_eos())
+                return Response(
+                    content=_pack_hidden(
+                        {"done": done, "token_id": int(next_id), "text": text}, None, wire_dtype
+                    ),
+                    media_type="application/octet-stream",
+                )
+
+            out = _extract_hidden_all_tokens(n_tokens)
+            return Response(
+                content=_pack_hidden({"done": False}, out, wire_dtype),
+                media_type="application/octet-stream",
+            )
+        finally:
+            lc.llama_batch_free(batch)
+
+
 class ReleaseRequest(BaseModel):
     session_id: str
 

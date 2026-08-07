@@ -52,6 +52,9 @@ pub struct NodeConfig {
     /// Concurrent generations; the context is split between them.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
+    /// Prompt tokens pushed through the pipeline per round trip.
+    #[serde(default = "default_prefill_chunk")]
+    pub prefill_chunk_tokens: u32,
     pub max_new_tokens: u32,
     pub temperature: f32,
     pub top_p: f32,
@@ -63,6 +66,7 @@ pub struct NodeConfig {
 }
 
 fn default_max_sessions() -> u32 { 1 }
+fn default_prefill_chunk() -> u32 { crate::prefill::DEFAULT_CHUNK_TOKENS }
 
 impl NodeConfig {
     pub fn layers_count(&self) -> u32 {
@@ -542,6 +546,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             max_sessions: 1,
+            prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,

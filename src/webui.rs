@@ -435,6 +435,9 @@ pub struct RuntimeParams {
     /// concurrency and costs context.
     #[serde(default = "d_max_sessions")]
     pub max_sessions: u32,
+    /// Prompt tokens per round trip through the pipeline.
+    #[serde(default = "d_prefill_chunk")]
+    pub prefill_chunk_tokens: u32,
     #[serde(default = "d_temp")]
     pub temperature: f32,
     #[serde(default = "d_top_p")]
@@ -454,6 +457,7 @@ fn d_n_ctx() -> u32 { 8192 }
 fn d_n_batch() -> u32 { 512 }
 fn d_max_new() -> u32 { 256 }
 fn d_max_sessions() -> u32 { 1 }
+fn d_prefill_chunk() -> u32 { crate::prefill::DEFAULT_CHUNK_TOKENS }
 fn d_temp() -> f32 { 0.7 }
 fn d_top_p() -> f32 { 0.9 }
 fn d_top_k() -> u32 { 40 }
@@ -469,6 +473,7 @@ impl Default for RuntimeParams {
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
+            prefill_chunk_tokens: d_prefill_chunk(),
             temperature: d_temp(),
             top_p: d_top_p(),
             top_k: d_top_k(),
@@ -674,6 +679,7 @@ async fn run_apply(
         n_batch: req.params.n_batch,
         max_new_tokens: req.params.max_new_tokens,
         max_sessions: req.params.max_sessions,
+        prefill_chunk_tokens: req.params.prefill_chunk_tokens,
         temperature: req.params.temperature,
         top_p: req.params.top_p,
         top_k: req.params.top_k,

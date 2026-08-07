@@ -1059,9 +1059,11 @@ pollCluster();
 // Notification polling
 async function pollNotifications() {
   try {
-    const r = await fetch('/admin/transfer-offers', { headers: authHeaders() });
+    await ensureConnectionKey();
+    const r = await fetch('/api/transfer/offers', { headers: authHeaders() });
     if (!r.ok) return;
     const data = await r.json();
+    state.diskFreeMb = data.disk_free_mb;
     updateNotificationBell(data.offers || []);
   } catch(e) {}
 }
@@ -1074,18 +1076,23 @@ function updateNotificationBell(offers) {
   if (offers.length > 0) {
     count.textContent = offers.length;
     count.classList.remove('hidden');
-    dropdown.innerHTML = offers.map(o => `
+    dropdown.innerHTML = offers.map(o => {
+      const cabe = state.diskFreeMb == null || state.diskFreeMb > (o.size_bytes / 1048576) + 512;
+      const faixa = (o.start_layer != null && o.end_layer != null)
+        ? `camadas ${o.start_layer}–${o.end_layer}` : 'fatia';
+      return `
       <div class="notif-item">
-        <strong>Transferencia pendente</strong><br>
-        ${o.shard_name} (${o.total_size_mb} MB)<br>
-        Camadas ${o.start_layer}-${o.end_layer}<br>
-        Espaco disponivel: ${o.disk_free_mb} MB
+        <strong>${esc(o.from_host)} quer te enviar uma fatia</strong>
+        <span class="notif-sub">${esc(o.name)} · ${fmtBytes(o.size_bytes)} · ${faixa}</span>
+        <span class="notif-sub">${cabe
+          ? `Cabe no disco (${fmtMB(state.diskFreeMb)} livres)`
+          : `<b>Espaço insuficiente</b> — só há ${fmtMB(state.diskFreeMb)} livres`}</span>
         <div class="notif-actions">
-          <button onclick="respondTransfer('${o.id}', true)">Aceitar</button>
-          <button onclick="respondTransfer('${o.id}', false)" style="background:#999">Recusar</button>
+          <button class="btn-slim" onclick="respondTransfer('${esc(o.id)}', true)">Aceitar</button>
+          <button class="btn-slim" onclick="respondTransfer('${esc(o.id)}', false)">Recusar</button>
         </div>
-      </div>
-    `).join('');
+      </div>`;
+    }).join('');
   } else {
     count.classList.add('hidden');
     dropdown.innerHTML = '<div class="notif-item" style="color:var(--muted)">Nenhuma notificacao</div>';
@@ -1094,14 +1101,149 @@ function updateNotificationBell(offers) {
 
 async function respondTransfer(id, accept) {
   try {
-    await fetch('/admin/transfer-offer/' + id, {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accept })
+    await ensureConnectionKey();
+    const acao = accept ? 'accept' : 'reject';
+    const r = await fetch(`/api/transfer/offers/${id}/${acao}`, {
+      method: 'POST', headers: authHeaders(),
     });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      alert('Não deu para ' + (accept ? 'aceitar' : 'recusar') + ': ' + (d.error || r.status));
+    }
     pollNotifications();
+    pollTransfers();
   } catch(e) {}
 }
+
+// ── Transferências de fatias ────────────────────────────────────────────────
+
+/** Progresso das transferências em curso, com velocidade e tempo restante.
+ *  A 10 MB/s medidos nesta LAN uma fatia de 10 GB leva ~17 min, então isto
+ *  não é enfeite: é como se sabe que a coisa está andando. */
+async function pollTransfers() {
+  const box = document.getElementById('transfer-jobs');
+  if (!box) return;
+  try {
+    await ensureConnectionKey();
+    const r = await fetch('/api/transfer/jobs', { headers: authHeaders() });
+    if (!r.ok) return;
+    const { jobs } = await r.json();
+    box.innerHTML = jobs.length
+      ? jobs.map(renderTransferJob).join('')
+      : '<p class="muted-note">Nenhuma transferência em curso.</p>';
+  } catch (e) {}
+}
+
+function fmtDuration(secs) {
+  if (secs == null) return "—";
+  if (secs < 60) return `${Math.round(secs)}s`;
+  const m = Math.floor(secs / 60), s = Math.round(secs % 60);
+  if (m < 60) return `${m}min ${s}s`;
+  return `${Math.floor(m / 60)}h ${m % 60}min`;
+}
+
+function renderTransferJob(j) {
+  const pct = j.bytes_total ? (j.bytes_done / j.bytes_total) * 100 : 0;
+  const falhou = j.state === 'falhou';
+  const pronto = j.state === 'concluída';
+  return `
+    <div class="node-row">
+      <div class="node-row-main">
+        <strong>${esc(j.name)}</strong>
+        <span class="node-row-sub">
+          de ${esc(j.from_host)} · ${fmtBytes(j.bytes_done)} de ${fmtBytes(j.bytes_total)}
+          ${pronto || falhou ? '' : `· ${fmtBytes(j.bytes_per_sec)}/s · faltam ${fmtDuration(j.eta_secs)}`}
+        </span>
+        <div class="meter-track" style="margin-top:6px">
+          <div class="meter-fill ${falhou ? 'is-high' : ''}" style="width:${pct.toFixed(1)}%"></div>
+        </div>
+        ${j.detail ? `<span class="node-row-sub">${esc(j.detail)}</span>` : ''}
+      </div>
+      <div class="tagrow">
+        <span class="tag ${pronto ? 'is-ready' : falhou ? 'is-failed' : 'is-starting'}">${esc(j.state)}</span>
+      </div>
+      <div></div>
+    </div>`;
+}
+
+/** Fatias que estão numa máquina e faltam na outra. */
+function renderSliceExchange(cm) {
+  const box = document.getElementById('slice-exchange');
+  if (!box || !cm) return;
+  const me = cm.peers.find(p => p.is_self);
+  const outros = cm.peers.filter(p => !p.is_self);
+  if (!me) return;
+
+  const meus = new Set((me.models || []).map(m => (m.name || '').toLowerCase()));
+  const linhas = [];
+
+  for (const peer of outros) {
+    const deles = new Set((peer.models || []).map(m => (m.name || '').toLowerCase()));
+
+    // o que eles têm e eu não: posso puxar
+    for (const m of (peer.models || [])) {
+      if (!m.shard_range) continue;
+      if (meus.has((m.name || '').toLowerCase())) continue;
+      linhas.push(sliceRow(m, peer, 'puxar'));
+    }
+    // o que eu tenho e eles não: posso oferecer
+    for (const m of (me.models || [])) {
+      if (!m.shard_range) continue;
+      if (deles.has((m.name || '').toLowerCase())) continue;
+      linhas.push(sliceRow(m, peer, 'enviar'));
+    }
+  }
+
+  box.innerHTML = linhas.length
+    ? linhas.join('')
+    : '<p class="muted-note">As duas máquinas têm as mesmas fatias — nada a trocar.</p>';
+}
+
+function sliceRow(m, peer, acao) {
+  const faixa = m.shard_range ? `camadas ${m.shard_range[0]}–${m.shard_range[1]}` : '';
+  const host = shortHost(peer.hostname || peer.node_id);
+  const botao = acao === 'puxar'
+    ? `<button class="btn-slim" onclick="pullSlice('${esc(peer.node_id)}','${esc(m.path)}','${esc(m.name)}')">Baixar</button>`
+    : `<button class="btn-slim" onclick="sendSlice('${esc(peer.node_id)}','${esc(m.path)}')">Enviar</button>`;
+  return `
+    <div class="node-row">
+      <div class="node-row-main">
+        <strong>${esc(m.name)}</strong>
+        <span class="node-row-sub">${fmtBytes(m.size_bytes)} · ${faixa} · ${
+          acao === 'puxar' ? `está em ${esc(host)}, falta aqui` : `está aqui, falta em ${esc(host)}`}</span>
+      </div>
+      <div class="tagrow"><span class="tag">${acao === 'puxar' ? 'baixar' : 'enviar'}</span></div>
+      <div class="node-row-actions">${botao}</div>
+    </div>`;
+}
+
+async function pullSlice(nodeId, remotePath, name) {
+  await ensureConnectionKey();
+  const r = await fetch('/api/transfer/pull', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id: nodeId, remote_path: remotePath, name }),
+  });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) alert('Não deu para baixar: ' + (d.error || r.status));
+  pollTransfers();
+}
+
+async function sendSlice(nodeId, path) {
+  await ensureConnectionKey();
+  const r = await fetch('/api/transfer/send', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to_node_id: nodeId, path }),
+  });
+  const d = await r.json().catch(() => ({}));
+  alert(r.ok
+    ? 'Oferta enviada. O outro nó precisa aceitar no sino de notificações.'
+    : 'Não deu para oferecer: ' + (d.error || r.status));
+}
+
+setInterval(pollTransfers, 1000);
+pollTransfers();
 
 async function loadNodesTab() {
   const view = document.getElementById('view-nos');
@@ -1130,6 +1272,13 @@ async function loadNodesTab() {
       nodesEl.innerHTML =
         `<p class="notice notice-warn">Nao foi possivel listar os nos (HTTP ${nodesR.status}).</p>`;
     }
+
+    // As fatias de cada máquina vêm do mesmo catálogo do cluster que a aba
+    // Configurar usa.
+    try {
+      const cm = await getJSON('/api/ui/cluster/models');
+      renderSliceExchange(cm);
+    } catch (e) {}
 
     const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
 

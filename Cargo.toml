@@ -21,11 +21,12 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
-reqwest = { version = "0.12", features = ["json"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
 axum = "0.7"
 md-5 = "0.10"
 memmap2 = "0.9"
 futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
 libp2p = { version = "0.56", features = [
     "tokio", "tcp", "dns", "noise", "yamux",
     "identify", "kad", "mdns", "gossipsub", "macros",

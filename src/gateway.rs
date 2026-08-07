@@ -50,6 +50,8 @@ pub struct GatewayState {
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
     pub auth: AuthState,
+    /// In-flight slice transfers and the offers waiting for an answer.
+    pub transfers: crate::transfer::Transfers,
 }
 
 impl axum::extract::FromRef<GatewayState> for AuthState {
@@ -529,6 +531,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/handshake", post(session::handle_handshake))
         .merge(crate::openai::routes())
         .merge(crate::webui::routes())
+        .merge(crate::transfer::routes())
         .nest("/", admin)
         .with_state(state);
 

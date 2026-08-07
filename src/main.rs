@@ -19,6 +19,7 @@ mod pkarr_node;
 mod plan;
 mod runtime;
 mod sysmon;
+mod transfer;
 mod webui;
 
 use anyhow::Result;
@@ -595,6 +596,7 @@ inference_port,
             runtime: node_runtime.clone(),
             gateway_port,
             auth: auth_config,
+            transfers: Default::default(),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -882,6 +884,7 @@ async fn start_gateway_only(
         runtime: node_runtime.clone(),
         gateway_port,
         auth: auth_state,
+        transfers: Default::default(),
     };
 
     info!("Gateway running at http://localhost:{} (model not yet configured)", gateway_port);

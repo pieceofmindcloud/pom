@@ -500,3 +500,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--panel-sub); color: var(--ink);
 }
 .btn-slim.is-done { border-color: var(--ok); color: var(--ok); }
+
+/* Notificações de oferta de fatia. */
+.notif-item .notif-sub {
+  display: block;
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  margin-top: 2px;
+}
+.notif-actions { display: flex; gap: 6px; margin-top: 8px; }

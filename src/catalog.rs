@@ -313,7 +313,7 @@ fn parse_quant(filename: &str) -> Option<String> {
 
 /// `qwen_0_15.gguf` → `("qwen", 0, 15)`. Mirrors `parse_layers_from_filename`
 /// in `main.rs`, which is what actually drives the assignment at startup.
-fn parse_shard_name(filename: &str) -> Option<(String, u32, u32)> {
+pub fn parse_shard_name(filename: &str) -> Option<(String, u32, u32)> {
     let stem = filename.strip_suffix(".gguf")?;
     let mut parts: Vec<&str> = stem.split('_').collect();
     if parts.len() < 3 {

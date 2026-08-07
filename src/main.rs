@@ -22,7 +22,6 @@ mod webui;
 
 use anyhow::Result;
 use clap::Parser;
-use config::Config;
 use discovery::Discovery;
 use gateway::{GatewayState, start_gateway};
 use memory::load_layer_memory;
@@ -210,6 +209,20 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    // ── Setup flow: if no config exists, serve only the setup page ──────────
+    if !config::Config::exists() {
+        info!("No config found — starting in setup mode");
+        start_setup_mode(args.gateway_port).await?;
+        return Ok(());
+    }
+
+    // ── Load existing config ─────────────────────────────────────────────────
+    let app_config = config::Config::load()?;
+    info!("Role: {}", app_config.role);
+    let p2p_port = app_config.p2p_port;
+    let gateway_port = app_config.gateway_port;
+    let inference_port = args.inference_port.or(app_config.inference_port);
+
     // ── list-models ─────────────────────────────────────────────────────────
     if args.list_models {
         println!("\nBuilt-in model profiles:\n");
@@ -253,7 +266,7 @@ async fn main() -> Result<()> {
     };
 
     // ── require --memory unless inference_port handles model loading ─────────
-    if args.memory.is_empty() && args.inference_port.is_none() {
+    if args.memory.is_empty() && inference_port.is_none() {
         error!("--memory is required (e.g. --memory 8GB) unless --inference-port is set.");
         std::process::exit(1);
     }
@@ -330,7 +343,7 @@ async fn main() -> Result<()> {
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 
-    display::print_node_info(&node_id, &pubkey, args.port);
+    display::print_node_info(&node_id, &pubkey, p2p_port);
 
     // ── Pkarr identity (stable across restarts) ──────────────────────────────
     let key_path = std::path::Path::new(".rdma-p2p.key");
@@ -347,10 +360,10 @@ async fn main() -> Result<()> {
 
     // ── Compute pkarr multiaddr to publish ───────────────────────────────────
     let pkarr_multiaddr = {
-        let default_tcp_port = args.port.saturating_add(10000);
+        let default_tcp_port = p2p_port.saturating_add(10000);
         if !args.public_addr.is_empty() {
             if let Some((host, port_str)) = args.public_addr.split_once(':') {
-                let udp_port = port_str.parse::<u16>().unwrap_or(args.port);
+                let udp_port = port_str.parse::<u16>().unwrap_or(p2p_port);
                 format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
             } else {
                 format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
@@ -375,13 +388,13 @@ async fn main() -> Result<()> {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // ── Bootstrap nodes ──────────────────────────────────────────────────────
-    let bootstrap_nodes: Vec<String> = args
-        .bootstrap
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    // ── Bootstrap nodes: config + CLI extras ─────────────────────────────────
+    let mut bootstrap_nodes: Vec<String> = app_config.bootstrap_nodes.clone();
+    for b in args.bootstrap.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+        if !bootstrap_nodes.contains(&b) {
+            bootstrap_nodes.push(b);
+        }
+    }
 
     if bootstrap_nodes.is_empty() {
         info!("No bootstrap nodes — will rely on local LAN broadcast (port {})", network::DISCOVERY_PORT);
@@ -424,11 +437,11 @@ async fn main() -> Result<()> {
         Network::new(
             node_id.clone(),
             pubkey.clone(),
-            args.port,
+            p2p_port,
             bootstrap_nodes.clone(),
             ollama_port,
-            args.inference_port,
-            Some(args.gateway_port),
+inference_port,
+            Some(gateway_port),
         )
         .await?,
     );
@@ -487,7 +500,7 @@ async fn main() -> Result<()> {
 
     // When inference_server.py manages the model, skip RAM reservation —
     // the Python process owns the model memory.
-    let (layer_buf, mem_source) = if args.inference_port.is_none() {
+    let (layer_buf, mem_source) = if inference_port.is_none() {
         let buf = load_layer_memory(
             &profile.name,
             assignment.start_layer,
@@ -517,7 +530,7 @@ async fn main() -> Result<()> {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
 
-    if let Some(port) = args.inference_port {
+    if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
             model_path: model_name.clone(),
             model_label: profile.name.clone(),
@@ -547,16 +560,7 @@ async fn main() -> Result<()> {
 
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
-        let auth_config = Arc::new(RwLock::new(Config {
-            role: config::Role::Node,
-            connection_key: String::new(),
-            gateway_port: args.gateway_port,
-            p2p_port: args.port,
-            inference_port: args.inference_port,
-            bootstrap_nodes: vec![],
-            api_keys: vec![],
-            blocked_nodes: vec![],
-        }));
+        let auth_config: Arc<tokio::sync::RwLock<config::Config>> = Arc::new(tokio::sync::RwLock::new(app_config.clone()));
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
@@ -569,10 +573,10 @@ async fn main() -> Result<()> {
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(http_client),
             runtime: node_runtime.clone(),
-            gateway_port: args.gateway_port,
+            gateway_port,
             auth: auth_config,
         };
-        let gw_port = args.gateway_port;
+        let gw_port = gateway_port;
         tokio::spawn(async move {
             if let Err(e) = start_gateway(gw_state, gw_port).await {
                 error!("HTTP API server error: {}", e);
@@ -585,7 +589,7 @@ async fn main() -> Result<()> {
     // Announce messages are published to gossipsub every 5 s so internet peers
     // learn our layer assignment without needing a shared signalling server.
     let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
-        args.port,
+        p2p_port,
         &bootstrap_nodes,
         &resolved_relay_addrs,
         args.serve_relay,
@@ -661,7 +665,7 @@ async fn main() -> Result<()> {
     if let Some(pn) = pkarr_node {
         let pn = std::sync::Arc::new(pn);
         let addr = pkarr_multiaddr.clone();
-        let inf_port = args.inference_port;
+        let inf_port = inference_port;
         let model_name_pk = profile.name.clone();
         let asgn_pk = assignment_shared.clone();
 
@@ -719,8 +723,8 @@ async fn main() -> Result<()> {
         let asgn = assignment_shared.read().await;
 
         if let Some(ref a) = *asgn {
-            let gateway_tag = format!(" │ 🌐 http:{}", args.gateway_port);
-            let infer_tag = if let Some(p) = args.inference_port {
+            let gateway_tag = format!(" │ 🌐 http:{}", gateway_port);
+            let infer_tag = if let Some(p) = inference_port {
                 format!(" │ ⚡ infer:{}", p)
             } else {
                 String::new()
@@ -765,4 +769,37 @@ fn parse_ollama_port(url: &str) -> Option<u16> {
         .nth(1)
         .and_then(|s| s.split('/').next())
         .and_then(|s| s.parse::<u16>().ok())
+}
+
+async fn start_setup_mode(gateway_port: u16) -> Result<()> {
+    use crate::config::{Config, Role};
+    use crate::webui;
+    use axum::{routing::get, Router};
+    use std::net::SocketAddr;
+
+    let config = Arc::new(RwLock::new(Config {
+        role: Role::Principal,
+        connection_key: String::new(),
+        gateway_port,
+        p2p_port: 42777,
+        inference_port: None,
+        bootstrap_nodes: vec![],
+        api_keys: vec![],
+        blocked_nodes: vec![],
+    }));
+
+    let app = Router::new()
+        .route("/", get(|| async {
+            axum::response::Html(include_str!("../web/setup.html"))
+        }))
+        .route("/api/setup/key", get(webui::get_setup_key))
+        .route("/api/setup/save", axum::routing::post(webui::save_setup))
+        .with_state(config);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
+    info!("Setup page available at http://localhost:{}", gateway_port);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
 }

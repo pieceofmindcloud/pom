@@ -116,6 +116,14 @@ document.getElementById('btn-start-principal').onclick = async () => {
       body: JSON.stringify({ role:'principal' })
     });
     if (r.ok) {
+      const d = await r.json();
+      if (d.restart) {
+        status.className = 'status success';
+        status.textContent = 'Configuracao salva! Aguardando reinicio...';
+        status.classList.remove('hidden');
+        await waitForServer();
+        return;
+      }
       status.className = 'status success';
       status.textContent = 'Configuracao salva! Redirecionando...';
       status.classList.remove('hidden');
@@ -127,6 +135,11 @@ document.getElementById('btn-start-principal').onclick = async () => {
       status.classList.remove('hidden');
     }
   } catch(e) {
+    status.className = 'status error';
+    status.textContent = e.message;
+    status.classList.remove('hidden');
+  }
+};
     status.className = 'status error';
     status.textContent = e.message;
     status.classList.remove('hidden');
@@ -151,6 +164,13 @@ document.getElementById('btn-connect').onclick = async () => {
     });
     const d = await r.json();
     if (r.ok) {
+      if (d.restart) {
+        status.className = 'status success';
+        status.textContent = 'Configuracao salva! Aguardando reinicio...';
+        status.classList.remove('hidden');
+        await waitForServer();
+        return;
+      }
       status.className = 'status success';
       status.textContent = d.message || 'Conectado! Redirecionando...';
       status.classList.remove('hidden');
@@ -166,6 +186,19 @@ document.getElementById('btn-connect').onclick = async () => {
     status.classList.remove('hidden');
   }
 };
+
+async function waitForServer() {
+  for (let i = 0; i < 20; i++) {
+    await new Promise(r => setTimeout(r, 1000));
+    try {
+      const resp = await fetch('/health');
+      if (resp.ok) { location.reload(); return; }
+    } catch(e) {}
+    const st = document.querySelector('.status');
+    if (st) st.textContent = 'Aguardando reinicio... (' + (i+1) + '/20)';
+  }
+  location.reload();
+}
 </script>
 </body>
 </html>

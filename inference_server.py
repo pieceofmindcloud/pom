@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import base64
+import json
 import faulthandler
 import struct
 import threading
@@ -30,7 +31,7 @@ faulthandler.enable()  # print C-level traceback on SIGSEGV/SIGABRT
 
 import numpy as np
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel
 
 try:
@@ -115,12 +116,15 @@ _MAX_SESSIONS = 8
 _SESSION_IDLE_TIMEOUT_S = 900.0
 
 class _Session:
-    __slots__ = ("seq_id", "n_past", "recent_tokens", "last_used")
+    __slots__ = ("seq_id", "n_past", "recent_tokens", "last_used", "prompt_tokens")
     def __init__(self, seq_id: int):
         self.seq_id = seq_id
         self.n_past = 0
         self.recent_tokens: list[int] = []
         self.last_used = time.time()
+        # Tokens do prompt, guardados pelo primeiro peer para alimentar em
+        # passadas sucessivas sem retokenizar a cada pedaco.
+        self.prompt_tokens: list[int] = []
 
 # Context actually allocated by llama.cpp, filled in once the context exists.
 _n_ctx_total = 0
@@ -176,6 +180,25 @@ def _clear_seq_kv(seq_id: int) -> None:
             lc.llama_memory_seq_rm(mem, seq_id, 0, -1)
     except Exception as e:
         print(f"WARNING: _clear_seq_kv(seq={seq_id}): {e}", flush=True)
+
+
+def _rollback_seq_kv(seq_id: int, from_pos: int) -> None:
+    """Drop this sequence's KV from `from_pos` on.
+
+    Makes a retried chunk idempotent: if the answer to chunk k was lost on the
+    way back, the sender repeats it and we redo the work from exactly the same
+    position instead of appending the same tokens twice.
+    """
+    if _llama is None:
+        return
+    try:
+        if hasattr(lc, "llama_kv_cache_seq_rm"):
+            lc.llama_kv_cache_seq_rm(_llama.ctx, seq_id, from_pos, -1)
+        elif hasattr(lc, "llama_get_memory") and hasattr(lc, "llama_memory_seq_rm"):
+            mem = lc.llama_get_memory(_llama.ctx)
+            lc.llama_memory_seq_rm(mem, seq_id, from_pos, -1)
+    except Exception as e:
+        print(f"WARNING: _rollback_seq_kv(seq={seq_id}, pos={from_pos}): {e}", flush=True)
 
 
 def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
@@ -268,6 +291,60 @@ class InferResponse(BaseModel):
     text: Optional[str] = None
     token_id: Optional[int] = None
     done: bool = False
+
+
+# ── Formato de fio do estado oculto ──────────────────────────────────────────
+#
+# Um pedaco de estado oculto atravessa como:
+#
+#     [4 bytes big-endian: tamanho do cabecalho JSON][cabecalho JSON][tensor cru]
+#
+# O cabecalho diz `dtype` e `shape`, entao a precisao e a codificacao sao
+# PARAMETRO, nao premissa: trocar f16 por outra coisa mexe so em
+# `_pack_hidden`/`_unpack_hidden`, e nao no caminho todo. O corpo e binario
+# porque base64 inflava 33% dos bytes, e sob um alvo de internet os bytes na
+# rede e que mandam no tempo ate a primeira palavra.
+
+WIRE_DTYPES = {"f32": np.float32, "f16": np.float16}
+
+
+def _pack_hidden(meta: dict, hidden: "np.ndarray | None", dtype: str) -> bytes:
+    """Frame `meta` and, when present, `hidden` converted to `dtype`."""
+    if hidden is not None:
+        np_dtype = WIRE_DTYPES.get(dtype)
+        if np_dtype is None:
+            raise ValueError(f"dtype de fio desconhecido: {dtype}")
+        arr = np.ascontiguousarray(hidden, dtype=np_dtype)
+        meta = {**meta, "dtype": dtype, "shape": [int(arr.shape[0]), int(arr.shape[1])]}
+        payload = arr.tobytes()
+    else:
+        payload = b""
+    head = json.dumps(meta).encode("utf-8")
+    return struct.pack(">I", len(head)) + head + payload
+
+
+def _unpack_hidden(buf: bytes) -> tuple[dict, "np.ndarray | None"]:
+    """Inverse of `_pack_hidden`. Always returns float32 for the maths."""
+    if len(buf) < 4:
+        raise ValueError("quadro curto demais")
+    (head_len,) = struct.unpack(">I", buf[:4])
+    meta = json.loads(buf[4 : 4 + head_len].decode("utf-8"))
+    payload = buf[4 + head_len :]
+    if not payload:
+        return meta, None
+    dtype = meta.get("dtype", "f32")
+    np_dtype = WIRE_DTYPES.get(dtype)
+    if np_dtype is None:
+        raise ValueError(f"dtype de fio desconhecido: {dtype}")
+    shape = meta.get("shape")
+    if not shape or len(shape) != 2:
+        raise ValueError(f"shape invalido: {shape}")
+    arr = np.frombuffer(payload, dtype=np_dtype)
+    expected = int(shape[0]) * int(shape[1])
+    if arr.size != expected:
+        raise ValueError(f"tensor com {arr.size} valores, esperado {expected}")
+    # O calculo e sempre em f32; a reducao de precisao vale so no fio.
+    return meta, arr.reshape(int(shape[0]), int(shape[1])).astype(np.float32)
 
 
 # ── Hidden tensor helpers ────────────────────────────────────────────────────
@@ -712,6 +789,124 @@ def _infer_impl(req: InferRequest) -> InferResponse:
 
 
 # ── Health endpoint ───────────────────────────────────────────────────────────
+
+# ── Prefill em pedacos ───────────────────────────────────────────────────────
+
+
+@app.post("/v1/prefill")
+async def prefill(request: Request):
+    """Ingest one chunk of the prompt.
+
+    The prompt used to go into a single `llama_batch`, which forced it to fit in
+    `n_batch` and made a multi-gigabyte hidden state cross the wire as one
+    block — on an internet link that is a request that dies. Here each chunk is
+    decoded at its own position, so memory stops scaling with the prompt and a
+    lost chunk costs one chunk, not the whole request.
+
+    Body is the framed format of `_pack_hidden`.
+    """
+    raw = await request.body()
+    try:
+        meta, hidden = _unpack_hidden(raw)
+    except Exception as e:
+        raise HTTPException(400, f"quadro invalido: {e}")
+
+    sid_key = meta.get("session_id") or "__legacy__"
+    chunk_index = int(meta.get("chunk_index", 0))
+    chunk_size = int(meta.get("chunk_size", 512))
+    is_last = bool(meta.get("is_last", False))
+    is_final_chunk = bool(meta.get("is_final_chunk", False))
+    wire_dtype = meta.get("dtype", "f16")
+    scale = float(meta.get("scale", 1.0))
+
+    with _lock:
+        # Chunk 0 opens the session; later chunks must find it.
+        session = _get_or_create_session(sid_key, reset=(chunk_index == 0))
+        sid = session.seq_id
+
+        # First peer: tokenize once on chunk 0 and keep the tokens.
+        prompt = meta.get("prompt")
+        if prompt is not None and chunk_index == 0:
+            use_template = bool(_args and _args.chat_template)
+            text = _apply_chat_template(prompt) if use_template else prompt
+            session.prompt_tokens = list(
+                _llama.tokenize(text.encode("utf-8"), add_bos=not use_template, special=True)
+            )
+
+        expected_pos = chunk_index * chunk_size
+        if session.n_past > expected_pos:
+            # The answer to this chunk was lost on the way back and the sender
+            # is repeating it. Rewind and redo — never append twice.
+            print(f"Refazendo pedaco {chunk_index} da sessao {sid_key[:8]} (pos {expected_pos})", flush=True)
+            _rollback_seq_kv(sid, expected_pos)
+            session.n_past = expected_pos
+        elif session.n_past < expected_pos:
+            raise HTTPException(
+                400,
+                f"pedaco fora de ordem: recebi {chunk_index} (pos {expected_pos}) "
+                f"mas a sessao esta em {session.n_past}",
+            )
+
+        n_past = session.n_past
+
+        if hidden is not None:
+            if scale != 1.0:
+                hidden = hidden * scale
+            n_tokens = hidden.shape[0]
+            batch = _make_embd_batch(
+                hidden, pos_offset=n_past, logits_mode="last" if is_last else "all", seq_id=sid
+            )
+        else:
+            tokens = session.prompt_tokens[expected_pos : expected_pos + chunk_size]
+            if not tokens:
+                raise HTTPException(400, f"pedaco {chunk_index} nao tem tokens")
+            n_tokens = len(tokens)
+            batch = _make_token_batch(
+                tokens, pos_offset=n_past, logits_mode="last" if is_last else "all", seq_id=sid
+            )
+
+        try:
+            rc = lc.llama_decode(_llama.ctx, batch)
+            if rc != 0:
+                raise HTTPException(500, f"llama_decode falhou rc={rc}")
+            session.n_past += n_tokens
+            session.last_used = time.time()
+
+            total_tokens = len(session.prompt_tokens)
+            more = (hidden is None) and (session.n_past < total_tokens)
+
+            if is_last:
+                if not is_final_chunk:
+                    # Middle of the prompt: just absorb it, nothing to sample yet.
+                    return Response(
+                        content=_pack_hidden({"done": False, "more_chunks": more}, None, wire_dtype),
+                        media_type="application/octet-stream",
+                    )
+                next_id = _sample_next_token(n_tokens - 1, session.recent_tokens)
+                text = _llama.detokenize([next_id], special=False).decode("utf-8", errors="ignore")
+                session.recent_tokens.append(next_id)
+                done = next_id == int(_llama.token_eos())
+                return Response(
+                    content=_pack_hidden(
+                        {"done": done, "token_id": int(next_id), "text": text, "more_chunks": False},
+                        None,
+                        wire_dtype,
+                    ),
+                    media_type="application/octet-stream",
+                )
+
+            out = _extract_hidden_all_tokens(n_tokens)
+            return Response(
+                content=_pack_hidden(
+                    {"done": False, "more_chunks": more, "n_prompt_tokens": len(session.prompt_tokens)},
+                    out,
+                    wire_dtype,
+                ),
+                media_type="application/octet-stream",
+            )
+        finally:
+            lc.llama_batch_free(batch)
+
 
 class ReleaseRequest(BaseModel):
     session_id: str

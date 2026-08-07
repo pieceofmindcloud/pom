@@ -9,6 +9,9 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
 const PEER_HUES = 5;
+/** Banda medida entre as máquinas do captain (ksia -> MacBook), por dois
+ *  métodos independentes. Usada para estimar tempo antes de o usuário decidir. */
+const MEDIDA_BYTES_POR_S = 10.24 * 1024 * 1024;
 const POLL_MS = 2000;
 /** Quantas amostras de carga a linha de tendência guarda. */
 const SPARK_POINTS = 40;
@@ -1182,13 +1185,11 @@ function renderSliceExchange(cm) {
 
     // o que eles têm e eu não: posso puxar
     for (const m of (peer.models || [])) {
-      if (!m.shard_range) continue;
       if (meus.has((m.name || '').toLowerCase())) continue;
       linhas.push(sliceRow(m, peer, 'puxar'));
     }
     // o que eu tenho e eles não: posso oferecer
     for (const m of (me.models || [])) {
-      if (!m.shard_range) continue;
       if (deles.has((m.name || '').toLowerCase())) continue;
       linhas.push(sliceRow(m, peer, 'enviar'));
     }
@@ -1196,24 +1197,47 @@ function renderSliceExchange(cm) {
 
   box.innerHTML = linhas.length
     ? linhas.join('')
-    : '<p class="muted-note">As duas máquinas têm as mesmas fatias — nada a trocar.</p>';
+    : '<p class="muted-note">As duas máquinas têm exatamente os mesmos arquivos — nada a trocar.</p>';
+}
+
+/** Só arquivos dentro de `models/` trafegam: o guarda de caminho do outro lado
+ *  recusa qualquer coisa fora dali, e é assim que tem de ser. Modelos do Ollama
+ *  e do LM Studio moram noutro lugar, então aparecem na lista mas sem botão —
+ *  com o motivo escrito, em vez de um botão que só falha quando clicado. */
+function transferivel(m) {
+  return (m.source || '').toLowerCase() === 'local';
 }
 
 function sliceRow(m, peer, acao) {
-  const faixa = m.shard_range ? `camadas ${m.shard_range[0]}–${m.shard_range[1]}` : '';
+  const tipo = m.shard_range
+    ? `fatia · camadas ${m.shard_range[0]}–${m.shard_range[1]}`
+    : 'modelo inteiro';
   const host = shortHost(peer.hostname || peer.node_id);
-  const botao = acao === 'puxar'
-    ? `<button class="btn-slim" onclick="pullSlice('${esc(peer.node_id)}','${esc(m.path)}','${esc(m.name)}')">Baixar</button>`
-    : `<button class="btn-slim" onclick="sendSlice('${esc(peer.node_id)}','${esc(m.path)}')">Enviar</button>`;
+  const onde = acao === 'puxar'
+    ? `está em ${esc(host)}, falta aqui`
+    : `está aqui, falta em ${esc(host)}`;
+
+  const podeIr = transferivel(m);
+  const nome = m.path ? m.path.split('/').pop() : m.name;
+  const tempo = m.size_bytes ? ` · ~${fmtDuration(m.size_bytes / MEDIDA_BYTES_POR_S)} no enlace medido` : '';
+
+  const acaoHtml = podeIr
+    ? (acao === 'puxar'
+        ? `<button class="btn-slim" onclick="pullSlice('${esc(peer.node_id)}','${esc(m.path)}','${esc(nome)}')">Baixar</button>`
+        : `<button class="btn-slim" onclick="sendSlice('${esc(peer.node_id)}','${esc(m.path)}')">Enviar</button>`)
+    : `<span class="muted-note">fora de models/</span>`;
+
   return `
     <div class="node-row">
       <div class="node-row-main">
         <strong>${esc(m.name)}</strong>
-        <span class="node-row-sub">${fmtBytes(m.size_bytes)} · ${faixa} · ${
-          acao === 'puxar' ? `está em ${esc(host)}, falta aqui` : `está aqui, falta em ${esc(host)}`}</span>
+        <span class="node-row-sub">${fmtBytes(m.size_bytes)} · ${tipo} · ${onde}${podeIr ? tempo : ''}</span>
+        ${podeIr ? '' : `<span class="node-row-sub">Só transfere o que está em <code>models/</code>;
+          este veio de ${esc(m.source_label || m.source || 'outra biblioteca')} e fica fora dela.</span>`}
       </div>
-      <div class="tagrow"><span class="tag">${acao === 'puxar' ? 'baixar' : 'enviar'}</span></div>
-      <div class="node-row-actions">${botao}</div>
+      <div class="tagrow"><span class="tag${podeIr ? '' : ' is-failed'}">${
+        podeIr ? (acao === 'puxar' ? 'baixar' : 'enviar') : 'não transfere'}</span></div>
+      <div class="node-row-actions">${acaoHtml}</div>
     </div>`;
 }
 

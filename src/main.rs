@@ -20,6 +20,7 @@ mod plan;
 mod runtime;
 mod sysmon;
 mod transfer;
+mod wire;
 mod webui;
 
 use anyhow::Result;

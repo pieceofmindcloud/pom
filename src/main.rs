@@ -1,3 +1,4 @@
+mod admin;
 mod catalog;
 mod config;
 mod auth;

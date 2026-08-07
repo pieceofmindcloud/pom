@@ -97,6 +97,50 @@ pub struct SystemLoad {
     pub sampled_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DiskStat {
+    pub total_mb: u64,
+    pub free_mb: u64,
+    pub mount_point: String,
+}
+
+// ── Disk ─────────────────────────────────────────────────────────────────────
+
+pub fn sample_disk() -> DiskStat {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let mount = cwd.to_string_lossy().to_string();
+    let out = std::process::Command::new("df")
+        .arg("-m")
+        .arg(&cwd)
+        .output()
+        .ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok());
+
+    if let Some(output) = out {
+        let lines: Vec<&str> = output.lines().collect();
+        if lines.len() >= 2 {
+            let fields: Vec<&str> = lines[1].split_whitespace().collect();
+            if fields.len() >= 4 {
+                if let (Ok(total), Ok(free)) =
+                    (fields[1].parse::<u64>(), fields[3].parse::<u64>())
+                {
+                    return DiskStat {
+                        total_mb: total,
+                        free_mb: free,
+                        mount_point: mount,
+                    };
+                }
+            }
+        }
+    }
+
+    DiskStat {
+        total_mb: 0,
+        free_mb: 0,
+        mount_point: mount,
+    }
+}
+
 // ── Cache ────────────────────────────────────────────────────────────────────
 
 struct Cached {

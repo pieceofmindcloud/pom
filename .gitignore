@@ -5,3 +5,4 @@ venv*
 __pycache__*
 *.log
 .rdma-p2p.key
+rdma-p2p.json

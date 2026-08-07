@@ -57,6 +57,9 @@
 
 * { box-sizing: border-box; }
 
+/* `display` explícito nas regras abaixo venceria o atributo `hidden`. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--ground);
@@ -364,9 +367,11 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 }
 
 .budget-foot {
-  display: flex; align-items: center; justify-content: space-between;
+  display: flex; align-items: center;
   gap: 16px; flex-wrap: wrap; margin-top: 16px;
 }
+/* O botão fica sempre à direita, mesmo quando a reserva está escondida. */
+.budget-foot .btn { margin-left: auto; }
 .reserve { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink-soft); }
 
 .btn {

@@ -493,11 +493,8 @@ function renderShardTable() {
 
   tbody.innerHTML = list
     .map(([group, rows], i) => {
-      const total = rows.find((r) => r.sample.total_layers)?.sample.total_layers;
-      const everywhere = new Map();
-      for (const p of state.clusterModels?.peers || []) {
-        everywhere.set(p.node_id, rows.some((r) => r.byPeer.has(p.node_id)) ? rows[0].sample : null);
-      }
+      const declared = rows.find((r) => r.sample.total_layers)?.sample.total_layers;
+      const total = shardSetTotal(rows);
       const chips = `<span class="avail">${(state.clusterModels?.peers || [])
         .map((p) => {
           const n = rows.filter((r) => r.byPeer.has(p.node_id)).length;
@@ -509,7 +506,8 @@ function renderShardTable() {
         <td><input type="radio" name="model-pick" value="s${i}" aria-label="${esc(group)}"></td>
         <td class="name">${esc(group)}</td>
         <td class="num">${rows.map((r) => `${r.sample.shard_range[0]}–${r.sample.shard_range[1]}`).join(" · ")}</td>
-        <td class="num">${total ?? "—"}</td>
+        <td class="num" ${declared ? "" : 'title="deduzido da cobertura: fatias antigas não gravam rdmap2p.original_block_count"'}>${
+          total ?? "—"}${declared ? "" : "*"}</td>
         <td>${chips}</td>
       </tr>`;
     })
@@ -539,10 +537,29 @@ function suggestedBudget(peer) {
   return Math.max(1024, Math.round((sys.ram?.available_mb || 8192) * 0.5 / 256) * 256);
 }
 
+/** Os dois modos preenchem a mesma tabela com coisas diferentes. */
+function setBudgetHeader(mode) {
+  const shards = mode === "shards";
+  $("#budget-title").textContent = shards
+    ? "2 · Quem serve cada fatia"
+    : "2 · Orçamento de memória por peer";
+  $("#budget-meta").textContent = shards
+    ? "As camadas já estão decididas pelas fatias; escolha a máquina de cada uma"
+    : "Quantas camadas cabem sai do tamanho real de cada bloco do GGUF";
+  $("#budget-head").innerHTML = shards
+    ? `<tr><th>Fatia</th><th>Papel</th><th class="num">Instalada?</th><th class="num">Peer</th>
+       <th class="num">Camadas</th><th class="num">Peso</th></tr>`
+    : `<tr><th>Peer</th><th>Papel</th><th class="num">Memória livre</th>
+       <th class="num">Orçamento (MB)</th><th class="num">Camadas</th><th class="num">Peso da fatia</th></tr>`;
+  // A reserva só faz sentido quando ainda há camadas a distribuir.
+  $(".reserve").hidden = shards;
+}
+
 function renderBudgets() {
   const tbody = $("#budget-table tbody");
   const sel = state.selection;
   const peers = state.cluster ? orderedPeers(state.cluster) : [];
+  setBudgetHeader(sel?.kind ?? "full");
 
   if (!sel || !peers.length) {
     tbody.innerHTML = `<tr><td colspan="6" class="empty">Escolha um modelo acima.</td></tr>`;
@@ -551,22 +568,37 @@ function renderBudgets() {
   }
 
   if (sel.kind === "shards") {
-    // Fatias prontas: as camadas já estão decididas, só há o que conferir.
-    tbody.innerHTML = peers
-      .map((p, i) => {
-        const row = sel.rows[i];
-        const has = row && row.byPeer.has(p.node_id);
+    // Uma linha por fatia, cada uma escolhendo o peer que vai servi-la.
+    // Quem fica com a fatia inicial processa o prompt inteiro de cada
+    // requisicao, entao vale colocar ali a maquina com mais memoria.
+    tbody.innerHTML = sel.rows
+      .map((row, i) => {
+        const [start, end] = row.sample.shard_range;
+        const options = peers
+          .map((p, k) => {
+            const has = row.byPeer.has(p.node_id);
+            const chosen = k === i ? " selected" : "";
+            return `<option value="${esc(p.node_id)}"${chosen}${has ? "" : " disabled"}>${
+              esc(peerName(p.node_id))}${has ? "" : " (não tem a fatia)"}</option>`;
+          })
+          .join("");
+        const missing = peers.filter((p) => !row.byPeer.has(p.node_id)).length;
         return `
-        <tr>
-          <td class="name">${esc(peerName(p.node_id))}</td>
-          <td>${i === 0 ? "primeiro" : i === sel.rows.length - 1 ? "último" : "meio"}</td>
-          <td class="num">—</td>
-          <td class="num">definido pela fatia</td>
-          <td class="num">${row ? `${row.sample.shard_range[0]}–${row.sample.shard_range[1]}` : "—"}</td>
-          <td class="num">${has ? fmtBytes(row.byPeer.get(p.node_id).size_bytes) : "<span class='chip hasnt'>falta</span>"}</td>
+        <tr data-shard="${i}">
+          <td class="name">fatia ${start}–${end}</td>
+          <td>${start === 0 ? "processa o prompt" : i === sel.rows.length - 1 ? "gera os tokens" : "meio"}</td>
+          <td class="num">${missing === 0
+            ? `<span class="chip has">em todos</span>`
+            : `<span class="chip hasnt">falta em ${missing}</span>`}</td>
+          <td class="num"><select class="shard-peer">${options}</select></td>
+          <td class="num">${end - start + 1} camadas</td>
+          <td class="num">${fmtBytes(row.sample.size_bytes)}</td>
         </tr>`;
       })
       .join("");
+    // Trocar o peer de uma fatia invalida a divisão calculada.
+    $$("#budget-table .shard-peer").forEach((s) =>
+      s.addEventListener("change", () => buildShardPlan(sel)));
     $("#btn-plan").textContent = "Conferir fatias";
     return;
   }
@@ -647,10 +679,10 @@ $("#btn-plan").addEventListener("click", async () => {
 
 /** Conjunto já fatiado: monta um plano equivalente sem calcular nada. */
 function buildShardPlan(sel) {
-  const peers = orderedPeers(state.cluster);
-  const total = sel.rows.find((r) => r.sample.total_layers)?.sample.total_layers;
+  const total = shardSetTotal(sel.rows);
   const shards = sel.rows.map((row, i) => {
-    const peer = peers[i];
+    const chosen = $(`#budget-table tbody tr[data-shard="${i}"] .shard-peer`)?.value;
+    const peer = state.cluster?.peers.find((p) => p.node_id === chosen);
     const [start, end] = row.sample.shard_range;
     return {
       node_id: peer?.node_id,
@@ -668,11 +700,19 @@ function buildShardPlan(sel) {
   });
 
   const warnings = [];
-  if (sel.rows.length > peers.length) {
-    warnings.push(`Há ${sel.rows.length} fatias e só ${peers.length} peer(s) na rede.`);
-  }
-  shards.filter((s) => !s.has_model).forEach((s) =>
-    warnings.push(`${s.label} não tem a fatia ${s.start_layer}–${s.end_layer}.`));
+  shards.filter((s) => !s.node_id).forEach((s) =>
+    warnings.push(`A fatia ${s.start_layer}–${s.end_layer} ficou sem peer.`));
+  shards.filter((s) => s.node_id && !s.has_model).forEach((s) =>
+    warnings.push(`${s.label} não tem a fatia ${s.start_layer}–${s.end_layer} instalada.`));
+  // Duas fatias no mesmo peer significam carregar dois modelos no mesmo
+  // processo, o que o servidor de inferência não faz.
+  const seen = new Set();
+  shards.filter((s) => s.node_id).forEach((s) => {
+    if (seen.has(s.node_id)) {
+      warnings.push(`${s.label} recebeu mais de uma fatia — cada peer serve uma só.`);
+    }
+    seen.add(s.node_id);
+  });
 
   const covered = shards.reduce((max, s) => Math.max(max, s.end_layer + 1), 0);
   const plan = {
@@ -824,6 +864,20 @@ $("#btn-launch").addEventListener("click", async () => {
     btn.textContent = "Subir a rede";
   }
 });
+
+/**
+ * Camadas do modelo de origem de um conjunto de fatias.
+ *
+ * Fatias geradas por `split_model.py` gravam `rdmap2p.original_block_count`.
+ * As antigas não gravam nada, e aí o único número honesto é até onde as fatias
+ * chegam — que é como `catalog::build_shard_sets` também resolve.
+ */
+function shardSetTotal(rows) {
+  const declared = rows.find((r) => r.sample.total_layers)?.sample.total_layers;
+  if (declared) return declared;
+  const reach = rows.reduce((max, r) => Math.max(max, r.sample.shard_range[1] + 1), 0);
+  return reach || undefined;
+}
 
 /** Espelha `plan::base_name_of` para nomear as fatias igual em todos os peers. */
 function baseNameOf(path) {

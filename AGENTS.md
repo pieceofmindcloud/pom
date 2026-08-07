@@ -18,6 +18,10 @@ cargo build                    # Debug build
 # Run with an Ollama model (auto-resolves profile from Ollama API)
 ./target/release/rdma-p2p --model llama3:8b --memory 10GB
 
+# Interface web + API OpenAI — servidas por TODO no na --gateway-port.
+# Abra http://localhost:8080/ ; ver "Interface web, API OpenAI e monitor" abaixo.
+# Atencao: web/ e embutido com include_str!, entao editar web/ exige cargo build.
+
 # Multi-node test on same machine (different ports)
 ./target/release/rdma-p2p --model gemma3 --memory 4GB --port 42777
 ./target/release/rdma-p2p --model gemma3 --memory 4GB --port 42778 --bootstrap 127.0.0.1:42777
@@ -85,7 +89,13 @@ Single-binary Rust application for decentralized LLM layer coordination with Oll
 - `display.rs` — Terminal UI: banner, layer map grid, peer table, coverage percentage
 - `ollama.rs` — `OllamaClient` wrapping Ollama's REST API (`/api/tags`, `/api/generate`)
 - `pipeline.rs` — `LoadTracker` (RAII per-peer counters), `PipelinePlan` / `PipelineStep`, `plan_pipeline()` greedy planner
-- `gateway.rs` — `axum` HTTP server: `POST /api/generate` (pipeline → local Ollama → peer Ollama), `GET /peers`, `GET /health`
+- `gateway.rs` — `axum` HTTP server; owns the single generation path (`generate_stream`), `POST /api/generate`, `GET /peers`, `GET /health`
+- `openai.rs` — OpenAI-compatible routes on top of `generate_stream` (protocol only)
+- `webui.rs` + `web/` — dashboard and control API, assets embedded with `include_str!`
+- `catalog.rs` + `gguf.rs` — installed-model discovery and a GGUF header/tensor-table reader
+- `plan.rs` — asymmetric layer planning from per-peer memory budgets; on-demand slicing
+- `sysmon.rs` — RAM / VRAM sampling per platform
+- `runtime.rs` — mutable node config; owns and supervises the `inference_server.py` child
 - `inference_server.py` — FastAPI server per peer node; handles `POST /v1/infer` for partial forward passes (hidden-state threading)
 - `split_model.py` — Pure-Python GGUF splitter; extracts layer range, remaps names, rewrites a valid GGUF slice
 
@@ -266,6 +276,123 @@ Falta para funcionar de fato pela internet:
 3. **`--public-addr` só alimenta o pkarr**, não o `addr` do `Announce`.
 4. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
    confiável, não na internet.
+
+## Interface web, API OpenAI e monitor
+
+Verificado em 2026-08-07 com MacBook + ksia.
+
+### Como a interface sobe
+
+Não sobe separado: **todo nó já serve a UI** na `--gateway-port`, junto da API.
+Abra `http://<peer>:<porta>/`. Os arquivos de `web/` são embutidos no binário
+com `include_str!` (`src/webui.rs`), então **editar `web/` exige `cargo build`** —
+recarregar o navegador não basta.
+
+- MacBook: `./run-p1.sh` → <http://localhost:8080/>
+- ksia: `./run-p2.sh` → <http://192.168.100.138:8090/>. **A 8080 do ksia é do
+  `code-server`**; por isso o peer 2 usa 8090. Nada precisa ser ajustado no
+  outro lado: `Announce`/`PeerInfo` carregam `gateway_port` e o painel de
+  qualquer máquina encontra o peer sozinho.
+
+`run-p1.sh` e `run-p2.sh` aceitam `N_CTX`, `N_BATCH`, `MAX_NEW_TOKENS`, `MODEL`,
+`BOOTSTRAP` e `GATEWAY_PORT` por variável de ambiente.
+
+A tela tem três abas: **Painel** (fita de camadas + RAM/VRAM de cada peer),
+**Configurar** (escolher modelo, orçamento por peer, papel, ajustes avançados,
+subir a rede) e **Testar** (streaming pelo mesmo caminho dos harnesses).
+
+### Onde os modelos são procurados
+
+Autoritativo: `src/catalog.rs`. Resumo do que foi encontrado de verdade:
+
+- **LM Studio**: `$LMSTUDIO_HOME` → `~/.lmstudio-home-pointer` → `~/.lmstudio`.
+  O diretório vem de `downloadsFolder` no `settings.json` **quando existe no
+  disco** (no MacBook ele aponta para `/Volumes/models/lmstudio`, um volume
+  desmontado, e o fallback `<home>/models` é que vale). No Linux também varre
+  `/home/*/.lmstudio`: o peer roda como `root`, e `/root/.lmstudio-home-pointer`
+  aponta para um diretório inexistente enquanto o LM Studio real está em
+  `/home/jairpereira/.lmstudio`.
+- **Ollama**: `$OLLAMA_MODELS` → `~/.ollama/models` → `/usr/share/ollama/...`,
+  `/var/lib/ollama/...`, `/home/*/.ollama/models`. Os pesos são blobs por
+  digest, então o nome amigável sai do manifesto em
+  `manifests/<registry>/<ns>/<nome>/<tag>`. Tags só-nuvem (ex. `kimi-k2.5:cloud`)
+  têm manifesto sem blob e são ignoradas. **O ksia não tem Ollama instalado.**
+- **Local**: `./models`, incluindo as fatias `<base>_<início>_<fim>.gguf`.
+
+`GET /api/ui/models` devolve os diretórios varridos junto com o resultado, então
+uma lista vazia é sempre explicável.
+
+### Divisão assimétrica por orçamento
+
+Decisão do captain em 2026-08-07: **não** se divide em partes iguais. Cada peer
+informa quanto de memória quer usar e `plan.rs` calcula quantas camadas cabem,
+somando o tamanho **real** de cada bloco lido da tensor table do GGUF
+(`gguf::read_layout`) — não a heurística de `model.rs`. A tela mostra o
+orçamento, as camadas resultantes, a cobertura e quanto falta quando não fecha.
+
+Fatiar é local e sob demanda: cada peer extrai só a sua faixa da própria cópia
+do GGUF com `split_model.py --start-layer/--end-layer`, que sempre aceitou faixa
+arbitrária. **Nenhum peso trafega pela rede.** (`split.py`, o wrapper `--qtd`,
+é que divide em partes iguais e não é usado por este caminho.)
+
+Como as bibliotecas divergem entre as máquinas, a tela marca em quais peers o
+modelo escolhido existe e avisa quando falta em algum.
+
+### API compatível com OpenAI
+
+Servida por **qualquer** peer, em `src/openai.rs`:
+
+    GET  /v1/models          GET  /v1/models/{id}
+    POST /v1/chat/completions   (stream: true → SSE)
+    POST /v1/completions
+
+É só camada de protocolo sobre `gateway::generate_stream`; a inferência não foi
+tocada. Chave de API não é verificada. `x_rdma_p2p.source` vai junto na resposta
+não-streaming com a cadeia de hops, que é a prova de execução distribuída.
+
+Como `inference_server.py` já embrulha o que recebe no template do Qwen
+(`_apply_chat_template`), `render_prompt` **achata** a conversa em um único texto
+em vez de aplicar um segundo template. Uma única mensagem `user` passa intacta,
+igual ao que `/api/generate` receberia.
+
+### Limite de prompt — a pegadinha que mais custa tempo
+
+`min(--n-batch, --n-ctx / 8 − --max-new-tokens)`. O `/8` é o `_MAX_SESSIONS` do
+`inference_server.py`, que fatia o contexto em 8 sessões.
+
+Passar disso fazia o llama.cpp **abortar o processo inteiro**
+(`GGML_ASSERT(n_tokens_all <= cparams.n_batch)`), derrubando o peer. O gateway
+agora mede o prompt antes e recusa com uma mensagem citando as flags. Números
+medidos: o OpenCode manda ~2200 caracteres com um agente mínimo (sem
+ferramentas) e ~8000 no agente padrão.
+
+Config que fez o OpenCode funcionar: `--n-ctx 32768 --n-batch 3072
+--max-new-tokens 256` → orçamento de 3072 tokens.
+
+**Quem fica com a camada 0 processa o prompt inteiro de cada requisição**, então
+essa fatia deve ir para a máquina com mais memória — no par atual, o ksia. A
+tela nomeia os papéis ("processa o prompt" / "gera os tokens") e deixa escolher.
+
+### Conectando um harness
+
+OpenCode (verificado): `opencode.json` com provider `@ai-sdk/openai-compatible`,
+`baseURL` `http://<peer>:<porta>/v1`, e um agente com prompt curto e ferramentas
+desligadas — o prompt do agente padrão não cabe no orçamento acima.
+
+```bash
+OPENCODE_CONFIG=/caminho/opencode.json opencode run --pure --agent curto "..."
+```
+
+O Pi só expõe base URL para Azure; não há como apontá-lo para um endpoint
+OpenAI-compatível arbitrário por env var.
+
+### Monitor de carga
+
+`src/sysmon.rs`. Linux: RAM de `/proc/meminfo`, VRAM e processos de `nvidia-smi`
+(conferido contra `nvidia-smi` na mão: bate exato). macOS: RAM de `sysctl` +
+`vm_stat`; memória unificada **não** reporta VRAM dedicada — a tela diz isso e
+mostra a memória wired, que é onde ficam os buffers do Metal, em vez de inventar
+um número.
 
 ## Maintaining this file
 

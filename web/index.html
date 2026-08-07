@@ -100,12 +100,12 @@
 
   <section class="panel" id="budget-panel">
     <header class="panel-head">
-      <h2>2 · Orçamento de memória por peer</h2>
-      <p class="panel-meta">Quantas camadas cabem sai do tamanho real de cada bloco do GGUF</p>
+      <h2 id="budget-title">2 · Orçamento de memória por peer</h2>
+      <p class="panel-meta" id="budget-meta">Quantas camadas cabem sai do tamanho real de cada bloco do GGUF</p>
     </header>
     <div class="table-scroll">
       <table class="grid" id="budget-table">
-        <thead>
+        <thead id="budget-head">
           <tr><th>Peer</th><th>Papel</th><th class="num">Memória livre</th><th class="num">Orçamento (MB)</th><th class="num">Camadas</th><th class="num">Peso da fatia</th></tr>
         </thead>
         <tbody><tr><td colspan="6" class="empty">Escolha um modelo acima.</td></tr></tbody>

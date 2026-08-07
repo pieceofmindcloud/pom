@@ -350,7 +350,9 @@ async fn main() -> Result<()> {
     info!("Memory allocated: {:.0}MB ({:.1}GB)", memory_mb, memory_mb / 1024.0);
 
     // ── Generate identity ────────────────────────────────────────────────────
-    let identity = identity::Identity::generate();
+    let identity = identity::Identity::load_or_create(
+        &config::project_root().join(identity::KEY_FILENAME),
+    );
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 
@@ -827,7 +829,9 @@ async fn start_gateway_only(
     use crate::gateway::{GatewayState, start_gateway};
     use crate::pipeline::LoadTracker;
 
-    let identity = identity::Identity::generate();
+    let identity = identity::Identity::load_or_create(
+        &config::project_root().join(identity::KEY_FILENAME),
+    );
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 

@@ -6,3 +6,4 @@ __pycache__*
 *.log
 .rdma-p2p.key
 rdma-p2p.json
+.rdma-p2p-node.key

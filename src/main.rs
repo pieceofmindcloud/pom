@@ -840,6 +840,24 @@ async fn start_headless_mode(gateway_port: u16, app_config: config::Config) -> R
                 "configured": false
             }))
         }))
+        .route("/api/ui/cluster", get(|| async {
+            axum::Json(serde_json::json!({
+                "peers": [],
+                "coverage": [],
+                "total_layers": 0,
+                "complete": false,
+                "configured": false
+            }))
+        }))
+        .route("/api/ui/cluster/models", get(|| async {
+            axum::Json(serde_json::json!({ "peers": [] }))
+        }))
+        .route("/api/ui/models", get(|| async {
+            axum::Json(serde_json::json!([]))
+        }))
+        .route("/admin/transfer-offers", get(|| async {
+            axum::Json(serde_json::json!({ "offers": [] }))
+        }))
         .route("/handshake", axum::routing::post(session::handle_handshake))
         .route("/api/setup/key", get(webui::get_setup_key))
         .route("/api/setup/save", axum::routing::post(webui::save_setup))

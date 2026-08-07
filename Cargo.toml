@@ -31,3 +31,4 @@ libp2p = { version = "0.56", features = [
     "relay", "dcutr", "autonat",
 ] }
 pkarr = "6"
+async-trait = "0.1"

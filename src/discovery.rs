@@ -261,6 +261,7 @@ async fn handle_event(
                 timestamp,
                 ollama_port,
                 inference_port,
+                gateway_port,
             }) = serde_json::from_slice(&message.data)
             {
                 network
@@ -276,6 +277,7 @@ async fn handle_event(
                         last_seen: timestamp,
                         ollama_port,
                         inference_port,
+                        gateway_port,
                     })
                     .await;
             }

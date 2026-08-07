@@ -1,13 +1,20 @@
+mod catalog;
 mod discovery;
 mod display;
 mod gateway;
+mod gguf;
 mod identity;
 mod memory;
 mod model;
 mod network;
 mod ollama;
+mod openai;
 mod pipeline;
 mod pkarr_node;
+mod plan;
+mod runtime;
+mod sysmon;
+mod webui;
 
 use anyhow::Result;
 use clap::Parser;
@@ -21,10 +28,8 @@ use pipeline::LoadTracker;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
-use tokio::process::Command;
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
-use std::process::Stdio;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -80,6 +85,11 @@ struct Args {
     #[arg(long)]
     start_layer: Option<u32>,
 
+    /// Force the last layer this node owns. Pairs with --start-layer; both are
+    /// inferred from the filename (`name_<start>_<end>.gguf`) when omitted.
+    #[arg(long)]
+    end_layer: Option<u32>,
+
     /// Port for the llama-cpp-python inference server on this node.
     /// When set, rdma-p2p auto-starts inference_server.py on this port.
     #[arg(long)]
@@ -118,6 +128,10 @@ struct Args {
     /// Repetition penalty (1.0 = off).
     #[arg(long, default_value = "1.15")]
     repeat_penalty: f32,
+
+    /// How many recent tokens the repetition penalty looks back over.
+    #[arg(long, default_value = "64")]
+    repeat_last_n: u32,
 
     /// Disable Qwen3.5 thinking mode (injects empty <think></think> block).
     #[arg(long)]
@@ -409,6 +423,7 @@ async fn main() -> Result<()> {
             bootstrap_nodes.clone(),
             ollama_port,
             args.inference_port,
+            Some(args.gateway_port),
         )
         .await?,
     );
@@ -430,9 +445,19 @@ async fn main() -> Result<()> {
         info!("Network already covers layers: {:?}", &covered[..covered.len().min(10)]);
     }
 
-    // Try to extract layers from filename, otherwise calculate
-    let assignment = if let Some((s, e)) = parse_layers_from_filename(&model_name) {
-        info!("Parsed layers {}-{} from filename '{}'", s, e, model_name);
+    // Layer range, in order of precedence: explicit flags, then the filename
+    // convention (`name_<start>_<end>.gguf`), then the gap-filling algorithm.
+    let explicit_range = match (args.start_layer, args.end_layer) {
+        (Some(s), Some(e)) => Some((s, e)),
+        _ => None,
+    };
+    let assignment = if let Some((s, e)) = explicit_range.or_else(|| parse_layers_from_filename(&model_name))
+    {
+        if explicit_range.is_some() {
+            info!("Layers {}-{} set explicitly", s, e);
+        } else {
+            info!("Parsed layers {}-{} from filename '{}'", s, e, model_name);
+        }
         let actual_count = e - s + 1;
         model::LayerAssignment {
             model: profile.name.clone(),
@@ -481,164 +506,38 @@ async fn main() -> Result<()> {
 
     net.announce(&assignment).await?;
 
-    // ── Start Inference Server (if port provided) ────────────────────────────
+    // ── Runtime: owns the model configuration and the inference server ──────
+    // Everything the web UI can change lives here, so a reconfiguration
+    // restarts the Python child without restarting this process.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
+
     if let Some(port) = args.inference_port {
-        let model_path = model_name.clone();
-        let start_l = assignment.start_layer;
-        let end_l = assignment.end_layer;
-        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let venv_python = cwd.join("venv/bin/python3");
-        let python_exe = if venv_python.exists() {
-            venv_python.to_string_lossy().to_string()
-        } else {
-            "python3".to_string()
+        let cfg = runtime::NodeConfig {
+            model_path: model_name.clone(),
+            model_label: profile.name.clone(),
+            start_layer: assignment.start_layer,
+            end_layer: assignment.end_layer,
+            total_layers: assignment.total_layers,
+            peer_count: if args.single_peer { 1 } else { 2 },
+            peer_index: 0,
+            primary: args.gateway,
+            inference_port: port,
+            n_gpu_layers: args.n_gpu_layers,
+            n_ctx: args.n_ctx,
+            n_batch: args.n_batch,
+            max_new_tokens: args.max_new_tokens,
+            temperature: args.temperature,
+            top_p: args.top_p,
+            top_k: args.top_k,
+            repeat_penalty: args.repeat_penalty,
+            repeat_last_n: args.repeat_last_n,
+            no_thinking: args.no_thinking,
+            single_peer: args.single_peer,
         };
-        let server_script = cwd.join("inference_server.py");
-        let n_gpu_layers = args.n_gpu_layers;
-        let n_ctx = args.n_ctx;
-        let n_batch = args.n_batch;
-        let max_new_tokens = args.max_new_tokens;
-        let temperature = args.temperature;
-        let top_p = args.top_p;
-        let top_k = args.top_k;
-        let repeat_penalty = args.repeat_penalty;
-        let no_thinking = args.no_thinking;
-        let single_peer = args.single_peer;
-        let log_path = format!("inference_server_{}.log", port);
-        let node_id_log = node_id.clone();
-
-        info!("Starting inference_server.py: layers={}-{} port={} gpu_layers={} n_ctx={} single_peer={}",
-            start_l, end_l, port, n_gpu_layers, n_ctx, single_peer);
-        info!("Inference server log: {}", log_path);
-
-        tokio::spawn(async move {
-            let mut attempts = 0u32;
-            loop {
-                attempts += 1;
-                if attempts > 1 {
-                    warn!("Restarting inference server (attempt {}/10)...", attempts);
-                    tokio::time::sleep(Duration::from_secs(5)).await;
-                }
-
-                let mut cmd = Command::new(&python_exe);
-                cmd.env("PYTHONUNBUFFERED", "1")
-                    .arg(&server_script)
-                    .arg("--model").arg(&model_path)
-                    .arg("--start-layer").arg(start_l.to_string())
-                    .arg("--end-layer").arg(end_l.to_string())
-                    .arg("--port").arg(port.to_string())
-                    .arg("--n-gpu-layers").arg(n_gpu_layers.to_string())
-                    .arg("--n-ctx").arg(n_ctx.to_string())
-                    .arg("--n-batch").arg(n_batch.to_string())
-                    .arg("--max-new-tokens").arg(max_new_tokens.to_string())
-                    .arg("--temperature").arg(temperature.to_string())
-                    .arg("--top-p").arg(top_p.to_string())
-                    .arg("--top-k").arg(top_k.to_string())
-                    .arg("--repeat-penalty").arg(repeat_penalty.to_string())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                if no_thinking { cmd.arg("--no-thinking"); }
-                if single_peer { cmd.arg("--single-peer"); }
-
-                let mut child = match cmd.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("Failed to spawn inference server: {}", e);
-                        if attempts >= 10 {
-                            error!("Inference server failed to start 10 times, giving up");
-                            break;
-                        }
-                        continue;
-                    }
-                };
-
-                let short_id = node_id_log[..8].to_string();
-
-                if let Some(stdout) = child.stdout.take() {
-                    let nid = short_id.clone();
-                    let lp = log_path.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::{AsyncBufReadExt, BufReader};
-                        use std::io::Write;
-                        let mut reader = BufReader::new(stdout).lines();
-                        while let Ok(Some(line)) = reader.next_line().await {
-                            println!("\x1b[36m[InfServer {}]\x1b[0m {}", nid, line);
-                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&lp) {
-                                let _ = writeln!(f, "[OUT] {}", line);
-                            }
-                        }
-                    });
-                }
-
-                if let Some(stderr) = child.stderr.take() {
-                    let nid = short_id.clone();
-                    let lp = log_path.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::{AsyncBufReadExt, BufReader};
-                        use std::io::Write;
-                        let mut reader = BufReader::new(stderr).lines();
-                        while let Ok(Some(line)) = reader.next_line().await {
-                            eprintln!("\x1b[31m[InfServer {} ERR]\x1b[0m {}", nid, line);
-                            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&lp) {
-                                let _ = writeln!(f, "[ERR] {}", line);
-                            }
-                        }
-                    });
-                }
-
-                let status = child.wait().await;
-                warn!("Inference server {} exited (attempt {}): {:?}", short_id, attempts, status);
-
-                if attempts >= 10 {
-                    error!("Inference server crashed 10 times, giving up. Check {}", log_path);
-                    break;
-                }
-            }
-        });
-    }
-
-    // ── Sync total_layers from inference server GGUF metadata ───────────────
-    // When --model is a GGUF slice path, profile.total_layers is a guess.
-    // The inference server embeds rdmap2p.original_block_count in the GGUF KV
-    // and exposes it via /health — read it back and correct the shared assignment
-    // so the display and gossip announces use the real value.
-    if let Some(inf_port) = args.inference_port {
-        let asgn_shared2 = assignment_shared.clone();
-        let health_http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .build()
-            .unwrap();
-        tokio::spawn(async move {
-            let url = format!("http://127.0.0.1:{}/health", inf_port);
-            for attempt in 0u32..30 {
-                // First attempt after 5 s (model loading); subsequent every 10 s.
-                tokio::time::sleep(Duration::from_secs(if attempt == 0 { 5 } else { 10 })).await;
-                let resp = health_http.get(&url).send().await;
-                if let Ok(r) = resp {
-                    if r.status().is_success() {
-                        if let Ok(body) = r.json::<serde_json::Value>().await {
-                            if let Some(obc) = body
-                                .get("original_block_count")
-                                .and_then(|v| v.as_u64())
-                            {
-                                let obc = obc as u32;
-                                let mut w = asgn_shared2.write().await;
-                                if let Some(ref mut a) = *w {
-                                    if a.total_layers != obc {
-                                        info!(
-                                            "Corrected total_layers: {} → {} (from GGUF metadata)",
-                                            a.total_layers, obc
-                                        );
-                                        a.total_layers = obc;
-                                    }
-                                }
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
-        });
+        if let Err(e) = node_runtime.apply(cfg).await {
+            error!("não foi possível iniciar o servidor de inferência: {e:#}");
+        }
     }
 
     // ── HTTP API server — every node serves it ───────────────────────────────
@@ -653,6 +552,8 @@ async fn main() -> Result<()> {
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(http_client),
+            runtime: node_runtime.clone(),
+            gateway_port: args.gateway_port,
         };
         let gw_port = args.gateway_port;
         tokio::spawn(async move {
@@ -709,6 +610,7 @@ async fn main() -> Result<()> {
                         timestamp: chrono::Utc::now(),
                         ollama_port: net_disc.ollama_port,
                         inference_port: net_disc.inference_port,
+                        gateway_port: net_disc.gateway_port,
                     };
                     if let Ok(data) = serde_json::to_vec(&msg) {
                         let _ = tx.send(data).await;

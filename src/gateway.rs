@@ -2,6 +2,7 @@ use crate::model::LayerAssignment;
 use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
 use crate::pipeline::{plan_pipeline, LoadTracker};
+use crate::runtime::NodeRuntime;
 use anyhow::Result;
 use std::time::Instant;
 use uuid::Uuid;
@@ -15,7 +16,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tracing::{info, warn};
+
+/// Tokens `/api/generate` will produce before stopping on its own.
+const DEFAULT_MAX_TOKENS: u32 = 512;
 
 // ── State ────────────────────────────────────────────────────────────────────
 
@@ -30,6 +35,40 @@ pub struct GatewayState {
     pub loads: Arc<LoadTracker>,
     /// Shared HTTP client with long timeout for pipeline calls.
     pub http: Arc<reqwest::Client>,
+    /// Mutable node configuration driven by the web UI.
+    pub runtime: Arc<NodeRuntime>,
+    /// HTTP port this node serves the API and UI on.
+    pub gateway_port: u16,
+}
+
+impl GatewayState {
+    /// Model label the pipeline planner matches on right now.
+    pub async fn active_model(&self) -> String {
+        self.runtime.model_label(&self.default_model).await
+    }
+
+    /// Alive peers plus this node, so the local assignment participates in
+    /// planning exactly like a remote one.
+    pub async fn all_peers(&self) -> Vec<PeerInfo> {
+        let mut peers = self.network.alive_peers().await;
+        if let Some(local) = self.local_assignment.read().await.clone() {
+            peers.push(PeerInfo {
+                node_id: self.network.node_id.clone(),
+                pubkey: self.network.pubkey.clone(),
+                addr: format!("127.0.0.1:{}", self.network.bind_addr.port()),
+                model: local.model,
+                start_layer: local.start_layer,
+                end_layer: local.end_layer,
+                total_layers: local.total_layers,
+                memory_mb: local.memory_used_mb,
+                last_seen: chrono::Utc::now(),
+                ollama_port: self.network.ollama_port,
+                inference_port: self.network.inference_port,
+                gateway_port: Some(self.gateway_port),
+            });
+        }
+        peers
+    }
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
@@ -38,7 +77,7 @@ pub struct GatewayState {
 #[derive(Debug, Serialize)]
 struct PeerInferRequest<'a> {
     model: &'a str,
-    /// Unique per /api/generate call; inference server uses it to track KV cache per session.
+    /// Unique per generation; inference server uses it to track KV cache per session.
     session_id: &'a str,
     /// Raw prompt text — only set for the FIRST peer in the pipeline (first step).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,32 +157,28 @@ pub struct HealthResponse {
     pub default_model: String,
 }
 
-// ── Server startup ────────────────────────────────────────────────────────────
+// ── Streaming generation ─────────────────────────────────────────────────────
 
-pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
-    let app = Router::new()
-        .route("/api/generate", post(handle_generate))
-        .route("/generate", post(handle_generate)) // alias
-        .route("/peers", get(handle_peers))
-        .route("/health", get(handle_health))
-        .with_state(state);
-
-    let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
-    info!(
-        "🌐 Gateway HTTP on http://localhost:{port}\
-         — POST /api/generate  GET /peers  GET /health"
-    );
-    axum::serve(listener, app).await?;
-    Ok(())
+/// One event from a running generation.
+#[derive(Debug, Clone)]
+pub enum GenEvent {
+    /// A newly decoded token's text.
+    Token(String),
+    /// Generation finished (possibly early — see `partial`).
+    Done(GenSummary),
+    /// Generation produced nothing usable.
+    Failed(String),
 }
 
-// ── Pipeline execution ────────────────────────────────────────────────────────
-
-#[derive(Debug)]
-struct StepResult {
-    text: String,
-    token_id: u32,
-    done: bool,
+#[derive(Debug, Clone, Serialize)]
+pub struct GenSummary {
+    /// "pipeline:<hop-chain>", with " (partial)" when it stopped early.
+    pub source: String,
+    pub tokens_generated: u32,
+    pub tokens_per_sec: f64,
+    pub duration_ms: u64,
+    /// True when a peer failed mid-generation but some text was salvaged.
+    pub partial: bool,
 }
 
 /// Execute a single forward pass through the pipeline.
@@ -216,13 +251,190 @@ async fn execute_pipeline_step(
     Err(anyhow::anyhow!("pipeline completed without a final response"))
 }
 
+#[derive(Debug)]
+struct StepResult {
+    text: String,
+    token_id: u32,
+    done: bool,
+}
+
+/// Run one generation, emitting each token as it is decoded.
+///
+/// This is the single generation path in the gateway: `/api/generate` collects
+/// the events into one response, the OpenAI endpoints forward them as SSE. The
+/// per-token loop and the peer protocol are unchanged — one round trip through
+/// every peer yields exactly one token.
+pub async fn generate_stream(
+    state: GatewayState,
+    model: String,
+    prompt: String,
+    max_tokens: u32,
+    tx: mpsc::Sender<GenEvent>,
+) {
+    let peers = state.all_peers().await;
+
+    // Total layers for THIS model, as reported by a peer that serves it.
+    let total_layers = peers
+        .iter()
+        .find(|p| p.model == model)
+        .map(|p| p.total_layers)
+        .unwrap_or(32);
+
+    // Each request gets a unique session_id passed to every inference server
+    // call, so parallel requests keep isolated KV cache state.
+    let session_id = Uuid::new_v4().to_string();
+
+    let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await else {
+        let _ = tx
+            .send(GenEvent::Failed(format!(
+                "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
+            )))
+            .await;
+        return;
+    };
+
+    info!(
+        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={}",
+        plan.steps.len(),
+        plan.hop_chain(),
+        &session_id[..8],
+        max_tokens,
+    );
+
+    let gen_start = Instant::now();
+    let mut tokens_generated: u32 = 0;
+    let mut current_prompt: Option<&str> = Some(&prompt);
+    let mut current_tokens: Option<Vec<u32>> = None;
+    let mut reset = true;
+    let max_tokens = max_tokens.max(1);
+
+    for i in 0..max_tokens {
+        let res = execute_pipeline_step(
+            &plan,
+            &model,
+            &session_id,
+            current_prompt,
+            current_tokens.as_deref(),
+            reset,
+            1.0,
+            &state.http,
+            &state.loads,
+        )
+        .await;
+
+        match res {
+            Ok(step) => {
+                tokens_generated += 1;
+                if !step.text.is_empty() && tx.send(GenEvent::Token(step.text)).await.is_err() {
+                    // Client hung up; stop burning GPU time on a dead request.
+                    info!("cliente desconectou após {tokens_generated} tokens");
+                    return;
+                }
+
+                if step.done || i == max_tokens - 1 {
+                    let elapsed = gen_start.elapsed();
+                    info!(
+                        "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
+                        tokens_generated,
+                        elapsed.as_secs_f64(),
+                        rate(tokens_generated, elapsed.as_secs_f64())
+                    );
+                    let _ = tx
+                        .send(GenEvent::Done(GenSummary {
+                            source: format!("pipeline:{}", plan.hop_chain()),
+                            tokens_generated,
+                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                            duration_ms: elapsed.as_millis() as u64,
+                            partial: false,
+                        }))
+                        .await;
+                    return;
+                }
+
+                current_prompt = None;
+                current_tokens = Some(vec![step.token_id]);
+                reset = false;
+            }
+            Err(e) => {
+                warn!("Erro no passo {i} do pipeline: {e}");
+                let elapsed = gen_start.elapsed();
+                if tokens_generated > 0 {
+                    // Some output is better than none — the original behaviour.
+                    info!("devolvendo {tokens_generated} tokens parciais");
+                    let _ = tx
+                        .send(GenEvent::Done(GenSummary {
+                            source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                            tokens_generated,
+                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                            duration_ms: elapsed.as_millis() as u64,
+                            partial: true,
+                        }))
+                        .await;
+                } else {
+                    let _ = tx
+                        .send(GenEvent::Failed(format!("Pipeline falhou no passo {i}: {e}")))
+                        .await;
+                }
+                return;
+            }
+        }
+    }
+}
+
+fn rate(tokens: u32, secs: f64) -> f64 {
+    if secs > 0.0 {
+        tokens as f64 / secs
+    } else {
+        0.0
+    }
+}
+
+/// Run a generation to completion and return the whole text.
+pub async fn generate_blocking(
+    state: GatewayState,
+    model: String,
+    prompt: String,
+    max_tokens: u32,
+) -> std::result::Result<(String, GenSummary), String> {
+    let (tx, mut rx) = mpsc::channel(64);
+    tokio::spawn(generate_stream(state, model, prompt, max_tokens, tx));
+
+    let mut text = String::new();
+    while let Some(event) = rx.recv().await {
+        match event {
+            GenEvent::Token(t) => text.push_str(&t),
+            GenEvent::Done(summary) => return Ok((text, summary)),
+            GenEvent::Failed(e) => return Err(e),
+        }
+    }
+    Err("geração terminou sem resposta".to_string())
+}
+
+// ── Server startup ────────────────────────────────────────────────────────────
+
+pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
+    let app = Router::new()
+        .route("/api/generate", post(handle_generate))
+        .route("/generate", post(handle_generate)) // alias
+        .route("/peers", get(handle_peers))
+        .route("/health", get(handle_health))
+        .merge(crate::openai::routes())
+        .merge(crate::webui::routes())
+        .with_state(state);
+
+    let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
+    info!(
+        "🌐 Interface e API em http://localhost:{port}  \
+         — UI /  ·  OpenAI /v1/chat/completions  ·  POST /api/generate  ·  GET /peers /health"
+    );
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
 // ── Route handlers ────────────────────────────────────────────────────────────
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.
-async fn handle_generate(
-    State(state): State<GatewayState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
     let req: GenerateRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -240,176 +452,43 @@ async fn handle_generate(
         }
     };
 
-    let model = req
-        .model
-        .as_deref()
-        .unwrap_or(&state.default_model)
-        .to_string();
+    let model = match req.model.as_deref() {
+        Some(m) => m.to_string(),
+        None => state.active_model().await,
+    };
 
     info!("📨 /api/generate model={} prompt_len={}", model, req.prompt.len());
 
-    let mut peers = state.network.alive_peers().await;
-    
-    // Include local node if it has an assignment and inference port
-    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
-        if local_asgn.model == model {
-            peers.push(PeerInfo {
-                node_id: state.network.node_id.clone(),
-                pubkey: state.network.pubkey.clone(),
-                addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
-                model: local_asgn.model,
-                start_layer: local_asgn.start_layer,
-                end_layer: local_asgn.end_layer,
-                total_layers: local_asgn.total_layers,
-                memory_mb: local_asgn.memory_used_mb,
-                last_seen: chrono::Utc::now(),
-                ollama_port: state.network.ollama_port,
-                inference_port: state.network.inference_port,
-            });
-        }
+    match generate_blocking(state, model, req.prompt, DEFAULT_MAX_TOKENS).await {
+        Ok((text, summary)) => (
+            StatusCode::OK,
+            Json(GenerateResponse {
+                response: text,
+                source: summary.source,
+                tokens_generated: summary.tokens_generated,
+                tokens_per_sec: summary.tokens_per_sec,
+                duration_ms: summary.duration_ms,
+            }),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(GenerateResponse {
+                response: format!(
+                    "Inference failed. Error: {e}. Start peers with --inference-port."
+                ),
+                source: "none".to_string(),
+                tokens_generated: 0,
+                tokens_per_sec: 0.0,
+                duration_ms: 0,
+            }),
+        )
+            .into_response(),
     }
-
-    // Find total layers for THIS model from peers that have it
-    let total_layers = peers.iter()
-        .find(|p| p.model == model)
-        .map(|p| p.total_layers)
-        .unwrap_or(32);
-
-    // ── 1. Try distributed pipeline (peers with inference_port) ──────────────
-    // Each request gets a unique session_id passed to every inference server call.
-    // The inference server tracks per-session KV cache state so parallel requests
-    // stay isolated while sharing the GPU (serialized by _lock inside the server).
-    let session_id = Uuid::new_v4().to_string();
-
-    let mut pipeline_error = None;
-    if let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await {
-        info!(
-            "🔀 Pipeline planned: {} hops [{}] session={}",
-            plan.steps.len(),
-            plan.hop_chain(),
-            &session_id[..8],
-        );
-
-        let gen_start = Instant::now();
-        let mut full_text = String::new();
-        let mut tokens_generated: u32 = 0;
-        let mut current_prompt: Option<&str> = Some(&req.prompt);
-        let mut current_tokens: Option<Vec<u32>> = None;
-        let mut reset = true;
-        let max_tokens = 512;
-
-        for i in 0..max_tokens {
-            let res = execute_pipeline_step(
-                &plan,
-                &model,
-                &session_id,
-                current_prompt,
-                current_tokens.as_deref(),
-                reset,
-                1.0,
-                &state.http,
-                &state.loads
-            ).await;
-
-            match res {
-                Ok(step) => {
-                    full_text.push_str(&step.text);
-                    tokens_generated += 1;
-                    if step.done || i == max_tokens - 1 {
-                        let elapsed = gen_start.elapsed();
-                        let duration_ms = elapsed.as_millis() as u64;
-                        let tokens_per_sec = if elapsed.as_secs_f64() > 0.0 {
-                            tokens_generated as f64 / elapsed.as_secs_f64()
-                        } else {
-                            0.0
-                        };
-                        info!("✅ Pipeline complete: {} tokens in {:.1}s ({:.1} tok/s)",
-                            tokens_generated, elapsed.as_secs_f64(), tokens_per_sec);
-                        return (
-                            StatusCode::OK,
-                            Json(GenerateResponse {
-                                response: full_text,
-                                source: format!("pipeline:{}", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec,
-                                duration_ms,
-                            }),
-                        )
-                            .into_response();
-                    }
-                    current_prompt = None;
-                    current_tokens = Some(vec![step.token_id]);
-                    reset = false;
-                }
-                Err(e) => {
-                    warn!("Pipeline step {} error: {}", i, e);
-                    if !full_text.is_empty() {
-                        let elapsed = gen_start.elapsed();
-                        let duration_ms = elapsed.as_millis() as u64;
-                        let tokens_per_sec = if elapsed.as_secs_f64() > 0.0 {
-                            tokens_generated as f64 / elapsed.as_secs_f64()
-                        } else {
-                            0.0
-                        };
-                        info!("Returning {} tokens of partial output", tokens_generated);
-                        return (
-                            StatusCode::OK,
-                            Json(GenerateResponse {
-                                response: full_text,
-                                source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                                tokens_generated,
-                                tokens_per_sec,
-                                duration_ms,
-                            }),
-                        ).into_response();
-                    }
-                    pipeline_error = Some(format!("Pipeline failed at step {}: {}", i, e));
-                    break;
-                }
-            }
-        }
-    } else {
-        pipeline_error = Some(format!("No valid pipeline plan for model '{}' (check layer coverage)", model));
-    }
-
-    // ── 2. Fallback: local Ollama ─────────────────────────────────────────────
-    // ... (commented out by user)
-
-    (
-        StatusCode::SERVICE_UNAVAILABLE,
-        Json(GenerateResponse {
-            response: format!(
-                "Inference failed. Error: {}. Start peers with --inference-port.",
-                pipeline_error.unwrap_or_else(|| "Unknown error".to_string())
-            ),
-            source: "none".to_string(),
-            tokens_generated: 0,
-            tokens_per_sec: 0.0,
-            duration_ms: 0,
-        }),
-    )
-        .into_response()
 }
 
 async fn handle_peers(State(state): State<GatewayState>) -> Json<PeersResponse> {
-    let mut peers = state.network.alive_peers().await;
-    
-    // Include local node
-    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
-        peers.push(PeerInfo {
-            node_id: state.network.node_id.clone(),
-            pubkey: state.network.pubkey.clone(),
-            addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
-            model: local_asgn.model,
-            start_layer: local_asgn.start_layer,
-            end_layer: local_asgn.end_layer,
-            total_layers: local_asgn.total_layers,
-            memory_mb: local_asgn.memory_used_mb,
-            last_seen: chrono::Utc::now(),
-            ollama_port: state.network.ollama_port,
-            inference_port: state.network.inference_port,
-        });
-    }
+    let peers = state.all_peers().await;
 
     let mut summaries = Vec::new();
     for p in &peers {
@@ -430,24 +509,7 @@ async fn handle_peers(State(state): State<GatewayState>) -> Json<PeersResponse> 
 
 async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse> {
     let ollama_available = state.ollama.is_available().await;
-    let mut peers = state.network.alive_peers().await;
-    
-    // Include local node
-    if let Some(local_asgn) = state.local_assignment.read().await.clone() {
-        peers.push(PeerInfo {
-            node_id: state.network.node_id.clone(),
-            pubkey: state.network.pubkey.clone(),
-            addr: format!("127.0.0.1:{}", state.network.bind_addr.port()),
-            model: local_asgn.model,
-            start_layer: local_asgn.start_layer,
-            end_layer: local_asgn.end_layer,
-            total_layers: local_asgn.total_layers,
-            memory_mb: local_asgn.memory_used_mb,
-            last_seen: chrono::Utc::now(),
-            ollama_port: state.network.ollama_port,
-            inference_port: state.network.inference_port,
-        });
-    }
+    let peers = state.all_peers().await;
 
     let peer_count = peers.len();
     let pipeline_peers = peers.iter().filter(|p| p.inference_port.is_some()).count();
@@ -456,6 +518,6 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
         ollama_available,
         peer_count,
         pipeline_peers,
-        default_model: state.default_model.clone(),
+        default_model: state.active_model().await,
     })
 }

@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rdma-p2p — painel</title>
+<link rel="stylesheet" href="/ui/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' fill='%230E7490'/><rect x='2' y='6' width='5' height='4' fill='%23fff'/><rect x='9' y='6' width='5' height='4' fill='%23F0B429'/></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-name">rdma-p2p</span>
+  </div>
+  <dl class="topstat" id="topstat">
+    <div><dt>nó</dt><dd id="stat-node">—</dd></div>
+    <div><dt>peers</dt><dd id="stat-peers">—</dd></div>
+    <div><dt>modelo</dt><dd id="stat-model">—</dd></div>
+  </dl>
+  <div class="conn" id="conn"><span class="dot"></span><span id="conn-text">conectando</span></div>
+</header>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" class="tab is-active" data-view="painel" aria-selected="true">Painel</button>
+  <button role="tab" class="tab" data-view="configurar" aria-selected="false">Configurar</button>
+  <button role="tab" class="tab" data-view="testar" aria-selected="false">Testar</button>
+</nav>
+
+<main>
+
+<!-- ── Painel ──────────────────────────────────────────────────────────── -->
+<section id="view-painel" class="view is-active">
+
+  <section class="panel hero">
+    <header class="panel-head">
+      <h2>Cobertura do modelo</h2>
+      <p class="panel-meta" id="coverage-meta">aguardando peers</p>
+    </header>
+    <div class="ribbon-wrap">
+      <div class="ribbon" id="ribbon" role="img" aria-label="Faixa de camadas do modelo por peer"></div>
+      <div class="ribbon-axis" id="ribbon-axis"></div>
+      <div class="ribbon-legend" id="ribbon-legend"></div>
+    </div>
+    <p class="notice notice-warn" id="coverage-warn" hidden></p>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Máquinas</h2>
+      <p class="panel-meta">RAM e VRAM lidas em cada peer</p>
+    </header>
+    <div class="peer-grid" id="peer-grid">
+      <p class="empty">Procurando peers na rede…</p>
+    </div>
+  </section>
+
+</section>
+
+<!-- ── Configurar ──────────────────────────────────────────────────────── -->
+<section id="view-configurar" class="view">
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>1 · Escolha o modelo</h2>
+      <p class="panel-meta">Instalados no LM Studio e no Ollama de cada máquina</p>
+    </header>
+
+    <div class="mode-switch" role="radiogroup" aria-label="Origem do modelo">
+      <label><input type="radio" name="mode" value="full" checked> Modelo inteiro — fatiar por orçamento</label>
+      <label><input type="radio" name="mode" value="shards"> Conjunto já fatiado</label>
+    </div>
+
+    <div id="mode-full">
+      <div class="table-scroll">
+        <table class="grid" id="model-table">
+          <thead>
+            <tr>
+              <th></th><th>Modelo</th><th>Origem</th><th>Quant.</th>
+              <th class="num">Camadas</th><th class="num">Tamanho</th><th>Disponível em</th>
+            </tr>
+          </thead>
+          <tbody><tr><td colspan="7" class="empty">Lendo as bibliotecas…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="mode-shards" hidden>
+      <div class="table-scroll">
+        <table class="grid" id="shard-table">
+          <thead>
+            <tr><th></th><th>Conjunto</th><th>Fatias</th><th class="num">Camadas</th><th>Disponível em</th></tr>
+          </thead>
+          <tbody><tr><td colspan="5" class="empty">Lendo as bibliotecas…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="budget-panel">
+    <header class="panel-head">
+      <h2>2 · Orçamento de memória por peer</h2>
+      <p class="panel-meta">Quantas camadas cabem sai do tamanho real de cada bloco do GGUF</p>
+    </header>
+    <div class="table-scroll">
+      <table class="grid" id="budget-table">
+        <thead>
+          <tr><th>Peer</th><th>Papel</th><th class="num">Memória livre</th><th class="num">Orçamento (MB)</th><th class="num">Camadas</th><th class="num">Peso da fatia</th></tr>
+        </thead>
+        <tbody><tr><td colspan="6" class="empty">Escolha um modelo acima.</td></tr></tbody>
+      </table>
+    </div>
+    <div class="budget-foot">
+      <label class="reserve">
+        Reserva para cache e ativações
+        <input type="number" id="reserve" value="15" min="0" max="80" step="5"> %
+      </label>
+      <button class="btn" id="btn-plan">Calcular divisão</button>
+    </div>
+  </section>
+
+  <section class="panel" id="plan-panel" hidden>
+    <header class="panel-head">
+      <h2>3 · Divisão proposta</h2>
+      <p class="panel-meta" id="plan-meta"></p>
+    </header>
+    <div class="ribbon-wrap">
+      <div class="ribbon" id="plan-ribbon"></div>
+      <div class="ribbon-axis" id="plan-axis"></div>
+      <div class="ribbon-legend" id="plan-legend"></div>
+    </div>
+    <div id="plan-warnings"></div>
+
+    <details class="advanced">
+      <summary>Ajustes avançados</summary>
+      <div class="params">
+        <label>Camadas na GPU<input type="number" id="p-gpu" value="99" min="0"></label>
+        <label>Contexto (n_ctx)<input type="number" id="p-ctx" value="8192" min="512" step="512"></label>
+        <label>Lote (n_batch)<input type="number" id="p-batch" value="512" min="32" step="32"></label>
+        <label>Máx. tokens novos<input type="number" id="p-maxnew" value="256" min="16"></label>
+        <label>Temperatura<input type="number" id="p-temp" value="0.7" min="0" max="2" step="0.05"></label>
+        <label>top_p<input type="number" id="p-topp" value="0.9" min="0" max="1" step="0.05"></label>
+        <label>top_k<input type="number" id="p-topk" value="40" min="0"></label>
+        <label>Penalidade de repetição<input type="number" id="p-rep" value="1.15" min="1" max="2" step="0.01"></label>
+        <label>Janela da penalidade<input type="number" id="p-repn" value="64" min="0"></label>
+        <label class="check"><input type="checkbox" id="p-nothink" checked> Desligar o bloco de raciocínio</label>
+      </div>
+    </details>
+
+    <div class="launch-row">
+      <label class="primary-pick">
+        Peer principal
+        <select id="primary-select"></select>
+      </label>
+      <button class="btn btn-go" id="btn-launch">Subir a rede</button>
+    </div>
+    <div id="launch-log"></div>
+  </section>
+
+</section>
+
+<!-- ── Testar ──────────────────────────────────────────────────────────── -->
+<section id="view-testar" class="view">
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Testar a rede</h2>
+      <p class="panel-meta">Usa <code>POST /v1/chat/completions</code> com <code>stream: true</code>, o mesmo caminho dos harnesses</p>
+    </header>
+    <form id="chat-form">
+      <textarea id="chat-input" rows="3" placeholder="Explique em uma frase o que e RDMA."></textarea>
+      <div class="launch-row">
+        <span class="hint" id="chat-hint"></span>
+        <button class="btn btn-go" type="submit" id="btn-send">Enviar</button>
+      </div>
+    </form>
+    <pre class="output" id="chat-output" aria-live="polite"></pre>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Conectar um harness</h2>
+      <p class="panel-meta">Qualquer peer serve — troque o endereço pelo do peer que preferir</p>
+    </header>
+    <table class="grid kv">
+      <tbody>
+        <tr><th>Base URL</th><td><code id="base-url">—</code></td></tr>
+        <tr><th>Modelo</th><td><code id="base-model">—</code></td></tr>
+        <tr><th>Chave de API</th><td><code>qualquer valor — não é verificada</code></td></tr>
+      </tbody>
+    </table>
+  </section>
+</section>
+
+</main>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

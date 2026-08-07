@@ -35,6 +35,10 @@ pub enum P2PMessage {
         ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
+        /// HTTP port serving the API and web UI. `serde(default)` keeps peers
+        /// running an older build parseable.
+        #[serde(default)]
+        gateway_port: Option<u16>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -66,6 +70,10 @@ pub struct PeerInfo {
     /// Used by the gateway pipeline to POST hidden states.
     #[serde(default)]
     pub inference_port: Option<u16>,
+    /// Port serving this peer's HTTP API and web UI, so the dashboard can pull
+    /// load figures straight from each peer.
+    #[serde(default)]
+    pub gateway_port: Option<u16>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -110,6 +118,12 @@ impl PeerInfo {
             format!("http://{}:{}", ip_host(&self.addr), port)
         })
     }
+
+    /// Base URL of this peer's HTTP API / web UI.
+    pub fn gateway_url(&self) -> Option<String> {
+        self.gateway_port
+            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
+    }
 }
 
 pub struct Network {
@@ -122,6 +136,8 @@ pub struct Network {
     pub ollama_port: Option<u16>,
     /// Port of the local llama-cpp-python inference server.
     pub inference_port: Option<u16>,
+    /// Port of this node's HTTP API / web UI.
+    pub gateway_port: Option<u16>,
     socket: Arc<UdpSocket>,
 }
 
@@ -133,6 +149,7 @@ impl Network {
         bootstrap_nodes: Vec<String>,
         ollama_port: Option<u16>,
         inference_port: Option<u16>,
+        gateway_port: Option<u16>,
     ) -> Result<Self> {
         // Bind dual-stack IPv6 so peers on IPv6 (including link-local fe80::) can be reached.
         // Falls back to IPv4-only if the OS has IPv6 disabled.
@@ -163,6 +180,7 @@ impl Network {
             bootstrap_nodes,
             ollama_port,
             inference_port,
+            gateway_port,
             socket: Arc::new(socket),
         })
     }
@@ -200,6 +218,7 @@ impl Network {
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
+            gateway_port: self.gateway_port,
         };
 
         // Announce to bootstrap nodes
@@ -314,6 +333,7 @@ impl Network {
                 timestamp,
                 ollama_port,
                 inference_port,
+                gateway_port,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -341,6 +361,7 @@ impl Network {
                     last_seen: timestamp,
                     ollama_port,
                     inference_port,
+                    gateway_port,
                 };
 
                 let is_new = {
@@ -391,6 +412,7 @@ impl Network {
                             timestamp: Utc::now(),
                             ollama_port: self.ollama_port,
                             inference_port: self.inference_port,
+                            gateway_port: self.gateway_port,
                         };
                         let _ = self.send_to(&announce, &src.to_string()).await;
                     }

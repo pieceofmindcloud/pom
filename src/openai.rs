@@ -521,38 +521,34 @@ fn sse_stream(
             Phase::Streaming => {}
         }
 
-        loop {
-            match s.rx.recv().await {
-                Some(GenEvent::Token(text)) => {
-                    let delta = match s.mode {
-                        Mode::Chat => json!({ "content": text }),
-                        Mode::Completion => json!(text),
-                    };
-                    let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, None);
-                    return Some((Ok(Event::default().data(chunk)), s));
-                }
-                Some(GenEvent::Done(summary)) => {
-                    let reason = finish_reason(&summary, s.max_tokens);
-                    let delta = match s.mode {
-                        Mode::Chat => json!({}),
-                        Mode::Completion => json!(""),
-                    };
-                    let chunk =
-                        chunk_json(&s.id, s.created, &s.model, s.mode, delta, Some(reason));
-                    s.trailer = Some(Event::default().data("[DONE]"));
-                    return Some((Ok(Event::default().data(chunk)), s));
-                }
-                Some(GenEvent::Failed(err)) => {
-                    // The status line is already sent, so the error has to ride
-                    // inside the stream. Clients surface it as the last event.
-                    let payload = json!({ "error": { "message": err, "type": "server_error" } });
-                    s.trailer = Some(Event::default().data("[DONE]"));
-                    return Some((Ok(Event::default().data(payload.to_string())), s));
-                }
-                None => {
-                    s.phase = Phase::Ended;
-                    return Some((Ok(Event::default().data("[DONE]")), s));
-                }
+        match s.rx.recv().await {
+            Some(GenEvent::Token(text)) => {
+                let delta = match s.mode {
+                    Mode::Chat => json!({ "content": text }),
+                    Mode::Completion => json!(text),
+                };
+                let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, None);
+                return Some((Ok(Event::default().data(chunk)), s));
+            }
+            Some(GenEvent::Done(summary)) => {
+                let reason = finish_reason(&summary, s.max_tokens);
+                let delta = match s.mode {
+                    Mode::Chat => json!({}),
+                    Mode::Completion => json!(""),
+                };
+                let chunk =
+                    chunk_json(&s.id, s.created, &s.model, s.mode, delta, Some(reason));
+                s.trailer = Some(Event::default().data("[DONE]"));
+                return Some((Ok(Event::default().data(chunk)), s));
+            }
+            Some(GenEvent::Failed(err)) => {
+                let payload = json!({ "error": { "message": err, "type": "server_error" } });
+                s.trailer = Some(Event::default().data("[DONE]"));
+                return Some((Ok(Event::default().data(payload.to_string())), s));
+            }
+            None => {
+                s.phase = Phase::Ended;
+                return Some((Ok(Event::default().data("[DONE]")), s));
             }
         }
     })

@@ -647,7 +647,7 @@ inference_port,
     }
 
     // ── Resolve pkarr peers and dial on startup ──────────────────────────────
-    if let (Some(ref pn), Some(ref dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
+    if let (Some(ref pn), Some(dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
         if !pkarr_peer_keys.is_empty() {
             let peers = tokio::time::timeout(
                 std::time::Duration::from_secs(10),

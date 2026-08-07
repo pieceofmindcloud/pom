@@ -83,7 +83,7 @@ pub fn print_layer_map(total_layers: u32, my_start: u32, my_end: u32, peers: &[P
 
     // Print in rows of 8
     let row_size = 8usize;
-    let rows = (total_layers as usize + row_size - 1) / row_size;
+    let rows = (total_layers as usize).div_ceil(row_size);
 
     for row in 0..rows {
         let start = row * row_size;
@@ -94,7 +94,7 @@ pub fn print_layer_map(total_layers: u32, my_start: u32, my_end: u32, peers: &[P
         for i in start..end {
             match &coverage[i] {
                 Some(label) if label == "ME" => print!(" \x1b[32m[{:^4}]\x1b[0m", i),
-                Some(label) => print!(" \x1b[34m[{:^4}]\x1b[0m", i),
+                Some(_label) => print!(" \x1b[34m[{:^4}]\x1b[0m", i),
                 None => print!(" \x1b[90m[ -- ]\x1b[0m"),
             }
         }

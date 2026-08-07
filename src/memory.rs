@@ -155,18 +155,9 @@ fn map_proportional(
 
 fn allocate_ram(size_mb: f64) -> LayerBuffer {
     let size_bytes = (size_mb * 1_048_576.0) as usize;
-    let mut data = Vec::new();
-    match data.try_reserve(size_bytes) {
-        Ok(_) => {
-            data.resize(size_bytes, 0u8);
-            info!("💾 Reserved {:.1}MB RAM", size_mb);
-            LayerBuffer { _inner: Inner::Allocated(data), size_bytes, source: "allocated/ram" }
-        }
-        Err(e) => {
-            warn!("RAM allocation failed ({:.1}MB): {}", size_mb, e);
-            LayerBuffer { _inner: Inner::Allocated(Vec::new()), size_bytes: 0, source: "failed" }
-        }
-    }
+    let data = vec![0; size_bytes];
+    info!("💾 Reserved {:.1}MB RAM", size_mb);
+    LayerBuffer { _inner: Inner::Allocated(data), size_bytes, source: "allocated/ram" }
 }
 
 // ── GGUF header parser ────────────────────────────────────────────────────────
@@ -208,7 +199,7 @@ fn gguf_layer_range(raw: &[u8], start_layer: u32, end_layer: u32) -> Result<(usi
     // Data section starts at the next alignment boundary after the header
     let header_end = c.position() as usize;
     let alignment = 32usize;
-    let data_start = (header_end + alignment - 1) / alignment * alignment;
+    let data_start = header_end.div_ceil(alignment) * alignment;
 
     // Filter tensors belonging to our layer range ("blk.<N>.*")
     let mut offsets: Vec<u64> = tensors
@@ -291,7 +282,7 @@ fn skip_value(c: &mut Cursor<&[u8]>, vtype: u32) -> Result<()> {
         0 | 7 => { read_u8(c)?; }              // u8, bool
         1 => { read_u8(c)?; }                   // i8 (same byte size)
         2 | 3 => { read_u16(c)?; }              // u16, i16
-        4 | 5 | 6 => { read_u32(c)?; }         // u32, i32, f32
+        4..=6 => { read_u32(c)?; }         // u32, i32, f32
         8 => { skip_string(c)?; }               // string
         9 => {                                   // array
             let elem_type = read_u32(c)?;
@@ -300,7 +291,7 @@ fn skip_value(c: &mut Cursor<&[u8]>, vtype: u32) -> Result<()> {
                 skip_value(c, elem_type)?;
             }
         }
-        10 | 11 | 12 => { read_u64(c)?; }      // u64, i64, f64
+        10..=12 => { read_u64(c)?; }      // u64, i64, f64
         t => return Err(anyhow::anyhow!("unknown GGUF value type {}", t)),
     }
     Ok(())

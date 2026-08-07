@@ -318,6 +318,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
         "hostname": local_host,
         "is_self": true,
         "models": local.models,
+        "shard_sets": local.shard_sets,
         "scanned": local.scanned,
     })];
 
@@ -328,6 +329,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "hostname": v.get("hostname").cloned().unwrap_or(json!(null)),
                 "is_self": false,
                 "models": v.get("models").cloned().unwrap_or(json!([])),
+                "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
             })),
             None => out.push(json!({
@@ -335,6 +337,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "is_self": false,
                 "error": error,
                 "models": [],
+                "shard_sets": [],
             })),
         }
     }
@@ -763,8 +766,19 @@ async fn launch(
             continue;
         };
 
+        // The peer's /api/ui/apply is behind ConnectionAuth. Every node in a
+        // cluster shares the same connection key, so forward ours — without it
+        // the remote leg of a launch always came back 401.
         let url = format!("{base}/api/ui/apply");
-        match state.http.post(&url).json(&apply_req).send().await {
+        let key = state.auth.read().await.connection_key.clone();
+        match state
+            .http
+            .post(&url)
+            .bearer_auth(&key)
+            .json(&apply_req)
+            .send()
+            .await
+        {
             Ok(r) if r.status().is_success() => {
                 let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
                 results.push(json!({

@@ -57,10 +57,25 @@ async function getJSON(url) {
   return r.json();
 }
 
+/** A chave de conexão deste nó, buscada uma vez e reusada. */
+async function ensureConnectionKey() {
+  if (state.connectionKey) return state.connectionKey;
+  try {
+    const node = await getJSON("/api/ui/node");
+    state.connectionKey = node.connection_key || "";
+  } catch (e) {
+    state.connectionKey = "";
+  }
+  return state.connectionKey;
+}
+
 async function postJSON(url, body) {
+  // /api/ui/plan, /apply e /launch exigem a chave de conexão. Sem este header
+  // toda a aba Configurar respondia 401, inclusive no próprio nó principal.
+  await ensureConnectionKey();
   const r = await fetch(url, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...authHeaders() },
     body: JSON.stringify(body),
   });
   const data = await r.json().catch(() => ({}));
@@ -245,12 +260,18 @@ function peerCard(peer, cluster) {
   return `
     <article class="peer-card" style="--peer-c:${hue}">
       <h3>${esc(sys?.hostname ? shortHost(sys.hostname) : peer.short_id)}</h3>
-      <p class="peer-sub">${esc(peer.addr)} · ${esc(sys?.os || "?")}/${esc(sys?.arch || "?")} · camadas ${peer.start_layer}–${peer.end_layer}</p>
+      <p class="peer-sub">${esc(peer.addr)} · ${esc(sys?.os || "?")}/${esc(sys?.arch || "?")} · ${
+        peer.total_layers > 0
+          ? `camadas ${peer.start_layer}–${peer.end_layer}`
+          : "sem camadas atribuídas"
+      }</p>
       <div class="tagrow">${tags.join("")}</div>
 
       ${meter("RAM", ram?.used_mb, ram?.total_mb, ram?.used_pct)}
 
       ${gpuSection(sys, gpu)}
+
+      ${diskSection(sys?.disk)}
 
       <canvas class="spark" id="spark-${esc(peer.node_id)}" data-node="${esc(peer.node_id)}"></canvas>
       <p class="spark-key">${sys?.gpu_kind === "nvidia"
@@ -276,6 +297,16 @@ function meter(label, usedMb, totalMb, pct) {
         <div class="meter-fill ${p > 90 ? "is-high" : ""}" style="width:${p}%"></div>
       </div>
     </div>`;
+}
+
+/** Espaço em disco onde ficam as fatias — é o que decide se cabe baixar outra. */
+function diskSection(disk) {
+  if (!disk || !disk.total_mb) return "";
+  const used = disk.total_mb - disk.free_mb;
+  const pct = (used / disk.total_mb) * 100;
+  return `
+    ${meter("Disco", used, disk.total_mb, pct)}
+    <p class="meter-note">${fmtMB(disk.free_mb)} livres em ${esc(disk.mount_point || "—")}</p>`;
 }
 
 /** VRAM só é desenhada como medidor quando existe VRAM dedicada de verdade. */
@@ -368,6 +399,14 @@ function drawSpark(peer) {
 function renderConnectInfo(cluster) {
   $("#base-url").textContent = `${location.origin}/v1`;
   $("#base-model").textContent = cluster.active_model || "—";
+  // As rotas /v1 pedem chave: a de conexão vale, ou uma chave de API criada
+  // na aba Nós. Dizer "não é verificada" deixou de ser verdade.
+  const keyEl = $("#connect-api-key");
+  if (keyEl) {
+    keyEl.textContent = state.connectionKey
+      ? "a chave de conexão, ou uma chave de API criada na aba Nós"
+      : "gere uma chave na aba Nós";
+  }
   $("#chat-hint").textContent = cluster.complete
     ? `pipeline pronto · ${cluster.total_layers} camadas`
     : "cobertura incompleta — a resposta deve falhar";
@@ -916,9 +955,12 @@ $("#chat-form").addEventListener("submit", async (ev) => {
   $("#ribbon").classList.add("is-running");
 
   try {
+    // As rotas /v1 exigem chave. O painel usa a chave de conexão deste nó,
+    // que o ApiKeyAuth aceita como credencial de operador.
+    await ensureConnectionKey();
     const resp = await fetch("/v1/chat/completions", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...authHeaders() },
       body: JSON.stringify({
         model: state.cluster?.active_model,
         messages: [{ role: "user", content: prompt }],
@@ -1029,8 +1071,30 @@ async function loadNodesTab() {
   if (!view || !view.classList.contains('is-active')) return;
 
   try {
-    const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
+    // The connection key comes from this node itself, and every /admin call
+    // needs it. Fetch it first, or the very first tab open sends an empty
+    // bearer token and every panel stays stuck on "Carregando...".
     const localNodeR = await fetch('/api/ui/node');
+    if (localNodeR.ok) {
+      const node = await localNodeR.json();
+      const connKey = node.connection_key || '';
+      document.getElementById('display-conn-key').textContent = connKey || '***';
+      state.connectionKey = connKey;
+    }
+
+    const nodesR = await fetch('/admin/nodes', { headers: authHeaders() });
+    const nodesEl = document.getElementById('nodes-table');
+    if (nodesR.ok) {
+      const nodes = await nodesR.json();
+      nodesEl.innerHTML = nodes.length
+        ? nodes.map(renderNodeRow).join('')
+        : '<p class="muted-note">Nenhum no conhecido ainda.</p>';
+    } else {
+      nodesEl.innerHTML =
+        `<p class="notice notice-warn">Nao foi possivel listar os nos (HTTP ${nodesR.status}).</p>`;
+    }
+
+    const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
 
     if (keysR.ok) {
       const keys = await keysR.json();
@@ -1044,15 +1108,38 @@ async function loadNodesTab() {
       `).join('') || '<p style="color:var(--muted)">Nenhuma chave</p>';
     }
 
-    if (localNodeR.ok) {
-      const node = await localNodeR.json();
-      const connKey = node.connection_key || '***';
-      document.getElementById('display-conn-key').textContent = connKey;
-      state.connectionKey = connKey !== '***' ? connKey : '';
-    }
   } catch(e) {
     console.error('Failed to load nodes tab', e);
   }
+}
+
+/** Uma linha da tabela "Nós conectados". */
+function renderNodeRow(n) {
+  const name = n.hostname ? shortHost(n.hostname) : (n.short_id || n.node_id);
+  const tags = [];
+  if (n.is_self) tags.push('<span class="tag is-primary">este nó</span>');
+  if (n.role) tags.push(`<span class="tag">${esc(n.role)}</span>`);
+  if (n.blocked) tags.push('<span class="tag is-failed">bloqueado</span>');
+  if (!n.connected) tags.push('<span class="tag">desconectado</span>');
+  const layers = n.total_layers > 0
+    ? `camadas ${n.start_layer}–${n.end_layer}`
+    : 'sem camadas atribuídas';
+
+  const actions = n.is_self
+    ? ''
+    : n.blocked
+      ? `<button class="btn-slim" onclick="unblockNode('${esc(n.node_id)}')">Desbloquear</button>`
+      : `<button class="btn-slim" onclick="blockNode('${esc(n.node_id)}')">Bloquear</button>`;
+
+  return `
+    <div class="node-row">
+      <div class="node-row-main">
+        <strong>${esc(name)}</strong>
+        <span class="node-row-sub">${esc(n.addr || '—')} · ${layers}</span>
+      </div>
+      <div class="tagrow">${tags.join('')}</div>
+      <div class="node-row-actions">${actions}</div>
+    </div>`;
 }
 
 async function revokeApiKey(key) {
@@ -1086,22 +1173,54 @@ document.getElementById('notif-bell')?.addEventListener('click', () => {
 pollNotifications();
 setInterval(pollNotifications, 5000);
 
+/** Copia o conteudo de um campo e confirma na propria tecla. */
+document.addEventListener('click', async (ev) => {
+  const btn = ev.target.closest('[data-copy]');
+  if (!btn) return;
+  const field = document.getElementById(btn.dataset.copy);
+  if (!field) return;
+  const value = field.value || '';
+  try {
+    await navigator.clipboard.writeText(value);
+  } catch (e) {
+    // clipboard bloqueado (http em host remoto): a selecao ainda resolve
+    field.select();
+    document.execCommand('copy');
+  }
+  const before = btn.textContent;
+  btn.textContent = 'Copiado';
+  btn.classList.add('is-done');
+  setTimeout(() => { btn.textContent = before; btn.classList.remove('is-done'); }, 1500);
+});
+
 document.getElementById('btn-regenerate-key')?.addEventListener('click', async () => {
+  if (!confirm('Gerar uma chave nova invalida a atual: todos os nos terao de ser reconfigurados com ela. Continuar?')) return;
+  await ensureConnectionKey();
   const r = await fetch('/admin/regenerate-key', { method: 'POST', headers: authHeaders() });
   const d = await r.json();
-  document.getElementById('display-conn-key').textContent = d.connection_key || '***';
-  alert('Nova chave gerada. Todos os nos precisarao reconfigurar.');
+  if (d.connection_key) {
+    document.getElementById('display-conn-key').value = d.connection_key;
+    state.connectionKey = d.connection_key;
+  }
 });
 
 document.getElementById('btn-generate-api-key')?.addEventListener('click', async () => {
   const label = prompt('Rotulo para a chave (ex: opencode):', 'default');
   if (!label) return;
+  await ensureConnectionKey();
   const r = await fetch('/admin/api-keys', {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
     body: JSON.stringify({ label })
   });
   const d = await r.json();
-  alert('Nova chave gerada:\n' + d.key);
+  if (!r.ok || !d.key) {
+    alert('Nao foi possivel gerar a chave: ' + (d.error || r.status));
+    return;
+  }
+  // Mostrada uma unica vez, num campo selecionavel - um alert() nao deixa copiar.
+  const box = document.getElementById('new-api-key');
+  document.getElementById('new-api-key-value').value = d.key;
+  box.hidden = false;
   loadNodesTab();
 });

@@ -94,6 +94,9 @@ pub struct SystemLoad {
     pub gpu_processes: Vec<GpuProcess>,
     /// Memory wired down by the kernel — where Metal buffers live on macOS.
     pub wired_mb: Option<f64>,
+    /// Free space where the model slices live, so the screen can say whether
+    /// another slice fits before anyone starts downloading one.
+    pub disk: DiskStat,
     pub sampled_at: String,
 }
 
@@ -104,10 +107,18 @@ pub struct DiskStat {
     pub mount_point: String,
 }
 
+impl Default for DiskStat {
+    fn default() -> Self {
+        DiskStat { total_mb: 0, free_mb: 0, mount_point: String::new() }
+    }
+}
+
 // ── Disk ─────────────────────────────────────────────────────────────────────
 
 pub fn sample_disk() -> DiskStat {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    // The slices live under the project root, which is not necessarily the
+    // working directory — see `config::project_root`.
+    let cwd = crate::config::project_root();
     let mount = cwd.to_string_lossy().to_string();
     let out = std::process::Command::new("df")
         .arg("-m")
@@ -184,6 +195,9 @@ async fn sample_uncached() -> SystemLoad {
             .map(|n| n.get())
             .unwrap_or(0),
         load_avg: read_load_avg().await,
+        disk: tokio::task::spawn_blocking(sample_disk)
+            .await
+            .unwrap_or_else(|_| DiskStat::default()),
         ram,
         gpu_kind,
         gpu_note,

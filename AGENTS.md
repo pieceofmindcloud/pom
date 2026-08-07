@@ -277,6 +277,67 @@ Falta para funcionar de fato pela internet:
 4. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
    confiável, não na internet.
 
+## Arquitetura Principal/Nó e as armadilhas que ela trouxe
+
+Verificado em 2026-08-07 com as duas máquinas configuradas **pela interface**,
+`./request.sh` devolvendo `"source": "pipeline:<hop1>→<hop2>"`.
+
+### O fluxo
+
+Sem `rdma-p2p.json`, o nó sobe em **modo setup** (`start_setup_mode`, `src/main.rs`):
+serve só `web/setup.html`, onde se escolhe Principal ou Nó. O Principal gera a
+**chave de conexão**; o Nó recebe essa chave mais `<ip-do-principal>:42777`.
+`POST /api/setup/save` grava a config, respawna o processo e sai — o reinício
+funciona e a tela volta sozinha para o painel.
+
+Com config e **sem `--model`**, entra `start_gateway_only`: P2P e todas as rotas
+no ar, modelo escolhido depois pela aba Configurar. É o caminho normal do produto;
+`--model`/`--memory` são só para subida por linha de comando.
+
+A chave de conexão é **a mesma em todo o cluster** e serve de credencial de
+operador: autentica as rotas `/admin/*`, `/api/ui/{plan,apply,launch}` e também
+as rotas `/v1` (ver `ApiKeyAuth` em `src/auth.rs`). Chamada entre nós carrega
+essa chave (o `launch` repassa o `apply` ao peer com `bearer_auth`).
+
+### Armadilhas de rede P2P — onde este projeto mais tropeça
+
+Três defeitos reais, todos com o mesmo sintoma ("os peers não se veem"):
+
+1. **Todo caminho de transmissão era condicionado a existir `LayerAssignment`.**
+   Um nó configurado pela interface não tem assignment, então nunca anunciava,
+   nunca respondia `PeerRequest` e `start_gateway_only` nem chamava
+   `bootstrap_discovery`. Dois nós assim ficam mudos. Hoje `Network::start`
+   chama o bootstrap e o gossip anuncia sempre (`self_announce`, `src/network.rs`).
+2. **Socket dual-stack + destino IPv4 = EINVAL no macOS.** Com o socket em
+   `[::]`, o Rust manda `sockaddr_in` e o macOS recusa
+   (`Failed to send to <ip>: Invalid argument (os error 22)`); o Linux aceita.
+   Resultado: descoberta funcionava num sentido só e o outro lado expirava o
+   peer em 30s. `Network::normalize` mapeia para `::ffff:a.b.c.d`; há teste em
+   `src/network.rs` porque a regressão é silenciosa e só aparece numa das
+   plataformas.
+3. **Broadcast v4 não sai de socket IPv6** — mesmo mapeamento resolve.
+
+Ao diagnosticar: `RUST_LOG=info` já mostra `Contacting bootstrap node`,
+`🆕 New peer`, `Failed to send to` e `🧹 Removed N timed-out peers`. A ausência
+de `Contacting bootstrap node` significa que o nó não transmite nada.
+
+### Diretório de trabalho: nunca lance o binário por caminho absoluto e pronto
+
+`models/`, `rdma-p2p.json` e `venv/` saem do **project root**
+(`config::project_root`, `src/config.rs`): `$RDMA_P2P_HOME` → cwd, se parecer o
+projeto → diretório do executável, subindo de `target/release`. Um
+`ssh host '/caminho/rdma-p2p'` roda em `$HOME` e antes disso lia outra config e
+não achava fatia nenhuma — a ksia aparecia sem os shards que estavam no disco
+dela. A linha `Project root: ...` no arranque diz qual foi escolhido; confira-a
+antes de suspeitar do catálogo. Use `run-p1.sh`/`run-p2.sh`, que fazem `cd`.
+
+### Porta de inferência
+
+Nó configurado pela interface não passa `--inference-port`, e sem porta o
+`apply` recusava todo modelo. O padrão é `config::DEFAULT_INFERENCE_PORT` (8181),
+anunciado desde o arranque; o servidor Python só sobe quando uma fatia é
+atribuída.
+
 ## Interface web, API OpenAI e monitor
 
 Verificado em 2026-08-07 com MacBook + ksia.

@@ -12,7 +12,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-pub fn admin_routes() -> Router<AuthState> {
+pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
     Router::new()
         .route("/admin/nodes", get(list_nodes))
         .route("/admin/nodes/{id}/block", post(block_node))
@@ -30,22 +30,56 @@ async fn transfer_offers(
     Json(json!({ "offers": [] }))
 }
 
+/// Every node this machine knows about: the peers actually on the network plus
+/// any blocked node that is not currently connected. Returning only the blocked
+/// list left the "Nós conectados" panel permanently empty.
 async fn list_nodes(
     _auth: ConnectionAuth,
-    State(config): State<AuthState>,
+    State(state): State<crate::gateway::GatewayState>,
 ) -> impl IntoResponse {
-    let cfg = config.read().await;
-    let nodes: Vec<serde_json::Value> = cfg
-        .blocked_nodes
+    let blocked = state.auth.read().await.blocked_nodes.clone();
+    let self_id = state.network.node_id.clone();
+
+    let mut nodes: Vec<serde_json::Value> = state
+        .all_peers()
+        .await
         .iter()
-        .map(|id| {
+        .map(|p| {
             json!({
-                "node_id": id,
-                "blocked": true,
-                "verified": false,
+                "node_id": p.node_id,
+                "short_id": &p.node_id[..p.node_id.len().min(12)],
+                "hostname": p.hostname,
+                "addr": p.addr,
+                "role": p.role,
+                "model": p.model,
+                "start_layer": p.start_layer,
+                "end_layer": p.end_layer,
+                "total_layers": p.total_layers,
+                "is_self": p.node_id == self_id,
+                "connected": true,
+                "blocked": blocked.contains(&p.node_id),
+                "verified": p.connection_verified,
             })
         })
         .collect();
+
+    let connected: Vec<String> = nodes
+        .iter()
+        .filter_map(|n| n["node_id"].as_str().map(str::to_string))
+        .collect();
+    for id in blocked.iter().filter(|id| !connected.contains(id)) {
+        nodes.push(json!({
+            "node_id": id,
+            "short_id": &id[..id.len().min(12)],
+            "hostname": "",
+            "addr": "",
+            "is_self": false,
+            "connected": false,
+            "blocked": true,
+            "verified": false,
+        }));
+    }
+
     Json(nodes)
 }
 

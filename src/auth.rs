@@ -83,7 +83,11 @@ where
         let token = header.strip_prefix("Bearer ").unwrap_or(header);
 
         let cfg = config.read().await;
-        if cfg.api_keys.iter().any(|k| k.active && k.key == token) {
+        // The connection key is this cluster's operator credential; it also
+        // opens the OpenAI routes, so the built-in test panel and any operator
+        // can call them without first minting an API key.
+        let is_operator = !cfg.connection_key.is_empty() && token == cfg.connection_key;
+        if is_operator || cfg.api_keys.iter().any(|k| k.active && k.key == token) {
             Ok(ApiKeyAuth)
         } else {
             Err(AuthRejection::InvalidKey)

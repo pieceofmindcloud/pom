@@ -87,22 +87,26 @@ impl GatewayState {
     /// planning exactly like a remote one.
     pub async fn all_peers(&self) -> Vec<PeerInfo> {
         let mut peers = self.network.alive_peers().await;
-        if let Some(local) = self.local_assignment.read().await.clone() {
+        // This machine is always part of the cluster, model or no model. Hiding
+        // it when there is no assignment made the whole machine list disappear
+        // on a node configured through the web UI.
+        {
+            let local = self.local_assignment.read().await.clone();
             peers.push(PeerInfo {
                 node_id: self.network.node_id.clone(),
                 pubkey: self.network.pubkey.clone(),
                 addr: format!("127.0.0.1:{}", self.network.bind_addr.port()),
-                model: local.model,
-                start_layer: local.start_layer,
-                end_layer: local.end_layer,
-                total_layers: local.total_layers,
-                memory_mb: local.memory_used_mb,
+                model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
+                start_layer: local.as_ref().map(|l| l.start_layer).unwrap_or(0),
+                end_layer: local.as_ref().map(|l| l.end_layer).unwrap_or(0),
+                total_layers: local.as_ref().map(|l| l.total_layers).unwrap_or(0),
+                memory_mb: local.as_ref().map(|l| l.memory_used_mb).unwrap_or(0.0),
                 last_seen: chrono::Utc::now(),
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
                 gateway_port: Some(self.gateway_port),
-                role: String::new(),
-                hostname: String::new(),
+                role: self.network.role.clone(),
+                hostname: self.network.hostname.clone(),
                 connection_verified: false,
                 disk_total_mb: 0,
                 disk_free_mb: 0,
@@ -476,7 +480,7 @@ pub async fn generate_blocking(
 // ── Server startup ────────────────────────────────────────────────────────────
 
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
-    let admin = admin::admin_routes().with_state(state.auth.clone());
+    let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
         .route("/generate", post(handle_generate)) // alias

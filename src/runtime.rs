@@ -253,7 +253,7 @@ impl NodeRuntime {
             RuntimeStatus::new(ServerState::Starting, "iniciando servidor de inferência");
 
         // Let peers know immediately instead of waiting for the next gossip tick.
-        if let Err(e) = self.net.announce(&assignment).await {
+        if let Err(e) = self.net.announce(Some(&assignment)).await {
             warn!("announce após reconfiguração falhou: {e}");
         }
 

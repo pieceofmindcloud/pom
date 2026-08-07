@@ -158,6 +158,10 @@ pub struct Network {
     pub inference_port: Option<u16>,
     /// Port of this node's HTTP API / web UI.
     pub gateway_port: Option<u16>,
+    /// Advertised in every `Announce` so peers can name this machine without a
+    /// second HTTP round-trip.
+    pub role: String,
+    pub hostname: String,
     socket: Arc<UdpSocket>,
 }
 
@@ -201,14 +205,48 @@ impl Network {
             ollama_port,
             inference_port,
             gateway_port,
+            role: String::new(),
+            hostname: String::new(),
             socket: Arc::new(socket),
         })
+    }
+
+    /// Label this node carries in its announces.
+    pub fn with_identity(mut self, role: String, hostname: String) -> Self {
+        self.role = role;
+        self.hostname = hostname;
+        self
+    }
+
+    /// Put a destination in the address family of our socket.
+    ///
+    /// The socket is bound dual-stack (`[::]`), and macOS refuses a `sockaddr_in`
+    /// destination on an `AF_INET6` socket with EINVAL — every send to an IPv4
+    /// peer failed, silently killing discovery in one direction. Linux happens to
+    /// accept it, which is why the breakage looked one-sided. Mapping the address
+    /// to `::ffff:a.b.c.d` works on both, for unicast and for broadcast.
+    fn normalize(&self, addr: SocketAddr) -> SocketAddr {
+        match (self.bind_addr, addr) {
+            (SocketAddr::V6(_), SocketAddr::V4(v4)) => {
+                SocketAddr::new(IpAddr::V6(v4.ip().to_ipv6_mapped()), v4.port())
+            }
+            _ => addr,
+        }
+    }
+
+    async fn send_bytes(&self, data: &[u8], addr: &str) -> std::io::Result<()> {
+        let resolved = tokio::net::lookup_host(addr)
+            .await?
+            .next()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "no address"))?;
+        self.socket.send_to(data, self.normalize(resolved)).await?;
+        Ok(())
     }
 
     /// Send a message to a specific address
     pub async fn send_to(&self, msg: &P2PMessage, addr: &str) -> Result<()> {
         let data = serde_json::to_vec(msg)?;
-        match self.socket.send_to(&data, addr).await {
+        match self.send_bytes(&data, addr).await {
             Ok(_) => debug!("Sent {:?} to {}", std::mem::discriminant(msg), addr),
             Err(e) => warn!("Failed to send to {}: {}", addr, e),
         }
@@ -219,31 +257,41 @@ impl Network {
     pub async fn broadcast_local(&self, msg: &P2PMessage) -> Result<()> {
         let data = serde_json::to_vec(msg)?;
         let broadcast_addr = format!("255.255.255.255:{}", DISCOVERY_PORT);
-        let _ = self.socket.send_to(&data, &broadcast_addr).await;
+        if let Err(e) = self.send_bytes(&data, &broadcast_addr).await {
+            debug!("LAN broadcast failed: {e}");
+        }
         Ok(())
     }
 
-    /// Announce this node's existence and layer assignment to the network
-    pub async fn announce(&self, assignment: &LayerAssignment) -> Result<()> {
-        let my_addr = format!("0.0.0.0:{}", self.bind_addr.port());
-        let msg = P2PMessage::Announce {
+    /// Build this node's `Announce`.
+    ///
+    /// A node configured through the web UI has no `LayerAssignment` until a
+    /// model is bound to it. It must still announce itself, otherwise it is
+    /// invisible to the rest of the cluster — it just announces zero layers.
+    fn self_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
+        P2PMessage::Announce {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
-            addr: my_addr,
-            model: assignment.model.clone(),
-            start_layer: assignment.start_layer,
-            end_layer: assignment.end_layer,
-            total_layers: assignment.total_layers,
-            memory_mb: assignment.memory_used_mb,
+            addr: format!("0.0.0.0:{}", self.bind_addr.port()),
+            model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
+            start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
+            end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
+            total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
+            memory_mb: assignment.map(|a| a.memory_used_mb).unwrap_or(0.0),
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
             gateway_port: self.gateway_port,
-            role: String::new(),
-            hostname: String::new(),
+            role: self.role.clone(),
+            hostname: self.hostname.clone(),
             disk_total_mb: 0,
             disk_free_mb: 0,
-        };
+        }
+    }
+
+    /// Announce this node's existence and layer assignment to the network
+    pub async fn announce(&self, assignment: Option<&LayerAssignment>) -> Result<()> {
+        let msg = self.self_announce(assignment);
 
         // Announce to bootstrap nodes
         for bootstrap in &self.bootstrap_nodes {
@@ -312,13 +360,19 @@ impl Network {
             let mut ticker = interval(Duration::from_secs(GOSSIP_INTERVAL_SECS));
             loop {
                 ticker.tick().await;
-                let asgn = assignment_gossip.read().await;
-                if let Some(ref a) = *asgn {
-                    let _ = net_gossip.announce(a).await;
-                    net_gossip.cleanup_dead_peers().await;
-                }
+                // Announce unconditionally: a node without a model still has to
+                // be discoverable, otherwise a freshly configured cluster is
+                // made of nodes that only listen and never speak.
+                let asgn = assignment_gossip.read().await.clone();
+                let _ = net_gossip.announce(asgn.as_ref()).await;
+                net_gossip.cleanup_dead_peers().await;
             }
         });
+
+        // Reach out to the configured bootstrap nodes right away. This belongs
+        // here, not in the caller: every start path needs it, and the
+        // gateway-only path used to skip it.
+        self.bootstrap_discovery().await?;
 
         Ok(())
     }
@@ -429,31 +483,12 @@ impl Network {
                 }
 
                 // Immediately send our own Announce so the requester learns about
-                // us without waiting for the next gossip cycle.
+                // us without waiting for the next gossip cycle. This happens even
+                // with no assignment — see `self_announce`.
                 {
-                    let asgn = assignment.read().await;
-                    if let Some(ref a) = *asgn {
-                        let my_addr = format!("0.0.0.0:{}", self.bind_addr.port());
-                        let announce = P2PMessage::Announce {
-                            node_id: self.node_id.clone(),
-                            pubkey: self.pubkey.clone(),
-                            addr: my_addr,
-                            model: a.model.clone(),
-                            start_layer: a.start_layer,
-                            end_layer: a.end_layer,
-                            total_layers: a.total_layers,
-                            memory_mb: a.memory_used_mb,
-                            timestamp: Utc::now(),
-                            ollama_port: self.ollama_port,
-                            inference_port: self.inference_port,
-                            gateway_port: self.gateway_port,
-                            role: String::new(),
-                            hostname: String::new(),
-                            disk_total_mb: 0,
-                            disk_free_mb: 0,
-                        };
-                        let _ = self.send_to(&announce, &src.to_string()).await;
-                    }
+                    let asgn = assignment.read().await.clone();
+                    let announce = self.self_announce(asgn.as_ref());
+                    let _ = self.send_to(&announce, &src.to_string()).await;
                 }
 
                 // Also send the list of peers we know about
@@ -544,5 +579,42 @@ impl Network {
             .filter(|p| p.is_alive())
             .cloned()
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sending an IPv4 destination on the dual-stack socket fails with EINVAL on
+    /// macOS, so IPv4 destinations must be mapped. Regressing this kills peer
+    /// discovery on one side only, which is very hard to spot.
+    #[tokio::test]
+    async fn ipv4_destinations_are_mapped_on_a_dual_stack_socket() {
+        let net = Network::new(
+            "n".into(), "p".into(), 0, vec![], None, None, None,
+        )
+        .await
+        .unwrap();
+
+        let v4: SocketAddr = "192.168.100.138:42777".parse().unwrap();
+        let out = net.normalize(v4);
+
+        if matches!(net.bind_addr, SocketAddr::V6(_)) {
+            assert_eq!(out, "[::ffff:192.168.100.138]:42777".parse().unwrap());
+        } else {
+            assert_eq!(out, v4, "IPv4-only socket must keep the address as-is");
+        }
+    }
+
+    #[tokio::test]
+    async fn ipv6_destinations_are_left_alone() {
+        let net = Network::new(
+            "n".into(), "p".into(), 0, vec![], None, None, None,
+        )
+        .await
+        .unwrap();
+        let v6: SocketAddr = "[fe80::1]:42777".parse().unwrap();
+        assert_eq!(net.normalize(v6), v6);
     }
 }

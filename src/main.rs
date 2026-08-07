@@ -210,6 +210,12 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
+    info!(
+        "Project root: {} (config: {})",
+        config::project_root().display(),
+        config::Config::config_path().display()
+    );
+
     // ── Setup flow: if no config exists, serve only the setup page ──────────
     if !config::Config::exists() {
         info!("No config found — starting in setup mode");
@@ -222,7 +228,10 @@ async fn main() -> Result<()> {
     info!("Role: {}", app_config.role);
     let p2p_port = app_config.p2p_port;
     let gateway_port = app_config.gateway_port;
-    let inference_port = args.inference_port.or(app_config.inference_port);
+    let inference_port = Some(
+        args.inference_port
+            .unwrap_or_else(|| app_config.inference_port_or_default()),
+    );
 
     // ── list-models ─────────────────────────────────────────────────────────
     if args.list_models {
@@ -445,16 +454,17 @@ async fn main() -> Result<()> {
 inference_port,
             Some(gateway_port),
         )
-        .await?,
+        .await?
+        .with_identity(
+            app_config.role.to_string(),
+            sysmon::sample().await.hostname,
+        ),
     );
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
         Arc::new(RwLock::new(None));
 
     net.clone().start(assignment_shared.clone()).await?;
-
-    // ── Bootstrap discovery ──────────────────────────────────────────────────
-    net.bootstrap_discovery().await?;
 
     info!("⏳ Scanning network for existing layer coverage...");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -524,12 +534,12 @@ inference_port,
         *a = Some(assignment.clone());
     }
 
-    net.announce(&assignment).await?;
+    net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
     // Everything the web UI can change lives here, so a reconfiguration
     // restarts the Python child without restarting this process.
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = config::project_root();
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
 
     if let Some(port) = inference_port {
@@ -828,10 +838,14 @@ async fn start_gateway_only(
             app_config.p2p_port,
             app_config.bootstrap_nodes.clone(),
             None,
-            app_config.inference_port,
+            Some(app_config.inference_port_or_default()),
             Some(gateway_port),
         )
-        .await?,
+        .await?
+        .with_identity(
+            app_config.role.to_string(),
+            sysmon::sample().await.hostname,
+        ),
     );
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
@@ -839,7 +853,7 @@ async fn start_gateway_only(
 
     net.clone().start(assignment_shared.clone()).await?;
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let cwd = config::project_root();
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
 
     let http_client = reqwest::Client::builder()

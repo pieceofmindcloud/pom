@@ -53,11 +53,60 @@ pub struct Config {
 fn default_gateway_port() -> u16 { 8080 }
 fn default_p2p_port() -> u16 { 42777 }
 
+/// Port the local inference server listens on when the config does not name one.
+///
+/// A node configured through the web UI never passes `--inference-port`, and
+/// without a port `apply` refused every model with "este nó subiu sem
+/// --inference-port" — the UI could configure nothing at all. Advertising it
+/// up front matches what `run-p1.sh`/`run-p2.sh` already do: the port is
+/// announced before the Python server exists, and the server is spawned when a
+/// slice is actually assigned.
+pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
+
+/// Directory `rdma-p2p.json`, `models/` and `venv/` are resolved against.
+///
+/// Everything used to be resolved against the working directory, so launching
+/// the binary by absolute path from somewhere else (`ssh host '/path/to/rdma-p2p'`
+/// runs in `$HOME`) silently read a different config and found no models at all —
+/// the node then reported it had none of the shards sitting right next to it.
+///
+/// Resolution order, first hit wins:
+///  1. `$RDMA_P2P_HOME`, for anyone who wants to be explicit;
+///  2. the working directory, when it actually looks like the project;
+///  3. the directory holding the executable, climbing out of `target/release`.
+pub fn project_root() -> PathBuf {
+    if let Ok(home) = std::env::var("RDMA_P2P_HOME") {
+        return PathBuf::from(home);
+    }
+
+    let looks_like_project =
+        |d: &std::path::Path| d.join(CONFIG_FILENAME).exists() || d.join("models").is_dir();
+
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    if looks_like_project(&cwd) {
+        return cwd;
+    }
+
+    if let Ok(exe) = std::env::current_exe() {
+        let mut dir = exe.parent().map(PathBuf::from);
+        // …/target/release/rdma-p2p → climb to the project directory.
+        for _ in 0..3 {
+            let Some(d) = dir else { break };
+            if looks_like_project(&d) {
+                return d;
+            }
+            dir = d.parent().map(PathBuf::from);
+        }
+    }
+
+    cwd
+}
+
 impl Config {
     pub fn config_path() -> PathBuf {
         std::env::var("RDMA_P2P_CONFIG")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| PathBuf::from(CONFIG_FILENAME))
+            .unwrap_or_else(|_| project_root().join(CONFIG_FILENAME))
     }
 
     pub fn exists() -> bool {
@@ -77,6 +126,11 @@ impl Config {
         let content = serde_json::to_string_pretty(self)?;
         std::fs::write(&path, content)
             .with_context(|| format!("Failed to write config at {:?}", path))
+    }
+
+    /// Inference port this node should use, falling back to the default.
+    pub fn inference_port_or_default(&self) -> u16 {
+        self.inference_port.unwrap_or(DEFAULT_INFERENCE_PORT)
     }
 
     pub fn active_api_key(&self) -> Option<&ApiKey> {

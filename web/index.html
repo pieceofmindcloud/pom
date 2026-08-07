@@ -39,18 +39,33 @@
 <!-- ── Nos ───────────────────────────────────────────────────────────────── -->
 <section id="view-nos" class="view">
   <div class="panel">
-    <h2>Nos conectados</h2>
-    <div id="nodes-table"><p style="color:var(--muted)">Carregando...</p></div>
-    <div id="connection-key-section" style="margin-top:24px">
-      <h3>Chave de conexao</h3>
-      <div class="key-box" id="display-conn-key" style="background:#000;color:#0f0;padding:12px;border-radius:4px;font-family:ui-monospace,monospace;font-size:.75rem;word-break:break-all">***</div>
-      <button id="btn-regenerate-key" style="width:auto;margin-top:8px">Regenerar chave</button>
-    </div>
+    <h2>Nós conectados</h2>
+    <p class="panel-sub">Máquinas que este nó enxerga na rede P2P</p>
+    <div id="nodes-table"><p class="muted-note">Carregando…</p></div>
   </div>
-  <div class="panel" style="margin-top:8px">
+
+  <div class="panel">
+    <h2>Chave de conexão</h2>
+    <p class="panel-sub">É o que um nó apresenta para entrar nesta rede</p>
+    <div class="secret-row">
+      <input id="display-conn-key" class="secret-field" readonly value="***" spellcheck="false">
+      <button class="btn-slim" data-copy="display-conn-key">Copiar</button>
+    </div>
+    <button id="btn-regenerate-key" class="btn-slim">Regenerar chave</button>
+  </div>
+
+  <div class="panel">
     <h2>Chaves de API</h2>
-    <div id="api-keys-list"><p style="color:var(--muted)">Carregando...</p></div>
-    <button id="btn-generate-api-key" style="width:auto;margin-top:8px">Gerar nova chave</button>
+    <p class="panel-sub">Usadas pelos harnesses no endpoint compatível com OpenAI</p>
+    <div id="api-keys-list"><p class="muted-note">Carregando…</p></div>
+    <div id="new-api-key" class="notice notice-ok" hidden>
+      <p><strong>Chave criada.</strong> Copie agora — ela não será mostrada de novo.</p>
+      <div class="secret-row">
+        <input id="new-api-key-value" class="secret-field" readonly spellcheck="false">
+        <button class="btn-slim" data-copy="new-api-key-value">Copiar</button>
+      </div>
+    </div>
+    <button id="btn-generate-api-key" class="btn-slim">Gerar nova chave</button>
   </div>
 </section>
 
@@ -210,7 +225,7 @@
       <tbody>
         <tr><th>Base URL</th><td><code id="base-url">—</code></td></tr>
         <tr><th>Modelo</th><td><code id="base-model">—</code></td></tr>
-        <tr><th>Chave de API</th><td><code>qualquer valor — não é verificada</code></td></tr>
+        <tr><th>Chave de API</th><td><code id="connect-api-key">gere uma na aba Nós</code></td></tr>
       </tbody>
     </table>
   </section>

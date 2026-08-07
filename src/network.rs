@@ -39,6 +39,14 @@ pub enum P2PMessage {
         /// running an older build parseable.
         #[serde(default)]
         gateway_port: Option<u16>,
+        #[serde(default)]
+        role: String,
+        #[serde(default)]
+        hostname: String,
+        #[serde(default)]
+        disk_total_mb: u64,
+        #[serde(default)]
+        disk_free_mb: u64,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -74,6 +82,18 @@ pub struct PeerInfo {
     /// load figures straight from each peer.
     #[serde(default)]
     pub gateway_port: Option<u16>,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub hostname: String,
+    #[serde(default)]
+    pub connection_verified: bool,
+    #[serde(default)]
+    pub disk_total_mb: u64,
+    #[serde(default)]
+    pub disk_free_mb: u64,
+    #[serde(default)]
+    pub api_keys_active: u16,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -219,6 +239,10 @@ impl Network {
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
             gateway_port: self.gateway_port,
+            role: String::new(),
+            hostname: String::new(),
+            disk_total_mb: 0,
+            disk_free_mb: 0,
         };
 
         // Announce to bootstrap nodes
@@ -334,6 +358,10 @@ impl Network {
                 ollama_port,
                 inference_port,
                 gateway_port,
+                role,
+                hostname,
+                disk_total_mb,
+                disk_free_mb,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -362,6 +390,12 @@ impl Network {
                     ollama_port,
                     inference_port,
                     gateway_port,
+                    role,
+                    hostname,
+                    connection_verified: false,
+                    disk_total_mb,
+                    disk_free_mb,
+                    api_keys_active: 0,
                 };
 
                 let is_new = {
@@ -413,6 +447,10 @@ impl Network {
                             ollama_port: self.ollama_port,
                             inference_port: self.inference_port,
                             gateway_port: self.gateway_port,
+                            role: String::new(),
+                            hostname: String::new(),
+                            disk_total_mb: 0,
+                            disk_free_mb: 0,
                         };
                         let _ = self.send_to(&announce, &src.to_string()).await;
                     }

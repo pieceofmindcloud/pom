@@ -614,6 +614,10 @@ async fn main() -> Result<()> {
                         ollama_port: net_disc.ollama_port,
                         inference_port: net_disc.inference_port,
                         gateway_port: net_disc.gateway_port,
+                        role: String::new(),
+                        hostname: String::new(),
+                        disk_total_mb: 0,
+                        disk_free_mb: 0,
                     };
                     if let Ok(data) = serde_json::to_vec(&msg) {
                         let _ = tx.send(data).await;

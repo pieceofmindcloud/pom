@@ -262,6 +262,10 @@ async fn handle_event(
                 ollama_port,
                 inference_port,
                 gateway_port,
+                role,
+                hostname,
+                disk_total_mb,
+                disk_free_mb,
             }) = serde_json::from_slice(&message.data)
             {
                 network
@@ -278,6 +282,12 @@ async fn handle_event(
                         ollama_port,
                         inference_port,
                         gateway_port,
+                        role,
+                        hostname,
+                        connection_verified: false,
+                        disk_total_mb,
+                        disk_free_mb,
+                        api_keys_active: 0,
                     })
                     .await;
             }

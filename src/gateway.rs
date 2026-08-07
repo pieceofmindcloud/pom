@@ -91,6 +91,12 @@ impl GatewayState {
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
                 gateway_port: Some(self.gateway_port),
+                role: String::new(),
+                hostname: String::new(),
+                connection_verified: false,
+                disk_total_mb: 0,
+                disk_free_mb: 0,
+                api_keys_active: 0,
             });
         }
         peers

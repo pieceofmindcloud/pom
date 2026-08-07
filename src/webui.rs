@@ -266,6 +266,8 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
     }
     let covered_count = covered.iter().filter(|c| **c).count();
 
+    let self_node = serde_json::to_value(node_info(State(state.clone())).await.0).ok();
+
     Json(json!({
         "self_id": self_id,
         "active_model": active,
@@ -274,6 +276,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         "coverage": covered,
         "complete": total > 0 && covered_count == total as usize,
         "peers": views,
+        "node": self_node,
     }))
 }
 

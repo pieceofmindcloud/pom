@@ -1,8 +1,9 @@
+use crate::bitswap::{self, BitswapCodec};
 use crate::network::{Network, PeerInfo, P2PMessage};
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
-    autonat, dcutr, gossipsub, identify, kad, mdns, noise, relay,
+    autonat, dcutr, gossipsub, identify, kad, mdns, noise, relay, request_response,
     swarm::{NetworkBehaviour, SwarmEvent},
     tcp, yamux, Multiaddr, PeerId, Swarm,
 };
@@ -36,6 +37,7 @@ struct DiscBehaviour {
     dcutr:        dcutr::Behaviour,
     autonat:      autonat::Behaviour,
     relay_server: relay::Behaviour,
+    bitswap:      request_response::Behaviour<BitswapCodec>,
 }
 
 pub struct Discovery {
@@ -134,6 +136,8 @@ impl Discovery {
 
                 let relay_server = relay::Behaviour::new(peer_id, relay_server_cfg);
 
+                let bitswap = bitswap::bitswap_behaviour();
+
                 DiscBehaviour {
                     gossipsub,
                     kademlia,
@@ -143,6 +147,7 @@ impl Discovery {
                     dcutr: dcutr::Behaviour::new(peer_id),
                     autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
                     relay_server,
+                    bitswap,
                 }
             })?
             .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
@@ -373,6 +378,23 @@ async fn handle_event(
             autonat::Event::StatusChanged { new, .. },
         )) => {
             info!("NAT status: {:?}", new);
+        }
+
+        // ── Bitswap: content-addressed chunk exchange ───────────────────────
+        SwarmEvent::Behaviour(DiscBehaviourEvent::Bitswap(event)) => {
+            match event {
+                request_response::Event::Message { peer, message, .. } => {
+                    match message {
+                        request_response::Message::Request { request, .. } => {
+                            debug!("Bitswap request from {}: {:?}", peer, request);
+                        }
+                        request_response::Message::Response { response, .. } => {
+                            debug!("Bitswap response from {}: {:?}", peer, response);
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
 
         _ => {}

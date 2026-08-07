@@ -257,12 +257,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // ── require --model for normal operation ────────────────────────────────
+    // ── When config exists, --model is optional: start headless (UI only) ────
     let model_name = match args.model {
         Some(ref m) => m.clone(),
         None => {
-            error!("--model is required. Run with --list-models to see available options.");
-            std::process::exit(1);
+            info!("No --model provided — starting in headless mode (UI + admin only)");
+            return start_headless_mode(gateway_port, app_config.clone()).await;
         }
     };
 
@@ -803,4 +803,59 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// Start the HTTP gateway without model/network — serves only the web UI and
+/// admin routes so the user can configure the model through the dashboard.
+async fn start_headless_mode(gateway_port: u16, app_config: config::Config) -> Result<()> {
+    use crate::admin;
+    use crate::session;
+    use axum::{routing::get, Router};
+    use axum::http::header;
+    use axum::response::{Html, IntoResponse};
+    use std::net::SocketAddr;
+
+    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
+
+    let app = Router::new()
+        .route("/", get(|| async { Html(include_str!("../web/index.html")) }))
+        .route("/ui/app.css", get(|| async {
+            ([(header::CONTENT_TYPE, "text/css; charset=utf-8")],
+             include_str!("../web/app.css")).into_response()
+        }))
+        .route("/ui/app.js", get(|| async {
+            ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
+             include_str!("../web/app.js")).into_response()
+        }))
+        .route("/health", get(|| async {
+            axum::Json(serde_json::json!({
+                "status": "ok",
+                "configured": false,
+                "message": "Modelo nao configurado — use a aba Configurar"
+            }))
+        }))
+        .route("/api/ui/node", get(|| async {
+            axum::Json(serde_json::json!({
+                "hostname": gethostname(),
+                "configured": false
+            }))
+        }))
+        .route("/handshake", axum::routing::post(session::handle_handshake))
+        .route("/api/setup/key", get(webui::get_setup_key))
+        .route("/api/setup/save", axum::routing::post(webui::save_setup))
+        .merge(admin::admin_routes())
+        .with_state(auth_state);
+
+    let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
+    info!("Headless mode — dashboard at http://localhost:{}", gateway_port);
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    axum::serve(listener, app).await?;
+    Ok(())
+}
+
+fn gethostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown".into())
 }

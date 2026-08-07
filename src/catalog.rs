@@ -161,21 +161,18 @@ fn lmstudio_homes() -> Vec<PathBuf> {
     }
 
     // The peer often runs as root while LM Studio was installed by a desktop
-    // user, so root's own home has nothing. Scan the other homes too.
+    // user, so root's own home has nothing. Look inside the other homes too —
+    // only at `<home>/.lmstudio`, never at every subdirectory of a home.
     if cfg!(target_os = "linux") {
-        for base in ["/home", "/root"] {
-            for dir in child_dirs(Path::new(base)) {
-                let candidate = if base == "/root" { dir } else { dir.join(".lmstudio") };
-                if candidate.is_dir() {
-                    push(candidate);
-                }
+        for home in child_dirs(Path::new("/home")) {
+            let candidate = home.join(".lmstudio");
+            if candidate.is_dir() {
+                push(candidate);
             }
-            if base == "/root" {
-                let p = PathBuf::from("/root/.lmstudio");
-                if p.is_dir() {
-                    push(p);
-                }
-            }
+        }
+        let root_home = PathBuf::from("/root/.lmstudio");
+        if root_home.is_dir() {
+            push(root_home);
         }
     }
 

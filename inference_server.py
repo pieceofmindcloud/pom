@@ -208,7 +208,6 @@ def _rollback_seq_kv(seq_id: int, from_pos: int) -> None:
 
 def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
     """Replace the llama context so n_seq_max == _MAX_SESSIONS.
-    """Replace the llama context so n_seq_max == _MAX_SESSIONS.
 
     llama.cpp / the model metadata often sets n_seq_max to 256 which limits
     each KV-cache sequence to only n_ctx/256 tokens.  By recreating the context

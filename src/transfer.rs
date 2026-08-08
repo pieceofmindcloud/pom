@@ -81,7 +81,11 @@ pub struct TransferOffer {
     pub from_node_id: String,
     pub from_host: String,
     pub from_gateway: String,
+    /// Shown to the human deciding, so they can see *what* is being offered.
     pub remote_path: String,
+    /// How we actually fetch it. Absent only for offers from an older peer,
+    /// which can still be pulled by path if the file lives in `models/`.
+    pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
     pub md5: String,
@@ -95,6 +99,13 @@ pub struct TransferState {
     pub offers: RwLock<Vec<TransferOffer>>,
     /// path → (mtime, size, md5), so a 3 GB digest is computed once.
     digests: RwLock<HashMap<String, (u64, u64, String)>>,
+    /// Files this machine's own operator deliberately offered: id → path.
+    ///
+    /// A grant is what lets a file outside `models/` leave this machine. It is
+    /// created only by [`send_to_peer`], which is driven from *this* node's
+    /// screen — so the path is always someone's local choice, never a remote
+    /// request. See [`grant_path`].
+    grants: RwLock<HashMap<String, PathBuf>>,
 }
 
 pub type Transfers = Arc<TransferState>;
@@ -122,6 +133,41 @@ fn safe_model_path(models_dir: &Path, requested: &str) -> Result<PathBuf, String
         return Err("caminho fora do diretório de modelos".to_string());
     }
     Ok(full)
+}
+
+/// Resolve a file this node is willing to serve to a peer.
+///
+/// Two ways in, and the difference is who chose the file:
+///
+/// - `grant` — our own operator picked this exact file on this machine's screen,
+///   so it may live anywhere the process can read. The peer never names a path;
+///   it only replays an opaque id we handed it.
+/// - `path` — nobody here chose anything (the pull direction, where a peer asks
+///   us for a file on its own initiative), so `models/` is the whole world.
+async fn servable_path(
+    state: &GatewayState,
+    q: &PathQuery,
+) -> Result<PathBuf, String> {
+    if let Some(id) = q.grant.as_deref() {
+        return grant_path(state, id).await;
+    }
+    let requested = q
+        .path
+        .as_deref()
+        .ok_or_else(|| "informe ?grant= ou ?path=".to_string())?;
+    safe_model_path(&state.runtime.models_dir(), requested)
+}
+
+/// Look up a grant. A stale or invented id is simply not a file here.
+async fn grant_path(state: &GatewayState, id: &str) -> Result<PathBuf, String> {
+    state
+        .transfers
+        .grants
+        .read()
+        .await
+        .get(id)
+        .cloned()
+        .ok_or_else(|| "concessão desconhecida ou expirada".to_string())
 }
 
 async fn file_digest(state: &GatewayState, path: &Path) -> Result<(u64, String), String> {
@@ -174,7 +220,12 @@ async fn file_digest(state: &GatewayState, path: &Path) -> Result<(u64, String),
 
 #[derive(Debug, Deserialize)]
 pub struct PathQuery {
-    pub path: String,
+    /// Only meaningful inside `models/` — see [`servable_path`].
+    #[serde(default)]
+    pub path: Option<String>,
+    /// Opaque id of a file our operator offered; may point anywhere.
+    #[serde(default)]
+    pub grant: Option<String>,
 }
 
 /// What the receiver needs before it commits to a multi-gigabyte download.
@@ -183,8 +234,7 @@ async fn manifest(
     State(state): State<GatewayState>,
     Query(q): Query<PathQuery>,
 ) -> Response {
-    let models_dir = state.runtime.models_dir();
-    let path = match safe_model_path(&models_dir, &q.path) {
+    let path = match servable_path(&state, &q).await {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
@@ -207,8 +257,7 @@ async fn download(
     headers: HeaderMap,
     Query(q): Query<PathQuery>,
 ) -> Response {
-    let models_dir = state.runtime.models_dir();
-    let path = match safe_model_path(&models_dir, &q.path) {
+    let path = match servable_path(&state, &q).await {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
@@ -267,6 +316,8 @@ pub struct OfferRequest {
     pub from_host: String,
     pub from_gateway: String,
     pub remote_path: String,
+    #[serde(default)]
+    pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
     pub md5: String,
@@ -288,6 +339,7 @@ async fn receive_offer(
         from_host: req.from_host,
         from_gateway: req.from_gateway,
         remote_path: req.remote_path,
+        grant: req.grant,
         name: req.name.clone(),
         size_bytes: req.size_bytes,
         md5: req.md5,
@@ -339,6 +391,7 @@ async fn accept_offer(
         state.clone(),
         offer.from_gateway.clone(),
         offer.remote_path.clone(),
+        offer.grant.clone(),
         offer.name.clone(),
         offer.from_host.clone(),
     )
@@ -382,7 +435,7 @@ async fn start_pull(
         peer.hostname.clone()
     };
 
-    match spawn_download(state.clone(), base, req.remote_path, req.name, host).await {
+    match spawn_download(state.clone(), base, req.remote_path, None, req.name, host).await {
         Ok(job_id) => Json(json!({ "started": true, "job_id": job_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
@@ -396,10 +449,27 @@ async fn list_jobs(_auth: ConnectionAuth, State(state): State<GatewayState>) -> 
 
 #[derive(Debug, Deserialize)]
 pub struct SendRequest {
-    /// Peer that should receive the slice.
+    /// Peer that should receive the file.
     pub to_node_id: String,
-    /// File on *this* machine.
+    /// File on *this* machine — any readable path, not just `models/`.
     pub path: String,
+}
+
+/// Resolve a file the local operator asked us to send.
+///
+/// Deliberately not restricted to `models/`: the captain's machine holds models
+/// under LM Studio, Ollama and loose directories, and "it is on this machine so
+/// I must be able to send it" is the requirement. The restriction that matters
+/// is that this path came from *here*, and that the peer only ever learns the
+/// grant id — see [`TransferState::grants`].
+fn local_send_path(requested: &str) -> Result<PathBuf, String> {
+    let full = Path::new(requested)
+        .canonicalize()
+        .map_err(|_| format!("arquivo não encontrado: {requested}"))?;
+    if !full.is_file() {
+        return Err(format!("não é um arquivo: {requested}"));
+    }
+    Ok(full)
 }
 
 /// Offer one of our slices to a peer.
@@ -411,8 +481,7 @@ async fn send_to_peer(
     State(state): State<GatewayState>,
     Json(req): Json<SendRequest>,
 ) -> Response {
-    let models_dir = state.runtime.models_dir();
-    let path = match safe_model_path(&models_dir, &req.path) {
+    let path = match local_send_path(&req.path) {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
@@ -447,10 +516,22 @@ async fn send_to_peer(
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
     let my_host = state.network.hostname.clone();
+
+    // The peer fetches by grant id, never by path: that is what lets this file
+    // sit outside `models/` without opening the disk to whoever holds the key.
+    let grant = uuid::Uuid::new_v4().simple().to_string();
+    state
+        .transfers
+        .grants
+        .write()
+        .await
+        .insert(grant.clone(), path.clone());
+
     let body = json!({
         "from_node_id": state.network.node_id,
         "from_host": my_host,
         "from_gateway": format!("http://{}:{}", local_ip_for(&peer_base), state.gateway_port),
+        "grant": grant,
         "remote_path": path.to_string_lossy(),
         "name": name,
         "size_bytes": size,
@@ -525,17 +606,25 @@ async fn spawn_download(
     state: GatewayState,
     base_url: String,
     remote_path: String,
+    grant: Option<String>,
     name: String,
     from_host: String,
 ) -> Result<String, String> {
     let key = state.auth.read().await.connection_key.clone();
+
+    // A grant, when we have one, is the only locator the serving side needs —
+    // and the only one that reaches a file outside its `models/`.
+    let locator: Vec<(&str, String)> = match &grant {
+        Some(g) => vec![("grant", g.clone())],
+        None => vec![("path", remote_path.clone())],
+    };
 
     // Ask first: size and digest decide whether this is even worth starting.
     let manifest: serde_json::Value = state
         .http
         .get(format!("{base_url}/api/transfer/manifest"))
         .bearer_auth(&key)
-        .query(&[("path", &remote_path)])
+        .query(&locator)
         .timeout(Duration::from_secs(120))
         .send()
         .await
@@ -585,7 +674,7 @@ async fn spawn_download(
         let dest = dir.join(&name);
         let part = dir.join(format!("{name}.part"));
         if let Err(e) = run_download(
-            &task_state, &job_id, &base_url, &key, &remote_path, &part, &dest, total, &md5,
+            &task_state, &job_id, &base_url, &key, &locator, &part, &dest, total, &md5,
         )
         .await
         {
@@ -609,7 +698,7 @@ async fn run_download(
     job_id: &str,
     base_url: &str,
     key: &str,
-    remote_path: &str,
+    locator: &[(&str, String)],
     part: &Path,
     dest: &Path,
     total: u64,
@@ -625,7 +714,7 @@ async fn run_download(
         .http
         .get(format!("{base_url}/api/transfer/download"))
         .bearer_auth(key)
-        .query(&[("path", remote_path)])
+        .query(locator)
         .timeout(Duration::from_secs(60 * 60 * 6));
     if already > 0 {
         info!("retomando {} a partir de {} bytes", dest.display(), already);

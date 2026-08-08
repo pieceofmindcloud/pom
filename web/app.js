@@ -411,7 +411,9 @@ function usableWindow() {
   const maxNew = Number($("#p-maxnew")?.value || 0);
   const sessions = Math.max(1, Number($("#p-sessions")?.value || 1));
   const perSession = Math.floor(nCtx / sessions);
-  const prompt = Math.max(0, Math.min(nBatch, perSession - maxNew));
+  // Sem `nBatch` de propósito: com o prompt em pedaços o lote limita o pedaço,
+  // não o prompt. Ver `gateway::prompt_budget`.
+  const prompt = Math.max(0, perSession - maxNew);
   return { nCtx, nBatch, maxNew, sessions, perSession, prompt };
 }
 

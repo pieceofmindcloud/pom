@@ -705,9 +705,11 @@ impl ApplyRequest {
         self.peer_count <= 1 && self.is_first() && self.is_last()
     }
     /// The last peer in a multi-peer pipeline should skip embedding extraction
-    /// to avoid logit corruption on models like phi-4.
+    /// to avoid logit corruption on models like phi-4. Only ever true for the
+    /// last peer (highest peer_index); the first peer always needs embeddings
+    /// to extract hidden states for the pipeline.
     fn no_embeddings(&self) -> bool {
-        self.params.no_embeddings || (!self.single_peer() && self.is_last_peer())
+        !self.single_peer() && self.is_last_peer()
     }
 }
 

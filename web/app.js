@@ -1028,6 +1028,9 @@ const modelos = {
   job: null,
   jobTimer: null,
   jobModel: "",
+  /** Lista de fatias em montagem, quando o painel está aberto. */
+  builder: null,
+  builderTimer: null,
 };
 
 async function loadModelsTab() {
@@ -1210,12 +1213,8 @@ function renderWholeModels() {
       ? `<span class="path-cell" title="${esc(m.path)}">${esc(dirOf(m.path))}</span>`
       : availabilityChips(row.byPeer);
     const acao = aqui
-      ? `<span class="slice-cell">
-           <input type="number" class="parts" min="1" max="64" step="1" value="2"
-                  aria-label="Quantas fatias">
-           <button class="btn-slim" type="button" data-slice="${esc(aqui.path)}"
-                   data-name="${esc(row.name)}">Fatiar</button>
-         </span>`
+      ? `<button class="btn-slim" type="button" data-slice="${esc(aqui.path)}"
+                 data-name="${esc(row.name)}" data-size="${aqui.size_bytes}">Fatiar…</button>`
       : `<span class="muted-note">não está aqui</span>`;
     return `
       <tr>
@@ -1231,10 +1230,8 @@ function renderWholeModels() {
   }).join("");
 
   tbody.querySelectorAll("[data-slice]").forEach((btn) =>
-    btn.addEventListener("click", () => {
-      const parts = Number(btn.closest(".slice-cell").querySelector(".parts").value) || 2;
-      startSlice(btn.dataset.slice, btn.dataset.name, parts);
-    }));
+    btn.addEventListener("click", () =>
+      openSliceBuilder(btn.dataset.slice, btn.dataset.name, Number(btn.dataset.size) || 0)));
 
   setSliceButtonsDisabled(!!modelos.job && modelos.job.state === "running");
 }
@@ -1243,12 +1240,230 @@ function setSliceButtonsDisabled(disabled) {
   $$("#whole-table [data-slice]").forEach((b) => { b.disabled = disabled; });
 }
 
-async function startSlice(path, name, parts) {
-  modelos.jobModel = name;
+// ── Montagem das fatias ──────────────────────────────────────────────────────
+//
+// As máquinas do cluster não são parecidas, então dividir em partes iguais é a
+// resposta errada quase sempre: quem manda no tamanho de uma fatia é a memória
+// da máquina que vai recebê-la. Aqui se monta a lista fatia a fatia, em GB, e a
+// tela mostra em que faixa de camadas cada tamanho caiu — o arredondamento é
+// para camada inteira e aparece, não fica escondido.
+
+/** Uma fatia da lista em edição: alvo em GB, ou "o resto". */
+const novaFatia = (gb) => ({ gb, resto: false });
+
+function openSliceBuilder(path, name, sizeBytes) {
+  modelos.builder = {
+    path,
+    name,
+    sizeBytes,
+    fatias: [novaFatia(""), { gb: "", resto: true }],
+    plan: null,
+    erro: "",
+    calculando: false,
+  };
+  renderSliceBuilder();
+  // Abre já com uma proposta completa em vez de dois campos vazios.
+  fillEqualParts(2);
+}
+
+function closeSliceBuilder() {
+  modelos.builder = null;
+  clearTimeout(modelos.builderTimer);
+  $("#slice-builder").hidden = true;
+}
+
+/** Pede ao nó a conversão GB → camadas. A conta é do Rust, e é a mesma que roda
+ *  na hora de fatiar de verdade. */
+function scheduleSlicePlan() {
+  clearTimeout(modelos.builderTimer);
+  modelos.builderTimer = setTimeout(refreshSlicePlan, 250);
+}
+
+async function refreshSlicePlan() {
+  const b = modelos.builder;
+  if (!b) return;
+  const slices = b.fatias.map((f) => ({
+    target_mb: f.resto ? null : Math.round((Number(f.gb) || 0) * 1024),
+  }));
+  if (!slices.length) {
+    b.plan = null;
+    b.erro = "Acrescente ao menos uma fatia.";
+    renderSliceBuilder();
+    return;
+  }
+  b.calculando = true;
+  try {
+    b.plan = await postJSON("/api/ui/slice/plan", { model_path: b.path, slices });
+    b.erro = "";
+  } catch (e) {
+    b.plan = null;
+    b.erro = e.message;
+  } finally {
+    b.calculando = false;
+    renderSliceBuilder();
+  }
+}
+
+/** Atalho: preenche a lista com N fatias de camadas iguais, que continuam
+ *  editáveis — o alvo de cada uma já vem com o tamanho real daquela faixa. */
+async function fillEqualParts(n) {
+  const b = modelos.builder;
+  if (!b) return;
+  b.calculando = true;
+  renderSliceBuilder();
+  try {
+    const plan = await postJSON("/api/ui/slice/plan", { model_path: b.path, equal_parts: n });
+    b.fatias = plan.ranges.map((r) => novaFatia((r.bytes / 1073741824).toFixed(1)));
+    b.plan = plan;
+    b.erro = "";
+  } catch (e) {
+    b.erro = e.message;
+  } finally {
+    b.calculando = false;
+    renderSliceBuilder();
+  }
+}
+
+function renderSliceBuilder() {
+  const box = $("#slice-builder");
+  const b = modelos.builder;
+  if (!box) return;
+  if (!b) {
+    box.hidden = true;
+    return;
+  }
+  box.hidden = false;
+
+  const plan = b.plan;
+  const faixaDe = (i) => plan?.ranges?.[i];
+
+  const linhas = b.fatias.map((f, i) => {
+    const r = faixaDe(i);
+    const faixa = !r || r.empty
+      ? `<span class="muted-note">sem camadas</span>`
+      : `camadas ${r.start_layer}–${r.end_layer} <span class="muted-note">(${r.layers})</span>`;
+    const real = r && !r.empty ? fmtBytes(r.bytes) : "—";
+    const alerta = r?.too_small
+      ? `<span class="chip hasnt">não cabe uma camada</span>`
+      : r?.empty
+        ? `<span class="chip hasnt">nada sobrou</span>`
+        : "";
+    return `
+      <tr data-fatia="${i}">
+        <td class="num">${i + 1}</td>
+        <td class="num">
+          ${f.resto
+            ? `<span class="chip has">o resto</span>`
+            : `<input type="number" class="fatia-gb" min="0.1" step="0.1" value="${esc(f.gb)}"
+                      aria-label="Tamanho da fatia ${i + 1} em GB"> GB`}
+        </td>
+        <td class="num">${faixa}</td>
+        <td class="num">${real} ${alerta}</td>
+        <td class="num">
+          <label class="hint"><input type="checkbox" class="fatia-resto" ${f.resto ? "checked" : ""}> o resto</label>
+          <button class="btn-slim" type="button" data-remove-fatia="${i}"
+                  ${b.fatias.length === 1 ? "disabled" : ""}>Remover</button>
+        </td>
+      </tr>`;
+  }).join("");
+
+  const faltam = plan ? plan.total_layers - plan.covered_layers : 0;
+  const cobertura = plan
+    ? plan.complete
+      ? `<p class="notice notice-ok">As fatias cobrem as ${plan.total_layers} camadas do modelo.</p>`
+      : `<p class="notice notice-warn">Cobertas ${plan.covered_layers} de ${plan.total_layers} camadas: `
+        + `faltam ${faltam} (${plan.missing_range[0]}–${plan.missing_range[1]}, ${fmtBytes(plan.missing_bytes)}). `
+        + `Acrescente uma fatia ou marque a última como “o resto”.</p>`
+    : "";
+
+  const avisos = (plan?.warnings || [])
+    .map((w) => `<p class="notice notice-warn">${esc(w)}</p>`).join("");
+  const erro = b.erro ? `<p class="notice notice-error">${esc(b.erro)}</p>` : "";
+  const impedido = !plan || plan.blocked || !!b.erro || b.calculando;
+
+  box.innerHTML = `
+    <div class="slice-builder-head">
+      <strong>Fatiar ${esc(b.name)}</strong>
+      <span class="muted-note">${b.sizeBytes ? fmtBytes(b.sizeBytes) : ""}${
+        plan ? ` · ${plan.total_layers} camadas` : ""}</span>
+      <button class="btn-slim" type="button" id="btn-slice-cancel">Cancelar</button>
+    </div>
+
+    <p class="sub-note">O tamanho de cada fatia é o que a máquina de destino aguenta, não uma
+      divisão aritmética. O valor em GB vira uma faixa de camadas inteiras — o tamanho real ao
+      lado é somado bloco a bloco da tabela de tensores, e por isso não bate exatamente com o alvo.</p>
+
+    <div class="table-scroll">
+      <table class="grid" id="fatia-table">
+        <thead>
+          <tr><th class="num">#</th><th class="num">Alvo</th><th class="num">Faixa</th>
+              <th class="num">Tamanho real</th><th class="num"></th></tr>
+        </thead>
+        <tbody>${linhas}</tbody>
+      </table>
+    </div>
+
+    ${cobertura}${avisos}${erro}
+
+    <div class="launch-row">
+      <span class="slice-builder-tools">
+        <button class="btn-slim" type="button" id="btn-fatia-add">+ Acrescentar fatia</button>
+        <label class="hint">dividir em
+          <input type="number" id="equal-parts" min="1" max="64" step="1" value="2"> iguais</label>
+        <button class="btn-slim" type="button" id="btn-fatia-equal">Preencher</button>
+      </span>
+      <button class="btn btn-go" id="btn-fatia-go" ${impedido ? "disabled" : ""}>
+        ${b.calculando ? "Calculando…" : "Fatiar"}</button>
+    </div>`;
+
+  $$("#fatia-table .fatia-gb").forEach((input) =>
+    input.addEventListener("input", () => {
+      const i = Number(input.closest("[data-fatia]").dataset.fatia);
+      modelos.builder.fatias[i].gb = input.value;
+      scheduleSlicePlan();
+    }));
+  $$("#fatia-table .fatia-resto").forEach((chk) =>
+    chk.addEventListener("change", () => {
+      const i = Number(chk.closest("[data-fatia]").dataset.fatia);
+      modelos.builder.fatias[i].resto = chk.checked;
+      renderSliceBuilder();
+      refreshSlicePlan();
+    }));
+  $$("#fatia-table [data-remove-fatia]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      modelos.builder.fatias.splice(Number(btn.dataset.removeFatia), 1);
+      renderSliceBuilder();
+      refreshSlicePlan();
+    }));
+
+  $("#btn-fatia-add").addEventListener("click", () => {
+    modelos.builder.fatias.push(novaFatia(""));
+    renderSliceBuilder();
+    refreshSlicePlan();
+  });
+  $("#btn-fatia-equal").addEventListener("click", () =>
+    fillEqualParts(Math.max(1, Math.min(64, Number($("#equal-parts").value) || 2))));
+  $("#btn-slice-cancel").addEventListener("click", closeSliceBuilder);
+  $("#btn-fatia-go").addEventListener("click", startSlice);
+}
+
+async function startSlice() {
+  const b = modelos.builder;
+  if (!b) return;
+  const slices = b.fatias.map((f) => ({
+    target_mb: f.resto ? null : Math.round((Number(f.gb) || 0) * 1024),
+  }));
+
+  modelos.jobModel = b.name;
   renderSliceJob({ state: "running", step: "preparando", progress: null, message: "" });
   setSliceButtonsDisabled(true);
   try {
-    const { job_id } = await postJSON("/api/ui/slice", { model_path: path, parts, name });
+    const { job_id } = await postJSON("/api/ui/slice", {
+      model_path: b.path,
+      name: b.name,
+      slices,
+    });
+    closeSliceBuilder();
     modelos.job = { id: job_id, state: "running" };
     pollSliceJob(job_id);
   } catch (e) {

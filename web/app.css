@@ -552,6 +552,34 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .slice-cell, .send-cell { display: inline-flex; align-items: center; gap: 6px; }
 .slice-cell .parts { width: 64px; }
 
+/* Montagem da lista de fatias: mesma moldura do progresso, para a tela não
+   trocar de linguagem entre planejar e executar. */
+#slice-builder {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--peer-1);
+  border-radius: var(--radius);
+  background: var(--panel-sub);
+  padding: 14px;
+  margin-bottom: 16px;
+}
+.slice-builder-head {
+  display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+.slice-builder-head strong { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.slice-builder-head .btn-slim { margin-left: auto; }
+#slice-builder .sub-note { margin-bottom: 12px; }
+#slice-builder .grid td { vertical-align: middle; }
+#slice-builder .fatia-gb { width: 78px; }
+/* A coluna de ações agrupa "o resto" e "remover" sem quebrar a linha. */
+#fatia-table td:last-child {
+  display: flex; gap: 10px; align-items: center; justify-content: flex-end;
+  border-bottom: 1px solid var(--rule-soft);
+}
+#fatia-table td:last-child .hint { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
+.slice-builder-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.slice-builder-tools input[type="number"] { width: 62px; }
+
 /* Fatiamento em curso. */
 .slice-job {
   border: 1px solid var(--rule);

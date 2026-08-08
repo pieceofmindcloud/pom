@@ -93,7 +93,7 @@ Single-binary Rust application for decentralized LLM layer coordination with Oll
 - `openai.rs` — OpenAI-compatible routes on top of `generate_stream` (protocol only)
 - `webui.rs` + `web/` — dashboard and control API, assets embedded with `include_str!`
 - `catalog.rs` + `gguf.rs` — installed-model discovery over the directories in `rdma-p2p.json`, and a GGUF header/tensor-table reader
-- `plan.rs` — asymmetric layer planning from per-peer memory budgets; `even_split` for "cut it in N"; on-demand slicing with progress
+- `plan.rs` — layer planning: `plan_split` from per-peer memory budgets, `plan_by_size` from per-slice target sizes, `even_split`/`plan_equal` for the "cut it in N" shortcut; on-demand slicing with progress
 - `sysmon.rs` — RAM / VRAM sampling per platform
 - `runtime.rs` — mutable node config; owns and supervises the `inference_server.py` child
 - `inference_server.py` — FastAPI server per peer node; handles `POST /v1/infer` for partial forward passes (hidden-state threading)
@@ -488,12 +488,35 @@ varredura (ler o cabeçalho de GGUFs de 14 GB). O catálogo por isso serve o
 resultado anterior e revalida por trás (`webui::local_catalog`); só a primeira
 varredura, e a troca de pastas, esperam.
 
-### Fatiar pela tela
+### Fatiar pela tela — por tamanho, não em partes iguais
 
-Aba Modelos → um modelo inteiro **desta máquina** → quantas fatias → `FATIAR`.
-`POST /api/ui/slice` divide as camadas em partes iguais (`plan::even_split`) e
-chama o mesmo `split_model.py` de sempre, uma faixa por vez, gravando em
-`<shard_dir>/<base>/`. O progresso vem do próprio script: ele imprime
+Decisão do captain em 2026-08-08: as fatias **não** têm o mesmo tamanho. Quem
+manda no tamanho de uma fatia é a memória da máquina que vai recebê-la, e as
+máquinas do cluster não se parecem. Então a aba Modelos monta uma lista fatia a
+fatia, cada uma com um **alvo em GB**, e a última pode simplesmente levar "o
+resto".
+
+`split_model.py` continua trabalhando por camada inicial e final; quem converte
+GB em faixa de camadas é `plan::plan_by_size`, somando o tamanho real de cada
+bloco da tensor table (`gguf::read_layout`) — não `total / n_camadas`, porque o
+embedding viaja em toda fatia e os blocos não são iguais entre si. O
+arredondamento é para camada inteira e fica **visível**: a tela mostra lado a
+lado o alvo pedido, a faixa que saiu e o tamanho real.
+
+- `POST /api/ui/slice/plan` — prévia (a tela chama a cada tecla, com o layout em
+  cache por arquivo). Com `equal_parts: N` em vez de `slices`, devolve o atalho
+  "dividir em N iguais" já preenchido com o tamanho real de cada faixa, que o
+  usuário continua podendo editar.
+- `POST /api/ui/slice` — executa. Refaz o plano em vez de confiar na prévia, e
+  recusa lista vazia, fatia que não cobre nem uma camada, e fatia que ficou sem
+  camada nenhuma. Cobertura incompleta **não** é recusa: fatiar só parte do
+  modelo é legítimo, a tela diz quanto falta.
+
+Números medidos no Qwen3.5-9B (32 camadas, 5,0 GB): alvo de 1,5 GB vira camadas
+0–7 e 1,4 GB reais; "o resto" vira 8–31 e 4,0 GB. A camada 0 sozinha pesa 653 MB,
+então um alvo de 100 MB é recusado com esse número na mensagem.
+
+As fatias saem em `<shard_dir>/<base>/`. O progresso vem do próprio script: ele imprime
 `RDMAP2P_PROGRESS <pct>` no stderr (lido por `plan::parse_progress`), e é a única
 coisa que ele ganhou além de `from __future__ import annotations` — sem esse
 import o script nem carrega no Python 3.9, que é o único do MacBook.

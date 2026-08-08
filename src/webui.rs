@@ -52,6 +52,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/slice", post(slice_locally))
+        .route("/api/ui/slice/plan", post(slice_plan))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/setup/key", get(get_setup_key))
         .route("/api/setup/save", post(save_setup))
@@ -916,12 +917,79 @@ async fn run_apply(
 pub struct SliceRequest {
     /// Whole model on *this* machine.
     pub model_path: String,
-    /// How many slices to cut it into.
-    pub parts: u32,
+    /// Target size of each slice, in order. A slice with no size takes what is
+    /// left of the model.
+    pub slices: Vec<plan::SizedSlice>,
     /// Catalog name of the model, used to name the slices. Without it the name
     /// comes from the file, which for an Ollama blob is a digest.
     #[serde(default)]
     pub name: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SlicePlanRequest {
+    pub model_path: String,
+    #[serde(default)]
+    pub slices: Vec<plan::SizedSlice>,
+    /// Shortcut: fill the list with `n` slices of equal layer count, each
+    /// carrying its real size as the target.
+    #[serde(default)]
+    pub equal_parts: Option<u32>,
+}
+
+/// Read the tensor table of a local model, once per file version.
+///
+/// The builder screen asks for a preview on every keystroke; re-reading the
+/// header each time would make typing a size feel heavy.
+async fn layout_of(path: &std::path::Path) -> Result<Arc<crate::gguf::GgufLayout>, String> {
+    type Key = (String, u64, u64);
+    static CACHE: std::sync::OnceLock<Mutex<HashMap<Key, Arc<crate::gguf::GgufLayout>>>> =
+        std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    let meta = tokio::fs::metadata(path)
+        .await
+        .map_err(|e| format!("modelo não encontrado nesta máquina: {e}"))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let key = (path.to_string_lossy().into_owned(), meta.len(), mtime);
+
+    if let Some(hit) = cache.lock().await.get(&key).cloned() {
+        return Ok(hit);
+    }
+
+    let p = path.to_path_buf();
+    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&p)).await {
+        Ok(Ok(l)) => Arc::new(l),
+        Ok(Err(e)) => return Err(format!("não foi possível ler o GGUF: {e}")),
+        Err(e) => return Err(format!("leitura do GGUF falhou: {e}")),
+    };
+    cache.lock().await.insert(key, layout.clone());
+    Ok(layout)
+}
+
+/// What a list of target sizes turns into: layer ranges, real sizes, coverage.
+async fn slice_plan(
+    _auth: ConnectionAuth,
+    Json(req): Json<SlicePlanRequest>,
+) -> Response {
+    let layout = match layout_of(std::path::Path::new(&req.model_path)).await {
+        Ok(l) => l,
+        Err(e) => return bad_request(e),
+    };
+    let planned = match req.equal_parts {
+        Some(n) if n >= 1 && n <= 64 => plan::plan_equal(&layout, n),
+        Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
+        None => plan::plan_by_size(&layout, &req.slices),
+    };
+    match planned {
+        Ok(p) => Json(p).into_response(),
+        Err(e) => bad_request(e.to_string()),
+    }
 }
 
 /// Cut a local model into `parts` slices, in the background.
@@ -939,27 +1007,43 @@ async fn slice_locally(
     if !source.is_file() {
         return bad_request(format!("modelo não encontrado nesta máquina: {}", req.model_path));
     }
-    if req.parts < 1 || req.parts > 64 {
-        return bad_request("escolha entre 1 e 64 fatias");
+    if req.slices.is_empty() {
+        return bad_request("nenhuma fatia na lista");
+    }
+    if req.slices.len() > 64 {
+        return bad_request("no máximo 64 fatias");
     }
 
-    let path = source.clone();
-    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&path)).await {
-        Ok(Ok(l)) => l,
-        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
-        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+    let layout = match layout_of(&source).await {
+        Ok(l) => l,
+        Err(e) => return bad_request(e),
     };
 
-    let total_layers = layout.layer_count();
-    let ranges = plan::even_split(total_layers, req.parts);
+    // The screen previews with the same function, but the decision is remade
+    // here: a stale preview must not become a slicing run nobody approved.
+    let sized = match plan::plan_by_size(&layout, &req.slices) {
+        Ok(p) => p,
+        Err(e) => return bad_request(e.to_string()),
+    };
+    if sized.blocked {
+        return bad_request(
+            sized
+                .warnings
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "há uma fatia impossível na lista".to_string()),
+        );
+    }
+
+    let total_layers = sized.total_layers;
+    let ranges: Vec<(u32, u32)> = sized
+        .ranges
+        .iter()
+        .filter(|r| !r.empty)
+        .map(|r| (r.start_layer, r.end_layer))
+        .collect();
     if ranges.is_empty() {
         return bad_request("este arquivo não declara camadas — não há o que fatiar");
-    }
-    if ranges.len() < req.parts as usize {
-        return bad_request(format!(
-            "o modelo tem {total_layers} camadas: não dá para dividi-lo em {} fatias sem deixar alguma vazia",
-            req.parts
-        ));
     }
 
     let base_name = req

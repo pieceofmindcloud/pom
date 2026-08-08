@@ -400,6 +400,234 @@ pub fn shard_output_dir(shard_dir: &Path, base_name: &str) -> PathBuf {
     shard_dir.join(sanitize(base_name))
 }
 
+// ── Fatias de tamanhos diferentes ────────────────────────────────────────────
+//
+// As máquinas do cluster não são parecidas, então dividir em partes iguais é a
+// resposta errada quase sempre: quem manda no tamanho de uma fatia é a memória
+// da máquina que vai recebê-la. Aqui o pedido é em bytes e a resposta é em
+// camadas, porque camada é a unidade que `split_model.py` conhece.
+
+/// One slice the operator asked for.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SizedSlice {
+    /// Target size in MB. `None` means "whatever is left of the model".
+    #[serde(default)]
+    pub target_mb: Option<f64>,
+}
+
+impl SizedSlice {
+    fn of_mb(mb: f64) -> Self {
+        Self { target_mb: Some(mb) }
+    }
+
+    /// "O resto do modelo" — a conveniência que evita erro de arredondamento na
+    /// última fatia.
+    #[cfg(test)]
+    fn rest() -> Self {
+        Self { target_mb: None }
+    }
+}
+
+/// What a requested size turned into once rounded to whole layers.
+#[derive(Debug, Clone, Serialize)]
+pub struct SizedRange {
+    pub index: u32,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub layers: u32,
+    /// Real size of the slice, summed from the tensor table.
+    pub bytes: u64,
+    /// What was asked for, when it was not "the rest".
+    pub target_mb: Option<f64>,
+    pub is_rest: bool,
+    pub is_last: bool,
+    /// The target could not hold even the first layer of this range.
+    pub too_small: bool,
+    /// Nothing was left of the model for this slice.
+    pub empty: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SizePlan {
+    pub total_layers: u32,
+    pub model_bytes: u64,
+    pub ranges: Vec<SizedRange>,
+    pub covered_layers: u32,
+    pub complete: bool,
+    /// Layers no slice covers, and what they would weigh.
+    pub missing_range: Option<(u32, u32)>,
+    pub missing_bytes: u64,
+    /// True when a slice is unusable: too small for a layer, or left with none.
+    pub blocked: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Turn a list of target sizes into contiguous layer ranges.
+///
+/// Rounding is always up to a whole layer and always **visible**: `SizedRange`
+/// carries both what was asked and what it became, because "5 GB" turning into
+/// 4,8 GB of layers 0–11 is the thing the operator has to be able to check.
+///
+/// Sizes come from the real tensor table (`gguf::read_layout`), not from
+/// `total / n_layers`: the embedding travels in every slice and the blocks
+/// themselves are not all the same size.
+pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePlan> {
+    let total_layers = layout.layer_count();
+    if total_layers == 0 {
+        bail!("não foi possível ler as camadas do GGUF (tensor table vazia)");
+    }
+    if slices.is_empty() {
+        bail!("nenhuma fatia na lista");
+    }
+
+    let mut ranges: Vec<SizedRange> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut pos: u32 = 0;
+
+    for (i, slice) in slices.iter().enumerate() {
+        let index = i as u32;
+        let last_requested = i == slices.len() - 1;
+
+        if pos >= total_layers {
+            warnings.push(format!(
+                "fatia {}: não sobrou camada nenhuma — as anteriores já cobrem o modelo inteiro",
+                index + 1
+            ));
+            ranges.push(SizedRange {
+                index,
+                start_layer: total_layers,
+                end_layer: total_layers,
+                layers: 0,
+                bytes: 0,
+                target_mb: slice.target_mb,
+                is_rest: slice.target_mb.is_none(),
+                is_last: false,
+                too_small: false,
+                empty: true,
+            });
+            continue;
+        }
+
+        // "O resto" takes everything left; so does the last slice of the list
+        // when its target overshoots what remains.
+        let take_rest = slice.target_mb.is_none();
+        let (end, too_small) = if take_rest {
+            (total_layers - 1, false)
+        } else {
+            let budget = (slice.target_mb.unwrap_or(0.0).max(0.0) * MB) as u64;
+            let mut end = pos;
+            let mut fits_one = false;
+            while end < total_layers {
+                let is_last = end + 1 >= total_layers;
+                if layout.slice_bytes(pos, end, is_last) > budget {
+                    break;
+                }
+                fits_one = true;
+                end += 1;
+            }
+            if fits_one {
+                (end - 1, false)
+            } else {
+                // Uma camada é o mínimo indivisível: entregamos uma e dizemos
+                // que o alvo não cabia, em vez de inventar meia camada.
+                (pos, true)
+            }
+        };
+
+        let end = end.min(total_layers - 1);
+        let is_last = end + 1 >= total_layers;
+        let bytes = layout.slice_bytes(pos, end, is_last);
+
+        if too_small {
+            warnings.push(format!(
+                "fatia {}: {} não cobrem nem a camada {}, que sozinha já pesa {}",
+                index + 1,
+                fmt_gb(slice.target_mb.unwrap_or(0.0) * MB),
+                pos,
+                fmt_gb(bytes as f64)
+            ));
+        }
+
+        ranges.push(SizedRange {
+            index,
+            start_layer: pos,
+            end_layer: end,
+            layers: end - pos + 1,
+            bytes,
+            target_mb: slice.target_mb,
+            is_rest: take_rest,
+            is_last,
+            too_small,
+            empty: false,
+        });
+
+        pos = end + 1;
+        if take_rest && !last_requested {
+            // "O resto" no meio da lista engole tudo; as seguintes ficam vazias
+            // e o aviso acima explica por quê.
+            continue;
+        }
+    }
+
+    let covered_layers = pos.min(total_layers);
+    let complete = covered_layers >= total_layers;
+    let (missing_range, missing_bytes) = if complete {
+        (None, 0)
+    } else {
+        (
+            Some((covered_layers, total_layers - 1)),
+            layout.slice_bytes(covered_layers, total_layers - 1, true),
+        )
+    };
+
+    // A cobertura não vira aviso: ela já está aqui em número (`covered_layers`,
+    // `missing_range`, `missing_bytes`), e quem mostra escreve uma frase só. Dois
+    // textos dizendo a mesma falta é ruído.
+    let blocked = ranges.iter().any(|r| r.empty || r.too_small);
+
+    Ok(SizePlan {
+        total_layers,
+        model_bytes: layout.total_bytes,
+        ranges,
+        covered_layers,
+        complete,
+        missing_range,
+        missing_bytes,
+        blocked,
+        warnings,
+    })
+}
+
+/// The "cut it in N" shortcut, as a list the operator can still edit.
+///
+/// Equal here means equal in *layers*, and the target of each entry is the real
+/// size that range costs — so filling the list with 3 and then raising one of
+/// them starts from an honest number rather than from `total / 3`.
+pub fn plan_equal(layout: &GgufLayout, parts: u32) -> Result<SizePlan> {
+    let ranges = even_split(layout.layer_count(), parts);
+    if ranges.is_empty() {
+        bail!("este arquivo não declara camadas — não há o que dividir");
+    }
+    let slices: Vec<SizedSlice> = ranges
+        .iter()
+        .enumerate()
+        .map(|(i, (start, end))| {
+            let is_last = i == ranges.len() - 1;
+            SizedSlice::of_mb(layout.slice_bytes(*start, *end, is_last) as f64 / MB)
+        })
+        .collect();
+    plan_by_size(layout, &slices)
+}
+
+fn fmt_gb(bytes: f64) -> String {
+    let gb = bytes / 1_073_741_824.0;
+    if gb >= 1.0 {
+        format!("{gb:.1} GB")
+    } else {
+        format!("{:.0} MB", bytes / MB)
+    }
+}
+
 /// Cut `total_layers` into `parts` contiguous ranges as evenly as they divide.
 ///
 /// The remainder goes to the first slices, one layer each, so the difference
@@ -552,6 +780,118 @@ mod tests {
     #[test]
     fn shard_filename_matches_the_parsed_convention() {
         assert_eq!(shard_filename("qwen", 0, 15), "qwen_0_15.gguf");
+    }
+
+    // ── Fatias de tamanhos diferentes ────────────────────────────────────────
+    //
+    // Layout de referência: 32 camadas de 200 MB, embedding de 100 MB em toda
+    // fatia, cabeça de 100 MB só na última. Uma fatia de N camadas que não é a
+    // última custa 100 + 200N MB.
+
+    #[test]
+    fn sizes_become_layer_ranges_and_the_rounding_is_visible() {
+        let l = layout(32, 200.0);
+        let plan = plan_by_size(
+            &l,
+            &[SizedSlice::of_mb(1100.0), SizedSlice::of_mb(2100.0), SizedSlice::rest()],
+        )
+        .unwrap();
+
+        // 100 de embedding + 5×200 = 1100 → camadas 0-4, exatamente no alvo.
+        assert_eq!((plan.ranges[0].start_layer, plan.ranges[0].end_layer), (0, 4));
+        assert_eq!(plan.ranges[0].bytes as f64 / MB, 1100.0);
+        // 100 + 10×200 = 2100 → camadas 5-14.
+        assert_eq!((plan.ranges[1].start_layer, plan.ranges[1].end_layer), (5, 14));
+        // O resto leva 15-31 e paga a cabeça.
+        assert!(plan.ranges[2].is_rest);
+        assert_eq!((plan.ranges[2].start_layer, plan.ranges[2].end_layer), (15, 31));
+        assert!(plan.ranges[2].is_last);
+        assert!(plan.complete);
+        assert!(!plan.blocked);
+    }
+
+    #[test]
+    fn a_target_that_falls_between_layers_rounds_down_and_says_so() {
+        let l = layout(32, 200.0);
+        // 1250 MB dá para 5 camadas (1100) mas não para 6 (1300).
+        let plan = plan_by_size(&l, &[SizedSlice::of_mb(1250.0), SizedSlice::rest()]).unwrap();
+        assert_eq!(plan.ranges[0].layers, 5);
+        assert_eq!(plan.ranges[0].target_mb, Some(1250.0));
+        assert_eq!(
+            plan.ranges[0].bytes as f64 / MB,
+            1100.0,
+            "o tamanho real fica abaixo do alvo, e é isso que a tela mostra"
+        );
+    }
+
+    #[test]
+    fn a_target_smaller_than_one_layer_is_refused_with_a_reason() {
+        let l = layout(32, 200.0);
+        let plan = plan_by_size(&l, &[SizedSlice::of_mb(50.0), SizedSlice::rest()]).unwrap();
+        assert!(plan.ranges[0].too_small);
+        assert_eq!(plan.ranges[0].layers, 1, "uma camada é o mínimo indivisível");
+        assert!(plan.blocked, "não se fatia com uma fatia impossível na lista");
+        assert!(plan.warnings.iter().any(|w| w.contains("nem a camada 0")));
+    }
+
+    #[test]
+    fn slices_that_fall_short_report_what_is_missing() {
+        let l = layout(32, 200.0);
+        let plan = plan_by_size(&l, &[SizedSlice::of_mb(1100.0)]).unwrap();
+        assert!(!plan.complete);
+        assert_eq!(plan.covered_layers, 5);
+        assert_eq!(plan.missing_range, Some((5, 31)));
+        assert!(plan.missing_bytes > 0);
+        assert!(
+            plan.warnings.is_empty(),
+            "faltar camada não é aviso solto: são números que a tela escreve numa frase só"
+        );
+        assert!(!plan.blocked, "faltar camada não impede fatiar o que já foi pedido");
+    }
+
+    #[test]
+    fn asking_for_more_than_the_model_has_leaves_the_extra_slices_empty() {
+        let l = layout(8, 200.0);
+        let plan = plan_by_size(
+            &l,
+            &[SizedSlice::of_mb(99_000.0), SizedSlice::of_mb(1000.0)],
+        )
+        .unwrap();
+        assert_eq!(plan.ranges[0].layers, 8, "a primeira já cobre o modelo");
+        assert!(plan.ranges[1].empty);
+        assert!(plan.blocked);
+        assert!(plan.warnings.iter().any(|w| w.contains("não sobrou camada")));
+        assert!(plan.complete, "cobertura fechada, o problema é a fatia vazia");
+    }
+
+    #[test]
+    fn the_equal_shortcut_fills_the_list_with_real_sizes() {
+        let l = layout(32, 200.0);
+        let plan = plan_equal(&l, 4).unwrap();
+        assert_eq!(plan.ranges.len(), 4);
+        assert!(plan.complete && !plan.blocked);
+        for r in &plan.ranges {
+            assert_eq!(r.layers, 8);
+            // O alvo de cada entrada é o tamanho real daquela faixa, não
+            // `total / 4` — a última carrega a cabeça e é maior.
+            assert_eq!(r.target_mb, Some(r.bytes as f64 / MB));
+        }
+        assert!(plan.ranges[3].bytes > plan.ranges[0].bytes);
+    }
+
+    #[test]
+    fn the_rest_alone_is_the_whole_model() {
+        let l = layout(32, 200.0);
+        let plan = plan_by_size(&l, &[SizedSlice::rest()]).unwrap();
+        assert_eq!(plan.ranges.len(), 1);
+        assert_eq!((plan.ranges[0].start_layer, plan.ranges[0].end_layer), (0, 31));
+        assert!(plan.complete && !plan.blocked);
+    }
+
+    #[test]
+    fn an_empty_list_is_not_a_plan() {
+        let l = layout(32, 200.0);
+        assert!(plan_by_size(&l, &[]).is_err());
     }
 
     #[test]

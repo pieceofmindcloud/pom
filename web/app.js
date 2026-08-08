@@ -1300,10 +1300,21 @@ async function sendSlice(nodeId, path) {
 function renderSendPathPeers() {
   const sel = document.getElementById('send-path-peer');
   if (!sel) return;
-  const peers = (state.cluster?.peers || []).filter((p) => p.node_id !== state.node?.node_id);
+  // `is_self` é a marca que o cluster já traz; comparar node_id com um campo
+  // que não existe deixava o próprio nó na lista de destinos.
+  const peers = (state.cluster?.peers || []).filter((p) => !p.is_self);
   const anterior = sel.value;
+  // Dois peers na mesma máquina compartilham o hostname, então o nome sozinho
+  // não distingue um do outro — a faixa de camadas distingue.
+  const rotulo = (p) => {
+    const nome = peerName(p.node_id);
+    const faixa = p.start_layer != null && p.end_layer != null
+      ? ` · camadas ${p.start_layer}–${p.end_layer}`
+      : '';
+    return `${nome}${faixa}`;
+  };
   sel.innerHTML = peers.length
-    ? peers.map((p) => `<option value="${esc(p.node_id)}">${esc(peerName(p.node_id))}</option>`).join('')
+    ? peers.map((p) => `<option value="${esc(p.node_id)}">${esc(rotulo(p))}</option>`).join('')
     : '<option value="">nenhuma outra máquina no cluster</option>';
   if (anterior && peers.some((p) => p.node_id === anterior)) sel.value = anterior;
   sel.disabled = !peers.length;

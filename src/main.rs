@@ -187,6 +187,16 @@ struct Args {
     /// Disable the built-in public IPFS relay nodes.
     #[arg(long)]
     no_default_relays: bool,
+
+    /// Start off the network: no announce, no LAN broadcast, no bootstrap.
+    ///
+    /// The discovery broadcast goes to `255.255.255.255:42777` whatever `--port`
+    /// says, so a node started to try the interface out joins whatever cluster
+    /// is on the wire. This is how you run one next to a live cluster without
+    /// showing up in it. The node still serves its own UI and API, and
+    /// Configurações › Rede brings it into the network when you want it there.
+    #[arg(long)]
+    no_discovery: bool,
 }
 
 /// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
@@ -291,7 +301,13 @@ async fn main() -> Result<()> {
 
     if model_name.is_none() {
         info!("No --model provided — starting gateway without model binding");
-        return start_gateway_only(gateway_port, app_config.clone(), args.ollama_url).await;
+        return start_gateway_only(
+            gateway_port,
+            app_config.clone(),
+            args.ollama_url,
+            args.no_discovery,
+        )
+        .await;
     }
 
     let model_name = model_name.unwrap();
@@ -490,6 +506,11 @@ inference_port,
         )
         .with_advertise_addr(advertise_addr.clone()),
     );
+
+    if args.no_discovery {
+        net.detach().await;
+        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
+    }
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
         Arc::new(RwLock::new(None));
@@ -862,6 +883,7 @@ async fn start_gateway_only(
     gateway_port: u16,
     app_config: config::Config,
     ollama_url: String,
+    no_discovery: bool,
 ) -> Result<()> {
     use crate::gateway::{GatewayState, start_gateway};
     use crate::pipeline::LoadTracker;
@@ -889,6 +911,11 @@ async fn start_gateway_only(
         )
         .with_advertise_addr(app_config.advertise_addr.clone()),
     );
+
+    if no_discovery {
+        net.detach().await;
+        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
+    }
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
         Arc::new(RwLock::new(None));

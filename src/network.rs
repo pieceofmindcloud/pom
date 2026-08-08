@@ -475,6 +475,13 @@ impl Network {
 
     /// Request peer list from bootstrap nodes
     pub async fn bootstrap_discovery(&self) -> Result<()> {
+        // A node that is off the network must not go looking for it either.
+        // `rejoin` clears the flag before calling this, so the live path is
+        // unaffected; what this closes is `start`, which reaches out to the
+        // bootstrap nodes on every path including a node started detached.
+        if self.is_detached() {
+            return Ok(());
+        }
         let msg = P2PMessage::PeerRequest {
             from: self.node_id.clone(),
         };
@@ -852,6 +859,35 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The LAN broadcast goes to `255.255.255.255:42777` no matter which port
+    /// this node runs on, so a node brought up to try the interface out lands
+    /// in whatever cluster is on the wire. Starting detached (`--no-discovery`)
+    /// is the only way to run one safely next to a live cluster, and it only
+    /// holds if neither the announce nor the bootstrap request goes out.
+    #[tokio::test]
+    async fn a_detached_node_neither_announces_nor_looks_for_bootstrap() {
+        let net = Network::new(
+            "n".into(),
+            "p".into(),
+            0,
+            vec!["127.0.0.1:1".into()],
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        net.detach().await;
+        assert!(net.is_detached());
+
+        // Both would fail loudly against `127.0.0.1:1` if anything were sent:
+        // announce walks the same bootstrap list, and the broadcast is inside it.
+        net.announce(None).await.unwrap();
+        net.bootstrap_discovery().await.unwrap();
+        assert!(net.peers.read().await.is_empty());
     }
 
     #[tokio::test]

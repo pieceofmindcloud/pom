@@ -266,6 +266,32 @@ planejador não fechou a cobertura 0..total_layers.
   `curl -s localhost:8181/openapi.json` tem que listar `/v1/prefill` **e**
   `/v1/step`.
 
+### Dois peers na mesma máquina — a armadilha é a identidade
+
+Serve para dar janela grande sem arriscar a RAM do MacBook: as 32 camadas do
+qwen cabem nos 16 GB de VRAM do ksia (medido: **7.636 MiB de 16.311** com
+`n_ctx 32768` nos dois). O que se perde é a validade da medição de rede — o
+salto vira loopback. Bytes por salto continuam valendo; tempo de rede, não.
+
+Portas diferentes **não bastam**. A identidade fica em
+`project_root()/.rdma-p2p-node.key` e `project_root()` é o diretório do projeto,
+então dois processos no mesmo diretório carregam a mesma chave, anunciam o mesmo
+`node_id` — e o cluster indexa peers por `node_id`. O segundo peer precisa de
+outra *casa*, via `RDMA_P2P_HOME`:
+
+```bash
+B=/home/jairpereira/workspace/rdma-p2p-b
+mkdir -p $B && cd $B
+for f in models venv inference_server.py split_model.py; do ln -s ../rdma-p2p/$f $f; done
+# a config nao e herdada: sem ela o no sobe em modo setup e nao carrega modelo.
+# copie a do peer A trocando gateway_port, p2p_port e bootstrap_nodes.
+RDMA_P2P_HOME=$B ../rdma-p2p/target/release/rdma-p2p --model ./models/qwen/qwen_16_31.gguf \
+    --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091 --inference-port 8182 ...
+```
+
+Os assets da UI são `include_str!` no binário, então a casa nova não precisa de
+`web/`. Confira que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
+
 ### Estado do cenário "peers em redes diferentes, pela internet"
 
 Já existe em `src/discovery.rs` e `src/pkarr_node.rs`: Circuit Relay v2 (cliente

@@ -1248,6 +1248,37 @@ def health():
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+def _serve(app, host: str, port: int) -> None:
+    """Serve `app`, and on the IPv6 wildcard serve IPv4 through the same socket.
+
+    Passing host="::" to uvicorn gets an AF_INET6 socket with IPV6_V6ONLY left
+    at the platform default, and that default turned out to be v6-only on both
+    machines: the peer on the internet was served, but the gateway sitting on
+    the same box could no longer reach http://127.0.0.1:8181 - which is exactly
+    how it addresses its own slice. Building the socket here and clearing
+    IPV6_V6ONLY is what actually makes one listener answer both families.
+    """
+    import socket
+
+    if host not in ("::", "[::]"):
+        uvicorn.run(app, host=host, port=port, log_level="warning")
+        return
+
+    sock = socket.socket(socket.AF_INET6, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+    except OSError as e:
+        # A kernel that refuses dual-stack: better to say so than to come up
+        # half-reachable and fail one hop later.
+        print(f"WARNING: dual-stack indisponivel ({e}); atendendo so IPv6", flush=True)
+    sock.bind(("::", port))
+    sock.listen(2048)
+
+    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+    server.run(sockets=[sock])
+
+
 def main():
     global _llama, _args, _n_embd, _n_vocab
 
@@ -1384,7 +1415,7 @@ def main():
     print(f"Starting server on {args.host}:{args.port}...", flush=True)
 
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
+        _serve(app, args.host, args.port)
     except Exception as e:
         print(f"FATAL: Failed to start uvicorn server: {e}", flush=True)
         import sys

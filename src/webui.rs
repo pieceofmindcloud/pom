@@ -55,8 +55,20 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
         .route("/api/ui/jobs/:id", get(job_status))
-        .route("/api/setup/key", get(get_setup_key))
-        .route("/api/setup/save", post(save_setup))
+    // `/api/setup/key` e `/api/setup/save` NAO entram aqui de proposito.
+    //
+    // Elas nao tem autenticacao - nao podem ter, e o momento em que a chave do
+    // cluster nasce - e so fazem sentido antes de existir configuracao. Num no
+    // ja configurado elas eram um portao aberto: `GET /api/setup/key` troca o
+    // `connection_key` em memoria, entao qualquer um alcancando a porta do
+    // gateway rotacionava a credencial de operador, derrubava a chave legitima
+    // (403) e ficava com acesso total a /admin, /api/ui/apply e /v1.
+    // Reproduzido em 2026-08-08 num no local; com o no atendendo IPv6 publico
+    // isso deixou de ser teorico.
+    //
+    // Quem precisa delas e o modo setup, que monta o proprio roteador com estas
+    // duas rotas e a setup.html (ver `start_setup_mode` em main.rs). O unico
+    // consumidor e aquela pagina, servida so enquanto nao ha `rdma-p2p.json`.
 }
 
 // ── Static assets ────────────────────────────────────────────────────────────

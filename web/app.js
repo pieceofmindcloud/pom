@@ -1297,9 +1297,19 @@ async function sendSlice(nodeId, path) {
  *  solto numa pasta qualquer não aparece em lugar nenhum, e era exatamente o que
  *  não dava para transferir. Aqui o caminho vem do dono da máquina.
  */
-function renderSendPathPeers() {
+async function renderSendPathPeers() {
   const sel = document.getElementById('send-path-peer');
   if (!sel) return;
+  // Buscar o cluster aqui em vez de esperar `state.cluster`: aquele campo só é
+  // preenchido pelo poller do painel, então abrir a aba Nós antes do primeiro
+  // ciclo deixava a lista de destinos vazia.
+  if (!state.cluster) {
+    try {
+      state.cluster = await getJSON('/api/ui/cluster');
+    } catch (e) {
+      return;
+    }
+  }
   // `is_self` é a marca que o cluster já traz; comparar node_id com um campo
   // que não existe deixava o próprio nó na lista de destinos.
   const peers = (state.cluster?.peers || []).filter((p) => !p.is_self);
@@ -1386,7 +1396,7 @@ async function loadNodesTab() {
       renderSliceExchange(cm);
     } catch (e) {}
 
-    renderSendPathPeers();
+    await renderSendPathPeers();
 
     const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
 

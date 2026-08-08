@@ -14,9 +14,14 @@ import clsx from "clsx";
 import { motion } from "framer-motion";
 import { ArrowRight, CircleDashed, MessageSquareText, Sparkles } from "lucide-react";
 import type { ClusterView, PeerView } from "../lib/types";
-import { layerRange } from "../lib/format";
+import {
+  isServing,
+  layerRange,
+  serverStateLabel,
+  serverStateTone,
+} from "../lib/format";
 import { MachineIcon, machineKind } from "./MachineIcon";
-import { Badge, Dot } from "./ui";
+import { Badge, Dot, Footnote } from "./ui";
 
 /** Track colours, in the order peers appear along the pipeline. */
 const TRACKS = [
@@ -58,9 +63,15 @@ function Terminus({
   );
 }
 
+/**
+ * The wire between two cards, and the elastic part of the rail: the cards and
+ * the two ends keep their size and the connector gives way first. Three
+ * machines then still show the whole path - including the "Resposta" end, which
+ * is the point of the drawing - before the panel has to scroll.
+ */
 function Conduit({ label, active }: { label: string | null; active: boolean }) {
   return (
-    <div className="relative flex w-16 shrink-0 flex-col items-center justify-center gap-2 self-center sm:w-24">
+    <div className="relative flex w-16 min-w-16 shrink flex-col items-center justify-center gap-2 self-center sm:w-24">
       <svg
         viewBox="0 0 96 12"
         preserveAspectRatio="none"
@@ -119,7 +130,7 @@ function PeerCard({
   const track = trackOf(index);
   const system = peer.node?.system;
   const kind = machineKind(system);
-  const running = peer.node?.status.state === "running";
+  const serving = isServing(peer.node?.status.state);
   const unreachable = Boolean(peer.unreachable);
 
   return (
@@ -168,15 +179,15 @@ function PeerCard({
       <div className="flex items-center justify-between gap-2 border-t border-line pt-2.5">
         <span className="flex min-w-0 items-center gap-1.5">
           <Dot
-            tone={unreachable ? "rose" : running ? "aqua" : "neutral"}
-            pulse={running && !unreachable}
+            tone={
+              unreachable ? "rose" : serverStateTone(peer.node?.status.state)
+            }
+            pulse={serving && !unreachable}
           />
           <span className="truncate text-[0.72rem] text-muted">
             {unreachable
               ? "sem resposta"
-              : running
-                ? "servindo"
-                : (peer.node?.status.state ?? "parado")}
+              : serverStateLabel(peer.node?.status.state)}
           </span>
         </span>
         {peer.load > 0 && (
@@ -248,7 +259,8 @@ export function PipelineRail({
   selected?: string | null;
 }) {
   const peers = pipelinePeers(cluster);
-  const flowing = cluster.complete && peers.some((p) => p.node?.status.state === "running");
+  const flowing =
+    cluster.complete && peers.some((p) => isServing(p.node?.status.state));
 
   if (peers.length === 0) {
     return (
@@ -281,7 +293,7 @@ export function PipelineRail({
             "linear-gradient(to right, transparent 0, #000 14px, #000 calc(100% - 28px), transparent 100%)",
         }}
       >
-        <div className="flex min-w-min items-stretch gap-1 py-1">
+        <div className="flex items-stretch gap-1 py-1">
           <Terminus
             icon={<MessageSquareText className="h-4 w-4" />}
             label="Requisição"
@@ -315,11 +327,10 @@ export function PipelineRail({
 
       <LayerRibbon cluster={cluster} />
 
-      <p className="flex items-center gap-2 text-xs text-faint">
-        <ArrowRight className="h-3.5 w-3.5 shrink-0" />
+      <Footnote icon={<ArrowRight className="h-3.5 w-3.5" />}>
         Cada conexão carrega o estado oculto em f16. A ordem na tela é a ordem em que a
         requisição percorre as máquinas.
-      </p>
+      </Footnote>
     </div>
   );
 }

@@ -15,6 +15,7 @@ import {
   Dot,
   Empty,
   ErrorState,
+  Footnote,
   Mono,
   PageHeader,
   Panel,
@@ -116,11 +117,13 @@ export function LogsLive() {
               </AnimatePresence>
             </div>
           )}
-          <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-xs text-faint">
-            <Activity className="h-3.5 w-3.5 shrink-0" />
+          <Footnote
+            className="border-t border-line px-5 py-3"
+            icon={<Activity className="h-3.5 w-3.5" />}
+          >
             Uma linha com dois ou mais saltos é a prova de que a inferência foi conjunta.
             Um salto só, ou nenhum, significa que o planejador não fechou a cobertura.
-          </p>
+          </Footnote>
         </Panel>
       )}
     </>

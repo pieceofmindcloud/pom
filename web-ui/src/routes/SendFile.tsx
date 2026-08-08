@@ -137,20 +137,27 @@ export function SendFile() {
             <ul className="space-y-3.5 px-5 py-4 text-[0.83rem] leading-relaxed text-muted">
               <li className="flex gap-2.5">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-aqua" />
-                Nada é gravado no disco alheio sem convite: o outro lado vê a oferta no
-                sino e decide.
+                <span className="min-w-0">
+                  Nada é gravado no disco alheio sem convite: o outro lado vê a oferta no
+                  sino e decide.
+                </span>
               </li>
               <li className="flex gap-2.5">
                 <FolderInput className="mt-0.5 h-4 w-4 shrink-0 text-sky" />
-                Aceita, a máquina de destino busca o arquivo e o grava em{" "}
-                <span className="font-mono text-fg">recebidos/</span>, dentro da pasta de
-                fatias dela.
+                <span className="min-w-0">
+                  Aceita, a máquina de destino busca o arquivo e o grava em{" "}
+                  <span className="font-mono text-fg">recebidos/</span>, dentro da pasta
+                  de fatias dela.
+                </span>
               </li>
               <li className="flex gap-2.5">
                 <Send className="mt-0.5 h-4 w-4 shrink-0 text-iris" />
-                A transferência retoma por <span className="font-mono text-fg">Range</span>{" "}
-                e o MD5 é conferido antes de o arquivo tomar o nome final. Se não bater, o
-                parcial é apagado.
+                <span className="min-w-0">
+                  A transferência retoma por{" "}
+                  <span className="font-mono text-fg">Range</span> e o MD5 é conferido
+                  antes de o arquivo tomar o nome final. Se não bater, o parcial é
+                  apagado.
+                </span>
               </li>
             </ul>
           </Panel>

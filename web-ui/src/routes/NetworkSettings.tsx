@@ -12,6 +12,7 @@ import {
   Dot,
   Empty,
   ErrorState,
+  Footnote,
   KeyValue,
   Mono,
   PageHeader,
@@ -191,12 +192,14 @@ export function NetworkSettings() {
                 ))}
               </div>
             )}
-            <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-xs text-faint">
-              <ShieldOff className="h-3.5 w-3.5 shrink-0" />
+            <Footnote
+              className="border-t border-line px-5 py-3"
+              icon={<ShieldOff className="h-3.5 w-3.5" />}
+            >
               A identidade de uma máquina é o node_id, guardado em{" "}
               <span className="font-mono">.rdma-p2p-node.key</span>. Apagar esse arquivo cria
               uma máquina nova aos olhos dos outros peers — e o bloqueio deixa de valer.
-            </p>
+            </Footnote>
           </Panel>
         )}
       </div>

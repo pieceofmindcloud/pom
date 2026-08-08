@@ -5,6 +5,7 @@ import {
   Button,
   Empty,
   ErrorState,
+  Footnote,
   PageHeader,
   Panel,
   PanelHeader,
@@ -181,10 +182,12 @@ export function Transfers() {
       </div>
 
       {waiting.length === 0 && jobs.length === 0 && (
-        <p className="mt-4 flex items-center gap-2 text-xs text-faint">
-          <Inbox className="h-3.5 w-3.5 shrink-0" />
+        <Footnote
+          className="mt-4"
+          icon={<Inbox className="h-3.5 w-3.5" />}
+        >
           Ofertas recebidas também aparecem no sino, no topo da tela.
-        </p>
+        </Footnote>
       )}
     </>
   );

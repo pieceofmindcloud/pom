@@ -14,6 +14,7 @@ import {
   Button,
   ErrorState,
   Field,
+  Footnote,
   Input,
   PageHeader,
   Panel,
@@ -217,12 +218,14 @@ export function ModelPaths() {
                 </Button>
               )}
             </div>
-            <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-xs text-faint">
-              <FolderTree className="h-3.5 w-3.5 shrink-0" />
+            <Footnote
+              className="border-t border-line px-5 py-3"
+              icon={<FolderTree className="h-3.5 w-3.5" />}
+            >
               Salvar recusa caminho que não exista ou que não seja uma pasta — um erro de
               digitação aqui só apareceria muito depois, como um peer que não acha o modelo
               que mandaram ele fatiar.
-            </p>
+            </Footnote>
           </Panel>
         </div>
       )}

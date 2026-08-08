@@ -54,7 +54,14 @@ export interface SystemLoad {
   sampled_at: string;
 }
 
-export type ServerState = "stopped" | "starting" | "running" | "failed" | string;
+/**
+ * The inference server's state on a node — `ServerState` in `src/runtime.rs`,
+ * serialised lowercase. No `| string` escape hatch on purpose: the first
+ * version of this type invented "stopped" and "running", and because anything
+ * was assignable every screen compared against a value the node never sends.
+ * A machine serving layers looked idle on every panel.
+ */
+export type ServerState = "disabled" | "starting" | "ready" | "failed";
 
 export interface RuntimeStatus {
   state: ServerState;

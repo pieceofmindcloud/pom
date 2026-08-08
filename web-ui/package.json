@@ -6,8 +6,7 @@
   "scripts": {
     "dev": "vite --port 5199 --strictPort",
     "build": "tsc -b && vite build",
-    "preview": "vite preview --port 5199 --strictPort",
-    "mock": "node mock-server.mjs"
+    "preview": "vite preview --port 5199 --strictPort"
   },
   "dependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.1.2",

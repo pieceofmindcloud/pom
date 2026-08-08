@@ -5,6 +5,7 @@ import {
   Button,
   Empty,
   ErrorState,
+  Footnote,
   PageHeader,
   Panel,
   PanelHeader,
@@ -191,11 +192,13 @@ export function WholeModels() {
       )}
 
       {catalog.data && models.length > 0 && (
-        <p className="mt-4 flex items-center gap-2 text-xs text-faint">
-          <Boxes className="h-3.5 w-3.5 shrink-0" />
+        <Footnote
+          className="mt-4"
+          icon={<Boxes className="h-3.5 w-3.5" />}
+        >
           Fatiar é local: cada máquina extrai a própria faixa da própria cópia do GGUF.
           Nenhum peso trafega pela rede.
-        </p>
+        </Footnote>
       )}
     </>
   );

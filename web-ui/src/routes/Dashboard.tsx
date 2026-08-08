@@ -17,6 +17,7 @@ import {
   Dot,
   Empty,
   ErrorState,
+  Footnote,
   KeyValue,
   Meter,
   PageHeader,
@@ -24,7 +25,16 @@ import {
   PanelHeader,
   Skeleton,
 } from "../components/ui";
-import { layerRange, megabytes, num, pct, since } from "../lib/format";
+import {
+  isServing,
+  layerRange,
+  megabytes,
+  num,
+  pct,
+  serverStateLabel,
+  serverStateTone,
+  since,
+} from "../lib/format";
 import { useCluster, useNode } from "../lib/queries";
 import type { PeerView } from "../lib/types";
 
@@ -102,7 +112,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
   const system = n?.system;
   const kind = machineKind(system);
   const cfg = n?.config;
-  const running = n?.status.state === "running";
+  const serving = isServing(n?.status.state);
   const gpu = system?.gpus[0];
 
   return (
@@ -140,10 +150,12 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
           </span>
           <span className="flex items-center gap-1.5 text-[0.72rem] text-muted">
             <Dot
-              tone={peer.unreachable ? "rose" : running ? "aqua" : "neutral"}
-              pulse={running}
+              tone={
+                peer.unreachable ? "rose" : serverStateTone(n?.status.state)
+              }
+              pulse={serving}
             />
-            {peer.unreachable ?? n?.status.state ?? "desconhecido"}
+            {peer.unreachable ?? serverStateLabel(n?.status.state)}
           </span>
         </div>
       </div>
@@ -273,7 +285,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
             <KeyValue label="Servidor">
               {n ? (
                 <span className="text-xs">
-                  {n.status.detail || n.status.state}
+                  {n.status.detail || serverStateLabel(n.status.state)}
                   {n.status.pid ? ` · pid ${n.status.pid}` : ""}
                   {n.status.restarts > 0 ? ` · ${n.status.restarts} reinícios` : ""}
                 </span>
@@ -315,7 +327,7 @@ export function Dashboard() {
 
   const c = cluster.data;
   const peers = c ? pipelinePeers(c) : [];
-  const serving = peers.filter((p) => p.node?.status.state === "running").length;
+  const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlight = peers.reduce((sum, p) => sum + p.load, 0);
 
   return (
@@ -465,11 +477,12 @@ export function Dashboard() {
                   </div>
                 )}
 
-                <p className="flex items-center gap-2 text-xs text-faint">
-                  <Zap className="h-3.5 w-3.5 shrink-0" />
+                <Footnote
+                  icon={<Zap className="h-3.5 w-3.5" />}
+                >
                   Amostrado {since(node.data?.system.sampled_at)} · memória unificada não
                   reporta VRAM dedicada, por isso o Mac mostra memória wired.
-                </p>
+                </Footnote>
               </motion.div>
             )}
           </AnimatePresence>

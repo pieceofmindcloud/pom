@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
+import { isServing } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
@@ -35,7 +36,7 @@ function NodeChip() {
 
   const n = node.data!;
   const c = cluster.data;
-  const serving = n.status.state === "running";
+  const serving = isServing(n.status.state);
   const complete = c?.complete ?? false;
 
   return (
@@ -81,7 +82,7 @@ function NodeActions() {
     return () => document.removeEventListener("mousedown", onClick);
   }, [open]);
 
-  const loaded = node.data?.config != null || node.data?.status.state === "running";
+  const loaded = node.data?.config != null || isServing(node.data?.status.state);
 
   async function run(action: Exclude<PendingAction, null>) {
     setBusy(true);

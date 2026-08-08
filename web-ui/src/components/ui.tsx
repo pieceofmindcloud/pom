@@ -189,7 +189,7 @@ export function Field({
 
 // ── Signals ──────────────────────────────────────────────────────────────────
 
-type Tone = "neutral" | "iris" | "aqua" | "amber" | "rose" | "sky" | "lime";
+export type Tone = "neutral" | "iris" | "aqua" | "amber" | "rose" | "sky" | "lime";
 
 const toneClass: Record<Tone, string> = {
   neutral: "border-line bg-raised text-muted",
@@ -423,6 +423,37 @@ export function ScrollX({
     <div className={clsx("min-w-0 max-w-full overflow-x-auto", className)}>
       {children}
     </div>
+  );
+}
+
+/**
+ * The aside under a panel: an icon, then one sentence explaining the screen.
+ *
+ * It is a component and not four lines of markup because the obvious markup is
+ * a trap. A flex container makes a separate flex item out of every inline
+ * element in the sentence, so a `<span className="font-mono">` in the middle of
+ * a phrase gets pulled out of the text flow and the sentence comes apart into
+ * columns. Keeping the prose inside a single child makes that impossible.
+ */
+export function Footnote({
+  icon,
+  children,
+  className,
+}: {
+  icon: ReactNode;
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <p
+      className={clsx(
+        "flex items-start gap-2 text-xs leading-relaxed text-faint",
+        className,
+      )}
+    >
+      <span className="mt-0.5 flex shrink-0">{icon}</span>
+      <span className="min-w-0">{children}</span>
+    </p>
   );
 }
 

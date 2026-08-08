@@ -1,5 +1,8 @@
 /** Number and time formatting, in pt-BR, used everywhere numbers are shown. */
 
+import type { ServerState } from "./types";
+import type { Tone } from "../components/ui";
+
 const nf = (digits: number) =>
   new Intl.NumberFormat("pt-BR", {
     minimumFractionDigits: digits,
@@ -87,4 +90,45 @@ export function layerRange(start: number, end: number): string {
 export function basename(path: string): string {
   const parts = path.split("/");
   return parts[parts.length - 1] || path;
+}
+
+// ── Node state ───────────────────────────────────────────────────────────────
+
+/**
+ * Whether a node is actually answering for its layers.
+ *
+ * One function instead of `state === "..."` spread over the panels: the values
+ * come from `ServerState` in `src/runtime.rs`, and every screen that compares
+ * them by hand is one rename away from showing a live cluster as idle.
+ */
+export function isServing(state: ServerState | undefined): boolean {
+  return state === "ready";
+}
+
+export function serverStateLabel(state: ServerState | undefined): string {
+  switch (state) {
+    case "ready":
+      return "servindo";
+    case "starting":
+      return "carregando";
+    case "failed":
+      return "falhou";
+    case "disabled":
+      return "sem modelo";
+    default:
+      return "desconhecido";
+  }
+}
+
+export function serverStateTone(state: ServerState | undefined): Tone {
+  switch (state) {
+    case "ready":
+      return "aqua";
+    case "starting":
+      return "amber";
+    case "failed":
+      return "rose";
+    default:
+      return "neutral";
+  }
 }

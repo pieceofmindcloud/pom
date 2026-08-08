@@ -1,5 +1,6 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Route, Routes, useLocation } from "react-router-dom";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
 import { Chat } from "./routes/Chat";
@@ -45,9 +46,24 @@ export default function App() {
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden">
-      <Sidebar />
+      {/*
+        The chrome gets its own boundaries. The routed page below is the part
+        that is expected to fail, but a toolbar that throws used to blank the
+        whole window — including the menu that gets the operator out of it.
+      */}
+      <ErrorBoundary fallback={null}>
+        <Sidebar />
+      </ErrorBoundary>
       <div className="flex min-w-0 flex-1 flex-col">
-        <Topbar />
+        <ErrorBoundary
+          fallback={
+            <div className="border-b border-line px-4 py-3 text-xs text-faint">
+              A barra superior falhou. O resto da interface continua.
+            </div>
+          }
+        >
+          <Topbar />
+        </ErrorBoundary>
         <main
           className={
             isChat
@@ -56,27 +72,31 @@ export default function App() {
           }
         >
           {isChat ? (
-            <Chat />
+            <ErrorBoundary resetKey={location.pathname}>
+              <Chat />
+            </ErrorBoundary>
           ) : (
             <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
-              <AnimatePresence mode="wait">
-                <Routes location={location} key={location.pathname}>
-                  <Route path="/" element={<Page><Dashboard /></Page>} />
-                  <Route path="/modelos" element={<Page><WholeModels /></Page>} />
-                  <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
-                  <Route path="/fatias" element={<Page><Shards /></Page>} />
-                  <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
-                  <Route path="/transferencias" element={<Page><Transfers /></Page>} />
-                  <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
-                  <Route path="/logs" element={<Page><LogsByToken /></Page>} />
-                  <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
-                  <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
-                  <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
-                  <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
-                  <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
-                  <Route path="*" element={<Page><NotFound /></Page>} />
-                </Routes>
-              </AnimatePresence>
+              <ErrorBoundary resetKey={location.pathname}>
+                <AnimatePresence mode="wait">
+                  <Routes location={location} key={location.pathname}>
+                    <Route path="/" element={<Page><Dashboard /></Page>} />
+                    <Route path="/modelos" element={<Page><WholeModels /></Page>} />
+                    <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
+                    <Route path="/fatias" element={<Page><Shards /></Page>} />
+                    <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
+                    <Route path="/transferencias" element={<Page><Transfers /></Page>} />
+                    <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
+                    <Route path="/logs" element={<Page><LogsByToken /></Page>} />
+                    <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
+                    <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
+                    <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
+                    <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
+                    <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
+                    <Route path="*" element={<Page><NotFound /></Page>} />
+                  </Routes>
+                </AnimatePresence>
+              </ErrorBoundary>
             </div>
           )}
         </main>

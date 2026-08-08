@@ -18,6 +18,7 @@ import {
   Empty,
   ErrorState,
   Field,
+  Footnote,
   Input,
   PageHeader,
   Panel,
@@ -40,6 +41,25 @@ interface SliceInput {
 
 let nextId = 1;
 const row = (gb = ""): SliceInput => ({ id: nextId++, gb });
+
+/**
+ * A 200 that is not a plan is not a plan.
+ *
+ * The preview is the one screen that renders straight off a POST body, so a
+ * node that answers this route with something else - an older build, a proxy
+ * that swallowed the body - used to take the whole window down on
+ * `plan.ranges.map`. Refusing it here turns that into the error panel this
+ * screen already knows how to show.
+ */
+function asPlan(value: unknown): SizePlan {
+  const plan = value as SizePlan;
+  if (!plan || !Array.isArray(plan.ranges) || !Array.isArray(plan.warnings)) {
+    throw new Error(
+      "O nó respondeu 200 em /api/ui/slice/plan, mas o corpo não é um plano de fatiamento.",
+    );
+  }
+  return plan;
+}
 
 export function SliceModels() {
   const [params] = useSearchParams();
@@ -77,7 +97,7 @@ export function SliceModels() {
     const timer = window.setTimeout(async () => {
       setPlanning(true);
       try {
-        setPlan(await api.post<SizePlan>("/api/ui/slice/plan", body));
+        setPlan(asPlan(await api.post<SizePlan>("/api/ui/slice/plan", body)));
         setPlanError(null);
       } catch (e) {
         setPlan(null);
@@ -92,10 +112,12 @@ export function SliceModels() {
   async function fillEqual(parts: number) {
     if (!path) return;
     try {
-      const equal = await api.post<SizePlan>("/api/ui/slice/plan", {
-        model_path: path,
-        equal_parts: parts,
-      });
+      const equal = asPlan(
+        await api.post<SizePlan>("/api/ui/slice/plan", {
+          model_path: path,
+          equal_parts: parts,
+        }),
+      );
       // The shortcut only fills the form — the sizes stay editable, which is
       // the whole point of asymmetric slicing.
       setSlices(
@@ -118,6 +140,7 @@ export function SliceModels() {
           return Number.isFinite(gb) && gb > 0 ? { target_mb: gb * 1024 } : {};
         }),
       });
+      if (!job_id) throw new Error("O nó aceitou o pedido mas não devolveu um job.");
       toast.success(
         "Fatiamento começou",
         `Acompanhe no sino ou em Modelos fatiados. Job ${job_id.slice(0, 8)}.`,
@@ -366,12 +389,14 @@ export function SliceModels() {
                   </ul>
                 )}
 
-                <p className="flex items-center gap-2 border-t border-line px-5 py-3 text-xs text-faint">
-                  <Scissors className="h-3.5 w-3.5 shrink-0" />
+                <Footnote
+                  className="border-t border-line px-5 py-3"
+                  icon={<Scissors className="h-3.5 w-3.5" />}
+                >
                   A maior parte do tempo é antes de gravar: empacotar o cabeçalho passa
                   duas vezes pelo tokenizer. A barra só vira percentual quando a escrita
                   começa.
-                </p>
+                </Footnote>
               </>
             )}
           </Panel>

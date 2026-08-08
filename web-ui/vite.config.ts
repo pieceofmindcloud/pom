@@ -12,8 +12,10 @@ import react from "@vitejs/plugin-react";
  *
  *   VITE_API_TARGET=http://192.168.100.138:8090 npm run dev
  *
- * `npm run mock` starts a read-only sample backend on 5198 for working on the
- * interface without a cluster.
+ * There is no sample backend: every screen reads a real node. A node with
+ * nothing configured yet is a legitimate thing to develop against — it answers
+ * the same routes with empty lists, which is exactly the state the screens have
+ * to handle. Start one with `--no-discovery` so it stays out of the cluster.
  */
 const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 

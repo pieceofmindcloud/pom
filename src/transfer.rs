@@ -13,8 +13,14 @@
 //! ranges — so an interrupted multi-gigabyte transfer resumes instead of
 //! starting over.
 //!
-//! Nothing is ever served or written outside the models directory, and a file
-//! only takes its final name once its MD5 matches the sender's.
+//! What may leave a machine depends on who chose the file. A **pull** names a
+//! path on a machine where nobody chose anything, so it is confined to the
+//! models directory. A **push** is this machine's own operator picking a file,
+//! so it may be any readable path — the peer receives an opaque grant id and
+//! never names a path of ours. See [`TransferState::grants`].
+//!
+//! Received files are always written under `models/recebidos/`, and a file only
+//! takes its final name once its MD5 matches the sender's.
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
@@ -839,6 +845,34 @@ mod tests {
 
         let resolved = safe_model_path(&dir, f.to_str().unwrap()).unwrap();
         assert_eq!(resolved.file_name().unwrap(), "slice.gguf");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The requirement: a file on this machine can be sent even when it sits
+    /// nowhere near `models/` — LM Studio, Ollama, or a loose directory.
+    #[test]
+    fn the_operator_may_send_a_file_from_anywhere() {
+        let dir = std::env::temp_dir().join(format!("rdma-xfer-any-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("solto.gguf");
+        std::fs::write(&f, b"x").unwrap();
+
+        // Nothing here is under a models dir, and that is the point.
+        let resolved = local_send_path(f.to_str().unwrap()).unwrap();
+        assert_eq!(resolved.file_name().unwrap(), "solto.gguf");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Choosing a file is one thing; a directory is not a transfer.
+    #[test]
+    fn a_directory_is_not_sendable() {
+        let dir = std::env::temp_dir().join(format!("rdma-xfer-dir-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        assert!(local_send_path(dir.to_str().unwrap()).is_err());
+        assert!(local_send_path("/nao/existe/em/lugar/nenhum.gguf").is_err());
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -51,6 +51,19 @@
   </div>
 
   <div class="panel">
+    <h2>Enviar um arquivo desta máquina</h2>
+    <p class="panel-sub">Qualquer caminho legível daqui, dentro ou fora de <code>models/</code></p>
+    <form id="send-path-form" class="secret-row">
+      <input id="send-path" class="secret-field" spellcheck="false"
+             placeholder="/caminho/para/o/arquivo.gguf" aria-label="Caminho do arquivo">
+      <select id="send-path-peer" aria-label="Máquina de destino"></select>
+      <button class="btn-slim" type="submit">Oferecer</button>
+    </form>
+    <p id="send-path-msg" class="muted-note">O outro lado recebe uma oferta e decide; nada é
+      escrito no disco dele sem aceite.</p>
+  </div>
+
+  <div class="panel">
     <h2>Transferências</h2>
     <p class="panel-sub">Progresso, velocidade e tempo restante; retoma sozinha se cair</p>
     <div id="transfer-jobs"><p class="muted-note">Nenhuma transferência em curso.</p></div>

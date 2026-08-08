@@ -1096,11 +1096,13 @@ function updateNotificationBell(offers) {
     dropdown.innerHTML = offers.map(o => {
       const cabe = state.diskFreeMb == null || state.diskFreeMb > (o.size_bytes / 1048576) + 512;
       const faixa = (o.start_layer != null && o.end_layer != null)
-        ? `camadas ${o.start_layer}–${o.end_layer}` : 'fatia';
+        ? `camadas ${o.start_layer}–${o.end_layer}` : 'arquivo inteiro';
       return `
       <div class="notif-item">
-        <strong>${esc(o.from_host)} quer te enviar uma fatia</strong>
+        <strong>${esc(o.from_host)} quer te enviar um arquivo</strong>
         <span class="notif-sub">${esc(o.name)} · ${fmtBytes(o.size_bytes)} · ${faixa}</span>
+        <span class="notif-sub" title="${esc(o.remote_path || '')}">de <code>${
+          esc(o.remote_path || '—')}</code></span>
         <span class="notif-sub">${cabe
           ? `Cabe no disco (${fmtMB(state.diskFreeMb)} livres)`
           : `<b>Espaço insuficiente</b> — só há ${fmtMB(state.diskFreeMb)} livres`}</span>
@@ -1214,12 +1216,19 @@ function renderSliceExchange(cm) {
     : '<p class="muted-note">As duas máquinas têm exatamente os mesmos arquivos — nada a trocar.</p>';
 }
 
-/** Só arquivos dentro de `models/` trafegam: o guarda de caminho do outro lado
- *  recusa qualquer coisa fora dali, e é assim que tem de ser. Modelos do Ollama
- *  e do LM Studio moram noutro lugar, então aparecem na lista mas sem botão —
- *  com o motivo escrito, em vez de um botão que só falha quando clicado. */
-function transferivel(m) {
+/** Puxar é pedir a outra máquina um arquivo que ninguém de lá escolheu, então o
+ *  guarda de caminho dela só libera o que está em `models/`. Modelos do Ollama e
+ *  do LM Studio moram fora dali: aparecem na lista sem botão de baixar, com o
+ *  motivo escrito e o caminho que resolve (pedir o envio do outro lado). */
+function podePuxar(m) {
   return (m.source || '').toLowerCase() === 'local';
+}
+
+/** Enviar é o dono da máquina escolhendo o arquivo, então vale qualquer caminho
+ *  legível: o nó registra uma concessão e o outro lado busca por ela, sem nunca
+ *  nomear um caminho nosso. Ver `transfer::TransferState::grants`. */
+function podeEnviar() {
+  return true;
 }
 
 function sliceRow(m, peer, acao) {
@@ -1231,7 +1240,7 @@ function sliceRow(m, peer, acao) {
     ? `está em ${esc(host)}, falta aqui`
     : `está aqui, falta em ${esc(host)}`;
 
-  const podeIr = transferivel(m);
+  const podeIr = acao === 'puxar' ? podePuxar(m) : podeEnviar();
   const nome = m.path ? m.path.split('/').pop() : m.name;
   const tempo = m.size_bytes ? ` · ~${fmtDuration(m.size_bytes / MEDIDA_BYTES_POR_S)} no enlace medido` : '';
 
@@ -1239,18 +1248,20 @@ function sliceRow(m, peer, acao) {
     ? (acao === 'puxar'
         ? `<button class="btn-slim" onclick="pullSlice('${esc(peer.node_id)}','${esc(m.path)}','${esc(nome)}')">Baixar</button>`
         : `<button class="btn-slim" onclick="sendSlice('${esc(peer.node_id)}','${esc(m.path)}')">Enviar</button>`)
-    : `<span class="muted-note">fora de models/</span>`;
+    : `<span class="muted-note">peça o envio de lá</span>`;
 
   return `
     <div class="node-row">
       <div class="node-row-main">
         <strong>${esc(m.name)}</strong>
         <span class="node-row-sub">${fmtBytes(m.size_bytes)} · ${tipo} · ${onde}${podeIr ? tempo : ''}</span>
-        ${podeIr ? '' : `<span class="node-row-sub">Só transfere o que está em <code>models/</code>;
-          este veio de ${esc(m.source_label || m.source || 'outra biblioteca')} e fica fora dela.</span>`}
+        ${podeIr ? '' : `<span class="node-row-sub">Este veio de
+          ${esc(m.source_label || m.source || 'outra biblioteca')}, fora de <code>models/</code>, e
+          baixar é este nó pedindo um caminho que ninguém de lá escolheu. Abra o painel de
+          ${esc(host)} e use “Enviar um arquivo desta máquina”.</span>`}
       </div>
       <div class="tagrow"><span class="tag${podeIr ? '' : ' is-failed'}">${
-        podeIr ? (acao === 'puxar' ? 'baixar' : 'enviar') : 'não transfere'}</span></div>
+        podeIr ? (acao === 'puxar' ? 'baixar' : 'enviar') : 'peça de lá'}</span></div>
       <div class="node-row-actions">${acaoHtml}</div>
     </div>`;
 }
@@ -1279,6 +1290,52 @@ async function sendSlice(nodeId, path) {
     ? 'Oferta enviada. O outro nó precisa aceitar no sino de notificações.'
     : 'Não deu para oferecer: ' + (d.error || r.status));
 }
+
+/** Envio por caminho digitado — o caso "está na máquina, tenho que poder mandar".
+ *
+ *  A lista de fatias só enxerga o que a varredura de bibliotecas achou; um GGUF
+ *  solto numa pasta qualquer não aparece em lugar nenhum, e era exatamente o que
+ *  não dava para transferir. Aqui o caminho vem do dono da máquina.
+ */
+function renderSendPathPeers() {
+  const sel = document.getElementById('send-path-peer');
+  if (!sel) return;
+  const peers = (state.cluster?.peers || []).filter((p) => p.node_id !== state.node?.node_id);
+  const anterior = sel.value;
+  sel.innerHTML = peers.length
+    ? peers.map((p) => `<option value="${esc(p.node_id)}">${esc(peerName(p.node_id))}</option>`).join('')
+    : '<option value="">nenhuma outra máquina no cluster</option>';
+  if (anterior && peers.some((p) => p.node_id === anterior)) sel.value = anterior;
+  sel.disabled = !peers.length;
+}
+
+document.getElementById('send-path-form')?.addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const msg = document.getElementById('send-path-msg');
+  const caminho = document.getElementById('send-path').value.trim();
+  const destino = document.getElementById('send-path-peer').value;
+  if (!caminho || !destino) {
+    msg.className = 'notice notice-error';
+    msg.textContent = 'Informe o caminho do arquivo e a máquina de destino.';
+    return;
+  }
+
+  msg.className = 'muted-note';
+  msg.textContent = 'Calculando o MD5 do arquivo…';
+  await ensureConnectionKey();
+  const r = await fetch('/api/transfer/send', {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to_node_id: destino, path: caminho }),
+  });
+  const d = await r.json().catch(() => ({}));
+  msg.className = r.ok ? 'notice notice-ok' : 'notice notice-error';
+  msg.textContent = r.ok
+    ? 'Oferta enviada. O outro nó precisa aceitar no sino de notificações.'
+    : 'Não deu para oferecer: ' + (d.error || r.status);
+  if (r.ok) document.getElementById('send-path').value = '';
+  pollTransfers();
+});
 
 setInterval(pollTransfers, 1000);
 pollTransfers();
@@ -1317,6 +1374,8 @@ async function loadNodesTab() {
       const cm = await getJSON('/api/ui/cluster/models');
       renderSliceExchange(cm);
     } catch (e) {}
+
+    renderSendPathPeers();
 
     const keysR = await fetch('/admin/api-keys', { headers: authHeaders() });
 

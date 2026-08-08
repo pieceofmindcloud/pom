@@ -1,31 +1,20 @@
 #!/usr/bin/env bash
-# Peer 2 - ksia (Ubuntu 24.04 + RTX 5060 Ti / CUDA): shard camadas 16-31
-#
-# As camadas 16-31 saem do nome do arquivo (`..._16_31.gguf`).
-# BOOTSTRAP aponta para o peer 1 (MacBook) em <ip>:<porta-udp>.
-#
-# Pre-requisitos e procedimento completo: ver CLAUDE.md, secao
-# "Subindo o cluster de dois peers".
+# Node 2: layers 16-31, bootstrap para p1 em :42777
+# NOTA: sem split_model.py, cada peer carrega o modelo completo mas anuncia
+# apenas suas layers para o P2P. Para inferência distribuída real, use split_model.py.
 
-set -euo pipefail
-cd "$(dirname "$0")"
+MODEL="./models/qwen/qwen_16_31.gguf"
 
-MODEL="${MODEL:-./models/qwen/qwen_16_31.gguf}"
-BOOTSTRAP="${BOOTSTRAP:-192.168.100.240:42777}"
-# 8080 esta ocupada pelo code-server no ksia; o peer anuncia a porta que usa,
-# entao o painel de qualquer maquina encontra este no sozinho.
-GATEWAY_PORT="${GATEWAY_PORT:-8090}"
-
-exec ./target/release/rdma-p2p \
+./target/release/rdma-p2p \
     --model "$MODEL" \
     --port 42777 \
-    --bootstrap "$BOOTSTRAP" \
-    --gateway-port "$GATEWAY_PORT" \
-    --inference-port 8181 \
+    --bootstrap 2804:d55:5579:1000:3939:e9e9:a832:bc6f:42777 \
+    --inference-port 8182 \
     --n-gpu-layers 99 \
-    --n-ctx "${N_CTX:-8192}" \
-    --n-batch "${N_BATCH:-512}" \
-    --max-new-tokens "${MAX_NEW_TOKENS:-256}" \
+    --pkarr-peers pk:fxbswjpo9izgpk4hbfw878txjtjiu3sju3cf4k9t1uw18h3jqr4o \
+    --n-ctx 2048 \
+    --n-batch 512 \
+    --max-new-tokens 512 \
     --temperature 0.7 \
     --top-p 0.9 \
     --top-k 40 \

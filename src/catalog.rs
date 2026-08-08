@@ -1,19 +1,30 @@
 //! Discovery of GGUF models already installed on this machine.
 //!
-//! Three sources, each resolved from the paths the tools actually use rather
-//! than a guess:
+//! Two kinds of directory, and the difference is what lives in them:
 //!
-//! * **LM Studio** — home comes from `$LMSTUDIO_HOME`, then the
-//!   `~/.lmstudio-home-pointer` file, then `~/.lmstudio`. The model directory is
-//!   `downloadsFolder` in `<home>/settings.json` when that path exists, else
-//!   `<home>/models`. On Linux every `/home/*/.lmstudio` and `/root/.lmstudio`
-//!   is also scanned, because the peer typically runs as a different user than
-//!   the one that installed LM Studio.
+//! * **whole models** — every directory in `Config::model_dirs`. Until the
+//!   operator edits that list it is [`default_model_dirs`]: the LM Studio and
+//!   Ollama libraries found on this machine, which is what the scan always did.
+//!   Each directory is read according to what it *is* (see [`detect_source`]),
+//!   so a plain folder of `.gguf` files works as well as an Ollama blob store.
+//! * **slices** — one directory, `Config::shard_dir`, default
+//!   `<project_root>/models`. It is where local slicing writes, where received
+//!   files land, and the only place a peer may pull from.
+//!
+//! Nothing here reads a fixed path any more: moving every GGUF to
+//! `/Volumes/sdcard/models` is a configuration change, not a code change.
+//!
+//! Library layouts recognised automatically:
+//!
+//! * **LM Studio** — home from `$LMSTUDIO_HOME`, then `~/.lmstudio-home-pointer`,
+//!   then `~/.lmstudio`; the directory is `downloadsFolder` in
+//!   `<home>/settings.json` when that path exists, else `<home>/models`. On
+//!   Linux every `/home/*/.lmstudio` and `/root/.lmstudio` is also considered,
+//!   because the peer typically runs as a different user than the one that
+//!   installed LM Studio.
 //! * **Ollama** — `$OLLAMA_MODELS`, then `~/.ollama/models`, plus the service
 //!   locations on Linux. Weights are blobs addressed by digest, so the friendly
 //!   name is recovered by reading the manifest tree.
-//! * **Local shards** — `.gguf` files under `./models`, including the
-//!   `<base>_<start>_<end>.gguf` slices produced by `split_model.py`.
 
 use crate::gguf::{self, GgufInfo};
 use serde::{Deserialize, Serialize};
@@ -30,7 +41,10 @@ const MAX_WALK_DEPTH: usize = 6;
 pub enum ModelSource {
     LmStudio,
     Ollama,
+    /// The slice directory — the only source a peer is allowed to pull from.
     Local,
+    /// Any other configured directory of `.gguf` files.
+    Folder,
 }
 
 impl ModelSource {
@@ -39,6 +53,7 @@ impl ModelSource {
             ModelSource::LmStudio => "LM Studio",
             ModelSource::Ollama => "Ollama",
             ModelSource::Local => "Local",
+            ModelSource::Folder => "Pasta",
         }
     }
 }
@@ -408,34 +423,91 @@ fn lmstudio_name(models_dir: &Path, path: &Path) -> String {
     }
 }
 
-fn scan_lmstudio(out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
+/// The libraries this machine already has, used until the operator edits the
+/// list. Only directories that really exist are offered: the configuration
+/// screen refuses paths that are not there, so proposing a phantom default
+/// would hand the user a list they cannot save.
+pub fn default_model_dirs() -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    let mut push = |p: PathBuf| {
+        if p.is_dir() && !out.contains(&p) {
+            out.push(p);
+        }
+    };
     for home in lmstudio_homes() {
-        let models_dir = lmstudio_models_dir(&home);
-        if roots.iter().any(|r| r.path == models_dir.to_string_lossy()) {
-            continue;
-        }
-        let exists = models_dir.is_dir();
-        let mut files = Vec::new();
-        if exists {
-            find_gguf(&models_dir, 0, &mut files);
-        }
-        let mut found = 0;
-        for f in files {
-            let name = lmstudio_name(&models_dir, &f);
-            if let Some(m) = describe(&f, name, ModelSource::LmStudio) {
-                if !out.iter().any(|e| e.path == m.path) {
-                    out.push(m);
-                    found += 1;
-                }
+        push(lmstudio_models_dir(&home));
+    }
+    for dir in ollama_model_dirs() {
+        push(dir);
+    }
+    out
+}
+
+/// What a configured directory turns out to be, decided by looking at it.
+///
+/// An Ollama store has to be read through its manifests, since the weights are
+/// digest-named blobs; LM Studio and anything else are just trees of `.gguf`
+/// files — which is exactly what the captain's `/Volumes/sdcard/models` will be.
+///
+/// LM Studio is checked first on purpose: its model directory also carries
+/// `blobs/` and `manifests/`, both empty, so the Ollama layout alone would
+/// misread it and the library would silently come back empty.
+pub fn detect_source(dir: &Path) -> ModelSource {
+    let text = dir.to_string_lossy().to_ascii_lowercase();
+    if text.contains("lmstudio") || text.contains("lm-studio") {
+        return ModelSource::LmStudio;
+    }
+    if text.contains(".ollama") || text.ends_with("ollama/models") || is_ollama_store(dir) {
+        return ModelSource::Ollama;
+    }
+    ModelSource::Folder
+}
+
+/// A store with manifests *and* blobs in it. Empty directories prove nothing.
+fn is_ollama_store(dir: &Path) -> bool {
+    let has_entries = |p: PathBuf| {
+        std::fs::read_dir(p)
+            .map(|mut rd| rd.next().is_some())
+            .unwrap_or(false)
+    };
+    has_entries(dir.join("manifests")) && has_entries(dir.join("blobs"))
+}
+
+/// Walk one directory of `.gguf` files.
+fn scan_gguf_dir(
+    dir: &Path,
+    source: ModelSource,
+    out: &mut Vec<DiscoveredModel>,
+    roots: &mut Vec<ScannedRoot>,
+) {
+    let exists = dir.is_dir();
+    let mut files = Vec::new();
+    if exists {
+        find_gguf(dir, 0, &mut files);
+    }
+    let mut found = 0;
+    for f in files {
+        // LM Studio stores `<publisher>/<repo>/<file>.gguf` and that pairing is
+        // the name people know. Anywhere else the filename is the name — and it
+        // has to be, since two slices in one subfolder would otherwise both be
+        // called after the folder and stop being telling apart.
+        let name = match source {
+            ModelSource::LmStudio => lmstudio_name(dir, &f),
+            _ => f.file_name().unwrap_or_default().to_string_lossy().into_owned(),
+        };
+        if let Some(m) = describe(&f, name, source) {
+            if !out.iter().any(|e| e.path == m.path) {
+                out.push(m);
+                found += 1;
             }
         }
-        roots.push(ScannedRoot {
-            source: ModelSource::LmStudio,
-            path: models_dir.to_string_lossy().into_owned(),
-            exists,
-            found,
-        });
     }
+    roots.push(ScannedRoot {
+        source,
+        path: display_path(dir),
+        exists,
+        found,
+    });
 }
 
 /// Ollama manifest: a JSON document whose `layers` array carries the digest of
@@ -456,40 +528,39 @@ struct OllamaLayer {
     size: u64,
 }
 
-fn scan_ollama(out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
-    for models_dir in ollama_model_dirs() {
-        if roots.iter().any(|r| r.path == models_dir.to_string_lossy()) {
-            continue;
-        }
-        let manifests = models_dir.join("manifests");
-        let blobs = models_dir.join("blobs");
-        let exists = manifests.is_dir() && blobs.is_dir();
-        let mut found = 0;
+fn scan_ollama_dir(
+    models_dir: &Path,
+    out: &mut Vec<DiscoveredModel>,
+    roots: &mut Vec<ScannedRoot>,
+) {
+    let manifests = models_dir.join("manifests");
+    let blobs = models_dir.join("blobs");
+    let exists = manifests.is_dir() && blobs.is_dir();
+    let mut found = 0;
 
-        if exists {
-            let mut files = Vec::new();
-            collect_files(&manifests, 0, &mut files);
-            for manifest_path in files {
-                let Some((name, blob)) = resolve_ollama_model(&manifests, &blobs, &manifest_path)
-                else {
-                    continue;
-                };
-                if let Some(m) = describe(&blob, name, ModelSource::Ollama) {
-                    if !out.iter().any(|e| e.path == m.path) {
-                        out.push(m);
-                        found += 1;
-                    }
+    if exists {
+        let mut files = Vec::new();
+        collect_files(&manifests, 0, &mut files);
+        for manifest_path in files {
+            let Some((name, blob)) = resolve_ollama_model(&manifests, &blobs, &manifest_path)
+            else {
+                continue;
+            };
+            if let Some(m) = describe(&blob, name, ModelSource::Ollama) {
+                if !out.iter().any(|e| e.path == m.path) {
+                    out.push(m);
+                    found += 1;
                 }
             }
         }
-
-        roots.push(ScannedRoot {
-            source: ModelSource::Ollama,
-            path: models_dir.to_string_lossy().into_owned(),
-            exists,
-            found,
-        });
     }
+
+    roots.push(ScannedRoot {
+        source: ModelSource::Ollama,
+        path: display_path(models_dir),
+        exists,
+        found,
+    });
 }
 
 /// `manifests/<registry>/<namespace>/<name>/<tag>` → ("name:tag", blob path).
@@ -552,7 +623,9 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-fn scan_local(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
+/// The slice directory. Names stay bare filenames here because that is what the
+/// `<base>_<start>_<end>.gguf` convention is read from.
+fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
     let exists = dir.is_dir();
     let mut files = Vec::new();
     if exists {
@@ -570,10 +643,24 @@ fn scan_local(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Scanne
     }
     roots.push(ScannedRoot {
         source: ModelSource::Local,
-        path: dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf()).to_string_lossy().into_owned(),
+        path: display_path(dir),
         exists,
         found,
     });
+}
+
+/// The path as configured — what the operator typed and will recognise.
+///
+/// Deliberately not resolved: the captain's `~/.ollama/models` is a symlink into
+/// the LM Studio library, and reporting the far end of it made the screen name a
+/// directory nobody had configured.
+fn display_path(dir: &Path) -> String {
+    dir.to_string_lossy().into_owned()
+}
+
+/// The path as the filesystem sees it, used only to tell two entries apart.
+fn identity_path(dir: &Path) -> PathBuf {
+    dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf())
 }
 
 /// Group slices by their shared base name and report whether the set covers the
@@ -625,17 +712,33 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
     sets
 }
 
-/// Scan every known location and return what is installed on this machine.
+/// Scan the configured directories and return what is installed here.
 ///
-/// `local_models_dir` is where this node keeps its own slices — usually
-/// `./models` relative to the working directory.
-pub fn discover(local_models_dir: &Path) -> Catalog {
+/// `shard_dir` is where this node keeps its own slices; `model_dirs` are the
+/// libraries of whole models. The slice directory is scanned first so a file
+/// reachable from both is reported as a slice, which is the reading that
+/// decides whether a peer may pull it.
+pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
     let mut models: Vec<DiscoveredModel> = Vec::new();
     let mut scanned: Vec<ScannedRoot> = Vec::new();
 
-    scan_local(local_models_dir, &mut models, &mut scanned);
-    scan_lmstudio(&mut models, &mut scanned);
-    scan_ollama(&mut models, &mut scanned);
+    scan_shard_dir(shard_dir, &mut models, &mut scanned);
+
+    // Two entries pointing at the same directory — a symlink, or the slice
+    // directory listed again — must be scanned once. Compared resolved, because
+    // that is the only way to see that they are the same place.
+    let mut seen = vec![identity_path(shard_dir)];
+    for dir in model_dirs {
+        let id = identity_path(dir);
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        match detect_source(dir) {
+            ModelSource::Ollama => scan_ollama_dir(dir, &mut models, &mut scanned),
+            source => scan_gguf_dir(dir, source, &mut models, &mut scanned),
+        }
+    }
 
     models.sort_by(|a, b| {
         a.name
@@ -717,6 +820,72 @@ mod tests {
 
         let with_gap = build_shard_sets(&[mk(0, 15, 32), mk(20, 31, 32)]);
         assert!(!with_gap[0].complete);
+    }
+
+    #[test]
+    fn a_directory_is_read_according_to_what_it_is() {
+        let base = std::env::temp_dir().join(format!("rdma-cat-kind-{}", std::process::id()));
+        let ollama = base.join("store/models");
+        std::fs::create_dir_all(ollama.join("manifests")).unwrap();
+        std::fs::create_dir_all(ollama.join("blobs")).unwrap();
+        std::fs::write(ollama.join("manifests/x"), b"{}").unwrap();
+        std::fs::write(ollama.join("blobs/sha256-x"), b"x").unwrap();
+
+        let plain = base.join("sdcard/models");
+        std::fs::create_dir_all(&plain).unwrap();
+
+        // LM Studio também tem `blobs/` e `manifests/`, vazios — o layout do
+        // Ollama sozinho leria a biblioteca dele como se não tivesse nada.
+        let lmstudio = base.join("home/.lmstudio/models");
+        std::fs::create_dir_all(lmstudio.join("manifests")).unwrap();
+        std::fs::create_dir_all(lmstudio.join("blobs")).unwrap();
+
+        assert_eq!(detect_source(&ollama), ModelSource::Ollama);
+        assert_eq!(detect_source(&lmstudio), ModelSource::LmStudio);
+        assert_eq!(
+            detect_source(&plain),
+            ModelSource::Folder,
+            "uma pasta qualquer de .gguf não é uma biblioteca de ninguém"
+        );
+        assert_eq!(
+            detect_source(&base.join("vazio-mas-ollama/.ollama/models")),
+            ModelSource::Ollama,
+            "um store do Ollama ainda sem blobs continua sendo do Ollama"
+        );
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    /// The configuration is what governs the scan: a directory nobody listed is
+    /// invisible, and one that was listed is read even with nothing familiar
+    /// about it.
+    #[test]
+    fn only_the_configured_directories_are_scanned() {
+        let base = std::env::temp_dir().join(format!("rdma-cat-dirs-{}", std::process::id()));
+        let listed = base.join("listada");
+        let unlisted = base.join("nao-listada");
+        let shards = base.join("fatias");
+        for d in [&listed, &unlisted, &shards] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        // Big enough to pass the "this is not a real GGUF" floor in `describe`.
+        let filler = vec![0u8; 4096];
+        std::fs::write(listed.join("visivel.gguf"), &filler).unwrap();
+        std::fs::write(unlisted.join("invisivel.gguf"), &filler).unwrap();
+        std::fs::write(shards.join("m_0_3.gguf"), &filler).unwrap();
+
+        let catalog = discover(&[listed.clone()], &shards);
+        let names: Vec<&str> = catalog.models.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"visivel.gguf"));
+        assert!(names.contains(&"m_0_3.gguf"));
+        assert!(!names.contains(&"invisivel.gguf"));
+
+        // And the slice keeps the source that lets a peer pull it.
+        let shard = catalog.models.iter().find(|m| m.name == "m_0_3.gguf").unwrap();
+        assert_eq!(shard.source, ModelSource::Local);
+        assert_eq!(shard.shard_range, Some((0, 3)));
+
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]

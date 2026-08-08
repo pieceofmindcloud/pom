@@ -66,6 +66,18 @@ impl GatewayState {
         self.runtime.model_label(&self.default_model).await
     }
 
+    /// Where this node writes slices, keeps received files, and the only
+    /// directory a peer may pull from. Read from the live configuration, so a
+    /// change on the screen takes effect without a restart.
+    pub async fn shard_dir(&self) -> std::path::PathBuf {
+        self.auth.read().await.shard_dir_path()
+    }
+
+    /// Directories of whole models this node scans.
+    pub async fn model_dirs(&self) -> Vec<std::path::PathBuf> {
+        self.auth.read().await.model_dir_paths()
+    }
+
     /// Largest prompt this node's inference server can take, in tokens.
     ///
     /// llama.cpp aborts the *whole process* on

@@ -48,6 +48,20 @@ pub struct Config {
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
+    /// Directories holding **whole** models.
+    ///
+    /// `None` — the field missing from an old `rdma-p2p.json`, or never edited —
+    /// means "whatever LM Studio and Ollama have on this machine", exactly what
+    /// the scan did before it was configurable. Once the operator saves the list
+    /// it becomes law, and an empty list really means "look nowhere": the
+    /// captain moving every GGUF to `/Volumes/sdcard/models` must not keep
+    /// getting the old locations back.
+    #[serde(default)]
+    pub model_dirs: Option<Vec<String>>,
+    /// Where slices produced on this machine are written and looked for.
+    /// `None` keeps the historical `<project_root>/models`.
+    #[serde(default)]
+    pub shard_dir: Option<String>,
 }
 
 fn default_gateway_port() -> u16 { 8080 }
@@ -136,6 +150,35 @@ impl Config {
     pub fn active_api_key(&self) -> Option<&ApiKey> {
         self.api_keys.iter().find(|k| k.active)
     }
+
+    /// Directories to scan for whole models, falling back to what LM Studio and
+    /// Ollama put on this machine while the operator has not chosen.
+    pub fn model_dir_paths(&self) -> Vec<PathBuf> {
+        match &self.model_dirs {
+            Some(dirs) => dirs.iter().map(PathBuf::from).collect(),
+            None => crate::catalog::default_model_dirs(),
+        }
+    }
+
+    /// True while the whole-model list is still the auto-detected one — the UI
+    /// says so instead of pretending the operator picked these paths.
+    pub fn model_dirs_are_default(&self) -> bool {
+        self.model_dirs.is_none()
+    }
+
+    /// Destination of local slicing, and the only directory a peer may pull
+    /// from (see `transfer::safe_model_path`).
+    pub fn shard_dir_path(&self) -> PathBuf {
+        match self.shard_dir.as_deref().map(str::trim) {
+            Some(d) if !d.is_empty() => PathBuf::from(d),
+            _ => default_shard_dir(),
+        }
+    }
+}
+
+/// `<project_root>/models` — where every slice has always landed.
+pub fn default_shard_dir() -> PathBuf {
+    project_root().join("models")
 }
 
 #[cfg(test)]
@@ -153,6 +196,8 @@ mod tests {
             bootstrap_nodes: vec![],
             api_keys: vec![],
             blocked_nodes: vec![],
+            model_dirs: None,
+            shard_dir: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -171,10 +216,45 @@ mod tests {
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
             api_keys: vec![],
             blocked_nodes: vec![],
+            model_dirs: None,
+            shard_dir: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.role, Role::Node);
+    }
+
+    /// A `rdma-p2p.json` written before the directories were configurable has
+    /// to keep behaving exactly as it did: auto-detected libraries, slices in
+    /// `<project_root>/models`.
+    #[test]
+    fn a_config_without_the_new_fields_keeps_todays_behaviour() {
+        let old = r#"{"role":"principal","connection_key":"k","gateway_port":8080,
+                      "p2p_port":42777,"bootstrap_nodes":[],"api_keys":[],"blocked_nodes":[]}"#;
+        let cfg: Config = serde_json::from_str(old).unwrap();
+        assert!(cfg.model_dirs_are_default());
+        assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
+        assert_eq!(cfg.shard_dir_path(), default_shard_dir());
+    }
+
+    /// Saving the list is the operator taking over: an empty list means "look
+    /// nowhere", not "go back to guessing".
+    #[test]
+    fn an_explicit_empty_list_is_not_the_default_list() {
+        let cfg: Config = serde_json::from_str(
+            r#"{"role":"node","model_dirs":[],"shard_dir":"/Volumes/sdcard/fatias"}"#,
+        )
+        .unwrap();
+        assert!(!cfg.model_dirs_are_default());
+        assert!(cfg.model_dir_paths().is_empty());
+        assert_eq!(cfg.shard_dir_path(), PathBuf::from("/Volumes/sdcard/fatias"));
+    }
+
+    #[test]
+    fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"role":"node","shard_dir":"   "}"#).unwrap();
+        assert_eq!(cfg.shard_dir_path(), default_shard_dir());
     }
 
     #[test]
@@ -203,6 +283,8 @@ mod tests {
                 },
             ],
             blocked_nodes: vec![],
+            model_dirs: None,
+            shard_dir: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

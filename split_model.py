@@ -19,6 +19,12 @@ Notes:
   - KV key <arch>.block_count is updated to reflect layers in the slice.
 """
 
+# `TensorInfo | None` in a signature is evaluated at def time before 3.10, and
+# the only interpreter on the captain's Mac is the system 3.9 — without this the
+# script dies on import and no slice is ever produced. Annotations only; nothing
+# below changes behaviour.
+from __future__ import annotations
+
 import argparse
 import mmap
 import os
@@ -200,8 +206,13 @@ class GGUFFile:
     def tensor_size(self, t: TensorInfo) -> int:
         return self._offset_sizes.get(t.offset, t.byte_size())
 
-    def stream_tensor_to(self, f, t: TensorInfo, chunk: int = 8 << 20) -> int:
-        """Write tensor data directly to f in chunks. Returns bytes written."""
+    def stream_tensor_to(self, f, t: TensorInfo, chunk: int = 8 << 20, on_bytes=None) -> int:
+        """Write tensor data directly to f in chunks. Returns bytes written.
+
+        `on_bytes(written_so_far)` is called once per chunk when given. It only
+        reports; token_embd.weight alone can be most of a slice, and a bar that
+        moves once per tensor sits still through the longest write of the run.
+        """
         start = self.data_offset + t.offset
         size = self.tensor_size(t)
         pos, remaining = start, size
@@ -217,6 +228,8 @@ class GGUFFile:
                 pass
             pos += n
             remaining -= n
+            if on_bytes is not None:
+                on_bytes(size - remaining)
         return size
 
     def tensor_data(self, t: TensorInfo) -> bytes:
@@ -481,6 +494,18 @@ def split_model(
     written_bytes = 0
     total_data_bytes = sum((s + ALIGN - 1) & ~(ALIGN - 1) for s in tensor_sizes)
 
+    last_reported = -1
+
+    def _report(done: int) -> None:
+        # Percentual em linha própria, no stderr, para quem estiver conduzindo
+        # este script em vez de assistindo (ver plan::parse_progress). Uma vez a
+        # cada ponto percentual: centenas de linhas iguais não ajudam ninguém.
+        nonlocal last_reported
+        pct = 100 * done / total_data_bytes
+        if int(pct) != last_reported:
+            last_reported = int(pct)
+            print(f"RDMAP2P_PROGRESS {pct:.1f}", file=sys.stderr, flush=True)
+
     with output_path.open("wb") as f:
         f.write(header)
         for i, (t, size) in enumerate(zip(all_tensors, tensor_sizes)):
@@ -488,8 +513,10 @@ def split_model(
             file_pos_before = data_offset + written_bytes
             if isinstance(t, FakeTensor):
                 f.write(t._data)
+                _report(written_bytes + size)
             else:
-                gguf.stream_tensor_to(f, t)
+                gguf.stream_tensor_to(
+                    f, t, on_bytes=lambda done: _report(written_bytes + done))
             pad = (ALIGN - (size % ALIGN)) % ALIGN
             f.write(b"\x00" * pad)
             written_bytes += size + pad
@@ -501,8 +528,10 @@ def split_model(
                 os.posix_fadvise(f.fileno(), file_pos_before, size + pad, os.POSIX_FADV_DONTNEED)
             except (AttributeError, OSError):
                 pass
+            pct = 100 * written_bytes / total_data_bytes
             print(f"  [{i+1}/{len(all_tensors)}] {name}  {size / (1024**2):.1f} MB"
-                  f"  ({100 * written_bytes / total_data_bytes:.0f}%)", end="\r")
+                  f"  ({pct:.0f}%)", end="\r")
+            _report(written_bytes)
 
     print()
     gguf.close()

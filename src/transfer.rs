@@ -19,8 +19,9 @@
 //! so it may be any readable path — the peer receives an opaque grant id and
 //! never names a path of ours. See [`TransferState::grants`].
 //!
-//! Received files are always written under `models/recebidos/`, and a file only
-//! takes its final name once its MD5 matches the sender's.
+//! Received files are always written under `<pasta de fatias>/recebidos/` — the
+//! directory configured in `rdma-p2p.json`, `models/` until someone changes it —
+//! and a file only takes its final name once its MD5 matches the sender's.
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
@@ -161,7 +162,7 @@ async fn servable_path(
         .path
         .as_deref()
         .ok_or_else(|| "informe ?grant= ou ?path=".to_string())?;
-    safe_model_path(&state.runtime.models_dir(), requested)
+    safe_model_path(&state.shard_dir().await, requested)
 }
 
 /// Look up a grant. A stale or invented id is simply not a file here.
@@ -654,7 +655,7 @@ async fn spawn_download(
         ));
     }
 
-    let dir = state.runtime.models_dir().join("recebidos");
+    let dir = state.shard_dir().await.join("recebidos");
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;

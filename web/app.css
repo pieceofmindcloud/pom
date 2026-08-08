@@ -59,6 +59,9 @@
 
 /* `display` explícito nas regras abaixo venceria o atributo `hidden`. */
 [hidden] { display: none !important; }
+/* O sino e seu balão são escondidos por classe, e sem esta regra o balão ficava
+   aberto o tempo todo por cima da tela, com um "0" fixo ao lado do sino. */
+.hidden { display: none !important; }
 
 body {
   margin: 0;
@@ -340,13 +343,16 @@ main { padding: var(--gap); max-width: 1240px; margin: 0 auto; }
   letter-spacing: 0.07em; color: var(--muted); white-space: nowrap; width: 1%; }
 
 .avail { display: flex; flex-wrap: wrap; gap: 5px; }
-.avail .chip {
+/* Fora da tabela de disponibilidade também se diz "tem" e "não tem" — a etiqueta
+   é a mesma, então o estilo não pode estar preso ao contêiner. */
+.chip {
+  display: inline-block;
   font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em;
   padding: 2px 6px; border: 1px solid var(--rule); border-radius: 2px;
   white-space: nowrap;
 }
-.avail .chip.has { border-color: var(--ok); color: var(--ok); }
-.avail .chip.hasnt { border-color: var(--alert); color: var(--alert); text-decoration: line-through; }
+.chip.has { border-color: var(--ok); color: var(--ok); }
+.chip.hasnt { border-color: var(--alert); color: var(--alert); text-decoration: line-through; }
 
 /* ── Formulários ────────────────────────────────────────────────────────── */
 
@@ -500,6 +506,92 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
   background: var(--panel-sub); color: var(--ink);
 }
 .btn-slim.is-done { border-color: var(--ok); color: var(--ok); }
+
+/* ── Aba Modelos ────────────────────────────────────────────────────────── */
+
+/* Subtítulo dentro de um painel: hierarquia sem virar outro painel. */
+.sub-head {
+  margin: 18px 0 2px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600;
+  text-transform: uppercase; letter-spacing: 0.09em;
+  color: var(--ink-soft);
+}
+.sub-head:first-of-type { margin-top: 0; }
+.sub-note { margin: 0 0 10px; font-size: 12px; color: var(--muted); }
+
+/* Uma pasta configurada: campo largo, o que ela é, e como tirá-la. */
+/* Colunas fixas nas duas linhas: o campo de uma pasta e o de acrescentar têm
+   que terminar no mesmo lugar, senão a lista parece desalinhada a cada tipo. */
+.path-row, .path-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 92px auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.path-add { margin-top: 10px; }
+.path-add > button { grid-column: 3; }
+.path-kind {
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.05em;
+  text-transform: uppercase; color: var(--muted); text-align: center;
+  border: 1px solid var(--rule); border-radius: 2px;
+  padding: 2px 6px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Pasta configurada que não está no disco: o motivo de a lista vir vazia. */
+.path-field.is-bad { border-color: var(--alert); color: var(--alert); }
+
+.path-cell {
+  font-family: var(--mono); font-size: 11px; color: var(--muted);
+  display: inline-block; max-width: 260px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  vertical-align: middle;
+}
+
+/* Célula de ação: "em quantas" e o botão, juntos e alinhados à direita. */
+.slice-cell, .send-cell { display: inline-flex; align-items: center; gap: 6px; }
+.slice-cell .parts { width: 64px; }
+
+/* Fatiamento em curso. */
+.slice-job {
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--radius);
+  background: var(--panel-sub);
+  padding: 12px 14px;
+  margin-bottom: 16px;
+}
+.slice-job.is-failed { border-left-color: var(--alert); }
+.slice-job-head {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 8px;
+}
+.slice-job-head strong { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; }
+.slice-job-head .tagrow { margin: 0; }
+.slice-job .slice-pct {
+  margin-left: auto;
+  font-family: var(--mono); font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.slice-job .meter-fill { background: var(--peer-0); transition: width 0.3s linear; }
+/* Sem percentual ainda: barra viva, para não parecer travada em zero. */
+.meter-fill.is-indeterminate {
+  background: repeating-linear-gradient(115deg,
+    var(--peer-0) 0 10px, var(--panel-sub) 10px 20px);
+  animation: crawl 1s linear infinite;
+}
+@keyframes crawl { to { background-position: 22px 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .meter-fill.is-indeterminate { animation: none; }
+}
+.slice-outputs {
+  margin: 10px 0 0; padding-left: 18px;
+  font-family: var(--mono); font-size: 11px;
+}
+.slice-outputs li { margin-bottom: 2px; }
+.slice-outputs .muted-note { font-size: 11px; }
+
+.send-msg { display: block; margin-top: 6px; }
+.node-row .send-msg.notice { margin: 6px 0 0; }
 
 /* Notificações de oferta de fatia. */
 .notif-item .notif-sub {

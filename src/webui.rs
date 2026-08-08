@@ -27,12 +27,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{Mutex, RwLock};
 use tracing::{info, warn};
 
-/// How long a scanned catalog is reused before walking the filesystem again.
+/// How long a scanned catalog is served before a refresh is started behind it.
 const CATALOG_TTL: Duration = Duration::from_secs(20);
 /// Timeout for one peer-to-peer control call.
 const PEER_TIMEOUT: Duration = Duration::from_secs(4);
@@ -46,9 +47,11 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/models", get(models))
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
+        .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/setup/key", get(get_setup_key))
         .route("/api/setup/save", post(save_setup))
@@ -120,9 +123,17 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
 
 // ── Model catalog ────────────────────────────────────────────────────────────
 
+/// Directories one scan covered: the whole-model libraries and the slice folder.
+type CatalogRoots = (Vec<std::path::PathBuf>, std::path::PathBuf);
+
 struct CachedCatalog {
     at: Instant,
+    /// Directories the cached scan covered. Point the configuration somewhere
+    /// else and the old result stops being an answer to the new question.
+    roots: CatalogRoots,
     catalog: Arc<Catalog>,
+    /// A refresh is already running; a second one would only duplicate the work.
+    refreshing: bool,
 }
 
 fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
@@ -130,31 +141,195 @@ fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// Walk the directories. Blocking work, kept off the reactor.
+async fn scan_catalog(roots: &CatalogRoots) -> Catalog {
+    let (dirs, shards) = (roots.0.clone(), roots.1.clone());
+    tokio::task::spawn_blocking(move || catalog::discover(&dirs, &shards))
+        .await
+        .unwrap_or_else(|e| {
+            warn!("varredura de modelos falhou: {e}");
+            Catalog {
+                models: Vec::new(),
+                shard_sets: Vec::new(),
+                scanned: Vec::new(),
+            }
+        })
+}
+
+/// Rescan in the background and publish the result, unless the configuration
+/// moved on in the meantime.
+fn spawn_refresh(roots: CatalogRoots) {
+    tokio::spawn(async move {
+        let catalog = Arc::new(scan_catalog(&roots).await);
+        let mut guard = catalog_cache().lock().await;
+        let superseded = guard.as_ref().is_some_and(|c| c.roots != roots);
+        if superseded {
+            return;
+        }
+        *guard = Some(CachedCatalog {
+            at: Instant::now(),
+            roots,
+            catalog,
+            refreshing: false,
+        });
+    });
+}
+
+/// Ask for a fresh walk without throwing away what we can already answer with —
+/// after slicing, after the directories change. A slice that exists must not
+/// need a restart to show up.
+async fn invalidate_catalog() {
+    let roots = {
+        let mut guard = catalog_cache().lock().await;
+        match guard.as_mut() {
+            Some(c) if !c.refreshing => {
+                c.refreshing = true;
+                Some(c.roots.clone())
+            }
+            _ => None,
+        }
+    };
+    if let Some(roots) = roots {
+        spawn_refresh(roots);
+    }
+}
+
+/// The catalog of this machine, served from cache while it is refreshed.
+///
+/// Scanning a slow volume is not cheap — the captain's SD card full of models
+/// takes about two minutes the first time — and the screen polls this. Handing
+/// back the previous answer and refreshing behind it keeps the list on screen
+/// instead of blanking it every time the cache turns stale. Only the very first
+/// scan, and a change of directories, have nothing valid to serve and wait.
 async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
+    let roots: CatalogRoots = (state.model_dirs().await, state.shard_dir().await);
+
     {
-        let guard = catalog_cache().lock().await;
-        if let Some(ref c) = *guard {
-            if c.at.elapsed() < CATALOG_TTL {
+        let mut guard = catalog_cache().lock().await;
+        if let Some(c) = guard.as_mut() {
+            if c.roots == roots {
+                let stale = c.at.elapsed() >= CATALOG_TTL;
+                if stale && !c.refreshing {
+                    c.refreshing = true;
+                    spawn_refresh(roots.clone());
+                }
                 return c.catalog.clone();
             }
         }
     }
 
-    let dir = state.runtime.models_dir();
-    // The walk touches the filesystem; keep it off the async reactor.
-    let scanned = tokio::task::spawn_blocking(move || catalog::discover(&dir))
-        .await
-        .unwrap_or_else(|e| {
-            warn!("varredura de modelos falhou: {e}");
-            catalog::discover(std::path::Path::new("models"))
-        });
-
-    let catalog = Arc::new(scanned);
+    let catalog = Arc::new(scan_catalog(&roots).await);
     *catalog_cache().lock().await = Some(CachedCatalog {
         at: Instant::now(),
+        roots,
         catalog: catalog.clone(),
+        refreshing: false,
     });
     catalog
+}
+
+// ── Model directories ────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+struct PathEntry {
+    path: String,
+    exists: bool,
+    /// "ollama" | "lmstudio" | "folder" — what the scan will make of it.
+    kind: &'static str,
+}
+
+fn path_entry(dir: &std::path::Path) -> PathEntry {
+    PathEntry {
+        path: dir.to_string_lossy().into_owned(),
+        exists: dir.is_dir(),
+        kind: match catalog::detect_source(dir) {
+            catalog::ModelSource::Ollama => "ollama",
+            catalog::ModelSource::LmStudio => "lmstudio",
+            _ => "folder",
+        },
+    }
+}
+
+/// Where this node looks for models and where it writes slices.
+async fn get_paths(State(state): State<GatewayState>) -> impl IntoResponse {
+    let cfg = state.auth.read().await;
+    let shard = cfg.shard_dir_path();
+    Json(json!({
+        "model_dirs": cfg.model_dir_paths().iter().map(|d| path_entry(d)).collect::<Vec<_>>(),
+        "shard_dir": path_entry(&shard),
+        "using_defaults": cfg.model_dirs_are_default(),
+        "detected": catalog::default_model_dirs()
+            .iter().map(|d| path_entry(d)).collect::<Vec<_>>(),
+        "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SavePathsRequest {
+    pub model_dirs: Vec<String>,
+    /// Empty means "back to `<project_root>/models`".
+    #[serde(default)]
+    pub shard_dir: String,
+}
+
+/// Refuse anything that is not a directory sitting on this machine right now.
+///
+/// A typo here is not a small thing: the node would advertise a library it does
+/// not have, and the mistake would only surface much later, as a peer that
+/// cannot find the model it was told to slice.
+fn check_dir(raw: &str, what: &str) -> Result<String, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(format!("{what}: caminho vazio."));
+    }
+    let path = std::path::Path::new(trimmed);
+    if !path.exists() {
+        return Err(format!("{what}: “{trimmed}” não existe nesta máquina."));
+    }
+    if !path.is_dir() {
+        return Err(format!("{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."));
+    }
+    Ok(trimmed.to_string())
+}
+
+async fn save_paths(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SavePathsRequest>,
+) -> Response {
+    let mut model_dirs = Vec::new();
+    for raw in &req.model_dirs {
+        match check_dir(raw, "Pasta de modelos inteiros") {
+            Ok(p) => {
+                if !model_dirs.contains(&p) {
+                    model_dirs.push(p);
+                }
+            }
+            Err(e) => return bad_request(e),
+        }
+    }
+
+    let shard_dir = if req.shard_dir.trim().is_empty() {
+        None
+    } else {
+        match check_dir(&req.shard_dir, "Pasta de modelos fatiados") {
+            Ok(p) => Some(p),
+            Err(e) => return bad_request(e),
+        }
+    };
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.model_dirs = Some(model_dirs);
+        cfg.shard_dir = shard_dir;
+        if let Err(e) = cfg.save() {
+            return bad_request(format!("não deu para gravar rdma-p2p.json: {e}"));
+        }
+    }
+
+    invalidate_catalog().await;
+    info!("pastas de modelos atualizadas pela interface");
+    get_paths(State(state)).await.into_response()
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -533,6 +708,12 @@ pub struct Job {
     pub state: &'static str,
     pub step: String,
     pub message: String,
+    /// 0..100 while `split_model.py` reports it; `None` before the first line
+    /// arrives, which the screen shows as an indeterminate bar rather than a
+    /// zero that looks stuck.
+    pub progress: Option<f64>,
+    /// Files the job has produced so far, in order.
+    pub outputs: Vec<String>,
     pub started_at: String,
     pub finished_at: Option<String>,
 }
@@ -540,6 +721,19 @@ pub struct Job {
 fn jobs() -> &'static RwLock<HashMap<String, Job>> {
     static JOBS: std::sync::OnceLock<RwLock<HashMap<String, Job>>> = std::sync::OnceLock::new();
     JOBS.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+fn new_job(id: &str, step: &str) -> Job {
+    Job {
+        id: id.to_string(),
+        state: "running",
+        step: step.to_string(),
+        message: String::new(),
+        progress: None,
+        outputs: Vec::new(),
+        started_at: chrono::Utc::now().to_rfc3339(),
+        finished_at: None,
+    }
 }
 
 async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
@@ -550,8 +744,35 @@ async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
         job.message = message.to_string();
         if state != "running" {
             job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            // Finished is finished: leaving a bar at 87% on a job that is done
+            // reads as a stall.
+            if state == "done" {
+                job.progress = Some(100.0);
+            }
         }
     }
+}
+
+/// Progress only ever moves forward.
+///
+/// Each reported percentage is delivered by its own task, so a line from the
+/// slice that just finished can land after the next one has started and drag
+/// the bar backwards — which reads as the work being redone.
+async fn set_job_progress(id: &str, pct: f64) {
+    let pct = pct.clamp(0.0, 100.0);
+    let mut map = jobs().write().await;
+    if let Some(job) = map.get_mut(id) {
+        if job.progress.map_or(true, |current| pct > current) {
+            job.progress = Some(pct);
+        }
+    }
+}
+
+/// Progress reported by the slicer, mapped onto the whole job: part `index` of
+/// `total` running at `pct`.
+fn overall_progress(index: u32, total: u32, pct: f64) -> f64 {
+    let total = total.max(1) as f64;
+    ((index as f64 + pct / 100.0) / total * 100.0).clamp(0.0, 100.0)
 }
 
 async fn job_status(Path(id): Path<String>) -> Response {
@@ -579,17 +800,7 @@ async fn apply(
     }
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    jobs().write().await.insert(
-        id.clone(),
-        Job {
-            id: id.clone(),
-            state: "running",
-            step: "preparando".into(),
-            message: String::new(),
-            started_at: chrono::Utc::now().to_rfc3339(),
-            finished_at: None,
-        },
-    );
+    jobs().write().await.insert(id.clone(), new_job(&id, "preparando"));
 
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -630,7 +841,8 @@ async fn run_apply(
         .await;
 
         let python = python_exe(&cwd);
-        let out_dir = plan::shard_output_dir(&cwd, &req.base_name);
+        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
+        let progress_job = job_id.to_string();
         let outcome = plan::extract_shard(
             &cwd,
             &python,
@@ -641,8 +853,13 @@ async fn run_apply(
             req.end_layer,
             req.is_first(),
             req.is_last(),
+            move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            },
         )
         .await?;
+        invalidate_catalog().await;
 
         info!(
             "shard pronto: {} ({:.1} GB, {})",
@@ -691,6 +908,169 @@ async fn run_apply(
 
     state.runtime.apply(cfg).await?;
     Ok(model_path)
+}
+
+// ── Slicing a whole model, here, on demand ───────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SliceRequest {
+    /// Whole model on *this* machine.
+    pub model_path: String,
+    /// How many slices to cut it into.
+    pub parts: u32,
+    /// Catalog name of the model, used to name the slices. Without it the name
+    /// comes from the file, which for an Ollama blob is a digest.
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Cut a local model into `parts` slices, in the background.
+///
+/// Nothing about the split itself is new: it is the same `split_model.py` the
+/// cluster launch already runs, one range at a time, writing into the
+/// configured slice directory. What is new is that the operator can ask for it
+/// without planning a whole cluster, and can watch it happen.
+async fn slice_locally(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SliceRequest>,
+) -> Response {
+    let source = std::path::PathBuf::from(&req.model_path);
+    if !source.is_file() {
+        return bad_request(format!("modelo não encontrado nesta máquina: {}", req.model_path));
+    }
+    if req.parts < 1 || req.parts > 64 {
+        return bad_request("escolha entre 1 e 64 fatias");
+    }
+
+    let path = source.clone();
+    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&path)).await {
+        Ok(Ok(l)) => l,
+        Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
+        Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
+    };
+
+    let total_layers = layout.layer_count();
+    let ranges = plan::even_split(total_layers, req.parts);
+    if ranges.is_empty() {
+        return bad_request("este arquivo não declara camadas — não há o que fatiar");
+    }
+    if ranges.len() < req.parts as usize {
+        return bad_request(format!(
+            "o modelo tem {total_layers} camadas: não dá para dividi-lo em {} fatias sem deixar alguma vazia",
+            req.parts
+        ));
+    }
+
+    let base_name = req
+        .name
+        .as_deref()
+        .and_then(plan::base_name_from_label)
+        .unwrap_or_else(|| plan::base_name_of(&req.model_path));
+    let out_dir = plan::shard_output_dir(&state.shard_dir().await, &base_name);
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    jobs().write().await.insert(id.clone(), new_job(&id, "preparando"));
+
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        match run_slice(state, source, out_dir, base_name, ranges, total_layers, &job_id).await {
+            Ok(files) => {
+                let msg = format!(
+                    "{} fatia{} em {}",
+                    files.len(),
+                    if files.len() == 1 { "" } else { "s" },
+                    files
+                        .first()
+                        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.display().to_string()))
+                        .unwrap_or_default()
+                );
+                set_job(&job_id, "done", "pronto", &msg).await;
+            }
+            Err(e) => {
+                warn!("fatiamento falhou: {e:#}");
+                set_job(&job_id, "failed", "erro", &format!("{e:#}")).await;
+            }
+        }
+    });
+
+    Json(json!({ "job_id": id })).into_response()
+}
+
+async fn run_slice(
+    state: GatewayState,
+    source: std::path::PathBuf,
+    out_dir: std::path::PathBuf,
+    base_name: String,
+    ranges: Vec<(u32, u32)>,
+    total_layers: u32,
+    job_id: &str,
+) -> anyhow::Result<Vec<String>> {
+    let cwd = state.runtime.cwd().clone();
+    let python = python_exe(&cwd);
+    let parts = ranges.len() as u32;
+    let mut outputs = Vec::new();
+
+    for (index, (start, end)) in ranges.iter().copied().enumerate() {
+        let index = index as u32;
+        // Reading the source and packing the new header comes before a single
+        // byte of weights is written, and on a model with a large tokenizer it
+        // is most of the wall time. Saying which phase we are in beats a bar
+        // that sits still with no explanation.
+        let label = format!(
+            "fatia {}/{} · camadas {start}–{end} de {total_layers}",
+            index + 1,
+            parts
+        );
+        set_job(job_id, "running", "lendo", &format!("{label} · lendo o modelo")).await;
+
+        let progress_job = job_id.to_string();
+        let writing_label = label.clone();
+        let first_report = Arc::new(AtomicBool::new(true));
+        let outcome = plan::extract_shard(
+            &cwd,
+            &python,
+            &source.to_string_lossy(),
+            &out_dir,
+            &base_name,
+            start,
+            end,
+            start == 0,
+            end + 1 >= total_layers,
+            move |pct| {
+                let id = progress_job.clone();
+                let overall = overall_progress(index, parts, pct);
+                let announce = first_report
+                    .swap(false, Ordering::Relaxed)
+                    .then(|| format!("{writing_label} · gravando"));
+                tokio::spawn(async move {
+                    if let Some(message) = announce {
+                        set_job(&id, "running", "gravando", &message).await;
+                    }
+                    set_job_progress(&id, overall).await;
+                });
+            },
+        )
+        .await?;
+
+        set_job_progress(job_id, overall_progress(index + 1, parts, 0.0)).await;
+        info!(
+            "fatia {}/{parts} pronta: {} ({:.1} GB, {})",
+            index + 1,
+            outcome.output_path,
+            outcome.bytes as f64 / 1_073_741_824.0,
+            if outcome.reused { "reaproveitada" } else { "gerada" }
+        );
+        outputs.push(outcome.output_path.clone());
+
+        // Show up in the catalog as each one lands, not only at the end.
+        invalidate_catalog().await;
+        let mut map = jobs().write().await;
+        if let Some(job) = map.get_mut(job_id) {
+            job.outputs.push(outcome.output_path);
+        }
+    }
+
+    Ok(outputs)
 }
 
 fn python_exe(cwd: &std::path::Path) -> String {

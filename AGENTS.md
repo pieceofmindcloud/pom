@@ -92,12 +92,12 @@ Single-binary Rust application for decentralized LLM layer coordination with Oll
 - `gateway.rs` — `axum` HTTP server; owns the single generation path (`generate_stream`), `POST /api/generate`, `GET /peers`, `GET /health`
 - `openai.rs` — OpenAI-compatible routes on top of `generate_stream` (protocol only)
 - `webui.rs` + `web/` — dashboard and control API, assets embedded with `include_str!`
-- `catalog.rs` + `gguf.rs` — installed-model discovery and a GGUF header/tensor-table reader
-- `plan.rs` — asymmetric layer planning from per-peer memory budgets; on-demand slicing
+- `catalog.rs` + `gguf.rs` — installed-model discovery over the directories in `rdma-p2p.json`, and a GGUF header/tensor-table reader
+- `plan.rs` — asymmetric layer planning from per-peer memory budgets; `even_split` for "cut it in N"; on-demand slicing with progress
 - `sysmon.rs` — RAM / VRAM sampling per platform
 - `runtime.rs` — mutable node config; owns and supervises the `inference_server.py` child
 - `inference_server.py` — FastAPI server per peer node; handles `POST /v1/infer` for partial forward passes (hidden-state threading)
-- `split_model.py` — Pure-Python GGUF splitter; extracts layer range, remaps names, rewrites a valid GGUF slice
+- `split_model.py` — Pure-Python GGUF splitter; extracts layer range, remaps names, rewrites a valid GGUF slice; reports `RDMAP2P_PROGRESS <pct>` on stderr
 
 **Data flow:**
 1. Identity generated → model resolved (built-in profile or queried from Ollama) → UDP socket bound
@@ -374,7 +374,7 @@ de o arquivo tomar o nome final (se não bater, o parcial é apagado), progresso
 com velocidade e tempo restante, checagem de espaço em disco antes de começar,
 e leitura/escrita em blocos de 1 MB.
 
-Chegada dos arquivos: `models/recebidos/`.
+Chegada dos arquivos: `<shard_dir>/recebidos/` (`models/recebidos/` por padrão).
 
 **O que pode sair da máquina depende de quem escolheu o arquivo.** Os dois
 sentidos tinham o mesmo guarda de caminho, e por isso um GGUF do LM Studio ou
@@ -389,8 +389,24 @@ solto numa pasta qualquer não podia sair — mesmo estando na máquina.
   não vira "ler qualquer coisa": `?path=/etc/passwd` e um `grant` inventado são
   recusados, e há prova disso nos dois.
 
-Na tela, painel "Enviar um arquivo desta máquina" (aba Nós) para caminho
-digitado, e a oferta no sino mostra de onde o arquivo vem antes do aceite.
+Na tela, três entradas para o mesmo transporte:
+
+- **Fatias nesta máquina** (aba Modelos): lista **toda** fatia local, sempre, e
+  o destino é um `select` só com os nós que ainda não a têm ("todas já têm"
+  quando não falta em ninguém).
+- **Fatias entre as máquinas** (aba Nós): lista de *diferença* — só o que falta
+  do outro lado.
+- **Enviar um arquivo desta máquina** (aba Nós): caminho digitado, para o que a
+  varredura não acha.
+
+A diferença acima é o motivo de "não existe opção de enviar uma fatia": o painel
+da aba Nós é uma lista de diferença, e as máquinas do captain tinham as mesmas
+fatias dos dois lados — sobravam só modelos inteiros, e nenhuma linha de fatia
+para clicar (ver commit 2edfa1b). O transporte nunca faltou; faltava a entrada.
+
+Peers da mesma máquina compartilham o hostname, então destino e etiqueta de
+disponibilidade levam o começo do `node_id` quando o nome se repete
+(`uniqueName`, `web/app.js`).
 
 ### Identidade do nó
 
@@ -436,30 +452,57 @@ recarregar o navegador não basta.
 `run-p1.sh` e `run-p2.sh` aceitam `N_CTX`, `N_BATCH`, `MAX_NEW_TOKENS`, `MODEL`,
 `BOOTSTRAP` e `GATEWAY_PORT` por variável de ambiente.
 
-A tela tem três abas: **Painel** (fita de camadas + RAM/VRAM de cada peer),
+A tela tem quatro abas: **Painel** (fita de camadas + RAM/VRAM de cada peer),
+**Modelos** (pastas configuráveis, catálogo local, fatiar, mandar fatia),
 **Configurar** (escolher modelo, orçamento por peer, papel, ajustes avançados,
 subir a rede) e **Testar** (streaming pelo mesmo caminho dos harnesses).
 
-### Onde os modelos são procurados
+### Onde os modelos são procurados — é configuração, não código
 
-Autoritativo: `src/catalog.rs`. Resumo do que foi encontrado de verdade:
+Autoritativo: `src/catalog.rs` (varredura) e `src/config.rs` (as pastas).
+`rdma-p2p.json` manda em tudo, pela aba **Modelos** ou pelo arquivo:
 
-- **LM Studio**: `$LMSTUDIO_HOME` → `~/.lmstudio-home-pointer` → `~/.lmstudio`.
-  O diretório vem de `downloadsFolder` no `settings.json` **quando existe no
-  disco** (no MacBook ele aponta para `/Volumes/models/lmstudio`, um volume
-  desmontado, e o fallback `<home>/models` é que vale). No Linux também varre
-  `/home/*/.lmstudio`: o peer roda como `root`, e `/root/.lmstudio-home-pointer`
-  aponta para um diretório inexistente enquanto o LM Studio real está em
-  `/home/jairpereira/.lmstudio`.
-- **Ollama**: `$OLLAMA_MODELS` → `~/.ollama/models` → `/usr/share/ollama/...`,
-  `/var/lib/ollama/...`, `/home/*/.ollama/models`. Os pesos são blobs por
-  digest, então o nome amigável sai do manifesto em
-  `manifests/<registry>/<ns>/<nome>/<tag>`. Tags só-nuvem (ex. `kimi-k2.5:cloud`)
-  têm manifesto sem blob e são ignoradas. **O ksia não tem Ollama instalado.**
-- **Local**: `./models`, incluindo as fatias `<base>_<início>_<fim>.gguf`.
+- `model_dirs` — lista de pastas de **modelos inteiros**. Ausente ou `null`
+  significa "detecte" (LM Studio + Ollama, como sempre foi); lista **vazia**
+  significa "não procure em lugar nenhum". Um `rdma-p2p.json` antigo, sem os
+  campos, se comporta exatamente como antes — há teste disso.
+- `shard_dir` — pasta única das **fatias**: destino do fatiamento local, dos
+  arquivos recebidos (`<shard_dir>/recebidos/`) e a **única** que um peer pode
+  puxar (`transfer::safe_model_path`). Padrão `<project_root>/models`.
+
+Cada pasta é lida pelo que ela é (`catalog::detect_source`): store do Ollama
+(manifestos + blobs), biblioteca do LM Studio (nome `publisher/repo`), ou pasta
+qualquer de `.gguf` (nome = arquivo). **LM Studio também tem `blobs/` e
+`manifests/`, vazios** — por isso o nome da pasta é conferido antes do layout,
+senão a biblioteca dele volta vazia. Detectados hoje no MacBook:
+`~/.lmstudio/models` e `~/.ollama/models` (que é *symlink* para dentro da
+biblioteca do LM Studio). O captain está movendo os `.gguf` para
+`/Volumes/sdcard/models`, que entra como "pasta".
 
 `GET /api/ui/models` devolve os diretórios varridos junto com o resultado, então
-uma lista vazia é sempre explicável.
+uma lista vazia é sempre explicável. `GET/POST /api/ui/paths` lê e grava a
+configuração; gravar recusa caminho que não exista ou não seja diretório.
+
+**Varredura de volume lento**: o cartão SD do captain leva ~2 min na primeira
+varredura (ler o cabeçalho de GGUFs de 14 GB). O catálogo por isso serve o
+resultado anterior e revalida por trás (`webui::local_catalog`); só a primeira
+varredura, e a troca de pastas, esperam.
+
+### Fatiar pela tela
+
+Aba Modelos → um modelo inteiro **desta máquina** → quantas fatias → `FATIAR`.
+`POST /api/ui/slice` divide as camadas em partes iguais (`plan::even_split`) e
+chama o mesmo `split_model.py` de sempre, uma faixa por vez, gravando em
+`<shard_dir>/<base>/`. O progresso vem do próprio script: ele imprime
+`RDMAP2P_PROGRESS <pct>` no stderr (lido por `plan::parse_progress`), e é a única
+coisa que ele ganhou além de `from __future__ import annotations` — sem esse
+import o script nem carrega no Python 3.9, que é o único do MacBook.
+
+Duas coisas que a barra ensina e o log não: **a maior parte do tempo é antes de
+gravar** (empacotar o cabeçalho passa duas vezes pelo tokenizer; num modelo de
+5 GB foram ~48 s de preparo para ~2 s de escrita), por isso a etapa aparece como
+"lendo o modelo" com barra indeterminada e só depois vira percentual; e o
+percentual é do arquivo, não do trabalho — 100% de uma fatia é 1/N do serviço.
 
 ### Divisão assimétrica por orçamento
 

@@ -815,6 +815,10 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         bootstrap_nodes: vec![],
         api_keys: vec![],
         blocked_nodes: vec![],
+        // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
+        // Modelos é onde essa lista deixa de ser um palpite.
+        model_dirs: None,
+        shard_dir: None,
     }));
 
     let app = Router::new()

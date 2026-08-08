@@ -76,6 +76,8 @@ mod tests {
             bootstrap_nodes: vec![],
             api_keys: vec![],
             blocked_nodes: blocked,
+            model_dirs: None,
+            shard_dir: None,
         }))
     }
 

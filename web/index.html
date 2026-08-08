@@ -30,6 +30,7 @@
 <nav class="tabs" role="tablist">
   <button role="tab" class="tab" data-view="nos" aria-selected="false">Nos</button>
   <button role="tab" class="tab is-active" data-view="painel" aria-selected="true">Painel</button>
+  <button role="tab" class="tab" data-view="modelos" aria-selected="false">Modelos</button>
   <button role="tab" class="tab" data-view="configurar" aria-selected="false">Configurar</button>
   <button role="tab" class="tab" data-view="testar" aria-selected="false">Testar</button>
 </nav>
@@ -118,6 +119,79 @@
     <div class="peer-grid" id="peer-grid">
       <p class="empty">Procurando peers na rede…</p>
     </div>
+  </section>
+
+</section>
+
+<!-- ── Modelos ─────────────────────────────────────────────────────────── -->
+<section id="view-modelos" class="view">
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Pastas de modelos</h2>
+      <p class="panel-meta" id="paths-meta">Onde este nó procura os arquivos</p>
+    </header>
+
+    <h3 class="sub-head">Modelos inteiros</h3>
+    <p class="sub-note">Bibliotecas varridas em busca de <code>.gguf</code>. Uma pasta do Ollama
+      é lida pelos manifestos; qualquer outra, pelos arquivos que tiver dentro.</p>
+    <div id="path-list"><p class="empty">Lendo a configuração…</p></div>
+    <div class="path-add">
+      <input id="path-new" class="secret-field" spellcheck="false"
+             placeholder="/Volumes/sdcard/models" aria-label="Nova pasta de modelos inteiros">
+      <button class="btn-slim" id="btn-path-add" type="button">Acrescentar</button>
+    </div>
+
+    <h3 class="sub-head">Modelos fatiados</h3>
+    <p class="sub-note">Destino do fatiamento local e dos arquivos recebidos de outra máquina.
+      É também a única pasta que um peer pode puxar sozinho.</p>
+    <div class="secret-row">
+      <input id="path-shard" class="secret-field" spellcheck="false"
+             aria-label="Pasta dos modelos fatiados">
+    </div>
+
+    <p id="paths-msg" class="muted-note"></p>
+    <div class="launch-row">
+      <span class="hint" id="paths-state"></span>
+      <button class="btn btn-go" id="btn-paths-save" type="button">Salvar pastas</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Modelos inteiros</h2>
+      <p class="panel-meta" id="whole-meta">—</p>
+    </header>
+
+    <div class="mode-switch" role="radiogroup" aria-label="Quais modelos listar">
+      <label><input type="radio" name="whole-scope" value="local" checked>
+        Somente os desta máquina</label>
+      <label><input type="radio" name="whole-scope" value="all">
+        Todos os anunciados pela rede</label>
+    </div>
+
+    <div id="slice-job" hidden></div>
+
+    <div class="table-scroll">
+      <table class="grid" id="whole-table">
+        <thead>
+          <tr>
+            <th>Modelo</th><th>Origem</th><th>Quant.</th>
+            <th class="num">Camadas</th><th class="num">Tamanho</th>
+            <th>Onde está</th><th class="num">Fatiar aqui</th>
+          </tr>
+        </thead>
+        <tbody><tr><td colspan="7" class="empty">Lendo as bibliotecas…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <header class="panel-head">
+      <h2>Fatias nesta máquina</h2>
+      <p class="panel-meta">Envie uma fatia para um nó que ainda não a tem</p>
+    </header>
+    <div id="local-shards"><p class="empty">Lendo as bibliotecas…</p></div>
   </section>
 
 </section>

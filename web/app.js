@@ -99,6 +99,7 @@ $$(".tab").forEach((tab) => {
       v.classList.toggle("is-active", v.id === `view-${tab.dataset.view}`));
     if (tab.dataset.view === "configurar") loadClusterModels();
     if (tab.dataset.view === "nos") loadNodesTab();
+    if (tab.dataset.view === "modelos") loadModelsTab();
   });
 });
 
@@ -482,9 +483,16 @@ async function loadClusterModels() {
     state.clusterModels = await getJSON("/api/ui/cluster/models");
     renderModelTable();
     renderShardTable();
+    // A aba Modelos lê o mesmo catálogo; uma busca só serve as duas.
+    renderWholeModels();
+    renderLocalShards();
   } catch (e) {
     $("#model-table tbody").innerHTML =
       `<tr><td colspan="7" class="empty">Falha ao ler as bibliotecas: ${esc(e.message)}</td></tr>`;
+    $("#whole-table tbody").innerHTML =
+      `<tr><td colspan="7" class="empty">Falha ao ler as bibliotecas: ${esc(e.message)}</td></tr>`;
+    $("#local-shards").innerHTML =
+      `<p class="notice notice-error">Falha ao ler as bibliotecas: ${esc(e.message)}</p>`;
   }
 }
 
@@ -500,6 +508,14 @@ function peerName(nodeId) {
 
 /** `Jairs-MacBook-Pro.local` → `Jairs-MacBook-Pro`: o sufixo mDNS só ocupa espaço. */
 const shortHost = (h) => String(h).replace(/\.local$/i, "");
+
+/** Nome do peer, com o começo do node_id quando dois peers da mesma máquina
+ *  compartilham o hostname — aí o nome sozinho não diz qual é qual. */
+function uniqueName(nodeId, peers) {
+  const nome = peerName(nodeId);
+  const repetido = (peers || []).filter((p) => peerName(p.node_id) === nome).length > 1;
+  return repetido ? `${nome} · ${String(nodeId).slice(0, 8)}` : nome;
+}
 
 /**
  * Linha de apoio do modelo. Para o Ollama o caminho é um blob endereçado por
@@ -531,7 +547,7 @@ function availabilityChips(byPeer) {
   return `<span class="avail">${all
     .map((p) => {
       const m = byPeer.get(p.node_id);
-      const name = esc(peerName(p.node_id));
+      const name = esc(uniqueName(p.node_id, all));
       return m
         ? `<span class="chip has" title="${esc(m.path)}">${name}${m.quant ? ` ${esc(m.quant)}` : ""}</span>`
         : `<span class="chip hasnt" title="não instalado neste peer">${name}</span>`;
@@ -993,6 +1009,421 @@ function baseNameOf(path) {
     return parts.slice(0, -2).join("_");
   }
   return stem;
+}
+
+// ── Modelos ──────────────────────────────────────────────────────────────────
+//
+// Três coisas que só o dono da máquina pode decidir: onde os arquivos estão,
+// em quantas fatias cortar um modelo, e para quem mandar uma fatia.
+
+const modelos = {
+  /** Resposta de /api/ui/paths. */
+  paths: null,
+  /** Lista em edição das pastas de modelos inteiros. */
+  dirs: [],
+  shardDir: "",
+  /** "local" (só desta máquina) ou "all" (todos os nós). */
+  scope: "local",
+  /** Fatiamento em curso. */
+  job: null,
+  jobTimer: null,
+  jobModel: "",
+};
+
+async function loadModelsTab() {
+  await Promise.all([loadPaths(), loadClusterModels()]);
+}
+
+// ── Pastas ───────────────────────────────────────────────────────────────────
+
+async function loadPaths() {
+  try {
+    modelos.paths = await getJSON("/api/ui/paths");
+    modelos.dirs = modelos.paths.model_dirs.map((d) => d.path);
+    modelos.shardDir = modelos.paths.shard_dir.path;
+    renderPaths();
+  } catch (e) {
+    $("#path-list").innerHTML =
+      `<p class="notice notice-error">Não deu para ler a configuração: ${esc(e.message)}</p>`;
+  }
+}
+
+const KIND_LABEL = { ollama: "Ollama", lmstudio: "LM Studio", folder: "Pasta" };
+
+/** O que a varredura vai fazer com um caminho, dito antes de salvar. */
+function kindOf(path) {
+  const known = modelos.paths?.model_dirs.concat(modelos.paths.detected || [])
+    .find((d) => d.path === path);
+  if (known) return known.kind;
+  const t = String(path).toLowerCase();
+  if (t.includes(".ollama") || t.endsWith("ollama/models")) return "ollama";
+  if (t.includes("lmstudio") || t.includes("lm-studio")) return "lmstudio";
+  return "folder";
+}
+
+function renderPaths() {
+  const box = $("#path-list");
+  if (!box) return;
+
+  box.innerHTML = modelos.dirs.length
+    ? modelos.dirs.map((dir, i) => {
+        const known = modelos.paths?.model_dirs.find((d) => d.path === dir);
+        const falta = known && !known.exists;
+        return `
+        <div class="path-row">
+          <input class="secret-field path-field ${falta ? "is-bad" : ""}" data-index="${i}"
+                 value="${esc(dir)}" spellcheck="false" aria-label="Pasta ${i + 1}">
+          <span class="path-kind">${esc(KIND_LABEL[kindOf(dir)] || "pasta")}</span>
+          <button class="btn-slim" data-remove="${i}" type="button" title="Remover da lista">Remover</button>
+        </div>`;
+      }).join("")
+    : `<p class="empty">Nenhuma pasta de modelos inteiros. Só as fatias serão encontradas.</p>`;
+
+  // Só reescreve o campo quando ele realmente ficou para trás: redesenhar a
+  // lista (acrescentar ou remover uma pasta) apagava o destino que a pessoa
+  // tinha acabado de digitar.
+  const shardField = $("#path-shard");
+  if (shardField.value !== modelos.shardDir) shardField.value = modelos.shardDir;
+
+  const meta = $("#paths-state");
+  if (meta) {
+    meta.textContent = modelos.paths?.using_defaults
+      ? "hoje: bibliotecas detectadas automaticamente — salvar fixa esta lista"
+      : "lista escolhida por você";
+  }
+
+  $$("#path-list .path-field").forEach((input) =>
+    input.addEventListener("input", () => {
+      modelos.dirs[Number(input.dataset.index)] = input.value;
+    }));
+  $$("#path-list [data-remove]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      modelos.dirs.splice(Number(btn.dataset.remove), 1);
+      renderPaths();
+    }));
+}
+
+$("#path-shard")?.addEventListener("input", (ev) => {
+  modelos.shardDir = ev.target.value;
+});
+
+$("#btn-path-add")?.addEventListener("click", () => {
+  const field = $("#path-new");
+  const value = field.value.trim();
+  if (!value) return;
+  if (modelos.dirs.includes(value)) {
+    pathsMessage("Essa pasta já está na lista.", "warn");
+    return;
+  }
+  modelos.dirs.push(value);
+  field.value = "";
+  renderPaths();
+  pathsMessage("Pasta acrescentada — falta salvar.", "");
+});
+
+function pathsMessage(text, kind) {
+  const el = $("#paths-msg");
+  if (!el) return;
+  el.className = kind === "error" ? "notice notice-error"
+    : kind === "ok" ? "notice notice-ok"
+    : kind === "warn" ? "notice notice-warn"
+    : "muted-note";
+  el.textContent = text;
+}
+
+$("#btn-paths-save")?.addEventListener("click", async () => {
+  const btn = $("#btn-paths-save");
+  btn.disabled = true;
+  pathsMessage("Conferindo as pastas…", "");
+  try {
+    const saved = await postJSON("/api/ui/paths", {
+      model_dirs: modelos.dirs.map((d) => d.trim()).filter(Boolean),
+      shard_dir: modelos.shardDir.trim(),
+    });
+    modelos.paths = saved;
+    modelos.dirs = saved.model_dirs.map((d) => d.path);
+    modelos.shardDir = saved.shard_dir.path;
+    renderPaths();
+    pathsMessage("Pastas salvas. A varredura já usa estas.", "ok");
+    loadClusterModels();
+  } catch (e) {
+    pathsMessage(e.message, "error");
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ── Modelos inteiros: filtro e fatiamento ────────────────────────────────────
+
+$$('input[name="whole-scope"]').forEach((r) =>
+  r.addEventListener("change", () => {
+    if (!r.checked) return;
+    modelos.scope = r.value;
+    renderWholeModels();
+  }));
+
+/** O peer que somos, dentro do catálogo do cluster. */
+const selfPeer = () => state.clusterModels?.peers.find((p) => p.is_self);
+
+/** Diretório onde um arquivo está, que é o que interessa quando a lista é local. */
+const dirOf = (path) => String(path).split("/").slice(0, -1).join("/") || "/";
+
+function renderWholeModels() {
+  const tbody = $("#whole-table tbody");
+  if (!tbody) return;
+  const meta = $("#whole-meta");
+  const cm = state.clusterModels;
+
+  if (!cm) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">Lendo as bibliotecas…</td></tr>`;
+    return;
+  }
+
+  const local = modelos.scope === "local";
+  const me = selfPeer();
+  const linhas = local
+    ? (me?.models || [])
+        .filter((m) => !m.shard_range)
+        .map((m) => ({ name: m.name, sample: m, byPeer: new Map([[me.node_id, m]]) }))
+        .sort((a, b) => a.name.localeCompare(b.name))
+    : unionModels((m) => !m.shard_range);
+
+  if (meta) {
+    meta.textContent = local
+      ? `${linhas.length} nesta máquina (${esc(peerName(me?.node_id || ""))}) · fatiar só acontece aqui`
+      : `${linhas.length} somando todos os nós — só os desta máquina podem ser fatiados daqui`;
+  }
+
+  if (!linhas.length) {
+    tbody.innerHTML = `<tr><td colspan="7" class="empty">${
+      local
+        ? "Nenhum modelo inteiro nas pastas configuradas acima."
+        : "Nenhum modelo inteiro em nenhum nó da rede."
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = linhas.map((row) => {
+    const m = row.sample;
+    const aqui = me ? row.byPeer.get(me.node_id) : null;
+    const onde = local
+      ? `<span class="path-cell" title="${esc(m.path)}">${esc(dirOf(m.path))}</span>`
+      : availabilityChips(row.byPeer);
+    const acao = aqui
+      ? `<span class="slice-cell">
+           <input type="number" class="parts" min="1" max="64" step="1" value="2"
+                  aria-label="Quantas fatias">
+           <button class="btn-slim" type="button" data-slice="${esc(aqui.path)}"
+                   data-name="${esc(row.name)}">Fatiar</button>
+         </span>`
+      : `<span class="muted-note">não está aqui</span>`;
+    return `
+      <tr>
+        <td class="name">${esc(row.name)}
+          <span class="sub">${esc(modelSubtitle(m))}</span></td>
+        <td>${esc(m.source_label)}</td>
+        <td>${esc(m.quant || "—")}</td>
+        <td class="num">${m.total_layers ?? "—"}</td>
+        <td class="num">${fmtBytes(m.size_bytes)}</td>
+        <td>${onde}</td>
+        <td class="num">${acao}</td>
+      </tr>`;
+  }).join("");
+
+  tbody.querySelectorAll("[data-slice]").forEach((btn) =>
+    btn.addEventListener("click", () => {
+      const parts = Number(btn.closest(".slice-cell").querySelector(".parts").value) || 2;
+      startSlice(btn.dataset.slice, btn.dataset.name, parts);
+    }));
+
+  setSliceButtonsDisabled(!!modelos.job && modelos.job.state === "running");
+}
+
+function setSliceButtonsDisabled(disabled) {
+  $$("#whole-table [data-slice]").forEach((b) => { b.disabled = disabled; });
+}
+
+async function startSlice(path, name, parts) {
+  modelos.jobModel = name;
+  renderSliceJob({ state: "running", step: "preparando", progress: null, message: "" });
+  setSliceButtonsDisabled(true);
+  try {
+    const { job_id } = await postJSON("/api/ui/slice", { model_path: path, parts, name });
+    modelos.job = { id: job_id, state: "running" };
+    pollSliceJob(job_id);
+  } catch (e) {
+    modelos.job = null;
+    setSliceButtonsDisabled(false);
+    renderSliceJob({ state: "failed", step: "erro", progress: null, message: e.message });
+  }
+}
+
+function pollSliceJob(id) {
+  clearTimeout(modelos.jobTimer);
+  const tick = async () => {
+    try {
+      const job = await getJSON(`/api/ui/jobs/${id}`);
+      modelos.job = job;
+      renderSliceJob(job);
+      if (job.state === "running") {
+        modelos.jobTimer = setTimeout(tick, 800);
+        return;
+      }
+      setSliceButtonsDisabled(false);
+      // As fatias novas entram no catálogo sem reiniciar nada. A varredura corre
+      // atrás da resposta que o servidor acabou de dar, então insiste até as
+      // fatias aparecerem — numa biblioteca em cartão SD isso leva um minuto.
+      awaitCatalog(job.outputs || []);
+    } catch (e) {
+      setSliceButtonsDisabled(false);
+      renderSliceJob({ state: "failed", step: "erro", progress: null, message: e.message });
+    }
+  };
+  modelos.jobTimer = setTimeout(tick, 400);
+}
+
+/** Recarrega o catálogo até ele conhecer os arquivos recém-criados. */
+async function awaitCatalog(outputs, tentativas = 8) {
+  await loadClusterModels();
+  const nomes = outputs.map((o) => o.split("/").pop());
+  const conhecidos = new Set((selfPeer()?.models || []).map((m) => m.name));
+  if (!nomes.length || nomes.every((n) => conhecidos.has(n)) || tentativas <= 0) return;
+  setTimeout(() => awaitCatalog(outputs, tentativas - 1), 4000);
+}
+
+function renderSliceJob(job) {
+  const box = $("#slice-job");
+  if (!box) return;
+  box.hidden = false;
+
+  const falhou = job.state === "failed";
+  const pronto = job.state === "done";
+  const pct = job.progress;
+  const indet = pct == null && !pronto && !falhou;
+  const largura = pronto ? 100 : pct ?? 100;
+
+  const tag = pronto ? "is-ready" : falhou ? "is-failed" : "is-starting";
+  const estado = pronto ? "pronto" : falhou ? "falhou" : job.step || "fatiando";
+
+  box.className = `slice-job ${falhou ? "is-failed" : ""}`;
+  box.innerHTML = `
+    <div class="slice-job-head">
+      <strong>${esc(modelos.jobModel || "modelo")}</strong>
+      <span class="tagrow"><span class="tag ${tag}">${esc(estado)}</span></span>
+      <span class="slice-pct">${pronto ? "100%" : falhou ? "—" : pct != null ? `${pct.toFixed(0)}%` : "…"}</span>
+    </div>
+    <div class="meter-track">
+      <div class="meter-fill ${falhou ? "is-high" : ""} ${indet ? "is-indeterminate" : ""}"
+           style="width:${largura}%"></div>
+    </div>
+    ${job.message ? `<p class="${falhou ? "notice notice-error" : "meter-note"}">${esc(job.message)}</p>` : ""}
+    ${(job.outputs || []).length
+      ? `<ul class="slice-outputs">${job.outputs
+          .map((o) => `<li title="${esc(o)}">${esc(o.split("/").pop())}</li>`)
+          .join("")}</ul>`
+      : ""}`;
+}
+
+// ── Fatias desta máquina: mandar uma para quem não tem ────────────────────────
+
+/** Um arquivo com este nome existe naquele peer? É o mesmo critério do painel
+ *  de trocas na aba Nós. */
+function peerHasFile(peer, name) {
+  const alvo = String(name).toLowerCase();
+  return (peer.models || []).some((m) => (m.name || "").toLowerCase() === alvo);
+}
+
+function renderLocalShards() {
+  const box = $("#local-shards");
+  if (!box) return;
+  const cm = state.clusterModels;
+  const me = selfPeer();
+
+  if (!cm || !me) {
+    box.innerHTML = `<p class="empty">Lendo as bibliotecas…</p>`;
+    return;
+  }
+
+  const fatias = (me.models || [])
+    .filter((m) => m.shard_range)
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  if (!fatias.length) {
+    box.innerHTML = `<p class="empty">Nenhuma fatia nesta máquina ainda. Fatie um modelo inteiro acima.</p>`;
+    return;
+  }
+
+  const outros = cm.peers.filter((p) => !p.is_self);
+
+  box.innerHTML = fatias.map((m, i) => {
+    const [a, b] = m.shard_range;
+    const faltam = outros.filter((p) => !peerHasFile(p, m.name));
+    const tem = outros.filter((p) => peerHasFile(p, m.name));
+    const tempo = m.size_bytes ? ` · ~${fmtDuration(m.size_bytes / MEDIDA_BYTES_POR_S)} no enlace medido` : "";
+
+    const destino = !outros.length
+      ? `<span class="muted-note">nenhuma outra máquina no cluster</span>`
+      : !faltam.length
+        ? `<span class="chip has">todas já têm</span>`
+        : `<span class="send-cell">
+             <select class="shard-dest" aria-label="Máquina de destino">${faltam
+               .map((p) => `<option value="${esc(p.node_id)}">${esc(uniqueName(p.node_id, cm.peers))}</option>`)
+               .join("")}</select>
+             <button class="btn-slim" type="button" data-send="${i}">Enviar</button>
+           </span>`;
+
+    return `
+      <div class="node-row" data-shard-row="${i}" data-path="${esc(m.path)}">
+        <div class="node-row-main">
+          <strong>${esc(m.name)}</strong>
+          <span class="node-row-sub">camadas ${a}–${b} · ${fmtBytes(m.size_bytes)}${tempo}</span>
+          <span class="node-row-sub" title="${esc(m.path)}">${esc(dirOf(m.path))}</span>
+          <span class="send-msg muted-note" hidden></span>
+        </div>
+        <div class="tagrow">${
+          // Quando ninguém está faltando, a própria ação já diz isso; repetir
+          // máquina por máquina só ocupa a linha.
+          faltam.length
+            ? tem.map((p) => `<span class="tag is-ready">${esc(peerName(p.node_id))} já tem</span>`).join("")
+            : ""}</div>
+        <div class="node-row-actions">${destino}</div>
+      </div>`;
+  }).join("");
+
+  box.querySelectorAll("[data-send]").forEach((btn) =>
+    btn.addEventListener("click", () => sendShardFromRow(btn)));
+}
+
+async function sendShardFromRow(btn) {
+  const row = btn.closest("[data-shard-row]");
+  const destino = row.querySelector(".shard-dest")?.value;
+  const msg = row.querySelector(".send-msg");
+  const path = row.dataset.path;
+  if (!destino || !path) return;
+
+  btn.disabled = true;
+  msg.hidden = false;
+  msg.className = "send-msg muted-note";
+  msg.textContent = "Calculando o MD5 da fatia…";
+  try {
+    await ensureConnectionKey();
+    const r = await fetch("/api/transfer/send", {
+      method: "POST",
+      headers: { ...authHeaders(), "Content-Type": "application/json" },
+      body: JSON.stringify({ to_node_id: destino, path }),
+    });
+    const d = await r.json().catch(() => ({}));
+    msg.className = r.ok ? "send-msg notice notice-ok" : "send-msg notice notice-error";
+    msg.textContent = r.ok
+      ? "Oferta enviada. O outro nó aceita no sino, e o progresso aparece em Transferências (aba Nós)."
+      : "Não deu para oferecer: " + (d.error || r.status);
+    pollTransfers();
+  } catch (e) {
+    msg.className = "send-msg notice notice-error";
+    msg.textContent = "Não deu para oferecer: " + e.message;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Testar ───────────────────────────────────────────────────────────────────

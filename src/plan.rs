@@ -14,12 +14,22 @@
 use crate::gguf::GgufLayout;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
 use tokio::process::Command;
 use tracing::info;
 
 const MB: f64 = 1_048_576.0;
+
+/// Lines of the slicer's output kept for the error message when it fails.
+const TAIL_LINES: usize = 12;
+
+/// Prefix `split_model.py` writes its percentage behind. Machine-readable on
+/// purpose: it is the one thing the script was allowed to gain, and the whole
+/// progress bar hangs off parsing it.
+const PROGRESS_PREFIX: &str = "RDMAP2P_PROGRESS";
 
 /// Fraction of a peer's budget held back for the KV cache, activations and the
 /// runtime itself, rather than model weights.
@@ -243,6 +253,11 @@ pub struct SliceOutcome {
 ///
 /// Runs entirely on the local machine against the local copy of the source
 /// model — no weights are transferred between peers.
+///
+/// `on_progress` is called with 0..100 as the script reports it. Slicing a
+/// 10 GB model is minutes of I/O; without this the screen has nothing to show
+/// but a spinner, and a stuck run looks exactly like a slow one.
+#[allow(clippy::too_many_arguments)]
 pub async fn extract_shard(
     cwd: &Path,
     python: &str,
@@ -253,6 +268,7 @@ pub async fn extract_shard(
     end_layer: u32,
     is_first: bool,
     is_last: bool,
+    on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
     let output = output_dir.join(shard_filename(base_name, start_layer, end_layer));
 
@@ -301,13 +317,31 @@ pub async fn extract_shard(
         cmd.arg("--is-last");
     }
 
-    let out = cmd.output().await.context("executar split_model.py")?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        let tail: String = stderr.lines().rev().take(12).collect::<Vec<_>>().join("\n");
+    let mut child = cmd.spawn().context("executar split_model.py")?;
+
+    // Both pipes are drained while the process runs. Reading them only after it
+    // exits would deadlock on a full pipe buffer, and the progress has to arrive
+    // as it happens to be worth anything.
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+    let tail = Arc::new(std::sync::Mutex::new(VecDeque::<String>::new()));
+
+    let out_task = tokio::spawn(drain(stdout, tail.clone(), None));
+    let err_task = tokio::spawn(drain(
+        stderr,
+        tail.clone(),
+        Some(Arc::new(on_progress) as Arc<dyn Fn(f64) + Send + Sync>),
+    ));
+
+    let status = child.wait().await.context("aguardar split_model.py")?;
+    let _ = out_task.await;
+    let _ = err_task.await;
+
+    if !status.success() {
+        let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
         // A partial file would be mistaken for a valid slice next time.
         let _ = std::fs::remove_file(&output);
-        bail!("split_model.py falhou ({}): {tail}", out.status);
+        bail!("split_model.py falhou ({status}): {}", lines.join("\n"));
     }
 
     let bytes = std::fs::metadata(&output)
@@ -321,15 +355,98 @@ pub async fn extract_shard(
     })
 }
 
-/// Where slices go: `<cwd>/models/<base>/`.
-pub fn shard_output_dir(cwd: &Path, base_name: &str) -> PathBuf {
-    cwd.join("models").join(sanitize(base_name))
+/// `RDMAP2P_PROGRESS 42.5` → `Some(42.5)`; anything else is just a log line.
+fn parse_progress(line: &str) -> Option<f64> {
+    let rest = line.trim().strip_prefix(PROGRESS_PREFIX)?;
+    let pct: f64 = rest.trim().parse().ok()?;
+    if pct.is_finite() {
+        Some(pct.clamp(0.0, 100.0))
+    } else {
+        None
+    }
+}
+
+/// Read one of the child's pipes to the end, feeding progress out and keeping
+/// the last lines for a failure message.
+async fn drain<R>(
+    pipe: Option<R>,
+    tail: Arc<std::sync::Mutex<VecDeque<String>>>,
+    progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let Some(pipe) = pipe else { return };
+    let mut lines = BufReader::new(pipe).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if let (Some(cb), Some(pct)) = (progress.as_ref(), parse_progress(&line)) {
+            cb(pct);
+            continue; // não polui o rastro de erro com centenas de percentuais
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        if let Ok(mut t) = tail.lock() {
+            if t.len() == TAIL_LINES {
+                t.pop_front();
+            }
+            t.push_back(line);
+        }
+    }
+}
+
+/// Where slices go: `<pasta de fatias>/<base>/`.
+pub fn shard_output_dir(shard_dir: &Path, base_name: &str) -> PathBuf {
+    shard_dir.join(sanitize(base_name))
+}
+
+/// Cut `total_layers` into `parts` contiguous ranges as evenly as they divide.
+///
+/// The remainder goes to the first slices, one layer each, so the difference
+/// between the biggest and the smallest is never more than one layer. This is
+/// the "split it in N" path the operator asks for by number — the asymmetric
+/// planner above is the one that sizes ranges by memory.
+pub fn even_split(total_layers: u32, parts: u32) -> Vec<(u32, u32)> {
+    if total_layers == 0 || parts == 0 {
+        return Vec::new();
+    }
+    let parts = parts.min(total_layers);
+    let base = total_layers / parts;
+    let extra = total_layers % parts;
+
+    let mut ranges = Vec::with_capacity(parts as usize);
+    let mut start = 0u32;
+    for i in 0..parts {
+        let len = base + if i < extra { 1 } else { 0 };
+        ranges.push((start, start + len - 1));
+        start += len;
+    }
+    ranges
 }
 
 fn sanitize(name: &str) -> String {
     name.chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' { c } else { '-' })
         .collect()
+}
+
+/// Turn a catalog name such as `qwen3:8b` into something that can be a filename
+/// and still survive `parse_shard_name`.
+///
+/// Ollama keeps its weights as `sha256-<digest>` blobs, so slicing one straight
+/// from the path produces `sha256-a3de…686f_0_11.gguf` — a name nobody can read
+/// and nothing can match across machines. The friendly name is right there in
+/// the catalog; this makes it usable as a base.
+pub fn base_name_from_label(label: &str) -> Option<String> {
+    let cleaned = sanitize(label.trim())
+        .trim_matches(['-', '.', '_'])
+        .to_string();
+    if cleaned.is_empty() {
+        return None;
+    }
+    // The `_<start>_<end>` suffix is what identifies a slice; a base that
+    // already ends in two numbers would make the range ambiguous.
+    Some(base_name_of(&format!("{cleaned}.gguf")))
 }
 
 #[cfg(test)]
@@ -429,5 +546,54 @@ mod tests {
     #[test]
     fn shard_filename_matches_the_parsed_convention() {
         assert_eq!(shard_filename("qwen", 0, 15), "qwen_0_15.gguf");
+    }
+
+    #[test]
+    fn a_catalog_name_becomes_a_readable_base() {
+        // O caso que motiva isto: o peso do Ollama é um blob por digest.
+        assert_eq!(base_name_from_label("qwen3:8b").as_deref(), Some("qwen3-8b"));
+        assert_eq!(
+            base_name_from_label("lmstudio-community/Qwen3.6-35B").as_deref(),
+            Some("lmstudio-community-Qwen3.6-35B")
+        );
+        // Um rótulo que já termina em dois números viraria uma faixa falsa.
+        assert_eq!(base_name_from_label("modelo_0_15").as_deref(), Some("modelo"));
+        assert_eq!(base_name_from_label("  ").as_deref(), None);
+        assert_eq!(base_name_from_label("///").as_deref(), None);
+    }
+
+    #[test]
+    fn even_split_covers_every_layer_without_a_gap() {
+        assert_eq!(even_split(32, 2), vec![(0, 15), (16, 31)]);
+        assert_eq!(even_split(32, 1), vec![(0, 31)]);
+        // 32 em 3: 11 + 11 + 10, e o resto vai para as primeiras.
+        assert_eq!(even_split(32, 3), vec![(0, 10), (11, 21), (22, 31)]);
+
+        for parts in 1..=9u32 {
+            let ranges = even_split(37, parts);
+            assert_eq!(ranges[0].0, 0);
+            assert_eq!(ranges.last().unwrap().1, 36);
+            for pair in ranges.windows(2) {
+                assert_eq!(pair[1].0, pair[0].1 + 1, "faixas contíguas, sem buraco");
+            }
+        }
+    }
+
+    #[test]
+    fn even_split_never_produces_an_empty_slice() {
+        // Mais fatias do que camadas seria uma fatia vazia — que o servidor de
+        // inferência não carrega.
+        assert_eq!(even_split(3, 8).len(), 3);
+        assert!(even_split(0, 4).is_empty());
+        assert!(even_split(10, 0).is_empty());
+    }
+
+    #[test]
+    fn progress_lines_are_the_only_thing_parsed_as_progress() {
+        assert_eq!(parse_progress("RDMAP2P_PROGRESS 42.5"), Some(42.5));
+        assert_eq!(parse_progress("  RDMAP2P_PROGRESS 100  "), Some(100.0));
+        assert_eq!(parse_progress("RDMAP2P_PROGRESS 120"), Some(100.0));
+        assert_eq!(parse_progress("Writing /tmp/x.gguf ..."), None);
+        assert_eq!(parse_progress("RDMAP2P_PROGRESS quase"), None);
     }
 }

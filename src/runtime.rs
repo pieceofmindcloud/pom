@@ -219,10 +219,6 @@ impl NodeRuntime {
             .unwrap_or_else(|| fallback.to_string())
     }
 
-    pub fn models_dir(&self) -> PathBuf {
-        self.cwd.join("models")
-    }
-
     /// Directory the Python interpreter is resolved from.
     pub fn cwd(&self) -> &PathBuf {
         &self.cwd

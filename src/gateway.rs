@@ -757,6 +757,7 @@ mod budget_tests {
             repeat_last_n: 64,
             no_thinking: true,
             single_peer: false,
+            no_embeddings: false,
         }
     }
 

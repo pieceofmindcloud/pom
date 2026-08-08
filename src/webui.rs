@@ -51,6 +51,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
+        .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
         .route("/api/ui/jobs/:id", get(job_status))
@@ -626,6 +627,10 @@ pub struct RuntimeParams {
     pub repeat_last_n: u32,
     #[serde(default = "d_true")]
     pub no_thinking: bool,
+    /// Disable embedding extraction in llama.cpp context on this peer.
+    /// Auto-set for the last peer of a multi-peer pipeline when true.
+    #[serde(default)]
+    pub no_embeddings: bool,
 }
 
 fn d_gpu_layers() -> u32 { 99 }
@@ -655,8 +660,9 @@ impl Default for RuntimeParams {
             top_k: d_top_k(),
             repeat_penalty: d_repeat_penalty(),
             repeat_last_n: d_repeat_last_n(),
-            no_thinking: d_true(),
-        }
+no_thinking: d_true(),
+                no_embeddings: false,
+            }
     }
 }
 
@@ -690,10 +696,18 @@ impl ApplyRequest {
     fn is_last(&self) -> bool {
         self.end_layer + 1 >= self.total_layers
     }
+    fn is_last_peer(&self) -> bool {
+        self.peer_index + 1 >= self.peer_count
+    }
     /// A single peer covering the whole model runs without hidden-state
     /// extraction, which is what `--single-peer` controls.
     fn single_peer(&self) -> bool {
         self.peer_count <= 1 && self.is_first() && self.is_last()
+    }
+    /// The last peer in a multi-peer pipeline should skip embedding extraction
+    /// to avoid logit corruption on models like phi-4.
+    fn no_embeddings(&self) -> bool {
+        self.params.no_embeddings || (!self.single_peer() && self.is_last_peer())
     }
 }
 
@@ -905,6 +919,7 @@ async fn run_apply(
         repeat_last_n: req.params.repeat_last_n,
         no_thinking: req.params.no_thinking,
         single_peer: req.single_peer(),
+        no_embeddings: req.no_embeddings(),
     };
 
     state.runtime.apply(cfg).await?;
@@ -1168,6 +1183,18 @@ fn python_exe(cwd: &std::path::Path) -> String {
 
 // ── Cluster launch ───────────────────────────────────────────────────────────
 
+/// Stop the inference server on this node, announce the node as idle,
+/// and free the inference port. Called by `launch` before reconfiguring
+/// peers so no stale endpoint receives inference requests mid-transition.
+async fn stop_inference(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    info!("stop-inference recebido — parando servidor neste nó");
+    state.runtime.stop().await;
+    Json(json!({ "stopped": true })).into_response()
+}
+
 /// One entry per peer taking part in the launch.
 #[derive(Debug, Deserialize)]
 pub struct LaunchTarget {
@@ -1205,6 +1232,53 @@ async fn launch(
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let peer_count = req.targets.len() as u32;
+
+    // Phase 1: stop inference on every target peer so no stale endpoint
+    // receives inference requests mid-transition, and to free ports before
+    // the new inference servers try to bind.
+    let key = state.auth.read().await.connection_key.clone();
+    for target in &req.targets {
+        if target.node_id == self_id {
+            state.runtime.stop().await;
+            continue;
+        }
+        let Some(base) = peers
+            .iter()
+            .find(|p| p.node_id == target.node_id)
+            .and_then(|p| p.gateway_url())
+        else {
+            warn!("peer {} nao encontrado para stop-inference", target.node_id);
+            continue;
+        };
+        let url = format!("{base}/api/ui/stop-inference");
+        match state
+            .http
+            .post(&url)
+            .bearer_auth(&key)
+            .timeout(PEER_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                info!("peer {} parou inferencia", target.node_id);
+            }
+            Ok(r) => {
+                warn!(
+                    "peer {} recusou stop-inference: HTTP {}",
+                    target.node_id,
+                    r.status()
+                );
+            }
+            Err(e) => {
+                warn!("peer {} inacessivel para stop-inference: {e}", target.node_id);
+            }
+        }
+    }
+
+    // Brief settle: let the OS release ports.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // Phase 2: dispatch apply with the new configuration.
     let mut results = Vec::new();
 
     for (index, target) in req.targets.iter().enumerate() {

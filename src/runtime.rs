@@ -63,6 +63,11 @@ pub struct NodeConfig {
     pub repeat_last_n: u32,
     pub no_thinking: bool,
     pub single_peer: bool,
+    /// Disable embedding extraction in llama.cpp. Set on the last (sampling)
+    /// peer of a multi-peer pipeline when `embeddings=True` breaks logits
+    /// (observed with phi-4 where the model outputs EOS as first token).
+    #[serde(default)]
+    pub no_embeddings: bool,
 }
 
 fn default_max_sessions() -> u32 { 1 }
@@ -224,6 +229,23 @@ impl NodeRuntime {
         &self.cwd
     }
 
+    /// Stop the current inference server and announce to peers that this
+    /// node no longer serves any layers. Called before a cluster reconfiguration
+    /// so no peer sends inference requests to a stale endpoint.
+    pub async fn stop(&self) {
+        info!("parando servidor de inferencia neste no");
+
+        let generation = *self.generation.borrow() + 1;
+        self.generation.send_replace(generation);
+
+        *self.config.write().await = None;
+        *self.assignment.write().await = None;
+        *self.status.write().await =
+            RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+
+        let _ = self.net.announce(None).await;
+    }
+
     /// Switch this node to a new configuration: stop the current inference
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
@@ -274,6 +296,7 @@ impl NodeRuntime {
             "inference_server_{}.log",
             cfg.inference_port
         ));
+        let port = cfg.inference_port;
         let mut gen_rx = self.generation.subscribe();
 
         // The supervisor needs the runtime to publish status; a raw pointer would
@@ -285,6 +308,10 @@ impl NodeRuntime {
         tokio::spawn(async move {
             let log_str = log_path.to_string_lossy().into_owned();
             status.set_log(&log_str).await;
+
+            // Before starting, kill anything already holding our port - it may
+            // be a zombie from a previous rdma-p2p run or a stale watcher loop.
+            free_port(port).await;
 
             let mut restarts = 0u32;
             loop {
@@ -326,6 +353,9 @@ impl NodeRuntime {
                 }
                 if cfg.single_peer {
                     cmd.arg("--single-peer");
+                }
+                if cfg.no_embeddings {
+                    cmd.arg("--no-embeddings");
                 }
 
                 let mut child = match cmd.spawn() {
@@ -461,6 +491,65 @@ fn short_path(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Kill any process holding `port` so the inference server can bind.
+///
+/// Uses `lsof -ti :PORT` to find the PID, sends SIGKILL, then polls the port
+/// for up to 5 seconds until it is free.
+async fn free_port(port: u16) {
+    use std::net::TcpListener;
+
+    // Fast path: if we can bind, the port is already free.
+    if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+        return;
+    }
+
+    info!("porta {port} em uso — procurando processo para matar");
+
+    let output = tokio::process::Command::new("lsof")
+        .args(["-ti", &format!(":{port}")])
+        .output()
+        .await;
+
+    let Ok(out) = output else {
+        warn!("nao foi possivel executar lsof para verificar a porta {port}");
+        return;
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    if stdout.trim().is_empty() {
+        warn!("porta {port} ocupada mas lsof nao encontrou o processo");
+        return;
+    }
+
+    for pid_str in stdout.split_whitespace() {
+        let Ok(pid) = pid_str.parse::<i32>() else { continue };
+        // Skip our own process - never kill ourselves.
+        if pid == std::process::id() as i32 {
+            continue;
+        }
+        info!("matando processo {pid} que ocupa a porta {port}");
+        let _ = Command::new("kill")
+            .arg("-9")
+            .arg(pid.to_string())
+            .output()
+            .await;
+    }
+
+    // Poll for up to 5 seconds until the port is free.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+            info!("porta {port} liberada");
+            return;
+        }
+        if tokio::time::Instant::now() > deadline {
+            warn!("porta {port} continua ocupada apos 5s — seguindo mesmo assim");
+            return;
+        }
+        sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// Stream a child pipe into the log file and the terminal.
 fn pipe_output<R>(pipe: Option<R>, log_path: &str, tag: &'static str, is_err: bool)
 where
@@ -552,6 +641,7 @@ mod tests {
             repeat_last_n: 64,
             no_thinking: true,
             single_peer: false,
+            no_embeddings: false,
         }
     }
 

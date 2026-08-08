@@ -580,6 +580,7 @@ inference_port,
             repeat_last_n: args.repeat_last_n,
             no_thinking: args.no_thinking,
             single_peer: args.single_peer,
+            no_embeddings: false,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");

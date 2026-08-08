@@ -93,6 +93,11 @@ def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
                 vtype = struct.unpack("<I", f.read(4))[0]
                 if vtype == 4 and key.startswith("rdmap2p."):  # UINT32
                     result[key] = struct.unpack("<I", f.read(4))[0]
+                # Read model training context to auto-cap n_ctx — phi-4 and other
+                # smaller models fail llama_new_context_with_model when n_ctx
+                # exceeds n_ctx_train, causing a crash loop.
+                elif vtype == 4 and key in ("llama.context_length", "llama.train.context_length", "context_length"):
+                    result["n_ctx_train"] = struct.unpack("<I", f.read(4))[0]
                 else:
                     _skip_gguf_value(f, vtype)
     except Exception as e:
@@ -203,6 +208,7 @@ def _rollback_seq_kv(seq_id: int, from_pos: int) -> None:
 
 def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
     """Replace the llama context so n_seq_max == _MAX_SESSIONS.
+    """Replace the llama context so n_seq_max == _MAX_SESSIONS.
 
     llama.cpp / the model metadata often sets n_seq_max to 256 which limits
     each KV-cache sequence to only n_ctx/256 tokens.  By recreating the context
@@ -210,7 +216,7 @@ def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
     session — enough for long generations with a small number of parallel requests.
     """
     assert _args is not None
-    need_embeddings = not _args.single_peer
+    need_embeddings = not _args.single_peer and not _args.no_embeddings
 
     ctx_params = lc.llama_context_default_params()
     ctx_params.n_ctx     = int(_args.n_ctx)
@@ -646,7 +652,7 @@ def _reinit_llama() -> None:
         pass
     gc.collect()
 
-    need_embeddings = not _args.single_peer
+    need_embeddings = not _args.single_peer and not _args.no_embeddings
     kwargs = dict(
         n_ctx=int(_args.n_ctx),
         n_batch=int(_args.n_batch),
@@ -1051,6 +1057,10 @@ def main():
     parser.add_argument("--single-peer", action="store_true",
                         help="Single-peer mode: loads WITHOUT embedding=True so causal attention works correctly. "
                              "Use this when one node covers all layers (no hidden-state passing needed).")
+    parser.add_argument("--no-embeddings", action="store_true",
+                        help="Disable embedding extraction in llama.cpp context. Use on the last "
+                             "(sampling) peer of a multi-peer pipeline when embeddings=True "
+                             "breaks logit computation (e.g. phi-4).")
     parser.add_argument("--chat-template", action="store_true",
                         help="Wrap prompts in Qwen3.5 chat template (<|im_start|> format)")
     parser.add_argument("--no-thinking", action="store_true",
@@ -1085,6 +1095,15 @@ def main():
 
     _args = args
 
+    # Auto-cap n_ctx at the model's training context to prevent
+    # llama_new_context_with_model failures (phi-4 has n_ctx_train=16384,
+    # Qwen3.5 has 32768, etc.).
+    n_ctx_train = gguf_meta.get("n_ctx_train")
+    if n_ctx_train is not None and int(args.n_ctx) > n_ctx_train:
+        print(f"WARNING: n_ctx reduzido {args.n_ctx} → {n_ctx_train} "
+              f"(maior que o n_ctx_train do modelo)", flush=True)
+        args.n_ctx = n_ctx_train
+
     print(f"Loading model : {args.model}", flush=True)
     print(f"Layers        : {args.start_layer}–{args.end_layer}"
           + (f" of {args.original_block_count}" if args.original_block_count else ""), flush=True)
@@ -1097,8 +1116,9 @@ def main():
 
     n_threads = int(args.threads)
     # embedding=True disables causal attention in recent llama.cpp builds, breaking generation.
-    # Only enable it when multi-peer distributed mode needs hidden-state extraction.
-    need_embeddings = not args.single_peer
+    # Only enable it when multi-peer distributed mode needs hidden-state extraction AND the peer
+    # is not the last (sampling) peer where --no-embeddings was passed.
+    need_embeddings = not args.single_peer and not args.no_embeddings
     kwargs = dict(
         n_ctx=int(args.n_ctx),
         n_batch=int(args.n_batch),
@@ -1126,7 +1146,7 @@ def main():
     _n_vocab = int(_llama.n_vocab())
     actual_n_ctx = int(lc.llama_n_ctx(_llama.ctx))
 
-    print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'multi-peer (embedding extraction)'}", flush=True)
+    print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'no-embeddings (sampling)' if args.no_embeddings else 'multi-peer (embedding extraction)'}", flush=True)
     print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}", flush=True)
     print(f"Layers (final): {args.start_layer}–{args.end_layer}"
           + (f" of {args.original_block_count}" if args.original_block_count else ""), flush=True)

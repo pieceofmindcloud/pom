@@ -274,11 +274,43 @@ pub struct GgufLayout {
     pub other_bytes: u64,
     /// Sum of everything, i.e. the size of the full model's weights.
     pub total_bytes: u64,
+    /// `layer_kinds[n]` — sorted tensor suffixes of `blk.<n>.*`, so two layers
+    /// that are different *kinds* of layer compare unequal. Hybrid models
+    /// (attention interleaved with Gated DeltaNet / Mamba) are not a stack of
+    /// identical blocks, and that decides where a slice may start.
+    pub layer_kinds: Vec<Vec<String>>,
 }
 
 impl GgufLayout {
     pub fn layer_count(&self) -> u32 {
         self.layer_bytes.len() as u32
+    }
+
+    /// Length of the repeating layer-kind pattern; 1 when every layer is alike.
+    ///
+    /// llama.cpp decides a layer's kind from its *index*, and a slice renumbers
+    /// `blk.<start+i>` to `blk.<i>`, so a slice may only start on a multiple of
+    /// this. Cutting a 4-periodic hybrid at layer 3 shifts every layer onto the
+    /// wrong kind — sometimes a hard `missing tensor` error, sometimes silently
+    /// wrong answers.
+    pub fn layer_period(&self) -> u32 {
+        let n = self.layer_kinds.len();
+        if n == 0 {
+            return 1;
+        }
+        (1..=n)
+            .find(|&p| (0..n).all(|i| self.layer_kinds[i] == self.layer_kinds[i % p]))
+            .unwrap_or(n) as u32
+    }
+
+    /// Largest valid start layer at or below `start`.
+    pub fn snap_start(&self, start: u32) -> u32 {
+        let p = self.layer_period();
+        if p <= 1 {
+            start
+        } else {
+            start - (start % p)
+        }
     }
 
     /// Bytes a slice covering `start..=end` would occupy on disk.
@@ -335,6 +367,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 
     let mut layout = GgufLayout::default();
     let mut layers: HashMap<u32, u64> = HashMap::new();
+    let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
     let mut max_layer: i64 = -1;
 
     for _ in 0..n_tensors {
@@ -363,6 +396,10 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 
         if let Some(n) = block_index(&name) {
             *layers.entry(n).or_insert(0) += bytes;
+            // `blk.12.attn_q.weight` -> `attn_q.weight`
+            if let Some(suffix) = name.splitn(3, '.').nth(2) {
+                kinds.entry(n).or_default().push(suffix.to_string());
+            }
             max_layer = max_layer.max(n as i64);
         } else if name == "token_embd.weight" {
             layout.embedding_bytes += bytes;
@@ -376,6 +413,13 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     if max_layer >= 0 {
         layout.layer_bytes = (0..=max_layer as u32)
             .map(|n| layers.get(&n).copied().unwrap_or(0))
+            .collect();
+        layout.layer_kinds = (0..=max_layer as u32)
+            .map(|n| {
+                let mut v = kinds.remove(&n).unwrap_or_default();
+                v.sort(); // tensor order in the file is not meaningful here
+                v
+            })
             .collect();
     }
 
@@ -409,6 +453,7 @@ mod tests {
             head_bytes: 30,
             other_bytes: 0,
             total_bytes: 480,
+            layer_kinds: vec![],
         };
         // Middle slice: 2 layers + embedding.
         assert_eq!(layout.slice_bytes(0, 1, false), 250);

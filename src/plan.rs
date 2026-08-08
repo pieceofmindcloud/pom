@@ -153,8 +153,23 @@ pub fn plan_split(
         }
 
         let start_layer = pos;
-        let end_layer = pos + taken - 1;
+        let mut end_layer = pos + taken - 1;
         let is_first = shards.is_empty();
+
+        // The *next* slice starts at end_layer+1, and on a hybrid model a slice
+        // may only start on a multiple of the layer-kind period — otherwise
+        // renumbering `blk.<start+i>` to `blk.<i>` lands every layer on the
+        // wrong kind. Shrink this slice to the nearest valid boundary rather
+        // than handing split_model.py a cut it will refuse.
+        let period = layout.layer_period();
+        if period > 1 && end_layer + 1 < total_layers {
+            let next_start = end_layer + 1;
+            let snapped = next_start - (next_start % period);
+            if snapped > start_layer {
+                end_layer = snapped - 1;
+            }
+        }
+        let taken = end_layer - start_layer + 1;
         let is_last = is_last_peer || end_layer + 1 >= total_layers;
 
         if !budget.has_model {
@@ -695,7 +710,24 @@ mod tests {
             head_bytes: (100.0 * MB) as u64,
             other_bytes: 0,
             total_bytes: per * n as u64 + (200.0 * MB) as u64,
+            // Homogeneous stack: period 1, so cuts are unconstrained.
+            layer_kinds: vec![vec!["attn.weight".to_string()]; n as usize],
         }
+    }
+
+    /// A hybrid stack: every 4th layer is attention, the rest are recurrent.
+    fn hybrid_layout(n: u32, per_layer_mb: f64) -> GgufLayout {
+        let mut l = layout(n, per_layer_mb);
+        l.layer_kinds = (0..n as usize)
+            .map(|i| {
+                if (i + 1) % 4 == 0 {
+                    vec!["attn_q.weight".to_string()]
+                } else {
+                    vec!["ssm_conv1d.weight".to_string()]
+                }
+            })
+            .collect();
+        l
     }
 
     fn budget(id: &str, mb: f64) -> PeerBudget {
@@ -705,6 +737,41 @@ mod tests {
             budget_mb: mb,
             has_model: true,
         }
+    }
+
+    #[test]
+    fn hybrid_layout_reports_its_pattern_period() {
+        assert_eq!(layout(32, 200.0).layer_period(), 1);
+        assert_eq!(hybrid_layout(32, 200.0).layer_period(), 4);
+        // Snapping never moves a start that is already valid.
+        assert_eq!(hybrid_layout(32, 200.0).snap_start(8), 8);
+        assert_eq!(hybrid_layout(32, 200.0).snap_start(11), 8);
+        assert_eq!(layout(32, 200.0).snap_start(11), 11);
+    }
+
+    #[test]
+    fn hybrid_cuts_land_on_the_pattern_period() {
+        // Budgets that would naturally cut mid-pattern: split_model.py renumbers
+        // blk.<start+i> to blk.<i>, so a start that is not a multiple of 4 puts
+        // every layer on the wrong kind. The planner must shrink to a boundary.
+        let l = hybrid_layout(32, 200.0);
+        let plan = plan_split(
+            "/m/hybrid.gguf",
+            &l,
+            &[budget("a", 1300.0), budget("b", 8000.0)],
+            0.0,
+        )
+        .unwrap();
+        for shard in &plan.shards {
+            assert_eq!(
+                shard.start_layer % 4,
+                0,
+                "slice starting at {} would renumber onto the wrong layer kind",
+                shard.start_layer
+            );
+        }
+        // And the model is still fully covered.
+        assert_eq!(plan.shards.last().unwrap().end_layer, 31);
     }
 
     #[test]

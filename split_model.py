@@ -385,6 +385,66 @@ def _fake_output_head(gguf: GGUFFile, hidden_dim: int, vocab_size: int) -> FakeT
 
 # ── Main split function ────────────────────────────────────────────────────────
 
+def layer_signatures(gguf: "GGUFFile") -> list[frozenset]:
+    """Per-layer tensor-name shape, e.g. {'attn_norm.weight', 'ffn_up.weight', ...}.
+
+    Two layers with different signatures are different *kinds* of layer.
+    """
+    per_layer: dict[int, set] = {}
+    for t in gguf.tensors:
+        if not t.name.startswith("blk."):
+            continue
+        parts = t.name.split(".", 2)
+        if len(parts) < 3:
+            continue
+        try:
+            idx = int(parts[1])
+        except ValueError:
+            continue
+        per_layer.setdefault(idx, set()).add(parts[2])
+    return [frozenset(per_layer[i]) for i in sorted(per_layer)]
+
+
+def layer_pattern_period(sigs: list[frozenset]) -> int:
+    """Smallest p with sigs[i] == sigs[i % p] for all i. 1 == every layer alike."""
+    n = len(sigs)
+    for p in range(1, n + 1):
+        if all(sigs[i] == sigs[i % p] for i in range(n)):
+            return p
+    return n
+
+
+def _check_layer_phase(gguf: "GGUFFile", start_layer: int, arch: str) -> None:
+    """Refuse a cut that would silently change what each layer *is*.
+
+    Hybrid models — Qwen3.5-DeepSeek-V4-Flash interleaves attention with Gated
+    DeltaNet, and Mamba/Jamba-likes do the same — are not a stack of identical
+    blocks. llama.cpp decides each layer's kind from its *index*, not from which
+    tensors are present. Since a slice renumbers blk.<start+i> to blk.<i>, a
+    start_layer that is not a multiple of the repeat period shifts every layer
+    onto the wrong kind.
+
+    Sometimes that fails loudly, as `missing tensor 'blk.0.ssm_conv1d.weight'`.
+    The dangerous case is when the phase happens to line up on tensor names but
+    not on semantics: the slice loads and only the answers are wrong. So check
+    the phase up front rather than letting llama.cpp discover it later.
+    """
+    sigs = layer_signatures(gguf)
+    period = layer_pattern_period(sigs)
+    if period <= 1:
+        return  # homogeneous stack: any cut point is fine
+    if start_layer % period == 0:
+        return
+    valid = [n for n in range(0, len(sigs), period)]
+    preview = ", ".join(str(v) for v in valid[:12]) + (" ..." if len(valid) > 12 else "")
+    raise UnsupportedQuant(
+        f"{arch} repeats a {period}-layer pattern (layer kinds are not all the "
+        f"same), so a slice may only start on a multiple of {period} — "
+        f"start-layer {start_layer} would renumber every layer onto the wrong "
+        f"kind. Valid start layers: {preview}"
+    )
+
+
 def split_model(
     src_path: Path,
     start_layer: int,
@@ -420,6 +480,8 @@ def split_model(
 
     print(f"Architecture : {arch}, hidden_dim = {hidden_dim}")
     print(f"Layers       : {start_layer}–{end_layer}  ({'first' if is_first else ''}{'last' if is_last else ''}{'middle' if not is_first and not is_last else ''})")
+
+    _check_layer_phase(gguf, start_layer, arch)
 
     # ── Tensor selection ───────────────────────────────────────────────────────
     def _want(t: TensorInfo) -> bool:

@@ -107,6 +107,8 @@ export interface NodeInfo {
   peer_count: number;
   load: number;
   active_model: string;
+  /** True while the operator has taken this node off the network. */
+  detached?: boolean;
 }
 
 export interface PeerView {

@@ -142,23 +142,30 @@ async fn list_api_keys(
 #[derive(Debug, Deserialize)]
 struct GenerateKeyRequest {
     label: Option<String>,
+    /// Node this token is meant for. Empty means the token belongs to the
+    /// cluster as a whole rather than to one machine.
+    #[serde(default)]
+    node_id: Option<String>,
 }
 
+/// Mint a token.
+///
+/// Tokens accumulate rather than replace each other: the operator hands one out
+/// per node (and per harness), and the request log attributes each generation
+/// back to the one that paid for it. Minting used to deactivate every existing
+/// key, which made "a token per node" impossible — the second one silently
+/// revoked the first.
 async fn generate_api_key(
     _auth: ConnectionAuth,
     State(config): State<AuthState>,
     Json(req): Json<GenerateKeyRequest>,
 ) -> impl IntoResponse {
     let mut cfg = config.write().await;
-    let node_id = "principal".to_string();
-    for k in &mut cfg.api_keys {
-        k.active = false;
-    }
     let raw = format!("sk-{}", Uuid::new_v4());
     let key = ApiKey {
         key: raw,
         label: req.label.unwrap_or_else(|| "default".into()),
-        node_id,
+        node_id: req.node_id.unwrap_or_default(),
         active: true,
         created_at: chrono::Utc::now().to_rfc3339(),
     };

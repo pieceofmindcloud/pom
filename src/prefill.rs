@@ -79,8 +79,13 @@ pub async fn run(
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
             "is_last": n_peers == 1,
-            // Only meaningful for a single-peer pipeline; for longer ones the
-            // flag is recomputed below, once we know whether this is the tail.
+            // We cannot know whether this is the last chunk before the head
+            // peer — which owns the tokenizer — tells us how many tokens the
+            // prompt has. So we say false, and for a one-hop pipeline the head
+            // peer overrides it from its own token count; see the
+            // `hidden is None and not more` branch in inference_server.py.
+            // For longer pipelines the flag is recomputed below, once
+            // `more_chunks` has come back, and sent to the real tail.
             "is_final_chunk": false,
             "prompt": if chunk_index == 0 { Some(prompt) } else { None },
         });

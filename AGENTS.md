@@ -516,6 +516,27 @@ Números medidos no Qwen3.5-9B (32 camadas, 5,0 GB): alvo de 1,5 GB vira camadas
 0–7 e 1,4 GB reais; "o resto" vira 8–31 e 4,0 GB. A camada 0 sozinha pesa 653 MB,
 então um alvo de 100 MB é recusado com esse número na mensagem.
 
+### A tabela de tipos ggml existe em dois lugares e tem que bater
+
+`_GGML_TYPE_INFO` (`split_model.py`) e `ggml_type_info` (`src/gguf.rs`) dizem
+quantos bytes tem um bloco de cada tipo. **Não escreva esses números de
+memória** — leia do llama.cpp que está em `./venv`: `ggml.h` para os códigos e
+`ggml_type_size`/`ggml_blck_size` (via `ctypes` no `libggml-base`) para os
+tamanhos. Foi assim que se descobriu que o código 16 era `IQ2_XXS` e não BF16
+(que é 30), que o Q5_K estava com 64% do tamanho, e que no Rust todo o bloco IQ
+estava três casas fora do lugar.
+
+Errar aqui **não dá erro**: com o tipo na tabela e o tamanho errado, a fatia sai
+e só a resposta do modelo fica errada. Por isso um tipo desconhecido é recusado
+em vez de estimado, e por isso `split_model_type_table_matches` (`src/gguf.rs`)
+lê a tabela do Python e quebra o build se as duas divergirem.
+
+Detalhe que parece descuido e não é: `tensor_size()` usa a diferença entre
+offsets, mas `t.byte_size()` é avaliado do mesmo jeito, porque Python calcula o
+default do `.get` sempre. Essa avaliação é o **único** ponto que recusa um quant
+que não sabemos medir; deixar o lookup preguiçoso fatiaria tipo desconhecido em
+silêncio.
+
 As fatias saem em `<shard_dir>/<base>/`. O progresso vem do próprio script: ele imprime
 `RDMAP2P_PROGRESS <pct>` no stderr (lido por `plan::parse_progress`), e é a única
 coisa que ele ganhou além de `from __future__ import annotations` — sem esse

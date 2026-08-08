@@ -20,6 +20,7 @@ import argparse
 import base64
 import json
 import faulthandler
+import os
 import struct
 import threading
 import time
@@ -52,6 +53,103 @@ _args = None
 _n_embd: Optional[int] = None
 _n_vocab: Optional[int] = None
 _lock = threading.Lock()   # serializes individual GPU decode steps (one at a time)
+
+# ── Residual capture across the peer boundary ────────────────────────────────
+#
+# What a non-last peer must hand to the next one is the *residual stream*
+# entering the next block — the plain `h` of `h_{k+1} = h_k + attn(norm(h_k))`.
+#
+# `llama_get_embeddings_ith` cannot give us that: llama.cpp sets t_embd to
+# `result_norm`, i.e. h AFTER output_norm. split_model.py used to paper over
+# this by injecting an all-ones output_norm into non-last slices, on the
+# argument that the next peer's pre_attn_norm is scale-invariant. That is true
+# of the normalised branch and false of the block: `h_k` also enters the
+# residual sum un-normalised. An all-ones RMSNorm is not the identity, it is a
+# projection onto unit norm, so every hop threw away one scalar per token.
+#
+# Measured on Phi-4 layers 0-5, the true per-token RMS of `l_out-5` ranges over
+# [13.95, 0.21, 16.57, 0.22] for a single 6-token prompt — a ~79x spread that
+# the old path flattened to exactly 1.0 for every token. That is why no single
+# `scale` could undo it, and why a shallow cut produced immediate EOS.
+#
+# So we read the real thing: a ggml scheduler callback grabs `l_out-<il>` of the
+# slice's last block. We touch only ggml *accessor* functions — never the
+# ggml_tensor struct layout — so this does not break when ggml is upgraded, and
+# ggml_backend_tensor_get works for CPU, CUDA and Metal alike.
+_ggml = None
+_capture_want: Optional[bytes] = None    # tensor name this slice must capture
+_capture_buf: Optional[np.ndarray] = None
+_capture_cb = None                       # keep the CFUNCTYPE alive; C holds the pointer
+_capture_ok = False                      # False => fall back to the old post-norm path
+
+_CB_TYPE = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_bool, ctypes.c_void_p)
+
+
+def _load_ggml() -> bool:
+    """Bind the few ggml accessors we need. Returns False if unavailable."""
+    global _ggml
+    if _ggml is not None:
+        return True
+    import glob
+    import llama_cpp as _llama_cpp_pkg
+
+    libdir = os.path.join(os.path.dirname(_llama_cpp_pkg.__file__), "lib")
+    names = []
+    for pat in ("libggml-base.dylib", "libggml-base.so", "ggml-base.dll"):
+        names.extend(sorted(glob.glob(os.path.join(libdir, pat))))
+    # Fall back to whatever the process already has mapped.
+    names.append("libggml-base.so")
+    for cand in names:
+        try:
+            lib = ctypes.CDLL(cand)
+            lib.ggml_get_name.argtypes = [ctypes.c_void_p]
+            lib.ggml_get_name.restype = ctypes.c_char_p
+            lib.ggml_nbytes.argtypes = [ctypes.c_void_p]
+            lib.ggml_nbytes.restype = ctypes.c_size_t
+            lib.ggml_nelements.argtypes = [ctypes.c_void_p]
+            lib.ggml_nelements.restype = ctypes.c_int64
+            lib.ggml_backend_tensor_get.argtypes = [
+                ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_size_t]
+            lib.ggml_backend_tensor_get.restype = None
+            _ggml = lib
+            return True
+        except (OSError, AttributeError):
+            continue
+    return False
+
+
+def _capture_callback(t, ask, _user_data):
+    """ggml_backend_sched_eval_callback: pull out the last block's residual.
+
+    Must never raise — it runs inside the ggml scheduler across the FFI
+    boundary, where a Python exception would be swallowed at best.
+    """
+    try:
+        if _ggml is None or _capture_want is None:
+            return True
+        name = _ggml.ggml_get_name(t)
+        if ask:
+            # Ask phase: True means "call me again once this node is computed".
+            return name == _capture_want
+        if name != _capture_want:
+            return True
+        n = int(_ggml.ggml_nbytes(t))
+        buf = (ctypes.c_char * n)()
+        _ggml.ggml_backend_tensor_get(t, buf, 0, n)
+        global _capture_buf
+        _capture_buf = np.frombuffer(bytes(buf), dtype=np.float32).copy()
+    except Exception:
+        global _capture_ok
+        _capture_ok = False
+        traceback.print_exc()
+    return True
+
+
+def _capture_target_name() -> bytes:
+    """`l_out-<il>` of this slice's last block, which is what the next peer needs."""
+    assert _llama is not None
+    n_layer = int(lc.llama_model_n_layer(_llama._model.model))
+    return f"l_out-{n_layer - 1}".encode("ascii")
 
 # ── Minimal GGUF KV reader (no deps, reads metadata before model load) ────────
 
@@ -227,6 +325,22 @@ def _recreate_ctx_with_seq_max(llama_obj: Llama) -> None:
     if int(_args.threads) > 0:
         ctx_params.n_threads       = int(_args.threads)
         ctx_params.n_threads_batch = int(_args.threads)
+
+    # A non-last peer hands its residual stream to the next one, so it needs the
+    # capture callback installed on the context before anything is decoded.
+    global _capture_cb, _capture_ok, _capture_want
+    if need_embeddings:
+        if _load_ggml():
+            _capture_want = _capture_target_name()
+            _capture_cb = _CB_TYPE(_capture_callback)
+            ctx_params.cb_eval = ctypes.cast(
+                _capture_cb, lc.ggml_backend_sched_eval_callback)
+            ctx_params.cb_eval_user_data = None
+            _capture_ok = True
+        else:
+            _capture_ok = False
+            print("WARNING: libggml not loadable — falling back to the post-norm "
+                  "hidden state. Output will be wrong on shallow cuts.", flush=True)
 
     lc.llama_free(llama_obj._ctx.ctx)
     new_ctx = lc.llama_new_context_with_model(llama_obj._model.model, ctx_params)
@@ -440,9 +554,35 @@ def _make_embd_batch(
 
 
 def _extract_hidden_all_tokens(n_tokens: int) -> np.ndarray:
+    """The residual stream this peer must hand to the next one.
+
+    Call this right after a successful llama_decode, and only once per decode:
+    the captured buffer is consumed so a stale one can never be mistaken for a
+    fresh result.
+    """
     assert _llama is not None
     assert _n_embd is not None
 
+    global _capture_buf
+    if _capture_ok:
+        buf, _capture_buf = _capture_buf, None
+        if buf is None:
+            raise RuntimeError(
+                f"residual capture did not fire for '{_capture_want!r}' — refusing "
+                "to fall back to the post-norm state, which would silently corrupt "
+                "the pipeline"
+            )
+        expected = n_tokens * _n_embd
+        if buf.size != expected:
+            raise RuntimeError(
+                f"captured residual has {buf.size} floats, expected "
+                f"{expected} ({n_tokens} tokens x {_n_embd}); the batch's output "
+                "rows and the tensor disagree"
+            )
+        return buf.reshape(n_tokens, _n_embd)
+
+    # Fallback: post-output_norm state. Only correct when the slice's
+    # output_norm is all-ones AND the residual happens to be near unit RMS.
     hidden = np.empty((n_tokens, _n_embd), dtype=np.float32)
     ctx = _llama.ctx
     for i in range(n_tokens):
@@ -671,18 +811,88 @@ def _reinit_llama() -> None:
     print("Llama context reinitialized.", flush=True)
 
 
-def _apply_chat_template(prompt: str) -> str:
-    """Wrap raw prompt in Qwen3.5 chat template. With no_thinking, forces empty <think> block."""
-    assert _args is not None
-    system = "You are a helpful assistant."
+_SYSTEM_PROMPT = "You are a helpful assistant."
+
+
+def _qwen_chat_template(prompt: str, no_thinking: bool) -> str:
+    """The old hard-coded Qwen3.5 wrapper, kept as a last resort."""
     out = (
-        f"<|im_start|>system\n{system}<|im_end|>\n"
+        f"<|im_start|>system\n{_SYSTEM_PROMPT}<|im_end|>\n"
         f"<|im_start|>user\n{prompt}<|im_end|>\n"
         "<|im_start|>assistant\n"
     )
-    if _args.no_thinking:
+    if no_thinking:
         out += "<think>\n\n</think>\n"
     return out
+
+
+def _apply_chat_template(prompt: str) -> str:
+    """Wrap the prompt in the template the *model* declares, not Qwen's.
+
+    Every model used to get Qwen's wrapper. On Phi-4 that is wrong twice over:
+    Phi-4 separates role from content with `<|im_sep|>` rather than a newline,
+    and `<think>`/`</think>` are not in its vocabulary at all, so `--no-thinking`
+    injected four literal tokens of junk. It still answered, but wrapped every
+    reply in `<response>` tags because the prompt looked tag-structured.
+
+    GGUF carries the real template in `tokenizer.chat_template`, so use it and
+    let llama.cpp render it. Fall back to the Qwen text only for models that
+    ship no template.
+    """
+    assert _args is not None and _llama is not None
+    no_thinking = bool(_args.no_thinking)
+
+    tmpl = _gguf_chat_template()
+    if tmpl is None:
+        return _qwen_chat_template(prompt, no_thinking)
+
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
+    try:
+        from llama_cpp.llama_chat_format import Jinja2ChatFormatter
+
+        text = Jinja2ChatFormatter(
+            template=tmpl,
+            bos_token=_token_text(lc.llama_vocab_bos),
+            eos_token=_token_text(lc.llama_vocab_eos),
+            add_generation_prompt=True,
+        )(messages=messages).prompt
+    except Exception as e:
+        print(f"WARNING: chat template render failed ({e}); using the Qwen wrapper",
+              flush=True)
+        return _qwen_chat_template(prompt, no_thinking)
+
+    # Only meaningful where <think> is a real token — i.e. Qwen-style thinking
+    # models. Adding it to a vocabulary that lacks it is pure noise.
+    if no_thinking and "<think>" in tmpl:
+        text += "<think>\n\n</think>\n"
+    return text
+
+
+def _token_text(fn) -> str:
+    """Render a special token id (via its llama_vocab_* getter) back to text."""
+    assert _llama is not None
+    try:
+        vocab = lc.llama_model_get_vocab(_llama._model.model)
+        tid = int(fn(vocab))
+        if tid < 0:
+            return ""
+        return _llama.detokenize([tid], special=True).decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _gguf_chat_template() -> Optional[str]:
+    """`tokenizer.chat_template` from the loaded GGUF, or None."""
+    assert _llama is not None
+    try:
+        md = _llama.metadata or {}
+    except Exception:
+        return None
+    tmpl = md.get("tokenizer.chat_template")
+    return tmpl if tmpl else None
 
 
 def _infer_impl(req: InferRequest) -> InferResponse:
@@ -879,6 +1089,16 @@ async def prefill(request: Request):
 
             total_tokens = len(session.prompt_tokens)
             more = (hidden is None) and (session.n_past < total_tokens)
+
+            # In a one-hop pipeline this peer is both head and tail, so it is
+            # holding the tokenizer that decides where the prompt ends. The
+            # gateway cannot know that before asking, and so always sends
+            # is_final_chunk=false to the head (src/prefill.rs) — which used to
+            # mean a single-peer pipeline never sampled at all and every request
+            # died with "último peer não devolveu token ao fim do prompt".
+            # When we own the tokens, our own `more` is the authority.
+            if hidden is None and not more:
+                is_final_chunk = True
 
             if is_last:
                 if not is_final_chunk:
@@ -1145,7 +1365,9 @@ def main():
     _n_vocab = int(_llama.n_vocab())
     actual_n_ctx = int(lc.llama_n_ctx(_llama.ctx))
 
-    print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'no-embeddings (sampling)' if args.no_embeddings else 'multi-peer (embedding extraction)'}", flush=True)
+    print(f"Mode          : {'single-peer (causal gen)' if args.single_peer else 'no-embeddings (sampling)' if args.no_embeddings else 'multi-peer (residual capture)'}", flush=True)
+    if not args.single_peer and not args.no_embeddings:
+        print(f"Handoff       : {'residual ' + _capture_want.decode() if _capture_ok else 'POST-NORM FALLBACK (degraded)'}", flush=True)
     print(f"Model loaded  : hidden_dim={_n_embd} vocab_size={_n_vocab}", flush=True)
     print(f"Layers (final): {args.start_layer}–{args.end_layer}"
           + (f" of {args.original_block_count}" if args.original_block_count else ""), flush=True)

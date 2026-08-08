@@ -372,10 +372,25 @@ O que não é acabamento e sim requisito, porque uma fatia de 10 GB leva ~17 min
 no enlace real: arquivo `.part` com retomada por `Range`, MD5 conferido antes
 de o arquivo tomar o nome final (se não bater, o parcial é apagado), progresso
 com velocidade e tempo restante, checagem de espaço em disco antes de começar,
-e leitura/escrita em blocos de 1 MB. Caminho pedido por outra máquina é
-resolvido dentro de `models/` e recusado se escapar — há teste para isso.
+e leitura/escrita em blocos de 1 MB.
 
 Chegada dos arquivos: `models/recebidos/`.
+
+**O que pode sair da máquina depende de quem escolheu o arquivo.** Os dois
+sentidos tinham o mesmo guarda de caminho, e por isso um GGUF do LM Studio ou
+solto numa pasta qualquer não podia sair — mesmo estando na máquina.
+
+- **Puxar** é um peer pedindo um caminho que ninguém do outro lado escolheu:
+  continua preso a `models/`, via `safe_model_path`. Tem teste.
+- **Enviar** é o dono da máquina escolhendo na própria tela: aceita qualquer
+  caminho legível (`local_send_path`). O peer recebe uma **concessão** opaca
+  (`grant`, id → caminho, em `TransferState::grants`) e busca por
+  `?grant=<id>`; um caminho nosso nunca viaja. Assim "mandar qualquer coisa"
+  não vira "ler qualquer coisa": `?path=/etc/passwd` e um `grant` inventado são
+  recusados, e há prova disso nos dois.
+
+Na tela, painel "Enviar um arquivo desta máquina" (aba Nós) para caminho
+digitado, e a oferta no sino mostra de onde o arquivo vem antes do aceite.
 
 ### Identidade do nó
 

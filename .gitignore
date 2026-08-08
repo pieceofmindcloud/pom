@@ -7,3 +7,6 @@ __pycache__*
 .rdma-p2p.key
 rdma-p2p.json
 .rdma-p2p-node.key
+
+# lixo do Finder do macOS; entrava no repo por si so
+.DS_Store

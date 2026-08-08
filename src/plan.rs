@@ -438,9 +438,15 @@ fn sanitize(name: &str) -> String {
 /// and nothing can match across machines. The friendly name is right there in
 /// the catalog; this makes it usable as a base.
 pub fn base_name_from_label(label: &str) -> Option<String> {
-    let cleaned = sanitize(label.trim())
-        .trim_matches(['-', '.', '_'])
-        .to_string();
+    // A model found in a plain folder is named after its file, extension and
+    // all, and stacking another one produces `modelo.gguf_0_15.gguf`.
+    let label = label.trim();
+    let label = label
+        .strip_suffix(".gguf")
+        .or_else(|| label.strip_suffix(".GGUF"))
+        .unwrap_or(label);
+
+    let cleaned = sanitize(label).trim_matches(['-', '.', '_']).to_string();
     if cleaned.is_empty() {
         return None;
     }
@@ -560,6 +566,18 @@ mod tests {
         assert_eq!(base_name_from_label("modelo_0_15").as_deref(), Some("modelo"));
         assert_eq!(base_name_from_label("  ").as_deref(), None);
         assert_eq!(base_name_from_label("///").as_deref(), None);
+
+        // Numa pasta comum o modelo se chama pelo arquivo, extensão e tudo, e
+        // empilhar outra daria `modelo.gguf_0_15.gguf`.
+        assert_eq!(
+            base_name_from_label("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf").as_deref(),
+            Some("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S")
+        );
+        assert_eq!(
+            shard_filename(&base_name_from_label("qwen_0_15.gguf").unwrap(), 0, 7),
+            "qwen_0_7.gguf",
+            "fatiar uma fatia não empilha faixas no nome"
+        );
     }
 
     #[test]

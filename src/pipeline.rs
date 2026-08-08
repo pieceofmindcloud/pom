@@ -151,12 +151,18 @@ pub async fn plan_pipeline(
         }
 
         let chosen = best.unwrap().0;
-        let port = chosen.inference_port.unwrap();
-        let ip = chosen.addr.split(':').next().unwrap_or("127.0.0.1");
+
+        // `PeerInfo::inference_url` is the one place that knows how to turn an
+        // address into a URL. Splitting `chosen.addr` on ':' here instead cut
+        // "[2804:d55:...]:42777" down to "[2804", and the hop died inside
+        // reqwest with nothing but "builder error" to show for it.
+        let Some(inference_url) = chosen.inference_url() else {
+            return None;
+        };
 
         steps.push(PipelineStep {
             node_id: chosen.node_id.clone(),
-            inference_url: format!("http://{}:{}", ip, port),
+            inference_url,
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
         });
@@ -165,4 +171,44 @@ pub async fn plan_pipeline(
     }
 
     Some(PipelinePlan { steps, total_layers })
+}
+
+#[cfg(test)]
+mod ipv6_tests {
+    use super::*;
+    use crate::network::PeerInfo;
+
+    fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
+        PeerInfo {
+            node_id: "n".repeat(64), pubkey: "p".into(), addr: addr.into(),
+            model: "qwen35".into(), start_layer: start, end_layer: end, total_layers: 32,
+            memory_mb: 0.0, last_seen: chrono::Utc::now(),
+            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
+            role: String::new(), hostname: String::new(), connection_verified: false,
+            disk_total_mb: 0, disk_free_mb: 0, api_keys_active: 0,
+        }
+    }
+
+    /// O passo do plano tem que virar URL de verdade: com IPv6 o endereco era
+    /// cortado no primeiro ':' e o hop morria com "builder error" no reqwest.
+    #[tokio::test]
+    async fn an_ipv6_peer_becomes_a_valid_step_url() {
+        let peers = vec![peer("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777", 0, 31)];
+        let tracker = LoadTracker::new();
+        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker).await.expect("plano");
+        assert_eq!(
+            plan.steps[0].inference_url,
+            "http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181"
+        );
+        let url = format!("{}/v1/prefill", plan.steps[0].inference_url);
+        assert!(url.parse::<reqwest::Url>().is_ok(), "URL invalida: {url}");
+    }
+
+    #[tokio::test]
+    async fn an_ipv4_peer_is_unchanged() {
+        let peers = vec![peer("192.168.100.138:42777", 0, 31)];
+        let tracker = LoadTracker::new();
+        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker).await.expect("plano");
+        assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
+    }
 }

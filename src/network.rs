@@ -4,6 +4,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::RwLock;
@@ -172,6 +173,14 @@ pub struct Network {
     /// GUA. See `advertised_addr`.
     pub advertise_addr: Option<String>,
     socket: Arc<UdpSocket>,
+    /// Set while the operator has taken this node off the network.
+    ///
+    /// A detached node keeps serving its own UI and API — that is how the
+    /// operator brings it back — but it stops announcing, stops accepting
+    /// anything peers say to it, and forgets everyone it knew. Without the
+    /// second half it would be re-discovered on the next gossip tick and the
+    /// button would look like it did nothing.
+    detached: AtomicBool,
 }
 
 /// Payload budget for one UDP datagram, in bytes.
@@ -307,6 +316,7 @@ impl Network {
             hostname: String::new(),
             advertise_addr: None,
             socket: Arc::new(socket),
+            detached: AtomicBool::new(false),
         })
     }
 
@@ -417,8 +427,31 @@ impl Network {
         }
     }
 
+    /// True while the operator has taken this node off the network.
+    pub fn is_detached(&self) -> bool {
+        self.detached.load(Ordering::Relaxed)
+    }
+
+    /// Leave the network: stop speaking, stop listening, forget the peers.
+    pub async fn detach(&self) {
+        self.detached.store(true, Ordering::Relaxed);
+        let forgotten = { self.peers.write().await.drain().count() };
+        info!("🔌 Nó fora da rede — {forgotten} peers esquecidos");
+    }
+
+    /// Rejoin: start announcing again and go looking for the bootstrap nodes.
+    pub async fn rejoin(&self, assignment: Option<&LayerAssignment>) -> Result<()> {
+        self.detached.store(false, Ordering::Relaxed);
+        info!("🔌 Nó voltando para a rede");
+        self.bootstrap_discovery().await?;
+        self.announce(assignment).await
+    }
+
     /// Announce this node's existence and layer assignment to the network
     pub async fn announce(&self, assignment: Option<&LayerAssignment>) -> Result<()> {
+        if self.is_detached() {
+            return Ok(());
+        }
         let msg = self.self_announce(assignment);
 
         // Announce to bootstrap nodes
@@ -526,6 +559,11 @@ impl Network {
         src: SocketAddr,
         assignment: &Arc<RwLock<Option<LayerAssignment>>>,
     ) {
+        // A node the operator took off the network does not learn peers and does
+        // not answer them. The socket stays bound so rejoining costs nothing.
+        if self.is_detached() {
+            return;
+        }
         match msg {
             P2PMessage::Announce {
                 node_id,

@@ -54,7 +54,12 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
+        .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
+        .route("/api/ui/unload", post(unload_model))
+        .route("/api/ui/leave", post(leave_network))
+        .route("/api/ui/rejoin", post(rejoin_network))
+        .route("/api/ui/requests", get(crate::reqlog::list_requests))
     // `/api/setup/key` e `/api/setup/save` NAO entram aqui de proposito.
     //
     // Elas nao tem autenticacao - nao podem ter, e o momento em que a chave do
@@ -109,6 +114,8 @@ pub struct NodeInfo {
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
+    /// True while the operator has taken this node off the network.
+    pub detached: bool,
 }
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
@@ -131,6 +138,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         peer_count: state.network.alive_peers().await.len(),
         load: state.loads.load(&state.network.node_id).await,
         active_model: state.active_model().await,
+        detached: state.network.is_detached(),
         system,
     })
 }
@@ -738,6 +746,12 @@ pub struct Job {
     pub id: String,
     /// "running" | "done" | "failed"
     pub state: &'static str,
+    /// "slice" — cutting a model here — or "apply" — binding this node to a
+    /// range. The notification list says which, because one is the operator's
+    /// own doing and the other can arrive from a peer's launch.
+    pub kind: &'static str,
+    /// One line naming the work, for a list that has no room for the detail.
+    pub title: String,
     pub step: String,
     pub message: String,
     /// 0..100 while `split_model.py` reports it; `None` before the first line
@@ -755,10 +769,12 @@ fn jobs() -> &'static RwLock<HashMap<String, Job>> {
     JOBS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn new_job(id: &str, step: &str) -> Job {
+fn new_job(id: &str, kind: &'static str, title: impl Into<String>, step: &str) -> Job {
     Job {
         id: id.to_string(),
         state: "running",
+        kind,
+        title: title.into(),
         step: step.to_string(),
         message: String::new(),
         progress: None,
@@ -766,6 +782,35 @@ fn new_job(id: &str, step: &str) -> Job {
         started_at: chrono::Utc::now().to_rfc3339(),
         finished_at: None,
     }
+}
+
+/// How long a finished job stays listed before it is dropped.
+///
+/// Long enough that an operator who was on another screen still sees "pronto"
+/// when they come back; short enough that yesterday's runs are not news.
+const JOB_RETENTION: Duration = Duration::from_secs(600);
+
+/// Every job this node knows about, newest first.
+///
+/// This is what makes the notification menu survive a reload: the work lives
+/// here, on the node running it, and the browser only ever asks what is going
+/// on. Finished jobs are pruned as the list is built, which is the only moment
+/// anybody looks at them.
+async fn list_jobs() -> Response {
+    let cutoff = chrono::Utc::now() - chrono::Duration::from_std(JOB_RETENTION).unwrap();
+    let mut map = jobs().write().await;
+    map.retain(|_, job| {
+        job.state == "running"
+            || job
+                .finished_at
+                .as_deref()
+                .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+                .is_none_or(|t| t.with_timezone(&chrono::Utc) > cutoff)
+    });
+
+    let mut list: Vec<Job> = map.values().cloned().collect();
+    list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    Json(json!({ "jobs": list })).into_response()
 }
 
 async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
@@ -832,7 +877,14 @@ async fn apply(
     }
 
     let id = uuid::Uuid::new_v4().simple().to_string();
-    jobs().write().await.insert(id.clone(), new_job(&id, "preparando"));
+    let title = format!(
+        "Carregando {} · camadas {}–{}",
+        req.base_name, req.start_layer, req.end_layer
+    );
+    jobs()
+        .write()
+        .await
+        .insert(id.clone(), new_job(&id, "apply", title, "preparando"));
 
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -1085,7 +1137,15 @@ async fn slice_locally(
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
     let out_dir = plan::shard_output_dir(&state.shard_dir().await, &base_name);
     let id = uuid::Uuid::new_v4().simple().to_string();
-    jobs().write().await.insert(id.clone(), new_job(&id, "preparando"));
+    let title = format!(
+        "Fatiando {base_name} em {} {}",
+        ranges.len(),
+        if ranges.len() == 1 { "fatia" } else { "fatias" }
+    );
+    jobs()
+        .write()
+        .await
+        .insert(id.clone(), new_job(&id, "slice", title, "preparando"));
 
     let job_id = id.clone();
     tokio::spawn(async move {
@@ -1210,6 +1270,64 @@ async fn stop_inference(
     info!("stop-inference recebido — parando servidor neste nó");
     state.runtime.stop().await;
     Json(json!({ "stopped": true })).into_response()
+}
+
+// ── Taking a node out of service ─────────────────────────────────────────────
+//
+// Two different things the operator asks for, deliberately separate routes even
+// though one is currently a subset of the other: unloading frees this machine's
+// memory and leaves it in the cluster, ready to be given a range again; leaving
+// takes the machine off the network entirely.
+
+/// Free this machine's memory: kill the inference server, forget the range, and
+/// tell the peers this node serves nothing.
+///
+/// Mechanically the same work `stop-inference` does during a launch, but that
+/// route exists for the launch orchestration and says nothing back about what
+/// was released — which is the whole answer the operator is waiting for here.
+async fn unload_model(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let unloaded = state.runtime.config().await;
+    if unloaded.is_none() {
+        return Json(json!({ "unloaded": false, "reason": "nenhum modelo carregado" }))
+            .into_response();
+    }
+    state.runtime.stop().await;
+    info!("modelo descarregado pela interface");
+    Json(json!({
+        "unloaded": true,
+        "model": unloaded.as_ref().map(|c| c.model_label.clone()),
+        "start_layer": unloaded.as_ref().map(|c| c.start_layer),
+        "end_layer": unloaded.as_ref().map(|c| c.end_layer),
+    }))
+    .into_response()
+}
+
+/// Take this node off the network: unload, stop announcing, forget the peers.
+///
+/// The HTTP gateway keeps serving, because the way back in is this same screen.
+async fn leave_network(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    state.runtime.stop().await;
+    state.network.detach().await;
+    info!("nó saiu da rede pela interface");
+    Json(json!({ "detached": true })).into_response()
+}
+
+/// Announce again and go looking for the bootstrap nodes.
+async fn rejoin_network(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let assignment = state.local_assignment.read().await.clone();
+    match state.network.rejoin(assignment.as_ref()).await {
+        Ok(()) => Json(json!({ "detached": false })).into_response(),
+        Err(e) => bad_request(format!("não deu para voltar à rede: {e}")),
+    }
 }
 
 /// One entry per peer taking part in the launch.

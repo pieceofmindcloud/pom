@@ -12,7 +12,7 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{generate_stream, GatewayState, GenEvent};
+use crate::gateway::{GatewayState, GenEvent};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -276,7 +276,7 @@ async fn get_model(
 // ── Chat completions ─────────────────────────────────────────────────────────
 
 async fn chat_completions(
-    _auth: ApiKeyAuth,
+    auth: ApiKeyAuth,
     State(state): State<GatewayState>,
     Json(req): Json<ChatRequest>,
 ) -> Response {
@@ -306,15 +306,36 @@ async fn chat_completions(
     let created = chrono::Utc::now().timestamp();
 
     if req.stream {
-        stream_response(state, model, prompt, max_tokens, id, created, Mode::Chat)
+        stream_response(
+            state,
+            auth.into_caller(),
+            "/v1/chat/completions",
+            model,
+            prompt,
+            max_tokens,
+            id,
+            created,
+            Mode::Chat,
+        )
     } else {
-        blocking_response(state, model, prompt, max_tokens, id, created, prompt_tokens, Mode::Chat)
-            .await
+        blocking_response(
+            state,
+            auth.into_caller(),
+            "/v1/chat/completions",
+            model,
+            prompt,
+            max_tokens,
+            id,
+            created,
+            prompt_tokens,
+            Mode::Chat,
+        )
+        .await
     }
 }
 
 async fn completions(
-    _auth: ApiKeyAuth,
+    auth: ApiKeyAuth,
     State(state): State<GatewayState>,
     Json(req): Json<CompletionRequest>,
 ) -> Response {
@@ -328,10 +349,22 @@ async fn completions(
     let created = chrono::Utc::now().timestamp();
 
     if req.stream {
-        stream_response(state, model, req.prompt, max_tokens, id, created, Mode::Completion)
+        stream_response(
+            state,
+            auth.into_caller(),
+            "/v1/completions",
+            model,
+            req.prompt,
+            max_tokens,
+            id,
+            created,
+            Mode::Completion,
+        )
     } else {
         blocking_response(
             state,
+            auth.into_caller(),
+            "/v1/completions",
             model,
             req.prompt,
             max_tokens,
@@ -375,6 +408,8 @@ impl Mode {
 #[allow(clippy::too_many_arguments)]
 async fn blocking_response(
     state: GatewayState,
+    caller: crate::reqlog::Caller,
+    route: &'static str,
     model: String,
     prompt: String,
     max_tokens: u32,
@@ -383,7 +418,9 @@ async fn blocking_response(
     prompt_tokens: u32,
     mode: Mode,
 ) -> Response {
-    match crate::gateway::generate_blocking(state, model.clone(), prompt, max_tokens).await {
+    match crate::gateway::generate_blocking(state, route, caller, model.clone(), prompt, max_tokens)
+        .await
+    {
         Ok((text, summary)) => {
             let finish = finish_reason(&summary, max_tokens);
             let choice = match mode {
@@ -438,6 +475,8 @@ fn finish_reason(summary: &crate::gateway::GenSummary, max_tokens: u32) -> &'sta
 #[allow(clippy::too_many_arguments)]
 fn stream_response(
     state: GatewayState,
+    caller: crate::reqlog::Caller,
+    route: &'static str,
     model: String,
     prompt: String,
     max_tokens: u32,
@@ -446,7 +485,15 @@ fn stream_response(
     mode: Mode,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream(state, model.clone(), prompt, max_tokens, tx));
+    crate::gateway::spawn_logged_generation(
+        state,
+        route,
+        caller,
+        model.clone(),
+        prompt,
+        max_tokens,
+        tx,
+    );
 
     let stream = sse_stream(rx, id, created, model, mode, max_tokens);
     (

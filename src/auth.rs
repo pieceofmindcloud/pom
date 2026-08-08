@@ -59,7 +59,17 @@ where
     }
 }
 
-pub struct ApiKeyAuth;
+/// A caller that presented a credential good for the `/v1` routes.
+///
+/// It carries *who* it was, because the request log has no other chance to find
+/// out: by the time a generation finishes, the header is long gone.
+pub struct ApiKeyAuth(pub crate::reqlog::Caller);
+
+impl ApiKeyAuth {
+    pub fn into_caller(self) -> crate::reqlog::Caller {
+        self.0
+    }
+}
 
 #[async_trait]
 impl<S> FromRequestParts<S> for ApiKeyAuth
@@ -87,10 +97,16 @@ where
         // opens the OpenAI routes, so the built-in test panel and any operator
         // can call them without first minting an API key.
         let is_operator = !cfg.connection_key.is_empty() && token == cfg.connection_key;
-        if is_operator || cfg.api_keys.iter().any(|k| k.active && k.key == token) {
-            Ok(ApiKeyAuth)
-        } else {
-            Err(AuthRejection::InvalidKey)
+        if is_operator {
+            return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));
+        }
+        match cfg.api_keys.iter().find(|k| k.active && k.key == token) {
+            Some(key) => Ok(ApiKeyAuth(crate::reqlog::Caller {
+                token_label: key.label.clone(),
+                token_hint: crate::reqlog::Caller::hint_of(&key.key),
+                token_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
+            })),
+            None => Err(AuthRejection::InvalidKey),
         }
     }
 }

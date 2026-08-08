@@ -16,6 +16,7 @@ mod ollama;
 mod openai;
 mod pipeline;
 mod prefill;
+mod reqlog;
 mod pkarr_node;
 mod plan;
 mod runtime;

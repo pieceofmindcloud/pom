@@ -1,0 +1,423 @@
+/**
+ * The test chat.
+ *
+ * It talks to the cluster the same way any other client does — `POST
+ * /v1/chat/completions` with `stream: true`, signed with the connection key —
+ * so what shows up here is exactly what a harness would get. No separate path,
+ * no shortcut through the local node.
+ */
+import clsx from "clsx";
+import { AnimatePresence, motion } from "framer-motion";
+import {
+  ArrowUp,
+  MessagesSquare,
+  Plus,
+  Square,
+  Trash2,
+  TriangleAlert,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Markdown } from "../components/Markdown";
+import { Badge, Button, Empty, Select } from "../components/ui";
+import { ApiError, streamSse } from "../lib/api";
+import {
+  emptySession,
+  newId,
+  titleFrom,
+  useChatSessions,
+  type ChatMessage,
+  type ChatSession,
+} from "../lib/chatStore";
+import { since } from "../lib/format";
+import { useCluster, useServableModels } from "../lib/queries";
+import { useToast } from "../lib/toast";
+
+function Bubble({ message }: { message: ChatMessage }) {
+  const isUser = message.role === "user";
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 6 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className={clsx("flex min-w-0 gap-3", isUser && "justify-end")}
+    >
+      {isUser ? (
+        <div className="max-w-[min(42rem,85%)] rounded-2xl rounded-br-md border border-line bg-raised px-4 py-2.5">
+          <p className="whitespace-pre-wrap text-[0.9rem] leading-relaxed text-fg">
+            {message.content}
+          </p>
+        </div>
+      ) : (
+        <div className="min-w-0 flex-1">
+          {message.content && <Markdown>{message.content}</Markdown>}
+          {message.error && (
+            <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
+              <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
+              <p className="break-path text-[0.82rem] leading-relaxed text-muted">
+                {message.error}
+              </p>
+            </div>
+          )}
+          {message.source && (
+            <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
+          )}
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
+function SessionList({
+  sessions,
+  activeId,
+  onPick,
+  onNew,
+  onDelete,
+}: {
+  sessions: ChatSession[];
+  activeId: string;
+  onPick: (s: ChatSession) => void;
+  onNew: () => void;
+  onDelete: (id: string) => void;
+}) {
+  return (
+    <aside className="hidden w-[248px] shrink-0 flex-col border-r border-line bg-surface md:flex">
+      <div className="p-3">
+        <Button
+          variant="primary"
+          className="w-full"
+          icon={<Plus className="h-4 w-4" />}
+          onClick={onNew}
+        >
+          Conversa nova
+        </Button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
+        {sessions.length === 0 ? (
+          <p className="px-3 py-6 text-center text-xs leading-relaxed text-faint">
+            As conversas ficam neste navegador.
+          </p>
+        ) : (
+          sessions.map((s) => (
+            <div
+              key={s.id}
+              className={clsx(
+                "group relative mb-0.5 rounded-lg transition-colors duration-150",
+                s.id === activeId ? "bg-iris/12 ring-1 ring-inset ring-iris/25" : "hover:bg-line/40",
+              )}
+            >
+              <button
+                onClick={() => onPick(s)}
+                className="block w-full px-3 py-2 pr-8 text-left"
+              >
+                <span className="block truncate text-[0.82rem] text-fg">{s.title}</span>
+                <span className="block text-[0.68rem] text-faint">
+                  {since(s.updatedAt)} · {s.messages.length}{" "}
+                  {s.messages.length === 1 ? "mensagem" : "mensagens"}
+                </span>
+              </button>
+              <button
+                onClick={() => onDelete(s.id)}
+                aria-label={`Apagar ${s.title}`}
+                className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-1.5 text-faint transition-colors hover:text-rose group-hover:block"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+    </aside>
+  );
+}
+
+export function Chat() {
+  const { sessions, upsert, remove } = useChatSessions();
+  const models = useServableModels();
+  const cluster = useCluster();
+  const toast = useToast();
+
+  const available = useMemo(
+    () => (models.data ?? []).map((m) => m.id).filter(Boolean),
+    [models.data],
+  );
+
+  const [session, setSession] = useState<ChatSession>(() => sessions[0] ?? emptySession(null));
+  const [draft, setDraft] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const abort = useRef<AbortController | null>(null);
+  const bottom = useRef<HTMLDivElement>(null);
+  const composer = useRef<HTMLTextAreaElement>(null);
+
+  // A session with no model yet takes whatever the network is serving.
+  const model = session.model ?? available[0] ?? cluster.data?.active_model ?? "";
+
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [session.messages, streaming]);
+
+  useEffect(() => () => abort.current?.abort(), []);
+
+  const grow = useCallback(() => {
+    const el = composer.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+  }, []);
+
+  async function send() {
+    const text = draft.trim();
+    if (!text || streaming) return;
+
+    const user: ChatMessage = {
+      id: newId(),
+      role: "user",
+      content: text,
+      at: new Date().toISOString(),
+    };
+    const reply: ChatMessage = {
+      id: newId(),
+      role: "assistant",
+      content: "",
+      at: new Date().toISOString(),
+    };
+
+    // Snapshot the turns before this one: the request carries the conversation,
+    // and the placeholder reply must not travel with it.
+    const history = [...session.messages, user];
+    let live: ChatSession = {
+      ...session,
+      model,
+      title: session.messages.length === 0 ? titleFrom(text) : session.title,
+      messages: [...history, reply],
+    };
+    setSession(live);
+    setDraft("");
+    setStreaming(true);
+    window.requestAnimationFrame(grow);
+
+    const controller = new AbortController();
+    abort.current = controller;
+
+    const patchReply = (patch: Partial<ChatMessage>) => {
+      live = {
+        ...live,
+        messages: live.messages.map((m) => (m.id === reply.id ? { ...m, ...patch } : m)),
+      };
+      setSession(live);
+    };
+
+    try {
+      let text = "";
+      for await (const data of streamSse(
+        "/v1/chat/completions",
+        {
+          model,
+          stream: true,
+          messages: history.map((m) => ({ role: m.role, content: m.content })),
+        },
+        controller.signal,
+      )) {
+        if (data === "[DONE]") break;
+        try {
+          const chunk = JSON.parse(data);
+          const delta = chunk?.choices?.[0]?.delta?.content;
+          if (typeof delta === "string" && delta) {
+            text += delta;
+            patchReply({ content: text });
+          }
+        } catch {
+          /* a keep-alive or a partial frame — nothing to render */
+        }
+      }
+      if (!text) {
+        patchReply({
+          error:
+            "A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.",
+        });
+      }
+    } catch (e) {
+      if (controller.signal.aborted) {
+        patchReply({ error: "Interrompido." });
+      } else {
+        const detail = e instanceof Error ? e.message : String(e);
+        patchReply({ error: detail });
+        if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
+          toast.error(
+            "A chave de conexão foi recusada",
+            "Recarregue a página para pegar a chave atual do nó.",
+          );
+        }
+      }
+    } finally {
+      setStreaming(false);
+      abort.current = null;
+      upsert(live);
+    }
+  }
+
+  function startNew() {
+    abort.current?.abort();
+    setSession(emptySession(model || null));
+    setDraft("");
+  }
+
+  function deleteSession(id: string) {
+    remove(id);
+    if (id === session.id) setSession(emptySession(model || null));
+  }
+
+  const noModel = available.length === 0 && !cluster.data?.active_model;
+
+  return (
+    <div className="flex h-full min-h-0">
+      <SessionList
+        sessions={sessions}
+        activeId={session.id}
+        onPick={(s) => {
+          abort.current?.abort();
+          setSession(s);
+        }}
+        onNew={startNew}
+        onDelete={deleteSession}
+      />
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
+          <div className="flex min-w-0 items-center gap-2">
+            <h1 className="truncate font-display text-[0.95rem] font-semibold text-fg">
+              {session.messages.length ? session.title : "Chat de teste"}
+            </h1>
+            {cluster.data && !cluster.data.complete && (
+              <Badge tone="amber">cobertura incompleta</Badge>
+            )}
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* One model is a fact, not a choice — the picker only earns its
+                space when the network is serving more than one. */}
+            {available.length > 1 ? (
+              <Select
+                value={model}
+                onChange={(e) => setSession({ ...session, model: e.target.value })}
+                className="w-44"
+                aria-label="Modelo"
+              >
+                {available.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </Select>
+            ) : (
+              model && <Badge mono>{model}</Badge>
+            )}
+            <Button
+              size="sm"
+              variant="ghost"
+              icon={<Plus className="h-3.5 w-3.5" />}
+              onClick={startNew}
+              className="md:hidden"
+            >
+              Nova
+            </Button>
+          </div>
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+          <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6">
+            {session.messages.length === 0 ? (
+              <div className="pt-[12vh]">
+                <Empty
+                  icon={<MessagesSquare className="h-5 w-5" />}
+                  title={
+                    noModel
+                      ? "A rede não está servindo nenhum modelo"
+                      : "Pergunte alguma coisa à rede"
+                  }
+                >
+                  {noModel
+                    ? "Atribua um modelo aos nós em Configurações antes de testar."
+                    : "As mensagens percorrem as máquinas na ordem do Painel e voltam token a token."}
+                </Empty>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <AnimatePresence initial={false}>
+                  {session.messages.map((m) => (
+                    <Bubble key={m.id} message={m} />
+                  ))}
+                </AnimatePresence>
+                {streaming &&
+                  !session.messages[session.messages.length - 1]?.content && (
+                    <div className="flex items-center gap-2 text-sm text-muted">
+                      <span className="flex gap-1">
+                        {[0, 1, 2].map((i) => (
+                          <span
+                            key={i}
+                            className="h-1.5 w-1.5 rounded-full bg-iris"
+                            style={{
+                              animation: "pulse-soft 1.2s ease-in-out infinite",
+                              animationDelay: `${i * 0.16}s`,
+                            }}
+                          />
+                        ))}
+                      </span>
+                      atravessando o pipeline
+                    </div>
+                  )}
+              </div>
+            )}
+            <div ref={bottom} className="h-4" />
+          </div>
+        </div>
+
+        <div className="shrink-0 border-t border-line bg-surface/80 px-4 py-3 backdrop-blur-md sm:px-6">
+          <div className="mx-auto w-full max-w-3xl">
+            <div className="flex items-end gap-2 rounded-xl border border-line bg-ink p-2 transition-colors duration-150 focus-within:border-iris/60 focus-within:ring-2 focus-within:ring-iris/20">
+              <textarea
+                ref={composer}
+                rows={1}
+                value={draft}
+                placeholder="Escreva para a rede…"
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  grow();
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send();
+                  }
+                }}
+                className="max-h-[220px] min-h-[2.25rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-[0.9rem] leading-relaxed text-fg placeholder:text-faint focus:outline-none"
+              />
+              {streaming ? (
+                <Button
+                  variant="outline"
+                  icon={<Square className="h-3.5 w-3.5" />}
+                  onClick={() => abort.current?.abort()}
+                >
+                  Parar
+                </Button>
+              ) : (
+                <Button
+                  variant="primary"
+                  disabled={!draft.trim()}
+                  onClick={() => void send()}
+                  aria-label="Enviar"
+                  className="w-9 px-0"
+                >
+                  <ArrowUp className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            <p className="mt-2 text-center text-[0.7rem] text-faint">
+              Enter envia, Shift+Enter quebra a linha. Mesmo caminho de um harness:{" "}
+              <span className="font-mono">POST /v1/chat/completions</span>.
+            </p>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

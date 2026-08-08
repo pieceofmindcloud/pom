@@ -565,15 +565,121 @@ fn rate(tokens: u32, secs: f64) -> f64 {
     }
 }
 
+/// Start a generation and write down what it did, without the generator having
+/// to know who asked for it.
+///
+/// Identity lives with the HTTP route (it is in the `Authorization` header) and
+/// the pipeline lives with the generator, so neither one alone can fill in the
+/// Logs screen. Forwarding the events through here joins the two without
+/// putting a caller argument through every early return in `generate_stream` —
+/// which is the hot inference path and not worth destabilising for a log line.
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_logged_generation(
+    state: GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    model: String,
+    prompt: String,
+    max_tokens: u32,
+    tx: mpsc::Sender<GenEvent>,
+) {
+    let entry_node_id = state.network.node_id.clone();
+    let prompt_tokens = estimate_tokens(&prompt);
+    let logged_model = model.clone();
+
+    let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
+    tokio::spawn(generate_stream(state, model, prompt, max_tokens, inner_tx));
+
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let mut generated: u32 = 0;
+        // `None` means the client hung up before the generation ended, which is
+        // its own outcome and worth seeing in the log.
+        let mut outcome: Option<Result<GenSummary, String>> = None;
+
+        while let Some(event) = inner_rx.recv().await {
+            let terminal = match &event {
+                GenEvent::Token(_) => {
+                    generated += 1;
+                    None
+                }
+                GenEvent::Done(summary) => Some(Ok(summary.clone())),
+                GenEvent::Failed(e) => Some(Err(e.clone())),
+            };
+            if tx.send(event).await.is_err() {
+                break;
+            }
+            if terminal.is_some() {
+                outcome = terminal;
+                break;
+            }
+        }
+
+        let (source, hops, completion_tokens, duration_ms, status, error) = match outcome {
+            Some(Ok(s)) => (
+                s.source.clone(),
+                s.source
+                    .strip_prefix("pipeline:")
+                    .unwrap_or_default()
+                    .split('→')
+                    .filter(|h| !h.is_empty())
+                    .map(|h| h.trim_end_matches(" (partial)").to_string())
+                    .collect(),
+                Some(s.tokens_generated),
+                Some(s.duration_ms),
+                if s.partial { "partial" } else { "ok" },
+                None,
+            ),
+            Some(Err(e)) => (
+                "none".to_string(),
+                Vec::new(),
+                None,
+                Some(started.elapsed().as_millis() as u64),
+                "error",
+                Some(e),
+            ),
+            None => (
+                "none".to_string(),
+                Vec::new(),
+                Some(generated),
+                Some(started.elapsed().as_millis() as u64),
+                "abandoned",
+                Some("o cliente desconectou antes do fim".to_string()),
+            ),
+        };
+
+        crate::reqlog::record(crate::reqlog::Entry {
+            id: Uuid::new_v4().simple().to_string(),
+            at: chrono::Utc::now().to_rfc3339(),
+            route: route.to_string(),
+            model: logged_model,
+            token_label: caller.token_label,
+            token_hint: caller.token_hint,
+            token_node_id: caller.token_node_id,
+            entry_node_id,
+            hops,
+            source,
+            prompt_tokens: Some(prompt_tokens),
+            completion_tokens,
+            duration_ms,
+            status,
+            error,
+        })
+        .await;
+    });
+}
+
 /// Run a generation to completion and return the whole text.
 pub async fn generate_blocking(
     state: GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
     max_tokens: u32,
 ) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    tokio::spawn(generate_stream(state, model, prompt, max_tokens, tx));
+    spawn_logged_generation(state, route, caller, model, prompt, max_tokens, tx);
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -639,7 +745,18 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
 
     info!("📨 /api/generate model={} prompt_len={}", model, req.prompt.len());
 
-    match generate_blocking(state, model, req.prompt, DEFAULT_MAX_TOKENS).await {
+    // `/api/generate` has never been behind auth, so there is no credential to
+    // attribute the request to — the log says exactly that instead of guessing.
+    match generate_blocking(
+        state,
+        "/api/generate",
+        crate::reqlog::Caller::anonymous(),
+        model,
+        req.prompt,
+        DEFAULT_MAX_TOKENS,
+    )
+    .await
+    {
         Ok((text, summary)) => (
             StatusCode::OK,
             Json(GenerateResponse {

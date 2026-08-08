@@ -1,0 +1,194 @@
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource/ibm-plex-sans/400.css";
+@import "@fontsource/ibm-plex-sans/500.css";
+@import "@fontsource/ibm-plex-sans/600.css";
+@import "@fontsource-variable/jetbrains-mono";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Two themes, one token table.
+ *
+ * Light is defined on the bare root so a page with no explicit choice still has
+ * every colour; dark redefines only what changes, under both the system
+ * preference and the explicit `data-theme` the toggle writes.
+ */
+:root {
+  --ink: 247 248 251;
+  --surface: 255 255 255;
+  --raised: 250 251 254;
+  --line: 226 230 240;
+  --line-strong: 205 211 226;
+  --fg: 18 20 30;
+  --muted: 95 103 126;
+  --faint: 141 149 170;
+
+  --iris: 91 71 235;
+  --aqua: 12 156 137;
+  --amber: 186 116 12;
+  --rose: 208 56 74;
+  --sky: 25 122 210;
+  --lime: 88 140 24;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --ink: 9 10 16;
+  --surface: 18 20 28;
+  --raised: 25 28 39;
+  --line: 38 42 56;
+  --line-strong: 55 61 80;
+  --fg: 232 234 242;
+  --muted: 138 144 166;
+  --faint: 98 105 128;
+
+  --iris: 138 124 255;
+  --aqua: 67 224 200;
+  --amber: 255 180 84;
+  --rose: 255 116 128;
+  --sky: 88 184 255;
+  --lime: 168 224 95;
+
+  color-scheme: dark;
+}
+
+* {
+  border-color: rgb(var(--line));
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-ink text-fg font-sans antialiased;
+  /* Nothing in this app scrolls sideways. Panels that hold wide content
+     scroll inside themselves; the page never does. */
+  overflow-x: hidden;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: rgb(var(--iris) / 0.28);
+}
+
+/* Scrollbars, quiet but present. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--line-strong)) transparent;
+}
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: rgb(var(--line-strong));
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:focus-visible {
+  outline: 2px solid rgb(var(--iris));
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@layer components {
+  .panel {
+    @apply rounded-xl border border-line bg-surface shadow-panel;
+  }
+  .eyebrow {
+    @apply font-mono text-2xs uppercase tracking-[0.14em] text-faint;
+  }
+  .hairline {
+    @apply border-t border-line;
+  }
+}
+
+/* Work whose size is not known yet: a bar that sweeps rather than a zero that
+   looks stuck. */
+@keyframes indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(300%);
+  }
+}
+
+@keyframes ping {
+  75%,
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+/* Long identifiers (node ids, absolute paths) must wrap or truncate, never
+   widen their container. */
+.break-path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* highlight.js — themed from our own tokens so code blocks belong to the page
+   instead of importing someone else's palette. */
+.hljs {
+  color: rgb(var(--fg));
+  background: transparent;
+}
+.hljs-comment,
+.hljs-quote {
+  color: rgb(var(--faint));
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-section,
+.hljs-doctag,
+.hljs-type,
+.hljs-name,
+.hljs-strong {
+  color: rgb(var(--iris));
+}
+.hljs-string,
+.hljs-title,
+.hljs-attr,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-addition {
+  color: rgb(var(--aqua));
+}
+.hljs-number,
+.hljs-meta,
+.hljs-built_in,
+.hljs-builtin-name,
+.hljs-variable,
+.hljs-template-variable,
+.hljs-attribute {
+  color: rgb(var(--amber));
+}
+.hljs-deletion,
+.hljs-regexp {
+  color: rgb(var(--rose));
+}

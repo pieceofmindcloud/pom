@@ -1,0 +1,348 @@
+/**
+ * Shapes the node actually serves.
+ *
+ * Authoritative sources, in the Rust crate: `src/webui.rs` (node, cluster,
+ * catalog, jobs), `src/sysmon.rs` (system load), `src/runtime.rs` (runtime
+ * status and node config), `src/transfer.rs` (transfers), `src/admin.rs`
+ * (nodes and keys). Anything typed loosely here is loose in the API too.
+ */
+
+export interface MemStat {
+  total_mb: number;
+  used_mb: number;
+  available_mb: number;
+  used_pct: number;
+}
+
+export interface GpuStat {
+  index: number;
+  name: string;
+  vram_total_mb: number | null;
+  vram_used_mb: number | null;
+  vram_used_pct: number | null;
+  utilization_pct: number | null;
+  temperature_c: number | null;
+}
+
+export interface GpuProcess {
+  pid: number;
+  name: string;
+  used_mb: number;
+}
+
+export type GpuKind = "nvidia" | "unified" | "none";
+
+export interface DiskStat {
+  total_mb: number;
+  free_mb: number;
+  mount_point: string;
+}
+
+export interface SystemLoad {
+  hostname: string;
+  os: string;
+  arch: string;
+  cpu_count: number;
+  load_avg: [number, number, number];
+  ram: MemStat;
+  gpu_kind: GpuKind;
+  gpu_note: string | null;
+  gpus: GpuStat[];
+  gpu_processes: GpuProcess[];
+  wired_mb: number | null;
+  disk: DiskStat;
+  sampled_at: string;
+}
+
+export type ServerState = "stopped" | "starting" | "running" | "failed" | string;
+
+export interface RuntimeStatus {
+  state: ServerState;
+  detail: string;
+  pid: number | null;
+  restarts: number;
+  log_path: string | null;
+  reported_total_layers: number | null;
+  changed_at: string;
+}
+
+export interface NodeConfig {
+  model_path: string;
+  model_label: string;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  peer_count: number;
+  peer_index: number;
+  primary: boolean;
+  inference_port: number;
+  n_gpu_layers: number;
+  n_ctx: number;
+  n_batch: number;
+  max_sessions: number;
+  prefill_chunk_tokens: number;
+  max_new_tokens: number;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  repeat_penalty: number;
+  repeat_last_n: number;
+  no_thinking: boolean;
+  single_peer: boolean;
+  no_embeddings: boolean;
+}
+
+export interface NodeInfo {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  role: string;
+  connection_key: string;
+  p2p_port: number;
+  gateway_port: number;
+  inference_port: number | null;
+  config: NodeConfig | null;
+  status: RuntimeStatus;
+  system: SystemLoad;
+  peer_count: number;
+  load: number;
+  active_model: string;
+}
+
+export interface PeerView {
+  node_id: string;
+  short_id: string;
+  addr: string;
+  model: string;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  inference_url: string | null;
+  gateway_url: string | null;
+  load: number;
+  is_self: boolean;
+  node: NodeInfo | null;
+  unreachable: string | null;
+}
+
+export interface ClusterView {
+  self_id: string;
+  active_model: string;
+  total_layers: number;
+  covered_layers: number;
+  coverage: boolean[];
+  complete: boolean;
+  peers: PeerView[];
+  node: NodeInfo | null;
+}
+
+export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
+
+export interface DiscoveredModel {
+  id: string;
+  name: string;
+  source: ModelSource;
+  source_label: string;
+  path: string;
+  size_bytes: number;
+  architecture: string | null;
+  total_layers: number | null;
+  quant: string | null;
+  shard_range: [number, number] | null;
+  shard_group: string | null;
+}
+
+export interface ShardSet {
+  group: string;
+  total_layers: number | null;
+  total_layers_inferred: boolean;
+  shards: DiscoveredModel[];
+  complete: boolean;
+}
+
+export interface ScannedRoot {
+  source: ModelSource;
+  path: string;
+  exists: boolean;
+  found: number;
+}
+
+export interface CatalogResponse {
+  hostname: string;
+  node_id: string;
+  models: DiscoveredModel[];
+  shard_sets: ShardSet[];
+  scanned: ScannedRoot[];
+}
+
+export interface PeerCatalog {
+  node_id: string;
+  hostname: string | null;
+  is_self: boolean;
+  models: DiscoveredModel[];
+  shard_sets: ShardSet[];
+  scanned?: ScannedRoot[];
+  error?: string;
+}
+
+export interface PathEntry {
+  path: string;
+  exists: boolean;
+  kind: "ollama" | "lmstudio" | "folder";
+}
+
+export interface PathsResponse {
+  model_dirs: PathEntry[];
+  shard_dir: PathEntry;
+  using_defaults: boolean;
+  detected: PathEntry[];
+  default_shard_dir: string;
+}
+
+/** A slicing or apply run. `src/webui.rs` — `Job`. */
+export interface Job {
+  id: string;
+  state: "running" | "done" | "failed";
+  step: string;
+  message: string;
+  progress: number | null;
+  outputs: string[];
+  started_at: string;
+  finished_at: string | null;
+  /** "slice" | "apply" — added by `GET /api/ui/jobs`. */
+  kind?: string;
+  /** Human label for the notification list. */
+  title?: string;
+}
+
+export interface TransferJob {
+  id: string;
+  name: string;
+  from_host: string;
+  state: string;
+  bytes_done: number;
+  bytes_total: number;
+  bytes_per_sec: number;
+  eta_secs: number | null;
+  detail: string;
+}
+
+export interface TransferOffer {
+  id: string;
+  from_node_id: string;
+  from_host: string;
+  from_gateway: string;
+  remote_path: string;
+  grant: string | null;
+  name: string;
+  size_bytes: number;
+  md5: string;
+  start_layer: number | null;
+  end_layer: number | null;
+}
+
+export interface AdminNode {
+  node_id: string;
+  short_id: string;
+  hostname: string;
+  addr: string;
+  role?: string;
+  model?: string;
+  start_layer?: number;
+  end_layer?: number;
+  total_layers?: number;
+  is_self: boolean;
+  connected: boolean;
+  blocked: boolean;
+  verified: boolean;
+}
+
+export interface ApiKey {
+  key: string;
+  label: string;
+  node_id: string;
+  active: boolean;
+  created_at: string;
+}
+
+/** One inference request, as the node recorded it. `src/reqlog.rs`. */
+export interface RequestLogEntry {
+  id: string;
+  at: string;
+  route: string;
+  model: string;
+  /** Label of the API token that paid for it, or "chave de conexão". */
+  token_label: string;
+  /** Last 6 characters of the token, all that is ever shown. */
+  token_hint: string;
+  /** Node the token is assigned to, when it is assigned to one. */
+  token_node_id: string | null;
+  /** Node that received the request. */
+  entry_node_id: string;
+  /** Ordered node ids the generation actually went through. */
+  hops: string[];
+  source: string;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  duration_ms: number | null;
+  status: "ok" | "error" | string;
+  error: string | null;
+}
+
+/** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */
+export interface SizedRange {
+  index: number;
+  start_layer: number;
+  end_layer: number;
+  layers: number;
+  bytes: number;
+  target_mb: number | null;
+  is_rest: boolean;
+  is_last: boolean;
+  too_small: boolean;
+  empty: boolean;
+}
+
+/** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
+export interface SizePlan {
+  total_layers: number;
+  model_bytes: number;
+  ranges: SizedRange[];
+  covered_layers: number;
+  complete: boolean;
+  missing_range: [number, number] | null;
+  missing_bytes: number;
+  blocked: boolean;
+  warnings: string[];
+}
+
+/** One peer in a memory-budget plan. `src/plan.rs` — `PlannedShard`. */
+export interface PlannedShard {
+  node_id: string;
+  label: string;
+  budget_mb: number;
+  usable_mb: number;
+  start_layer: number;
+  end_layer: number;
+  layers: number;
+  weight_mb: number;
+  is_first: boolean;
+  is_last: boolean;
+  has_model: boolean;
+  shard_filename: string;
+}
+
+/** `src/plan.rs` — `SplitPlan`, what `POST /api/ui/plan` answers. */
+export interface SplitPlan {
+  model_path: string;
+  base_name: string;
+  total_layers: number;
+  model_weight_mb: number;
+  reserve_pct: number;
+  shards: PlannedShard[];
+  covered_layers: number;
+  complete: boolean;
+  missing_range: [number, number] | null;
+  missing_mb: number;
+  warnings: string[];
+}

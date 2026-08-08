@@ -964,6 +964,7 @@ $("#btn-launch").addEventListener("click", async () => {
       repeat_penalty: Number($("#p-rep").value),
       repeat_last_n: Number($("#p-repn").value),
       no_thinking: $("#p-nothink").checked,
+      no_embeddings: $("#p-no-embeddings").checked,
     },
   };
 

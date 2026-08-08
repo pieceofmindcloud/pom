@@ -704,12 +704,15 @@ impl ApplyRequest {
     fn single_peer(&self) -> bool {
         self.peer_count <= 1 && self.is_first() && self.is_last()
     }
-    /// The last peer in a multi-peer pipeline should skip embedding extraction
-    /// to avoid logit corruption on models like phi-4. Only ever true for the
-    /// last peer (highest peer_index); the first peer always needs embeddings
-    /// to extract hidden states for the pipeline.
+    /// When checked in the UI, force no_embeddings on every peer (dangerous —
+    /// the first peer won't be able to extract hidden states). When unchecked,
+    /// auto-detect: only the last peer in a multi-peer pipeline skips embeddings.
     fn no_embeddings(&self) -> bool {
-        !self.single_peer() && self.is_last_peer()
+        if self.params.no_embeddings {
+            true
+        } else {
+            !self.single_peer() && self.is_last_peer()
+        }
     }
 }
 

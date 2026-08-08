@@ -19,12 +19,39 @@ const DEFAULT_RELAY_NODES: &[&str] = &[
     "/ip4/104.131.131.82/tcp/4001/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
 ];
 
+/// Split `host:port`, including the bracketed IPv6 form.
+///
+/// A bare IPv6 address is nothing but colons, so `rsplit_once(':')` picks a
+/// piece of the address as the port. The brackets are what disambiguate it, and
+/// they are also what the operator types.
+fn split_host_port(addr: &str) -> Option<(&str, &str)> {
+    if let Some(rest) = addr.strip_prefix('[') {
+        let (host, after) = rest.split_once(']')?;
+        Some((host, after.strip_prefix(':')?))
+    } else {
+        addr.rsplit_once(':')
+    }
+}
+
 /// libp2p TCP port is always UDP port + 10 000.
+///
+/// Returned `None` for every IPv6 bootstrap before: the address was pasted into
+/// an `/ip4/` multiaddr, which never parses, so the dial was dropped without a
+/// word in the log.
 fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
-    let (host, port_str) = addr.rsplit_once(':')?;
+    use std::net::IpAddr;
+
+    let (host, port_str) = split_host_port(addr)?;
     let udp_port: u16 = port_str.parse().ok()?;
     let tcp_port = udp_port.checked_add(10000)?;
-    format!("/ip4/{}/tcp/{}", host, tcp_port).parse().ok()
+
+    let ma = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(v4)) => format!("/ip4/{v4}/tcp/{tcp_port}"),
+        Ok(IpAddr::V6(v6)) => format!("/ip6/{v6}/tcp/{tcp_port}"),
+        // A hostname: libp2p resolves it, the swarm is built `.with_dns()`.
+        Err(_) => format!("/dns/{host}/tcp/{tcp_port}"),
+    };
+    ma.parse().ok()
 }
 
 #[derive(NetworkBehaviour)]
@@ -398,5 +425,34 @@ async fn handle_event(
         }
 
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An IPv6 bootstrap used to be dropped in silence: the address went into an
+    /// `/ip4/` multiaddr, the parse failed, and `None` skipped the dial.
+    #[test]
+    fn a_bootstrap_address_becomes_a_dialable_multiaddr() {
+        let ma = |s: &str| udp_to_libp2p_multiaddr(s).map(|m| m.to_string());
+
+        assert_eq!(ma("192.168.100.138:42777").as_deref(),
+                   Some("/ip4/192.168.100.138/tcp/52777"));
+        assert_eq!(
+            ma("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777").as_deref(),
+            Some("/ip6/2804:d55:5579:1000:89f3:3f94:7c07:e183/tcp/52777")
+        );
+        assert_eq!(ma("[::1]:42901").as_deref(), Some("/ip6/::1/tcp/52901"));
+        assert_eq!(ma("ksia.local:42777").as_deref(), Some("/dns/ksia.local/tcp/52777"));
+        assert_eq!(ma("sem-porta"), None);
+    }
+
+    #[test]
+    fn host_and_port_split_on_the_brackets_not_the_colons() {
+        assert_eq!(split_host_port("[2804:d55::1]:42777"), Some(("2804:d55::1", "42777")));
+        assert_eq!(split_host_port("10.0.0.1:42777"), Some(("10.0.0.1", "42777")));
+        assert_eq!(split_host_port("[2804:d55::1]"), None);
     }
 }

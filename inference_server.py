@@ -1259,7 +1259,13 @@ def main():
     parser.add_argument("--end-layer",   type=int, default=None,
                         help="Last layer this node owns (auto-detected from GGUF if omitted)")
     parser.add_argument("--port",        type=int, default=8181)
-    parser.add_argument("--host",        default="0.0.0.0")
+    # "::" is a dual-stack wildcard: with the usual IPV6_V6ONLY=0 it also accepts
+    # IPv4 (as ::ffff:a.b.c.d), so the local gateway keeps reaching us at
+    # 127.0.0.1 while a peer on the public internet reaches us over IPv6.
+    # "0.0.0.0" was IPv4-only, which silently broke every cross-machine hop once
+    # the peer was known by an IPv6 address: the gateway dialled
+    # http://[2804:...]:8181 and got connection refused.
+    parser.add_argument("--host",        default="::")
     parser.add_argument("--n-gpu-layers", type=int, default=0,
                         help="Number of layers to offload to GPU (llama-cpp-python)")
     parser.add_argument("--n-ctx", type=int, default=4096,

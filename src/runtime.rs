@@ -336,6 +336,10 @@ impl NodeRuntime {
                     .arg("--start-layer").arg(cfg.start_layer.to_string())
                     .arg("--end-layer").arg(cfg.end_layer.to_string())
                     .arg("--port").arg(cfg.inference_port.to_string())
+                    // Explicit, not inherited from the script's default: a peer
+                    // known by an IPv6 address is dialled at http://[addr]:port,
+                    // which an IPv4-only listener refuses.
+                    .arg("--host").arg("::")
                     .arg("--n-gpu-layers").arg(cfg.n_gpu_layers.to_string())
                     .arg("--n-ctx").arg(cfg.n_ctx.to_string())
                     .arg("--n-batch").arg(cfg.n_batch.to_string())
@@ -491,15 +495,28 @@ fn short_path(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+/// Can the inference server still take this port?
+///
+/// It binds the dual-stack wildcard `::`, so that is what has to be probed: a
+/// `0.0.0.0` probe succeeds while a `::` listener already owns the port on some
+/// stacks, and the supervisor would then start a child doomed to `address
+/// already in use`. Falls back to IPv4 on a host with IPv6 turned off.
+fn port_is_free(port: u16) -> bool {
+    use std::net::TcpListener;
+    match TcpListener::bind(("::", port)) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => false,
+        Err(_) => TcpListener::bind(("0.0.0.0", port)).is_ok(),
+    }
+}
+
 /// Kill any process holding `port` so the inference server can bind.
 ///
 /// Uses `lsof -ti :PORT` to find the PID, sends SIGKILL, then polls the port
 /// for up to 5 seconds until it is free.
 async fn free_port(port: u16) {
-    use std::net::TcpListener;
-
     // Fast path: if we can bind, the port is already free.
-    if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+    if port_is_free(port) {
         return;
     }
 
@@ -538,7 +555,7 @@ async fn free_port(port: u16) {
     // Poll for up to 5 seconds until the port is free.
     let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
     loop {
-        if TcpListener::bind(("0.0.0.0", port)).is_ok() {
+        if port_is_free(port) {
             info!("porta {port} liberada");
             return;
         }

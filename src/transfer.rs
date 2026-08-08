@@ -537,7 +537,17 @@ async fn send_to_peer(
     let body = json!({
         "from_node_id": state.network.node_id,
         "from_host": my_host,
-        "from_gateway": format!("http://{}:{}", local_ip_for(&peer_base), state.gateway_port),
+        // A pinned address beats one read off the routing table: with privacy
+        // extensions the outbound source is a temporary IPv6 that rotates, and a
+        // multi-gigabyte download outlives it.
+        "from_gateway": format!(
+            "http://{}:{}",
+            state
+                .network
+                .advertised_host()
+                .unwrap_or_else(|| local_ip_for(&peer_base)),
+            state.gateway_port
+        ),
         "grant": grant,
         "remote_path": path.to_string_lossy(),
         "name": name,
@@ -574,32 +584,57 @@ async fn send_to_peer(
     }
 }
 
-/// Our address as seen from the peer we are talking to.
+/// Our address as seen from the peer we are talking to, ready to drop into a URL.
 ///
 /// The peer will open a connection back to us, so the offer has to carry an
 /// address that works from *its* side — `127.0.0.1` would send it to itself.
+/// That is exactly what happened to every IPv6 peer: the host was pulled out
+/// with `split(':')`, which on `http://[2804:...]:8090` yields `"[2804"`, fails
+/// to parse as an address, and fell back to loopback. The receiver then
+/// downloaded from its own machine.
 fn local_ip_for(peer_base: &str) -> String {
-    let peer_host = peer_base
-        .trim_start_matches("http://")
-        .split(':')
-        .next()
-        .unwrap_or("127.0.0.1");
-    match peer_host.parse::<std::net::IpAddr>() {
+    match url_host(peer_base).parse::<std::net::IpAddr>() {
         Ok(ip) => local_ip_towards(ip),
         Err(_) => "127.0.0.1".to_string(),
     }
 }
 
+/// Host part of `http://host:port`, with IPv6 brackets stripped.
+fn url_host(base: &str) -> &str {
+    let rest = base
+        .trim_start_matches("http://")
+        .trim_start_matches("https://");
+    if let Some(inner) = rest.strip_prefix('[') {
+        return inner.split(']').next().unwrap_or("127.0.0.1");
+    }
+    rest.split(':').next().unwrap_or("127.0.0.1")
+}
+
 /// Ask the OS which local address it would use to reach `dest`.
+///
+/// Returned bracketed when it is IPv6, because the only caller interpolates it
+/// straight into a URL.
 fn local_ip_towards(dest: std::net::IpAddr) -> String {
-    // A connected UDP socket performs no traffic but fixes the route.
-    std::net::UdpSocket::bind("0.0.0.0:0")
+    // A connected UDP socket performs no traffic but fixes the route. It has to
+    // be bound in the destination's family: connecting a v4 socket to a v6
+    // address fails outright.
+    let bind: &str = if dest.is_ipv6() { "[::]:0" } else { "0.0.0.0:0" };
+    std::net::UdpSocket::bind(bind)
         .and_then(|s| {
             s.connect((dest, 9))?;
             s.local_addr()
         })
-        .map(|a| a.ip().to_string())
-        .unwrap_or_else(|_| "127.0.0.1".to_string())
+        .map(|a| match a.ip() {
+            std::net::IpAddr::V6(v6) => format!("[{v6}]"),
+            ip => ip.to_string(),
+        })
+        .unwrap_or_else(|_| {
+            if dest.is_ipv6() {
+                "[::1]".to_string()
+            } else {
+                "127.0.0.1".to_string()
+            }
+        })
 }
 
 // ── The download itself ──────────────────────────────────────────────────────
@@ -876,5 +911,34 @@ mod tests {
         assert!(local_send_path("/nao/existe/em/lugar/nenhum.gguf").is_err());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod ipv6_tests {
+    use super::*;
+
+    /// An offer carries the address the receiver will fetch from. For an IPv6
+    /// peer it used to carry `127.0.0.1`, pointing the receiver at itself.
+    #[test]
+    fn the_host_of_a_url_survives_ipv6_brackets() {
+        assert_eq!(url_host("http://192.168.100.138:8090"), "192.168.100.138");
+        assert_eq!(
+            url_host("http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8090"),
+            "2804:d55:5579:1000:89f3:3f94:7c07:e183"
+        );
+        assert_eq!(url_host("http://[::1]:8090"), "::1");
+    }
+
+    /// Whatever the routing table answers has to be usable in a URL, which for
+    /// IPv6 means brackets.
+    #[test]
+    fn an_ipv6_source_address_comes_back_bracketed() {
+        let out = local_ip_for("http://[::1]:8090");
+        assert!(out.starts_with('[') && out.ends_with(']'), "esperado bracketed, veio {out}");
+        assert!(
+            format!("http://{out}:8090").parse::<reqwest::Url>().is_ok(),
+            "o endereco tem que formar uma URL valida: {out}"
+        );
     }
 }

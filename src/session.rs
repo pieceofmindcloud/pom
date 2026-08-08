@@ -74,6 +74,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: blocked,
             model_dirs: None,

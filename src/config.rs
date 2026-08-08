@@ -44,6 +44,15 @@ pub struct Config {
     pub inference_port: Option<u16>,
     #[serde(default)]
     pub bootstrap_nodes: Vec<String>,
+    /// Address other nodes should keep for this one, e.g.
+    /// `"[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777"` or just the bare IPv6.
+    ///
+    /// Empty means "let each peer read it off the packet", which is right on a
+    /// LAN. On the public internet it is not: with privacy extensions the source
+    /// address is a temporary IPv6 that rotates, so peers end up holding an
+    /// address that has stopped answering. See `network::advertised_addr`.
+    #[serde(default)]
+    pub advertise_addr: Option<String>,
     #[serde(default)]
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
@@ -194,6 +203,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec![],
+            advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
@@ -214,6 +224,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: Some(8181),
             bootstrap_nodes: vec!["192.168.1.1:42777".into()],
+            advertise_addr: None,
             api_keys: vec![],
             blocked_nodes: vec![],
             model_dirs: None,
@@ -266,6 +277,7 @@ mod tests {
             p2p_port: 42777,
             inference_port: None,
             bootstrap_nodes: vec![],
+            advertise_addr: None,
             api_keys: vec![
                 ApiKey {
                     key: "sk-old".into(),

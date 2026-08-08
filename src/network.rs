@@ -162,7 +162,105 @@ pub struct Network {
     /// second HTTP round-trip.
     pub role: String,
     pub hostname: String,
+    /// Address peers should keep for this node, already `host:port`.
+    ///
+    /// `None` means "work it out from where my packets came from", which is
+    /// right on a LAN and wrong on the public internet: with privacy extensions
+    /// on (the default on macOS and on most Linux desktops) the source address
+    /// is a *temporary* IPv6 that rotates every few hours, so every peer ends up
+    /// holding an address that stops answering. Setting this pins the stable
+    /// GUA. See `advertised_addr`.
+    pub advertise_addr: Option<String>,
     socket: Arc<UdpSocket>,
+}
+
+/// Payload budget for one UDP datagram, in bytes.
+///
+/// The measured path from the captain's 5G tethering to his Linux box has an
+/// MTU of 1450. IPv6 routers never fragment, so an oversized datagram depends on
+/// the sender learning the path MTU from an ICMPv6 "Packet Too Big" - and mobile
+/// networks are exactly where that message tends to be filtered, which turns the
+/// reply into a silent black hole. 1200 is the conservative floor that IPv6
+/// itself guarantees (RFC 8200 requires links to carry 1280), minus headroom for
+/// the IPv6 + UDP headers.
+const MAX_DATAGRAM_PAYLOAD: usize = 1200;
+
+/// Split a peer list into datagrams that fit under [`MAX_DATAGRAM_PAYLOAD`].
+///
+/// A `PeerList` grows ~530 bytes per peer, so it crosses the 5G path MTU at the
+/// third peer - which is the captain's own target topology (his Linux box, his
+/// MacBook, his friend). Losing that reply is not fatal, because the 5 s gossip
+/// `Announce` eventually carries the same peers, but it makes a new node take
+/// far longer to see the cluster for no reason.
+fn peer_list_chunks(peers: Vec<PeerInfo>) -> Vec<Vec<PeerInfo>> {
+    let mut chunks: Vec<Vec<PeerInfo>> = Vec::new();
+    let mut current: Vec<PeerInfo> = Vec::new();
+
+    for peer in peers {
+        current.push(peer);
+        let size = serde_json::to_vec(&P2PMessage::PeerList {
+            peers: current.clone(),
+        })
+        .map(|v| v.len())
+        .unwrap_or(0);
+
+        if size > MAX_DATAGRAM_PAYLOAD && current.len() > 1 {
+            // The one that broke the budget starts the next datagram. A single
+            // peer that does not fit on its own is still sent: dropping it would
+            // hide a peer forever, and the datagram is only slightly oversized.
+            let overflow = current.pop().expect("just pushed");
+            chunks.push(std::mem::take(&mut current));
+            current.push(overflow);
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+    chunks
+}
+
+/// Normalise an operator-supplied address into the `host:port` form that
+/// travels in `Announce.addr` and is later parsed by `ip_host`.
+///
+/// The captain types the address by hand, so all of these have to work:
+/// a bare IPv6 (`2804:d55::1`), a bracketed one with or without a port, an
+/// IPv4, or a hostname. A bare IPv6 is the interesting case: it is *all* colons,
+/// so it cannot be split on `:` to find a port - it has to be bracketed first.
+pub fn advertised_addr(raw: &str, default_port: u16) -> Option<String> {
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return None;
+    }
+
+    // Already a full socket address, in either family.
+    if raw.parse::<SocketAddr>().is_ok() {
+        return Some(raw.to_string());
+    }
+    // "[2804:d55::1]" - bracketed, no port.
+    if let Some(inner) = raw.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
+        if inner.parse::<Ipv6Addr>().is_ok() {
+            return Some(format!("[{inner}]:{default_port}"));
+        }
+        return None;
+    }
+    // "2804:d55::1" - bare IPv6, needs brackets before a port can be appended.
+    if raw.parse::<Ipv6Addr>().is_ok() {
+        return Some(format!("[{raw}]:{default_port}"));
+    }
+    // "192.168.1.5"
+    if raw.parse::<Ipv4Addr>().is_ok() {
+        return Some(format!("{raw}:{default_port}"));
+    }
+    // A hostname, with or without a port. Anything with a colon left at this
+    // point already carries one.
+    if raw.contains(':') {
+        Some(raw.to_string())
+    } else {
+        Some(format!("{raw}:{default_port}"))
+    }
 }
 
 impl Network {
@@ -207,6 +305,7 @@ impl Network {
             gateway_port,
             role: String::new(),
             hostname: String::new(),
+            advertise_addr: None,
             socket: Arc::new(socket),
         })
     }
@@ -216,6 +315,35 @@ impl Network {
         self.role = role;
         self.hostname = hostname;
         self
+    }
+
+    /// Pin the address peers should reach this node at.
+    pub fn with_advertise_addr(mut self, raw: Option<String>) -> Self {
+        self.advertise_addr = raw
+            .as_deref()
+            .and_then(|r| advertised_addr(r, self.bind_addr.port()));
+        if let Some(ref a) = self.advertise_addr {
+            info!("Anunciando o endereço fixo {a} (em vez do endereço de origem)");
+        }
+        self
+    }
+
+    /// Host part of the advertised address, ready to interpolate into a URL
+    /// (bracketed when it is IPv6). `None` when no address was pinned.
+    pub fn advertised_host(&self) -> Option<String> {
+        self.advertise_addr
+            .as_deref()
+            .map(|a| ip_host(a).to_string())
+    }
+
+    /// What this node puts in `Announce.addr`.
+    ///
+    /// `0.0.0.0:<port>` is the "ask the receiver" sentinel: `handle_message`
+    /// replaces it with the source address of the packet.
+    pub fn announce_addr(&self) -> String {
+        self.advertise_addr
+            .clone()
+            .unwrap_or_else(|| format!("0.0.0.0:{}", self.bind_addr.port()))
     }
 
     /// Put a destination in the address family of our socket.
@@ -272,7 +400,7 @@ impl Network {
         P2PMessage::Announce {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
-            addr: format!("0.0.0.0:{}", self.bind_addr.port()),
+            addr: self.announce_addr(),
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
@@ -491,13 +619,16 @@ impl Network {
                     let _ = self.send_to(&announce, &src.to_string()).await;
                 }
 
-                // Also send the list of peers we know about
+                // Also send the list of peers we know about, split so that no
+                // single datagram exceeds the path MTU.
                 let peer_list: Vec<PeerInfo> = {
                     let peers = self.peers.read().await;
                     peers.values().filter(|p| p.is_alive()).cloned().collect()
                 };
-                let reply = P2PMessage::PeerList { peers: peer_list };
-                let _ = self.send_to(&reply, &src.to_string()).await;
+                for chunk in peer_list_chunks(peer_list) {
+                    let reply = P2PMessage::PeerList { peers: chunk };
+                    let _ = self.send_to(&reply, &src.to_string()).await;
+                }
             }
 
             P2PMessage::PeerList { peers } => {
@@ -604,6 +735,84 @@ mod tests {
             assert_eq!(out, "[::ffff:192.168.100.138]:42777".parse().unwrap());
         } else {
             assert_eq!(out, v4, "IPv4-only socket must keep the address as-is");
+        }
+    }
+
+    /// The captain types the address by hand and hands it to a friend, so every
+    /// shape he might reasonably type has to land on the same `host:port`.
+    #[test]
+    fn a_hand_typed_address_becomes_host_port() {
+        let stable = "2804:d55:5579:1000:89f3:3f94:7c07:e183";
+        assert_eq!(
+            advertised_addr(stable, 42777).as_deref(),
+            Some("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777")
+        );
+        assert_eq!(
+            advertised_addr(&format!("[{stable}]"), 42777).as_deref(),
+            Some("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777")
+        );
+        assert_eq!(
+            advertised_addr(&format!("[{stable}]:42999"), 42777).as_deref(),
+            Some("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42999")
+        );
+        assert_eq!(advertised_addr("192.168.100.138", 42777).as_deref(),
+                   Some("192.168.100.138:42777"));
+        assert_eq!(advertised_addr("192.168.100.138:1234", 42777).as_deref(),
+                   Some("192.168.100.138:1234"));
+        assert_eq!(advertised_addr("  ", 42777), None);
+    }
+
+    /// The address only helps if it survives the trip into a URL.
+    #[test]
+    fn an_advertised_ipv6_survives_into_the_peer_urls() {
+        let peer = PeerInfo {
+            node_id: "n".into(), pubkey: "p".into(),
+            addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
+            model: "qwen35".into(), start_layer: 4, end_layer: 31, total_layers: 32,
+            memory_mb: 0.0, last_seen: Utc::now(),
+            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
+            role: String::new(), hostname: String::new(), connection_verified: false,
+            disk_total_mb: 0, disk_free_mb: 0, api_keys_active: 0,
+        };
+        assert_eq!(
+            peer.inference_url().as_deref(),
+            Some("http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181")
+        );
+        assert_eq!(
+            peer.gateway_url().as_deref(),
+            Some("http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8090")
+        );
+    }
+
+    /// The 5G path to the captain's box has an MTU of 1450 and IPv6 does not
+    /// fragment in transit, so no reply may exceed the budget.
+    #[test]
+    fn peer_lists_are_split_to_fit_the_path_mtu() {
+        let peer = PeerInfo {
+            node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
+            pubkey: "a".repeat(64),
+            addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
+            model: "qwen35".into(), start_layer: 4, end_layer: 31, total_layers: 32,
+            memory_mb: 6780.0, last_seen: Utc::now(),
+            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
+            role: "Principal".into(), hostname: "ksia".into(), connection_verified: false,
+            disk_total_mb: 500000, disk_free_mb: 200000, api_keys_active: 0,
+        };
+
+        for count in [0usize, 1, 2, 3, 5, 12] {
+            let chunks = peer_list_chunks(vec![peer.clone(); count]);
+            let sent: usize = chunks.iter().map(|c| c.len()).sum();
+            assert_eq!(sent, count, "nenhum peer pode sumir no fatiamento");
+            for chunk in &chunks {
+                let bytes = serde_json::to_vec(&P2PMessage::PeerList { peers: chunk.clone() })
+                    .unwrap()
+                    .len();
+                assert!(
+                    bytes <= MAX_DATAGRAM_PAYLOAD || chunk.len() == 1,
+                    "datagrama de {bytes} bytes com {} peers passa do orcamento",
+                    chunk.len()
+                );
+            }
         }
     }
 

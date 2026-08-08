@@ -67,6 +67,13 @@ struct Args {
     #[arg(long, short = 'b', default_value = "")]
     bootstrap: String,
 
+    /// Address peers should keep for this node, e.g. `[2804:d55::1]:42777` or a
+    /// bare IPv6. Overrides `advertise_addr` in rdma-p2p.json. Without it each
+    /// peer reads the address off the packet, which on the public internet means
+    /// a temporary IPv6 that rotates.
+    #[arg(long, default_value = "")]
+    advertise_addr: String,
+
     /// Refresh UI every N seconds
     #[arg(long, default_value = "3")]
     refresh: u64,
@@ -421,6 +428,13 @@ async fn main() -> Result<()> {
         }
     }
 
+    // CLI wins over the config file, same as --bootstrap.
+    let advertise_addr: Option<String> = if !args.advertise_addr.trim().is_empty() {
+        Some(args.advertise_addr.clone())
+    } else {
+        app_config.advertise_addr.clone()
+    };
+
     if bootstrap_nodes.is_empty() {
         info!("No bootstrap nodes — will rely on local LAN broadcast (port {})", network::DISCOVERY_PORT);
         info!("Tip: use --bootstrap 127.0.0.1:<port> to connect multiple local instances");
@@ -472,7 +486,8 @@ inference_port,
         .with_identity(
             app_config.role.to_string(),
             sysmon::sample().await.hostname,
-        ),
+        )
+        .with_advertise_addr(advertise_addr.clone()),
     );
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
@@ -652,7 +667,7 @@ inference_port,
                     let msg = P2PMessage::Announce {
                         node_id: net_disc.node_id.clone(),
                         pubkey: net_disc.pubkey.clone(),
-                        addr: format!("0.0.0.0:{}", net_disc.bind_addr.port()),
+                        addr: net_disc.announce_addr(),
                         model: a.model.clone(),
                         start_layer: a.start_layer,
                         end_layer: a.end_layer,
@@ -814,6 +829,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         p2p_port: 42777,
         inference_port: None,
         bootstrap_nodes: vec![],
+        advertise_addr: None,
         api_keys: vec![],
         blocked_nodes: vec![],
         // Um nó recém-configurado sobe com as bibliotecas detectadas; a tela de
@@ -869,7 +885,8 @@ async fn start_gateway_only(
         .with_identity(
             app_config.role.to_string(),
             sysmon::sample().await.hostname,
-        ),
+        )
+        .with_advertise_addr(app_config.advertise_addr.clone()),
     );
 
     let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =

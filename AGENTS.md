@@ -253,6 +253,18 @@ planejador não fechou a cobertura 0..total_layers.
   (`split_model.py`) gravam `rdmap2p.original_block_count` e são a via confiável.
 - **A TUI limpa a tela a cada `--refresh` segundos.** Para ver logs, redirecione
   para arquivo (`./run-p1.sh > /tmp/p1.out 2>&1`) e leia de lá.
+- **`pkill -f "target/release/rdma-p2p"` por ssh mata o próprio shell do ssh** —
+  o padrão casa com a linha de comando do `bash -c` remoto, e o ssh volta com
+  exit 255 sem ter matado o peer. Use um padrão que não se auto-inclua, ou
+  `pgrep -fa` primeiro para conferir o que vai morrer.
+- **Se a porta de inferência ainda estiver ocupada quando o peer sobe**, o
+  supervisor tenta `MAX_RESTARTS` vezes, desiste em silêncio e a TUI continua
+  mostrando "Mem loaded: inference_server" como se estivesse tudo bem. O peer
+  aparece no cluster, com cobertura 100%, e só quebra na hora da inferência. A
+  prova está em `inference_server_<porta>.log`
+  (`[Errno 98] address already in use`), não na TUI. Confira as rotas de verdade:
+  `curl -s localhost:8181/openapi.json` tem que listar `/v1/prefill` **e**
+  `/v1/step`.
 
 ### Estado do cenário "peers em redes diferentes, pela internet"
 
@@ -433,7 +445,9 @@ Servida por **qualquer** peer, em `src/openai.rs`:
     POST /v1/completions
 
 É só camada de protocolo sobre `gateway::generate_stream`; a inferência não foi
-tocada. Chave de API não é verificada. `x_rdma_p2p.source` vai junto na resposta
+tocada. A **chave de conexão do cluster vale como chave de API**: sem
+`Authorization: Bearer <connection_key>` as rotas `/v1` respondem 401 (conferido
+nos dois peers). `x_rdma_p2p.source` vai junto na resposta
 não-streaming com a cadeia de hops, que é a prova de execução distribuída.
 
 Como `inference_server.py` já embrulha o que recebe no template do Qwen
@@ -441,10 +455,38 @@ Como `inference_server.py` já embrulha o que recebe no template do Qwen
 em vez de aplicar um segundo template. Uma única mensagem `user` passa intacta,
 igual ao que `/api/generate` receberia.
 
-### Limite de prompt — a pegadinha que mais custa tempo
+### Estado oculto em trânsito — formato e custo real
 
-`min(--n-batch, --n-ctx / 8 − --max-new-tokens)`. O `/8` é o `_MAX_SESSIONS` do
-`inference_server.py`, que fatia o contexto em 8 sessões.
+`src/wire.rs` é o **único** lugar que conhece o dtype e a codificação do tensor:
+`[4 bytes de tamanho][JSON][tensor cru]`, f16, corpo binário. Nada de base64 e
+nada de f32 na rede. `inference_server.py` fala o mesmo formato em
+`POST /v1/prefill` e `POST /v1/step`; o prompt vai em pedaços
+(`--prefill-chunk-tokens`, padrão 512), e `_rollback_seq_kv` rebobina o cache KV
+antes de refazer um pedaço reenviado, o que torna a retentativa idempotente.
+
+Medido com `tcpdump` no peer 2, uma requisição de 35 tokens de prompt + 34
+gerados, prompt curto:
+
+| direção | payload TCP |
+|---|---|
+| mac → ksia (estado oculto) | 565.336 bytes |
+| ksia → mac (tokens amostrados) | 6.715 bytes |
+
+565.336 ÷ 69 tokens = **8.192 bytes por token por hop**, que é exatamente
+`hidden_dim` 4096 × 2 bytes de f16. O overhead do enquadramento some no ruído.
+O formato antigo (f32 em base64) custava 4096 × 4 × 4/3 = 21.846 bytes por token
+por hop, ou seja **62,5% a menos de bytes** — a meta do captain, batida. Só a
+metade f16 foi medida; a razão 4/3 do base64 é aritmética do próprio
+enquadramento, não estimativa.
+
+Tempo até a primeira palavra pelo SSE: **290 ms**; 33 tokens em 2.237 ms.
+
+int8 foi recusado pelo captain: degradaria a resposta em silêncio.
+
+### Limite de prompt
+
+`min(--n-batch, --n-ctx / --max-sessions − --max-new-tokens)`. O `/8` fixo saiu;
+`--max-sessions` é configurável e vale 1 por padrão.
 
 Passar disso fazia o llama.cpp **abortar o processo inteiro**
 (`GGML_ASSERT(n_tokens_all <= cparams.n_batch)`), derrubando o peer. O gateway

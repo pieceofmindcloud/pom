@@ -1515,7 +1515,9 @@ function renderSliceJob(job) {
   const pronto = job.state === "done";
   const pct = job.progress;
   const indet = pct == null && !pronto && !falhou;
-  const largura = pronto ? 100 : pct ?? 100;
+  // Numa falha a barra mostra até onde chegou. Encher a barra por falta de
+  // percentual fazia o erro aparecer sob uma barra cheia, com cara de pronto.
+  const largura = pronto ? 100 : falhou ? pct ?? 0 : pct ?? 100;
 
   const tag = pronto ? "is-ready" : falhou ? "is-failed" : "is-starting";
   const estado = pronto ? "pronto" : falhou ? "falhou" : job.step || "fatiando";
@@ -1531,7 +1533,14 @@ function renderSliceJob(job) {
       <div class="meter-fill ${falhou ? "is-high" : ""} ${indet ? "is-indeterminate" : ""}"
            style="width:${largura}%"></div>
     </div>
-    ${job.message ? `<p class="${falhou ? "notice notice-error" : "meter-note"}">${esc(job.message)}</p>` : ""}
+    ${job.message
+      ? falhou
+        // A mensagem vem do processo e pode ser várias linhas (um traceback do
+        // Python, quando não é uma frase nossa). Sem preservar a quebra vira
+        // um parágrafo corrido e ilegível — ver .notice-saida no app.css.
+        ? `<p class="notice notice-error notice-saida">${esc(job.message)}</p>`
+        : `<p class="meter-note">${esc(job.message)}</p>`
+      : ""}
     ${(job.outputs || []).length
       ? `<ul class="slice-outputs">${job.outputs
           .map((o) => `<li title="${esc(o)}">${esc(o.split("/").pop())}</li>`)

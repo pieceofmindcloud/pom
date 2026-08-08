@@ -39,7 +39,16 @@ GGUF_VERSION_2 = 2
 GGUF_VERSION_3 = 3
 
 # dtype → (bytes_per_block, elements_per_block)
-# Verified against ggml-quants.h struct sizes (llama.cpp).
+#
+# The codes are `enum ggml_type` and the sizes are the `blck_size`/`type_size`
+# ggml itself reports; both were read straight from the llama.cpp that ships in
+# ./venv (ggml.h for the codes, ggml_blck_size/ggml_type_size for the sizes)
+# rather than written from memory. `test_split_model_type_table` in src/gguf.rs
+# fails the build if this table and the Rust one ever drift apart again.
+#
+# Codes 4, 5 (Q4_2/Q4_3) and 31..33, 36..38 are types ggml removed, and 40..42
+# (NVFP4, Q1_0, Q2_0) are new enough that their block layout is not cited here.
+# All are absent on purpose: an unmeasurable file is refused, never guessed.
 # K-quant super-block size is always QK_K=256 elements.
 _GGML_TYPE_INFO: dict[int, tuple[int, int]] = {
     0:  (4,   1),    # F32
@@ -49,13 +58,36 @@ _GGML_TYPE_INFO: dict[int, tuple[int, int]] = {
     6:  (22,  32),   # Q5_0  = {half d; u8 qh[4]; u8 qs[16]}
     7:  (24,  32),   # Q5_1  = {half d,m; u8 qh[4]; u8 qs[16]}
     8:  (34,  32),   # Q8_0  = {half d; i8 qs[32]}
+    9:  (36,  32),   # Q8_1  = {half2 ds; i8 qs[32]}
     10: (84,  256),  # Q2_K  = {u8 scales[16]; u8 qs[64]; half2 dm}
     11: (110, 256),  # Q3_K  = {u8 hmask[32]; u8 qs[64]; u8 scales[12]; half d}
     12: (144, 256),  # Q4_K  = {half2 dm; u8 scales[12]; u8 qs[128]}
-    13: (112, 256),  # Q5_K  = {half2 dm; u8 scales[12]; u8 qh[32]; u8 qs[64]}
+    # Q5_K carries qs[QK_K/2]=128, not 64: it was booked as 112 bytes against a
+    # real 176, so every Q5_K tensor was measured at 64% of its size.
+    13: (176, 256),  # Q5_K  = {half2 dm; u8 scales[12]; u8 qh[32]; u8 qs[128]}
     14: (210, 256),  # Q6_K  = {u8 ql[128]; u8 qh[64]; i8 scales[16]; half d}
     15: (292, 256),  # Q8_K  = {float d; i8 qs[256]; i16 bsums[16]}
-    16: (2,   1),    # BF16
+    # 16 is IQ2_XXS, *not* BF16 (BF16 is 30). As (2,1) it never raised: an
+    # IQ2_XXS tensor was measured at 2 bytes/element instead of 66 bytes/256,
+    # so the file was sliced with a silently wrong size instead of refused.
+    16: (66,  256),  # IQ2_XXS = {half d; u16 qs[32]}
+    17: (74,  256),  # IQ2_XS  = {half d; u16 qs[32]; u8 scales[8]}
+    18: (98,  256),  # IQ3_XXS = {half d; u8 qs[96]}
+    19: (50,  256),  # IQ1_S   = {half d; u8 qs[32]; u16 qh[16]}
+    20: (18,  32),   # IQ4_NL  = {half d; u8 qs[16]}                (QK4_NL=32)
+    21: (110, 256),  # IQ3_S   = {half d; u8 qs[64]; u8 qh[8]; u8 signs[32]; u8 scales[4]}
+    22: (82,  256),  # IQ2_S   = {half d; u8 qs[64]; u8 qh[8]; u8 scales[8]}
+    23: (136, 256),  # IQ4_XS  = {half d; u16 scales_h; u8 scales_l[4]; u8 qs[128]}
+    24: (1,   1),    # I8
+    25: (2,   1),    # I16
+    26: (4,   1),    # I32
+    27: (8,   1),    # I64
+    28: (8,   1),    # F64
+    29: (56,  256),  # IQ1_M   = {u8 qs[32]; u8 qh[16]; u8 scales[8]}  (no d: in scales)
+    30: (2,   1),    # BF16
+    34: (54,  256),  # TQ1_0 = {u8 qs[48]; u8 qh[4]; half d}
+    35: (66,  256),  # TQ2_0 = {u8 qs[64]; half d}
+    39: (17,  32),   # MXFP4 = {u8 e; u8 qs[16]}                     (QK_MXFP4=32)
 }
 
 # GGUFValueType codes
@@ -122,6 +154,26 @@ class KVEntry:
         self.key = key; self.vtype = vtype; self.value = value
 
 
+class UnsupportedQuant(Exception):
+    """A tensor type this script cannot measure.
+
+    Raised instead of guessing a size: a wrong block size does not fail, it
+    writes a slice that llama.cpp loads and quietly computes garbage from.
+    `main()` prints it without the traceback, so the sentence reaches the
+    interface readable.
+    """
+    def __init__(self, dtype: int, tensor_name: str):
+        self.dtype = dtype
+        self.tensor_name = tensor_name
+        super().__init__(
+            f"o arquivo usa uma quantização que este script ainda não conhece: "
+            f"tipo ggml {dtype} (no tensor '{tensor_name}'). "
+            f"Fatiar sem saber o tamanho do bloco produziria uma fatia corrompida, "
+            f"então nada foi gravado. Acrescente o tipo {dtype} à tabela "
+            f"_GGML_TYPE_INFO em split_model.py para habilitar este modelo."
+        )
+
+
 class TensorInfo:
     """A tensor that lives in the source GGUF."""
     def __init__(self, name: str, dims: list[int], dtype: int, offset: int):
@@ -132,7 +184,7 @@ class TensorInfo:
         for d in self.dims:
             n *= d
         if self.dtype not in _GGML_TYPE_INFO:
-            raise ValueError(f"Unknown dtype {self.dtype} for '{self.name}'")
+            raise UnsupportedQuant(self.dtype, self.name)
         bpe, blk = _GGML_TYPE_INFO[self.dtype]
         return ((n + blk - 1) // blk) * bpe
 
@@ -204,6 +256,11 @@ class GGUFFile:
         self.close()
 
     def tensor_size(self, t: TensorInfo) -> int:
+        # The offset delta wins, but `t.byte_size()` is still evaluated on every
+        # call — Python computes a `.get` default eagerly — and that is the only
+        # thing that refuses an unmeasurable quant, since every tensor's offset
+        # is a key here and the fallback never actually returns. Turning this
+        # into a lazy lookup would slice unknown types silently. Keep it eager.
         return self._offset_sizes.get(t.offset, t.byte_size())
 
     def stream_tensor_to(self, f, t: TensorInfo, chunk: int = 8 << 20, on_bytes=None) -> int:
@@ -290,7 +347,8 @@ def _fake_output_norm(gguf: GGUFFile, hidden_dim: int, scale: float = 1.0) -> Fa
     
     if dtype == 0: # F32
         data = struct.pack(f"<{hidden_dim}f", *([scale] * hidden_dim))
-    elif dtype == 16: # BF16
+    elif dtype == 30: # BF16 (was 16 here, which is IQ2_XXS — packed 2-byte
+                      # halves into what is really a 256-element block type)
         # To make it easy, we'll just pack the hex for common scales if needed.
         # For scale=1.0, hex is 0x3f80. For scale=100000.0, hex is 0x47c3.
         val = 0x3f80 if scale == 1.0 else 0x47c3 if scale == 100000.0 else 0x0000
@@ -561,14 +619,20 @@ def main():
     if args.start_layer > args.end_layer:
         sys.exit("--start-layer must be <= --end-layer")
 
-    split_model(
-        src_path=src,
-        start_layer=args.start_layer,
-        end_layer=args.end_layer,
-        output_path=out,
-        is_first=args.is_first,
-        is_last=args.is_last,
-    )
+    try:
+        split_model(
+            src_path=src,
+            start_layer=args.start_layer,
+            end_layer=args.end_layer,
+            output_path=out,
+            is_first=args.is_first,
+            is_last=args.is_last,
+        )
+    except UnsupportedQuant as e:
+        # The interface shows the tail of stderr. A traceback there is six lines
+        # of our file paths around one useful sentence, so print just the
+        # sentence — the condition is the file's, not a bug to report.
+        sys.exit(str(e))
 
 
 if __name__ == "__main__":

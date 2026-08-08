@@ -209,7 +209,16 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
 // ── Tensor layout ────────────────────────────────────────────────────────────
 
 /// Bytes-per-block and elements-per-block for every GGML tensor type.
-/// Same table as `split_model.py`, verified against `ggml-quants.h`.
+///
+/// Codes are `enum ggml_type`; sizes are what `ggml_type_size`/`ggml_blck_size`
+/// report. Both were read from the llama.cpp in `./venv`, not from memory: the
+/// IQ block used to start at 19 (every IQ code off by three, because the two
+/// removed Q4_2/Q4_3 slots were counted away) which measured IQ3_S tensors with
+/// IQ3_XXS's size and priced an IQ model's layers at roughly 60% of the truth.
+///
+/// This table and `_GGML_TYPE_INFO` in `split_model.py` must agree; the two
+/// live in different languages, so `split_model_type_table_matches` below reads
+/// the Python one and fails the build when they drift.
 fn ggml_type_info(t: u32) -> Option<(u64, u64)> {
     Some(match t {
         0 => (4, 1),      // F32
@@ -219,22 +228,31 @@ fn ggml_type_info(t: u32) -> Option<(u64, u64)> {
         6 => (22, 32),    // Q5_0
         7 => (24, 32),    // Q5_1
         8 => (34, 32),    // Q8_0
+        9 => (36, 32),    // Q8_1
         10 => (84, 256),  // Q2_K
         11 => (110, 256), // Q3_K
         12 => (144, 256), // Q4_K
-        13 => (112, 256), // Q5_K
+        13 => (176, 256), // Q5_K  — was 112: qs is QK_K/2=128 bytes, not 64
         14 => (210, 256), // Q6_K
         15 => (292, 256), // Q8_K
-        16 => (2, 1),     // BF16
-        19 => (66, 256),  // IQ2_XXS
-        20 => (74, 256),  // IQ2_XS
-        21 => (66, 256),  // IQ3_XXS
-        22 => (50, 256),  // IQ1_S
-        23 => (56, 32),   // IQ4_NL
-        24 => (98, 256),  // IQ3_S
-        25 => (82, 256),  // IQ2_S
-        26 => (110, 256), // IQ4_XS
-        29 => (52, 256),  // IQ1_M
+        16 => (66, 256),  // IQ2_XXS — was labelled BF16 (2,1); BF16 is 30
+        17 => (74, 256),  // IQ2_XS
+        18 => (98, 256),  // IQ3_XXS
+        19 => (50, 256),  // IQ1_S
+        20 => (18, 32),   // IQ4_NL
+        21 => (110, 256), // IQ3_S
+        22 => (82, 256),  // IQ2_S
+        23 => (136, 256), // IQ4_XS
+        24 => (1, 1),     // I8
+        25 => (2, 1),     // I16
+        26 => (4, 1),     // I32
+        27 => (8, 1),     // I64
+        28 => (8, 1),     // F64
+        29 => (56, 256),  // IQ1_M
+        30 => (2, 1),     // BF16
+        34 => (54, 256),  // TQ1_0
+        35 => (66, 256),  // TQ2_0
+        39 => (17, 32),   // MXFP4
         _ => return None,
     })
 }
@@ -406,6 +424,137 @@ mod tests {
         std::fs::write(&p, b"hello world, definitely not gguf").unwrap();
         assert!(read_info(&p).is_err());
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// Every type this project claims to measure, with the `(type_size,
+    /// blck_size)` ggml itself reports. Read out of the llama.cpp shipped in
+    /// `./venv` via `ggml_type_size`/`ggml_blck_size` — the point of writing
+    /// them down again here is that a typo has to be made twice to survive.
+    const GGML_TRUTH: &[(u32, u64, u64, &str)] = &[
+        (0, 4, 1, "F32"),
+        (1, 2, 1, "F16"),
+        (2, 18, 32, "Q4_0"),
+        (3, 20, 32, "Q4_1"),
+        (6, 22, 32, "Q5_0"),
+        (7, 24, 32, "Q5_1"),
+        (8, 34, 32, "Q8_0"),
+        (9, 36, 32, "Q8_1"),
+        (10, 84, 256, "Q2_K"),
+        (11, 110, 256, "Q3_K"),
+        (12, 144, 256, "Q4_K"),
+        (13, 176, 256, "Q5_K"),
+        (14, 210, 256, "Q6_K"),
+        (15, 292, 256, "Q8_K"),
+        (16, 66, 256, "IQ2_XXS"),
+        (17, 74, 256, "IQ2_XS"),
+        (18, 98, 256, "IQ3_XXS"),
+        (19, 50, 256, "IQ1_S"),
+        (20, 18, 32, "IQ4_NL"),
+        (21, 110, 256, "IQ3_S"),
+        (22, 82, 256, "IQ2_S"),
+        (23, 136, 256, "IQ4_XS"),
+        (24, 1, 1, "I8"),
+        (25, 2, 1, "I16"),
+        (26, 4, 1, "I32"),
+        (27, 8, 1, "I64"),
+        (28, 8, 1, "F64"),
+        (29, 56, 256, "IQ1_M"),
+        (30, 2, 1, "BF16"),
+        (34, 54, 256, "TQ1_0"),
+        (35, 66, 256, "TQ2_0"),
+        (39, 17, 32, "MXFP4"),
+    ];
+
+    #[test]
+    fn ggml_type_table_matches_ggml() {
+        for &(code, bytes, elems, name) in GGML_TRUTH {
+            assert_eq!(
+                ggml_type_info(code),
+                Some((bytes, elems)),
+                "ggml type {code} ({name}) has the wrong block size"
+            );
+        }
+    }
+
+    /// The codes ggml removed, plus the ones whose layout we chose not to cite.
+    /// They must stay unknown: a file using one has to be refused, and a size
+    /// invented here would be spent slicing it into garbage instead.
+    #[test]
+    fn removed_and_uncited_ggml_types_stay_unknown() {
+        for code in [4, 5, 31, 32, 33, 36, 37, 38, 40, 41, 42, 99] {
+            assert_eq!(ggml_type_info(code), None, "type {code} should be unknown");
+        }
+    }
+
+    /// IQ3_S is what the captain's IQ3_M model is mostly made of, and the two
+    /// numbers this pins are exactly the ones that were wrong: a 5120×248320
+    /// embedding priced with IQ3_XXS's 66-byte block instead of IQ3_S's 110.
+    #[test]
+    fn tensor_bytes_per_type() {
+        let bytes = |code: u32, elements: u64| {
+            let (b, e) = ggml_type_info(code).expect("known type");
+            elements / e * b
+        };
+        // token_embd.weight of the real IQ3_M model: 546 MB, not the 327 MB the
+        // old table reported for it by handing IQ3_S a 66-byte block.
+        assert_eq!(bytes(21, 5120 * 248320), 546_304_000);
+        // BF16 output.weight — 2 bytes per element, not a 256-element block.
+        assert_eq!(bytes(30, 5120 * 248320), 2_542_796_800);
+        // A Q5_K layer, the entry that was booked at 64% of its true size
+        // (11_534_336 here against the 7_340_032 the 112-byte block gave).
+        assert_eq!(bytes(13, 4096 * 4096), 11_534_336);
+        assert_eq!(bytes(12, 4096 * 4096), 9_437_184); // Q4_K, always correct
+    }
+
+    /// `split_model.py` carries the same table in Python, and a slice is only
+    /// correct if both agree: Rust prices the layers, Python writes the bytes.
+    /// Parsing the script keeps the two honest without a Python test runner.
+    #[test]
+    fn split_model_type_table_matches() {
+        let src = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("split_model.py"),
+        )
+        .expect("split_model.py sits next to Cargo.toml");
+
+        let body = src
+            .split_once("_GGML_TYPE_INFO: dict[int, tuple[int, int]] = {")
+            .expect("table still declared the same way")
+            .1;
+
+        let mut seen = 0;
+        for line in body.lines() {
+            // `    21: (110, 256),  # IQ3_S = {half d; ...}` — the comment goes
+            // first, since the block structs in it are full of braces.
+            let line = line.split('#').next().unwrap_or("").trim();
+            if line.starts_with('}') {
+                break;
+            }
+            let Some((code, rest)) = line.split_once(':') else {
+                continue;
+            };
+            let Ok(code) = code.trim().parse::<u32>() else {
+                continue;
+            };
+            let nums: Vec<u64> = rest
+                .trim()
+                .trim_start_matches('(')
+                .split(',')
+                .filter_map(|n| n.trim().trim_end_matches(')').parse().ok())
+                .collect();
+            assert_eq!(nums.len(), 2, "malformed entry for ggml type {code}");
+            assert_eq!(
+                ggml_type_info(code),
+                Some((nums[0], nums[1])),
+                "split_model.py and gguf.rs disagree about ggml type {code}"
+            );
+            seen += 1;
+        }
+        assert_eq!(
+            seen,
+            GGML_TRUTH.len(),
+            "split_model.py knows {seen} types, this file knows {}",
+            GGML_TRUTH.len()
+        );
     }
 
     #[test]

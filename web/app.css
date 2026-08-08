@@ -435,6 +435,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible {
 .notice-error { border-left-color: var(--alert); }
 .notice-ok { border-left-color: var(--ok); }
 
+/* Saída crua de um processo dentro de um aviso: preserva a quebra de linha,
+   quebra caminho longo em vez de esticar o painel, e limita a altura para um
+   traceback não empurrar o resto da página para fora da tela. */
+.notice-saida {
+  font-family: var(--mono); font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  max-height: 15em; overflow-y: auto;
+}
+
 .output {
   font-family: var(--mono); font-size: 13px; line-height: 1.65;
   white-space: pre-wrap; overflow-wrap: anywhere;

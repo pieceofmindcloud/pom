@@ -28,6 +28,18 @@ pub struct Identity {
 /// Where the node's long-lived keypair lives, under the project root.
 pub const KEY_FILENAME: &str = ".rdma-p2p-node.key";
 
+/// Resolves the key file path.
+///
+/// `$RDMA_P2P_NODE_KEY` overrides the default so Docker deployments and
+/// multi-instance setups can pin a specific file without touching the
+/// project directory.  Falls back to `<project_root>/.rdma-p2p-node.key`.
+pub fn key_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("RDMA_P2P_NODE_KEY") {
+        return std::path::PathBuf::from(p);
+    }
+    crate::config::project_root().join(KEY_FILENAME)
+}
+
 impl Identity {
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);

@@ -71,6 +71,10 @@ pub struct Config {
     /// `None` keeps the historical `<project_root>/models`.
     #[serde(default)]
     pub shard_dir: Option<String>,
+    /// Human-readable name for this node shown in the dashboard and peer lists.
+    /// Falls back to the OS hostname when absent.
+    #[serde(default)]
+    pub node_name: Option<String>,
 }
 
 fn default_gateway_port() -> u16 { 8080 }
@@ -208,6 +212,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            node_name: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -229,6 +234,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            node_name: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -297,6 +303,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            node_name: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

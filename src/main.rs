@@ -395,9 +395,7 @@ async fn main() -> Result<()> {
     info!("Memory allocated: {:.0}MB ({:.1}GB)", memory_mb, memory_mb / 1024.0);
 
     // ── Generate identity ────────────────────────────────────────────────────
-    let identity = identity::Identity::load_or_create(
-        &config::project_root().join(identity::KEY_FILENAME),
-    );
+    let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 
@@ -498,6 +496,10 @@ async fn main() -> Result<()> {
     };
 
     // ── Start P2P network ────────────────────────────────────────────────────
+    let node_display_name = match app_config.node_name.clone() {
+        Some(name) => name,
+        None => sysmon::sample().await.hostname,
+    };
     let net = Arc::new(
         Network::new(
             node_id.clone(),
@@ -509,10 +511,7 @@ inference_port,
             Some(gateway_port),
         )
         .await?
-        .with_identity(
-            app_config.role.to_string(),
-            sysmon::sample().await.hostname,
-        )
+        .with_identity(app_config.role.to_string(), node_display_name)
         .with_advertise_addr(advertise_addr.clone()),
     );
 
@@ -864,6 +863,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         // Modelos é onde essa lista deixa de ser um palpite.
         model_dirs: None,
         shard_dir: None,
+        node_name: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -895,12 +895,14 @@ async fn start_gateway_only(
     use crate::gateway::{GatewayState, start_gateway};
     use crate::pipeline::LoadTracker;
 
-    let identity = identity::Identity::load_or_create(
-        &config::project_root().join(identity::KEY_FILENAME),
-    );
+    let identity = identity::Identity::load_or_create(&identity::key_path());
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 
+    let node_display_name = match app_config.node_name.clone() {
+        Some(name) => name,
+        None => sysmon::sample().await.hostname,
+    };
     let net = Arc::new(
         Network::new(
             node_id.clone(),
@@ -912,10 +914,7 @@ async fn start_gateway_only(
             Some(gateway_port),
         )
         .await?
-        .with_identity(
-            app_config.role.to_string(),
-            sysmon::sample().await.hostname,
-        )
+        .with_identity(app_config.role.to_string(), node_display_name)
         .with_advertise_addr(app_config.advertise_addr.clone()),
     );
 

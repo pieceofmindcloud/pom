@@ -373,7 +373,8 @@ export interface DeployStep {
   position: number;
   start_layer: number;
   end_layer: number;
-  total_layers: number;
+  /** The plan's answer for the model size, `null` when nobody could say. */
+  total_layers: number | null;
   name: string;
   size_bytes: number;
   target_node_id: string;
@@ -399,7 +400,9 @@ export interface DeployStep {
 export interface DeployCandidate {
   start_layer: number;
   end_layer: number;
-  total_layers: number;
+  /** What this slice itself declares. `null` for slices cut before
+   *  `split_model.py` started writing `rdmap2p.original_block_count`. */
+  total_layers: number | null;
   name: string;
   size_bytes: number;
   /** Node ids that already have this exact range. */
@@ -450,7 +453,12 @@ export interface DeploySelection {
 
 export interface DeployPlan {
   group: string;
-  total_layers: number;
+  /** `null` means no slice declares it and none starts at layer 0, which is a
+   *  `blocked` plan rather than a model of zero layers. */
+  total_layers: number | null;
+  /** True when the total was read off the slices' coverage instead of their
+   *  metadata. The deploy still runs; the screen has to say so. */
+  total_layers_inferred: boolean;
   steps: DeployStep[];
   complete: boolean;
   transfer_bytes: number;

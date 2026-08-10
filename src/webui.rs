@@ -879,6 +879,22 @@ async fn apply(
     if req.start_layer > req.end_layer {
         return bad_request("faixa de camadas invertida");
     }
+    // Answered here rather than from inside the spawned job: a configuration
+    // that `NodeConfig::validate` will reject is a bad request, and reporting
+    // it as one keeps the caller from reading "job criado" as "deu certo".
+    if req.total_layers == 0 {
+        return bad_request(format!(
+            "a fatia {} não veio com o total de camadas do modelo, e sem ele o nó não sabe \
+             se esta faixa é o começo, o meio ou o fim da rede",
+            req.base_name
+        ));
+    }
+    if req.end_layer >= req.total_layers {
+        return bad_request(format!(
+            "a fatia L{}-{} passa do fim de um modelo de {} camadas",
+            req.start_layer, req.end_layer, req.total_layers
+        ));
+    }
 
     let id = uuid::Uuid::new_v4().simple().to_string();
     let title = format!(
@@ -1629,6 +1645,27 @@ pub(crate) async fn launch(
 ) -> Response {
     if req.targets.is_empty() {
         return bad_request("nenhum peer selecionado");
+    }
+    // Checked before phase 1, which stops inference on every target: a launch
+    // that cannot possibly apply must not be allowed to take the cluster down
+    // on its way to failing. `deploy.rs` refuses this earlier and with the
+    // offending files named; this is the guard for every other caller.
+    if req.total_layers == 0 {
+        return bad_request(
+            "não foi informado de quantas camadas é o modelo, e as fatias não podem ser \
+             atribuídas sem esse total. Fatias geradas pela tela de Fatiar gravam esse dado; \
+             as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
+        );
+    }
+    if let Some(t) = req
+        .targets
+        .iter()
+        .find(|t| t.end_layer >= req.total_layers)
+    {
+        return bad_request(format!(
+            "a fatia L{}-{} passa do fim de um modelo de {} camadas",
+            t.start_layer, t.end_layer, req.total_layers
+        ));
     }
 
     let peers = state.all_peers().await;

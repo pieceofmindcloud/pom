@@ -141,10 +141,12 @@ function Coverage({
   total,
   rows,
 }: {
-  total: number;
+  /** `null` when no slice declares the model size and none starts at layer 0.
+   *  There is no ribbon to draw then, and the plan is blocked anyway. */
+  total: number | null;
   rows: DeploySelection[];
 }) {
-  if (total <= 0) return null;
+  if (!total || total <= 0) return null;
 
   const owner = new Array<number>(total).fill(-1);
   const doubled = new Array<boolean>(total).fill(false);
@@ -644,6 +646,25 @@ export function DeployModel() {
                   </div>
                 )}
 
+                {/* A deduced total is not a defect, but it is the one number
+                    here nobody can check: the slices reach layer N and there is
+                    no metadata saying whether the model ends there. Said before
+                    the button, next to the coverage warning it belongs with. */}
+                {validated && p.total_layers_inferred && (
+                  <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
+                    <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-fg">
+                        As fatias não dizem de que tamanho é o modelo
+                      </p>
+                      <p className="mt-1 text-sm text-muted">
+                        {p.warnings.find((w) => w.includes("deduzido")) ??
+                          `O total foi deduzido da cobertura das fatias: ${p.total_layers} camadas.`}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 {validated &&
                   p.warnings
                     .filter((w) => w.includes("memória"))
@@ -857,8 +878,19 @@ export function DeployModel() {
                   <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
                     <span className="text-[0.82rem] text-muted">
                       {rows.length} de {p.available.length}{" "}
-                      {p.available.length === 1 ? "fatia" : "fatias"} · {p.total_layers}{" "}
-                      camadas no modelo
+                      {p.available.length === 1 ? "fatia" : "fatias"} ·{" "}
+                      {p.total_layers === null ? (
+                        <span className="text-rose">
+                          tamanho do modelo desconhecido
+                        </span>
+                      ) : (
+                        <>
+                          {p.total_layers} camadas no modelo
+                          {p.total_layers_inferred && (
+                            <span className="text-amber"> (deduzidas)</span>
+                          )}
+                        </>
+                      )}
                     </span>
                     {copies.length === 0 ? (
                       <Badge tone="aqua">nada a copiar</Badge>

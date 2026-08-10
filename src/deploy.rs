@@ -100,7 +100,15 @@ pub struct DeployRequest {
 struct HeldShard {
     start_layer: u32,
     end_layer: u32,
-    total_layers: u32,
+    /// How many layers the *original* model had, when the slice says so.
+    ///
+    /// `None` is the normal state of an old slice: only `split_model.py` writes
+    /// `rdmap2p.original_block_count`, so anything cut before it — the captain's
+    /// `qwen_0_15.gguf` / `qwen_16_31.gguf` — carries no total at all. It stays
+    /// an `Option` all the way to `model_size` because a missing total and a
+    /// total of zero are different facts, and collapsing them is what let a
+    /// deploy start and die at the far end (`runtime::NodeConfig::validate`).
+    total_layers: Option<u32>,
     name: String,
     path: String,
     size_bytes: u64,
@@ -246,7 +254,11 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
     Some(HeldShard {
         start_layer: range.first()?.as_u64()? as u32,
         end_layer: range.get(1)?.as_u64()? as u32,
-        total_layers: v.get("total_layers").and_then(|t| t.as_u64()).unwrap_or(0) as u32,
+        total_layers: v
+            .get("total_layers")
+            .and_then(|t| t.as_u64())
+            .map(|t| t as u32)
+            .filter(|t| *t > 0),
         name: v.get("name")?.as_str()?.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
@@ -265,7 +277,9 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
 pub struct Candidate {
     start_layer: u32,
     end_layer: u32,
-    total_layers: u32,
+    /// Only what the slice itself declares. `null` on screen means "this file
+    /// does not say how big the model is", which is a fact about the file.
+    total_layers: Option<u32>,
     name: String,
     size_bytes: u64,
     /// Every machine that already has this exact range.
@@ -306,7 +320,9 @@ pub struct Step {
     position: u32,
     start_layer: u32,
     end_layer: u32,
-    total_layers: u32,
+    /// The model size this step will be launched with — the plan's answer, not
+    /// the file's, so every step of one deploy carries the same number.
+    total_layers: Option<u32>,
     name: String,
     size_bytes: u64,
     target_node_id: String,
@@ -336,7 +352,14 @@ pub struct Step {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     group: String,
-    total_layers: u32,
+    /// How many layers the original model has. `None` means nobody could say —
+    /// which is a refusal (`blocked`), never a zero passed down the line.
+    total_layers: Option<u32>,
+    /// True when that number was read off the coverage of the slices instead of
+    /// out of their metadata. The deploy still runs; the screen has to say so,
+    /// because a set of slices that stops at L31 looks exactly the same whether
+    /// the model has 32 layers or 40 and the tail is missing from the cluster.
+    total_layers_inferred: bool,
     steps: Vec<Step>,
     /// Every layer from 0 to `total_layers` is covered exactly once.
     complete: bool,
@@ -395,6 +418,81 @@ fn candidates(machines: &[Machine]) -> Vec<Candidate> {
     out
 }
 
+/// How many layers the model being deployed has, and how we know.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModelSize {
+    /// A slice said so, in `rdmap2p.original_block_count`.
+    Declared(u32),
+    /// No slice said so, but the ranges reach this far from layer 0, which is
+    /// the same reading `catalog::build_shard_sets` makes for one machine.
+    Inferred(u32),
+    /// Nothing to read and nothing to deduce: no slice declares a total and
+    /// none of them starts at layer 0.
+    Unknown,
+}
+
+impl ModelSize {
+    fn value(self) -> Option<u32> {
+        match self {
+            ModelSize::Declared(n) | ModelSize::Inferred(n) => Some(n),
+            ModelSize::Unknown => None,
+        }
+    }
+    fn inferred(self) -> bool {
+        matches!(self, ModelSize::Inferred(_))
+    }
+}
+
+/// Decide the model's layer count from every range the cluster holds.
+///
+/// Declared beats deduced, and the deduction is deliberately cluster-wide: one
+/// machine holding only L16–31 can conclude nothing on its own, while the two
+/// machines together plainly reach layer 32. Overlapping cuts of the same model
+/// (0–4 / 5–31 next to 0–15 / 16–31) are why this walks the reach instead of
+/// summing lengths.
+fn model_size(candidates: &[Candidate]) -> ModelSize {
+    if let Some(declared) = candidates.iter().filter_map(|c| c.total_layers).max() {
+        return ModelSize::Declared(declared);
+    }
+    let mut reach = 0u32;
+    loop {
+        let next = candidates
+            .iter()
+            .filter(|c| c.start_layer <= reach && c.end_layer >= reach)
+            .map(|c| c.end_layer + 1)
+            .max();
+        match next {
+            Some(n) => reach = n,
+            None => break,
+        }
+    }
+    if reach > 0 {
+        ModelSize::Inferred(reach)
+    } else {
+        ModelSize::Unknown
+    }
+}
+
+/// The slices that carry no layer total, named the way the operator sees them
+/// on screen, so a refusal points at files instead of at a concept.
+fn nameless(candidates: &[Candidate]) -> String {
+    const SHOWN: usize = 4;
+    let missing: Vec<&Candidate> = candidates
+        .iter()
+        .filter(|c| c.total_layers.is_none())
+        .collect();
+    let mut out = missing
+        .iter()
+        .take(SHOWN)
+        .map(|c| format!("L{}-{} em {}", c.start_layer, c.end_layer, c.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    if missing.len() > SHOWN {
+        out.push_str(&format!(" e mais {}", missing.len() - SHOWN));
+    }
+    out
+}
+
 /// The chain the node would pick on its own: start at layer 0 and always take
 /// the longest range that begins where the last one ended.
 ///
@@ -404,8 +502,8 @@ fn candidates(machines: &[Machine]) -> Vec<Candidate> {
 /// construction — which matters the moment a model has been sliced twice with
 /// different cuts. When nothing continues the chain the sweep jumps to the next
 /// range that starts later, which leaves a hole and says so.
-fn auto_chain(candidates: &[Candidate]) -> Vec<usize> {
-    let total = candidates.iter().map(|c| c.total_layers).max().unwrap_or(0);
+fn auto_chain(candidates: &[Candidate], total: Option<u32>) -> Vec<usize> {
+    let total = total.unwrap_or(0);
     let mut chain = Vec::new();
     let mut next = 0u32;
     loop {
@@ -493,7 +591,8 @@ fn plan(
     params: &RuntimeParams,
 ) -> Plan {
     let mut available = candidates(machines);
-    let total_layers = available.iter().map(|c| c.total_layers).max().unwrap_or(0);
+    let size = model_size(&available);
+    let total_layers = size.value();
 
     // What we are planning: (index into `available`, target node id).
     let auto = selection.is_none();
@@ -504,7 +603,7 @@ fn plan(
 
     match selection {
         None => {
-            let chain = auto_chain(&available);
+            let chain = auto_chain(&available, total_layers);
             let targets = auto_assign(&chain, &available, machines);
             chosen = chain
                 .into_iter()
@@ -543,7 +642,38 @@ fn plan(
 
     if available.is_empty() {
         blocked.get_or_insert(format!("nenhuma máquina do cluster tem fatias de {group}"));
-    } else if chosen.is_empty() {
+    }
+
+    // ── How big is the model ────────────────────────────────────────────────
+    //
+    // Refused here, in front of the operator, instead of being carried down as
+    // a zero that only `runtime::NodeConfig::validate` objects to — by which
+    // point `launch` has already stopped inference on every target machine.
+    //
+    // Ahead of "nenhuma fatia selecionada" on purpose: a set nobody can size is
+    // unusable however the operator ticks the boxes, and finding that out one
+    // click later is the same dead end one step further in.
+    match size {
+        ModelSize::Unknown if !available.is_empty() => {
+            blocked.get_or_insert(format!(
+                "nenhuma fatia de {group} diz de quantas camadas é o modelo ({}), \
+                 e nenhuma delas começa na camada 0 para que o total possa ser deduzido. \
+                 Refatie o modelo inteiro pela tela de Fatiar, que grava esse dado em cada \
+                 fatia, ou traga para o cluster a fatia que começa na camada 0.",
+                nameless(&available)
+            ));
+        }
+        ModelSize::Inferred(n) => warnings.push(format!(
+            "o total de camadas não está gravado nas fatias ({}), então foi deduzido da \
+             cobertura delas: {n} camadas. Se o modelo original tiver mais, as camadas que \
+             faltam não estão em máquina nenhuma e a resposta sai errada. Refatie pela tela \
+             de Fatiar para gravar o total.",
+            nameless(&available)
+        )),
+        _ => {}
+    }
+
+    if !available.is_empty() && chosen.is_empty() {
         blocked.get_or_insert("nenhuma fatia selecionada".to_string());
     }
 
@@ -560,8 +690,8 @@ fn plan(
         }
         next = next.max(c.end_layer.saturating_add(1));
     }
-    if total_layers > 0 && next < total_layers {
-        missing.push([next, total_layers - 1]);
+    if let Some(total) = total_layers.filter(|t| next < *t) {
+        missing.push([next, total - 1]);
     }
     let complete = missing.is_empty() && overlap.is_empty() && !chosen.is_empty();
 
@@ -673,7 +803,7 @@ fn plan(
             position: pos as u32 + 1,
             start_layer: c.start_layer,
             end_layer: c.end_layer,
-            total_layers: c.total_layers,
+            total_layers,
             name: c.name.clone(),
             size_bytes: c.size_bytes,
             target_node_id: target_id.clone(),
@@ -724,6 +854,7 @@ fn plan(
     Plan {
         group: group.to_string(),
         total_layers,
+        total_layers_inferred: size.inferred(),
         complete,
         transfer_bytes,
         steps,
@@ -959,12 +1090,18 @@ async fn run(
         .find(|s| s.primary)
         .map(|s| s.target_node_id.clone());
 
+    // `plan` refuses an unknown size before anything is copied, so this is a
+    // fact by the time we get here rather than a default worth inventing.
+    let total_layers = plan
+        .total_layers
+        .ok_or_else(|| format!("as fatias de {} não dizem o total de camadas", plan.group))?;
+
     let response = launch(
         ConnectionAuth,
         State(state),
         Json(LaunchRequest {
             base_name: plan.group.clone(),
-            total_layers: plan.total_layers,
+            total_layers,
             targets,
             primary_node_id: primary,
             params,
@@ -973,9 +1110,30 @@ async fn run(
     .await;
 
     if !response.status().is_success() {
-        return Err(format!("o launch recusou: HTTP {}", response.status()));
+        return Err(refusal(response).await);
     }
     Ok(())
+}
+
+/// The reason a refused launch gives, not just its status code.
+///
+/// `launch` answers `{"error": "..."}` and the operator only ever saw
+/// "HTTP 400", which is the same dead end this whole screen exists to avoid.
+async fn refusal(response: Response) -> String {
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+        .await
+        .ok()
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .and_then(|v| {
+            v.get("error")
+                .and_then(|e| e.as_str())
+                .map(|s| s.to_string())
+        });
+    match body {
+        Some(reason) => format!("o launch recusou: {reason}"),
+        None => format!("o launch recusou: HTTP {status}"),
+    }
 }
 
 async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<String> {
@@ -1072,6 +1230,9 @@ mod tests {
         mem_free_mb: u64,
         disk_free_mb: u64,
         held: Vec<(u32, u32)>,
+        /// What each of this machine's slices declares as the model's size.
+        /// `None` is a slice cut before `rdmap2p.original_block_count` existed.
+        declares: Option<u32>,
     }
 
     fn m(id: &'static str, mem_free_mb: u64, held: &[(u32, u32)]) -> Spec {
@@ -1080,6 +1241,16 @@ mod tests {
             mem_free_mb,
             disk_free_mb: 500_000,
             held: held.to_vec(),
+            declares: Some(32),
+        }
+    }
+
+    /// A machine whose slices carry no layer total, like the captain's
+    /// `qwen_0_15.gguf` / `qwen_16_31.gguf`.
+    fn nameless_machine(id: &'static str, mem_free_mb: u64, held: &[(u32, u32)]) -> Spec {
+        Spec {
+            declares: None,
+            ..m(id, mem_free_mb, held)
         }
     }
 
@@ -1097,7 +1268,7 @@ mod tests {
                     .map(|(a, b)| HeldShard {
                         start_layer: *a,
                         end_layer: *b,
-                        total_layers: 32,
+                        total_layers: s.declares,
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
                         size_bytes: GIB,
@@ -1443,5 +1614,147 @@ mod tests {
 
         // A peer that did not answer says nothing, and nothing is inferred.
         assert_eq!(free_memory_mb(None), 0);
+    }
+
+    // ── How many layers the model has ───────────────────────────────────────
+    //
+    // Reproduced on the captain's own cluster: both machines answer
+    // `"total_layers": null` for the `qwen` set (slices cut before
+    // `split_model.py` wrote `rdmap2p.original_block_count`). That `null`
+    // became a `0`, the plan called itself complete, and every peer's apply
+    // died on `runtime::NodeConfig::validate` with "total_layers não pode ser
+    // zero" — after `launch` had already stopped inference on all of them.
+
+    /// The exact shape of the captain's `qwen` set: no metadata anywhere, but
+    /// the two ranges plainly reach layer 32 between them.
+    #[test]
+    fn slices_without_metadata_take_the_total_from_their_coverage() {
+        let ms = build(vec![
+            nameless_machine("a", 100_000, &[(0, 15)]),
+            nameless_machine("b", 200_000, &[(16, 31)]),
+        ]);
+        let p = plan("qwen", &ms, None);
+
+        assert_eq!(p.total_layers, Some(32), "0-15 e 16-31 alcançam a camada 32");
+        assert!(p.total_layers_inferred, "veio da cobertura, não do arquivo");
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert!(
+            p.warnings.iter().any(|w| w.contains("deduzido")),
+            "a tela tem de dizer que o total foi deduzido: {:?}",
+            p.warnings
+        );
+    }
+
+    /// The plan is what `launch` is handed, so a zero here is a peer that stops
+    /// serving for nothing. There is no path that produces one.
+    #[test]
+    fn a_plan_never_carries_a_total_of_zero() {
+        for machines in [
+            build(vec![nameless_machine("a", 100_000, &[(0, 15), (16, 31)])]),
+            build(vec![nameless_machine("a", 100_000, &[(0, 31)])]),
+            build(vec![m("a", 100_000, &[(0, 15)])]),
+        ] {
+            let p = plan("m", &machines, None);
+            assert_ne!(p.total_layers, Some(0));
+            assert!(p.total_layers.is_some() || p.blocked.is_some());
+        }
+    }
+
+    /// Nothing declares a total and nothing starts at layer 0: the honest
+    /// answer is a refusal that names the files, not a guess and not a zero.
+    #[test]
+    fn a_set_that_cannot_say_its_size_is_refused_by_name() {
+        let ms = build(vec![nameless_machine("a", 100_000, &[(16, 31)])]);
+        let p = plan("qwen", &ms, None);
+
+        assert_eq!(p.total_layers, None);
+        let reason = p.blocked.expect("sem total e sem camada 0 é recusa");
+        assert!(
+            reason.contains("m_16_31.gguf"),
+            "a recusa tem de dizer qual fatia está sem o dado: {reason}"
+        );
+        assert!(
+            reason.contains("Fatiar"),
+            "e o que fazer a respeito: {reason}"
+        );
+    }
+
+    /// Metadata is a fact and coverage is a deduction, so the fact wins — and
+    /// the layers the set does not reach are reported as missing instead of
+    /// disappearing with the total.
+    #[test]
+    fn a_declared_total_beats_the_coverage_and_exposes_the_gap() {
+        let mut ms = build(vec![m("a", 100_000, &[(0, 15)])]);
+        ms[0].held[0].total_layers = Some(40);
+        let p = plan("m", &ms, None);
+
+        assert_eq!(p.total_layers, Some(40));
+        assert!(!p.total_layers_inferred);
+        assert_eq!(p.missing, vec![[16, 39]]);
+        assert!(!p.complete);
+    }
+
+    /// Half a nameless set is a half deploy, and before the fix it was the
+    /// silent one: with the total at zero the tail check was skipped, the plan
+    /// called itself complete and the screen armed the button.
+    #[test]
+    fn half_of_a_nameless_set_is_reported_as_a_gap() {
+        let ms = build(vec![nameless_machine(
+            "a",
+            100_000,
+            &[(0, 15), (16, 31)],
+        )]);
+        let p = plan("qwen", &ms, Some(&[pick(0, 15, "a")]));
+
+        assert_eq!(p.total_layers, Some(32));
+        assert_eq!(p.missing, vec![[16, 31]], "L16-31 ficou de fora");
+        assert!(!p.complete, "meia rede não é uma rede completa");
+    }
+
+    /// The deduction walks the reach from layer 0, so a model sliced twice with
+    /// different cuts still resolves to one size, and a set that starts later
+    /// resolves to none.
+    #[test]
+    fn the_deduction_walks_the_reach_from_layer_zero() {
+        let size = |held: &[(u32, u32)]| {
+            let ms = build(vec![nameless_machine("a", 100_000, held)]);
+            model_size(&candidates(&ms))
+        };
+        assert_eq!(size(&[(0, 15), (16, 31)]), ModelSize::Inferred(32));
+        // Two different cuts of the same model, side by side.
+        assert_eq!(
+            size(&[(0, 4), (5, 31), (0, 15), (16, 31)]),
+            ModelSize::Inferred(32)
+        );
+        // A hole stops the reach where the hole is.
+        assert_eq!(size(&[(0, 15), (20, 31)]), ModelSize::Inferred(16));
+        assert_eq!(size(&[(4, 31)]), ModelSize::Unknown);
+        assert_eq!(size(&[]), ModelSize::Unknown);
+    }
+
+    /// A peer running an older build answers `"total_layers": 0` where this one
+    /// answers `null`. Both mean "this file does not say".
+    #[test]
+    fn a_shard_that_reports_zero_layers_is_a_shard_with_no_total() {
+        let shard = parse_shard(&json!({
+            "shard_range": [0, 15],
+            "total_layers": 0,
+            "name": "qwen_0_15.gguf",
+            "path": "/models/qwen/qwen_0_15.gguf",
+            "size_bytes": 2569314208u64,
+        }))
+        .expect("a fatia é válida, só não diz o total");
+        assert_eq!(shard.total_layers, None);
+
+        let declared = parse_shard(&json!({
+            "shard_range": [0, 5],
+            "total_layers": 40,
+            "name": "phi_0_5.gguf",
+            "path": "/models/phi/phi_0_5.gguf",
+            "size_bytes": 1u64,
+        }))
+        .unwrap();
+        assert_eq!(declared.total_layers, Some(40));
     }
 }

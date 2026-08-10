@@ -69,17 +69,37 @@ import {
   Select,
   Skeleton,
 } from "../components/ui";
-import type { DeployPlan, DeploySelection, RuntimeParams } from "../lib/types";
+import type {
+  DeployCandidate,
+  DeployPlan,
+  DeploySelection,
+  DeployStep,
+  RuntimeParams,
+} from "../lib/types";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
 
-/** The plan on screen, in the shape the routes accept it back. */
+/** The plan on screen, in the shape the routes accept it back.
+ *
+ *  A merged step is the union of its parts, so it has to expand back into the
+ *  per-slice rows the screen edits — otherwise the plan could never match what
+ *  the operator sees. */
 function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
-  return (plan?.steps ?? []).map((s) => ({
-    start_layer: s.start_layer,
-    end_layer: s.end_layer,
-    target_node_id: s.target_node_id,
-  }));
+  return (plan?.steps ?? []).flatMap((s) =>
+    s.merged
+      ? s.parts.map((pt) => ({
+          start_layer: pt.start_layer,
+          end_layer: pt.end_layer,
+          target_node_id: s.target_node_id,
+        }))
+      : [
+          {
+            start_layer: s.start_layer,
+            end_layer: s.end_layer,
+            target_node_id: s.target_node_id,
+          },
+        ],
+  );
 }
 
 const sameRows = (a: DeploySelection[], b: DeploySelection[]) =>
@@ -357,6 +377,8 @@ export function DeployModel() {
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
   const [params, setParams] = useState<RuntimeParams | null>(null);
+  /** `null` means "the node's default" — merged units off. */
+  const [merge, setMerge] = useState<boolean | null>(null);
   /** Half-typed numbers, so clearing a field does not snap back to a digit. */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [advanced, setAdvanced] = useState(false);
@@ -397,12 +419,14 @@ export function DeployModel() {
       chosen,
       settled ? JSON.stringify(settled) : "auto",
       settledParams ? JSON.stringify(settledParams) : "padrão",
+      merge == null ? "merge-padrão" : `merge-${merge}`,
     ],
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
+        ...(merge != null ? { merge } : {}),
       }),
     enabled: chosen.length > 0,
     staleTime: 10_000,
@@ -425,6 +449,25 @@ export function DeployModel() {
 
   /** The settings in force: the operator's edit, or the node's own defaults. */
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+  /** Merged units in force: the operator's toggle, or the node's default. */
+  const effMerge = merge ?? p?.merge ?? false;
+
+  /** The step that owns a row.
+   *
+   *  Plain steps match the row's range exactly; a merged step is the union of
+   *  several ranges, so a row inside one of its parts belongs to it too. */
+  const stepOf = (c: DeployCandidate, target: string | undefined): DeployStep | undefined => {
+    const exact = p?.steps.find(
+      (s) =>
+        s.start_layer === c.start_layer &&
+        s.end_layer === c.end_layer &&
+        s.target_node_id === target,
+    );
+    if (exact) return exact;
+    return p?.steps.find(
+      (s) => s.merged && s.target_node_id === target && s.parts.some((pt) => pt.start_layer === c.start_layer && pt.end_layer === c.end_layer),
+    );
+  };
 
   /** Edit one knob. The draft keeps the field usable while it is half-typed. */
   function setKnob(key: keyof RuntimeParams, text: string) {
@@ -461,12 +504,16 @@ export function DeployModel() {
     });
   }
 
-  /** Give a range to a machine. Taking an occupied machine swaps the two. */
+  /** Give a range to a machine. Taking an occupied machine swaps the two —
+   *  unless merged units are on, where two ranges on the same machine is
+   *  exactly what the operator is asking for. */
   function assign(index: number, nodeId: string) {
     edit((base) => {
       const previous = base[index].target_node_id;
-      const busy = base.findIndex((r, i) => i !== index && r.target_node_id === nodeId);
-      if (busy !== -1) base[busy].target_node_id = previous;
+      if (!effMerge) {
+        const busy = base.findIndex((r, i) => i !== index && r.target_node_id === nodeId);
+        if (busy !== -1) base[busy].target_node_id = previous;
+      }
       base[index].target_node_id = nodeId;
       return base;
     });
@@ -474,14 +521,13 @@ export function DeployModel() {
 
   /**
    * How many layers this machine offloads, or `null` to take the cluster's
-   * number. Set on the machine and carried by whichever range it ends up with.
+   * number. One number per machine, so it lands on every row the machine
+   * holds — a merged machine can't have two of them.
    */
   function setPeerGpu(nodeId: string, value: number | null) {
-    edit((base) => {
-      const at = base.findIndex((r) => r.target_node_id === nodeId);
-      if (at !== -1) base[at].n_gpu_layers = value;
-      return base;
-    });
+    edit((base) =>
+      base.map((r) => (r.target_node_id === nodeId ? { ...r, n_gpu_layers: value } : r)),
+    );
   }
 
   /** Move a machine one place along the pipeline, which is a swap of ranges. */
@@ -504,6 +550,7 @@ export function DeployModel() {
         group: chosen,
         ...(selection ? { selection: rows } : {}),
         ...(params ? { params } : {}),
+        ...(merge != null ? { merge } : {}),
       });
       setJobId(started.job_id);
       toast.success(
@@ -521,12 +568,24 @@ export function DeployModel() {
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
   // A range with no machine is a blocked plan, not traffic: counting it made
   // the footer promise "1 cópia · 3,3 GB" for a row that says "sem máquina".
+  // A merged step is a copy per missing part, not one per row.
   const copies = rows.filter((r) => {
     if (!r.target_node_id) return false;
     const s = p?.steps.find(
-      (x) => x.start_layer === r.start_layer && x.end_layer === r.end_layer,
+      (x) =>
+        (x.merged
+          ? x.parts.some((pt) => pt.start_layer === r.start_layer && pt.end_layer === r.end_layer)
+          : x.start_layer === r.start_layer && x.end_layer === r.end_layer) &&
+        x.target_node_id === r.target_node_id,
     );
-    return s && !s.ready && s.target_node_id === r.target_node_id;
+    if (!s) return false;
+    if (s.merged) {
+      const part = s.parts.find(
+        (pt) => pt.start_layer === r.start_layer && pt.end_layer === r.end_layer,
+      );
+      return part ? !part.ready : false;
+    }
+    return !s.ready;
   });
   const copyBytes = copies.reduce((sum, r) => {
     const c = p?.available.find(
@@ -715,6 +774,15 @@ export function DeployModel() {
                     }
                   />
 
+                  <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 border-b border-line px-5 py-4">
+                    <Switch
+                      checked={effMerge}
+                      onChange={(v) => setMerge(v)}
+                      label="Juntar fatias vizinhas na mesma máquina"
+                      hint="Duas faixas adjacentes podem ficar na mesma máquina: elas são fundidas num arquivo só antes de subir. Sem isto, cada máquina continua servindo uma faixa."
+                    />
+                  </div>
+
                   <ScrollX>
                     <table className="w-full min-w-[64rem] text-sm">
                       <thead>
@@ -742,12 +810,14 @@ export function DeployModel() {
                           );
                           const on = at !== -1;
                           const row = on ? rows[at] : null;
-                          const step = p.steps.find(
-                            (s) =>
-                              s.start_layer === c.start_layer &&
-                              s.end_layer === c.end_layer &&
-                              s.target_node_id === row?.target_node_id,
-                          );
+                          const step = stepOf(c, row?.target_node_id);
+                          const part = step?.merged
+                            ? step.parts.find(
+                                (pt) =>
+                                  pt.start_layer === c.start_layer &&
+                                  pt.end_layer === c.end_layer,
+                              )
+                            : null;
                           const track = on ? trackOf(at) : null;
 
                           return (
@@ -858,6 +928,19 @@ export function DeployModel() {
                                     <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                                     {step.problem}
                                   </span>
+                                ) : step.merged ? (
+                                  part?.ready ? (
+                                    <span className="text-[0.8rem] text-muted">
+                                      já está lá · funde em {layerRange(step.start_layer, step.end_layer)}
+                                    </span>
+                                  ) : (
+                                    <span className="flex items-start gap-1.5 text-[0.8rem] text-amber">
+                                      <Download className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                      copiar de {part?.source_host ?? "—"} e fundir em{" "}
+                                      {layerRange(step.start_layer, step.end_layer)}
+                                      {step.note ? ` · ${step.note}` : ""}
+                                    </span>
+                                  )
                                 ) : step.ready ? (
                                   <span className="text-[0.8rem] text-muted">já está lá</span>
                                 ) : (
@@ -1022,7 +1105,14 @@ export function DeployModel() {
                       </thead>
                       <tbody className="divide-y divide-line">
                         {p.machines.map((m) => {
-                          const taking = rows.find((r) => r.target_node_id === m.node_id);
+                          const taking = rows.filter((r) => r.target_node_id === m.node_id);
+                          const union =
+                            taking.length > 0
+                              ? layerRange(
+                                  taking[0].start_layer,
+                                  taking[taking.length - 1].end_layer,
+                                )
+                              : null;
                           return (
                             <tr key={m.node_id}>
                               <td className="whitespace-nowrap px-5 py-3">
@@ -1043,9 +1133,14 @@ export function DeployModel() {
                                   : m.holds.map(([a, b]) => layerRange(a, b)).join(" · ")}
                               </td>
                               <td className="whitespace-nowrap px-5 py-3">
-                                {taking ? (
+                                {taking.length > 0 ? (
                                   <Badge tone="iris" mono>
-                                    {layerRange(taking.start_layer, taking.end_layer)}
+                                    {union}
+                                    {taking.length > 1 && (
+                                      <span className="ml-1.5 normal-case text-iris/80">
+                                        +{taking.length - 1}
+                                      </span>
+                                    )}
                                   </Badge>
                                 ) : (
                                   <span className="text-[0.8rem] text-faint">fica de fora</span>
@@ -1055,7 +1150,7 @@ export function DeployModel() {
                                   disagree about, so it is edited next to the
                                   machine and not in the cluster-wide block. */}
                               <td className="whitespace-nowrap px-5 py-3">
-                                {taking ? (
+                                {taking.length > 0 ? (
                                   <Input
                                     type="number"
                                     min={0}
@@ -1063,7 +1158,7 @@ export function DeployModel() {
                                     name={`gpu-${m.node_id}`}
                                     className="h-8 w-24 text-[0.82rem]"
                                     placeholder={String(eff.n_gpu_layers)}
-                                    value={taking.n_gpu_layers ?? ""}
+                                    value={taking[0].n_gpu_layers ?? ""}
                                     onChange={(e) =>
                                       setPeerGpu(
                                         m.node_id,

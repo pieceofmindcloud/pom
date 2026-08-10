@@ -16,6 +16,7 @@ use crate::gguf;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
 use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
+use anyhow::Context;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -709,6 +710,11 @@ pub struct ApplyRequest {
     /// no slicing is needed.
     #[serde(default)]
     pub skip_split: bool,
+    /// Local slices to join into one file before serving. When present, the
+    /// peer merges them and serves the union instead of slicing
+    /// `source_model_path`.
+    #[serde(default)]
+    pub merge: Option<Vec<MergeSource>>,
     #[serde(default)]
     pub params: RuntimeParams,
 }
@@ -870,7 +876,18 @@ async fn apply(
     State(state): State<GatewayState>,
     Json(req): Json<ApplyRequest>,
 ) -> Response {
-    if !std::path::Path::new(&req.source_model_path).exists() {
+    // A merge request lists the files it needs instead of pointing at one; the
+    // guard below checks whichever set is actually going to be read.
+    if let Some(parts) = &req.merge {
+        for p in parts {
+            if !std::path::Path::new(&p.source_model_path).exists() {
+                return bad_request(format!(
+                    "fatia não encontrada neste peer: {}",
+                    p.source_model_path
+                ));
+            }
+        }
+    } else if !std::path::Path::new(&req.source_model_path).exists() {
         return bad_request(format!(
             "modelo não encontrado neste peer: {}",
             req.source_model_path
@@ -927,7 +944,10 @@ async fn run_apply(
     req: ApplyRequest,
     job_id: &str,
 ) -> anyhow::Result<String> {
-    let model_path = if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
+    let model_path = if let Some(parts) = req.merge.clone() {
+        let shard_dir = state.shard_dir().await;
+        merge_parts(shard_dir, &req, &parts, job_id).await?
+    } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
         req.source_model_path.clone()
     } else {
@@ -1008,6 +1028,103 @@ async fn run_apply(
 
     state.runtime.apply(cfg).await?;
     Ok(model_path)
+}
+
+/// Join local slices into one GGUF covering their union, then serve that.
+///
+/// The peer that receives a merged step holds (or just received) each part as
+/// a separate file; this runs `splitter::merge` on this machine and the result
+/// becomes the model file the node is configured with. The output lands in the
+/// shard directory under the shared base name, so the catalog picks it up the
+/// same way it picks up a slice that was carved here.
+async fn merge_parts(
+    shard_dir: std::path::PathBuf,
+    req: &ApplyRequest,
+    parts: &[MergeSource],
+    job_id: &str,
+) -> anyhow::Result<String> {
+    if parts.len() < 2 {
+        anyhow::bail!("juntar menos de duas fatias não faz sentido");
+    }
+    let start = parts.first().map(|p| p.start_layer).unwrap_or(0);
+    let end = parts
+        .last()
+        .map(|p| p.end_layer)
+        .ok_or_else(|| anyhow::anyhow!("nenhuma fatia para juntar"))?;
+    let out_dir = plan::shard_output_dir(&shard_dir, &req.base_name);
+    let output = out_dir.join(plan::shard_filename(&req.base_name, start, end));
+
+    // Reuse an existing merge: rebuilding gigabytes is wasted I/O for an
+    // identical result. Safe because the output name is only ever given to a
+    // complete file (see the rename below).
+    if let Ok(meta) = tokio::fs::metadata(&output).await {
+        if meta.len() > 1024 {
+            info!(
+                "modelo junto já existe, reaproveitando: {}",
+                output.display()
+            );
+            invalidate_catalog().await;
+            return Ok(output.to_string_lossy().into_owned());
+        }
+    }
+
+    set_job(
+        job_id,
+        "running",
+        "juntando fatias",
+        &format!(
+            "{} fatia(s), camadas {}-{} (pode levar alguns minutos)",
+            parts.len(),
+            start,
+            end
+        ),
+    )
+    .await;
+
+    let merge_parts: Vec<crate::splitter::MergePart> = parts
+        .iter()
+        .map(|p| crate::splitter::MergePart {
+            path: std::path::PathBuf::from(&p.source_model_path),
+            start_layer: p.start_layer,
+            end_layer: p.end_layer,
+        })
+        .collect();
+    let dst = output.clone();
+    // Write to a temporary name and rename when complete, so a merge cut short
+    // (kill, power loss) never leaves a half file under the final name where a
+    // later apply would reuse it as a finished model. The unique suffix also
+    // keeps two concurrent merges of the same range from interleaving writes.
+    let temp = output.with_file_name(format!(
+        "{}.{}.part",
+        output.file_name().map(|s| s.to_string_lossy()).unwrap_or_default(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    let temp_cleanup = temp.clone();
+    let progress_job = job_id.to_string();
+
+    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
+        let n = crate::splitter::merge(&merge_parts, &temp, move |pct| {
+            let id = progress_job.clone();
+            tokio::spawn(async move { set_job_progress(&id, pct).await });
+        })?;
+        std::fs::rename(&temp, &dst)
+            .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
+        Ok(n)
+    })
+    .await
+    .context("spawn_blocking para splitter")?
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(&temp_cleanup);
+    })?;
+
+    invalidate_catalog().await;
+
+    info!(
+        "modelo junto pronto: {} ({:.1} GB)",
+        output.display(),
+        bytes as f64 / 1_073_741_824.0
+    );
+    Ok(output.to_string_lossy().into_owned())
 }
 
 // ── Slicing a whole model, here, on demand ───────────────────────────────────
@@ -1531,6 +1648,7 @@ async fn release_slice(
         peer_index: cfg.peer_index,
         primary: cfg.primary,
         skip_split: true,
+        merge: None,
         params: RuntimeParams::from(&cfg),
     };
 
@@ -1589,6 +1707,16 @@ async fn rejoin_network(
     }
 }
 
+/// One local slice feeding a merge on this peer: the file and the range it
+/// stands for. The peer joins these into one GGUF before serving it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MergeSource {
+    /// Path of the slice *on this peer*.
+    pub source_model_path: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
 /// One entry per peer taking part in the launch.
 #[derive(Debug, Deserialize)]
 pub struct LaunchTarget {
@@ -1599,6 +1727,12 @@ pub struct LaunchTarget {
     pub end_layer: u32,
     #[serde(default)]
     pub skip_split: bool,
+    /// Local slices to join into one file before serving. When present, the
+    /// peer merges them (`splitter::merge`) and serves the union; the merge
+    /// replaces `skip_split` because the file covering the range only comes
+    /// into existence through the merge.
+    #[serde(default)]
+    pub merge: Option<Vec<MergeSource>>,
     /// How many of this peer's layers go on its GPU, overriding
     /// `params.n_gpu_layers` for this peer alone.
     ///
@@ -1732,6 +1866,7 @@ pub(crate) async fn launch(
             peer_index: index as u32,
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             skip_split: target.skip_split,
+            merge: target.merge.clone(),
             params,
         };
 
@@ -1925,6 +2060,7 @@ mod tests {
             start_layer: 0,
             end_layer: 15,
             skip_split: true,
+            merge: None,
             n_gpu_layers: gpu,
         };
 
@@ -1946,6 +2082,7 @@ mod tests {
             peer_index: 0,
             primary: true,
             skip_split: false,
+            merge: None,
             params: RuntimeParams::default(),
         }
     }
@@ -1983,5 +2120,111 @@ mod tests {
         assert_eq!(p.n_ctx, 4096);
         assert!(!p.no_thinking);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
+    }
+
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f)
+    }
+
+    /// `merge_parts` with two real mini-GGUF slices: the execution path the
+    /// planner's merged steps feed into, exercised with files instead of mocks.
+    #[test]
+    fn merge_parts_joins_two_slices_into_a_whole() {
+        block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "rdmap2p-webui-merge-{}",
+                std::process::id()
+            ));
+            let parts_dir = root.join("parts");
+            std::fs::create_dir_all(&parts_dir).unwrap();
+            let a = parts_dir.join("m_0_15.gguf");
+            let b = parts_dir.join("m_16_31.gguf");
+            std::fs::write(&a, crate::splitter::test_gguf_bytes(16)).unwrap();
+            std::fs::write(&b, crate::splitter::test_gguf_bytes(16)).unwrap();
+
+            let req = req(0, 31, 32, 1);
+            let parts = vec![
+                MergeSource {
+                    source_model_path: a.to_string_lossy().into_owned(),
+                    start_layer: 0,
+                    end_layer: 15,
+                },
+                MergeSource {
+                    source_model_path: b.to_string_lossy().into_owned(),
+                    start_layer: 16,
+                    end_layer: 31,
+                },
+            ];
+            let out = merge_parts(root.clone(), &req, &parts, "job-merge").await.unwrap();
+            let out_path = std::path::Path::new(&out);
+            assert_eq!(
+                out_path.file_name().unwrap().to_string_lossy().as_ref(),
+                "m_0_31.gguf",
+                "o modelo junto sai no diretório de fatias com o nome convencional"
+            );
+            let layout = crate::gguf::read_layout(out_path).unwrap();
+            assert_eq!(layout.layer_count(), 32, "as duas fatias juntas cobrem o modelo");
+            assert!(out_path.metadata().unwrap().len() > a.metadata().unwrap().len());
+
+            // Reuse: a second apply with the same range must not rebuild it —
+            // a marker written over the output proves the file was left alone.
+            let marker = vec![0xAAu8; 2048];
+            std::fs::write(&out_path, &marker).unwrap();
+            let again = merge_parts(root.clone(), &req, &parts, "job-merge-2").await.unwrap();
+            assert_eq!(again, out);
+            assert_eq!(
+                std::fs::read(&out_path).unwrap(),
+                marker,
+                "o modelo junto existente foi reaproveitado, não reescrito"
+            );
+
+            std::fs::remove_dir_all(&root).ok();
+        });
+    }
+
+    #[test]
+    fn merge_parts_refuses_one_part_or_a_gap() {
+        block_on(async {
+            let root = std::env::temp_dir().join(format!(
+                "rdmap2p-webui-merge-bad-{}",
+                std::process::id()
+            ));
+            let parts_dir = root.join("parts");
+            std::fs::create_dir_all(&parts_dir).unwrap();
+            let a = parts_dir.join("m_0_15.gguf");
+            let b = parts_dir.join("m_17_31.gguf");
+            std::fs::write(&a, crate::splitter::test_gguf_bytes(16)).unwrap();
+            std::fs::write(&b, crate::splitter::test_gguf_bytes(15)).unwrap();
+
+            let req = req(0, 31, 32, 1);
+            let single = vec![MergeSource {
+                source_model_path: a.to_string_lossy().into_owned(),
+                start_layer: 0,
+                end_layer: 15,
+            }];
+            let err = merge_parts(root.clone(), &req, &single, "job-1").await.unwrap_err();
+            assert!(err.to_string().contains("menos de duas"), "{err}");
+
+            let gap = vec![
+                MergeSource {
+                    source_model_path: a.to_string_lossy().into_owned(),
+                    start_layer: 0,
+                    end_layer: 15,
+                },
+                MergeSource {
+                    source_model_path: b.to_string_lossy().into_owned(),
+                    start_layer: 17,
+                    end_layer: 31,
+                },
+            ];
+            let err = merge_parts(root.clone(), &req, &gap, "job-2").await.unwrap_err();
+            assert!(err.to_string().contains("vizinhas"), "{err}");
+
+            std::fs::remove_dir_all(&root).ok();
+        });
     }
 }

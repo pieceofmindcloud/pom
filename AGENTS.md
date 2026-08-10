@@ -571,6 +571,37 @@ arbitrária. **Nenhum peso trafega pela rede.** (`split.py`, o wrapper `--qtd`,
 Como as bibliotecas divergem entre as máquinas, a tela marca em quais peers o
 modelo escolhido existe e avisa quando falta em algum.
 
+### Implantar na rede - o plano, a fusão e a ordem
+
+A aba "Implantar na rede" (`web-ui/src/routes/DeployModel.tsx`, rotas
+`/api/ui/deploy/plan` e `/api/ui/deploy` em `src/deploy.rs`) põe em serviço um
+conjunto de fatias que já existe. O nó sugere a distribuição; a escolha do
+operador (`selection`) viaja na requisição e o `deploy` **re-varre o cluster em
+vez de confiar na prévia** - o `plan` é barato o bastante para ser chamado a
+cada edição, o `deploy` não.
+
+Três regras saem da arquitetura, não do gosto:
+
+- **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
+  prompt inteiro de cada requisição. "Escolher a ordem" é o mesmo ato que
+  escolher quem fica com qual faixa - não há segundo botão.
+- **Um nó serve uma faixa.** Duas faixas na mesma máquina são recusa, **exceto**
+  com `merge` ligado: faixas adjacentes viram uma *unidade fundida*, a máquina
+  junta as fatias num arquivo só (`splitter::merge`, `split_model.py --merge`)
+  e serve a união. O passo fundido carrega `parts`, uma por fatia, cada uma com
+  sua fonte.
+- **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
+  rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
+  legítima e só impede o pipeline de planejar.
+
+A fusão escreve em `<shard_dir>/<base>/` como temp com sufixo único e renomeia
+no fim (nunca deixa arquivo pela metade com nome final), e um arquivo já
+existente é reaproveitado sem reescrever. A checagem de disco da implantação
+conta a **união das fatias mais o que falta** - a máquina precisa de espaço para
+o modelo junto *e* para as partes que ficam no disco. O transporte é o mesmo da
+tela de Transferências (Range com retomada, MD5 antes do nome final); o
+progresso fica no sino e vem dos nós, então fechar a aba não interrompe nada.
+
 ### API compatível com OpenAI
 
 Servida por **qualquer** peer, em `src/openai.rs`:

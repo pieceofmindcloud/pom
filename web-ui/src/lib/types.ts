@@ -370,6 +370,19 @@ export interface DeployAlternative {
   note: string | null;
 }
 
+/** One slice feeding a merged step: the range, its file, where it comes from. */
+export interface DeployStepPart {
+  start_layer: number;
+  end_layer: number;
+  name: string;
+  size_bytes: number;
+  /** Already on the target — nothing to copy for this part. */
+  ready: boolean;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+}
+
 /** One slice of a deploy plan: who serves it, and what has to move first. */
 export interface DeployStep {
   /** 1-based place in the pipeline. Position 1 receives the prompt. */
@@ -397,6 +410,12 @@ export interface DeployStep {
   problem: string | null;
   /** Set when it can, but the operator should read it first. */
   note: string | null;
+  /** True when this step serves the union of `parts`, joined into one file on
+   *  the target, instead of a single slice already in place. */
+  merged: boolean;
+  /** The slices this step is assembled from, in layer order. Empty for a
+   *  plain step. */
+  parts: DeployStepPart[];
 }
 
 /** A range that exists somewhere in the cluster, selected or not. */
@@ -469,6 +488,9 @@ export interface DeployPlan {
   blocked: string | null;
   /** True while this is the node's suggestion rather than the operator's edit. */
   auto: boolean;
+  /** True when the operator asked each machine's adjacent slices to be joined
+   *  into one file — the steps reflect it. */
+  merge: boolean;
   available: DeployCandidate[];
   machines: DeployMachine[];
   missing: Array<[number, number]>;

@@ -13,3 +13,8 @@ rdma-p2p.json
 
 # lixo do Finder do macOS; entrava no repo por si so
 .DS_Store
+
+# build artifacts do web-ui
+web-ui/node_modules/
+web-ui/dist/
+*.tsbuildinfo

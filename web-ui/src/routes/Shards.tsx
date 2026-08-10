@@ -58,10 +58,14 @@ function CoverageBar({ set }: { set: ShardSet }) {
 function ShardCard({
   set,
   peersMissing,
+  aloneInNetwork,
   onSend,
 }: {
   set: ShardSet;
   peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
+  /** No other machine is on the network at all — different from "everyone
+      already has this slice", and the label has to say so. */
+  aloneInNetwork: boolean;
   onSend: (shard: DiscoveredModel, nodeId: string) => void;
 }) {
   return (
@@ -113,7 +117,9 @@ function ShardCard({
               </span>
               <div className="flex shrink-0 items-center gap-2">
                 {missing.length === 0 ? (
-                  <span className="text-[0.78rem] text-faint">todas já têm</span>
+                  <span className="text-[0.78rem] text-faint">
+                    {aloneInNetwork ? "nenhuma outra máquina" : "todas já têm"}
+                  </span>
                 ) : (
                   <Select
                     className="w-52"
@@ -217,6 +223,7 @@ export function Shards() {
             key={set.group}
             set={set}
             peersMissing={peersMissing}
+            aloneInNetwork={others.length === 0}
             onSend={(shard, nodeId) => void send(shard, nodeId)}
           />
         ))}

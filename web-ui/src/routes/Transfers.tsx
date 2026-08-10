@@ -112,20 +112,24 @@ export function Transfers() {
         )}
 
         <Panel>
-          <PanelHeader
-            title={
-              active.length
-                ? `${active.length} ${active.length === 1 ? "transferência" : "transferências"} em andamento`
-                : "Nada em andamento"
-            }
-            subtitle="O andamento vem do nó, então recarregar a página não perde a barra."
-          />
+          {/* Only worth a header when there is something under it; otherwise the
+              empty state below already carries the whole message. */}
+          {(transfers.isLoading || active.length > 0) && (
+            <PanelHeader
+              title={
+                active.length
+                  ? `${active.length} ${active.length === 1 ? "transferência" : "transferências"} em andamento`
+                  : "Nada em andamento"
+              }
+              subtitle="O andamento vem do nó, então recarregar a página não perde a barra."
+            />
+          )}
           {transfers.isLoading ? (
             <div className="space-y-3 p-5">
               <Skeleton className="h-12 w-full" />
             </div>
           ) : active.length === 0 ? (
-            <Empty icon={<Download className="h-5 w-5" />} title="Nenhum download rodando">
+            <Empty icon={<Download className="h-5 w-5" />} title="Nada em andamento">
               Os arquivos recebidos vão para a subpasta <span className="font-mono">recebidos/</span>{" "}
               da pasta de fatias configurada.
             </Empty>

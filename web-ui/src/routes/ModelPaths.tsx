@@ -171,11 +171,10 @@ export function ModelPaths() {
                     placeholder={paths.data.default_shard_dir}
                   />
                 </Field>
-                <p className="flex items-start gap-2 text-xs leading-relaxed text-faint">
-                  <HardDriveDownload className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <Footnote icon={<HardDriveDownload className="h-3.5 w-3.5" />}>
                   Os arquivos que chegam de outra máquina vão para a subpasta{" "}
                   <span className="font-mono">recebidos/</span> dentro desta.
-                </p>
+                </Footnote>
               </div>
             </Panel>
           </div>

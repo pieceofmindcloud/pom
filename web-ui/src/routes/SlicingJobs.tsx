@@ -100,16 +100,20 @@ export function SlicingJobs() {
 
       {jobs.data && (
         <Panel>
-          <PanelHeader
-            title={
-              running.length
-                ? `${running.length} ${running.length === 1 ? "trabalho rodando" : "trabalhos rodando"}`
-                : "Nada rodando agora"
-            }
-            subtitle="Trabalhos terminados ficam listados por dez minutos."
-          />
+          {/* An empty panel says its piece once: the header would only repeat
+              what the empty state already spells out. */}
+          {list.length > 0 && (
+            <PanelHeader
+              title={
+                running.length
+                  ? `${running.length} ${running.length === 1 ? "trabalho rodando" : "trabalhos rodando"}`
+                  : "Nada rodando agora"
+              }
+              subtitle="Trabalhos terminados ficam listados por dez minutos."
+            />
+          )}
           {list.length === 0 ? (
-            <Empty icon={<ListTree className="h-5 w-5" />} title="Nenhum trabalho recente">
+            <Empty icon={<ListTree className="h-5 w-5" />} title="Nada rodando agora">
               Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam, e por dez
               minutos depois de terminarem.
             </Empty>

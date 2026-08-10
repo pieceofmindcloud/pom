@@ -44,12 +44,28 @@ unsafe extern "C" fn capture_callback(
     if name.is_null() {
         return true;
     }
-    if unsafe { CStr::from_ptr(name) } != target.as_c_str() {
-        return ask; // ask=true: "do you want this tensor?" → no; ask=false: wrong tensor, skip
-    }
-    // ask=true means "will you want this tensor?": return true to be called again after compute.
+    let matches = unsafe { CStr::from_ptr(name) } == target.as_c_str();
+
+    // The two phases mean different things, and the return value means something
+    // different in each — see `ggml_backend_sched_compute_splits`:
+    //
+    //   ask = true   "will you want this tensor?" `false` lets ggml batch this
+    //                node with the following ones, which is what we want for
+    //                every node but ours.
+    //   ask = false  the tensor is ready. Here `false` does NOT mean "not mine":
+    //                it BREAKS the evaluation loop and abandons the rest of the
+    //                graph.
+    //
+    // Returning `ask` for a non-matching tensor got both wrong at once: it
+    // claimed every node, forcing them to be computed one at a time, and then
+    // returned false on the first one — so the forward pass stopped at the very
+    // first node while `llama_decode` still reported success. Nothing after the
+    // input embedding was ever computed.
     if ask {
-        return true;
+        return matches;
+    }
+    if !matches {
+        return true; // keep going; this node was simply not ours
     }
 
     // Compute phase: copy the tensor bytes.
@@ -650,14 +666,61 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
 mod tests {
     use super::*;
 
+    /// The capture target and buffer are process-global — the module doc
+    /// explains why that is sound in production, where one engine exists per
+    /// process. Tests run in parallel threads, so two engines would exist at
+    /// once and whichever loaded last would decide what the other captures.
+    /// This lock restores the one-engine-at-a-time property the design assumes.
+    static ENGINE_LOCK: Mutex<()> = Mutex::new(());
+
     /// `tokenize` sizes its buffer from a call with `n_tokens_max = 0`, whose
     /// documented answer is the NEGATIVE of the count. Reading that as an error
     /// made every prompt come back empty, and the head peer of the pipeline
     /// rejected chunk 0 with "não tem tokens" before the second peer was ever
     /// contacted. Only a real vocab exercises the contract, so the test points
     /// at a GGUF given by the environment and skips when there is none.
+
+    /// The residual capture has to actually fire, and the tensor has to have one
+    /// row per token. This is the regression test for the eval-callback
+    /// contract: returning `false` in the compute phase does not mean "not my
+    /// tensor", it breaks ggml's evaluation loop and abandons the rest of the
+    /// graph. With that inverted, the forward pass stopped at the input
+    /// embedding, `llama_decode` still returned success, and the peer answered
+    /// "residual capture did not fire".
+    #[test]
+    fn residual_capture_fires_with_one_row_per_token() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
+            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: true,
+        };
+        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let toks = engine.tokenize("Explique RDMA em uma frase.", true, true);
+        assert!(!toks.is_empty(), "prompt must tokenize");
+        engine.decode_tokens(&toks, 0, 0, true).expect("decode succeeds");
+
+        let residual = engine
+            .take_residual(toks.len())
+            .expect("the capture callback must have fired");
+        assert_eq!(residual.len(), toks.len() * engine.n_embd);
+        // An abandoned graph leaves the buffer zeroed; a real residual does not.
+        assert!(
+            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            "residual is all zeros or non-finite — the graph did not run"
+        );
+    }
+
     #[test]
     fn tokenize_returns_tokens_for_a_real_vocab() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
             eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
             return;

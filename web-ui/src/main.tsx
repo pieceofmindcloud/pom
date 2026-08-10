@@ -24,7 +24,12 @@ createRoot(document.getElementById("root")!).render(
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <ToastProvider>
-          <BrowserRouter>
+          {/* Opt in to the v7 behaviour now: it is what this app already
+              assumes, and it keeps the dev console free of deprecation noise
+              so a real warning stands out. */}
+          <BrowserRouter
+            future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+          >
             <App />
           </BrowserRouter>
         </ToastProvider>

@@ -13,7 +13,7 @@ import {
 } from "../components/ui";
 import { bytes, num } from "../lib/format";
 import { useLocalCatalog } from "../lib/queries";
-import type { DiscoveredModel, ModelSource } from "../lib/types";
+import { isWholeModel, type DiscoveredModel, type ModelSource } from "../lib/types";
 
 const SOURCE_TONE: Record<string, "sky" | "amber" | "neutral"> = {
   lmstudio: "sky",
@@ -102,7 +102,10 @@ export function ScannedRoots({
 
 export function WholeModels() {
   const catalog = useLocalCatalog();
-  const models = catalog.data?.models ?? [];
+  // Fatias têm `shard_range` preenchido e ficam fora da lista de modelos
+  // inteiros — o catálogo continua trazendo as duas, e quem precisa das fatias
+  // lê `shard_sets` (ou faz a pergunta inversa).
+  const models = (catalog.data?.models ?? []).filter(isWholeModel);
 
   return (
     <>

@@ -161,6 +161,9 @@ export interface DiscoveredModel {
   shard_group: string | null;
 }
 
+/** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
+export const isWholeModel = (m: DiscoveredModel): boolean => m.shard_range == null;
+
 export interface ShardSet {
   group: string;
   total_layers: number | null;

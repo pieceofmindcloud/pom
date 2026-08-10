@@ -31,7 +31,7 @@ import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
 import { useInvalidate, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { SizePlan } from "../lib/types";
+import { isWholeModel, type SizePlan } from "../lib/types";
 
 /** One row of the builder. Empty means "the rest of the model". */
 interface SliceInput {
@@ -68,7 +68,9 @@ export function SliceModels() {
   const navigate = useNavigate();
   const invalidate = useInvalidate();
 
-  const models = catalog.data?.models ?? [];
+  // Fatiar é sobre modelos inteiros: fatias têm `shard_range` e não podem ser
+  // fatiadas de novo.
+  const models = (catalog.data?.models ?? []).filter(isWholeModel);
   const [path, setPath] = useState(params.get("path") ?? "");
   const [slices, setSlices] = useState<SliceInput[]>([row("4"), row()]);
   const [plan, setPlan] = useState<SizePlan | null>(null);

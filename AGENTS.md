@@ -253,6 +253,12 @@ planejador não fechou a cobertura 0..total_layers.
   corrigem `total_layers` via `/health`; nesses casos o valor vem do palpite de
   `guess_from_name` (32 para `qwen`), que só por sorte bate. Shards novos
   (`split_model.py`) gravam `rdmap2p.original_block_count` e são a via confiável.
+  Quantas camadas o modelo tem é **`Option`, não número**, do catálogo até o
+  plano: `catalog.rs` deduz o total da cobertura do conjunto quando a fatia não
+  declara (e marca `total_layers_inferred`), e `deploy::model_size` faz o mesmo
+  no cluster inteiro. Zerar esse "não sei" foi o bug de 2026-08-10: o plano se
+  dizia completo e todo `apply` morria em `NodeConfig::validate`, depois de
+  `launch` já ter parado a inferência das máquinas alvo.
 - **A TUI limpa a tela a cada `--refresh` segundos.** Para ver logs, redirecione
   para arquivo (`./run-p1.sh > /tmp/p1.out 2>&1`) e leia de lá.
 - **`pkill -f "target/release/rdma-p2p"` por ssh mata o próprio shell do ssh** —

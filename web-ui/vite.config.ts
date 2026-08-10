@@ -24,6 +24,26 @@ const proxied = ["/api", "/v1", "/admin", "/peers", "/health", "/generate"];
 
 export default defineConfig({
   plugins: [react()],
+  /**
+   * Pinned, and not left to the default, because the default has a silent
+   * fallback that hid a real failure for a while.
+   *
+   * Vite computes it as `cacheDir ?? (pkgDir ? pkgDir/node_modules/.vite :
+   * root/.vite)`. The last branch only happens when Vite could not find this
+   * package's `package.json` — the same loss of project context that leaves it
+   * running with no config at all: no PostCSS (so `@tailwind` reaches the
+   * browser as a literal and the page renders unstyled) and no `server.proxy`
+   * (so `/api/*` answers with index.html instead of JSON). Nothing errors; the
+   * server keeps replying 200.
+   *
+   * That state is reachable by editing nothing: a `git rebase` or branch switch
+   * rewrites `vite.config.ts` under a live dev server, Vite restarts itself on
+   * the spot, and the restart can land while the tree is mid-rewrite. Naming
+   * the directory means a stray `web-ui/.vite/` can no longer appear, so if the
+   * page ever loses its styling again the cure is the same as ever — restart
+   * the dev server — and the cache location is at least not a second variable.
+   */
+  cacheDir: "node_modules/.vite",
   resolve: {
     alias: { "@": fileURLToPath(new URL("./src", import.meta.url)) },
   },

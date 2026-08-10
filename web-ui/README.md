@@ -49,6 +49,40 @@ que está sendo usado. Há teste disso em `src/network.rs`
 Um nó destacado mostra "Fora da rede" em Configurações › Rede, com um botão
 "Voltar para a rede" que chama `/api/ui/rejoin`.
 
+### A tela abriu sem estilo? Reinicie o dev server
+
+Sintoma: a página aparece crua, fontes com serifa, sem layout — e junto,
+`/api/*` devolve `<!doctype html>` em vez de JSON, então as telas mostram
+"Unexpected token '<'". Os dois ao mesmo tempo, sem nenhum erro no console e com
+o servidor respondendo 200 em tudo.
+
+Não é o Tailwind, não é o PostCSS, não é o cache. É o dev server que **perdeu o
+contexto do projeto** e está rodando sem config nenhuma. Reiniciar resolve:
+
+```bash
+# no diretorio web-ui
+npm run dev
+```
+
+Como se confirma em dez segundos, sem abrir o navegador:
+
+```bash
+curl -s http://localhost:5199/src/index.css | grep -c '@tailwind'   # sadio: 0
+curl -s http://localhost:5199/api/ui/node | head -c 20              # sadio: {"node_id"...
+```
+
+`@tailwind` cru na saída significa que o PostCSS não rodou de todo — diferente
+de `content` mal configurado, que geraria o preflight e comeria a diretiva.
+
+**Como se chega nesse estado sem editar nada:** um `git rebase`, um `git
+checkout` de outra branch, qualquer coisa que reescreva `vite.config.ts` com o
+dev server no ar. O Vite se reinicia sozinho ao ver o arquivo mudar, e o
+reinício pode cair no instante em que a árvore está no meio da reescrita; ele
+sobe sem achar o `package.json` e, a partir daí, sem config: sem PostCSS e sem
+`server.proxy`. Nada falha alto, o servidor continua servindo.
+
+A regra prática: **mexeu no git com o dev server rodando, reinicie o dev server.**
+
 ### A porta e a configuração usadas na validação
 
 `rdma-p2p.json` não é versionado. O que subiu durante esta entrega:

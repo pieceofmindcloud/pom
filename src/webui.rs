@@ -1997,7 +1997,12 @@ pub async fn save_setup(
             cfg.connection_key = req.connection_key.clone();
         }
         if !req.bootstrap.is_empty() {
-            cfg.bootstrap_nodes = req.bootstrap.split(',').map(|s| s.trim().to_string()).collect();
+            cfg.bootstrap_nodes = req
+                .bootstrap
+                .split(',')
+                .map(crate::config::normalize_peer_addr)
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
 

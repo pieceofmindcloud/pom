@@ -445,8 +445,20 @@ async fn main() -> Result<()> {
         .collect();
 
     // ── Bootstrap nodes: config + CLI extras ─────────────────────────────────
-    let mut bootstrap_nodes: Vec<String> = app_config.bootstrap_nodes.clone();
-    for b in args.bootstrap.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+    // Normalised on the way in, config file included: an entry saved before
+    // there was any validation is exactly the one that fails at send time.
+    let mut bootstrap_nodes: Vec<String> = app_config
+        .bootstrap_nodes
+        .iter()
+        .map(|b| config::normalize_peer_addr(b))
+        .filter(|s| !s.is_empty())
+        .collect();
+    for b in args
+        .bootstrap
+        .split(',')
+        .map(config::normalize_peer_addr)
+        .filter(|s| !s.is_empty())
+    {
         if !bootstrap_nodes.contains(&b) {
             bootstrap_nodes.push(b);
         }

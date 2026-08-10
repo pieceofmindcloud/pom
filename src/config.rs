@@ -80,6 +80,46 @@ pub struct Config {
 fn default_gateway_port() -> u16 { 8080 }
 fn default_p2p_port() -> u16 { 42777 }
 
+/// Put a peer address the operator typed into the form the resolver accepts.
+///
+/// The failure this exists for is an address with **no port**: the resolver
+/// splits on the last colon, so a bare IPv6 hands it a group of hex digits
+/// where a port belongs and answers `invalid port value`. The gossip loop then
+/// repeats `Failed to send to …: invalid port value` forever, and the message
+/// names neither the offending entry nor the fix — it comes from a layer below
+/// anything the operator ever typed. So a bare address gets the default P2P
+/// port, which is the only port it could have meant.
+///
+/// Missing brackets are handled too, though measurement says they are *not* the
+/// culprit: `2804:d55::1:42777` resolves fine, because the split leaves a valid
+/// IPv6 on the left. Normalising it anyway keeps what we store equal to what we
+/// print, which is what makes a peer list comparable by eye.
+pub fn normalize_peer_addr(raw: &str) -> String {
+    use std::net::{IpAddr, SocketAddr};
+
+    let s = raw.trim();
+    if s.is_empty() {
+        return String::new();
+    }
+    // Already valid — `[v6]:port`, `v4:port`.
+    if s.parse::<SocketAddr>().is_ok() {
+        return s.to_string();
+    }
+    // An address and nothing else: supply the port it must have meant.
+    if let Ok(ip) = s.parse::<IpAddr>() {
+        return SocketAddr::new(ip, default_p2p_port()).to_string();
+    }
+    // Unbracketed IPv6 with a port: resolvable as typed, stored canonically.
+    if let Some((host, port)) = s.rsplit_once(':') {
+        if host.parse::<std::net::Ipv6Addr>().is_ok() && port.parse::<u16>().is_ok() {
+            return format!("[{host}]:{port}");
+        }
+    }
+    // Hostnames resolve at send time; leave anything else untouched rather than
+    // rejecting a name we simply do not understand here.
+    s.to_string()
+}
+
 /// Port the local inference server listens on when the config does not name one.
 ///
 /// A node configured through the web UI never passes `--inference-port`, and
@@ -196,6 +236,29 @@ pub fn default_shard_dir() -> PathBuf {
 
 #[cfg(test)]
 mod tests {
+    /// A peer address with no port is what produces `invalid port value` — the
+    /// resolver splits on the last colon and finds hex where a port belongs.
+    /// Measured, not assumed: an unbracketed IPv6 *with* a port resolves fine.
+    #[test]
+    fn peer_addr_supplies_the_missing_port() {
+        assert_eq!(
+            normalize_peer_addr("2804:d55:5579:1000:1c20:e551:6a95:9a0d:42777"),
+            "[2804:d55:5579:1000:1c20:e551:6a95:9a0d]:42777"
+        );
+        // Already correct: untouched.
+        assert_eq!(
+            normalize_peer_addr(" [2804:d55::1]:42777 "),
+            "[2804:d55::1]:42777"
+        );
+        // No port at all: the default P2P port is the only one it could mean.
+        assert_eq!(normalize_peer_addr("2804:d55::1"), "[2804:d55::1]:42777");
+        assert_eq!(normalize_peer_addr("192.168.1.5"), "192.168.1.5:42777");
+        // IPv4 with port, and a hostname, both pass through.
+        assert_eq!(normalize_peer_addr("192.168.1.5:42777"), "192.168.1.5:42777");
+        assert_eq!(normalize_peer_addr("ksia:42777"), "ksia:42777");
+        assert_eq!(normalize_peer_addr("  "), "");
+    }
+
     use super::*;
 
     #[test]

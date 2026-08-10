@@ -138,9 +138,17 @@ impl GatewayState {
 /// 512 tokens no matter how large `--n-ctx` was, which is what a harness sending
 /// a real conversation hits immediately.
 pub fn prompt_budget(cfg: &crate::runtime::NodeConfig) -> u32 {
-    let per_session_ctx = cfg.n_ctx / cfg.max_sessions.max(1);
+    prompt_budget_of(cfg.n_ctx, cfg.max_sessions, cfg.max_new_tokens)
+}
+
+/// The same figure from loose numbers, for a configuration that is still being
+/// chosen and has no running node behind it yet — the deploy screen quotes it
+/// while the operator is editing the knobs, and quoting it from anywhere but
+/// here is how the two go out of step.
+pub fn prompt_budget_of(n_ctx: u32, max_sessions: u32, max_new_tokens: u32) -> u32 {
+    let per_session_ctx = n_ctx / max_sessions.max(1);
     // Room has to be left for the tokens we are about to generate.
-    per_session_ctx.saturating_sub(cfg.max_new_tokens)
+    per_session_ctx.saturating_sub(max_new_tokens)
 }
 
 /// Tokens per prefill chunk — this is what `n_batch` actually constrains.
@@ -148,9 +156,11 @@ pub fn prompt_budget(cfg: &crate::runtime::NodeConfig) -> u32 {
 /// A chunk is decoded as one batch on the peer, so a configured chunk larger
 /// than `n_batch` would abort llama.cpp exactly the way whole prompts used to.
 pub fn prompt_chunk_tokens(cfg: &crate::runtime::NodeConfig) -> u32 {
-    cfg.prefill_chunk_tokens
-        .max(1)
-        .min(cfg.n_batch.max(1))
+    prompt_chunk_of(cfg.prefill_chunk_tokens, cfg.n_batch)
+}
+
+pub fn prompt_chunk_of(prefill_chunk_tokens: u32, n_batch: u32) -> u32 {
+    prefill_chunk_tokens.max(1).min(n_batch.max(1))
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────

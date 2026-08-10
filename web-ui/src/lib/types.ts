@@ -356,8 +356,21 @@ export interface SplitPlan {
   warnings: string[];
 }
 
+/** One machine offered as the target of one slice. `src/deploy.rs`. */
+export interface DeployAlternative {
+  node_id: string;
+  label: string;
+  /** Already has the file — nothing to copy. */
+  has: boolean;
+  /** Nothing about this machine stops the assignment. */
+  ok: boolean;
+  note: string | null;
+}
+
 /** One slice of a deploy plan: who serves it, and what has to move first. */
 export interface DeployStep {
+  /** 1-based place in the pipeline. Position 1 receives the prompt. */
+  position: number;
   start_layer: number;
   end_layer: number;
   total_layers: number;
@@ -371,6 +384,68 @@ export interface DeployStep {
   source_host: string | null;
   source_path: string | null;
   target_path: string | null;
+  /** Entry point of the pipeline — whoever holds layer 0. */
+  primary: boolean;
+  /** Per-machine GPU offload, when set. `null` means "the cluster's number". */
+  n_gpu_layers: number | null;
+  options: DeployAlternative[];
+  /** Set when this assignment cannot be carried out, and why. */
+  problem: string | null;
+  /** Set when it can, but the operator should read it first. */
+  note: string | null;
+}
+
+/** A range that exists somewhere in the cluster, selected or not. */
+export interface DeployCandidate {
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  name: string;
+  size_bytes: number;
+  /** Node ids that already have this exact range. */
+  holders: string[];
+  selected: boolean;
+}
+
+export interface DeployMachine {
+  node_id: string;
+  label: string;
+  mem_free_mb: number;
+  disk_free_mb: number;
+  holds: Array<[number, number]>;
+  taking: [number, number] | null;
+}
+
+/**
+ * Execution settings a launch carries. `src/webui.rs` — `RuntimeParams`.
+ *
+ * Cluster-wide on purpose: the context window and the batch decide the prompt
+ * budget the gateway enforces, and the sampling only runs on the last peer.
+ * `n_gpu_layers` is the default a peer takes when it has no override of its own.
+ */
+export interface RuntimeParams {
+  n_gpu_layers: number;
+  n_ctx: number;
+  n_batch: number;
+  max_new_tokens: number;
+  max_sessions: number;
+  prefill_chunk_tokens: number;
+  temperature: number;
+  top_p: number;
+  top_k: number;
+  repeat_penalty: number;
+  repeat_last_n: number;
+  no_thinking: boolean;
+  no_embeddings: boolean;
+}
+
+/** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
+export interface DeploySelection {
+  start_layer: number;
+  end_layer: number;
+  target_node_id: string;
+  /** Overrides `params.n_gpu_layers` for this machine alone. */
+  n_gpu_layers?: number | null;
 }
 
 export interface DeployPlan {
@@ -381,4 +456,17 @@ export interface DeployPlan {
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */
   blocked: string | null;
+  /** True while this is the node's suggestion rather than the operator's edit. */
+  auto: boolean;
+  available: DeployCandidate[];
+  machines: DeployMachine[];
+  missing: Array<[number, number]>;
+  overlap: Array<[number, number]>;
+  warnings: string[];
+  /** The settings this deploy would launch with, defaults filled in. */
+  params: RuntimeParams;
+  /** Prompt tokens one request gets under `params`. `gateway::prompt_budget`. */
+  prompt_tokens: number;
+  /** Prompt tokens per round trip through the pipeline, under `params`. */
+  chunk_tokens: number;
 }

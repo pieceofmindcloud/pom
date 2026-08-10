@@ -1,55 +1,369 @@
 /**
  * Putting a set of slices that already exists into service.
  *
- * The screen is a preview of a decision, not a form: the operator picks the
- * model, and the node answers with who would serve which range and what has to
- * be copied first. Nothing here computes that in the browser — the plan comes
- * from `/api/ui/deploy/plan`, and pressing the button recomputes it server-side
- * rather than submitting the preview, because a machine can leave the cluster
- * between looking and deciding.
+ * The screen opens on a decision the node made — who would serve which range,
+ * and what has to be copied first — and every part of that decision is then
+ * editable. Nothing here computes the plan in the browser: the suggestion comes
+ * from `/api/ui/deploy/plan`, every edit is sent straight back to the same route
+ * for validation, and pressing the button re-surveys the cluster server-side
+ * before acting, because a machine can leave between looking and deciding.
  *
- * The copies matter enough to be the loudest thing on screen. A 10 GB slice
- * takes about seventeen minutes on the real link, so "3 fatias, 12 GB" is the
- * difference between a deploy that finishes now and one that finishes after
- * lunch, and the operator should learn that before pressing, not after.
+ * Three things the operator is choosing, and why they are the shape they are:
+ *
+ * * **Which layers.** A model is often sliced more than once, with different
+ *   cuts — 0-4 / 5-31 next to 0-10 / 11-31. Every range anyone holds is a row
+ *   with a checkbox, so mixing two slicings is possible and the ribbon above the
+ *   table shows immediately what that leaves covered, uncovered or doubled.
+ * * **Which machine.** Each selected row carries a target picker. Choosing a
+ *   machine that already has another range swaps the two, because that is what
+ *   the operator meant and a node can only serve one range.
+ * * **The order.** The pipeline runs in layer order — `pipeline.rs` sweeps from
+ *   layer 0 up, so whoever holds layer 0 receives every prompt. There is no
+ *   second knob to turn: reordering the pipeline *is* reassigning the ranges,
+ *   and the ↑ ↓ buttons do exactly that by swapping machines between
+ *   neighbouring rows. The rail at the top shows the resulting order.
+ *
+ * The copies matter enough to stay loud. A 10 GB slice takes about seventeen
+ * minutes on the real link, so "3 fatias, 12 GB" is the difference between a
+ * deploy that finishes now and one that finishes after lunch.
  */
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useState } from "react";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  ArrowDown,
   ArrowRight,
+  ArrowUp,
+  Check,
+  ChevronDown,
+  ChevronUp,
   CircleAlert,
   Download,
   Layers,
+  MessageSquareText,
   Rocket,
   ServerCog,
+  Sparkles,
   TriangleAlert,
+  Wand2,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { useClusterCatalog, useInvalidate } from "../lib/queries";
+import { useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { bytes, layerRange } from "../lib/format";
+import { bytes, layerRange, megabytes, num } from "../lib/format";
+import { Confirm } from "../components/Confirm";
+import { trackOf } from "../components/PipelineRail";
 import {
   Badge,
   Button,
   Empty,
   ErrorState,
+  Field,
   Footnote,
+  Input,
   PageHeader,
   Panel,
   PanelHeader,
+  Progress,
   ScrollX,
   Select,
   Skeleton,
 } from "../components/ui";
-import type { DeployPlan } from "../lib/types";
+import type { DeployPlan, DeploySelection, RuntimeParams } from "../lib/types";
+
+const rangeKey = (start: number, end: number) => `${start}-${end}`;
+
+/** The plan on screen, in the shape the routes accept it back. */
+function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
+  return (plan?.steps ?? []).map((s) => ({
+    start_layer: s.start_layer,
+    end_layer: s.end_layer,
+    target_node_id: s.target_node_id,
+  }));
+}
+
+const sameRows = (a: DeploySelection[], b: DeploySelection[]) =>
+  a.length === b.length &&
+  a.every(
+    (r, i) =>
+      r.start_layer === b[i].start_layer &&
+      r.end_layer === b[i].end_layer &&
+      r.target_node_id === b[i].target_node_id,
+  );
+
+const byLayer = (a: DeploySelection, b: DeploySelection) =>
+  a.start_layer - b.start_layer || a.end_layer - b.end_layer;
+
+/**
+ * The include box.
+ *
+ * A native `<input type=checkbox>` was the obvious thing and the wrong one: the
+ * unchecked state is painted by the platform, and against these surfaces it
+ * lands as a pale filled square that reads as *disabled* — the opposite of what
+ * an unticked row means. This is the same control drawn with the panel's own
+ * border and accent.
+ */
+function Tick({
+  on,
+  label,
+  onToggle,
+}: {
+  on: boolean;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={on}
+      aria-label={label}
+      onClick={onToggle}
+      className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border transition-colors duration-150 ${
+        on
+          ? "border-iris bg-iris text-white"
+          : "border-line-strong bg-ink text-transparent hover:border-iris/60"
+      }`}
+    >
+      <Check className="h-3 w-3" strokeWidth={3} />
+    </button>
+  );
+}
+
+/**
+ * One tick per layer of the model, coloured by the machine that would run it.
+ *
+ * This is the part that makes a mixed selection legible: a hole shows as a
+ * hollow tick and a layer claimed by two slices shows as a striped one, so
+ * "0-10 plus 5-31" is visibly wrong before the node has to say so in words.
+ */
+function Coverage({
+  total,
+  rows,
+}: {
+  total: number;
+  rows: DeploySelection[];
+}) {
+  if (total <= 0) return null;
+
+  const owner = new Array<number>(total).fill(-1);
+  const doubled = new Array<boolean>(total).fill(false);
+  rows.forEach((r, i) => {
+    for (let l = r.start_layer; l <= Math.min(r.end_layer, total - 1); l++) {
+      if (owner[l] === -1) owner[l] = i;
+      else doubled[l] = true;
+    }
+  });
+
+  const covered = owner.filter((o) => o !== -1).length;
+  const overlapped = doubled.filter(Boolean).length;
+
+  return (
+    <div className="min-w-0">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="eyebrow">Camadas cobertas pela escolha</span>
+        <span className="font-mono text-[0.72rem] text-muted">
+          {covered}/{total}
+          {covered < total && (
+            <span className="ml-2 text-amber">faltam {total - covered}</span>
+          )}
+          {overlapped > 0 && (
+            <span className="ml-2 text-rose">{overlapped} em duas fatias</span>
+          )}
+        </span>
+      </div>
+      <div className="flex h-6 w-full gap-[2px] overflow-hidden rounded-md">
+        {owner.map((o, l) => (
+          <div
+            key={l}
+            title={
+              doubled[l]
+                ? `Camada ${l} — em mais de uma fatia escolhida`
+                : o === -1
+                  ? `Camada ${l} — fora da escolha`
+                  : `Camada ${l} — ${rangeKey(rows[o].start_layer, rows[o].end_layer)}`
+            }
+            className={
+              doubled[l]
+                ? "min-w-0 flex-1 rounded-[2px] bg-rose/30 ring-1 ring-inset ring-rose"
+                : o === -1
+                  ? "min-w-0 flex-1 rounded-[2px] bg-line ring-1 ring-inset ring-amber/50"
+                  : `min-w-0 flex-1 rounded-[2px] ${trackOf(o).fill}`
+            }
+            style={{ opacity: o === -1 || doubled[l] ? 1 : 0.85 }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * The execution settings, in the order and wording the old "Ajustes avançados"
+ * block used — the launch has always carried all of these, and the rewritten
+ * panel simply had nowhere to type them.
+ *
+ * They are cluster-wide because the pipeline needs them to be: the context
+ * window, the batch and the chunk decide the prompt budget the gateway enforces
+ * on every request, and the sampling only ever runs on the last peer. The one
+ * that is genuinely per-machine, GPU offload, is edited in the machines table
+ * instead, next to the machine it belongs to.
+ */
+const KNOBS: Array<{
+  key: keyof RuntimeParams;
+  label: string;
+  hint?: string;
+  min: number;
+  max?: number;
+  step?: number;
+}> = [
+  {
+    key: "n_gpu_layers",
+    label: "Camadas na GPU",
+    hint: "Padrão do cluster; cada máquina pode ter o seu.",
+    min: 0,
+  },
+  {
+    key: "n_ctx",
+    label: "Contexto (n_ctx)",
+    hint: "Dividido entre as requisições simultâneas.",
+    min: 512,
+    step: 512,
+  },
+  {
+    key: "n_batch",
+    label: "Lote (n_batch)",
+    hint: "Teto de um pedaço de prompt.",
+    min: 32,
+    step: 32,
+  },
+  { key: "max_new_tokens", label: "Máx. tokens novos", min: 16 },
+  {
+    key: "max_sessions",
+    label: "Requisições simultâneas",
+    hint: "Divide o contexto: mais concorrência, menos janela.",
+    min: 1,
+    max: 16,
+  },
+  { key: "prefill_chunk_tokens", label: "Tokens por pedaço", min: 32, step: 32 },
+  { key: "temperature", label: "Temperatura", min: 0, max: 2, step: 0.05 },
+  { key: "top_p", label: "top_p", min: 0, max: 1, step: 0.05 },
+  { key: "top_k", label: "top_k", min: 0 },
+  { key: "repeat_penalty", label: "Penalidade de repetição", min: 1, max: 2, step: 0.01 },
+  { key: "repeat_last_n", label: "Janela da penalidade", min: 0 },
+];
+
+function Switch({
+  checked,
+  onChange,
+  label,
+  hint,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  hint?: string;
+}) {
+  return (
+    <div className="flex items-start gap-2.5">
+      <span className="mt-0.5">
+        <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[0.82rem] text-fg">{label}</span>
+        {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
+      </span>
+    </div>
+  );
+}
+
+function Terminus({ icon, label }: { icon: React.ReactNode; label: string }) {
+  return (
+    <div className="flex w-[76px] shrink-0 flex-col items-center gap-1.5 text-center">
+      <div className="flex h-8 w-8 items-center justify-center rounded-full border border-dashed border-line-strong text-faint">
+        {icon}
+      </div>
+      <span className="text-[0.72rem] text-muted">{label}</span>
+    </div>
+  );
+}
+
+function Arrow() {
+  return (
+    <div className="flex w-8 shrink-0 items-center justify-center self-center pb-5 text-faint">
+      <ArrowRight className="h-4 w-4" />
+    </div>
+  );
+}
+
+/** The order the request will actually travel, read left to right. */
+function OrderRail({
+  rows,
+  labelOf,
+}: {
+  rows: DeploySelection[];
+  labelOf: (id: string) => string;
+}) {
+  return (
+    <div className="-mx-1 overflow-x-auto px-1 pb-1">
+      <div className="flex items-stretch gap-1 py-1">
+        <Terminus icon={<MessageSquareText className="h-4 w-4" />} label="prompt" />
+        <Arrow />
+        {rows.map((r, i) => {
+          const track = trackOf(i);
+          return (
+            <div key={rangeKey(r.start_layer, r.end_layer)} className="flex items-stretch">
+              <div className="relative flex w-[164px] shrink-0 flex-col gap-2 rounded-xl border border-line bg-surface p-3">
+                <span
+                  className={`absolute inset-x-3.5 top-0 h-[2px] rounded-full ${track.fill}`}
+                />
+                {/* Fixed height so the layer range sits on the same baseline in
+                    every card, badge or no badge. */}
+                <div className="flex h-5 items-center gap-1.5">
+                  <span className="font-mono text-[0.7rem] text-faint">{i + 1}º</span>
+                  {i === 0 && (
+                    <Badge tone="iris" className="px-1.5 py-0 text-[0.62rem] leading-4">
+                      processa o prompt
+                    </Badge>
+                  )}
+                </div>
+                <div className={`font-mono text-[0.9rem] font-semibold ${track.text}`}>
+                  {layerRange(r.start_layer, r.end_layer)}
+                </div>
+                <div className="flex min-w-0 items-center gap-1.5 border-t border-line pt-2">
+                  <ServerCog className="h-3.5 w-3.5 shrink-0 text-faint" />
+                  <span className="truncate text-[0.78rem] text-fg">
+                    {r.target_node_id ? labelOf(r.target_node_id) : "sem máquina"}
+                  </span>
+                </div>
+              </div>
+              {i < rows.length - 1 && <Arrow />}
+            </div>
+          );
+        })}
+        <Arrow />
+        <Terminus icon={<Sparkles className="h-4 w-4" />} label="resposta" />
+      </div>
+    </div>
+  );
+}
 
 export function DeployModel() {
   const cluster = useClusterCatalog();
   const [group, setGroup] = useState("");
+  /** `null` means "whatever the node suggests" — the default, few-clicks path. */
+  const [selection, setSelection] = useState<DeploySelection[] | null>(null);
+  /** `null` means "the node's own defaults", which is what most deploys want. */
+  const [params, setParams] = useState<RuntimeParams | null>(null);
+  /** Half-typed numbers, so clearing a field does not snap back to a digit. */
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [advanced, setAdvanced] = useState(false);
+  const [asked, setAsked] = useState(false);
   const [running, setRunning] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
+  const jobs = useJobs();
 
   /** Every slice set anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
@@ -62,20 +376,137 @@ export function DeployModel() {
 
   const chosen = group || groups[0] || "";
 
+  // Edits go to the node for validation, but not on every keystroke: the survey
+  // behind this route talks to every peer, and the settings are typed digit by
+  // digit.
+  const [settled, setSettled] = useState<DeploySelection[] | null>(null);
+  const [settledParams, setSettledParams] = useState<RuntimeParams | null>(null);
+  useEffect(() => {
+    const t = setTimeout(() => {
+      setSettled(selection);
+      setSettledParams(params);
+    }, 260);
+    return () => clearTimeout(t);
+  }, [selection, params]);
+
   const plan = useQuery({
-    queryKey: ["deploy-plan", chosen],
-    queryFn: () => api.post<DeployPlan>("/api/ui/deploy/plan", { group: chosen }),
+    queryKey: [
+      "deploy-plan",
+      chosen,
+      settled ? JSON.stringify(settled) : "auto",
+      settledParams ? JSON.stringify(settledParams) : "padrão",
+    ],
+    queryFn: () =>
+      api.post<DeployPlan>("/api/ui/deploy/plan", {
+        group: chosen,
+        ...(settled ? { selection: settled } : {}),
+        ...(settledParams ? { params: settledParams } : {}),
+      }),
     enabled: chosen.length > 0,
     staleTime: 10_000,
+    placeholderData: keepPreviousData,
   });
+
+  const p = plan.data;
+
+  /** What is on screen right now: the operator's edit, or the suggestion. */
+  const rows = useMemo(
+    () => (selection ?? rowsOf(p)).slice().sort(byLayer),
+    [selection, p],
+  );
+
+  /** True while the node's answer still describes exactly these rows. */
+  const validated = !!p && sameRows(rows, rowsOf(p));
+
+  const labelOf = (id: string) =>
+    p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
+
+  /** The settings in force: the operator's edit, or the node's own defaults. */
+  const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+
+  /** Edit one knob. The draft keeps the field usable while it is half-typed. */
+  function setKnob(key: keyof RuntimeParams, text: string) {
+    setDrafts((d) => ({ ...d, [key]: text }));
+    const value = Number(text);
+    if (text !== "" && Number.isFinite(value)) {
+      setParams({ ...eff, [key]: value });
+    }
+  }
+
+  function edit(next: (base: DeploySelection[]) => DeploySelection[]) {
+    setSelection(next(rows.map((r) => ({ ...r }))).slice().sort(byLayer));
+  }
+
+  function toggle(start: number, end: number) {
+    edit((base) => {
+      const at = base.findIndex((r) => r.start_layer === start && r.end_layer === end);
+      if (at !== -1) return base.filter((_, i) => i !== at);
+
+      // A newly included range needs a machine, and the useful default is one
+      // that already has the file and is not busy with another range.
+      const taken = new Set(base.map((r) => r.target_node_id).filter(Boolean));
+      const candidate = p?.available.find(
+        (c) => c.start_layer === start && c.end_layer === end,
+      );
+      const target =
+        candidate?.holders.find((h) => !taken.has(h)) ??
+        p?.machines.find((m) => !taken.has(m.node_id))?.node_id ??
+        "";
+      return [
+        ...base,
+        { start_layer: start, end_layer: end, target_node_id: target, n_gpu_layers: null },
+      ];
+    });
+  }
+
+  /** Give a range to a machine. Taking an occupied machine swaps the two. */
+  function assign(index: number, nodeId: string) {
+    edit((base) => {
+      const previous = base[index].target_node_id;
+      const busy = base.findIndex((r, i) => i !== index && r.target_node_id === nodeId);
+      if (busy !== -1) base[busy].target_node_id = previous;
+      base[index].target_node_id = nodeId;
+      return base;
+    });
+  }
+
+  /**
+   * How many layers this machine offloads, or `null` to take the cluster's
+   * number. Set on the machine and carried by whichever range it ends up with.
+   */
+  function setPeerGpu(nodeId: string, value: number | null) {
+    edit((base) => {
+      const at = base.findIndex((r) => r.target_node_id === nodeId);
+      if (at !== -1) base[at].n_gpu_layers = value;
+      return base;
+    });
+  }
+
+  /** Move a machine one place along the pipeline, which is a swap of ranges. */
+  function move(index: number, delta: number) {
+    const to = index + delta;
+    if (to < 0 || to >= rows.length) return;
+    edit((base) => {
+      const keep = base[index].target_node_id;
+      base[index].target_node_id = base[to].target_node_id;
+      base[to].target_node_id = keep;
+      return base;
+    });
+  }
 
   async function deploy() {
     setRunning(true);
+    setAsked(false);
     try {
-      await api.post<{ job_id: string }>("/api/ui/deploy", { group: chosen });
+      const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
+        group: chosen,
+        ...(selection ? { selection: rows } : {}),
+        ...(params ? { params } : {}),
+      });
+      setJobId(started.job_id);
       toast.success(
         "Implantação começou",
-        "Acompanhe no sino: o progresso vem dos nós, então recarregar não perde nada.",
+        "Acompanhe abaixo ou no sino: o progresso vem dos nós, então recarregar não perde nada.",
       );
       invalidate();
     } catch (e) {
@@ -85,15 +516,29 @@ export function DeployModel() {
     }
   }
 
-  const p = plan.data;
-  const copies = p?.steps.filter((s) => !s.ready && s.target_node_id) ?? [];
-  const canDeploy = !!p && !p.blocked && p.steps.length > 0;
+  const job = jobs.data?.jobs.find((j) => j.id === jobId);
+  // A range with no machine is a blocked plan, not traffic: counting it made
+  // the footer promise "1 cópia · 3,3 GB" for a row that says "sem máquina".
+  const copies = rows.filter((r) => {
+    if (!r.target_node_id) return false;
+    const s = p?.steps.find(
+      (x) => x.start_layer === r.start_layer && x.end_layer === r.end_layer,
+    );
+    return s && !s.ready && s.target_node_id === r.target_node_id;
+  });
+  const copyBytes = copies.reduce((sum, r) => {
+    const c = p?.available.find(
+      (x) => x.start_layer === r.start_layer && x.end_layer === r.end_layer,
+    );
+    return sum + (c?.size_bytes ?? 0);
+  }, 0);
+  const canDeploy = validated && !p?.blocked && rows.length > 0;
 
   return (
     <>
       <PageHeader
         title="Implantar um modelo fatiado"
-        subtitle="Pegue um conjunto de fatias que já existe e coloque-o para atender na rede."
+        subtitle="Pegue um conjunto de fatias que já existe e coloque-o para atender na rede. O nó sugere a distribuição; daqui em diante ela é sua."
       />
 
       {cluster.isLoading && <Skeleton className="h-40 w-full" />}
@@ -116,12 +561,32 @@ export function DeployModel() {
             <PanelHeader
               title="Modelo a implantar"
               subtitle="Conjuntos de fatias que alguma máquina do cluster já tem."
+              actions={
+                (selection || params) && (
+                  <Button
+                    size="sm"
+                    icon={<Wand2 className="h-3.5 w-3.5" />}
+                    onClick={() => {
+                      setSelection(null);
+                      setParams(null);
+                      setDrafts({});
+                    }}
+                  >
+                    Voltar ao plano do nó
+                  </Button>
+                )
+              }
             />
             <div className="px-5 py-4">
               <Select
                 aria-label="Conjunto de fatias"
+                name="conjunto-de-fatias"
                 value={chosen}
-                onChange={(e) => setGroup(e.target.value)}
+                onChange={(e) => {
+                  setGroup(e.target.value);
+                  setSelection(null);
+                  setJobId(null);
+                }}
                 className="max-w-md"
               >
                 {groups.map((g) => (
@@ -148,7 +613,7 @@ export function DeployModel() {
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                 className="space-y-5"
               >
-                {p.blocked && (
+                {validated && p.blocked && (
                   <div className="flex items-start gap-3 rounded-xl border border-rose/30 bg-rose/[0.07] px-4 py-3.5">
                     <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
                     <div className="min-w-0">
@@ -160,33 +625,69 @@ export function DeployModel() {
                   </div>
                 )}
 
-                {!p.blocked && !p.complete && (
+                {validated && !p.blocked && !p.complete && (
                   <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
                     <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-fg">
-                        As fatias não cobrem o modelo inteiro
+                        As fatias escolhidas não cobrem o modelo inteiro
                       </p>
                       <p className="mt-1 text-sm text-muted">
-                        Dá para subir assim, mas o planejador recusa pipeline com
-                        buraco — a rede não vai atender até a cobertura fechar.
+                        {p.missing
+                          .map(([a, b]) => (a === b ? `L${a}` : `L${a}–${b}`))
+                          .join(", ")}{" "}
+                        {p.missing.length === 1 ? "ficou de fora" : "ficaram de fora"}. Dá
+                        para subir assim, mas o planejador recusa pipeline com buraco — a
+                        rede não vai atender até a cobertura fechar.
                       </p>
                     </div>
                   </div>
                 )}
 
+                {validated &&
+                  p.warnings
+                    .filter((w) => w.includes("memória"))
+                    .map((w) => (
+                      <div
+                        key={w}
+                        className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3"
+                      >
+                        <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
+                        <p className="min-w-0 text-sm text-muted">{w}</p>
+                      </div>
+                    ))}
+
                 <Panel>
                   <PanelHeader
-                    eyebrow="Prévia"
-                    title="Como as fatias ficam distribuídas"
-                    subtitle="Da primeira camada à última. Quem fica com a camada 0 processa o prompt inteiro de cada requisição, então essa vai para a máquina com mais espaço."
+                    eyebrow={p.auto && !selection ? "Sugestão do nó" : "Sua escolha"}
+                    title="A ordem em que a requisição percorre as máquinas"
+                    subtitle="O pipeline roda em ordem de camada, então quem fica com a camada 0 recebe o prompt inteiro de cada requisição. Trocar a ordem é trocar quem fica com qual faixa."
+                  />
+                  <div className="px-5 py-4">
+                    {rows.length === 0 ? (
+                      <p className="py-6 text-center text-sm text-muted">
+                        Nenhuma fatia escolhida — marque ao menos uma na tabela abaixo.
+                      </p>
+                    ) : (
+                      <OrderRail rows={rows} labelOf={labelOf} />
+                    )}
+                  </div>
+                  <div className="border-t border-line px-5 py-4">
+                    <Coverage total={p.total_layers} rows={rows} />
+                  </div>
+                </Panel>
+
+                <Panel>
+                  <PanelHeader
+                    title="Quais fatias entram, e em qual máquina"
+                    subtitle="Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
                     actions={
                       <Button
                         variant="primary"
                         icon={<Rocket className="h-4 w-4" />}
                         loading={running}
                         disabled={!canDeploy}
-                        onClick={() => void deploy()}
+                        onClick={() => (p.complete ? void deploy() : setAsked(true))}
                       >
                         Implantar
                       </Button>
@@ -194,10 +695,291 @@ export function DeployModel() {
                   />
 
                   <ScrollX>
-                    <table className="w-full min-w-[46rem] text-sm">
+                    <table className="w-full min-w-[64rem] text-sm">
                       <thead>
                         <tr className="border-b border-line text-left">
-                          {["Camadas", "Fatia", "Tamanho", "Vai para", "O que acontece"].map(
+                          {[
+                            "Entra",
+                            "Camadas",
+                            "Fatia",
+                            "Tamanho",
+                            "Vai para",
+                            "Ordem",
+                            "O que acontece",
+                          ].map((h) => (
+                            <th key={h} className="px-5 py-2.5 text-xs font-medium text-faint">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-line">
+                        {p.available.map((c) => {
+                          const at = rows.findIndex(
+                            (r) =>
+                              r.start_layer === c.start_layer && r.end_layer === c.end_layer,
+                          );
+                          const on = at !== -1;
+                          const row = on ? rows[at] : null;
+                          const step = p.steps.find(
+                            (s) =>
+                              s.start_layer === c.start_layer &&
+                              s.end_layer === c.end_layer &&
+                              s.target_node_id === row?.target_node_id,
+                          );
+                          const track = on ? trackOf(at) : null;
+
+                          return (
+                            <tr
+                              key={rangeKey(c.start_layer, c.end_layer)}
+                              className={on ? "" : "opacity-55"}
+                            >
+                              <td className="py-3 pl-5 pr-2">
+                                <Tick
+                                  on={on}
+                                  label={`Incluir ${layerRange(c.start_layer, c.end_layer)}`}
+                                  onToggle={() => toggle(c.start_layer, c.end_layer)}
+                                />
+                              </td>
+                              <td className="whitespace-nowrap py-3 pl-3 pr-5">
+                                <span className="flex items-center gap-2">
+                                  {/* Kept in the flow even when empty so every
+                                      range starts at the same x. */}
+                                  <span
+                                    className={`h-3.5 w-[3px] rounded-full ${
+                                      track ? track.fill : "bg-transparent"
+                                    }`}
+                                  />
+                                  <span
+                                    className={`font-mono text-[0.82rem] ${
+                                      track ? track.text : "text-muted"
+                                    }`}
+                                  >
+                                    {layerRange(c.start_layer, c.end_layer)}
+                                  </span>
+                                </span>
+                              </td>
+                              <td className="max-w-[15rem] px-5 py-3">
+                                <span className="block truncate text-[0.82rem] text-fg">
+                                  {c.name}
+                                </span>
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
+                                {bytes(c.size_bytes)}
+                              </td>
+                              {/* The width lives on the cell: `Select` is
+                                  `w-full`, and a width class on it loses to
+                                  that in the generated CSS whatever the order
+                                  in the string. */}
+                              <td className="w-[18rem] px-5 py-3">
+                                {on ? (
+                                  <Select
+                                    aria-label={`Máquina para ${layerRange(c.start_layer, c.end_layer)}`}
+                                    name={`destino-${rangeKey(c.start_layer, c.end_layer)}`}
+                                    className="h-8 text-[0.82rem]"
+                                    value={row?.target_node_id ?? ""}
+                                    onChange={(e) => assign(at, e.target.value)}
+                                  >
+                                    <option value="">— escolher máquina —</option>
+                                    {p.machines.map((m) => (
+                                      <option key={m.node_id} value={m.node_id}>
+                                        {/* The cost of the choice is spelled out
+                                            in the last column; here it only has
+                                            to say whether it means a copy. */}
+                                        {m.label}
+                                        {c.holders.includes(m.node_id) ? " · já tem" : " · copiar"}
+                                      </option>
+                                    ))}
+                                  </Select>
+                                ) : (
+                                  <span className="text-[0.8rem] text-faint">—</span>
+                                )}
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-3">
+                                {on ? (
+                                  <span className="flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      aria-label={`Adiantar ${layerRange(c.start_layer, c.end_layer)} na ordem`}
+                                      disabled={at === 0}
+                                      onClick={() => move(at, -1)}
+                                      className="flex h-7 w-7 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-line-strong hover:text-fg disabled:pointer-events-none disabled:opacity-35"
+                                    >
+                                      <ArrowUp className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      aria-label={`Atrasar ${layerRange(c.start_layer, c.end_layer)} na ordem`}
+                                      disabled={at === rows.length - 1}
+                                      onClick={() => move(at, 1)}
+                                      className="flex h-7 w-7 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-line-strong hover:text-fg disabled:pointer-events-none disabled:opacity-35"
+                                    >
+                                      <ArrowDown className="h-3.5 w-3.5" />
+                                    </button>
+                                  </span>
+                                ) : (
+                                  <span className="text-[0.8rem] text-faint">—</span>
+                                )}
+                              </td>
+                              <td className="px-5 py-3">
+                                {!on ? (
+                                  <span className="text-[0.8rem] text-faint">
+                                    {c.holders.length === 0
+                                      ? "em nenhuma máquina"
+                                      : c.holders.length > 2
+                                        ? `em ${c.holders.length} máquinas`
+                                        : `em ${c.holders.map(labelOf).join(", ")}`}
+                                  </span>
+                                ) : !step ? (
+                                  <span className="text-[0.8rem] text-faint">conferindo…</span>
+                                ) : step.problem ? (
+                                  <span className="flex items-start gap-1.5 text-[0.8rem] text-rose">
+                                    <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                    {step.problem}
+                                  </span>
+                                ) : step.ready ? (
+                                  <span className="text-[0.8rem] text-muted">já está lá</span>
+                                ) : (
+                                  <span className="flex items-start gap-1.5 text-[0.8rem] text-amber">
+                                    <Download className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                    copiar de {step.source_host ?? "—"}
+                                    {step.note ? ` · ${step.note}` : ""}
+                                  </span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </ScrollX>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
+                    <span className="text-[0.82rem] text-muted">
+                      {rows.length} de {p.available.length}{" "}
+                      {p.available.length === 1 ? "fatia" : "fatias"} · {p.total_layers}{" "}
+                      camadas no modelo
+                    </span>
+                    {copies.length === 0 ? (
+                      <Badge tone="aqua">nada a copiar</Badge>
+                    ) : (
+                      <Badge tone="amber">
+                        {copies.length} {copies.length === 1 ? "cópia" : "cópias"} ·{" "}
+                        {bytes(copyBytes)} pela rede
+                      </Badge>
+                    )}
+                  </div>
+                </Panel>
+
+                {job && (
+                  <Panel>
+                    <PanelHeader
+                      eyebrow="Em andamento"
+                      title={job.title ?? "Implantação"}
+                      subtitle={job.message}
+                    />
+                    <div className="space-y-2.5 px-5 py-4">
+                      <div className="flex items-baseline justify-between gap-3">
+                        <span className="text-[0.82rem] text-fg">{job.step}</span>
+                        <span className="font-mono text-[0.78rem] tabular-nums text-muted">
+                          {job.progress == null ? "…" : `${Math.round(job.progress)}%`}
+                        </span>
+                      </div>
+                      <Progress
+                        value={job.progress}
+                        tone={
+                          job.state === "failed"
+                            ? "rose"
+                            : job.state === "done"
+                              ? "aqua"
+                              : "iris"
+                        }
+                      />
+                    </div>
+                  </Panel>
+                )}
+
+                <Panel>
+                  <PanelHeader
+                    eyebrow="Execução"
+                    title="Ajustes avançados"
+                    subtitle={`Cada requisição aceita até ${num(p.prompt_tokens)} tokens de prompt, em pedaços de ${num(p.chunk_tokens)}. Passar disso é recusado antes de chegar ao llama.cpp.`}
+                    actions={
+                      <Button
+                        size="sm"
+                        icon={
+                          advanced ? (
+                            <ChevronUp className="h-3.5 w-3.5" />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5" />
+                          )
+                        }
+                        onClick={() => setAdvanced((v) => !v)}
+                      >
+                        {advanced ? "Esconder" : "Mostrar"}
+                      </Button>
+                    }
+                  />
+                  {advanced && (
+                    <div className="space-y-5 px-5 py-4">
+                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                        {KNOBS.map((k) => (
+                          <Field key={k.key} label={k.label} hint={k.hint}>
+                            <Input
+                              type="number"
+                              name={k.key}
+                              min={k.min}
+                              max={k.max}
+                              step={k.step}
+                              value={drafts[k.key] ?? String(eff[k.key] ?? "")}
+                              onChange={(e) => setKnob(k.key, e.target.value)}
+                              onBlur={() =>
+                                setDrafts((d) => {
+                                  const { [k.key]: _drop, ...rest } = d;
+                                  return rest;
+                                })
+                              }
+                            />
+                          </Field>
+                        ))}
+                      </div>
+
+                      <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
+                        <Switch
+                          checked={eff.no_thinking ?? true}
+                          onChange={(v) => setParams({ ...eff, no_thinking: v })}
+                          label="Desligar o bloco de raciocínio"
+                          hint="O modelo responde direto, sem o preâmbulo entre tags."
+                        />
+                        <Switch
+                          checked={eff.no_embeddings ?? false}
+                          onChange={(v) => setParams({ ...eff, no_embeddings: v })}
+                          label="Forçar sem embeddings (todos os peers)"
+                          hint="Normalmente é automático — só o último peer dispensa. Ligar aqui impede o primeiro de extrair o estado oculto, e o pipeline para de funcionar."
+                        />
+                      </div>
+                    </div>
+                  )}
+                </Panel>
+
+                <Panel>
+                  <PanelHeader
+                    eyebrow="Máquinas"
+                    title="O que cada uma tem e quanto lhe sobra"
+                    subtitle="A memória livre é o que a fatia precisa caber: VRAM onde há placa dedicada, RAM disponível no resto. A última coluna é quantas camadas esta máquina põe na GPU — em branco, vale o padrão do cluster."
+                  />
+                  <ScrollX>
+                    <table className="w-full min-w-[40rem] text-sm">
+                      <thead>
+                        <tr className="border-b border-line text-left">
+                          {[
+                            "Máquina",
+                            "Memória livre",
+                            "Disco livre",
+                            "Fatias que já tem",
+                            "Nesta implantação",
+                            "GPU nesta máquina",
+                          ].map(
                             (h) => (
                               <th key={h} className="px-5 py-2.5 text-xs font-medium text-faint">
                                 {h}
@@ -207,68 +989,68 @@ export function DeployModel() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-line">
-                        {p.steps.map((s) => (
-                          <tr key={`${s.start_layer}-${s.end_layer}`}>
-                            <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.82rem] text-iris">
-                              {layerRange(s.start_layer, s.end_layer)}
-                            </td>
-                            <td className="max-w-[16rem] px-5 py-3">
-                              <span className="block truncate text-[0.82rem] text-fg">
-                                {s.name}
-                              </span>
-                            </td>
-                            <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
-                              {bytes(s.size_bytes)}
-                            </td>
-                            <td className="whitespace-nowrap px-5 py-3">
-                              {s.target_node_id ? (
+                        {p.machines.map((m) => {
+                          const taking = rows.find((r) => r.target_node_id === m.node_id);
+                          return (
+                            <tr key={m.node_id}>
+                              <td className="whitespace-nowrap px-5 py-3">
                                 <span className="flex items-center gap-1.5 text-[0.82rem] text-fg">
                                   <ServerCog className="h-3.5 w-3.5 text-faint" />
-                                  {s.target_host}
-                                  {s.start_layer === 0 && (
-                                    <Badge tone="iris" className="ml-1">
-                                      processa o prompt
-                                    </Badge>
-                                  )}
+                                  {m.label}
                                 </span>
-                              ) : (
-                                <span className="text-[0.8rem] text-rose">
-                                  sem máquina livre
-                                </span>
-                              )}
-                            </td>
-                            <td className="whitespace-nowrap px-5 py-3">
-                              {!s.target_node_id ? (
-                                <span className="text-[0.8rem] text-faint">—</span>
-                              ) : s.ready ? (
-                                <span className="text-[0.8rem] text-muted">já está lá</span>
-                              ) : (
-                                <span className="flex items-center gap-1.5 text-[0.8rem] text-amber">
-                                  <Download className="h-3.5 w-3.5" />
-                                  copiar de {s.source_host ?? "—"}
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
+                                {m.mem_free_mb > 0 ? megabytes(m.mem_free_mb) : "—"}
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
+                                {m.disk_free_mb > 0 ? megabytes(m.disk_free_mb) : "—"}
+                              </td>
+                              <td className="px-5 py-3 font-mono text-[0.8rem] text-muted">
+                                {m.holds.length === 0
+                                  ? "nenhuma"
+                                  : m.holds.map(([a, b]) => layerRange(a, b)).join(" · ")}
+                              </td>
+                              <td className="whitespace-nowrap px-5 py-3">
+                                {taking ? (
+                                  <Badge tone="iris" mono>
+                                    {layerRange(taking.start_layer, taking.end_layer)}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-[0.8rem] text-faint">fica de fora</span>
+                                )}
+                              </td>
+                              {/* Offload is the one setting a machine gets to
+                                  disagree about, so it is edited next to the
+                                  machine and not in the cluster-wide block. */}
+                              <td className="whitespace-nowrap px-5 py-3">
+                                {taking ? (
+                                  <Input
+                                    type="number"
+                                    min={0}
+                                    aria-label={`Camadas na GPU em ${m.label}`}
+                                    name={`gpu-${m.node_id}`}
+                                    className="h-8 w-24 text-[0.82rem]"
+                                    placeholder={String(eff.n_gpu_layers)}
+                                    value={taking.n_gpu_layers ?? ""}
+                                    onChange={(e) =>
+                                      setPeerGpu(
+                                        m.node_id,
+                                        e.target.value === ""
+                                          ? null
+                                          : Math.max(0, Number(e.target.value) || 0),
+                                      )
+                                    }
+                                  />
+                                ) : (
+                                  <span className="text-[0.8rem] text-faint">—</span>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </ScrollX>
-
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
-                    <span className="text-[0.82rem] text-muted">
-                      {p.steps.length} {p.steps.length === 1 ? "fatia" : "fatias"} ·{" "}
-                      {p.total_layers} camadas
-                    </span>
-                    {copies.length === 0 ? (
-                      <Badge tone="aqua">nada a copiar</Badge>
-                    ) : (
-                      <Badge tone="amber">
-                        {copies.length} {copies.length === 1 ? "cópia" : "cópias"} ·{" "}
-                        {bytes(p.transfer_bytes)} pela rede
-                      </Badge>
-                    )}
-                  </div>
                 </Panel>
 
                 <Footnote icon={<ArrowRight className="h-3.5 w-3.5" />}>
@@ -281,6 +1063,25 @@ export function DeployModel() {
           </AnimatePresence>
         </div>
       )}
+
+      <Confirm
+        open={asked}
+        title="Subir com camadas de fora?"
+        description={
+          <>
+            {p?.missing
+              .map(([a, b]) => (a === b ? `L${a}` : `L${a}–${b}`))
+              .join(", ")}{" "}
+            não {(p?.missing.length ?? 0) === 1 ? "está" : "estão"} em nenhuma fatia
+            escolhida. Os nós sobem e as fatias são copiadas, mas a rede só volta a
+            responder quando a cobertura fechar.
+          </>
+        }
+        confirmLabel="Implantar assim"
+        busy={running}
+        onConfirm={() => void deploy()}
+        onCancel={() => setAsked(false)}
+      />
     </>
   );
 }

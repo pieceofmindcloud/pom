@@ -1601,6 +1601,16 @@ pub struct LaunchTarget {
     pub end_layer: u32,
     #[serde(default)]
     pub skip_split: bool,
+    /// How many of this peer's layers go on its GPU, overriding
+    /// `params.n_gpu_layers` for this peer alone.
+    ///
+    /// The only knob that is honestly per-machine: the rest of `RuntimeParams`
+    /// is either protocol (context window, batch, chunk) or sampling, and both
+    /// have to agree across the pipeline. Offload does not — a box with a 5060
+    /// Ti and a CPU-only box in the same cluster want different numbers, and
+    /// before this the whole launch had to settle on one.
+    #[serde(default)]
+    pub n_gpu_layers: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1613,6 +1623,20 @@ pub struct LaunchRequest {
     pub primary_node_id: Option<String>,
     #[serde(default)]
     pub params: RuntimeParams,
+}
+
+/// The cluster-wide settings as one peer will actually receive them.
+///
+/// Everything in `RuntimeParams` has to agree across the pipeline — the context
+/// window and the batch decide the prompt budget the gateway enforces, and the
+/// sampling is only used by the last peer — except how much of its own share a
+/// machine offloads to its GPU. That one is a property of the machine.
+fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
+    let mut params = base.clone();
+    if let Some(gpu) = target.n_gpu_layers {
+        params.n_gpu_layers = gpu;
+    }
+    params
 }
 
 /// Dispatch the planned configuration to every peer, including this one.
@@ -1678,6 +1702,7 @@ pub(crate) async fn launch(
     let mut results = Vec::new();
 
     for (index, target) in req.targets.iter().enumerate() {
+        let params = params_for(&req.params, target);
         let apply_req = ApplyRequest {
             source_model_path: target.source_model_path.clone(),
             base_name: req.base_name.clone(),
@@ -1688,7 +1713,7 @@ pub(crate) async fn launch(
             peer_index: index as u32,
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             skip_split: target.skip_split,
-            params: req.params.clone(),
+            params,
         };
 
         if target.node_id == self_id {
@@ -1865,6 +1890,31 @@ type UiQuery = Query<HashMap<String, String>>;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The GPU number is the one setting a machine gets to disagree about, and
+    /// disagreeing must not disturb anything else the pipeline relies on.
+    #[test]
+    fn only_the_gpu_offload_is_per_machine() {
+        let base = RuntimeParams {
+            n_gpu_layers: 99,
+            n_ctx: 32768,
+            ..RuntimeParams::default()
+        };
+        let target = |gpu| LaunchTarget {
+            node_id: "a".into(),
+            source_model_path: "/m.gguf".into(),
+            start_layer: 0,
+            end_layer: 15,
+            skip_split: true,
+            n_gpu_layers: gpu,
+        };
+
+        let cpu_only = params_for(&base, &target(Some(0)));
+        assert_eq!(cpu_only.n_gpu_layers, 0);
+        assert_eq!(cpu_only.n_ctx, 32768, "o resto continua sendo do cluster");
+
+        assert_eq!(params_for(&base, &target(None)).n_gpu_layers, 99);
+    }
 
     fn req(start: u32, end: u32, total: u32, peers: u32) -> ApplyRequest {
         ApplyRequest {

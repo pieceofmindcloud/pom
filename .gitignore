@@ -18,3 +18,4 @@ rdma-p2p.json
 web-ui/node_modules/
 web-ui/dist/
 *.tsbuildinfo
+web-ui/.vite/

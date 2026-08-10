@@ -8,8 +8,11 @@ venv*
 __pycache__*
 *.log
 .rdma-p2p.key
-rdma-p2p.json
-.rdma-p2p-node.key
+# Toda variante da config, nao so o nome exato: rdma-p2p-cpu.json e afins
+# carregam a connection_key, que vale como credencial de operador e como chave
+# de API. Um `git add -A` de script de deploy publicaria o segredo.
+rdma-p2p*.json
+.rdma-p2p-node*.key
 
 # lixo do Finder do macOS; entrava no repo por si so
 .DS_Store

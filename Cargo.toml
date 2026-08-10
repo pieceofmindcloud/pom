@@ -7,6 +7,12 @@ edition = "2021"
 name = "rdma-p2p"
 path = "src/main.rs"
 
+[features]
+# Embed the committed bundle instead of rebuilding the interface, so cutting a
+# release needs no Node. See build.rs for why this is the exception, not the
+# default.
+release-bundle = []
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
@@ -34,3 +40,8 @@ libp2p = { version = "0.56", features = [
 ] }
 pkarr = "6"
 async-trait = "0.1"
+# interpolate-folder-path: the bundle directory comes from build.rs via
+# CODAI_UI_DIST. debug-embed: embed in debug builds too, otherwise a debug
+# binary reads the bundle off disk at runtime and stops being self-contained.
+rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
+mime_guess = "2"

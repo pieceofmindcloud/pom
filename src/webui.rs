@@ -18,8 +18,8 @@ use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
 use axum::{
     extract::{Path, Query, State},
-    http::{header, StatusCode},
-    response::{Html, IntoResponse, Response},
+    http::StatusCode,
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -40,9 +40,6 @@ const PEER_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
-        .route("/", get(index))
-        .route("/ui/app.css", get(stylesheet))
-        .route("/ui/app.js", get(script))
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/models", get(models))
         .route("/api/ui/cluster", get(cluster))
@@ -76,26 +73,6 @@ pub fn routes() -> Router<GatewayState> {
     // Quem precisa delas e o modo setup, que monta o proprio roteador com estas
     // duas rotas e a setup.html (ver `start_setup_mode` em main.rs). O unico
     // consumidor e aquela pagina, servida so enquanto nao ha `rdma-p2p.json`.
-}
-
-// ── Static assets ────────────────────────────────────────────────────────────
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("../web/index.html"))
-}
-
-async fn stylesheet() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("../web/app.css"),
-    )
-}
-
-async fn script() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/javascript; charset=utf-8")],
-        include_str!("../web/app.js"),
-    )
 }
 
 // ── Node view ────────────────────────────────────────────────────────────────

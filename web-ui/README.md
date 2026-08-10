@@ -1,9 +1,9 @@
 # CODAI-SERVER — interface web
 
-Interface administrativa do `rdma-p2p`, reescrita em React. Vive em `web-ui/` e
-**não substitui** `web/`: o binário continua embutindo `web/` com `include_str!`
-e servindo-o na porta do gateway. Este app é um cliente separado, servido pelo
-dev server do Vite, que fala com um nó de verdade pela mesma API HTTP.
+Interface administrativa do `rdma-p2p`. **É a interface do produto**: o binário
+embute o build de produção deste diretório e o serve na porta do gateway (8080
+por padrão), incluindo a tela de configuração inicial. O antigo `web/` foi
+removido.
 
 A marca é só da interface. Crate, binário, config (`rdma-p2p.json`) e rotas
 continuam `rdma-p2p`.
@@ -12,11 +12,40 @@ continuam `rdma-p2p`.
 `@tanstack/react-query`, `react-markdown` + `remark-gfm` + `rehype-highlight`,
 `lucide-react` e `recharts`.
 
----
+## Como o binário serve a interface
 
-## Como subir
+`cargo build` **reconstrói a interface** (`build.rs` chama o Vite) e embute o
+resultado com `rust-embed`. Isso torna impossível o binário servir uma tela que
+discorde de `web-ui/src` — o preço é exigir Node e npm nas máquinas de
+desenvolvimento, que foi a escolha do captain.
 
-Duas peças: o nó (backend Rust) e o dev server.
+Para compilar **sem Node**, existe o caminho de release:
+
+```bash
+./scripts/cut-ui-bundle.sh          # gera web-ui/dist-release + a impressao digital
+git add web-ui/dist-release && git commit
+cargo build --release --features release-bundle
+```
+
+`dist-release` só entra no git **no corte do release**; fora disso nada gerado é
+versionado. E ele não é confiado na palavra: o pacote carrega a impressão digital
+do fonte que o gerou, e tanto o build de release quanto `cargo test` recusam alto
+se ela não bater com o `web-ui/src` atual. Um pacote velho falha a compilação em
+vez de virar uma interface de duas versões atrás na máquina de alguém.
+
+### Roteamento
+
+O bundle é montado **por último** no roteador do axum, e o catch-all dele é
+estreito de propósito: arquivo real ganha; `/api`, `/v1`, `/admin`, `/peers`,
+`/health` e `/generate` nunca caem no app (uma rota de API desconhecida responde
+404 em JSON, não uma página com status 200); um caminho com extensão que não
+existe é 404; o que sobra recebe o `index.html`, para recarregar `/config/keys/api`
+funcionar.
+
+## Desenvolvimento com hot reload
+
+Para iterar na interface sem recompilar o Rust a cada mudança, o dev server do
+Vite continua sendo o caminho — ele fala com um nó de verdade por proxy.
 
 ```bash
 # 1. o backend, na raiz do repo
@@ -124,6 +153,8 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | API keys | `GET`/`POST /admin/api-keys`, `DELETE /admin/api-keys/:key` |
 | Chaves de conexão | `GET /api/ui/node`, `POST /admin/regenerate-key` |
 | Pastas de modelos | `GET`/`POST /api/ui/paths` |
+| Configuração inicial | `GET /api/setup/key`, `POST /api/setup/save` |
+| Liberar fatia | `GET /api/ui/release/candidate`, `POST /api/ui/release` |
 
 **API token por nó está ligado de verdade**, não é maquete: os tokens são
 emitidos, listados e revogados em `/admin/api-keys`, ficam em `api_keys` no
@@ -174,6 +205,8 @@ Todas em `src/webui.rs`, no estilo do arquivo, mais um módulo novo.
 | `POST /api/ui/leave` | Sai da rede: para de anunciar e esquece os peers. |
 | `POST /api/ui/rejoin` | Volta para a rede. |
 | `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta as duas telas de Logs. |
+| `POST /api/ui/release` | O nó devolve a memória da fatia que serve e continua na rede; se houver peer ocioso com a fatia no disco, ela é passada adiante. Nunca é recusada. |
+| `GET /api/ui/release/candidate` | Quem assumiria a fatia, para a confirmação na tela avisar de verdade quando a faixa vai ficar descoberta. |
 
 Módulo novo `src/reqlog.rs`: registro em memória das requisições atendidas, com
 o `Caller` (operador, token com dica do valor, ou anônimo) e os hops percorridos.
@@ -192,15 +225,14 @@ Flag nova de CLI: `--no-discovery` (`src/main.rs`, `src/network.rs`).
 - Guardar as ofertas de transferência no backend, para `/admin/transfer-offers`
   deixar de ser lista vazia.
 - Registro de requisições em disco, para sobreviver ao reinício do nó.
-- Substituir `web/` por este app — é passo separado, decisão do captain. Enquanto
-  isso os dois coexistem e o binário serve o antigo.
 - A logo. `src/components/Logo.tsx` é um placeholder com dimensões fixas,
   isolado de propósito: trocar por um SVG mexe só nesse arquivo.
 
 ## Detalhes que economizam tempo depois
 
-- **Editar `web/` exige `cargo build`** — aqueles arquivos são embutidos com
-  `include_str!`. `web-ui/` não: tem hot reload.
+- **Editar `web-ui/` exige `cargo build`** para valer no binário, porque o bundle
+  é embutido em tempo de compilação. Durante o desenvolvimento use o dev server,
+  que tem hot reload.
 - **`Footnote`** (`src/components/ui.tsx`) existe porque a marcação óbvia é uma
   armadilha: um `<p className="flex">` com um `<span>` no meio da frase faz do
   span um item de flex próprio e a frase se parte em colunas. Use o componente,

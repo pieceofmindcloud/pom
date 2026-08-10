@@ -23,6 +23,8 @@ mod runtime;
 mod sysmon;
 mod transfer;
 mod wire;
+mod ui_manifest;
+mod webapp;
 mod webui;
 
 use anyhow::Result;
@@ -860,12 +862,13 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_dir: None,
     }));
 
+    // The same interface the configured node serves, so setup is not a second
+    // look-and-feel to maintain. The app notices it is in setup mode because
+    // `/api/ui/node` is not among the routes here.
     let app = Router::new()
-        .route("/", get(|| async {
-            axum::response::Html(include_str!("../web/setup.html"))
-        }))
         .route("/api/setup/key", get(webui::get_setup_key))
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
+        .merge(crate::webapp::routes())
         .with_state(config);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));

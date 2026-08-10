@@ -54,6 +54,38 @@ export const keys = {
   openaiModels: ["openai-models"] as const,
 };
 
+/**
+ * Whether this node has no configuration yet and is running the setup router.
+ *
+ * Deliberately its own query rather than a read of `useNode()`'s error: that one
+ * polls every few seconds, and react-query clears `error` while a retry is in
+ * flight, so keying the whole shell off it made the app flip from the setup
+ * screen to the dashboard and back between polls. This asks once, never retries
+ * and never goes stale — the answer cannot change without the node restarting,
+ * and that reloads the page anyway.
+ *
+ * `undefined` means "still asking", and callers have to wait rather than guess,
+ * or the setup screen flashes on every cold load of a configured node.
+ */
+export function useIsSetupMode() {
+  return useQuery({
+    queryKey: ["setup-mode"],
+    queryFn: async () => {
+      try {
+        await api.get<unknown>("/api/ui/node", { auth: false });
+        return false;
+      } catch (e) {
+        // Only a 404 means "this router has no /api/ui at all". A node that is
+        // merely unreachable is not a node asking to be configured.
+        return e instanceof ApiError && e.status === 404;
+      }
+    },
+    retry: false,
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  }).data;
+}
+
 export function useNode() {
   return useQuery({
     queryKey: keys.node,

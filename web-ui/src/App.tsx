@@ -1,5 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Route, Routes, useLocation } from "react-router-dom";
+import { useIsSetupMode } from "./lib/queries";
+import { Setup } from "./routes/Setup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Sidebar } from "./components/Sidebar";
 import { Topbar } from "./components/Topbar";
@@ -43,6 +45,20 @@ function Page({ children }: { children: React.ReactNode }) {
 export default function App() {
   const location = useLocation();
   const isChat = location.pathname === "/chat";
+  /*
+   * A node with no `rdma-p2p.json` runs a router carrying only `/api/setup/*`,
+   * so `/api/ui/node` answers 404. That miss is the signal.
+   *
+   * Deliberately not probed with `/api/setup/key`: that route *mints* a new
+   * connection key, so asking it "are we in setup?" would rotate the cluster
+   * credential on every page load.
+   */
+  const isSetup = useIsSetupMode();
+
+  // Undefined means the probe has not answered yet. Rendering either branch on
+  // a guess flashes the wrong screen, so hold the paint for one request.
+  if (isSetup === undefined) return <div className="h-full bg-ink" />;
+  if (isSetup) return <Setup />;
 
   return (
     <div className="flex h-full min-h-0 w-full overflow-hidden">

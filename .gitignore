@@ -17,4 +17,7 @@ rdma-p2p.json
 # build artifacts do web-ui
 web-ui/node_modules/
 web-ui/dist/
+# dist-release is the exception: it is the versioned bundle a release build
+# embeds, and cut-ui-bundle.sh is what regenerates it.
+!web-ui/dist-release/
 *.tsbuildinfo

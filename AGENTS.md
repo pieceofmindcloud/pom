@@ -20,7 +20,8 @@ cargo build                    # Debug build
 
 # Interface web + API OpenAI — servidas por TODO no na --gateway-port.
 # Abra http://localhost:8080/ ; ver "Interface web, API OpenAI e monitor" abaixo.
-# Atencao: web/ e embutido com include_str!, entao editar web/ exige cargo build.
+# Atencao: a interface e o build de web-ui/, embutido pelo build.rs, entao
+# `cargo build` PRECISA de Node/npm e reconstroi a tela junto.
 
 # Multi-node test on same machine (different ports)
 ./target/release/rdma-p2p --model gemma3 --memory 4GB --port 42777
@@ -91,7 +92,8 @@ Single-binary Rust application for decentralized LLM layer coordination with Oll
 - `pipeline.rs` — `LoadTracker` (RAII per-peer counters), `PipelinePlan` / `PipelineStep`, `plan_pipeline()` greedy planner
 - `gateway.rs` — `axum` HTTP server; owns the single generation path (`generate_stream`), `POST /api/generate`, `GET /peers`, `GET /health`
 - `openai.rs` — OpenAI-compatible routes on top of `generate_stream` (protocol only)
-- `webui.rs` + `web/` — dashboard and control API, assets embedded with `include_str!`
+- `webui.rs` — control API (`/api/ui/*`). The interface itself is `web-ui/` (React),
+  built by `build.rs` and embedded by `webapp.rs`; `web/` no longer exists
 - `catalog.rs` + `gguf.rs` — installed-model discovery over the directories in `rdma-p2p.json`, and a GGUF header/tensor-table reader
 - `plan.rs` — layer planning: `plan_split` from per-peer memory budgets, `plan_by_size` from per-slice target sizes, `even_split`/`plan_equal` for the "cut it in N" shortcut; on-demand slicing with progress
 - `sysmon.rs` — RAM / VRAM sampling per platform
@@ -289,8 +291,7 @@ RDMA_P2P_HOME=$B ../rdma-p2p/target/release/rdma-p2p --model ./models/qwen/qwen_
     --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091 --inference-port 8182 ...
 ```
 
-Os assets da UI são `include_str!` no binário, então a casa nova não precisa de
-`web/`. Confira que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
+Os assets da UI são embutidos no binário, então a casa nova não precisa deles. Confira que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
 
 ### Estado do cenário "peers em redes diferentes, pela internet"
 
@@ -439,8 +440,8 @@ Verificado em 2026-08-07 com MacBook + ksia.
 ### Como a interface sobe
 
 Não sobe separado: **todo nó já serve a UI** na `--gateway-port`, junto da API.
-Abra `http://<peer>:<porta>/`. Os arquivos de `web/` são embutidos no binário
-com `include_str!` (`src/webui.rs`), então **editar `web/` exige `cargo build`** —
+Abra `http://<peer>:<porta>/`. A interface é o build de `web-ui/`, embutido no binário
+pelo `build.rs` (ver `src/webapp.rs`), então **editar `web-ui/` exige `cargo build`** —
 recarregar o navegador não basta.
 
 - MacBook: `./run-p1.sh` → <http://localhost:8080/>

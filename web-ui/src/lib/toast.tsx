@@ -6,10 +6,15 @@
  * returns to rest is indistinguishable from one that did nothing.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { CheckCircle2, Info, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
 
-type Kind = "success" | "error" | "info";
+/**
+ * `warning` is the level this panel kept needing and did not have: the action
+ * did work, so calling it an error lies, but the cluster came out of it worse
+ * than it went in — a released slice nobody picked up is the case that named it.
+ */
+type Kind = "success" | "error" | "warning" | "info";
 
 interface Toast {
   id: number;
@@ -37,7 +42,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       const id = nextId++;
       setToasts((t) => [...t.slice(-3), { id, kind, title, detail }]);
       // Errors stay long enough to be read and copied; the rest step aside.
-      window.setTimeout(() => dismiss(id), kind === "error" ? 9000 : 4200);
+      // Bad news stays on screen long enough to be read, not just glimpsed.
+      const linger = kind === "error" || kind === "warning";
+      window.setTimeout(() => dismiss(id), linger ? 9000 : 4200);
     },
     [dismiss],
   );
@@ -64,6 +71,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               )}
               {t.kind === "error" && (
                 <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
+              )}
+              {t.kind === "warning" && (
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
               )}
               {t.kind === "info" && <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky" />}
               <div className="min-w-0 flex-1">
@@ -95,6 +105,7 @@ export function useToast() {
     () => ({
       success: (title: string, detail?: string) => push("success", title, detail),
       error: (title: string, detail?: string) => push("error", title, detail),
+      warning: (title: string, detail?: string) => push("warning", title, detail),
       info: (title: string, detail?: string) => push("info", title, detail),
       /** Report whatever the node said went wrong, verbatim. */
       fromError: (title: string, e: unknown) =>

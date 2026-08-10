@@ -12,6 +12,7 @@ import {
 import { useState } from "react";
 import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
+import { ReleaseSlice } from "../components/ReleaseSlice";
 import {
   Badge,
   Dot,
@@ -294,6 +295,12 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               )}
             </KeyValue>
           </dl>
+
+          {/* Only on this machine's own card: the slice is released by the node
+              that owns the memory, never by a coordinator reaching in. */}
+          {peer.is_self && cfg && (
+            <ReleaseSlice startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
+          )}
 
           {system && system.gpu_processes.length > 0 && (
             <div className="border-t border-line px-5 py-3">

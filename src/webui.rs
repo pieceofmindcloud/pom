@@ -57,6 +57,8 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/ui/unload", post(unload_model))
+        .route("/api/ui/release", post(release_slice))
+        .route("/api/ui/release/candidate", get(release_candidate))
         .route("/api/ui/leave", post(leave_network))
         .route("/api/ui/rejoin", post(rejoin_network))
         .route("/api/ui/requests", get(crate::reqlog::list_requests))
@@ -680,9 +682,34 @@ impl Default for RuntimeParams {
             top_k: d_top_k(),
             repeat_penalty: d_repeat_penalty(),
             repeat_last_n: d_repeat_last_n(),
-no_thinking: d_true(),
-                no_embeddings: false,
-            }
+            no_thinking: d_true(),
+            no_embeddings: false,
+        }
+    }
+}
+
+/// Carry a running node's knobs over to whoever takes its slice.
+///
+/// A handover that quietly reset the context window or the sampling would change
+/// the model's behaviour halfway through a session, which is worse than the
+/// handover failing outright.
+impl From<&NodeConfig> for RuntimeParams {
+    fn from(c: &NodeConfig) -> Self {
+        Self {
+            n_gpu_layers: c.n_gpu_layers,
+            n_ctx: c.n_ctx,
+            n_batch: c.n_batch,
+            max_new_tokens: c.max_new_tokens,
+            max_sessions: c.max_sessions,
+            prefill_chunk_tokens: c.prefill_chunk_tokens,
+            temperature: c.temperature,
+            top_p: c.top_p,
+            top_k: c.top_k,
+            repeat_penalty: c.repeat_penalty,
+            repeat_last_n: c.repeat_last_n,
+            no_thinking: c.no_thinking,
+            no_embeddings: c.no_embeddings,
+        }
     }
 }
 
@@ -1316,6 +1343,263 @@ async fn leave_network(
     state.network.detach().await;
     info!("nó saiu da rede pela interface");
     Json(json!({ "detached": true })).into_response()
+}
+
+// ── Releasing a slice, and the network taking it back up ─────────────────────
+
+/// What the operator asked for when releasing.
+#[derive(Debug, Deserialize)]
+pub struct ReleaseRequest {
+    /// Try to hand the slice to another node afterwards. On by default; the
+    /// operator can turn it off to free the memory and leave the range down.
+    #[serde(default = "default_true")]
+    pub reassign: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// A node that could take over a slice: idle, and already holding the file.
+struct Candidate {
+    node_id: String,
+    hostname: String,
+    gateway: String,
+    /// Where that same slice lives on *that* peer's disk.
+    path: String,
+}
+
+/// Find a peer that is serving nothing and already has this exact slice.
+///
+/// "Already has it" is deliberate: the point of releasing is that this machine
+/// needs its memory back *now*, so the handover has to be something another node
+/// can act on immediately. Copying a 10 GB slice across the link first would take
+/// ~17 minutes, which is not a handover — that is what the deploy screen is for.
+///
+/// Matching is by layer range plus shard group, not by file name: the same slice
+/// legitimately sits under different paths on different machines.
+async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Option<Candidate> {
+    let self_id = state.network.node_id.clone();
+    let key = state.auth.read().await.connection_key.clone();
+
+    for peer in state.all_peers().await {
+        if peer.node_id == self_id {
+            continue;
+        }
+        let Some(base) = peer.gateway_url() else { continue };
+
+        // Busy peers are out: a node serves one range at a time.
+        match state
+            .http
+            .get(format!("{base}/api/ui/node"))
+            .bearer_auth(&key)
+            .timeout(PEER_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {
+                let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
+                if !body.get("config").map(|c| c.is_null()).unwrap_or(true) {
+                    continue;
+                }
+            }
+            _ => continue,
+        }
+
+        let Ok(r) = state
+            .http
+            .get(format!("{base}/api/ui/models"))
+            .timeout(PEER_TIMEOUT * 3)
+            .send()
+            .await
+        else {
+            continue;
+        };
+        if !r.status().is_success() {
+            continue;
+        }
+        let body: serde_json::Value = r.json().await.unwrap_or(json!({}));
+
+        let found = body
+            .get("shard_sets")
+            .and_then(|s| s.as_array())
+            .into_iter()
+            .flatten()
+            .flat_map(|set| set.get("shards").and_then(|s| s.as_array()).into_iter().flatten())
+            .find(|shard| {
+                let range = shard.get("shard_range").and_then(|r| r.as_array());
+                let matches_range = range
+                    .map(|r| {
+                        r.first().and_then(|v| v.as_u64()) == Some(cfg.start_layer as u64)
+                            && r.get(1).and_then(|v| v.as_u64()) == Some(cfg.end_layer as u64)
+                    })
+                    .unwrap_or(false);
+                matches_range
+                    && shard
+                        .get("total_layers")
+                        .and_then(|v| v.as_u64())
+                        .map(|t| t == cfg.total_layers as u64)
+                        .unwrap_or(true)
+            })
+            .and_then(|shard| shard.get("path").and_then(|p| p.as_str()).map(String::from));
+
+        if let Some(path) = found {
+            return Some(Candidate {
+                node_id: peer.node_id.clone(),
+                hostname: peer.hostname.clone(),
+                gateway: base,
+                path,
+            });
+        }
+    }
+    None
+}
+
+/// Who would take this node's slice if it were released right now.
+///
+/// Read-only, and the reason the confirmation dialog can promise something true:
+/// warning "the model will stop answering" only when it actually will beats a
+/// blanket scare that the operator learns to click through.
+async fn release_candidate(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    let Some(cfg) = state.runtime.config().await else {
+        return Json(json!({ "serving": false })).into_response();
+    };
+    let candidate = find_release_candidate(&state, &cfg).await;
+    Json(json!({
+        "serving": true,
+        "slice": {
+            "model": cfg.model_label,
+            "start_layer": cfg.start_layer,
+            "end_layer": cfg.end_layer,
+            "total_layers": cfg.total_layers,
+        },
+        "candidate": candidate.map(|c| json!({
+            "node_id": c.node_id,
+            "hostname": c.hostname,
+        })),
+    }))
+    .into_response()
+}
+
+/// Hand this node's slice back and free its RAM/VRAM, staying in the cluster.
+///
+/// The release is **never refused**, even when nobody can take the slice over.
+/// That is the whole point of the feature: the machine needs its memory now, and
+/// a node that has to ask permission to stop has not been given the freedom the
+/// operator was promised. What the caller gets instead is a straight answer about
+/// what the cluster looks like afterwards — `reassigned_to` when another node
+/// picked the range up, or `uncovered: true` naming the range that is now down.
+///
+/// An uncovered range is not silent anywhere else either: the planner already
+/// refuses to build a pipeline with a hole in it, so generation fails with the
+/// gap named rather than falling back to a wrong answer.
+async fn release_slice(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    body: Option<Json<ReleaseRequest>>,
+) -> Response {
+    let Some(cfg) = state.runtime.config().await else {
+        return bad_request("este nó não está servindo nenhuma fatia");
+    };
+    let reassign = body.map(|Json(r)| r.reassign).unwrap_or(true);
+
+    // Free the memory first, and unconditionally. Looking for a successor before
+    // stopping would make the operator wait on the network for the one thing
+    // they asked to happen immediately.
+    state.runtime.stop().await;
+    info!(
+        "fatia L{}-{} liberada pelo nó; memória devolvida",
+        cfg.start_layer, cfg.end_layer
+    );
+
+    let released = json!({
+        "model": cfg.model_label,
+        "start_layer": cfg.start_layer,
+        "end_layer": cfg.end_layer,
+        "total_layers": cfg.total_layers,
+    });
+
+    if !reassign {
+        return Json(json!({
+            "released": true, "slice": released,
+            "reassigned_to": null, "uncovered": true,
+            "reason": "reatribuição desligada no pedido",
+        }))
+        .into_response();
+    }
+
+    let Some(candidate) = find_release_candidate(&state, &cfg).await else {
+        warn!(
+            "fatia L{}-{} ficou descoberta: nenhum nó ocioso tem esse arquivo",
+            cfg.start_layer, cfg.end_layer
+        );
+        return Json(json!({
+            "released": true, "slice": released,
+            "reassigned_to": null, "uncovered": true,
+            "reason": "nenhum outro nó está ocioso e com esta fatia no disco",
+        }))
+        .into_response();
+    };
+
+    // Same shape a launch dispatches, so the successor comes up exactly as this
+    // node was: same label, same position in the split, same runtime params.
+    let apply_req = ApplyRequest {
+        source_model_path: candidate.path.clone(),
+        base_name: cfg.model_label.clone(),
+        start_layer: cfg.start_layer,
+        end_layer: cfg.end_layer,
+        total_layers: cfg.total_layers,
+        peer_count: cfg.peer_count,
+        peer_index: cfg.peer_index,
+        primary: cfg.primary,
+        skip_split: true,
+        params: RuntimeParams::from(&cfg),
+    };
+
+    let key = state.auth.read().await.connection_key.clone();
+    match state
+        .http
+        .post(format!("{}/api/ui/apply", candidate.gateway))
+        .bearer_auth(&key)
+        .json(&apply_req)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            info!(
+                "fatia L{}-{} assumida por {}",
+                cfg.start_layer, cfg.end_layer, candidate.node_id
+            );
+            Json(json!({
+                "released": true, "slice": released, "uncovered": false,
+                "reassigned_to": {
+                    "node_id": candidate.node_id,
+                    "hostname": candidate.hostname,
+                },
+            }))
+            .into_response()
+        }
+        Ok(r) => {
+            let code = r.status();
+            let text = r.text().await.unwrap_or_default();
+            warn!("{} recusou assumir a fatia: HTTP {code}", candidate.node_id);
+            Json(json!({
+                "released": true, "slice": released,
+                "reassigned_to": null, "uncovered": true,
+                "reason": format!("{} recusou assumir: HTTP {code} {text}", candidate.hostname),
+            }))
+            .into_response()
+        }
+        Err(e) => Json(json!({
+            "released": true, "slice": released,
+            "reassigned_to": null, "uncovered": true,
+            "reason": format!("{} inacessível: {e}", candidate.hostname),
+        }))
+        .into_response(),
+    }
 }
 
 /// Announce again and go looking for the bootstrap nodes.

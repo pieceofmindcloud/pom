@@ -929,95 +929,97 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 }
 
 #[cfg(test)]
+/// A minimal but structurally valid llama GGUF with `n_blocks` layers.
+///
+/// Shared with `webui`'s tests so the merge execution path is exercised with
+/// real files, not mocks.
+#[cfg(test)]
+pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
+    let n = 4u64;
+    let f32v = |vals: &[f32]| -> Vec<u8> {
+        vals.iter().flat_map(|v| v.to_le_bytes()).collect()
+    };
+    let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
+    tensors.push((
+        "token_embd.weight".into(),
+        vec![n, n],
+        T_F32,
+        f32v(&[0.5; 16]),
+    ));
+    for i in 0..n_blocks {
+        let base = i as f32 * 10.0;
+        let data: Vec<f32> = (0..16).map(|j| base + j as f32).collect();
+        tensors.push((format!("blk.{i}.attn_q.weight"), vec![n, n], T_F32, f32v(&data)));
+    }
+    tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
+    tensors.push(("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])));
+
+    let s = |b: &str| -> Vec<u8> {
+        let mut v = (b.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(b.as_bytes());
+        v
+    };
+    let str_kv = |key: &str, val: &str| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_STR.to_le_bytes());
+        v.extend_from_slice(&s(val));
+        v
+    };
+    let u32_kv = |key: &str, val: u32| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_U32.to_le_bytes());
+        v.extend_from_slice(&val.to_le_bytes());
+        v
+    };
+
+    let mut kv: Vec<Vec<u8>> = vec![
+        str_kv("general.architecture", "llama"),
+        u32_kv("llama.embedding_length", n as u32),
+        u32_kv("llama.block_count", n_blocks),
+        u32_kv("llama.vocab_size", n as u32),
+        u32_kv("rdmap2p.original_block_count", n_blocks),
+    ];
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+    header.extend_from_slice(&3u32.to_le_bytes());
+    header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+    for b in &kv {
+        header.extend_from_slice(b);
+    }
+
+    let mut cur = 0u64;
+    let offsets: Vec<u64> = tensors
+        .iter()
+        .map(|(_, _, _, bytes)| {
+            let off = cur;
+            cur = align_up(cur + bytes.len() as u64);
+            off
+        })
+        .collect();
+    for ((name, dims, dtype, _), off) in tensors.iter().zip(&offsets) {
+        header.extend_from_slice(&s(name));
+        header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            header.extend_from_slice(&d.to_le_bytes());
+        }
+        header.extend_from_slice(&dtype.to_le_bytes());
+        header.extend_from_slice(&off.to_le_bytes());
+    }
+    let pad = align_up(header.len() as u64) as usize - header.len();
+    header.extend_from_slice(&vec![0u8; pad]);
+
+    for (_, _, _, bytes) in &tensors {
+        header.extend_from_slice(bytes);
+        let aligned = align_up(bytes.len() as u64) as usize;
+        header.extend_from_slice(&vec![0u8; aligned - bytes.len()]);
+    }
+    header
+}
+
 mod tests {
     use super::*;
-
-    const T_F32_STR: u32 = 6;
-
-    /// A minimal but structurally valid llama GGUF with `n_blocks` layers.
-    fn gguf_bytes(n_blocks: u32) -> Vec<u8> {
-        let n = 4u64;
-        let f32v = |vals: &[f32]| -> Vec<u8> {
-            vals.iter().flat_map(|v| v.to_le_bytes()).collect()
-        };
-        let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
-        tensors.push((
-            "token_embd.weight".into(),
-            vec![n, n],
-            T_F32_STR,
-            f32v(&[0.5; 16]),
-        ));
-        for i in 0..n_blocks {
-            let base = i as f32 * 10.0;
-            let data: Vec<f32> = (0..16).map(|j| base + j as f32).collect();
-            tensors.push((format!("blk.{i}.attn_q.weight"), vec![n, n], T_F32_STR, f32v(&data)));
-        }
-        tensors.push(("output_norm.weight".into(), vec![n], T_F32_STR, f32v(&[2.0; 4])));
-        tensors.push(("output.weight".into(), vec![n, n], T_F32_STR, f32v(&[3.0; 16])));
-
-        let s = |b: &str| -> Vec<u8> {
-            let mut v = (b.len() as u64).to_le_bytes().to_vec();
-            v.extend_from_slice(b.as_bytes());
-            v
-        };
-        let str_kv = |key: &str, val: &str| {
-            let mut v = s(key);
-            v.extend_from_slice(&T_STR.to_le_bytes());
-            v.extend_from_slice(&s(val));
-            v
-        };
-        let u32_kv = |key: &str, val: u32| {
-            let mut v = s(key);
-            v.extend_from_slice(&T_U32.to_le_bytes());
-            v.extend_from_slice(&val.to_le_bytes());
-            v
-        };
-
-        let mut kv: Vec<Vec<u8>> = vec![
-            str_kv("general.architecture", "llama"),
-            u32_kv("llama.embedding_length", n as u32),
-            u32_kv("llama.block_count", n_blocks),
-            u32_kv("llama.vocab_size", n as u32),
-            u32_kv("rdmap2p.original_block_count", n_blocks),
-        ];
-
-        let mut header = Vec::new();
-        header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
-        header.extend_from_slice(&3u32.to_le_bytes());
-        header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
-        header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
-        for b in &kv {
-            header.extend_from_slice(b);
-        }
-
-        let mut cur = 0u64;
-        let offsets: Vec<u64> = tensors
-            .iter()
-            .map(|(_, _, _, bytes)| {
-                let off = cur;
-                cur = align_up(cur + bytes.len() as u64);
-                off
-            })
-            .collect();
-        for ((name, dims, dtype, _), off) in tensors.iter().zip(&offsets) {
-            header.extend_from_slice(&s(name));
-            header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
-            for d in dims {
-                header.extend_from_slice(&d.to_le_bytes());
-            }
-            header.extend_from_slice(&dtype.to_le_bytes());
-            header.extend_from_slice(&off.to_le_bytes());
-        }
-        let pad = align_up(header.len() as u64) as usize - header.len();
-        header.extend_from_slice(&vec![0u8; pad]);
-
-        for (_, _, _, bytes) in &tensors {
-            header.extend_from_slice(bytes);
-            let aligned = align_up(bytes.len() as u64) as usize;
-            header.extend_from_slice(&vec![0u8; aligned - bytes.len()]);
-        }
-        header
-    }
 
     fn tensor_data<'a>(mm: &'a [u8], p: &MergedSrc, name: &str) -> &'a [u8] {
         let t = p
@@ -1036,7 +1038,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdmap2p-merge-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
-        std::fs::write(&whole, gguf_bytes(4)).unwrap();
+        std::fs::write(&whole, test_gguf_bytes(4)).unwrap();
 
         let a = dir.join("a.gguf");
         let b = dir.join("b.gguf");
@@ -1102,7 +1104,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdmap2p-merge-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
-        std::fs::write(&whole, gguf_bytes(6)).unwrap();
+        std::fs::write(&whole, test_gguf_bytes(6)).unwrap();
         let a = dir.join("a.gguf");
         let b = dir.join("b.gguf");
         split(&whole, &a, 0, 1, true, false, |_| {}).unwrap();

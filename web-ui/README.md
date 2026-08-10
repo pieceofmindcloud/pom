@@ -276,7 +276,7 @@ Viabilidade, e o que é recusa e o que é aviso:
 | Situação | Resposta |
 |---|---|
 | Faixas escolhidas se sobrepõem | **Recusa.** As camadas rodariam duas vezes e a resposta sairia errada sem nada falhar. |
-| Duas faixas na mesma máquina | **Recusa.** Um nó serve uma faixa. |
+| Duas faixas na mesma máquina | **Recusa** por padrão — a não ser que "juntar fatias vizinhas" esteja ligado: faixas **adjacentes** da mesma máquina são fundidas num arquivo só (`splitter::merge`) antes de subir, e a máquina passa a servir a união. Faixas não adjacentes são recusa mesmo com a junta ligada. |
 | Faixa sem máquina, ou máquina que saiu do cluster | **Recusa.** |
 | Faixa que ninguém do cluster tem | **Recusa.** |
 | Disco insuficiente no destino de uma cópia | **Recusa** — o `transfer.rs` recusaria de qualquer jeito, melhor antes de mover byte. |

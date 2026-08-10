@@ -31,7 +31,10 @@
 //!   takes which range — there is no second knob, and pretending otherwise
 //!   would be a lie on screen.
 //! * **A node serves one range.** Two selected ranges on the same machine is a
-//!   refusal, not a warning.
+//!   refusal, not a warning — unless `merge` is on, in which case adjacent
+//!   ranges on the same machine become one *merged unit*: the machine joins
+//!   the slices into a single file (`splitter::merge`) and serves the union.
+//!   A merged step carries `parts`, one per slice, each with its own source.
 //! * **Overlap is not a preference.** Two selected ranges covering the same
 //!   layer would run those layers twice and corrupt the answer, so a set that
 //!   overlaps is refused. A *gap* is different: it is a legitimate half-deploy
@@ -51,10 +54,10 @@ use tracing::{info, warn};
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
-use crate::plan::DEFAULT_RESERVE_PCT;
+use crate::plan::{self, DEFAULT_RESERVE_PCT};
 use crate::webui::{
-    jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, RuntimeParams,
-    PEER_TIMEOUT,
+    jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, MergeSource,
+    RuntimeParams, PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -91,6 +94,11 @@ pub struct DeployRequest {
     /// decides, and the screen shows the decision.
     #[serde(default)]
     pub selection: Option<Vec<SelectedSlice>>,
+    /// Join each machine's adjacent slices into a single file, so a node
+    /// serves the union of the ranges it already holds. `false` keeps the rule
+    /// that a node serves one range.
+    #[serde(default)]
+    pub merge: bool,
 }
 
 // ── What a machine can tell us about itself ──────────────────────────────────
@@ -314,6 +322,24 @@ pub struct Alternative {
     note: Option<String>,
 }
 
+/// One slice feeding a merged step: the range, its file, and where it comes
+/// from. A merged step serves the union of its parts, joined into one file on
+/// the target.
+#[derive(Debug, Clone, Serialize)]
+pub struct StepPart {
+    start_layer: u32,
+    end_layer: u32,
+    name: String,
+    size_bytes: u64,
+    /// Already on the target: nothing to copy for this part.
+    ready: bool,
+    /// Who sends it when it is not. `None` together with `ready: false` means
+    /// nobody in the cluster has this slice at all.
+    source_node_id: Option<String>,
+    source_host: Option<String>,
+    source_path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Step {
     /// 1-based place in the pipeline. Position 1 receives the prompt.
@@ -347,6 +373,12 @@ pub struct Step {
     problem: Option<String>,
     /// Set when it can, but the operator should read it first.
     note: Option<String>,
+    /// True when this step serves the union of `parts`, joined into one file
+    /// on the target, instead of a single slice already in place.
+    merged: bool,
+    /// The slices this step is assembled from, in layer order. Empty for a
+    /// plain step.
+    parts: Vec<StepPart>,
 }
 
 #[derive(Debug, Serialize)]
@@ -370,6 +402,9 @@ pub struct Plan {
     /// True when the node chose this, false when it is validating the
     /// operator's own selection.
     auto: bool,
+    /// True when the operator asked each machine's adjacent slices to be
+    /// joined into one file — the plan reflects it in its steps.
+    merge: bool,
     /// Every range anyone holds, so the screen can offer the ones left out.
     available: Vec<Candidate>,
     /// Every machine, so the screen can offer them as targets.
@@ -589,6 +624,7 @@ fn plan(
     machines: &[Machine],
     selection: Option<&[SelectedSlice]>,
     params: &RuntimeParams,
+    merge: bool,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -711,118 +747,275 @@ fn plan(
         });
     }
 
-    // ── One range per machine ───────────────────────────────────────────────
-    for (pos, (_, target, _)) in chosen.iter().enumerate() {
-        if target.is_empty() {
-            continue;
-        }
-        if let Some(other) = chosen[..pos].iter().find(|(_, t, _)| t == target) {
-            let label = machines
-                .iter()
-                .find(|m| &m.node_id == target)
-                .map(|m| m.label())
-                .unwrap_or_else(|| target.clone());
-            blocked.get_or_insert(format!(
-                "{label} ficou com duas faixas (L{}-{} e L{}-{}) — um nó serve uma faixa por vez",
-                available[other.0].start_layer,
-                available[other.0].end_layer,
-                available[chosen[pos].0].start_layer,
-                available[chosen[pos].0].end_layer,
-            ));
-            break;
+    // ── One range per machine, or one merged unit per machine ───────────────
+    //
+    // A node serves one file, so two ranges on the same machine can only both
+    // come up when they are joined first. `merge` says that is what the
+    // operator wants: each machine's adjacent slices become a single step that
+    // merges them into one file on that machine. Without it, two ranges on one
+    // machine stay the refusal they always were.
+    let mut groups: Vec<Vec<(usize, String, Option<u32>)>> = Vec::new();
+    for entry in &chosen {
+        match groups.iter_mut().find(|g| g[0].1 == entry.1) {
+            Some(g) => g.push(entry.clone()),
+            None => groups.push(vec![entry.clone()]),
         }
     }
+    // `chosen` is already in layer order, so each group is too; ordering the
+    // groups by their first range keeps the pipeline order intact.
+    groups.sort_by_key(|g| (available[g[0].0].start_layer, available[g[0].0].end_layer));
 
-    // ── The steps themselves ────────────────────────────────────────────────
     let mut transfer_bytes = 0u64;
     let mut steps: Vec<Step> = Vec::new();
+    let mut position = 0u32;
 
-    for (pos, (i, target_id, gpu)) in chosen.iter().enumerate() {
-        let c = &available[*i];
+    for grp in groups {
+        let target_id = &grp[0].1;
         let target = machines.iter().find(|m| &m.node_id == target_id);
-        let ready = target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
-        let source = if ready {
-            None
-        } else {
-            machines
-                .iter()
-                .find(|m| Some(&m.node_id) != target.map(|t| &t.node_id) && m.holds(c.start_layer, c.end_layer).is_some())
-        };
-        if !ready && target.is_some() {
-            transfer_bytes += c.size_bytes;
+        let first = &available[grp[0].0];
+        let last = &available[grp[grp.len() - 1].0];
+        let start_layer = first.start_layer;
+        let end_layer = last.end_layer;
+
+        // Adjacency is what makes a merge possible: `splitter::merge` joins a
+        // chain of neighbours and refuses anything else.
+        let adjacent = grp
+            .windows(2)
+            .all(|w| available[w[1].0].start_layer == available[w[0].0].end_layer + 1);
+        let merged = merge && grp.len() > 1 && adjacent;
+
+        if grp.len() > 1 && !merge {
+            blocked.get_or_insert(format!(
+                "{} ficou com duas faixas (L{}-{} e L{}-{}) — junte as fatias vizinhas na \
+                 tela, ou mova uma delas para outra máquina",
+                target.map(|m| m.label()).unwrap_or_else(|| target_id.clone()),
+                first.start_layer,
+                first.end_layer,
+                last.start_layer,
+                last.end_layer,
+            ));
+        } else if grp.len() > 1 && merge && !adjacent {
+            blocked.get_or_insert(format!(
+                "as fatias de {} não são vizinhas (L{}-{} e L{}-{}) — só dá para juntar \
+                 fatias adjacentes",
+                target.map(|m| m.label()).unwrap_or_else(|| target_id.clone()),
+                first.start_layer,
+                first.end_layer,
+                last.start_layer,
+                last.end_layer,
+            ));
         }
 
-        let mut problem = None;
-        let mut note = None;
+        if merged {
+            let mut parts: Vec<StepPart> = Vec::new();
+            for (i, _, _) in &grp {
+                let c = &available[*i];
+                let part_ready =
+                    target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                let source = if part_ready {
+                    None
+                } else {
+                    machines.iter().find(|m| {
+                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                            && m.holds(c.start_layer, c.end_layer).is_some()
+                    })
+                };
+                if !part_ready && target.is_some() {
+                    transfer_bytes += c.size_bytes;
+                }
+                parts.push(StepPart {
+                    start_layer: c.start_layer,
+                    end_layer: c.end_layer,
+                    name: c.name.clone(),
+                    size_bytes: c.size_bytes,
+                    ready: part_ready,
+                    source_node_id: source.map(|m| m.node_id.clone()),
+                    source_host: source.map(|m| m.label()),
+                    source_path: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .map(|s| s.path.clone()),
+                });
+            }
 
-        if target_id.is_empty() {
-            problem = Some(format!(
-                "a fatia L{}-{} está sem máquina",
-                c.start_layer, c.end_layer
-            ));
-        } else if target.is_none() {
-            problem = Some(format!("a máquina {target_id} não está no cluster"));
-        } else if !ready && source.is_none() {
-            problem = Some(format!(
-                "a fatia L{}-{} não existe em máquina nenhuma do cluster",
-                c.start_layer, c.end_layer
-            ));
-        }
+            let size_bytes = parts.iter().map(|p| p.size_bytes).sum();
+            let ready = parts.iter().all(|p| p.ready);
 
-        if let (None, Some(t)) = (&problem, target) {
-            let need = needed_mb(c.size_bytes);
-            if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
-                problem = Some(format!(
-                    "{} tem {} GB livres em disco e a fatia pesa {} GB",
-                    t.label(),
-                    gb(t.disk_free_mb),
-                    gb(need)
-                ));
-            } else if t.mem_free_mb > 0 && need > usable_mb(t.mem_free_mb) {
-                note = Some(format!(
-                    "{} tem {} GB de memória livre para uma fatia de {} GB",
-                    t.label(),
-                    gb(t.mem_free_mb),
-                    gb(need)
-                ));
+            let mut problem = None;
+            let mut note = None;
+
+            if target_id.is_empty() {
+                problem = Some(format!("a faixa L{}-{} está sem máquina", start_layer, end_layer));
+            } else if target.is_none() {
+                problem = Some(format!("a máquina {target_id} não está no cluster"));
             } else if !ready {
-                note = Some(format!("{} GB pela rede antes de subir", gb(need)));
+                if let Some(orphan) = parts.iter().find(|p| !p.ready && p.source_node_id.is_none())
+                {
+                    problem = Some(format!(
+                        "a fatia L{}-{} não existe em máquina nenhuma do cluster",
+                        orphan.start_layer, orphan.end_layer
+                    ));
+                }
+            }
+
+            if let (None, Some(t)) = (&problem, target) {
+                // The join writes the union file on top of the parts, which
+                // stay on disk — so free space must cover the union plus
+                // whatever still has to be pulled. A fully-ready join is not
+                // exempt: it still needs room to write the union.
+                let missing: u64 = parts
+                    .iter()
+                    .filter(|p| !p.ready)
+                    .map(|p| p.size_bytes)
+                    .sum();
+                let disk_need = needed_mb(size_bytes + missing);
+                let mem_need = needed_mb(size_bytes);
+                if t.disk_free_mb > 0 && disk_need > t.disk_free_mb {
+                    problem = Some(format!(
+                        "{} tem {} GB livres em disco e juntar essas fatias precisa de {} GB",
+                        t.label(),
+                        gb(t.disk_free_mb),
+                        gb(disk_need)
+                    ));
+                } else if t.mem_free_mb > 0 && mem_need > usable_mb(t.mem_free_mb) {
+                    note = Some(format!(
+                        "{} tem {} GB de memória livre para o modelo junto de {} GB",
+                        t.label(),
+                        gb(t.mem_free_mb),
+                        gb(mem_need)
+                    ));
+                } else if !ready {
+                    note = Some(format!("{} GB pela rede antes de subir", gb(mem_need)));
+                }
+            }
+
+            if let Some(p) = &problem {
+                blocked.get_or_insert(p.clone());
+            }
+            if let Some(n) = &note {
+                if n.contains("memória") {
+                    warnings.push(n.clone());
+                }
+            }
+
+            position += 1;
+            steps.push(Step {
+                position,
+                start_layer,
+                end_layer,
+                total_layers,
+                name: plan::shard_filename(group, start_layer, end_layer),
+                size_bytes,
+                target_node_id: target_id.clone(),
+                target_host: target.map(|t| t.label()).unwrap_or_default(),
+                ready,
+                source_node_id: None,
+                source_host: None,
+                source_path: None,
+                target_path: None,
+                primary: start_layer == 0,
+                n_gpu_layers: grp[0].2,
+                options: merged_alternatives(&parts, machines),
+                problem,
+                note,
+                merged: true,
+                parts,
+            });
+        } else {
+            // Plain steps: one range, one file. A group of more than one
+            // already set `blocked`; the steps are still listed so the screen
+            // can show which ranges are where.
+            for (i, target_id, gpu) in &grp {
+                let c = &available[*i];
+                let target = machines.iter().find(|m| &m.node_id == target_id);
+                let ready = target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                let source = if ready {
+                    None
+                } else {
+                    machines.iter().find(|m| {
+                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                            && m.holds(c.start_layer, c.end_layer).is_some()
+                    })
+                };
+                if !ready && target.is_some() {
+                    transfer_bytes += c.size_bytes;
+                }
+
+                let mut problem = None;
+                let mut note = None;
+
+                if target_id.is_empty() {
+                    problem = Some(format!(
+                        "a fatia L{}-{} está sem máquina",
+                        c.start_layer, c.end_layer
+                    ));
+                } else if target.is_none() {
+                    problem = Some(format!("a máquina {target_id} não está no cluster"));
+                } else if !ready && source.is_none() {
+                    problem = Some(format!(
+                        "a fatia L{}-{} não existe em máquina nenhuma do cluster",
+                        c.start_layer, c.end_layer
+                    ));
+                }
+
+                if let (None, Some(t)) = (&problem, target) {
+                    let need = needed_mb(c.size_bytes);
+                    if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
+                        problem = Some(format!(
+                            "{} tem {} GB livres em disco e a fatia pesa {} GB",
+                            t.label(),
+                            gb(t.disk_free_mb),
+                            gb(need)
+                        ));
+                    } else if t.mem_free_mb > 0 && need > usable_mb(t.mem_free_mb) {
+                        note = Some(format!(
+                            "{} tem {} GB de memória livre para uma fatia de {} GB",
+                            t.label(),
+                            gb(t.mem_free_mb),
+                            gb(need)
+                        ));
+                    } else if !ready {
+                        note = Some(format!("{} GB pela rede antes de subir", gb(need)));
+                    }
+                }
+
+                if let Some(p) = &problem {
+                    blocked.get_or_insert(p.clone());
+                }
+                if let Some(n) = &note {
+                    if n.contains("memória") {
+                        warnings.push(n.clone());
+                    }
+                }
+
+                position += 1;
+                steps.push(Step {
+                    position,
+                    start_layer: c.start_layer,
+                    end_layer: c.end_layer,
+                    total_layers,
+                    name: c.name.clone(),
+                    size_bytes: c.size_bytes,
+                    target_node_id: target_id.clone(),
+                    target_host: target.map(|t| t.label()).unwrap_or_default(),
+                    ready,
+                    source_node_id: source.map(|m| m.node_id.clone()),
+                    source_host: source.map(|m| m.label()),
+                    source_path: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .map(|s| s.path.clone()),
+                    target_path: target
+                        .and_then(|t| t.holds(c.start_layer, c.end_layer))
+                        .map(|s| s.path.clone()),
+                    primary: c.start_layer == 0,
+                    n_gpu_layers: *gpu,
+                    options: alternatives(c, machines),
+                    problem,
+                    note,
+                    merged: false,
+                    parts: Vec::new(),
+                });
             }
         }
-
-        if let Some(p) = &problem {
-            blocked.get_or_insert(p.clone());
-        }
-        if let Some(n) = &note {
-            if n.contains("memória") {
-                warnings.push(n.clone());
-            }
-        }
-
-        steps.push(Step {
-            position: pos as u32 + 1,
-            start_layer: c.start_layer,
-            end_layer: c.end_layer,
-            total_layers,
-            name: c.name.clone(),
-            size_bytes: c.size_bytes,
-            target_node_id: target_id.clone(),
-            target_host: target.map(|t| t.label()).unwrap_or_default(),
-            ready,
-            source_node_id: source.map(|m| m.node_id.clone()),
-            source_host: source.map(|m| m.label()),
-            source_path: source
-                .and_then(|m| m.holds(c.start_layer, c.end_layer))
-                .map(|s| s.path.clone()),
-            target_path: target
-                .and_then(|t| t.holds(c.start_layer, c.end_layer))
-                .map(|s| s.path.clone()),
-            primary: c.start_layer == 0,
-            n_gpu_layers: *gpu,
-            options: alternatives(c, machines),
-            problem,
-            note,
-        });
     }
 
     // The auto planner runs out of machines before it runs out of slices, and
@@ -844,10 +1037,12 @@ fn plan(
             mem_free_mb: m.mem_free_mb,
             disk_free_mb: m.disk_free_mb,
             holds: m.held.iter().map(|s| [s.start_layer, s.end_layer]).collect(),
-            taking: chosen
+            // A merged machine serves the union of its ranges as one file, so
+            // the table names that union rather than the first slice.
+            taking: steps
                 .iter()
-                .find(|(_, t, _)| t == &m.node_id)
-                .map(|(i, ..)| [available[*i].start_layer, available[*i].end_layer]),
+                .find(|s| s.target_node_id == m.node_id)
+                .map(|s| [s.start_layer, s.end_layer]),
         })
         .collect();
 
@@ -860,6 +1055,7 @@ fn plan(
         steps,
         blocked,
         auto,
+        merge,
         available,
         machines: machine_views,
         missing,
@@ -912,13 +1108,54 @@ fn alternatives(c: &Candidate, machines: &[Machine]) -> Vec<Alternative> {
         .collect()
 }
 
+/// Every machine as a possible home for a merged step.
+///
+/// A machine "has" the merged unit when it already holds every part — the
+/// merge then runs locally with nothing crossing the network. Otherwise it
+/// would receive the parts, so the cost is the union's size.
+fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternative> {
+    let need = needed_mb(parts.iter().map(|p| p.size_bytes).sum());
+    machines
+        .iter()
+        .map(|m| {
+            let has = parts
+                .iter()
+                .all(|p| m.holds(p.start_layer, p.end_layer).is_some());
+            let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
+            let tight = m.mem_free_mb > 0 && need > usable_mb(m.mem_free_mb);
+            Alternative {
+                node_id: m.node_id.clone(),
+                label: m.label(),
+                has,
+                ok: !no_disk,
+                note: if no_disk {
+                    Some(format!("só {} GB livres em disco", gb(m.disk_free_mb)))
+                } else if tight {
+                    Some(format!("{} GB de memória livre", gb(m.mem_free_mb)))
+                } else if has {
+                    Some("já tem todas as fatias".to_string())
+                } else {
+                    Some(format!("receberia {} GB", gb(need)))
+                },
+            }
+        })
+        .collect()
+}
+
 async fn plan_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<DeployRequest>,
 ) -> Response {
     let machines = survey(&state, &req.group).await;
-    Json(plan(&req.group, &machines, req.selection.as_deref(), &req.params)).into_response()
+    Json(plan(
+        &req.group,
+        &machines,
+        req.selection.as_deref(),
+        &req.params,
+        req.merge,
+    ))
+    .into_response()
 }
 
 // ── Carrying it out ──────────────────────────────────────────────────────────
@@ -934,7 +1171,13 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let machines = survey(&state, &req.group).await;
-    let plan = plan(&req.group, &machines, req.selection.as_deref(), &req.params);
+    let plan = plan(
+        &req.group,
+        &machines,
+        req.selection.as_deref(),
+        &req.params,
+        req.merge,
+    );
 
     if let Some(reason) = plan.blocked {
         return (
@@ -980,27 +1223,44 @@ async fn run(
     job_id: &str,
 ) -> Result<(), String> {
     let key = state.auth.read().await.connection_key.clone();
-    let to_move: Vec<&Step> = plan.steps.iter().filter(|s| !s.ready).collect();
 
-    // ── Phase 1: transfers ───────────────────────────────────────────────────
-    //
-    // Each target pulls for itself, through the transfer path that already has
-    // resume, MD5 checking and a disk-space guard. Nothing new moves bytes here.
-    if !to_move.is_empty() {
-        set_job(
-            job_id,
-            "running",
-            "copiando fatias",
-            &format!(
-                "{} fatia(s), {:.1} GB no total",
-                to_move.len(),
-                plan.transfer_bytes as f64 / 1_073_741_824.0
-            ),
-        )
-        .await;
-
-        let mut watching: Vec<(String, String)> = Vec::new(); // (gateway, job id)
-        for step in &to_move {
+    // One unit of movement: a slice that has to reach a target. A merged step
+    // moves one file per part; a plain step moves its one slice.
+    struct Pull {
+        target_node_id: String,
+        target_host: String,
+        source_node_id: String,
+        source_path: String,
+        name: String,
+        start_layer: u32,
+        end_layer: u32,
+    }
+    let mut pulls: Vec<Pull> = Vec::new();
+    for step in &plan.steps {
+        if step.merged {
+            for part in &step.parts {
+                if part.ready {
+                    continue;
+                }
+                let (Some(source_node), Some(source_path)) =
+                    (&part.source_node_id, &part.source_path)
+                else {
+                    return Err(format!(
+                        "a fatia L{}-{} não tem de onde vir",
+                        part.start_layer, part.end_layer
+                    ));
+                };
+                pulls.push(Pull {
+                    target_node_id: step.target_node_id.clone(),
+                    target_host: step.target_host.clone(),
+                    source_node_id: source_node.clone(),
+                    source_path: source_path.clone(),
+                    name: part.name.clone(),
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                });
+            }
+        } else if !step.ready {
             let (Some(source_node), Some(source_path)) =
                 (&step.source_node_id, &step.source_path)
             else {
@@ -1009,22 +1269,53 @@ async fn run(
                     step.start_layer, step.end_layer
                 ));
             };
-            let gateway = gateway_of(&state, &step.target_node_id)
+            pulls.push(Pull {
+                target_node_id: step.target_node_id.clone(),
+                target_host: step.target_host.clone(),
+                source_node_id: source_node.clone(),
+                source_path: source_path.clone(),
+                name: step.name.clone(),
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+            });
+        }
+    }
+
+    // ── Phase 1: transfers ───────────────────────────────────────────────────
+    //
+    // Each target pulls for itself, through the transfer path that already has
+    // resume, MD5 checking and a disk-space guard. Nothing new moves bytes here.
+    if !pulls.is_empty() {
+        set_job(
+            job_id,
+            "running",
+            "copiando fatias",
+            &format!(
+                "{} fatia(s), {:.1} GB no total",
+                pulls.len(),
+                plan.transfer_bytes as f64 / 1_073_741_824.0
+            ),
+        )
+        .await;
+
+        let mut watching: Vec<(String, String)> = Vec::new(); // (gateway, job id)
+        for pull in &pulls {
+            let gateway = gateway_of(&state, &pull.target_node_id)
                 .await
-                .ok_or_else(|| format!("{} não anuncia porta de gateway", step.target_host))?;
+                .ok_or_else(|| format!("{} não anuncia porta de gateway", pull.target_host))?;
 
             let body: serde_json::Value = state
                 .http
                 .post(format!("{gateway}/api/transfer/pull"))
                 .bearer_auth(&key)
                 .json(&json!({
-                    "node_id": source_node,
-                    "remote_path": source_path,
-                    "name": step.name,
+                    "node_id": pull.source_node_id,
+                    "remote_path": pull.source_path,
+                    "name": pull.name,
                 }))
                 .send()
                 .await
-                .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", step.target_host))?
+                .map_err(|e| format!("{} não aceitou puxar a fatia: {e}", pull.target_host))?
                 .json()
                 .await
                 .unwrap_or(json!({}));
@@ -1033,14 +1324,14 @@ async fn run(
                 Some(tid) => {
                     info!(
                         "{} puxando L{}-{} de {}",
-                        step.target_host, step.start_layer, step.end_layer, source_node
+                        pull.target_host, pull.start_layer, pull.end_layer, pull.source_node_id
                     );
                     watching.push((gateway, tid.to_string()));
                 }
                 None => {
                     return Err(format!(
                         "{} recusou a cópia: {}",
-                        step.target_host,
+                        pull.target_host,
                         body.get("error").and_then(|e| e.as_str()).unwrap_or("motivo não informado")
                     ))
                 }
@@ -1059,9 +1350,50 @@ async fn run(
     let machines = survey(&state, &plan.group).await;
     let mut targets = Vec::new();
     for step in &plan.steps {
-        let path = machines
-            .iter()
-            .find(|m| m.node_id == step.target_node_id)
+        let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
+
+        if step.merged {
+            // Each part's path on the target is resolved the same way; the
+            // apply merges them into one file there before serving.
+            let mut merge: Vec<MergeSource> = Vec::new();
+            for part in &step.parts {
+                let path = target_machine
+                    .and_then(|m| m.holds(part.start_layer, part.end_layer))
+                    .map(|s| s.path.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "{} não achou a fatia L{}-{} depois da cópia",
+                            step.target_host, part.start_layer, part.end_layer
+                        )
+                    })?;
+                merge.push(MergeSource {
+                    source_model_path: path,
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                });
+            }
+            let anchor = merge
+                .first()
+                .map(|m| m.source_model_path.clone())
+                .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+
+            targets.push(LaunchTarget {
+                node_id: step.target_node_id.clone(),
+                // Unused when `merge` is set: the apply validates the parts and
+                // never reads this. Present only because `LaunchTarget` requires
+                // the field; the first part names a real file for the record.
+                source_model_path: anchor,
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+                // Nothing to cut: the merge produces the exact range.
+                skip_split: true,
+                merge: Some(merge),
+                n_gpu_layers: step.n_gpu_layers,
+            });
+            continue;
+        }
+
+        let path = target_machine
             .and_then(|m| m.holds(step.start_layer, step.end_layer))
             .map(|s| s.path.clone())
             .ok_or_else(|| {
@@ -1078,6 +1410,7 @@ async fn run(
             end_layer: step.end_layer,
             // Already a slice of exactly this range: nothing to cut.
             skip_split: true,
+            merge: None,
             n_gpu_layers: step.n_gpu_layers,
         });
     }
@@ -1290,7 +1623,18 @@ mod tests {
     /// The knobs are their own axis; every test below is about the placement,
     /// so they all run on the defaults unless they say otherwise.
     fn plan(group: &str, machines: &[Machine], selection: Option<&[SelectedSlice]>) -> Plan {
-        super::plan(group, machines, selection, &RuntimeParams::default())
+        super::plan(group, machines, selection, &RuntimeParams::default(), false)
+    }
+
+    /// The merge axis, flipped on; everything else still defaults.
+    fn merged(group: &str, machines: &[Machine], selection: &[SelectedSlice]) -> Plan {
+        super::plan(
+            group,
+            machines,
+            Some(selection),
+            &RuntimeParams::default(),
+            true,
+        )
     }
 
     // ── The suggestion ──────────────────────────────────────────────────────
@@ -1465,6 +1809,112 @@ mod tests {
         assert!(blocked.contains("duas faixas"), "{blocked}");
     }
 
+    // ── Merged units ─────────────────────────────────────────────────────────
+
+    /// The whole point of the toggle: adjacent slices on the same machine
+    /// become one file, so the machine serves the union. Everything is already
+    /// there, so nothing travels and the plan is complete with one step fewer.
+    #[test]
+    fn merge_joins_adjacent_slices_on_one_machine() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (8, 15)]),
+            m("b", 100_000, &[(16, 31)]),
+        ]);
+        let p = merged(
+            "m",
+            &ms,
+            &[pick(0, 7, "a"), pick(8, 15, "a"), pick(16, 31, "b")],
+        );
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete, "0-7 + 8-15 + 16-31 cobrem 32 camadas");
+        assert_eq!(p.transfer_bytes, 0, "a já tem as duas fatias");
+        assert_eq!(p.steps.len(), 2);
+
+        let joined = p.steps.iter().find(|s| s.merged).unwrap();
+        assert_eq!((joined.start_layer, joined.end_layer), (0, 15));
+        assert!(joined.ready);
+        assert_eq!(joined.parts.len(), 2, "duas fatias entram no arquivo");
+        assert!(joined.parts.iter().all(|part| part.ready));
+        assert_eq!(joined.name, "m_0_15.gguf", "nome do arquivo junto");
+
+        let solo = p.steps.iter().find(|s| !s.merged).unwrap();
+        assert_eq!((solo.start_layer, solo.end_layer), (16, 31));
+        // The merged machine's table row names the union.
+        let a = p.machines.iter().find(|m| m.node_id == "a").unwrap();
+        assert_eq!(a.taking, Some([0, 15]));
+    }
+
+    /// Merging is what makes a machine with two files able to serve them both;
+    /// without the toggle the same two ranges stay the old refusal.
+    #[test]
+    fn the_toggle_is_what_allows_two_ranges_on_one_machine() {
+        let ms = build(vec![m("a", 100_000, &[(0, 7), (8, 15)])]);
+        let p = merged("m", &ms, &[pick(0, 7, "a"), pick(8, 15, "a")]);
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.steps.len() == 1 && p.steps[0].merged);
+    }
+
+    /// `splitter::merge` only knows how to join neighbours, so a machine whose
+    /// two ranges are separated by a gap cannot serve both — the refusal names
+    /// the gap.
+    #[test]
+    fn merge_requires_adjacency() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (9, 15)]),
+            m("b", 100_000, &[(8, 8)]),
+        ]);
+        let p = merged(
+            "m",
+            &ms,
+            &[pick(0, 7, "a"), pick(9, 15, "a"), pick(8, 8, "b")],
+        );
+        let blocked = p.blocked.expect("fatias separadas não se juntam");
+        assert!(blocked.contains("vizinhas"), "{blocked}");
+    }
+
+    /// A merged unit may need copies: each part that is missing has its own
+    /// source, and the transfer byte count is the union of the missing ones.
+    #[test]
+    fn merged_parts_keep_their_sources() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7)]),
+            m("b", 100_000, &[(8, 15)]),
+            m("d", 100_000, &[(0, 7), (8, 15)]),
+            m("e", 100_000, &[(16, 31)]),
+            m("c", 100_000, &[]),
+        ]);
+        let p = merged(
+            "m",
+            &ms,
+            &[pick(0, 7, "c"), pick(8, 15, "c"), pick(16, 31, "e")],
+        );
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        let joined = p.steps.iter().find(|s| s.merged).unwrap();
+        assert!(!joined.ready);
+        assert_eq!(p.transfer_bytes, 2 * GIB, "as duas fatias viajam");
+        let first = &joined.parts[0];
+        assert_eq!(first.source_node_id.as_deref(), Some("a"));
+        let second = &joined.parts[1];
+        assert_eq!(second.source_node_id.as_deref(), Some("b"));
+        // A machine holding every part is offered as ready for the merged unit.
+        let option = joined
+            .options
+            .iter()
+            .find(|o| o.node_id == "d" && o.has)
+            .expect("d tem as duas fatias, logo está pronta para juntar");
+        assert!(option.ok);
+    }
+
+    /// A merged unit whose target holds no part and no machine holds a part is
+    /// a dead end, reported with the offending range named.
+    #[test]
+    fn a_merged_unit_with_an_unobtainable_part_is_refused() {
+        let ms = build(vec![m("a", 100_000, &[(0, 7)])]);
+        let p = merged("m", &ms, &[pick(0, 7, "a"), pick(8, 15, "a")]);
+        let blocked = p.blocked.expect("L8-15 não existe em máquina nenhuma");
+        assert!(blocked.contains("L8-15"), "{blocked}");
+    }
+
     #[test]
     fn a_slice_with_no_machine_is_refused() {
         let ms = build(vec![m("a", 100_000, &[(0, 15), (16, 31)])]);
@@ -1563,7 +2013,7 @@ mod tests {
             prefill_chunk_tokens: 4096,
             ..RuntimeParams::default()
         };
-        let p = super::plan("m", &ms, None, &params);
+        let p = super::plan("m", &ms, None, &params, false);
 
         assert_eq!(p.params.n_ctx, 32768);
         // 32768 / 2 sessões − 256 gerados.

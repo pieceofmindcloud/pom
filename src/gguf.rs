@@ -551,57 +551,6 @@ mod tests {
         assert_eq!(bytes(12, 4096 * 4096), 9_437_184); // Q4_K, always correct
     }
 
-    /// `split_model.py` carries the same table in Python, and a slice is only
-    /// correct if both agree: Rust prices the layers, Python writes the bytes.
-    /// Parsing the script keeps the two honest without a Python test runner.
-    #[test]
-    fn split_model_type_table_matches() {
-        let src = std::fs::read_to_string(
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("split_model.py"),
-        )
-        .expect("split_model.py sits next to Cargo.toml");
-
-        let body = src
-            .split_once("_GGML_TYPE_INFO: dict[int, tuple[int, int]] = {")
-            .expect("table still declared the same way")
-            .1;
-
-        let mut seen = 0;
-        for line in body.lines() {
-            // `    21: (110, 256),  # IQ3_S = {half d; ...}` — the comment goes
-            // first, since the block structs in it are full of braces.
-            let line = line.split('#').next().unwrap_or("").trim();
-            if line.starts_with('}') {
-                break;
-            }
-            let Some((code, rest)) = line.split_once(':') else {
-                continue;
-            };
-            let Ok(code) = code.trim().parse::<u32>() else {
-                continue;
-            };
-            let nums: Vec<u64> = rest
-                .trim()
-                .trim_start_matches('(')
-                .split(',')
-                .filter_map(|n| n.trim().trim_end_matches(')').parse().ok())
-                .collect();
-            assert_eq!(nums.len(), 2, "malformed entry for ggml type {code}");
-            assert_eq!(
-                ggml_type_info(code),
-                Some((nums[0], nums[1])),
-                "split_model.py and gguf.rs disagree about ggml type {code}"
-            );
-            seen += 1;
-        }
-        assert_eq!(
-            seen,
-            GGML_TRUTH.len(),
-            "split_model.py knows {seen} types, this file knows {}",
-            GGML_TRUTH.len()
-        );
-    }
-
     #[test]
     fn scalar_sizes_cover_all_scalar_types() {
         for t in [

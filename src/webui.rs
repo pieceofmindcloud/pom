@@ -911,8 +911,6 @@ async fn run_apply(
     req: ApplyRequest,
     job_id: &str,
 ) -> anyhow::Result<String> {
-    let cwd = state.runtime.cwd().clone();
-
     let model_path = if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
         // Nothing to carve out: this peer serves the file as it is.
         req.source_model_path.clone()
@@ -928,12 +926,9 @@ async fn run_apply(
         )
         .await;
 
-        let python = python_exe(&cwd);
         let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
         let progress_job = job_id.to_string();
         let outcome = plan::extract_shard(
-            &cwd,
-            &python,
             &req.source_model_path,
             &out_dir,
             &req.base_name,
@@ -1177,7 +1172,7 @@ async fn slice_locally(
 }
 
 async fn run_slice(
-    state: GatewayState,
+    _state: GatewayState,
     source: std::path::PathBuf,
     out_dir: std::path::PathBuf,
     base_name: String,
@@ -1185,8 +1180,6 @@ async fn run_slice(
     total_layers: u32,
     job_id: &str,
 ) -> anyhow::Result<Vec<String>> {
-    let cwd = state.runtime.cwd().clone();
-    let python = python_exe(&cwd);
     let parts = ranges.len() as u32;
     let mut outputs = Vec::new();
 
@@ -1207,8 +1200,6 @@ async fn run_slice(
         let writing_label = label.clone();
         let first_report = Arc::new(AtomicBool::new(true));
         let outcome = plan::extract_shard(
-            &cwd,
-            &python,
             &source.to_string_lossy(),
             &out_dir,
             &base_name,
@@ -1251,15 +1242,6 @@ async fn run_slice(
     }
 
     Ok(outputs)
-}
-
-fn python_exe(cwd: &std::path::Path) -> String {
-    let venv = cwd.join("venv/bin/python3");
-    if venv.exists() {
-        venv.to_string_lossy().into_owned()
-    } else {
-        "python3".to_string()
-    }
 }
 
 // ── Cluster launch ───────────────────────────────────────────────────────────

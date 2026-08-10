@@ -22,6 +22,45 @@ O binário estará em `./target/release/rdma-p2p`.
 
 ---
 
+## Docker
+
+### Build
+
+```bash
+docker build -t rdma-p2p .
+```
+
+O build usa três estágios (`cargo-chef` → builder → runtime). O binário é
+compilado sem suporte a GPU (`--no-default-features`) para funcionar em
+qualquer máquina. Para rodar com CUDA, compile o binário localmente e empacote
+na imagem com `COPY`.
+
+O `ubuntu:24.04` do builder instala `build-essential`, `cmake`, `libclang-dev`
+e `libssl-dev`; a imagem final fica com `libstdc++6` e `libgomp1` apenas.
+
+### Executar
+
+```bash
+# Nó simples com models montado em volume
+docker run --rm \
+    -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
+    -v ./models:/models \
+    rdma-p2p --model /models/meu-modelo.gguf \
+             --gateway --gateway-port 8080
+
+# Nó conectando a bootstrap
+docker run --rm \
+    -p 8080:8080 -p 42778:42778/udp -p 8182:8182 \
+    -v ./models:/models \
+    rdma-p2p --model /models/shard_16_31.gguf \
+             --port 42778 --bootstrap 192.168.1.10:42777 \
+             --gateway --gateway-port 8080 --inference-port 8182
+```
+
+A interface web fica disponível em `http://localhost:8080/` assim que o contêiner sobe.
+
+---
+
 ## Uso
 
 ```bash

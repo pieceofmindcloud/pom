@@ -1,0 +1,11 @@
+target/
+.git/
+venv/
+.venv/
+models/
+*.gguf
+*.part
+*.log
+*.key
+rdma-p2p.json
+docs/

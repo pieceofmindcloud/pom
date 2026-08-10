@@ -1,5 +1,7 @@
 mod admin;
 mod bitswap;
+mod infer_server;
+mod llm;
 mod catalog;
 mod config;
 mod auth;
@@ -20,6 +22,7 @@ mod reqlog;
 mod pkarr_node;
 mod plan;
 mod runtime;
+mod splitter;
 mod sysmon;
 mod transfer;
 mod wire;
@@ -594,10 +597,7 @@ inference_port,
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
-    // Everything the web UI can change lives here, so a reconfiguration
-    // restarts the Python child without restarting this process.
-    let cwd = config::project_root();
-    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
+    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
 
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
@@ -929,8 +929,7 @@ async fn start_gateway_only(
 
     net.clone().start(assignment_shared.clone()).await?;
 
-    let cwd = config::project_root();
-    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone(), cwd);
+    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
 
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))

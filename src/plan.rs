@@ -14,22 +14,10 @@
 use crate::gguf::GgufLayout;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
-use std::sync::Arc;
-use tokio::process::Command;
 use tracing::info;
 
 const MB: f64 = 1_048_576.0;
-
-/// Lines of the slicer's output kept for the error message when it fails.
-const TAIL_LINES: usize = 12;
-
-/// Prefix `split_model.py` writes its percentage behind. Machine-readable on
-/// purpose: it is the one thing the script was allowed to gain, and the whole
-/// progress bar hangs off parsing it.
-const PROGRESS_PREFIX: &str = "RDMAP2P_PROGRESS";
 
 /// Fraction of a peer's budget held back for the KV cache, activations and the
 /// runtime itself, rather than model weights.
@@ -264,18 +252,14 @@ pub struct SliceOutcome {
     pub reused: bool,
 }
 
-/// Produce this peer's slice with `split_model.py`, unless it is already there.
+/// Produce this peer's slice, unless it already exists.
 ///
 /// Runs entirely on the local machine against the local copy of the source
 /// model — no weights are transferred between peers.
 ///
-/// `on_progress` is called with 0..100 as the script reports it. Slicing a
-/// 10 GB model is minutes of I/O; without this the screen has nothing to show
-/// but a spinner, and a stuck run looks exactly like a slow one.
+/// `on_progress` is called with 0..=100 as the slicer writes bytes.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_shard(
-    cwd: &Path,
-    python: &str,
     source_model: &str,
     output_dir: &Path,
     base_name: &str,
@@ -303,111 +287,24 @@ pub async fn extract_shard(
     std::fs::create_dir_all(output_dir)
         .with_context(|| format!("criar {}", output_dir.display()))?;
 
-    let script = cwd.join("split_model.py");
-    if !script.exists() {
-        bail!("split_model.py não encontrado em {}", cwd.display());
-    }
+    let src = std::path::PathBuf::from(source_model);
+    let dst = output.clone();
 
-    info!(
-        "✂️  fatiando camadas {}-{} de {} → {}",
-        start_layer,
-        end_layer,
-        source_model,
-        output.display()
-    );
-
-    let mut cmd = Command::new(python);
-    cmd.current_dir(cwd)
-        .arg(&script)
-        .arg("--model").arg(source_model)
-        .arg("--start-layer").arg(start_layer.to_string())
-        .arg("--end-layer").arg(end_layer.to_string())
-        .arg("--output").arg(&output)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if is_first {
-        cmd.arg("--is-first");
-    }
-    if is_last {
-        cmd.arg("--is-last");
-    }
-
-    let mut child = cmd.spawn().context("executar split_model.py")?;
-
-    // Both pipes are drained while the process runs. Reading them only after it
-    // exits would deadlock on a full pipe buffer, and the progress has to arrive
-    // as it happens to be worth anything.
-    let stdout = child.stdout.take();
-    let stderr = child.stderr.take();
-    let tail = Arc::new(std::sync::Mutex::new(VecDeque::<String>::new()));
-
-    let out_task = tokio::spawn(drain(stdout, tail.clone(), None));
-    let err_task = tokio::spawn(drain(
-        stderr,
-        tail.clone(),
-        Some(Arc::new(on_progress) as Arc<dyn Fn(f64) + Send + Sync>),
-    ));
-
-    let status = child.wait().await.context("aguardar split_model.py")?;
-    let _ = out_task.await;
-    let _ = err_task.await;
-
-    if !status.success() {
-        let lines: Vec<String> = tail.lock().map(|t| t.iter().cloned().collect()).unwrap_or_default();
+    let bytes = tokio::task::spawn_blocking(move || {
+        crate::splitter::split(&src, &dst, start_layer, end_layer, is_first, is_last, on_progress)
+    })
+    .await
+    .context("spawn_blocking para splitter")?
+    .inspect_err(|_| {
         // A partial file would be mistaken for a valid slice next time.
         let _ = std::fs::remove_file(&output);
-        bail!("split_model.py falhou ({status}): {}", lines.join("\n"));
-    }
-
-    let bytes = std::fs::metadata(&output)
-        .with_context(|| format!("split_model.py não gerou {}", output.display()))?
-        .len();
+    })?;
 
     Ok(SliceOutcome {
         output_path: output.to_string_lossy().into_owned(),
         bytes,
         reused: false,
     })
-}
-
-/// `RDMAP2P_PROGRESS 42.5` → `Some(42.5)`; anything else is just a log line.
-fn parse_progress(line: &str) -> Option<f64> {
-    let rest = line.trim().strip_prefix(PROGRESS_PREFIX)?;
-    let pct: f64 = rest.trim().parse().ok()?;
-    if pct.is_finite() {
-        Some(pct.clamp(0.0, 100.0))
-    } else {
-        None
-    }
-}
-
-/// Read one of the child's pipes to the end, feeding progress out and keeping
-/// the last lines for a failure message.
-async fn drain<R>(
-    pipe: Option<R>,
-    tail: Arc<std::sync::Mutex<VecDeque<String>>>,
-    progress: Option<Arc<dyn Fn(f64) + Send + Sync>>,
-) where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let Some(pipe) = pipe else { return };
-    let mut lines = BufReader::new(pipe).lines();
-    while let Ok(Some(line)) = lines.next_line().await {
-        if let (Some(cb), Some(pct)) = (progress.as_ref(), parse_progress(&line)) {
-            cb(pct);
-            continue; // não polui o rastro de erro com centenas de percentuais
-        }
-        if line.trim().is_empty() {
-            continue;
-        }
-        if let Ok(mut t) = tail.lock() {
-            if t.len() == TAIL_LINES {
-                t.pop_front();
-            }
-            t.push_back(line);
-        }
-    }
 }
 
 /// Where slices go: `<pasta de fatias>/<base>/`.
@@ -1013,12 +910,4 @@ mod tests {
         assert!(even_split(10, 0).is_empty());
     }
 
-    #[test]
-    fn progress_lines_are_the_only_thing_parsed_as_progress() {
-        assert_eq!(parse_progress("RDMAP2P_PROGRESS 42.5"), Some(42.5));
-        assert_eq!(parse_progress("  RDMAP2P_PROGRESS 100  "), Some(100.0));
-        assert_eq!(parse_progress("RDMAP2P_PROGRESS 120"), Some(100.0));
-        assert_eq!(parse_progress("Writing /tmp/x.gguf ..."), None);
-        assert_eq!(parse_progress("RDMAP2P_PROGRESS quase"), None);
-    }
 }

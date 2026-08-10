@@ -2,24 +2,19 @@
 //!
 //! Everything that used to be fixed by the command line at startup — which GGUF
 //! to serve, which layers, the sampling knobs — lives here so the web UI can
-//! change it while the process keeps running. The runtime owns the
-//! `inference_server.py` child and restarts it when the configuration changes.
-//!
-//! This is supervision only. What the inference server *does* with a request is
-//! untouched; the arguments passed to it are exactly the ones `run-inf.sh`
-//! documents.
+//! change it while the process keeps running. The runtime owns the in-process
+//! Rust inference server and restarts it when the configuration changes.
 
 use crate::model::{LayerAssignment, ModelProfile};
 use crate::network::Network;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::process::Stdio;
 use std::sync::Arc;
 use tokio::process::Command;
 use tokio::sync::{watch, RwLock};
 use tokio::time::{sleep, Duration};
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 /// Give up restarting a crash-looping inference server after this many tries.
 const MAX_RESTARTS: u32 = 10;
@@ -182,15 +177,12 @@ pub struct NodeRuntime {
     net: Arc<Network>,
     /// Bumped on every `apply`; the supervisor of an older generation exits.
     generation: watch::Sender<u64>,
-    /// Working directory the Python process and model paths are resolved from.
-    cwd: PathBuf,
 }
 
 impl NodeRuntime {
     pub fn new(
         net: Arc<Network>,
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
-        cwd: PathBuf,
     ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
@@ -202,7 +194,6 @@ impl NodeRuntime {
             assignment,
             net,
             generation,
-            cwd,
         })
     }
 
@@ -222,11 +213,6 @@ impl NodeRuntime {
             .as_ref()
             .map(|c| c.model_label.clone())
             .unwrap_or_else(|| fallback.to_string())
-    }
-
-    /// Directory the Python interpreter is resolved from.
-    pub fn cwd(&self) -> &PathBuf {
-        &self.cwd
     }
 
     /// Stop the current inference server and announce to peers that this
@@ -288,29 +274,17 @@ impl NodeRuntime {
         Ok(())
     }
 
-    /// Start (or restart) the `inference_server.py` child for `generation`.
+    /// Start (or restart) the Rust inference server for `generation`.
     fn spawn_supervisor(&self, cfg: NodeConfig, generation: u64) {
-        let python = self.python_exe();
-        let script = self.cwd.join("inference_server.py");
-        let log_path = self.cwd.join(format!(
-            "inference_server_{}.log",
-            cfg.inference_port
-        ));
-        let port = cfg.inference_port;
-        let mut gen_rx = self.generation.subscribe();
-
-        // The supervisor needs the runtime to publish status; a raw pointer would
-        // be wrong here, so hand it the pieces it writes to.
+        let gen_rx = self.generation.subscribe();
         let status = StatusWriter {
             status: self.status_handle(),
         };
+        let port = cfg.inference_port;
 
         tokio::spawn(async move {
-            let log_str = log_path.to_string_lossy().into_owned();
-            status.set_log(&log_str).await;
-
-            // Before starting, kill anything already holding our port - it may
-            // be a zombie from a previous rdma-p2p run or a stale watcher loop.
+            // Kill anything already holding our port (e.g. a stale process from
+            // a previous run of rdma-p2p).
             free_port(port).await;
 
             let mut restarts = 0u32;
@@ -329,56 +303,6 @@ impl NodeRuntime {
                     }
                 }
 
-                let mut cmd = Command::new(&python);
-                cmd.env("PYTHONUNBUFFERED", "1")
-                    .arg(&script)
-                    .arg("--model").arg(&cfg.model_path)
-                    .arg("--start-layer").arg(cfg.start_layer.to_string())
-                    .arg("--end-layer").arg(cfg.end_layer.to_string())
-                    .arg("--port").arg(cfg.inference_port.to_string())
-                    // Explicit, not inherited from the script's default: a peer
-                    // known by an IPv6 address is dialled at http://[addr]:port,
-                    // which an IPv4-only listener refuses.
-                    .arg("--host").arg("::")
-                    .arg("--n-gpu-layers").arg(cfg.n_gpu_layers.to_string())
-                    .arg("--n-ctx").arg(cfg.n_ctx.to_string())
-                    .arg("--n-batch").arg(cfg.n_batch.to_string())
-                    .arg("--max-sessions").arg(cfg.max_sessions.max(1).to_string())
-                    .arg("--max-new-tokens").arg(cfg.max_new_tokens.to_string())
-                    .arg("--temperature").arg(cfg.temperature.to_string())
-                    .arg("--top-p").arg(cfg.top_p.to_string())
-                    .arg("--top-k").arg(cfg.top_k.to_string())
-                    .arg("--repeat-penalty").arg(cfg.repeat_penalty.to_string())
-                    .arg("--repeat-last-n").arg(cfg.repeat_last_n.to_string())
-                    .stdout(Stdio::piped())
-                    .stderr(Stdio::piped());
-                if cfg.no_thinking {
-                    cmd.arg("--no-thinking");
-                }
-                if cfg.single_peer {
-                    cmd.arg("--single-peer");
-                }
-                if cfg.no_embeddings {
-                    cmd.arg("--no-embeddings");
-                }
-
-                let mut child = match cmd.spawn() {
-                    Ok(c) => c,
-                    Err(e) => {
-                        error!("falha ao iniciar servidor de inferência: {e}");
-                        restarts += 1;
-                        if restarts >= MAX_RESTARTS {
-                            status
-                                .set(ServerState::Failed, format!("não iniciou: {e}"), restarts)
-                                .await;
-                            return;
-                        }
-                        continue;
-                    }
-                };
-
-                let pid = child.id();
-                status.set_pid(pid).await;
                 status
                     .set(
                         ServerState::Starting,
@@ -387,32 +311,30 @@ impl NodeRuntime {
                     )
                     .await;
 
-                pipe_output(child.stdout.take(), &log_str, "OUT", false);
-                pipe_output(child.stderr.take(), &log_str, "ERR", true);
-
-                tokio::select! {
-                    result = child.wait() => {
-                        warn!("servidor de inferência encerrou: {result:?}");
+                match crate::infer_server::run(cfg.clone(), gen_rx.clone(), generation).await {
+                    Ok(()) => {
+                        info!("servidor de inferência encerrado graciosamente");
+                        return;
+                    }
+                    Err(e) => {
+                        warn!("servidor de inferência encerrou com erro: {e}");
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
-                            status.set(
-                                ServerState::Failed,
-                                format!("encerrou {MAX_RESTARTS}x — veja {log_str}"),
-                                restarts,
-                            ).await;
+                            status
+                                .set(
+                                    ServerState::Failed,
+                                    format!("encerrou {MAX_RESTARTS}x: {e}"),
+                                    restarts,
+                                )
+                                .await;
                             return;
                         }
-                    }
-                    _ = gen_rx.changed() => {
-                        info!("configuração trocada — encerrando servidor de inferência anterior");
-                        let _ = child.kill().await;
-                        return;
                     }
                 }
             }
         });
 
-        self.spawn_health_watch(cfg.inference_port, generation);
+        self.spawn_health_watch(port, generation);
     }
 
     /// Poll the inference server until it answers, then mark the node ready and
@@ -470,17 +392,6 @@ impl NodeRuntime {
                 return;
             }
         });
-    }
-
-    fn python_exe(&self) -> String {
-        // The venv at the repo root is what has llama-cpp-python; the system
-        // python3 on macOS is 3.9 without numpy and dies in a restart loop.
-        let venv = self.cwd.join("venv/bin/python3");
-        if venv.exists() {
-            venv.to_string_lossy().into_owned()
-        } else {
-            "python3".to_string()
-        }
     }
 
     fn status_handle(&self) -> Arc<RwLock<RuntimeStatus>> {
@@ -565,34 +476,6 @@ async fn free_port(port: u16) {
         }
         sleep(Duration::from_millis(200)).await;
     }
-}
-
-/// Stream a child pipe into the log file and the terminal.
-fn pipe_output<R>(pipe: Option<R>, log_path: &str, tag: &'static str, is_err: bool)
-where
-    R: tokio::io::AsyncRead + Unpin + Send + 'static,
-{
-    let Some(pipe) = pipe else { return };
-    let log_path = log_path.to_string();
-    tokio::spawn(async move {
-        use std::io::Write;
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        let mut lines = BufReader::new(pipe).lines();
-        while let Ok(Some(line)) = lines.next_line().await {
-            if is_err {
-                eprintln!("\x1b[31m[InfServer ERR]\x1b[0m {line}");
-            } else {
-                println!("\x1b[36m[InfServer]\x1b[0m {line}");
-            }
-            if let Ok(mut f) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&log_path)
-            {
-                let _ = writeln!(f, "[{tag}] {line}");
-            }
-        }
-    });
 }
 
 // ── Status plumbing ──────────────────────────────────────────────────────────

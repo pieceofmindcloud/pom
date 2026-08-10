@@ -23,6 +23,9 @@ mod runtime;
 mod sysmon;
 mod transfer;
 mod wire;
+// Shared with build.rs through `include!`, so from the binary's point of view
+// most of it is unused — the users are the build script and the tests.
+#[allow(dead_code)]
 mod ui_manifest;
 mod webapp;
 mod webui;

@@ -355,3 +355,30 @@ export interface SplitPlan {
   missing_mb: number;
   warnings: string[];
 }
+
+/** One slice of a deploy plan: who serves it, and what has to move first. */
+export interface DeployStep {
+  start_layer: number;
+  end_layer: number;
+  total_layers: number;
+  name: string;
+  size_bytes: number;
+  target_node_id: string;
+  target_host: string;
+  /** Already on the target — nothing to copy. */
+  ready: boolean;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+  target_path: string | null;
+}
+
+export interface DeployPlan {
+  group: string;
+  total_layers: number;
+  steps: DeployStep[];
+  complete: boolean;
+  transfer_bytes: number;
+  /** Set when the plan cannot be carried out at all, and why. */
+  blocked: string | null;
+}

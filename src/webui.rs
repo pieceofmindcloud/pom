@@ -36,7 +36,7 @@ use tracing::{info, warn};
 /// How long a scanned catalog is served before a refresh is started behind it.
 const CATALOG_TTL: Duration = Duration::from_secs(20);
 /// Timeout for one peer-to-peer control call.
-const PEER_TIMEOUT: Duration = Duration::from_secs(4);
+pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(4);
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -768,12 +768,12 @@ pub struct Job {
     pub finished_at: Option<String>,
 }
 
-fn jobs() -> &'static RwLock<HashMap<String, Job>> {
+pub(crate) fn jobs() -> &'static RwLock<HashMap<String, Job>> {
     static JOBS: std::sync::OnceLock<RwLock<HashMap<String, Job>>> = std::sync::OnceLock::new();
     JOBS.get_or_init(|| RwLock::new(HashMap::new()))
 }
 
-fn new_job(id: &str, kind: &'static str, title: impl Into<String>, step: &str) -> Job {
+pub(crate) fn new_job(id: &str, kind: &'static str, title: impl Into<String>, step: &str) -> Job {
     Job {
         id: id.to_string(),
         state: "running",
@@ -817,7 +817,7 @@ async fn list_jobs() -> Response {
     Json(json!({ "jobs": list })).into_response()
 }
 
-async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
+pub(crate) async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
     let mut map = jobs().write().await;
     if let Some(job) = map.get_mut(id) {
         job.state = state;
@@ -839,7 +839,7 @@ async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
 /// Each reported percentage is delivered by its own task, so a line from the
 /// slice that just finished can land after the next one has started and drag
 /// the bar backwards — which reads as the work being redone.
-async fn set_job_progress(id: &str, pct: f64) {
+pub(crate) async fn set_job_progress(id: &str, pct: f64) {
     let pct = pct.clamp(0.0, 100.0);
     let mut map = jobs().write().await;
     if let Some(job) = map.get_mut(id) {
@@ -1616,7 +1616,7 @@ pub struct LaunchRequest {
 }
 
 /// Dispatch the planned configuration to every peer, including this one.
-async fn launch(
+pub(crate) async fn launch(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<LaunchRequest>,

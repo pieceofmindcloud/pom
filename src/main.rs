@@ -27,6 +27,7 @@ mod wire;
 // most of it is unused — the users are the build script and the tests.
 #[allow(dead_code)]
 mod ui_manifest;
+mod deploy;
 mod webapp;
 mod webui;
 

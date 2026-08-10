@@ -12,6 +12,7 @@ import { LogsLive } from "./routes/LogsLive";
 import { ModelPaths } from "./routes/ModelPaths";
 import { NetworkSettings } from "./routes/NetworkSettings";
 import { NotFound } from "./routes/NotFound";
+import { DeployModel } from "./routes/DeployModel";
 import { Shards } from "./routes/Shards";
 import { SliceModels } from "./routes/SliceModels";
 import { SlicingJobs } from "./routes/SlicingJobs";
@@ -100,6 +101,7 @@ export default function App() {
                     <Route path="/modelos" element={<Page><WholeModels /></Page>} />
                     <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
+                    <Route path="/fatias/implantar" element={<Page><DeployModel /></Page>} />
                     <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
                     <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                     <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />

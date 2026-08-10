@@ -8,6 +8,7 @@ import {
   MessagesSquare,
   Network,
   Radio,
+  Rocket,
   Scissors,
   Send,
   Settings,
@@ -52,6 +53,7 @@ export const NAV: NavSection[] = [
     icon: Layers,
     children: [
       { label: "Fatias", to: "/fatias", icon: Layers, end: true },
+      { label: "Implantar na rede", to: "/fatias/implantar", icon: Rocket },
       { label: "Fatiamentos em andamento", to: "/fatias/andamento", icon: ListTree },
     ],
   },

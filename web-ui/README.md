@@ -154,6 +154,7 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Chaves de conexão | `GET /api/ui/node`, `POST /admin/regenerate-key` |
 | Pastas de modelos | `GET`/`POST /api/ui/paths` |
 | Configuração inicial | `GET /api/setup/key`, `POST /api/setup/save` |
+| Implantar modelo fatiado | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy` |
 | Liberar fatia | `GET /api/ui/release/candidate`, `POST /api/ui/release` |
 
 **API token por nó está ligado de verdade**, não é maquete: os tokens são
@@ -207,6 +208,8 @@ Todas em `src/webui.rs`, no estilo do arquivo, mais um módulo novo.
 | `GET /api/ui/requests` | O registro de requisições, por token e por nó, que alimenta as duas telas de Logs. |
 | `POST /api/ui/release` | O nó devolve a memória da fatia que serve e continua na rede; se houver peer ocioso com a fatia no disco, ela é passada adiante. Nunca é recusada. |
 | `GET /api/ui/release/candidate` | Quem assumiria a fatia, para a confirmação na tela avisar de verdade quando a faixa vai ficar descoberta. |
+| `POST /api/ui/deploy/plan` | Só leitura: quem serviria qual faixa de um conjunto de fatias pronto, e o que teria de ser copiado antes. |
+| `POST /api/ui/deploy` | Executa. Refaz o plano no servidor, manda cada alvo puxar o que falta pelo transporte existente, espera, e então chama o `launch` com `skip_split`. É um job, então o sino acompanha e recarregar não perde nada. |
 
 Módulo novo `src/reqlog.rs`: registro em memória das requisições atendidas, com
 o `Caller` (operador, token com dica do valor, ou anônimo) e os hops percorridos.
@@ -218,6 +221,27 @@ Flag nova de CLI: `--no-discovery` (`src/main.rs`, `src/network.rs`).
 `cargo build --release` passa e `cargo test` fica verde (118 testes).
 
 ---
+
+## Implantar um modelo já fatiado
+
+`src/deploy.rs`. As peças já existiam — o catálogo sabe quem tem qual fatia, o
+`transfer` move arquivo entre máquinas, o `launch` amarra uma faixa a um peer. O
+que faltava era a decisão do meio: **qual máquina serve qual fatia**, e o que
+precisa ser copiado para isso ser possível. O módulo é só essa decisão mais a
+sequência; não inventa um segundo mecanismo de transferência nem de launch.
+
+As regras do planejador, na ordem em que importam:
+
+1. Um nó serve uma faixa por vez, então o conjunto precisa de pelo menos tantas
+   máquinas quantas fatias. Menos que isso é recusa, não implantação pela metade.
+2. Máquina que já tem a fatia é preferida para ela — cada cópia evitada são ~17
+   minutos a menos no enlace real.
+3. A camada 0 vai para a máquina com mais espaço, porque quem fica com ela
+   processa o prompt inteiro de toda requisição. É a única posição onde a
+   escolha não é arbitrária.
+
+Depois das cópias, o caminho de cada arquivo é perguntado à máquina que o
+recebeu em vez de deduzido — só ela sabe onde o próprio `recebidos/` fica.
 
 ## O que ficou faltando
 

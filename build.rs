@@ -98,9 +98,27 @@ fn build_from_source(web_ui: &Path) -> PathBuf {
     dist
 }
 
+/// Spawn `program args…`, going through `cmd /C` on Windows.
+///
+/// npm there is `npm.cmd`, a batch file, and `CreateProcess` — what
+/// `std::process::Command` calls — does not complete a bare name from `PATHEXT`
+/// the way the shell does. `Command::new("npm")` therefore fails with "program
+/// not found" on a machine where npm is installed and on the PATH, which is a
+/// confusing thing to tell someone whose toolchain is fine.
+fn command(program: &str, args: &[&str]) -> Command {
+    if cfg!(windows) {
+        let mut c = Command::new("cmd");
+        c.arg("/C").arg(program).args(args);
+        c
+    } else {
+        let mut c = Command::new(program);
+        c.args(args);
+        c
+    }
+}
+
 fn run(cwd: &Path, program: &str, args: &[&str]) {
-    let out = Command::new(program)
-        .args(args)
+    let out = command(program, args)
         .current_dir(cwd)
         .output()
         .unwrap_or_else(|e| {

@@ -206,7 +206,13 @@ impl LlmEngine {
             Ok(s) => s,
             Err(_) => return vec![],
         };
-        // First call to get the required token count.
+        // Sizing call. With `n_tokens_max = 0` llama.cpp cannot write anything,
+        // so it reports the space it *would* need as a NEGATIVE number - the
+        // documented contract in llama.h ("returns a negative number on failure
+        // - the number of tokens that would have been returned"). Reading that
+        // as an error made every prompt tokenize to nothing, and the head peer
+        // rejected chunk 0 with "não tem tokens" before any hidden state ever
+        // reached the second peer.
         let n = unsafe {
             sys::llama_tokenize(
                 self.vocab,
@@ -218,21 +224,28 @@ impl LlmEngine {
                 parse_special,
             )
         };
-        if n <= 0 {
+        // INT32_MIN means the count overflowed; anything else negative is the
+        // capacity we have to allocate.
+        if n == 0 || n == i32::MIN {
             return vec![];
         }
-        let mut tokens = vec![0i32; n as usize];
-        unsafe {
+        let cap = n.unsigned_abs() as usize;
+        let mut tokens = vec![0i32; cap];
+        let written = unsafe {
             sys::llama_tokenize(
                 self.vocab,
                 c_text.as_ptr(),
                 text.len() as i32,
                 tokens.as_mut_ptr(),
-                n,
+                cap as i32,
                 add_special,
                 parse_special,
             )
         };
+        if written <= 0 {
+            return vec![];
+        }
+        tokens.truncate(written as usize);
         tokens
     }
 
@@ -631,4 +644,38 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
         out.push_str("<think>\n\n</think>\n");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `tokenize` sizes its buffer from a call with `n_tokens_max = 0`, whose
+    /// documented answer is the NEGATIVE of the count. Reading that as an error
+    /// made every prompt come back empty, and the head peer of the pipeline
+    /// rejected chunk 0 with "não tem tokens" before the second peer was ever
+    /// contacted. Only a real vocab exercises the contract, so the test points
+    /// at a GGUF given by the environment and skips when there is none.
+    #[test]
+    fn tokenize_returns_tokens_for_a_real_vocab() {
+        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
+            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+        };
+        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let tokens = engine.tokenize("oi", true, true);
+        assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
+        assert!(
+            engine.tokenize("Explique o que e RDMA em uma frase.", true, true).len() > tokens.len(),
+            "a longer prompt must produce more tokens"
+        );
+    }
 }

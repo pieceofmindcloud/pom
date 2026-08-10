@@ -69,6 +69,7 @@ mod tests {
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
         Arc::new(RwLock::new(Config {
             role: Role::Principal,
+            node_name: None,
             connection_key: key.into(),
             gateway_port: 8080,
             p2p_port: 42777,

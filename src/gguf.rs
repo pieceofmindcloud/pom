@@ -286,30 +286,42 @@ impl GgufLayout {
         self.layer_bytes.len() as u32
     }
 
-    /// Length of the repeating layer-kind pattern; 1 when every layer is alike.
+    /// Indices where the layer kind changes — the architectural boundaries.
     ///
     /// llama.cpp decides a layer's kind from its *index*, and a slice renumbers
-    /// `blk.<start+i>` to `blk.<i>`, so a slice may only start on a multiple of
-    /// this. Cutting a 4-periodic hybrid at layer 3 shifts every layer onto the
-    /// wrong kind — sometimes a hard `missing tensor` error, sometimes silently
-    /// wrong answers.
-    pub fn layer_period(&self) -> u32 {
+    /// `blk.<start+i>` to `blk.<i>`. A slice boundary is only safe where the
+    /// kind sequence is continuous: cutting a hybrid model mid-group shifts every
+    /// subsequent layer onto the wrong kind — sometimes a hard `missing tensor`
+    /// error, sometimes silently wrong answers.
+    ///
+    /// For [8 Mamba, 8 Attention, 8 Mamba, 8 Attention] this returns [8, 16, 24].
+    pub fn arch_boundaries(&self) -> Vec<u32> {
         let n = self.layer_kinds.len();
-        if n == 0 {
-            return 1;
-        }
-        (1..=n)
-            .find(|&p| (0..n).all(|i| self.layer_kinds[i] == self.layer_kinds[i % p]))
-            .unwrap_or(n) as u32
+        (1..n)
+            .filter(|&i| self.layer_kinds[i] != self.layer_kinds[i - 1])
+            .map(|i| i as u32)
+            .collect()
     }
 
-    /// Largest valid start layer at or below `start`.
-    pub fn snap_start(&self, start: u32) -> u32 {
-        let p = self.layer_period();
-        if p <= 1 {
-            start
+    /// Snap `end` so that `end + 1` falls on a valid slice-start position.
+    ///
+    /// Valid starts are layer 0, every architectural boundary, and `total_layers`
+    /// (end of model). When a budget's natural cut falls mid-group, this walks
+    /// back to the last boundary that is ≤ `end + 1` — the slice shrinks to stay
+    /// whole-group, rather than handing split_model.py a cut it will refuse.
+    pub fn snap_end_layer(&self, start: u32, end: u32, total: u32) -> u32 {
+        if end + 1 >= total {
+            return end;
+        }
+        let boundaries = self.arch_boundaries();
+        if boundaries.is_empty() {
+            return end;
+        }
+        let next_start = end + 1;
+        if let Some(&b) = boundaries.iter().rev().find(|&&b| b <= next_start && b > start) {
+            b - 1
         } else {
-            start - (start % p)
+            end
         }
     }
 

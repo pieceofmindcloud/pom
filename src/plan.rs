@@ -144,19 +144,9 @@ pub fn plan_split(
         let mut end_layer = pos + taken - 1;
         let is_first = shards.is_empty();
 
-        // The *next* slice starts at end_layer+1, and on a hybrid model a slice
-        // may only start on a multiple of the layer-kind period — otherwise
-        // renumbering `blk.<start+i>` to `blk.<i>` lands every layer on the
-        // wrong kind. Shrink this slice to the nearest valid boundary rather
-        // than handing split_model.py a cut it will refuse.
-        let period = layout.layer_period();
-        if period > 1 && end_layer + 1 < total_layers {
-            let next_start = end_layer + 1;
-            let snapped = next_start - (next_start % period);
-            if snapped > start_layer {
-                end_layer = snapped - 1;
-            }
-        }
+        // Snap the cut so the next slice starts on a valid layer kind. Hybrid
+        // models fail with "missing tensor" when a slice starts mid-group.
+        end_layer = layout.snap_end_layer(start_layer, end_layer, total_layers);
         let taken = end_layer - start_layer + 1;
         let is_last = is_last_peer || end_layer + 1 >= total_layers;
 
@@ -446,6 +436,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             }
         };
 
+        let end = if take_rest { end } else { layout.snap_end_layer(pos, end, total_layers) };
         let end = end.min(total_layers - 1);
         let is_last = end + 1 >= total_layers;
         let bytes = layout.slice_bytes(pos, end, is_last);
@@ -637,20 +628,31 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_layout_reports_its_pattern_period() {
-        assert_eq!(layout(32, 200.0).layer_period(), 1);
-        assert_eq!(hybrid_layout(32, 200.0).layer_period(), 4);
-        // Snapping never moves a start that is already valid.
-        assert_eq!(hybrid_layout(32, 200.0).snap_start(8), 8);
-        assert_eq!(hybrid_layout(32, 200.0).snap_start(11), 8);
-        assert_eq!(layout(32, 200.0).snap_start(11), 11);
+    fn hybrid_layout_reports_arch_boundaries() {
+        // Homogeneous: no boundaries, snap_end_layer is a no-op.
+        assert!(layout(32, 200.0).arch_boundaries().is_empty());
+        assert_eq!(layout(32, 200.0).snap_end_layer(0, 11, 32), 11);
+        // Every 4th layer is attention (3 recurrent + 1 attention repeating).
+        // Kind changes at 3, 4, 7, 8, 11, 12, ...
+        let b = hybrid_layout(32, 200.0).arch_boundaries();
+        assert!(b.contains(&3));
+        assert!(b.contains(&4));
+        assert!(!b.contains(&0));
+        // snap_end_layer walks back to the last valid cut.
+        let h = hybrid_layout(32, 200.0);
+        // Natural cut at layer 5 (next_start=6): last boundary ≤ 6 and > 0 is 4 → end=3.
+        assert_eq!(h.snap_end_layer(0, 5, 32), 3);
+        // Already on a boundary (next_start=4 ∈ boundaries): end stays at 3.
+        assert_eq!(h.snap_end_layer(0, 3, 32), 3);
+        // Last layer: no snap needed.
+        assert_eq!(h.snap_end_layer(0, 31, 32), 31);
     }
 
     #[test]
-    fn hybrid_cuts_land_on_the_pattern_period() {
-        // Budgets that would naturally cut mid-pattern: split_model.py renumbers
-        // blk.<start+i> to blk.<i>, so a start that is not a multiple of 4 puts
-        // every layer on the wrong kind. The planner must shrink to a boundary.
+    fn hybrid_cuts_land_on_arch_boundaries() {
+        // Budgets that would naturally cut mid-group: the planner must extend to
+        // the next architectural boundary so the following slice starts on the
+        // correct layer kind.
         let l = hybrid_layout(32, 200.0);
         let plan = plan_split(
             "/m/hybrid.gguf",
@@ -659,15 +661,15 @@ mod tests {
             0.0,
         )
         .unwrap();
+        // Every shard start must be on an arch boundary (or 0).
+        let boundaries = l.arch_boundaries();
         for shard in &plan.shards {
-            assert_eq!(
-                shard.start_layer % 4,
-                0,
-                "slice starting at {} would renumber onto the wrong layer kind",
+            assert!(
+                shard.start_layer == 0 || boundaries.contains(&shard.start_layer),
+                "slice starting at {} is not on an arch boundary",
                 shard.start_layer
             );
         }
-        // And the model is still fully covered.
         assert_eq!(plan.shards.last().unwrap().end_layer, 31);
     }
 

@@ -77,6 +77,7 @@ import type {
   RuntimeParams,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
 
@@ -365,7 +366,7 @@ function OrderRail({
 }
 
 export function DeployModel() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const cluster = useClusterCatalog();
   const [group, setGroup] = useState("");
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -724,7 +725,7 @@ export function DeployModel() {
                         className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3"
                       >
                         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
-                        <p className="min-w-0 text-sm text-muted">{w}</p>
+                        <p className="min-w-0 text-sm text-muted">{localizeServerText(locale, w)}</p>
                       </div>
                     ))}
 

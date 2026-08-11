@@ -19,24 +19,24 @@ cd "$(dirname "$0")/.."
 root=$PWD
 
 echo "==> reconstruindo a interface a partir do fonte"
-cd web-ui
+cd apps/frontend
 [ -d node_modules ] || npm install --no-audit --no-fund
 npm run build
 
-echo "==> publicando em web-ui/dist-release"
+echo "==> publicando em apps/frontend/dist-release"
 rm -rf dist-release
 cp -R dist dist-release
 
 echo "==> gravando a impressao digital do fonte"
 cd "$root"
-cargo run --quiet --bin ui-fingerprint > web-ui/dist-release/.source-manifest
-echo "    $(cat web-ui/dist-release/.source-manifest)"
+cargo run --quiet --bin ui-fingerprint > apps/frontend/dist-release/.source-manifest
+echo "    $(cat apps/frontend/dist-release/.source-manifest)"
 
 cat <<'EOF'
 
 Pacote pronto. Falta commitar:
 
-    git add web-ui/dist-release
+    git add apps/frontend/dist-release
     git commit -m "chore(ui): pacote versionado da interface"
 
 E para conferir que o release compila sem Node:

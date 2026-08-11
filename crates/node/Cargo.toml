@@ -1,0 +1,57 @@
+[package]
+name = "node"
+version.workspace = true
+edition.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "rdma-p2p"
+path = "src/main.rs"
+
+[[bin]]
+name = "ui-fingerprint"
+path = "src/bin/ui-fingerprint.rs"
+
+[features]
+release-bundle = []
+default = []
+cuda = ["llama-cpp-sys-2/cuda"]
+metal = ["llama-cpp-sys-2/metal"]
+
+[dependencies]
+llama-cpp-sys-2 = { version = "0.1.154", default-features = false }
+half = "2"
+libc = "0.2"
+tokio = { version = "1", features = ["full"] }
+clap = { version = "4", features = ["derive"] }
+serde.workspace = true
+serde_json.workspace = true
+uuid = { version = "1", features = ["v4"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow.workspace = true
+reqwest = { version = "0.12", features = ["json", "stream"] }
+axum = "0.7"
+md-5 = "0.10"
+memmap2 = "0.9"
+futures = "0.3"
+tokio-util = { version = "0.7", features = ["io"] }
+libp2p = { version = "0.56", features = [
+    "tokio", "tcp", "dns", "noise", "yamux",
+    "identify", "kad", "mdns", "gossipsub", "macros",
+    "relay", "dcutr", "autonat", "request-response",
+] }
+pkarr = "6"
+async-trait = "0.1"
+rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
+mime_guess = "2"
+zstd = "0.13"
+routing-contract = { path = "../routing-contract" }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

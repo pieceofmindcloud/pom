@@ -1,0 +1,7 @@
+[package]
+name = "routing-base"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+routing-contract = { path = "../routing-contract" }

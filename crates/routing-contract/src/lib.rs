@@ -5,6 +5,28 @@ use serde::{Deserialize, Serialize};
 /// Version negotiated by a node and any routing provider.
 pub const ROUTING_API_VERSION: u16 = 1;
 
+/// A model range a peer can make available to the routing control plane.
+///
+/// A peer can publish several entries, including overlapping ranges for the
+/// same model and ranges belonging to entirely different model revisions.
+/// `model_id` is an opaque, stable model revision identifier, never a UI label.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelCapability {
+    pub model_id: String,
+    /// Inclusive first transformer layer for compatibility with the current
+    /// node wire format. A future wire version can move to an exclusive end.
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub supports_inference: bool,
+}
+
+/// The complete model inventory exposed by one peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelInventory {
+    pub peer_id: String,
+    pub capabilities: Vec<ModelCapability>,
+}
+
 /// Information about a peer that routing providers may use. It deliberately
 /// excludes transport clients and runtime handles.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +140,35 @@ pub enum RoutingError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_inventory_keeps_overlapping_ranges_for_distinct_models() {
+        let inventory = ModelInventory {
+            peer_id: "no1".into(),
+            capabilities: vec![
+                ModelCapability {
+                    model_id: "qwen35@r1".into(),
+                    start_layer: 0,
+                    end_layer: 2,
+                    supports_inference: true,
+                },
+                ModelCapability {
+                    model_id: "ornith@r7".into(),
+                    start_layer: 0,
+                    end_layer: 2,
+                    supports_inference: true,
+                },
+            ],
+        };
+
+        let encoded = serde_json::to_string(&inventory).unwrap();
+        let decoded: ModelInventory = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded.capabilities.len(), 2);
+        assert_ne!(
+            decoded.capabilities[0].model_id,
+            decoded.capabilities[1].model_id
+        );
+    }
 
     fn two_step_plan() -> RoutingPlan {
         RoutingPlan {

@@ -48,6 +48,7 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const isChat = location.pathname === "/chat";
+  const isNetworkDemo = location.pathname === "/" && new URLSearchParams(location.search).get("demo") === "network";
   /*
    * A node with no `rdma-p2p.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -95,7 +96,7 @@ export default function App() {
               <Chat />
             </ErrorBoundary>
           ) : (
-            <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+            <div className={isNetworkDemo ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
               <ErrorBoundary resetKey={location.pathname}>
                 <AnimatePresence mode="wait">
                   <Routes location={location} key={location.pathname}>

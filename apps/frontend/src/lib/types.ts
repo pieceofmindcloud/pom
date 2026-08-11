@@ -131,12 +131,29 @@ export interface PeerView {
   start_layer: number;
   end_layer: number;
   total_layers: number;
+  capabilities: ModelCapability[];
   inference_url: string | null;
   gateway_url: string | null;
   load: number;
   is_self: boolean;
   node: NodeInfo | null;
   unreachable: string | null;
+}
+
+export interface ModelCapability {
+  model_id: string;
+  start_layer: number;
+  end_layer: number;
+  supports_inference: boolean;
+}
+
+/** A handoff selected by the backend routing planner for the active model. */
+export interface RoutingEdge {
+  from_node_id: string;
+  to_node_id: string;
+  model_id: string;
+  from_end_layer: number;
+  to_start_layer: number;
 }
 
 export interface ClusterView {
@@ -147,6 +164,7 @@ export interface ClusterView {
   coverage: boolean[];
   complete: boolean;
   peers: PeerView[];
+  routing_edges: RoutingEdge[];
   node: NodeInfo | null;
 }
 

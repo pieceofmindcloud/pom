@@ -1,6 +1,7 @@
 use crate::model::LayerAssignment;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
+use routing_contract::ModelCapability;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
@@ -48,6 +49,10 @@ pub enum P2PMessage {
         role: String,
         #[serde(default)]
         hostname: String,
+        /// Full inventory for new peers. The legacy model/range fields remain
+        /// so a rolling cluster can still communicate with older binaries.
+        #[serde(default)]
+        capabilities: Vec<ModelCapability>,
         #[serde(default)]
         disk_total_mb: u64,
         #[serde(default)]
@@ -93,6 +98,8 @@ pub struct PeerInfo {
     pub role: String,
     #[serde(default)]
     pub hostname: String,
+    #[serde(default)]
+    pub capabilities: Vec<ModelCapability>,
     #[serde(default)]
     pub connection_verified: bool,
     #[serde(default)]
@@ -427,6 +434,16 @@ impl Network {
             gateway_port: self.gateway_port,
             role: self.role.clone(),
             hostname: self.hostname.clone(),
+            capabilities: assignment
+                .map(|a| {
+                    vec![ModelCapability {
+                        model_id: a.model.clone(),
+                        start_layer: a.start_layer,
+                        end_layer: a.end_layer,
+                        supports_inference: self.inference_port.is_some(),
+                    }]
+                })
+                .unwrap_or_default(),
             disk_total_mb: 0,
             disk_free_mb: 0,
         }
@@ -593,6 +610,7 @@ impl Network {
                 gateway_port,
                 role,
                 hostname,
+                capabilities,
                 disk_total_mb,
                 disk_free_mb,
             } => {
@@ -626,6 +644,7 @@ impl Network {
                     gateway_port,
                     role,
                     hostname,
+                    capabilities,
                     connection_verified: false,
                     disk_total_mb,
                     disk_free_mb,
@@ -840,6 +859,7 @@ mod tests {
             inference_frame_capabilities: Vec::new(),
             role: String::new(),
             hostname: String::new(),
+            capabilities: Vec::new(),
             connection_verified: false,
             disk_total_mb: 0,
             disk_free_mb: 0,
@@ -875,6 +895,7 @@ mod tests {
             inference_frame_capabilities: Vec::new(),
             role: "Principal".into(),
             hostname: "ksia".into(),
+            capabilities: Vec::new(),
             connection_verified: false,
             disk_total_mb: 500000,
             disk_free_mb: 200000,

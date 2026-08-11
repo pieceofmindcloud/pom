@@ -1,11 +1,37 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Logo } from "./Logo";
 import { NAV, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
+import { useTheme } from "../lib/theme";
+
+function SidebarUtilityControls() {
+  const { locale, setLocale, t } = useI18n();
+  const { theme, toggle } = useTheme();
+  return (
+    <div className="border-t border-line p-3">
+      <div role="group" aria-label={locale === "pt-BR" ? "Idioma" : "Language"} className="flex gap-1">
+        {(["en", "pt-BR"] as const).map((next) => (
+          <button
+            key={next}
+            type="button"
+            aria-pressed={locale === next}
+            onClick={() => setLocale(next)}
+            className={clsx("min-h-11 flex-1 rounded-lg border px-2 text-xs font-semibold", locale === next ? "border-iris/50 bg-iris/12 text-fg" : "border-line text-muted hover:text-fg")}
+          >
+            {next === "en" ? "EN" : "PT-BR"}
+          </button>
+        ))}
+        <button type="button" onClick={toggle} aria-label={theme === "dark" ? t("topbar.useLightTheme") : t("topbar.useDarkTheme")} className="flex min-h-11 w-11 items-center justify-center rounded-lg border border-line text-muted hover:text-fg">
+          {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        </button>
+      </div>
+    </div>
+  );
+}
 
 function sectionHoldsPath(section: NavSection, pathname: string) {
   return (section.children ?? []).some((c) =>
@@ -149,6 +175,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
           <Section key={s.labelKey} section={s} onNavigate={onNavigate} />
         ))}
       </nav>
+      <SidebarUtilityControls />
     </>
   );
 }

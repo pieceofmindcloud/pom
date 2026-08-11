@@ -2,21 +2,17 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ChevronDown,
-  Cpu,
   LogOut,
   Menu,
-  Moon,
   PowerOff,
-  Sun,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { isServing } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
-import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
-import { LanguageSelect, useI18n } from "../i18n/provider";
+import { useI18n } from "../i18n/provider";
 import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
@@ -210,30 +206,6 @@ function NodeActions() {
   );
 }
 
-function ThemeToggle() {
-  const { theme, toggle } = useTheme();
-  const { t } = useI18n();
-  return (
-    <button
-      onClick={toggle}
-      aria-label={theme === "dark" ? t("topbar.useLightTheme") : t("topbar.useDarkTheme")}
-      className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-raised text-muted transition-colors duration-150 hover:border-line-strong hover:text-fg"
-    >
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.span
-          key={theme}
-          initial={{ opacity: 0, rotate: -70, scale: 0.7 }}
-          animate={{ opacity: 1, rotate: 0, scale: 1 }}
-          exit={{ opacity: 0, rotate: 70, scale: 0.7 }}
-          transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
-        >
-          {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-        </motion.span>
-      </AnimatePresence>
-    </button>
-  );
-}
-
 export function Topbar() {
   const { t } = useI18n();
   const [drawer, setDrawer] = useState(false);
@@ -254,20 +226,8 @@ export function Topbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
-          <a
-            href="/v1/models"
-            target="_blank"
-            rel="noreferrer"
-            className="hidden h-9 items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 text-[0.82rem] text-muted transition-colors hover:border-line-strong hover:text-fg xl:flex"
-            title={t("topbar.apiTitle")}
-          >
-            <Cpu className="h-3.5 w-3.5" />
-            <span className="font-mono">/v1</span>
-          </a>
           <Notifications />
           <NodeActions />
-          <LanguageSelect className="hidden sm:block" />
-          <ThemeToggle />
         </div>
       </header>
 

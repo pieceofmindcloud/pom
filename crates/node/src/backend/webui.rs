@@ -367,6 +367,7 @@ struct PeerView {
     start_layer: u32,
     end_layer: u32,
     total_layers: u32,
+    capabilities: Vec<routing_contract::ModelCapability>,
     inference_url: Option<String>,
     gateway_url: Option<String>,
     load: u32,
@@ -375,6 +376,15 @@ struct PeerView {
     node: Option<serde_json::Value>,
     /// Why the peer could not be reached, when it could not.
     unreachable: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct RoutingEdgeView {
+    from_node_id: String,
+    to_node_id: String,
+    model_id: String,
+    from_end_layer: u32,
+    to_start_layer: u32,
 }
 
 async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -425,6 +435,16 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
             start_layer: p.start_layer,
             end_layer: p.end_layer,
             total_layers: p.total_layers,
+            capabilities: if p.capabilities.is_empty() && !p.model.is_empty() {
+                vec![routing_contract::ModelCapability {
+                    model_id: p.model.clone(),
+                    start_layer: p.start_layer,
+                    end_layer: p.end_layer,
+                    supports_inference: p.inference_port.is_some(),
+                }]
+            } else {
+                p.capabilities.clone()
+            },
             inference_url: p.inference_url(),
             gateway_url: p.gateway_url(),
             load: state.loads.load(&p.node_id).await,
@@ -453,6 +473,29 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
     }
     let covered_count = covered.iter().filter(|c| **c).count();
 
+    // Ask the same planner used by generation which handoffs it selected.
+    // This is observability only: the UI cannot influence routing or load
+    // balancing through this endpoint.
+    let routing_edges = if active.is_empty() || total == 0 {
+        Vec::new()
+    } else {
+        crate::pipeline::plan_pipeline(&peers, &active, total, &state.loads)
+            .await
+            .map(|plan| {
+                plan.edges
+                    .into_iter()
+                    .map(|edge| RoutingEdgeView {
+                        from_node_id: edge.from_node_id,
+                        to_node_id: edge.to_node_id,
+                        model_id: active.clone(),
+                        from_end_layer: edge.from_end_layer,
+                        to_start_layer: edge.to_start_layer,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
     let self_node = serde_json::to_value(node_info(State(state.clone())).await.0).ok();
 
     Json(json!({
@@ -463,6 +506,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         "coverage": covered,
         "complete": total > 0 && covered_count == total as usize,
         "peers": views,
+        "routing_edges": routing_edges,
         "node": self_node,
     }))
 }

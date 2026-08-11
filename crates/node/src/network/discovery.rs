@@ -296,6 +296,7 @@ async fn handle_event(
                 gateway_port,
                 role,
                 hostname,
+                capabilities,
                 disk_total_mb,
                 disk_free_mb,
             }) = serde_json::from_slice(&message.data)
@@ -317,6 +318,7 @@ async fn handle_event(
                         gateway_port,
                         role,
                         hostname,
+                        capabilities,
                         connection_verified: false,
                         disk_total_mb,
                         disk_free_mb,

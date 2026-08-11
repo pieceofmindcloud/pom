@@ -75,6 +75,18 @@ pub struct PipelineStep {
     pub inference_frame_capabilities: Vec<String>,
 }
 
+/// A handoff chosen by the planner between two consecutive pipeline steps.
+///
+/// The layer boundaries let observers attach the edge to the exact advertised
+/// ranges, even when a node advertises overlapping model slices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineEdge {
+    pub from_node_id: String,
+    pub to_node_id: String,
+    pub from_end_layer: u32,
+    pub to_start_layer: u32,
+}
+
 impl PipelineStep {
     pub fn frame_encoding(&self) -> FrameEncoding {
         if self
@@ -94,6 +106,8 @@ impl PipelineStep {
 pub struct PipelinePlan {
     /// Steps in order from first layer to last.
     pub steps: Vec<PipelineStep>,
+    /// Handoffs selected by the same planner invocation as `steps`.
+    pub edges: Vec<PipelineEdge>,
     pub total_layers: u32,
 }
 
@@ -217,8 +231,19 @@ pub async fn plan_pipeline(
         pos = chosen.end_layer + 1;
     }
 
+    let edges = steps
+        .windows(2)
+        .map(|pair| PipelineEdge {
+            from_node_id: pair[0].node_id.clone(),
+            to_node_id: pair[1].node_id.clone(),
+            from_end_layer: pair[0].end_layer,
+            to_start_layer: pair[1].start_layer,
+        })
+        .collect();
+
     Some(PipelinePlan {
         steps,
+        edges,
         total_layers,
     })
 }
@@ -244,6 +269,7 @@ mod ipv6_tests {
             gateway_port: Some(8090),
             role: String::new(),
             hostname: String::new(),
+            capabilities: Vec::new(),
             connection_verified: false,
             disk_total_mb: 0,
             disk_free_mb: 0,
@@ -324,5 +350,27 @@ mod ipv6_tests {
             .await
             .expect("plano");
         assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
+    }
+
+    #[tokio::test]
+    async fn plan_exposes_handoffs_for_the_selected_steps() {
+        let mut first = peer("192.168.1.10:42777", 0, 15);
+        first.node_id = "first".into();
+        let mut second = peer("192.168.1.11:42777", 16, 31);
+        second.node_id = "second".into();
+
+        let plan = plan_pipeline(&[first, second], "qwen35", 32, &LoadTracker::new())
+            .await
+            .expect("plano");
+
+        assert_eq!(
+            plan.edges,
+            vec![PipelineEdge {
+                from_node_id: "first".into(),
+                to_node_id: "second".into(),
+                from_end_layer: 15,
+                to_start_layer: 16,
+            }]
+        );
     }
 }

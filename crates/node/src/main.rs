@@ -786,6 +786,12 @@ async fn main() -> Result<()> {
                         gateway_port: net_disc.gateway_port,
                         role: String::new(),
                         hostname: String::new(),
+                        capabilities: vec![routing_contract::ModelCapability {
+                            model_id: a.model.clone(),
+                            start_layer: a.start_layer,
+                            end_layer: a.end_layer,
+                            supports_inference: net_disc.inference_port.is_some(),
+                        }],
                         disk_total_mb: 0,
                         disk_free_mb: 0,
                     };

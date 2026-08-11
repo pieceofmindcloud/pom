@@ -159,6 +159,17 @@ impl GatewayState {
                 gateway_port: Some(self.gateway_port),
                 role: self.network.role.clone(),
                 hostname: self.network.hostname.clone(),
+                capabilities: local
+                    .as_ref()
+                    .map(|l| {
+                        vec![routing_contract::ModelCapability {
+                            model_id: l.model.clone(),
+                            start_layer: l.start_layer,
+                            end_layer: l.end_layer,
+                            supports_inference: self.network.inference_port.is_some(),
+                        }]
+                    })
+                    .unwrap_or_default(),
                 connection_verified: false,
                 disk_total_mb: 0,
                 disk_free_mb: 0,
@@ -1044,6 +1055,7 @@ mod peer_visibility_tests {
             gateway_port: Some(8090),
             role: String::new(),
             hostname: String::new(),
+            capabilities: Vec::new(),
             connection_verified: false,
             disk_total_mb: 0,
             disk_free_mb: 0,

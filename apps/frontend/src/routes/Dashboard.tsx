@@ -15,6 +15,8 @@ import { Confirm } from "../components/Confirm";
 import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
+import { ModelNetworkDemo } from "../components/ModelNetworkDemo";
+import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import {
   Badge,
   Button,
@@ -416,6 +418,7 @@ export function Dashboard() {
   const [selected, setSelected] = useState<string | null>(null);
   const cluster = useCluster();
   const node = useNode();
+  const demo = new URLSearchParams(window.location.search).get("demo") === "network";
 
   const c = cluster.data;
   const peers = c ? pipelinePeers(c) : [];
@@ -451,6 +454,8 @@ export function Dashboard() {
 
       {c && (
         <div className="space-y-5">
+          {demo && <ModelNetworkDemo />}
+          {!demo && <ModelNetworkCanvas cluster={c} />}
           <Panel className="grid grid-cols-2 divide-x divide-y divide-line sm:grid-cols-4 sm:divide-y-0">
             <ClusterStat
               label={t("dashboard.machines")}

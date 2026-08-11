@@ -793,7 +793,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .merge(crate::deploy::routes())
         .merge(crate::transfer::routes())
         .merge(crate::devupdate::router())
-        .nest("/", admin)
+        .merge(admin)
         // Genuinely last: this one ends in a `/*path` catch-all that hands
         // unknown paths to the client router, so anything registered after it
         // would never be reached.

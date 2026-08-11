@@ -88,6 +88,62 @@ async fn restart_endpoint(
     Json(json!({ "restarting": true })).into_response()
 }
 
+/// O que impede esta máquina de ser atualizada agora.
+#[derive(Debug, PartialEq)]
+pub enum Preflight {
+    Ok,
+    BranchErrado(String),
+    DesatachadoOuSemBranch,
+    ArvoreSuja(Vec<String>),
+}
+
+/// Decide a partir da saída de `git rev-parse --abbrev-ref HEAD` e de
+/// `git status --porcelain`.
+pub fn preflight(branch: &str, status_porcelain: &str) -> Preflight {
+    let branch = branch.trim();
+    if branch.is_empty() || branch == "HEAD" {
+        return Preflight::DesatachadoOuSemBranch;
+    }
+    if branch != "main" {
+        return Preflight::BranchErrado(branch.to_string());
+    }
+
+    // `??` é arquivo não rastreado: o pull não o toca.
+    let sujos: Vec<String> = status_porcelain
+        .lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with("??"))
+        .filter_map(|l| l.get(3..).map(|s| s.trim().to_string()))
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !sujos.is_empty() {
+        return Preflight::ArvoreSuja(sujos);
+    }
+    Preflight::Ok
+}
+
+impl Preflight {
+    /// A mensagem que vai para a tela, ou `None` quando dá para seguir.
+    pub fn mensagem(&self) -> Option<String> {
+        match self {
+            Preflight::Ok => None,
+            Preflight::DesatachadoOuSemBranch => Some(
+                "o repositório desta máquina não está num branch (HEAD destacado). \
+                 A atualização só roda no main."
+                    .into(),
+            ),
+            Preflight::BranchErrado(b) => Some(format!(
+                "o repositório desta máquina está no branch '{b}', não no main. \
+                 Alguém pode estar trabalhando aqui — a atualização não troca de branch."
+            )),
+            Preflight::ArvoreSuja(files) => Some(format!(
+                "há alterações não commitadas nesta máquina: {}. \
+                 A atualização não descarta trabalho, então ela para aqui.",
+                files.join(", ")
+            )),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -116,5 +172,46 @@ mod tests {
             "a mensagem tem que dizer qual variável liga: {}",
             r.1
         );
+    }
+
+    /// Numa máquina onde alguém está codificando, o botão falha e explica, em
+    /// vez de arrumar a casa alheia. Um `git pull --ff-only origin main` num
+    /// branch de trabalho o avançaria para o main em silêncio.
+    #[test]
+    fn recusa_branch_diferente_de_main() {
+        let p = preflight("fm/minha-feature", "");
+        assert!(matches!(p, Preflight::BranchErrado(ref b) if b == "fm/minha-feature"));
+        assert!(p.mensagem().unwrap().contains("fm/minha-feature"));
+    }
+
+    #[test]
+    fn recusa_head_destacado() {
+        // `git rev-parse --abbrev-ref HEAD` devolve literalmente "HEAD".
+        assert!(matches!(preflight("HEAD", ""), Preflight::DesatachadoOuSemBranch));
+        assert!(matches!(preflight("", ""), Preflight::DesatachadoOuSemBranch));
+    }
+
+    /// Árvore suja para antes de tocar em qualquer coisa, e diz quais arquivos.
+    /// Um build de árvore suja não corresponde a commit nenhum, e o carimbo
+    /// build_commit viraria mentira.
+    #[test]
+    fn recusa_arvore_suja_nomeando_os_arquivos() {
+        let status = " M src/llm.rs\n M src/webui.rs\n";
+        let p = preflight("main", status);
+        match &p {
+            Preflight::ArvoreSuja(files) => {
+                assert_eq!(files, &vec!["src/llm.rs".to_string(), "src/webui.rs".to_string()]);
+            }
+            outro => panic!("esperava árvore suja, veio {outro:?}"),
+        }
+        assert!(p.mensagem().unwrap().contains("src/llm.rs"));
+    }
+
+    /// Arquivo não rastreado não conta: o pull não o toca, e se colidir com um
+    /// arquivo do remoto o próprio git aborta sem sobrescrever.
+    #[test]
+    fn arquivo_nao_rastreado_nao_impede() {
+        assert!(matches!(preflight("main", "?? gateway.rs\n"), Preflight::Ok));
+        assert!(preflight("main", "").mensagem().is_none());
     }
 }

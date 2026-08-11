@@ -18,6 +18,12 @@ export interface ChatMessage {
   error?: string;
   /** `x_rdma_p2p.source`-style hop chain, when the node reported one. */
   source?: string;
+  /** Thinking blocks emitted by models with reasoning enabled. */
+  reasoning?: string;
+  /** Authoritative final throughput from the generating node. */
+  tokensPerSecond?: number;
+  tokensGenerated?: number;
+  durationMs?: number;
   at: string;
 }
 

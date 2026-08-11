@@ -61,7 +61,176 @@ fn refuse(r: (StatusCode, String)) -> Response {
 const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
 
 pub fn router() -> Router<GatewayState> {
-    Router::new().route("/api/ui/dev/restart", post(restart_endpoint))
+    Router::new()
+        .route("/api/ui/dev/restart", post(restart_endpoint))
+        .route("/api/ui/dev/update", post(update_endpoint))
+}
+
+/// Argumentos do cargo, com as features desta máquina.
+fn build_args(features: Option<&str>) -> Vec<String> {
+    let mut v = vec!["build".to_string(), "--release".to_string()];
+    match features.map(str::trim) {
+        Some(f) if !f.is_empty() => {
+            v.push("--features".into());
+            v.push(f.to_string());
+        }
+        _ => {}
+    }
+    v
+}
+
+/// URLs de gateway dos peers que rodam na mesma máquina que este nó.
+///
+/// A entrada é `(hostname, addr, gateway_port)` de cada peer vivo. Peer sem
+/// porta de gateway fica de fora: não há como pedir nada a ele.
+fn sibling_urls(my_hostname: &str, peers: &[(&str, &str, Option<u16>)]) -> Vec<String> {
+    peers
+        .iter()
+        .filter(|(h, _, _)| *h == my_hostname)
+        .filter_map(|(_, addr, port)| {
+            let port = (*port)?;
+            let host = addr.rsplit_once(':').map(|(h, _)| h)?;
+            Some(format!("http://{host}:{port}"))
+        })
+        .collect()
+}
+
+async fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
+    let out = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .await
+        .map_err(|e| format!("não deu para rodar git {}: {e}", args.join(" ")))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git {} falhou:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).to_string())
+}
+
+async fn update_endpoint(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    if let Some(r) = gate_rejection() {
+        return refuse(r);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let job = crate::webui::new_job(&id, "update", "Atualizar esta máquina", "conferindo o repositório");
+    crate::webui::jobs().write().await.insert(id.clone(), job);
+
+    let job_id = id.clone();
+    tokio::spawn(async move {
+        let root = crate::config::project_root();
+
+        async fn fail(job_id: &str, msg: String) {
+            let mut jobs = crate::webui::jobs().write().await;
+            if let Some(j) = jobs.get_mut(job_id) {
+                j.state = "failed";
+                j.message = msg;
+                j.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+
+        // ── Checagens ────────────────────────────────────────────────────────
+        let branch = match git(&root, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+            Ok(b) => b,
+            Err(e) => return fail(&job_id, e).await,
+        };
+        let status = match git(&root, &["status", "--porcelain"]).await {
+            Ok(s) => s,
+            Err(e) => return fail(&job_id, e).await,
+        };
+        if let Some(msg) = preflight(&branch, &status).mensagem() {
+            return fail(&job_id, msg).await;
+        }
+
+        // ── Pull ─────────────────────────────────────────────────────────────
+        step(&job_id, "puxando o código").await;
+        if let Err(e) = git(&root, &["pull", "--ff-only", "origin", "main"]).await {
+            return fail(&job_id, e).await;
+        }
+
+        // ── Build ────────────────────────────────────────────────────────────
+        step(&job_id, "compilando").await;
+        let features = std::env::var(ENV_FEATURES).ok();
+        let args = build_args(features.as_deref());
+        let out = tokio::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
+            .args(&args)
+            .current_dir(&root)
+            .stdin(std::process::Stdio::null())
+            .output()
+            .await;
+        match out {
+            Ok(o) if o.status.success() => {}
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                let tail: String = err
+                    .lines()
+                    .rev()
+                    .take(30)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                return fail(&job_id, format!("o build falhou. Ninguém reiniciou.\n{tail}")).await;
+            }
+            Err(e) => return fail(&job_id, format!("não deu para rodar cargo: {e}")).await,
+        }
+
+        // ── Reinícios ────────────────────────────────────────────────────────
+        step(&job_id, "reiniciando os nós desta máquina").await;
+        let me = crate::sysmon::sample().await.hostname;
+        let peers = state.network.alive_peers().await;
+        let tuples: Vec<(&str, &str, Option<u16>)> = peers
+            .iter()
+            .map(|p| (p.hostname.as_str(), p.addr.as_str(), p.gateway_port))
+            .collect();
+        let key = { state.auth.read().await.connection_key.clone() };
+        for url in sibling_urls(&me, &tuples) {
+            let _ = state
+                .http
+                .post(format!("{url}/api/ui/dev/restart"))
+                .bearer_auth(&key)
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await;
+        }
+
+        {
+            let mut jobs = crate::webui::jobs().write().await;
+            if let Some(j) = jobs.get_mut(&job_id) {
+                j.state = "done";
+                j.step = "pronto".into();
+                j.message = "código atualizado; esta máquina está reiniciando".into();
+                j.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            }
+        }
+
+        // Este nó por último, para o job chegar a ser marcado como pronto.
+        if let Some(cfg) = state.runtime.config().await {
+            let _ = crate::lastslice::save(&cfg);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let e = crate::respawn::respawn_self();
+        tracing::error!("respawn falhou, o nó segue no ar: {e}");
+    });
+
+    Json(json!({ "job_id": id })).into_response()
+}
+
+async fn step(job_id: &str, s: &str) {
+    let mut jobs = crate::webui::jobs().write().await;
+    if let Some(j) = jobs.get_mut(job_id) {
+        j.step = s.to_string();
+    }
 }
 
 async fn restart_endpoint(
@@ -213,5 +382,41 @@ mod tests {
     fn arquivo_nao_rastreado_nao_impede() {
         assert!(matches!(preflight("main", "?? gateway.rs\n"), Preflight::Ok));
         assert!(preflight("main", "").mensagem().is_none());
+    }
+
+    /// O comando de build precisa carregar as features da máquina. Sem isto a
+    /// ksia perderia CUDA no primeiro clique — o mesmo engano já cometido à mão.
+    #[test]
+    fn o_build_leva_as_features_da_maquina() {
+        assert_eq!(build_args(None), vec!["build", "--release"]);
+        assert_eq!(build_args(Some("")), vec!["build", "--release"]);
+        assert_eq!(
+            build_args(Some("cuda")),
+            vec!["build", "--release", "--features", "cuda"]
+        );
+        assert_eq!(
+            build_args(Some("metal")),
+            vec!["build", "--release", "--features", "metal"]
+        );
+    }
+
+    /// Os irmãos são os peers da mesma máquina, e este nó não está na lista de
+    /// peers — ele reinicia por último, por conta própria.
+    #[test]
+    fn irmaos_sao_os_peers_do_mesmo_hostname() {
+        let alvos = sibling_urls("ksia", &[
+            ("ksia", "[2804:d55::1]:42777", Some(8090)),
+            ("ksia", "[2804:d55::1]:42778", Some(8094)),
+            ("tiago-pc", "[2804:f30::9]:42777", Some(8080)),
+            ("ksia", "[2804:d55::1]:42779", None),
+        ]);
+        assert_eq!(
+            alvos,
+            vec![
+                "http://[2804:d55::1]:8090".to_string(),
+                "http://[2804:d55::1]:8094".to_string(),
+            ],
+            "outra máquina fica de fora, e peer sem gateway_port não dá para chamar"
+        );
     }
 }

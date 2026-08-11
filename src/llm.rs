@@ -673,6 +673,15 @@ mod tests {
     /// This lock restores the one-engine-at-a-time property the design assumes.
     static ENGINE_LOCK: Mutex<()> = Mutex::new(());
 
+    /// How many layers the tests offload. Real peers run with everything on the
+    /// GPU, and the capture behaves differently there, so this has to be a knob.
+    fn test_gpu_layers() -> i32 {
+        std::env::var("RDMA_P2P_TEST_GPU_LAYERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0)
+    }
+
     /// `tokenize` sizes its buffer from a call with `n_tokens_max = 0`, whose
     /// documented answer is the NEGATIVE of the count. Reading that as an error
     /// made every prompt come back empty, and the head peer of the pipeline
@@ -701,14 +710,10 @@ mod tests {
             eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
             return;
         };
-        let n_gpu_layers = std::env::var("RDMA_P2P_TEST_GPU_LAYERS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
         let cfg = EngineConfig {
             n_ctx: 512,
             n_batch: 512,
-            n_gpu_layers,
+            n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: true,
@@ -745,7 +750,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             n_batch: 512,
-            n_gpu_layers: 0,
+            n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: true,

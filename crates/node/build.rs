@@ -1,25 +1,25 @@
 //! Puts the web interface where the binary can embed it.
 //!
-//! Two paths, and the hierarchy between them is the whole point:
-//!
-//! * **Development (default).** `cargo build` rebuilds the interface from
-//!   source with Vite. Node and npm are required on the development machines,
-//!   which is the price for the property that matters: the binary physically
-//!   cannot serve an interface that disagrees with `web-ui/src`.
-//!
-//! * **Release (`--features release-bundle`).** Nothing is rebuilt; the bundle
-//!   committed at `web-ui/dist-release` is embedded as-is, so cutting a release
-//!   needs no JavaScript toolchain at all. That convenience is exactly where a
-//!   stale bundle could slip through, so this path refuses to build unless the
-//!   committed bundle's fingerprint matches the current source.
-//!
-//! Either way the chosen directory is handed to the crate through
-//! `CODAI_UI_DIST`, and `rust-embed` compiles it in from there.
+//! Every build recompiles the React interface with Vite, then hands its output
+//! to the crate through `CODAI_UI_DIST`. Node and npm are therefore required
+//! only on development and release-building machines. The resulting binary
+//! embeds the assets with `rust-embed` and needs neither at runtime.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-include!("src/utils/ui_manifest.rs");
+const UI_SOURCE_INPUTS: &[&str] = &[
+    "src",
+    "index.html",
+    "package.json",
+    "package-lock.json",
+    "vite.config.ts",
+    "tailwind.config.js",
+    "postcss.config.js",
+    "tsconfig.json",
+    "tsconfig.app.json",
+    "tsconfig.node.json",
+];
 
 fn main() {
     let root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"))
@@ -33,13 +33,7 @@ fn main() {
         println!("cargo:rerun-if-changed=apps/frontend/{input}");
     }
     println!("cargo:rerun-if-changed=build.rs");
-    println!("cargo:rerun-if-changed=src/utils/ui_manifest.rs");
-
-    let dist = if cfg!(feature = "release-bundle") {
-        release_bundle(&web_ui)
-    } else {
-        build_from_source(&web_ui)
-    };
+    let dist = build_from_source(&web_ui);
 
     println!("cargo:rustc-env=CODAI_UI_DIST={}", dist.display());
     emit_build_id(&root);
@@ -81,44 +75,6 @@ fn emit_build_id(root: &Path) {
     // Without this the stamp freezes at whatever the first build saw.
     println!("cargo:rerun-if-changed=.git/HEAD");
     println!("cargo:rerun-if-changed=.git/index");
-}
-
-/// Embed the committed bundle, but only if it still matches the source.
-fn release_bundle(web_ui: &Path) -> PathBuf {
-    let dist = web_ui.join("dist-release");
-    if !dist.join("index.html").exists() {
-        panic!(
-            "--features release-bundle, mas nao ha pacote em {}.\n\
-             Gere com: ./scripts/cut-ui-bundle.sh",
-            dist.display()
-        );
-    }
-
-    let recorded = std::fs::read_to_string(dist.join(MANIFEST_FILE))
-        .unwrap_or_else(|_| {
-            panic!(
-                "o pacote em {} nao tem {MANIFEST_FILE}, entao nao da para provar \
-                 que ele corresponde ao codigo. Regere com ./scripts/cut-ui-bundle.sh",
-                dist.display()
-            )
-        })
-        .trim()
-        .to_string();
-
-    let actual = ui_source_fingerprint(web_ui).expect("ler o fonte da interface");
-
-    // The failure this exists for: someone edits the UI, cuts a release, and the
-    // binary ships the old screens without a word. Loud, with the way out.
-    assert_eq!(
-        recorded, actual,
-        "\n\nO pacote versionado da interface esta velho.\n\
-         web-ui/dist-release foi gerado de um fonte diferente do que esta aqui \
-         (gravado {recorded}, atual {actual}).\n\
-         Regere e commite antes de cortar o release:\n\
-         \n    ./scripts/cut-ui-bundle.sh\n\n"
-    );
-
-    dist
 }
 
 /// Run Vite and embed what it produces.
@@ -169,9 +125,7 @@ fn run(cwd: &Path, program: &str, args: &[&str]) {
         .unwrap_or_else(|e| {
             panic!(
                 "nao deu para rodar `{program} {}` em {}: {e}\n\
-                 O build padrao reconstroi a interface e precisa de Node e npm. \
-                 Para compilar sem eles, use o pacote versionado:\n\
-                 \n    cargo build --release --features release-bundle\n",
+                 O build recompila a interface e precisa de Node e npm na maquina de desenvolvimento.\n",
                 args.join(" "),
                 cwd.display()
             )

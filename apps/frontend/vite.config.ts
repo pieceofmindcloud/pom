@@ -39,7 +39,7 @@ export default defineConfig({
    * That state is reachable by editing nothing: a `git rebase` or branch switch
    * rewrites `vite.config.ts` under a live dev server, Vite restarts itself on
    * the spot, and the restart can land while the tree is mid-rewrite. Naming
-   * the directory means a stray `web-ui/.vite/` can no longer appear, so if the
+   * the directory means a stray `apps/frontend/.vite/` can no longer appear, so if the
    * page ever loses its styling again the cure is the same as ever — restart
    * the dev server — and the cache location is at least not a second variable.
    */

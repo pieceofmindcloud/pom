@@ -5,5 +5,5 @@ kept for operator reference only and are not invoked by Cargo, the node binary,
 or the release pipeline.
 
 Use `cargo run --bin rdma-p2p -- <arguments>` during development, or the
-released `rdma-p2p` binary. The supported release asset workflow remains
-`scripts/cut-ui-bundle.sh` because it builds the embedded frontend bundle.
+released `rdma-p2p` binary. Cargo builds the embedded frontend directly from
+`apps/frontend`; Node and npm are needed to compile, never to run the binary.

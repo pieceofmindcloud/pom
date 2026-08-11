@@ -4,7 +4,7 @@
  * Kept in this browser's `localStorage`, not on the node. The chat is a test
  * surface for the operator's own machine, and putting transcripts on a peer
  * would mean deciding who else in the cluster gets to read them — a question
- * nobody has asked. The trade is stated in `web-ui/README.md`: sessions do not
+ * nobody has asked. The trade is stated in `apps/frontend/README.md`: sessions do not
  * follow you to another browser, and clearing site data clears them.
  */
 import { useCallback, useEffect, useState } from "react";

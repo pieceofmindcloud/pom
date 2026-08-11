@@ -8,11 +8,9 @@ build = "build.rs"
 name = "rdma-p2p"
 path = "src/main.rs"
 
-[[bin]]
-name = "ui-fingerprint"
-path = "src/bin/ui-fingerprint.rs"
-
 [features]
+# Kept as a compatibility alias for existing release commands. Every build now
+# compiles the frontend locally, so this no longer selects a committed bundle.
 release-bundle = []
 default = []
 cuda = ["llama-cpp-sys-2/cuda"]

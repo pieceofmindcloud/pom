@@ -15,23 +15,13 @@ continuam `rdma-p2p`.
 ## Como o binário serve a interface
 
 `cargo build` **reconstrói a interface** (`build.rs` chama o Vite) e embute o
-resultado com `rust-embed`. Isso torna impossível o binário servir uma tela que
-discorde de `web-ui/src` — o preço é exigir Node e npm nas máquinas de
-desenvolvimento, que foi a escolha do captain.
+resultado com `rust-embed`. Portanto, Node e npm são necessários somente na
+máquina que compila, inclusive no corte de release. O binário pronto contém os
+assets e não precisa de Node, npm ou de uma pasta `dist` ao ser executado.
 
-Para compilar **sem Node**, existe o caminho de release:
-
-```bash
-./scripts/cut-ui-bundle.sh          # gera web-ui/dist-release + a impressao digital
-git add web-ui/dist-release && git commit
-cargo build --release --features release-bundle
-```
-
-`dist-release` só entra no git **no corte do release**; fora disso nada gerado é
-versionado. E ele não é confiado na palavra: o pacote carrega a impressão digital
-do fonte que o gerou, e tanto o build de release quanto `cargo test` recusam alto
-se ela não bater com o `web-ui/src` atual. Um pacote velho falha a compilação em
-vez de virar uma interface de duas versões atrás na máquina de alguém.
+`dist/` e `dist-release/` são artefatos locais e ignorados pelo Git. Assim cada
+release é sempre produzido a partir do fonte atual da interface, sem risco de
+embarcar uma tela compilada em outro commit.
 
 ### Roteamento
 
@@ -53,7 +43,7 @@ cargo build --release
 ./target/release/rdma-p2p --no-discovery
 
 # 2. a interface, apontada para ele
-cd web-ui
+cd apps/frontend
 npm install
 VITE_API_TARGET=http://127.0.0.1:8099 npm run dev
 ```
@@ -89,7 +79,7 @@ Não é o Tailwind, não é o PostCSS, não é o cache. É o dev server que **pe
 contexto do projeto** e está rodando sem config nenhuma. Reiniciar resolve:
 
 ```bash
-# no diretorio web-ui
+# no diretorio apps/frontend
 npm run dev
 ```
 
@@ -393,7 +383,7 @@ por máquina.
 
 ## Detalhes que economizam tempo depois
 
-- **Editar `web-ui/` exige `cargo build`** para valer no binário, porque o bundle
+- **Editar `apps/frontend/` exige `cargo build`** para valer no binário, porque o bundle
   é embutido em tempo de compilação. Durante o desenvolvimento use o dev server,
   que tem hot reload.
 - **`Footnote`** (`src/components/ui.tsx`) existe porque a marcação óbvia é uma

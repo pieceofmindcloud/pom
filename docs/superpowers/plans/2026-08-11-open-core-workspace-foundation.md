@@ -154,9 +154,9 @@ Expected: PASS.
 
 - [ ] **Step 5: Run complete verification**
 
-Run: `cargo test --workspace && cargo build --release --features release-bundle`
+Run: `cargo test --workspace && cargo build --release`
 
-Expected: both commands exit zero. If `web-ui/dist-release` is intentionally absent, run `cargo build --release` instead and record that release-bundle was not testable in the task report.
+Expected: both commands exit zero. Node and npm are required on the build machine; the resulting binary embeds the frontend assets and does not require them at runtime.
 
 ### Task 5: Document the private plugin boundary without shipping private code
 

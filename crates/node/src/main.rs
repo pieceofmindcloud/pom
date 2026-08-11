@@ -63,8 +63,6 @@ mod splitter;
 mod sysmon;
 #[path = "backend/transfer.rs"]
 mod transfer;
-#[path = "utils/ui_manifest.rs"]
-mod ui_manifest;
 #[path = "backend/webapp.rs"]
 mod webapp;
 #[path = "backend/webui.rs"]

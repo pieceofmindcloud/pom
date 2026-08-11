@@ -171,16 +171,17 @@ async fn update_endpoint(
     State(state): State<GatewayState>,
     body: Option<Json<UpdateRequest>>,
 ) -> Response {
-    if let Some(r) = gate_rejection() {
-        return refuse(r);
-    }
-
     let node_id_pedido = body.and_then(|Json(b)| b.node_id);
-    if deve_repassar(node_id_pedido.as_deref(), &state.network.node_id) {
-        // O portão é checado no destino, não aqui: repassar não pode furar o
-        // portão de ninguém. Um peer sem RDMA_P2P_DEV_UPDATE=1 responde 403 e
-        // este nó devolve exatamente esse status e corpo ao navegador.
-        let alvo = node_id_pedido.expect("deve_repassar só é verdadeiro com Some");
+
+    // O portão protege a máquina que vai rodar o build, e repassar não roda
+    // nada aqui. Checá-lo antes da decisão de repasse impedia o painel de um nó
+    // comum de atualizar um peer que tem o portão aberto — e a tela desenha o
+    // botão a partir do `dev_update` **do alvo**, então o botão aparecia e este
+    // nó respondia 403. Quem repassa não precisa da permissão; quem executa,
+    // sim, e é o destino que a verifica.
+    if let Some(alvo) =
+        node_id_pedido.filter(|id| deve_repassar(Some(id), &state.network.node_id))
+    {
         let peers = state.network.alive_peers().await;
         let Some(base) = peers
             .iter()
@@ -223,6 +224,11 @@ async fn update_endpoint(
             )
                 .into_response(),
         };
+    }
+
+    // Daqui para baixo é execução nesta máquina, e aí sim o portão manda.
+    if let Some(r) = gate_rejection() {
+        return refuse(r);
     }
 
     let id = uuid::Uuid::new_v4().to_string();

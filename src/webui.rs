@@ -297,7 +297,9 @@ fn check_dir(raw: &str, what: &str) -> Result<String, String> {
         return Err(format!("{what}: “{trimmed}” não existe nesta máquina."));
     }
     if !path.is_dir() {
-        return Err(format!("{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."));
+        return Err(format!(
+            "{what}: “{trimmed}” é um arquivo, e aqui se informa a pasta que o contém."
+        ));
     }
     Ok(trimmed.to_string())
 }
@@ -481,15 +483,20 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
             let node_id = p.node_id.clone();
             async move {
                 let Some(base) = url else {
-                    return (node_id, None, Some("sem porta de gateway anunciada".to_string()));
+                    return (
+                        node_id,
+                        None,
+                        Some("sem porta de gateway anunciada".to_string()),
+                    );
                 };
                 let url = format!("{base}/api/ui/models");
                 match tokio::time::timeout(PEER_TIMEOUT * 3, http.get(&url).send()).await {
-                    Ok(Ok(r)) if r.status().is_success() => match r.json::<serde_json::Value>().await
-                    {
-                        Ok(v) => (node_id, Some(v), None),
-                        Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
-                    },
+                    Ok(Ok(r)) if r.status().is_success() => {
+                        match r.json::<serde_json::Value>().await {
+                            Ok(v) => (node_id, Some(v), None),
+                            Err(e) => (node_id, None, Some(format!("resposta inválida: {e}"))),
+                        }
+                    }
                     Ok(Ok(r)) => (node_id, None, Some(format!("HTTP {}", r.status()))),
                     Ok(Err(e)) => (node_id, None, Some(format!("{e}"))),
                     Err(_) => (node_id, None, Some("timeout".to_string())),
@@ -611,6 +618,8 @@ pub struct RuntimeParams {
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
     pub n_ctx: u32,
+    #[serde(default = "d_true")]
+    pub offload_kqv: bool,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
@@ -641,24 +650,49 @@ pub struct RuntimeParams {
     pub no_embeddings: bool,
 }
 
-fn d_gpu_layers() -> u32 { 99 }
-fn d_n_ctx() -> u32 { 8192 }
-fn d_n_batch() -> u32 { 512 }
-fn d_max_new() -> u32 { 256 }
-fn d_max_sessions() -> u32 { 1 }
-fn d_prefill_chunk() -> u32 { crate::prefill::DEFAULT_CHUNK_TOKENS }
-fn d_temp() -> f32 { 0.7 }
-fn d_top_p() -> f32 { 0.9 }
-fn d_top_k() -> u32 { 40 }
-fn d_repeat_penalty() -> f32 { 1.15 }
-fn d_repeat_last_n() -> u32 { 64 }
-fn d_true() -> bool { true }
+fn d_gpu_layers() -> u32 {
+    99
+}
+fn d_n_ctx() -> u32 {
+    8192
+}
+fn d_n_batch() -> u32 {
+    512
+}
+fn d_max_new() -> u32 {
+    256
+}
+fn d_max_sessions() -> u32 {
+    1
+}
+fn d_prefill_chunk() -> u32 {
+    crate::prefill::DEFAULT_CHUNK_TOKENS
+}
+fn d_temp() -> f32 {
+    0.7
+}
+fn d_top_p() -> f32 {
+    0.9
+}
+fn d_top_k() -> u32 {
+    40
+}
+fn d_repeat_penalty() -> f32 {
+    1.15
+}
+fn d_repeat_last_n() -> u32 {
+    64
+}
+fn d_true() -> bool {
+    true
+}
 
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
+            offload_kqv: d_true(),
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
@@ -684,6 +718,7 @@ impl From<&NodeConfig> for RuntimeParams {
         Self {
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
+            offload_kqv: c.offload_kqv,
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
@@ -873,7 +908,10 @@ fn overall_progress(index: u32, total: u32, pct: f64) -> f64 {
 async fn job_status(Path(id): Path<String>) -> Response {
     match jobs().read().await.get(&id) {
         Some(job) => Json(job.clone()).into_response(),
-        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "job desconhecido" })))
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "job desconhecido" })),
+        )
             .into_response(),
     }
 }
@@ -947,11 +985,7 @@ async fn apply(
     Json(json!({ "job_id": id })).into_response()
 }
 
-async fn run_apply(
-    state: GatewayState,
-    req: ApplyRequest,
-    job_id: &str,
-) -> anyhow::Result<String> {
+async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
     let model_path = if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
         merge_parts(shard_dir, &req, &parts, job_id).await?
@@ -992,12 +1026,22 @@ async fn run_apply(
             "shard pronto: {} ({:.1} GB, {})",
             outcome.output_path,
             outcome.bytes as f64 / 1_073_741_824.0,
-            if outcome.reused { "reaproveitado" } else { "gerado" }
+            if outcome.reused {
+                "reaproveitado"
+            } else {
+                "gerado"
+            }
         );
         outcome.output_path
     };
 
-    set_job(job_id, "running", "carregando", "iniciando servidor de inferência").await;
+    set_job(
+        job_id,
+        "running",
+        "carregando",
+        "iniciando servidor de inferência",
+    )
+    .await;
 
     // The label must be derived from the *shared* base name, not the local
     // filename, so peers holding different quantisations still agree.
@@ -1020,6 +1064,7 @@ async fn run_apply(
         inference_port,
         n_gpu_layers: req.params.n_gpu_layers,
         n_ctx: req.params.n_ctx,
+        offload_kqv: req.params.offload_kqv,
         n_batch: req.params.n_batch,
         max_new_tokens: req.params.max_new_tokens,
         max_sessions: req.params.max_sessions,
@@ -1104,7 +1149,10 @@ async fn merge_parts(
     // keeps two concurrent merges of the same range from interleaving writes.
     let temp = output.with_file_name(format!(
         "{}.{}.part",
-        output.file_name().map(|s| s.to_string_lossy()).unwrap_or_default(),
+        output
+            .file_name()
+            .map(|s| s.to_string_lossy())
+            .unwrap_or_default(),
         uuid::Uuid::new_v4().simple()
     ));
     let temp_cleanup = temp.clone();
@@ -1197,10 +1245,7 @@ async fn layout_of(path: &std::path::Path) -> Result<Arc<crate::gguf::GgufLayout
 }
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.
-async fn slice_plan(
-    _auth: ConnectionAuth,
-    Json(req): Json<SlicePlanRequest>,
-) -> Response {
+async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) -> Response {
     let layout = match layout_of(std::path::Path::new(&req.model_path)).await {
         Ok(l) => l,
         Err(e) => return bad_request(e),
@@ -1229,7 +1274,10 @@ async fn slice_locally(
 ) -> Response {
     let source = std::path::PathBuf::from(&req.model_path);
     if !source.is_file() {
-        return bad_request(format!("modelo não encontrado nesta máquina: {}", req.model_path));
+        return bad_request(format!(
+            "modelo não encontrado nesta máquina: {}",
+            req.model_path
+        ));
     }
     if req.slices.is_empty() {
         return bad_request("nenhuma fatia na lista");
@@ -1289,7 +1337,17 @@ async fn slice_locally(
 
     let job_id = id.clone();
     tokio::spawn(async move {
-        match run_slice(state, source, out_dir, base_name, ranges, total_layers, &job_id).await {
+        match run_slice(
+            state,
+            source,
+            out_dir,
+            base_name,
+            ranges,
+            total_layers,
+            &job_id,
+        )
+        .await
+        {
             Ok(files) => {
                 let msg = format!(
                     "{} fatia{} em {}",
@@ -1297,7 +1355,9 @@ async fn slice_locally(
                     if files.len() == 1 { "" } else { "s" },
                     files
                         .first()
-                        .and_then(|f| std::path::Path::new(f).parent().map(|p| p.display().to_string()))
+                        .and_then(|f| std::path::Path::new(f)
+                            .parent()
+                            .map(|p| p.display().to_string()))
                         .unwrap_or_default()
                 );
                 set_job(&job_id, "done", "pronto", &msg).await;
@@ -1335,7 +1395,13 @@ async fn run_slice(
             index + 1,
             parts
         );
-        set_job(job_id, "running", "lendo", &format!("{label} · lendo o modelo")).await;
+        set_job(
+            job_id,
+            "running",
+            "lendo",
+            &format!("{label} · lendo o modelo"),
+        )
+        .await;
 
         let progress_job = job_id.to_string();
         let writing_label = label.clone();
@@ -1370,7 +1436,11 @@ async fn run_slice(
             index + 1,
             outcome.output_path,
             outcome.bytes as f64 / 1_073_741_824.0,
-            if outcome.reused { "reaproveitada" } else { "gerada" }
+            if outcome.reused {
+                "reaproveitada"
+            } else {
+                "gerada"
+            }
         );
         outputs.push(outcome.output_path.clone());
 
@@ -1390,10 +1460,7 @@ async fn run_slice(
 /// Stop the inference server on this node, announce the node as idle,
 /// and free the inference port. Called by `launch` before reconfiguring
 /// peers so no stale endpoint receives inference requests mid-transition.
-async fn stop_inference(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
+async fn stop_inference(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     info!("stop-inference recebido — parando servidor neste nó");
     state.runtime.stop().await;
     Json(json!({ "stopped": true })).into_response()
@@ -1412,10 +1479,7 @@ async fn stop_inference(
 /// Mechanically the same work `stop-inference` does during a launch, but that
 /// route exists for the launch orchestration and says nothing back about what
 /// was released — which is the whole answer the operator is waiting for here.
-async fn unload_model(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
+async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     let unloaded = state.runtime.config().await;
     if unloaded.is_none() {
         return Json(json!({ "unloaded": false, "reason": "nenhum modelo carregado" }))
@@ -1435,10 +1499,7 @@ async fn unload_model(
 /// Take this node off the network: unload, stop announcing, forget the peers.
 ///
 /// The HTTP gateway keeps serving, because the way back in is this same screen.
-async fn leave_network(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
+async fn leave_network(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     state.runtime.stop().await;
     state.network.detach().await;
     info!("nó saiu da rede pela interface");
@@ -1486,7 +1547,9 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
         if peer.node_id == self_id {
             continue;
         }
-        let Some(base) = peer.gateway_url() else { continue };
+        let Some(base) = peer.gateway_url() else {
+            continue;
+        };
 
         // Busy peers are out: a node serves one range at a time.
         match state
@@ -1525,7 +1588,12 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
             .and_then(|s| s.as_array())
             .into_iter()
             .flatten()
-            .flat_map(|set| set.get("shards").and_then(|s| s.as_array()).into_iter().flatten())
+            .flat_map(|set| {
+                set.get("shards")
+                    .and_then(|s| s.as_array())
+                    .into_iter()
+                    .flatten()
+            })
             .find(|shard| {
                 let range = shard.get("shard_range").and_then(|r| r.as_array());
                 let matches_range = range
@@ -1560,10 +1628,7 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
 /// Read-only, and the reason the confirmation dialog can promise something true:
 /// warning "the model will stop answering" only when it actually will beats a
 /// blanket scare that the operator learns to click through.
-async fn release_candidate(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
+async fn release_candidate(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     let Some(cfg) = state.runtime.config().await else {
         return Json(json!({ "serving": false })).into_response();
     };
@@ -1704,10 +1769,7 @@ async fn release_slice(
 }
 
 /// Announce again and go looking for the bootstrap nodes.
-async fn rejoin_network(
-    _auth: ConnectionAuth,
-    State(state): State<GatewayState>,
-) -> Response {
+async fn rejoin_network(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
     let assignment = state.local_assignment.read().await.clone();
     match state.network.rejoin(assignment.as_ref()).await {
         Ok(()) => Json(json!({ "detached": false })).into_response(),
@@ -1799,11 +1861,7 @@ pub(crate) async fn launch(
              as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
         );
     }
-    if let Some(t) = req
-        .targets
-        .iter()
-        .find(|t| t.end_layer >= req.total_layers)
-    {
+    if let Some(t) = req.targets.iter().find(|t| t.end_layer >= req.total_layers) {
         return bad_request(format!(
             "a fatia L{}-{} passa do fim de um modelo de {} camadas",
             t.start_layer, t.end_layer, req.total_layers
@@ -1851,7 +1909,10 @@ pub(crate) async fn launch(
                 );
             }
             Err(e) => {
-                warn!("peer {} inacessivel para stop-inference: {e}", target.node_id);
+                warn!(
+                    "peer {} inacessivel para stop-inference: {e}",
+                    target.node_id
+                );
             }
         }
     }
@@ -1950,9 +2011,7 @@ pub struct SetupKeyResponse {
     pub addresses: Vec<String>,
 }
 
-pub async fn get_setup_key(
-    State(config): State<AuthState>,
-) -> impl IntoResponse {
+pub async fn get_setup_key(State(config): State<AuthState>) -> impl IntoResponse {
     let raw = format!("{}-{}", uuid::Uuid::new_v4(), std::process::id());
     let mut hasher = Sha256::new();
     hasher.update(raw.as_bytes());
@@ -2027,8 +2086,9 @@ pub async fn save_setup(
         }
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(json!({"error": e.to_string()}))
-        ).into_response(),
+            Json(json!({"error": e.to_string()})),
+        )
+            .into_response(),
     }
 }
 
@@ -2118,13 +2178,17 @@ mod tests {
         assert_eq!(p.n_ctx, 8192);
         assert_eq!(p.n_batch, 512);
         assert!(p.no_thinking);
+        assert!(p.offload_kqv);
     }
 
     #[test]
     fn params_accept_partial_overrides() {
-        let p: RuntimeParams = serde_json::from_str(r#"{"n_ctx":4096,"no_thinking":false}"#).unwrap();
-        assert_eq!(p.n_ctx, 4096);
+        let p: RuntimeParams =
+            serde_json::from_str(r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false}"#)
+                .unwrap();
+        assert_eq!(p.n_ctx, 250000);
         assert!(!p.no_thinking);
+        assert!(!p.offload_kqv);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
     }
 
@@ -2141,10 +2205,8 @@ mod tests {
     #[test]
     fn merge_parts_joins_two_slices_into_a_whole() {
         block_on(async {
-            let root = std::env::temp_dir().join(format!(
-                "rdmap2p-webui-merge-{}",
-                std::process::id()
-            ));
+            let root =
+                std::env::temp_dir().join(format!("rdmap2p-webui-merge-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");
@@ -2165,7 +2227,9 @@ mod tests {
                     end_layer: 31,
                 },
             ];
-            let out = merge_parts(root.clone(), &req, &parts, "job-merge").await.unwrap();
+            let out = merge_parts(root.clone(), &req, &parts, "job-merge")
+                .await
+                .unwrap();
             let out_path = std::path::Path::new(&out);
             assert_eq!(
                 out_path.file_name().unwrap().to_string_lossy().as_ref(),
@@ -2173,14 +2237,20 @@ mod tests {
                 "o modelo junto sai no diretório de fatias com o nome convencional"
             );
             let layout = crate::gguf::read_layout(out_path).unwrap();
-            assert_eq!(layout.layer_count(), 32, "as duas fatias juntas cobrem o modelo");
+            assert_eq!(
+                layout.layer_count(),
+                32,
+                "as duas fatias juntas cobrem o modelo"
+            );
             assert!(out_path.metadata().unwrap().len() > a.metadata().unwrap().len());
 
             // Reuse: a second apply with the same range must not rebuild it —
             // a marker written over the output proves the file was left alone.
             let marker = vec![0xAAu8; 2048];
             std::fs::write(&out_path, &marker).unwrap();
-            let again = merge_parts(root.clone(), &req, &parts, "job-merge-2").await.unwrap();
+            let again = merge_parts(root.clone(), &req, &parts, "job-merge-2")
+                .await
+                .unwrap();
             assert_eq!(again, out);
             assert_eq!(
                 std::fs::read(&out_path).unwrap(),
@@ -2195,10 +2265,8 @@ mod tests {
     #[test]
     fn merge_parts_refuses_one_part_or_a_gap() {
         block_on(async {
-            let root = std::env::temp_dir().join(format!(
-                "rdmap2p-webui-merge-bad-{}",
-                std::process::id()
-            ));
+            let root = std::env::temp_dir()
+                .join(format!("rdmap2p-webui-merge-bad-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");
@@ -2212,7 +2280,9 @@ mod tests {
                 start_layer: 0,
                 end_layer: 15,
             }];
-            let err = merge_parts(root.clone(), &req, &single, "job-1").await.unwrap_err();
+            let err = merge_parts(root.clone(), &req, &single, "job-1")
+                .await
+                .unwrap_err();
             assert!(err.to_string().contains("menos de duas"), "{err}");
 
             let gap = vec![
@@ -2227,7 +2297,9 @@ mod tests {
                     end_layer: 31,
                 },
             ];
-            let err = merge_parts(root.clone(), &req, &gap, "job-2").await.unwrap_err();
+            let err = merge_parts(root.clone(), &req, &gap, "job-2")
+                .await
+                .unwrap_err();
             assert!(err.to_string().contains("vizinhas"), "{err}");
 
             std::fs::remove_dir_all(&root).ok();

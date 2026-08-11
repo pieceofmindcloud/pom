@@ -6,8 +6,6 @@ use crate::pipeline::{plan_pipeline, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
 use crate::{admin, session};
 use anyhow::Result;
-use std::time::{Duration, Instant};
-use uuid::Uuid;
 use axum::{
     body::Bytes,
     extract::State,
@@ -18,12 +16,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{info, warn};
+use uuid::Uuid;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
 const DEFAULT_MAX_TOKENS: u32 = 512;
-
 
 /// Characters per token, used only to size up a prompt before sending it.
 /// Deliberately pessimistic — the real tokenizer lives in the first peer's
@@ -111,6 +110,10 @@ impl GatewayState {
                 last_seen: chrono::Utc::now(),
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
+                inference_frame_capabilities: vec![
+                    "frame/v1-f16".into(),
+                    "frame/v2-zstd-f16".into(),
+                ],
                 gateway_port: Some(self.gateway_port),
                 role: self.network.role.clone(),
                 hostname: self.network.hostname.clone(),
@@ -320,7 +323,12 @@ async fn execute_pipeline_step(
         if !resp.status().is_success() {
             let code = resp.status();
             let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!("peer {} returned {}: {}", &step.node_id[..8], code, body));
+            return Err(anyhow::anyhow!(
+                "peer {} returned {}: {}",
+                &step.node_id[..8],
+                code,
+                body
+            ));
         }
 
         let peer_resp: PeerInferResponse = resp
@@ -340,7 +348,9 @@ async fn execute_pipeline_step(
         hidden_shape = peer_resp.hidden_shape;
     }
 
-    Err(anyhow::anyhow!("pipeline completed without a final response"))
+    Err(anyhow::anyhow!(
+        "pipeline completed without a final response"
+    ))
 }
 
 #[derive(Debug)]
@@ -425,7 +435,9 @@ pub async fn generate_stream(
     let (chunk_tokens, dtype) = {
         let cfg = state.runtime.config().await;
         (
-            cfg.as_ref().map(|c| c.prefill_chunk_tokens).unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
+            cfg.as_ref()
+                .map(|c| c.prefill_chunk_tokens)
+                .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             crate::wire::WireDtype::F16,
         )
     };
@@ -435,107 +447,120 @@ pub async fn generate_stream(
     // sampling peer used to free anything, and only on EOS, so the first peer
     // leaked a slot per request and died after eight of them.
     async {
-    // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
-    // back the first token once the whole prompt is in.
-    let first = match crate::prefill::run(
-        &plan, &session_id, &prompt, chunk_tokens, dtype, &state.http,
-    )
-    .await
-    {
-        Ok(o) => {
-            info!(
-                "📥 prompt de {} tokens em {} pedaço(s) · {:.1}s até a primeira palavra",
-                o.prompt_tokens,
-                o.chunks,
-                gen_start.elapsed().as_secs_f64(),
-            );
-            o
-        }
-        Err(e) => {
-            let _ = tx.send(GenEvent::Failed(format!("Prefill falhou: {e}"))).await;
-            return;
-        }
-    };
-
-    let mut next_token = first.token_id;
-    tokens_generated += 1;
-    if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
-        info!("cliente desconectou logo após o prompt");
-        return;
-    }
-    if first.done {
-        let elapsed = gen_start.elapsed();
-        let _ = tx
-            .send(GenEvent::Done(GenSummary {
-                source: format!("pipeline:{}", plan.hop_chain()),
-                tokens_generated,
-                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                duration_ms: elapsed.as_millis() as u64,
-                partial: false,
-            }))
-            .await;
-        return;
-    }
-
-    for i in 0..max_tokens {
-        let res = crate::prefill::step(&plan, &session_id, next_token, dtype, &state.http).await;
-
-        match res {
-            Ok((token_id, text, done)) => {
-                next_token = token_id;
-                let step = StepResult { text, token_id, done };
-                tokens_generated += 1;
-                if !step.text.is_empty() && tx.send(GenEvent::Token(step.text)).await.is_err() {
-                    // Client hung up; stop burning GPU time on a dead request.
-                    info!("cliente desconectou após {tokens_generated} tokens");
-                    return;
-                }
-
-                if step.done || i == max_tokens - 1 {
-                    let elapsed = gen_start.elapsed();
-                    info!(
-                        "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
-                        tokens_generated,
-                        elapsed.as_secs_f64(),
-                        rate(tokens_generated, elapsed.as_secs_f64())
-                    );
-                    let _ = tx
-                        .send(GenEvent::Done(GenSummary {
-                            source: format!("pipeline:{}", plan.hop_chain()),
-                            tokens_generated,
-                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                            duration_ms: elapsed.as_millis() as u64,
-                            partial: false,
-                        }))
-                        .await;
-                    return;
-                }
-
+        // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
+        // back the first token once the whole prompt is in.
+        let first = match crate::prefill::run(
+            &plan,
+            &session_id,
+            &prompt,
+            chunk_tokens,
+            dtype,
+            &state.http,
+        )
+        .await
+        {
+            Ok(o) => {
+                info!(
+                    "📥 prompt de {} tokens em {} pedaço(s) · {:.1}s até a primeira palavra",
+                    o.prompt_tokens,
+                    o.chunks,
+                    gen_start.elapsed().as_secs_f64(),
+                );
+                o
             }
             Err(e) => {
-                warn!("Erro no passo {i} do pipeline: {e}");
-                let elapsed = gen_start.elapsed();
-                if tokens_generated > 0 {
-                    // Some output is better than none — the original behaviour.
-                    info!("devolvendo {tokens_generated} tokens parciais");
-                    let _ = tx
-                        .send(GenEvent::Done(GenSummary {
-                            source: format!("pipeline:{} (partial)", plan.hop_chain()),
-                            tokens_generated,
-                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
-                            duration_ms: elapsed.as_millis() as u64,
-                            partial: true,
-                        }))
-                        .await;
-                } else {
-                    let _ = tx
-                        .send(GenEvent::Failed(format!("Pipeline falhou no passo {i}: {e}")))
-                        .await;
-                }
+                let _ = tx
+                    .send(GenEvent::Failed(format!("Prefill falhou: {e}")))
+                    .await;
                 return;
             }
+        };
+
+        let mut next_token = first.token_id;
+        tokens_generated += 1;
+        if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
+            info!("cliente desconectou logo após o prompt");
+            return;
         }
-    }
+        if first.done {
+            let elapsed = gen_start.elapsed();
+            let _ = tx
+                .send(GenEvent::Done(GenSummary {
+                    source: format!("pipeline:{}", plan.hop_chain()),
+                    tokens_generated,
+                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                    duration_ms: elapsed.as_millis() as u64,
+                    partial: false,
+                }))
+                .await;
+            return;
+        }
+
+        for i in 0..max_tokens {
+            let res =
+                crate::prefill::step(&plan, &session_id, next_token, dtype, &state.http).await;
+
+            match res {
+                Ok((token_id, text, done)) => {
+                    next_token = token_id;
+                    let step = StepResult {
+                        text,
+                        token_id,
+                        done,
+                    };
+                    tokens_generated += 1;
+                    if !step.text.is_empty() && tx.send(GenEvent::Token(step.text)).await.is_err() {
+                        // Client hung up; stop burning GPU time on a dead request.
+                        info!("cliente desconectou após {tokens_generated} tokens");
+                        return;
+                    }
+
+                    if step.done || i == max_tokens - 1 {
+                        let elapsed = gen_start.elapsed();
+                        info!(
+                            "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
+                            tokens_generated,
+                            elapsed.as_secs_f64(),
+                            rate(tokens_generated, elapsed.as_secs_f64())
+                        );
+                        let _ = tx
+                            .send(GenEvent::Done(GenSummary {
+                                source: format!("pipeline:{}", plan.hop_chain()),
+                                tokens_generated,
+                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                                duration_ms: elapsed.as_millis() as u64,
+                                partial: false,
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+                Err(e) => {
+                    warn!("Erro no passo {i} do pipeline: {e}");
+                    let elapsed = gen_start.elapsed();
+                    if tokens_generated > 0 {
+                        // Some output is better than none — the original behaviour.
+                        info!("devolvendo {tokens_generated} tokens parciais");
+                        let _ = tx
+                            .send(GenEvent::Done(GenSummary {
+                                source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                                tokens_generated,
+                                tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                                duration_ms: elapsed.as_millis() as u64,
+                                partial: true,
+                            }))
+                            .await;
+                    } else {
+                        let _ = tx
+                            .send(GenEvent::Failed(format!(
+                                "Pipeline falhou no passo {i}: {e}"
+                            )))
+                            .await;
+                    }
+                    return;
+                }
+            }
+        }
     }
     .await;
 
@@ -556,7 +581,11 @@ async fn release_sessions(plan: &PipelinePlan, session_id: &str, http: &reqwest:
             .await
         {
             Ok(r) if r.status().is_success() => {}
-            Ok(r) => warn!("release de sessão em {} respondeu {}", step.node_id, r.status()),
+            Ok(r) => warn!(
+                "release de sessão em {} respondeu {}",
+                step.node_id,
+                r.status()
+            ),
             Err(e) => warn!("release de sessão em {} falhou: {e}", step.node_id),
         }
     }
@@ -759,7 +788,11 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         None => state.active_model().await,
     };
 
-    info!("📨 /api/generate model={} prompt_len={}", model, req.prompt.len());
+    info!(
+        "📨 /api/generate model={} prompt_len={}",
+        model,
+        req.prompt.len()
+    );
 
     // `/api/generate` has never been behind auth, so there is no credential to
     // attribute the request to — the log says exactly that instead of guessing.
@@ -817,7 +850,10 @@ async fn handle_peers(State(state): State<GatewayState>) -> Json<PeersResponse> 
         });
     }
     let count = summaries.len();
-    Json(PeersResponse { peers: summaries, count })
+    Json(PeersResponse {
+        peers: summaries,
+        count,
+    })
 }
 
 async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse> {
@@ -879,6 +915,7 @@ mod budget_tests {
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx,
+            offload_kqv: true,
             n_batch,
             max_sessions,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
@@ -926,7 +963,10 @@ mod budget_tests {
         assert_eq!(prompt_chunk_tokens(&c), 512);
 
         let wide = cfg(32_768, 4096, 1024, 1);
-        assert_eq!(prompt_chunk_tokens(&wide), crate::prefill::DEFAULT_CHUNK_TOKENS);
+        assert_eq!(
+            prompt_chunk_tokens(&wide),
+            crate::prefill::DEFAULT_CHUNK_TOKENS
+        );
     }
 
     #[test]

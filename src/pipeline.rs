@@ -4,6 +4,7 @@
 /// selects the optimal ordered sequence of peers that covers layers 0..total_layers,
 /// tracks per-peer request load, and exposes the plan to the gateway.
 use crate::network::PeerInfo;
+use crate::wire::FrameEncoding;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -68,6 +69,23 @@ pub struct PipelineStep {
     pub inference_url: String,
     pub start_layer: u32,
     pub end_layer: u32,
+    /// Advertised receiver capabilities. An absent v2 signal must remain on
+    /// the v1 f16 contract so rolling upgrades keep working.
+    pub inference_frame_capabilities: Vec<String>,
+}
+
+impl PipelineStep {
+    pub fn frame_encoding(&self) -> FrameEncoding {
+        if self
+            .inference_frame_capabilities
+            .iter()
+            .any(|cap| cap == "frame/v2-zstd-f16")
+        {
+            FrameEncoding::ZstdF16
+        } else {
+            FrameEncoding::F16
+        }
+    }
 }
 
 /// Ordered pipeline plan for a single inference request.
@@ -119,7 +137,10 @@ pub async fn plan_pipeline(
         .collect();
 
     if candidates.is_empty() {
-        debug!("Pipeline plan failed: No alive peers for model '{}' with inference_port", model_name);
+        debug!(
+            "Pipeline plan failed: No alive peers for model '{}' with inference_port",
+            model_name
+        );
         return None;
     }
 
@@ -135,7 +156,10 @@ pub async fn plan_pipeline(
             .collect();
 
         if reachable.is_empty() {
-            info!("Pipeline plan failed: Gap at layer {} for model '{}'", pos, model_name);
+            info!(
+                "Pipeline plan failed: Gap at layer {} for model '{}'",
+                pos, model_name
+            );
             return None; // gap — no peer covers layer `pos`
         }
 
@@ -165,12 +189,16 @@ pub async fn plan_pipeline(
             inference_url,
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
+            inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
         });
 
         pos = chosen.end_layer + 1;
     }
 
-    Some(PipelinePlan { steps, total_layers })
+    Some(PipelinePlan {
+        steps,
+        total_layers,
+    })
 }
 
 #[cfg(test)]
@@ -180,22 +208,65 @@ mod ipv6_tests {
 
     fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
-            node_id: "n".repeat(64), pubkey: "p".into(), addr: addr.into(),
-            model: "qwen35".into(), start_layer: start, end_layer: end, total_layers: 32,
-            memory_mb: 0.0, last_seen: chrono::Utc::now(),
-            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
-            role: String::new(), hostname: String::new(), connection_verified: false,
-            disk_total_mb: 0, disk_free_mb: 0, api_keys_active: 0,
+            node_id: "n".repeat(64),
+            pubkey: "p".into(),
+            addr: addr.into(),
+            model: "qwen35".into(),
+            start_layer: start,
+            end_layer: end,
+            total_layers: 32,
+            memory_mb: 0.0,
+            last_seen: chrono::Utc::now(),
+            ollama_port: None,
+            inference_port: Some(8181),
+            gateway_port: Some(8090),
+            role: String::new(),
+            hostname: String::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+            inference_frame_capabilities: Vec::new(),
         }
+    }
+
+    #[test]
+    fn peers_without_a_compression_capability_keep_the_v1_f16_wire_format() {
+        let step = PipelineStep {
+            node_id: "old".into(),
+            inference_url: "http://127.0.0.1:8181".into(),
+            start_layer: 0,
+            end_layer: 1,
+            inference_frame_capabilities: Vec::new(),
+        };
+        assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
+    }
+
+    #[test]
+    fn peers_advertising_v2_receive_compressed_frames() {
+        let step = PipelineStep {
+            node_id: "new".into(),
+            inference_url: "http://127.0.0.1:8181".into(),
+            start_layer: 0,
+            end_layer: 1,
+            inference_frame_capabilities: vec!["frame/v2-zstd-f16".into()],
+        };
+        assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::ZstdF16);
     }
 
     /// O passo do plano tem que virar URL de verdade: com IPv6 o endereco era
     /// cortado no primeiro ':' e o hop morria com "builder error" no reqwest.
     #[tokio::test]
     async fn an_ipv6_peer_becomes_a_valid_step_url() {
-        let peers = vec![peer("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777", 0, 31)];
+        let peers = vec![peer(
+            "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777",
+            0,
+            31,
+        )];
         let tracker = LoadTracker::new();
-        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker).await.expect("plano");
+        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker)
+            .await
+            .expect("plano");
         assert_eq!(
             plan.steps[0].inference_url,
             "http://[2804:d55:5579:1000:89f3:3f94:7c07:e183]:8181"
@@ -208,7 +279,9 @@ mod ipv6_tests {
     async fn an_ipv4_peer_is_unchanged() {
         let peers = vec![peer("192.168.100.138:42777", 0, 31)];
         let tracker = LoadTracker::new();
-        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker).await.expect("plano");
+        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker)
+            .await
+            .expect("plano");
         assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
     }
 }

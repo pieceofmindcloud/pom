@@ -250,6 +250,7 @@ const KNOBS: Array<{
     label: "Contexto (n_ctx)",
     hint: "Dividido entre as requisições simultâneas.",
     min: 512,
+    max: 250000,
     step: 512,
   },
   {
@@ -1060,6 +1061,12 @@ export function DeployModel() {
                       </div>
 
                       <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
+                        <Switch
+                          checked={eff.offload_kqv ?? true}
+                          onChange={(v) => setParams({ ...eff, offload_kqv: v })}
+                          label="KV cache na GPU"
+                          hint="Desligue para guardar o KV cache na RAM e priorizar contexto grande em hardware com RAM suficiente."
+                        />
                         <Switch
                           checked={eff.no_thinking ?? true}
                           onChange={(v) => setParams({ ...eff, no_thinking: v })}

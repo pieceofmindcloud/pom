@@ -36,6 +36,10 @@ pub enum P2PMessage {
         ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
+        /// Inference frame encodings this peer can receive. Missing means an
+        /// older peer and therefore requires the v1 f16 fallback.
+        #[serde(default)]
+        inference_frame_capabilities: Vec<String>,
         /// HTTP port serving the API and web UI. `serde(default)` keeps peers
         /// running an older build parseable.
         #[serde(default)]
@@ -79,6 +83,8 @@ pub struct PeerInfo {
     /// Used by the gateway pipeline to POST hidden states.
     #[serde(default)]
     pub inference_port: Option<u16>,
+    #[serde(default)]
+    pub inference_frame_capabilities: Vec<String>,
     /// Port serving this peer's HTTP API and web UI, so the dashboard can pull
     /// load figures straight from each peer.
     #[serde(default)]
@@ -128,16 +134,14 @@ impl PeerInfo {
 
     /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
     pub fn ollama_url(&self) -> Option<String> {
-        self.ollama_port.map(|port| {
-            format!("http://{}:{}", ip_host(&self.addr), port)
-        })
+        self.ollama_port
+            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
     }
 
     /// Full inference server URL for pipeline calls (None if not running).
     pub fn inference_url(&self) -> Option<String> {
-        self.inference_port.map(|port| {
-            format!("http://{}:{}", ip_host(&self.addr), port)
-        })
+        self.inference_port
+            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
     }
 
     /// Base URL of this peer's HTTP API / web UI.
@@ -285,7 +289,7 @@ impl Network {
         // Bind dual-stack IPv6 so peers on IPv6 (including link-local fe80::) can be reached.
         // Falls back to IPv4-only if the OS has IPv6 disabled.
         let (socket, bind_addr) = {
-            let v6: SocketAddr = format!("[::]:{}",  port).parse()?;
+            let v6: SocketAddr = format!("[::]:{}", port).parse()?;
             match UdpSocket::bind(v6).await {
                 Ok(s) => {
                     let _ = s.set_broadcast(true); // no-op on pure IPv6, ignored
@@ -293,7 +297,7 @@ impl Network {
                     (s, v6)
                 }
                 Err(e) => {
-                    info!("{}",e);
+                    info!("{}", e);
                     let v4: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
                     let s = UdpSocket::bind(v4).await?;
                     s.set_broadcast(true)?;
@@ -419,6 +423,7 @@ impl Network {
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
+            inference_frame_capabilities: vec!["frame/v1-f16".into(), "frame/v2-zstd-f16".into()],
             gateway_port: self.gateway_port,
             role: self.role.clone(),
             hostname: self.hostname.clone(),
@@ -584,6 +589,7 @@ impl Network {
                 timestamp,
                 ollama_port,
                 inference_port,
+                inference_frame_capabilities,
                 gateway_port,
                 role,
                 hostname,
@@ -616,6 +622,7 @@ impl Network {
                     last_seen: timestamp,
                     ollama_port,
                     inference_port,
+                    inference_frame_capabilities,
                     gateway_port,
                     role,
                     hostname,
@@ -643,7 +650,12 @@ impl Network {
                         ollama_tag,
                     );
                 } else {
-                    debug!("Peer update: {} layers={}-{}", &node_id[..12], start_layer, end_layer);
+                    debug!(
+                        "Peer update: {} layers={}-{}",
+                        &node_id[..12],
+                        start_layer,
+                        end_layer
+                    );
                 }
 
                 let mut peers = self.peers.write().await;
@@ -767,11 +779,9 @@ mod tests {
     /// discovery on one side only, which is very hard to spot.
     #[tokio::test]
     async fn ipv4_destinations_are_mapped_on_a_dual_stack_socket() {
-        let net = Network::new(
-            "n".into(), "p".into(), 0, vec![], None, None, None,
-        )
-        .await
-        .unwrap();
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
 
         let v4: SocketAddr = "192.168.100.138:42777".parse().unwrap();
         let out = net.normalize(v4);
@@ -800,10 +810,14 @@ mod tests {
             advertised_addr(&format!("[{stable}]:42999"), 42777).as_deref(),
             Some("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42999")
         );
-        assert_eq!(advertised_addr("192.168.100.138", 42777).as_deref(),
-                   Some("192.168.100.138:42777"));
-        assert_eq!(advertised_addr("192.168.100.138:1234", 42777).as_deref(),
-                   Some("192.168.100.138:1234"));
+        assert_eq!(
+            advertised_addr("192.168.100.138", 42777).as_deref(),
+            Some("192.168.100.138:42777")
+        );
+        assert_eq!(
+            advertised_addr("192.168.100.138:1234", 42777).as_deref(),
+            Some("192.168.100.138:1234")
+        );
         assert_eq!(advertised_addr("  ", 42777), None);
     }
 
@@ -811,13 +825,25 @@ mod tests {
     #[test]
     fn an_advertised_ipv6_survives_into_the_peer_urls() {
         let peer = PeerInfo {
-            node_id: "n".into(), pubkey: "p".into(),
+            node_id: "n".into(),
+            pubkey: "p".into(),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
-            model: "qwen35".into(), start_layer: 4, end_layer: 31, total_layers: 32,
-            memory_mb: 0.0, last_seen: Utc::now(),
-            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
-            role: String::new(), hostname: String::new(), connection_verified: false,
-            disk_total_mb: 0, disk_free_mb: 0, api_keys_active: 0,
+            model: "qwen35".into(),
+            start_layer: 4,
+            end_layer: 31,
+            total_layers: 32,
+            memory_mb: 0.0,
+            last_seen: Utc::now(),
+            ollama_port: None,
+            inference_port: Some(8181),
+            gateway_port: Some(8090),
+            inference_frame_capabilities: Vec::new(),
+            role: String::new(),
+            hostname: String::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -837,11 +863,22 @@ mod tests {
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
-            model: "qwen35".into(), start_layer: 4, end_layer: 31, total_layers: 32,
-            memory_mb: 6780.0, last_seen: Utc::now(),
-            ollama_port: None, inference_port: Some(8181), gateway_port: Some(8090),
-            role: "Principal".into(), hostname: "ksia".into(), connection_verified: false,
-            disk_total_mb: 500000, disk_free_mb: 200000, api_keys_active: 0,
+            model: "qwen35".into(),
+            start_layer: 4,
+            end_layer: 31,
+            total_layers: 32,
+            memory_mb: 6780.0,
+            last_seen: Utc::now(),
+            ollama_port: None,
+            inference_port: Some(8181),
+            gateway_port: Some(8090),
+            inference_frame_capabilities: Vec::new(),
+            role: "Principal".into(),
+            hostname: "ksia".into(),
+            connection_verified: false,
+            disk_total_mb: 500000,
+            disk_free_mb: 200000,
+            api_keys_active: 0,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -849,9 +886,11 @@ mod tests {
             let sent: usize = chunks.iter().map(|c| c.len()).sum();
             assert_eq!(sent, count, "nenhum peer pode sumir no fatiamento");
             for chunk in &chunks {
-                let bytes = serde_json::to_vec(&P2PMessage::PeerList { peers: chunk.clone() })
-                    .unwrap()
-                    .len();
+                let bytes = serde_json::to_vec(&P2PMessage::PeerList {
+                    peers: chunk.clone(),
+                })
+                .unwrap()
+                .len();
                 assert!(
                     bytes <= MAX_DATAGRAM_PAYLOAD || chunk.len() == 1,
                     "datagrama de {bytes} bytes com {} peers passa do orcamento",
@@ -892,11 +931,9 @@ mod tests {
 
     #[tokio::test]
     async fn ipv6_destinations_are_left_alone() {
-        let net = Network::new(
-            "n".into(), "p".into(), 0, vec![], None, None, None,
-        )
-        .await
-        .unwrap();
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
         let v6: SocketAddr = "[fe80::1]:42777".parse().unwrap();
         assert_eq!(net.normalize(v6), v6);
     }

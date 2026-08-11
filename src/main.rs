@@ -2,48 +2,48 @@
 pub const BUILD_COMMIT: &str = env!("RDMA_P2P_BUILD_COMMIT");
 
 mod admin;
+mod auth;
 mod bitswap;
-mod infer_server;
-mod llm;
 mod catalog;
 mod config;
-mod auth;
-mod session;
 mod devupdate;
 mod discovery;
 mod display;
 mod gateway;
 mod gguf;
 mod identity;
+mod infer_server;
 mod lastslice;
+mod llm;
 mod memory;
 mod model;
 mod network;
 mod ollama;
 mod openai;
 mod pipeline;
+mod pkarr_node;
+mod plan;
 mod prefill;
 mod reqlog;
 mod respawn;
-mod pkarr_node;
-mod plan;
 mod runtime;
+mod session;
 mod splitter;
 mod sysmon;
 mod transfer;
 mod wire;
 // Shared with build.rs through `include!`, so from the binary's point of view
 // most of it is unused — the users are the build script and the tests.
+mod deploy;
 #[allow(dead_code)]
 mod ui_manifest;
-mod deploy;
 mod webapp;
 mod webui;
 
 use anyhow::Result;
 use clap::Parser;
 use discovery::Discovery;
-use gateway::{GatewayState, start_gateway};
+use gateway::{start_gateway, GatewayState};
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
 use network::{Network, P2PMessage};
@@ -149,6 +149,10 @@ struct Args {
     #[arg(long, default_value = "1")]
     max_sessions: u32,
 
+    /// Keep the KV cache in system RAM instead of GPU VRAM.
+    #[arg(long)]
+    kv_cache_ram: bool,
+
     /// Prompt tokens pushed through the pipeline per round trip.
     #[arg(long, default_value = "512")]
     prefill_chunk_tokens: u32,
@@ -216,24 +220,25 @@ struct Args {
 
 /// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
 fn parse_layers_from_filename(path: &str) -> Option<(u32, u32)> {
-    let filename = std::path::Path::new(path)
-        .file_stem()?
-        .to_str()?;
-    
+    let filename = std::path::Path::new(path).file_stem()?.to_str()?;
+
     // Look for patterns like _0_20 at the end or middle
     let parts: Vec<&str> = filename.split('_').collect();
     if parts.len() >= 3 {
         // Try last two parts first
         let end_idx = parts.len() - 1;
         let start_idx = parts.len() - 2;
-        
-        if let (Ok(s), Ok(e)) = (parts[start_idx].parse::<u32>(), parts[end_idx].parse::<u32>()) {
+
+        if let (Ok(s), Ok(e)) = (
+            parts[start_idx].parse::<u32>(),
+            parts[end_idx].parse::<u32>(),
+        ) {
             return Some((s, e));
         }
-        
+
         // Try searching for any two adjacent numeric parts
-        for i in 0..parts.len()-1 {
-            if let (Ok(s), Ok(e)) = (parts[i].parse::<u32>(), parts[i+1].parse::<u32>()) {
+        for i in 0..parts.len() - 1 {
+            if let (Ok(s), Ok(e)) = (parts[i].parse::<u32>(), parts[i + 1].parse::<u32>()) {
                 // Heuristic: start < end and end - start < 200 (sanity check)
                 if s < e && e - s < 200 {
                     return Some((s, e));
@@ -343,7 +348,10 @@ async fn main() -> Result<()> {
         match parse_memory(&args.memory) {
             Ok(mb) => mb,
             Err(_) => {
-                error!("Invalid memory format '{}'. Use e.g. 10GB or 4096MB", args.memory);
+                error!(
+                    "Invalid memory format '{}'. Use e.g. 10GB or 4096MB",
+                    args.memory
+                );
                 std::process::exit(1);
             }
         }
@@ -351,7 +359,7 @@ async fn main() -> Result<()> {
 
     // Priority: (1) built-in profile, (2) Ollama size-based profile,
     // (3) name-based estimate — so any Ollama model always works.
-    
+
     // If it's a path, use the filename for profile lookup
     let profile_lookup_name = if model_name.contains('/') || model_name.contains('\\') {
         std::path::Path::new(&model_name)
@@ -387,9 +395,7 @@ async fn main() -> Result<()> {
                     ModelProfile::guess_from_name(&model_name)
                 }
             }
-            Err(_) => {
-                ModelProfile::guess_from_name(&model_name)
-            }
+            Err(_) => ModelProfile::guess_from_name(&model_name),
         }
     };
 
@@ -399,7 +405,11 @@ async fn main() -> Result<()> {
     }
 
     info!("Model: {} ({})", profile.name, profile.description);
-    info!("Memory allocated: {:.0}MB ({:.1}GB)", memory_mb, memory_mb / 1024.0);
+    info!(
+        "Memory allocated: {:.0}MB ({:.1}GB)",
+        memory_mb,
+        memory_mb / 1024.0
+    );
 
     // ── Generate identity ────────────────────────────────────────────────────
     let identity = identity::Identity::load_or_create(&identity::key_path());
@@ -479,7 +489,10 @@ async fn main() -> Result<()> {
     };
 
     if bootstrap_nodes.is_empty() {
-        info!("No bootstrap nodes — will rely on local LAN broadcast (port {})", network::DISCOVERY_PORT);
+        info!(
+            "No bootstrap nodes — will rely on local LAN broadcast (port {})",
+            network::DISCOVERY_PORT
+        );
         info!("Tip: use --bootstrap 127.0.0.1:<port> to connect multiple local instances");
     } else {
         info!("Bootstrap nodes: {:?}", bootstrap_nodes);
@@ -526,7 +539,7 @@ async fn main() -> Result<()> {
             p2p_port,
             bootstrap_nodes.clone(),
             ollama_port,
-inference_port,
+            inference_port,
             Some(gateway_port),
         )
         .await?
@@ -550,7 +563,10 @@ inference_port,
     // ── Calculate layer assignment ───────────────────────────────────────────
     let covered = net.get_covered_layers(&profile.name).await;
     if !covered.is_empty() {
-        info!("Network already covers layers: {:?}", &covered[..covered.len().min(10)]);
+        info!(
+            "Network already covers layers: {:?}",
+            &covered[..covered.len().min(10)]
+        );
     }
 
     // Layer range, in order of precedence: explicit flags, then the filename
@@ -559,7 +575,8 @@ inference_port,
         (Some(s), Some(e)) => Some((s, e)),
         _ => None,
     };
-    let assignment = if let Some((s, e)) = explicit_range.or_else(|| parse_layers_from_filename(&model_name))
+    let assignment = if let Some((s, e)) =
+        explicit_range.or_else(|| parse_layers_from_filename(&model_name))
     {
         if explicit_range.is_some() {
             info!("Layers {}-{} set explicitly", s, e);
@@ -638,6 +655,7 @@ inference_port,
             inference_port: port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
+            offload_kqv: !args.kv_cache_ram,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
             prefill_chunk_tokens: args.prefill_chunk_tokens,
@@ -658,7 +676,8 @@ inference_port,
 
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
-        let auth_config: Arc<tokio::sync::RwLock<config::Config>> = Arc::new(tokio::sync::RwLock::new(app_config.clone()));
+        let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
+            Arc::new(tokio::sync::RwLock::new(app_config.clone()));
 
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
@@ -730,6 +749,10 @@ inference_port,
                         timestamp: chrono::Utc::now(),
                         ollama_port: net_disc.ollama_port,
                         inference_port: net_disc.inference_port,
+                        inference_frame_capabilities: vec![
+                            "frame/v1-f16".into(),
+                            "frame/v2-zstd-f16".into(),
+                        ],
                         gateway_port: net_disc.gateway_port,
                         role: String::new(),
                         hostname: String::new(),
@@ -750,7 +773,9 @@ inference_port,
             let peers = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 pn.resolve_peers(&pkarr_peer_keys),
-            ).await.unwrap_or_default();
+            )
+            .await
+            .unwrap_or_default();
             for peer in &peers {
                 if let Ok(ma) = peer.multiaddr.parse::<libp2p::Multiaddr>() {
                     let _ = dtx.send(ma).await;
@@ -782,7 +807,10 @@ inference_port,
                         None => return,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn2.publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, serve_relay).await {
+                if let Err(e) = pn2
+                    .publish(&addr2, inf_port, &mn2, start_l, end_l, total_l, serve_relay)
+                    .await
+                {
                     warn!("pkarr initial publish failed: {}", e);
                 }
             });
@@ -801,7 +829,18 @@ inference_port,
                         None => continue,
                     }
                 }; // guard dropped here
-                if let Err(e) = pn.publish(&addr, inf_port, &model_name_pk, start_l, end_l, total_l, serve_relay).await {
+                if let Err(e) = pn
+                    .publish(
+                        &addr,
+                        inf_port,
+                        &model_name_pk,
+                        start_l,
+                        end_l,
+                        total_l,
+                        serve_relay,
+                    )
+                    .await
+                {
                     warn!("pkarr republish failed: {}", e);
                 }
             }
@@ -834,7 +873,11 @@ inference_port,
                 &node_id[..12],
                 chrono::Utc::now().format("%H:%M:%S"),
                 peers.len(),
-                if peers.is_empty() { "🔍 discovering..." } else { "🟢 connected" },
+                if peers.is_empty() {
+                    "🔍 discovering..."
+                } else {
+                    "🟢 connected"
+                },
                 gateway_tag,
                 infer_tag,
             );
@@ -843,7 +886,13 @@ inference_port,
             display::print_assignment(a, &mem_source);
             display::print_layer_map(a.total_layers, a.start_layer, a.end_layer, &peers);
             display::print_peers(&peers);
-            display::print_network_health(a.total_layers, a.start_layer, a.end_layer, &peers, &a.model);
+            display::print_network_health(
+                a.total_layers,
+                a.start_layer,
+                a.end_layer,
+                &peers,
+                &a.model,
+            );
 
             let covered_now = net.get_covered_layers(&profile.name).await;
             let gap_exists = (0..a.start_layer).any(|l| !covered_now.contains(&l));
@@ -919,7 +968,7 @@ async fn start_gateway_only(
     ollama_url: String,
     no_discovery: bool,
 ) -> Result<()> {
-    use crate::gateway::{GatewayState, start_gateway};
+    use crate::gateway::{start_gateway, GatewayState};
     use crate::pipeline::LoadTracker;
 
     let identity = identity::Identity::load_or_create(&identity::key_path());
@@ -989,7 +1038,10 @@ async fn start_gateway_only(
         transfers: Default::default(),
     };
 
-    info!("Gateway running at http://localhost:{} (model not yet configured)", gateway_port);
+    info!(
+        "Gateway running at http://localhost:{} (model not yet configured)",
+        gateway_port
+    );
     start_gateway(gw_state, gateway_port).await?;
     Ok(())
 }

@@ -1,5 +1,5 @@
 use crate::bitswap::{self, BitswapCodec};
-use crate::network::{Network, PeerInfo, P2PMessage};
+use crate::network::{Network, P2PMessage, PeerInfo};
 use anyhow::Result;
 use futures::StreamExt;
 use libp2p::{
@@ -56,27 +56,27 @@ fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
 
 #[derive(NetworkBehaviour)]
 struct DiscBehaviour {
-    gossipsub:    gossipsub::Behaviour,
-    kademlia:     kad::Behaviour<kad::store::MemoryStore>,
-    mdns:         mdns::tokio::Behaviour,
-    identify:     identify::Behaviour,
-    relay:        relay::client::Behaviour,
-    dcutr:        dcutr::Behaviour,
-    autonat:      autonat::Behaviour,
+    gossipsub: gossipsub::Behaviour,
+    kademlia: kad::Behaviour<kad::store::MemoryStore>,
+    mdns: mdns::tokio::Behaviour,
+    identify: identify::Behaviour,
+    relay: relay::client::Behaviour,
+    dcutr: dcutr::Behaviour,
+    autonat: autonat::Behaviour,
     relay_server: relay::Behaviour,
-    bitswap:      request_response::Behaviour<BitswapCodec>,
+    bitswap: request_response::Behaviour<BitswapCodec>,
 }
 
 pub struct Discovery {
-    pub announce_tx:  mpsc::Sender<Vec<u8>>,
-    pub dial_tx:      mpsc::Sender<Multiaddr>,
-    swarm:            Swarm<DiscBehaviour>,
-    topic:            gossipsub::IdentTopic,
-    network:          Arc<Network>,
-    announce_rx:      mpsc::Receiver<Vec<u8>>,
-    dial_rx:          mpsc::Receiver<Multiaddr>,
+    pub announce_tx: mpsc::Sender<Vec<u8>>,
+    pub dial_tx: mpsc::Sender<Multiaddr>,
+    swarm: Swarm<DiscBehaviour>,
+    topic: gossipsub::IdentTopic,
+    network: Arc<Network>,
+    announce_rx: mpsc::Receiver<Vec<u8>>,
+    dial_rx: mpsc::Receiver<Multiaddr>,
     relay_peer_addrs: HashSet<Multiaddr>,
-    relay_peer_ids:   HashSet<PeerId>,
+    relay_peer_ids: HashSet<PeerId>,
     connected_relays: HashSet<PeerId>,
 }
 
@@ -129,10 +129,8 @@ impl Discovery {
                 .expect("gossipsub init");
 
                 let peer_id = key.public().to_peer_id();
-                let mut kademlia = kad::Behaviour::new(
-                    peer_id,
-                    kad::store::MemoryStore::new(peer_id),
-                );
+                let mut kademlia =
+                    kad::Behaviour::new(peer_id, kad::store::MemoryStore::new(peer_id));
                 kademlia.set_mode(Some(kad::Mode::Server));
 
                 let mdns = mdns::tokio::Behaviour::new(mdns::Config::default(), peer_id)
@@ -279,7 +277,8 @@ async fn handle_event(
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::Gossipsub(gossipsub::Event::Message {
-            message, ..
+            message,
+            ..
         })) => {
             if let Ok(P2PMessage::Announce {
                 node_id,
@@ -293,6 +292,7 @@ async fn handle_event(
                 timestamp,
                 ollama_port,
                 inference_port,
+                inference_frame_capabilities,
                 gateway_port,
                 role,
                 hostname,
@@ -313,6 +313,7 @@ async fn handle_event(
                         last_seen: timestamp,
                         ollama_port,
                         inference_port,
+                        inference_frame_capabilities,
                         gateway_port,
                         role,
                         hostname,
@@ -329,7 +330,10 @@ async fn handle_event(
         SwarmEvent::Behaviour(DiscBehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
             for (peer_id, addr) in list {
                 info!("mDNS: {} at {}", peer_id, addr);
-                swarm.behaviour_mut().kademlia.add_address(&peer_id, addr.clone());
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .add_address(&peer_id, addr.clone());
                 if let Err(e) = swarm.dial(addr) {
                     debug!("mDNS dial: {}", e);
                 }
@@ -339,7 +343,10 @@ async fn handle_event(
         // ── mDNS: LAN peer expired ────────────────────────────────────────────
         SwarmEvent::Behaviour(DiscBehaviourEvent::Mdns(mdns::Event::Expired(list))) => {
             for (peer_id, addr) in list {
-                swarm.behaviour_mut().kademlia.remove_address(&peer_id, &addr);
+                swarm
+                    .behaviour_mut()
+                    .kademlia
+                    .remove_address(&peer_id, &addr);
             }
         }
 
@@ -354,9 +361,13 @@ async fn handle_event(
             }
             if connected_relays.contains(&peer_id) {
                 if let Some(relay_addr) = relay_peer_addrs.iter().find(|ma| {
-                    ma.iter().any(|p| matches!(p, libp2p::multiaddr::Protocol::P2p(pid) if pid == peer_id))
+                    ma.iter().any(
+                        |p| matches!(p, libp2p::multiaddr::Protocol::P2p(pid) if pid == peer_id),
+                    )
                 }) {
-                    let relay_circuit = relay_addr.clone().with(libp2p::multiaddr::Protocol::P2pCircuit);
+                    let relay_circuit = relay_addr
+                        .clone()
+                        .with(libp2p::multiaddr::Protocol::P2pCircuit);
                     swarm.listen_on(relay_circuit).ok();
                 }
             }
@@ -389,40 +400,41 @@ async fn handle_event(
         SwarmEvent::Behaviour(DiscBehaviourEvent::Dcutr(dcutr::Event {
             remote_peer_id,
             result,
-        })) => {
-            match result {
-                Ok(_conn_id) => {
-                    info!("Direct connection to {} (hole punch succeeded)", remote_peer_id);
-                }
-                Err(e) => {
-                    warn!("DCuTR failed for {} ({:?}) — relay fallback active", remote_peer_id, e);
-                }
+        })) => match result {
+            Ok(_conn_id) => {
+                info!(
+                    "Direct connection to {} (hole punch succeeded)",
+                    remote_peer_id
+                );
             }
-        }
+            Err(e) => {
+                warn!(
+                    "DCuTR failed for {} ({:?}) — relay fallback active",
+                    remote_peer_id, e
+                );
+            }
+        },
 
         // ── AutoNAT: NAT type detected ───────────────────────────────────────
-        SwarmEvent::Behaviour(DiscBehaviourEvent::Autonat(
-            autonat::Event::StatusChanged { new, .. },
-        )) => {
+        SwarmEvent::Behaviour(DiscBehaviourEvent::Autonat(autonat::Event::StatusChanged {
+            new,
+            ..
+        })) => {
             info!("NAT status: {:?}", new);
         }
 
         // ── Bitswap: content-addressed chunk exchange ───────────────────────
-        SwarmEvent::Behaviour(DiscBehaviourEvent::Bitswap(event)) => {
-            match event {
-                request_response::Event::Message { peer, message, .. } => {
-                    match message {
-                        request_response::Message::Request { request, .. } => {
-                            debug!("Bitswap request from {}: {:?}", peer, request);
-                        }
-                        request_response::Message::Response { response, .. } => {
-                            debug!("Bitswap response from {}: {:?}", peer, response);
-                        }
-                    }
+        SwarmEvent::Behaviour(DiscBehaviourEvent::Bitswap(event)) => match event {
+            request_response::Event::Message { peer, message, .. } => match message {
+                request_response::Message::Request { request, .. } => {
+                    debug!("Bitswap request from {}: {:?}", peer, request);
                 }
-                _ => {}
-            }
-        }
+                request_response::Message::Response { response, .. } => {
+                    debug!("Bitswap response from {}: {:?}", peer, response);
+                }
+            },
+            _ => {}
+        },
 
         _ => {}
     }
@@ -438,21 +450,32 @@ mod tests {
     fn a_bootstrap_address_becomes_a_dialable_multiaddr() {
         let ma = |s: &str| udp_to_libp2p_multiaddr(s).map(|m| m.to_string());
 
-        assert_eq!(ma("192.168.100.138:42777").as_deref(),
-                   Some("/ip4/192.168.100.138/tcp/52777"));
+        assert_eq!(
+            ma("192.168.100.138:42777").as_deref(),
+            Some("/ip4/192.168.100.138/tcp/52777")
+        );
         assert_eq!(
             ma("[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777").as_deref(),
             Some("/ip6/2804:d55:5579:1000:89f3:3f94:7c07:e183/tcp/52777")
         );
         assert_eq!(ma("[::1]:42901").as_deref(), Some("/ip6/::1/tcp/52901"));
-        assert_eq!(ma("ksia.local:42777").as_deref(), Some("/dns/ksia.local/tcp/52777"));
+        assert_eq!(
+            ma("ksia.local:42777").as_deref(),
+            Some("/dns/ksia.local/tcp/52777")
+        );
         assert_eq!(ma("sem-porta"), None);
     }
 
     #[test]
     fn host_and_port_split_on_the_brackets_not_the_colons() {
-        assert_eq!(split_host_port("[2804:d55::1]:42777"), Some(("2804:d55::1", "42777")));
-        assert_eq!(split_host_port("10.0.0.1:42777"), Some(("10.0.0.1", "42777")));
+        assert_eq!(
+            split_host_port("[2804:d55::1]:42777"),
+            Some(("2804:d55::1", "42777"))
+        );
+        assert_eq!(
+            split_host_port("10.0.0.1:42777"),
+            Some(("10.0.0.1", "42777"))
+        );
         assert_eq!(split_host_port("[2804:d55::1]"), None);
     }
 }

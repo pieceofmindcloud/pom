@@ -92,6 +92,7 @@ unsafe extern "C" fn capture_callback(
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
     pub n_ctx: u32,
+    pub offload_kqv: bool,
     pub n_batch: u32,
     pub n_gpu_layers: i32,
     pub n_threads: i32,
@@ -110,6 +111,7 @@ pub struct LlmEngine {
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
+    offload_kqv: bool,
 }
 
 // SAFETY: We serialise all GPU calls behind a `Mutex<LlmEngine>` in the HTTP
@@ -158,7 +160,7 @@ impl LlmEngine {
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = cfg.n_batch;
         cparams.n_seq_max = cfg.max_sessions;
-        cparams.offload_kqv = true;
+        cparams.offload_kqv = cfg.offload_kqv;
         cparams.embeddings = cfg.need_embeddings;
         if cfg.n_threads > 0 {
             cparams.n_threads = cfg.n_threads;
@@ -169,8 +171,8 @@ impl LlmEngine {
         let capture_ok = if cfg.need_embeddings {
             // Target tensor: l_out-<last_layer_index> of this slice.
             let n_layer = unsafe { sys::llama_model_n_layer(model) };
-            let tensor_name = CString::new(format!("l_out-{}", n_layer - 1))
-                .expect("tensor name is valid ASCII");
+            let tensor_name =
+                CString::new(format!("l_out-{}", n_layer - 1)).expect("tensor name is valid ASCII");
             *CAPTURE_WANT.lock().unwrap() = Some(tensor_name);
             *CAPTURE_BUF.lock().unwrap() = None;
             cparams.cb_eval = Some(capture_callback);
@@ -185,7 +187,10 @@ impl LlmEngine {
         let ctx = unsafe { sys::llama_new_context_with_model(model, cparams) };
         if ctx.is_null() {
             unsafe { sys::llama_model_free(model) };
-            bail!("llama_new_context_with_model failed (n_seq_max={})", cfg.max_sessions);
+            bail!(
+                "llama_new_context_with_model failed (n_seq_max={})",
+                cfg.max_sessions
+            );
         }
 
         // Ensure causal attention is on — needed when embeddings mode is active.
@@ -195,16 +200,36 @@ impl LlmEngine {
         let n_ctx_seq = actual_n_ctx / cfg.max_sessions.max(1);
         tracing::info!(
             "llama context ready: n_seq_max={} n_ctx={} n_ctx_seq={} capture={}",
-            cfg.max_sessions, actual_n_ctx, n_ctx_seq,
-            if capture_ok { format!("l_out-{}", unsafe { sys::llama_model_n_layer(model) } - 1) }
-            else { "disabled".to_string() }
+            cfg.max_sessions,
+            actual_n_ctx,
+            n_ctx_seq,
+            if capture_ok {
+                format!("l_out-{}", unsafe { sys::llama_model_n_layer(model) } - 1)
+            } else {
+                "disabled".to_string()
+            }
         );
 
-        Ok(LlmEngine { model, ctx, vocab, n_embd, n_vocab, capture_ok })
+        Ok(LlmEngine {
+            model,
+            ctx,
+            vocab,
+            n_embd,
+            n_vocab,
+            capture_ok,
+            offload_kqv: cfg.offload_kqv,
+        })
     }
 
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ctx) }
+    }
+
+    pub fn offload_kqv(&self) -> bool {
+        // The setting is immutable for this context and carried in the engine
+        // configuration only during construction. Keep a copy visible through
+        // `/health` rather than guessing from GPU utilisation.
+        self.offload_kqv
     }
 
     pub fn eos_token(&self) -> i32 {
@@ -285,7 +310,10 @@ impl LlmEngine {
     }
 
     pub fn tokens_to_string(&self, tokens: &[i32]) -> String {
-        tokens.iter().map(|&t| self.token_to_piece(t, false)).collect()
+        tokens
+            .iter()
+            .map(|&t| self.token_to_piece(t, false))
+            .collect()
     }
 
     // ── Chat template ─────────────────────────────────────────────────────────
@@ -492,8 +520,7 @@ impl LlmEngine {
             // slice's output_norm is all-ones (shallow cuts are wrong with this).
             let mut out = Vec::with_capacity(n_tokens * self.n_embd);
             for i in 0..n_tokens {
-                let ptr =
-                    unsafe { sys::llama_get_embeddings_ith(self.ctx, i as i32) };
+                let ptr = unsafe { sys::llama_get_embeddings_ith(self.ctx, i as i32) };
                 if ptr.is_null() {
                     bail!("llama_get_embeddings_ith returned NULL for i={i}");
                 }
@@ -551,7 +578,8 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
     // Repetition penalty.
     if cfg.repeat_penalty != 1.0 && !recent.is_empty() {
         let window_start = recent.len().saturating_sub(cfg.repeat_last_n);
-        let window: std::collections::HashSet<i32> = recent[window_start..].iter().copied().collect();
+        let window: std::collections::HashSet<i32> =
+            recent[window_start..].iter().copied().collect();
         for &tok in &window {
             let t = tok as usize;
             if t < logits.len() {
@@ -629,7 +657,9 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
         // Use a simple LCG seeded from the system clock to avoid pulling in `rand`.
         static RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
         let mut r = RNG.lock().unwrap();
-        *r = r.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        *r = r
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let bits = ((*r >> 33) as u32) | 0x3f800000;
         f32::from_bits(bits) - 1.0
     };
@@ -712,6 +742,7 @@ mod tests {
         };
         let cfg = EngineConfig {
             n_ctx: 512,
+            offload_kqv: true,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -749,6 +780,7 @@ mod tests {
         };
         let cfg = EngineConfig {
             n_ctx: 512,
+            offload_kqv: true,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -758,7 +790,9 @@ mod tests {
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let toks = engine.tokenize("Explique RDMA em uma frase.", true, true);
         assert!(!toks.is_empty(), "prompt must tokenize");
-        engine.decode_tokens(&toks, 0, 0, true).expect("decode succeeds");
+        engine
+            .decode_tokens(&toks, 0, 0, true)
+            .expect("decode succeeds");
 
         let residual = engine
             .take_residual(toks.len())
@@ -780,6 +814,7 @@ mod tests {
         };
         let cfg = EngineConfig {
             n_ctx: 512,
+            offload_kqv: true,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,
@@ -790,7 +825,10 @@ mod tests {
         let tokens = engine.tokenize("oi", true, true);
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
-            engine.tokenize("Explique o que e RDMA em uma frase.", true, true).len() > tokens.len(),
+            engine
+                .tokenize("Explique o que e RDMA em uma frase.", true, true)
+                .len()
+                > tokens.len(),
             "a longer prompt must produce more tokens"
         );
     }

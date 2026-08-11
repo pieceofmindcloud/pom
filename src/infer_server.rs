@@ -72,7 +72,10 @@ mod tests {
         let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
-        assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+        assert!(to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap()
+            .is_empty());
     }
 }
 
@@ -174,7 +177,11 @@ impl InferState {
         let count = stale.len();
         for sid in stale {
             if let Some(s) = self.sessions.remove(&sid) {
-                info!("reclaiming idle session {}… (seq={})", &sid[..8.min(sid.len())], s.seq_id);
+                info!(
+                    "reclaiming idle session {}… (seq={})",
+                    &sid[..8.min(sid.len())],
+                    s.seq_id
+                );
                 self.engine.kv_remove(s.seq_id, 0, -1);
                 self.free_seq(s.seq_id);
             }
@@ -189,13 +196,16 @@ impl InferState {
                 self.free_seq(old.seq_id);
             }
             let seq = self.alloc_seq().ok_or_else(|| {
-                anyhow::anyhow!("seq pool esgotado (max {} sessões simultâneas)", self.max_sessions)
+                anyhow::anyhow!(
+                    "seq pool esgotado (max {} sessões simultâneas)",
+                    self.max_sessions
+                )
             })?;
             self.sessions.insert(sid.to_string(), Session::new(seq));
         }
-        self.sessions
-            .get_mut(sid)
-            .ok_or_else(|| anyhow::anyhow!("sessão '{}' desconhecida — envie reset=true antes", sid))
+        self.sessions.get_mut(sid).ok_or_else(|| {
+            anyhow::anyhow!("sessão '{}' desconhecida — envie reset=true antes", sid)
+        })
     }
 
     fn finish(&mut self, sid: &str) {
@@ -219,6 +229,7 @@ pub async fn run(
     let need_embeddings = !cfg.single_peer && !cfg.no_embeddings;
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
+        offload_kqv: cfg.offload_kqv,
         n_batch: cfg.n_batch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
         n_threads: 0,
@@ -232,9 +243,10 @@ pub async fn run(
         .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
 
     let mut state_inner = InferState::new(engine, &cfg);
-    state_inner.original_block_count = crate::gguf::read_info(std::path::Path::new(&cfg.model_path))
-        .ok()
-        .and_then(|info| info.original_block_count);
+    state_inner.original_block_count =
+        crate::gguf::read_info(std::path::Path::new(&cfg.model_path))
+            .ok()
+            .and_then(|info| info.original_block_count);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
 
@@ -328,6 +340,8 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "free_slots": s.seq_pool.len(),
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
+        "offload_kqv": s.engine.offload_kqv(),
+        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16"],
     }))
 }
 
@@ -357,10 +371,7 @@ async fn handle_release(
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
-async fn handle_prefill(
-    State(state): State<SharedState>,
-    body: Bytes,
-) -> Response {
+async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
@@ -372,9 +383,18 @@ async fn handle_prefill(
         .filter(|s| !s.is_empty())
         .unwrap_or("__legacy__")
         .to_string();
-    let chunk_index = meta.get("chunk_index").and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-    let chunk_size = meta.get("chunk_size").and_then(|v| v.as_u64()).unwrap_or(512) as u32;
-    let is_last = meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false);
+    let chunk_index = meta
+        .get("chunk_index")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let chunk_size = meta
+        .get("chunk_size")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(512) as u32;
+    let is_last = meta
+        .get("is_last")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let mut is_final_chunk = meta
         .get("is_final_chunk")
         .and_then(|v| v.as_bool())
@@ -459,7 +479,8 @@ fn prefill_blocking(
             let use_tmpl = s.chat_template;
             let no_think = s.no_thinking;
             let formatted = if use_tmpl {
-                s.engine.apply_chat_template(&[("user", text)], true, no_think)
+                s.engine
+                    .apply_chat_template(&[("user", text)], true, no_think)
             } else {
                 text.clone()
             };
@@ -511,13 +532,15 @@ fn prefill_blocking(
     let n_tokens;
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
-        s.engine.decode_hidden(&hidden, n_tokens, n_past, seq_id, !is_last)?;
+        s.engine
+            .decode_hidden(&hidden, n_tokens, n_past, seq_id, !is_last)?;
     } else {
         if tokens_for_chunk.is_empty() {
             bail!("chunk {chunk_index} não tem tokens");
         }
         n_tokens = tokens_for_chunk.len();
-        s.engine.decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
+        s.engine
+            .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
 
     // ── Session update ───────────────────────────────────────────────────────
@@ -543,7 +566,11 @@ fn prefill_blocking(
 
     if is_last {
         if !is_final_chunk {
-            let out = wire::encode(&json!({"done": false, "more_chunks": more}), None, wire_dtype)?;
+            let out = wire::encode(
+                &json!({"done": false, "more_chunks": more}),
+                None,
+                wire_dtype,
+            )?;
             return Ok(out);
         }
         let recent = s.sessions[&sid_key].recent_tokens.clone();
@@ -551,7 +578,11 @@ fn prefill_blocking(
         let next_id = sample_token(&logits, &recent, &sampling);
         let text = s.engine.token_to_piece(next_id, false);
         let done = next_id == eos;
-        s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(next_id);
+        s.sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .recent_tokens
+            .push(next_id);
         if done {
             s.finish(&sid_key);
         }
@@ -574,10 +605,7 @@ fn prefill_blocking(
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
 
-async fn handle_step(
-    State(state): State<SharedState>,
-    body: Bytes,
-) -> Response {
+async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
@@ -589,10 +617,16 @@ async fn handle_step(
         .filter(|s| !s.is_empty())
         .unwrap_or("__legacy__")
         .to_string();
-    let is_last = meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_last = meta
+        .get("is_last")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
-    let token_id = meta.get("token_id").and_then(|v| v.as_i64()).map(|v| v as i32);
+    let token_id = meta
+        .get("token_id")
+        .and_then(|v| v.as_i64())
+        .map(|v| v as i32);
 
     let tensor = match tensor {
         Some((mut values, shape)) => {
@@ -638,10 +672,9 @@ fn step_blocking(
 ) -> Result<Vec<u8>> {
     let mut s = state.lock().unwrap();
 
-    let session = s
-        .sessions
-        .get_mut(&sid_key)
-        .ok_or_else(|| anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key))?;
+    let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
+        anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
+    })?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id;
@@ -658,8 +691,7 @@ fn step_blocking(
         let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
         n_tokens = 1;
         let logits_all = !is_last;
-        s.engine
-            .decode_tokens(&[tid], n_past, seq_id, logits_all)?;
+        s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
     }
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;

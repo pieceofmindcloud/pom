@@ -19,7 +19,7 @@
 //! a parameter rather than an assumption.
 
 use crate::pipeline::PipelinePlan;
-use crate::wire::{self, WireDtype};
+use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
 use serde_json::json;
 use std::time::Duration;
@@ -97,6 +97,7 @@ pub async fn run(
             &head_meta,
             None,
             dtype,
+            FrameEncoding::F16,
             chunk_index,
         )
         .await?;
@@ -104,7 +105,10 @@ pub async fn run(
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
-        let more = meta.get("more_chunks").and_then(|v| v.as_bool()).unwrap_or(false);
+        let more = meta
+            .get("more_chunks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
         let is_final_chunk = !more;
 
         // ── The rest of the pipeline, carrying this chunk's hidden state.
@@ -131,6 +135,7 @@ pub async fn run(
                 &body_meta,
                 Some((&values, shape)),
                 dtype,
+                step.frame_encoding(),
                 chunk_index,
             )
             .await?;
@@ -177,9 +182,13 @@ async fn send_chunk(
     meta: &serde_json::Value,
     tensor: Option<(&[f32], [usize; 2])>,
     dtype: WireDtype,
+    encoding: FrameEncoding,
     chunk_index: u32,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
-    let body = wire::encode(meta, tensor, dtype)?;
+    let body = match (tensor, dtype) {
+        (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
+        (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
+    };
     let url = format!("{inference_url}/v1/prefill");
     let mut last_error = String::new();
 
@@ -202,7 +211,9 @@ async fn send_chunk(
                 let text = r.text().await.unwrap_or_default();
                 // A refusal is the peer's considered answer, not a hiccup;
                 // repeating it would only waste the link.
-                return Err(anyhow!("peer {node_id} recusou o pedaço {chunk_index}: {code} {text}"));
+                return Err(anyhow!(
+                    "peer {node_id} recusou o pedaço {chunk_index}: {code} {text}"
+                ));
             }
             Err(e) => {
                 last_error = e.to_string();
@@ -243,7 +254,12 @@ pub async fn step(
 
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
-        let body = wire::encode(&body_meta, as_ref, dtype)?;
+        let body = match (as_ref, dtype) {
+            (Some(tensor), WireDtype::F16) => {
+                wire::encode_with_encoding(&body_meta, Some(tensor), peer.frame_encoding())?
+            }
+            (tensor, dtype) => wire::encode(&body_meta, tensor, dtype)?,
+        };
 
         let url = format!("{}/v1/step", peer.inference_url);
         let resp = http
@@ -272,7 +288,10 @@ pub async fn step(
         .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
     Ok((
         token,
-        meta.get("text").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        meta.get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
         meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
     ))
 }

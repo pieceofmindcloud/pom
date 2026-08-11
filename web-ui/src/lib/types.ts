@@ -85,6 +85,7 @@ export interface NodeConfig {
   inference_port: number;
   n_gpu_layers: number;
   n_ctx: number;
+  offload_kqv: boolean;
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
@@ -455,6 +456,7 @@ export interface DeployMachine {
 export interface RuntimeParams {
   n_gpu_layers: number;
   n_ctx: number;
+  offload_kqv: boolean;
   n_batch: number;
   max_new_tokens: number;
   max_sessions: number;

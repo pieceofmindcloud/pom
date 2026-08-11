@@ -21,6 +21,21 @@
 
 use anyhow::{anyhow, Result};
 use serde_json::Value;
+use std::io::{Cursor, Read};
+
+/// Largest decoded tensor payload accepted from an inference peer. The Axum
+/// handlers apply the same body limit before this decoder sees the frame.
+pub const MAX_FRAME_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
+
+/// Tensor representation selected by the sending peer for one frame.
+///
+/// `F16` is the established v1 wire contract. `ZstdF16` is deliberately
+/// opt-in: callers must use it only after the receiver advertised support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameEncoding {
+    F16,
+    ZstdF16,
+}
 
 /// Precision a tensor takes on the wire. Adding one means adding a branch in
 /// `encode`/`decode` and nothing more.
@@ -55,7 +70,60 @@ impl WireDtype {
 }
 
 /// Frame a header and an optional tensor.
-pub fn encode(meta: &Value, tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<Vec<u8>> {
+pub fn encode(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+) -> Result<Vec<u8>> {
+    if dtype != WireDtype::F16 {
+        return encode_raw(meta, tensor, dtype);
+    }
+    encode_with_encoding(meta, tensor, FrameEncoding::F16)
+}
+
+/// Frame a tensor with a negotiated f16 encoding.
+pub fn encode_with_encoding(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    encoding: FrameEncoding,
+) -> Result<Vec<u8>> {
+    let mut meta = meta.clone();
+    let payload = match tensor {
+        Some((values, shape)) => {
+            let expected = checked_tensor_bytes(shape, WireDtype::F16)?;
+            if values.len() * WireDtype::F16.bytes_per_value() != expected {
+                return Err(anyhow!(
+                    "tensor com {} valores não bate com shape {:?}",
+                    values.len(),
+                    shape
+                ));
+            }
+            meta["dtype"] = Value::from(WireDtype::F16.as_str());
+            meta["shape"] = Value::from(vec![shape[0], shape[1]]);
+            let raw: Vec<u8> = values
+                .iter()
+                .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
+                .collect();
+            match encoding {
+                FrameEncoding::F16 => raw,
+                FrameEncoding::ZstdF16 => {
+                    meta["frame_version"] = Value::from(2);
+                    meta["encoding"] = Value::from("zstd");
+                    meta["uncompressed_payload_bytes"] = Value::from(expected as u64);
+                    zstd::stream::encode_all(Cursor::new(raw), 3)?
+                }
+            }
+        }
+        None => Vec::new(),
+    };
+    frame(meta, payload)
+}
+
+fn encode_raw(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+) -> Result<Vec<u8>> {
     let mut meta = meta.clone();
     let payload = match tensor {
         Some((values, shape)) => {
@@ -78,7 +146,10 @@ pub fn encode(meta: &Value, tensor: Option<(&[f32], [usize; 2])>, dtype: WireDty
         }
         None => Vec::new(),
     };
+    frame(meta, payload)
+}
 
+fn frame(meta: Value, payload: Vec<u8>) -> Result<Vec<u8>> {
     let head = serde_json::to_vec(&meta)?;
     let mut out = Vec::with_capacity(4 + head.len() + payload.len());
     out.extend_from_slice(&(head.len() as u32).to_be_bytes());
@@ -99,7 +170,7 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
     }
     let meta: Value = serde_json::from_slice(&buf[4..4 + head_len])?;
     let payload = &buf[4 + head_len..];
-    if payload.is_empty() {
+    if payload.is_empty() && meta.get("encoding").is_none() {
         return Ok((meta, None));
     }
 
@@ -107,19 +178,73 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
     let shape: Vec<usize> = meta
         .get("shape")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|x| x.as_u64().map(|n| n as usize)).collect())
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_u64().map(|n| n as usize))
+                .collect()
+        })
         .unwrap_or_default();
     if shape.len() != 2 {
         return Err(anyhow!("shape inválido: {:?}", shape));
     }
-    let expected = shape[0] * shape[1];
+    let expected = shape[0]
+        .checked_mul(shape[1])
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let expected_bytes = expected
+        .checked_mul(dtype.bytes_per_value())
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    if expected_bytes > MAX_FRAME_PAYLOAD_BYTES {
+        return Err(anyhow!(
+            "payload do tensor excede limite de {} bytes",
+            MAX_FRAME_PAYLOAD_BYTES
+        ));
+    }
+
+    let decoded_payload = match meta.get("encoding").and_then(|v| v.as_str()) {
+        None => payload.to_vec(),
+        Some("zstd") => {
+            if meta.get("frame_version").and_then(|v| v.as_u64()) != Some(2) {
+                return Err(anyhow!("versão de quadro comprimido inválida"));
+            }
+            let declared = meta
+                .get("uncompressed_payload_bytes")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow!("quadro comprimido sem tamanho declarado"))?
+                as usize;
+            if declared > MAX_FRAME_PAYLOAD_BYTES {
+                return Err(anyhow!(
+                    "payload descomprimido excede limite de {} bytes",
+                    MAX_FRAME_PAYLOAD_BYTES
+                ));
+            }
+            if declared != expected_bytes {
+                return Err(anyhow!("tamanho declarado não bate com o shape"));
+            }
+            let mut decoder = zstd::stream::read::Decoder::new(payload)?;
+            let mut output = Vec::with_capacity(expected_bytes);
+            decoder
+                .take((MAX_FRAME_PAYLOAD_BYTES + 1) as u64)
+                .read_to_end(&mut output)?;
+            if output.len() != expected_bytes {
+                return Err(anyhow!("payload zstd truncado ou maior que o declarado"));
+            }
+            output
+        }
+        Some(other) => return Err(anyhow!("encoding de fio desconhecido: {other}")),
+    };
+    if decoded_payload.len() != expected_bytes {
+        return Err(anyhow!(
+            "payload tem {} bytes, esperado {expected_bytes}",
+            decoded_payload.len()
+        ));
+    }
 
     let values: Vec<f32> = match dtype {
-        WireDtype::F32 => payload
+        WireDtype::F32 => decoded_payload
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
-        WireDtype::F16 => payload
+        WireDtype::F16 => decoded_payload
             .chunks_exact(2)
             .map(|c| f16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .collect(),
@@ -131,6 +256,22 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
         ));
     }
     Ok((meta, Some((values, [shape[0], shape[1]]))))
+}
+
+fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
+    let values = shape[0]
+        .checked_mul(shape[1])
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    let bytes = values
+        .checked_mul(dtype.bytes_per_value())
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    if bytes > MAX_FRAME_PAYLOAD_BYTES {
+        return Err(anyhow!(
+            "payload do tensor excede limite de {} bytes",
+            MAX_FRAME_PAYLOAD_BYTES
+        ));
+    }
+    Ok(bytes)
 }
 
 // ── f16 conversion ───────────────────────────────────────────────────────────
@@ -145,7 +286,13 @@ fn f32_to_f16_bits(value: f32) -> u16 {
 
     if exp >= 0x1f {
         // Overflow, infinity or NaN.
-        return sign | 0x7c00 | if mantissa != 0 && exp == 0x1f + 112 { 0x0200 } else { 0 };
+        return sign
+            | 0x7c00
+            | if mantissa != 0 && exp == 0x1f + 112 {
+                0x0200
+            } else {
+                0
+            };
     }
     if exp <= 0 {
         // Subnormal, or too small to represent: flush toward zero.
@@ -157,7 +304,11 @@ fn f32_to_f16_bits(value: f32) -> u16 {
         let half = (mantissa >> shift) as u16;
         // Round to nearest, ties away from zero.
         let round_bit = 1u32 << (shift - 1);
-        let rounded = if (mantissa & round_bit) != 0 { half + 1 } else { half };
+        let rounded = if (mantissa & round_bit) != 0 {
+            half + 1
+        } else {
+            half
+        };
         return sign | rounded;
     }
 
@@ -203,6 +354,55 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compressed_f16_round_trip_is_bounded_and_preserves_the_tensor_shape() {
+        let values = vec![0.25_f32; 512 * 4096];
+        let meta = serde_json::json!({ "session_id": "compressed" });
+        let framed =
+            encode_with_encoding(&meta, Some((&values, [512, 4096])), FrameEncoding::ZstdF16)
+                .unwrap();
+
+        let (back_meta, tensor) = decode(&framed).unwrap();
+        let (back, shape) = tensor.unwrap();
+        assert_eq!(back_meta["frame_version"], 2);
+        assert_eq!(back_meta["encoding"], "zstd");
+        assert_eq!(shape, [512, 4096]);
+        assert_eq!(back.len(), values.len());
+    }
+
+    #[test]
+    fn compressed_frame_declaring_more_than_the_bounded_uncompressed_limit_is_refused() {
+        let meta = serde_json::json!({
+            "dtype": "f16",
+            "shape": [1, 1],
+            "frame_version": 2,
+            "encoding": "zstd",
+            "uncompressed_payload_bytes": MAX_FRAME_PAYLOAD_BYTES + 1,
+        });
+        let head = serde_json::to_vec(&meta).unwrap();
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&(head.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&head);
+        assert!(decode(&framed).unwrap_err().to_string().contains("limite"));
+    }
+
+    #[test]
+    fn malformed_compressed_frame_is_refused_without_decoding_a_tensor() {
+        let meta = serde_json::json!({
+            "dtype": "f16",
+            "shape": [512, 4096],
+            "frame_version": 2,
+            "encoding": "zstd",
+            "uncompressed_payload_bytes": 4 * 1024 * 1024,
+        });
+        let head = serde_json::to_vec(&meta).unwrap();
+        let mut framed = Vec::new();
+        framed.extend_from_slice(&(head.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&head);
+        framed.extend_from_slice(&[0x28, 0xb5]);
+        assert!(decode(&framed).is_err());
+    }
 
     #[test]
     fn a_tensor_survives_a_round_trip_in_f32() {
@@ -260,7 +460,12 @@ mod tests {
     #[test]
     fn a_shape_that_disagrees_with_the_payload_is_refused() {
         let values = vec![1.0f32; 4];
-        let mut framed = encode(&serde_json::json!({}), Some((&values, [1, 4])), WireDtype::F16).unwrap();
+        let mut framed = encode(
+            &serde_json::json!({}),
+            Some((&values, [1, 4])),
+            WireDtype::F16,
+        )
+        .unwrap();
         framed.truncate(framed.len() - 2);
         assert!(decode(&framed).is_err());
     }

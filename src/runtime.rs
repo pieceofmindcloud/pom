@@ -18,6 +18,10 @@ use tracing::{info, warn};
 
 /// Give up restarting a crash-looping inference server after this many tries.
 const MAX_RESTARTS: u32 = 10;
+/// Largest context the product exposes. Larger allocations can exhaust a node
+/// before llama.cpp can report a useful error, so keep the operator-facing
+/// contract explicit.
+pub const MAX_CONTEXT_TOKENS: u32 = 250_000;
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -43,6 +47,10 @@ pub struct NodeConfig {
     pub inference_port: u16,
     pub n_gpu_layers: u32,
     pub n_ctx: u32,
+    /// Keep the llama.cpp KV cache on the GPU. Disable to trade latency for
+    /// host RAM capacity on large-context hardware.
+    #[serde(default = "default_offload_kqv")]
+    pub offload_kqv: bool,
     pub n_batch: u32,
     /// Concurrent generations; the context is split between them.
     #[serde(default = "default_max_sessions")]
@@ -65,8 +73,15 @@ pub struct NodeConfig {
     pub no_embeddings: bool,
 }
 
-fn default_max_sessions() -> u32 { 1 }
-fn default_prefill_chunk() -> u32 { crate::prefill::DEFAULT_CHUNK_TOKENS }
+fn default_max_sessions() -> u32 {
+    1
+}
+fn default_prefill_chunk() -> u32 {
+    crate::prefill::DEFAULT_CHUNK_TOKENS
+}
+fn default_offload_kqv() -> bool {
+    true
+}
 
 impl NodeConfig {
     pub fn layers_count(&self) -> u32 {
@@ -89,6 +104,9 @@ impl NodeConfig {
         }
         if self.total_layers == 0 {
             bail!("total_layers não pode ser zero");
+        }
+        if self.n_ctx == 0 || self.n_ctx > MAX_CONTEXT_TOKENS {
+            bail!("n_ctx precisa estar entre 1 e {MAX_CONTEXT_TOKENS}");
         }
         if self.end_layer >= self.total_layers {
             bail!(
@@ -180,10 +198,7 @@ pub struct NodeRuntime {
 }
 
 impl NodeRuntime {
-    pub fn new(
-        net: Arc<Network>,
-        assignment: Arc<RwLock<Option<LayerAssignment>>>,
-    ) -> Arc<Self> {
+    pub fn new(net: Arc<Network>, assignment: Arc<RwLock<Option<LayerAssignment>>>) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
             config: RwLock::new(None),
@@ -367,7 +382,11 @@ impl NodeRuntime {
                 let Ok(body) = resp.json::<serde_json::Value>().await else {
                     continue;
                 };
-                if !body.get("model_loaded").and_then(|v| v.as_bool()).unwrap_or(false) {
+                if !body
+                    .get("model_loaded")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
                     continue;
                 }
 
@@ -382,7 +401,10 @@ impl NodeRuntime {
                     let mut w = assignment.write().await;
                     if let Some(ref mut a) = *w {
                         if a.total_layers != total {
-                            info!("total_layers corrigido: {} → {total} (metadata GGUF)", a.total_layers);
+                            info!(
+                                "total_layers corrigido: {} → {total} (metadata GGUF)",
+                                a.total_layers
+                            );
                             a.total_layers = total;
                         }
                     }
@@ -450,7 +472,9 @@ async fn free_port(port: u16) {
     }
 
     for pid_str in stdout.split_whitespace() {
-        let Ok(pid) = pid_str.parse::<i32>() else { continue };
+        let Ok(pid) = pid_str.parse::<i32>() else {
+            continue;
+        };
         // Skip our own process - never kill ourselves.
         if pid == std::process::id() as i32 {
             continue;
@@ -530,6 +554,7 @@ mod tests {
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,
+            offload_kqv: true,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
@@ -564,6 +589,17 @@ mod tests {
         let mut c = cfg();
         c.model_path = file!().to_string();
         c.end_layer = 40;
+        assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn accepts_a_250k_context_but_refuses_a_larger_configured_limit() {
+        let mut c = cfg();
+        c.model_path = file!().to_string();
+        c.n_ctx = 250_000;
+        assert!(c.validate().is_ok());
+
+        c.n_ctx = 250_001;
         assert!(c.validate().is_err());
     }
 

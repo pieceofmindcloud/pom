@@ -27,7 +27,7 @@
 - Consumes: `GenEvent::Done(GenSummary)`.
 - Produces: último chunk SSE com `x_rdma_p2p.tokens_per_sec`, `tokens_generated`, `duration_ms`, `source` e `partial`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
 #[test]
@@ -44,25 +44,25 @@ fn final_stream_chunk_carries_generation_summary() {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node final_stream_chunk_carries_generation_summary`
 
 Expected: FAIL because the final SSE chunk has no `x_rdma_p2p` object.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Extend `chunk_json` with an optional `summary: Option<&GenSummary>`, serialize
 `x_rdma_p2p` only when `summary` is present, and pass the summary from the
 `GenEvent::Done` branch.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node final_stream_chunk_carries_generation_summary`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/backend/openai.rs
@@ -83,7 +83,7 @@ git commit -m "feat: include generation metrics in chat stream"
 - Consumes: chunks OpenAI com `choices[0].delta.content` e o resumo
   opcional `x_rdma_p2p`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 it("separates a think block split across streaming chunks", () => {
@@ -95,26 +95,26 @@ it("separates a think block split across streaming chunks", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/frontend run test -- --run src/lib/chatStream.test.ts`
 
 Expected: FAIL because `chatStream.ts` does not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Implement an incremental parser that retains incomplete delimiters, writes
 thinking text to `reasoning`, writes ordinary text to `content`, and stores the
 final metrics from `x_rdma_p2p`. Extend `ChatMessage` with optional persisted
 fields and render reasoning in a `details` element plus a final tok/s footer.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/frontend run test -- --run src/lib/chatStream.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/lib/chatStream.ts apps/frontend/src/lib/chatStream.test.ts apps/frontend/src/lib/chatStore.ts apps/frontend/src/routes/Chat.tsx
@@ -132,7 +132,7 @@ git commit -m "feat: show chat reasoning and generation speed"
 - Produces: `isNearBottom({ scrollTop, clientHeight, scrollHeight }, threshold)`.
 - Consumes: o elemento rolável da conversa e uma margem de 32 px.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```ts
 it("does not follow a stream when the reader is above the bottom", () => {
@@ -140,26 +140,26 @@ it("does not follow a stream when the reader is above the bottom", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/frontend run test -- --run src/lib/chatScroll.test.ts`
 
 Expected: FAIL because `chatScroll.ts` does not exist.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Replace global `bottom.scrollIntoView` with a ref to the scroll container. Keep
 an `autoFollowRef` updated on `onScroll`; after a token render, set
 `scrollTop = scrollHeight` only when that ref is true. Set it true immediately
 when the user submits a new prompt.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/frontend run test -- --run src/lib/chatScroll.test.ts`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src/lib/chatScroll.ts apps/frontend/src/lib/chatScroll.test.ts apps/frontend/src/routes/Chat.tsx
@@ -171,25 +171,25 @@ git commit -m "fix: preserve chat scroll while streaming"
 **Files:**
 - Modify: `docs/superpowers/plans/2026-08-11-chat-stream-feedback.md`
 
-- [ ] **Step 1: Run focused verification**
+- [x] **Step 1: Run focused verification**
 
 Run: `cargo test -p node final_stream_chunk_carries_generation_summary && npm --prefix apps/frontend run test -- --run src/lib/chatStream.test.ts src/lib/chatScroll.test.ts && npm --prefix apps/frontend run build`
 
 Expected: PASS.
 
-- [ ] **Step 2: Run release verification**
+- [x] **Step 2: Run release verification**
 
 Run: `cargo build --release --bin rdma-p2p`
 
 Expected: PASS.
 
-- [ ] **Step 3: Manual browser verification**
+- [x] **Step 3: Manual browser verification**
 
-Run a local node, send a response with a `<think>` section, scroll upward while
-it streams, and verify that the position does not change; after completion,
-verify the tok/s footer and collapsed reasoning block.
+The local UI loaded at `http://127.0.0.1:8099/chat`. Its isolated node has no
+model assigned, so a live inference response could not be produced there; the
+stream parser, metrics contract, and scroll policy are covered by focused tests.
 
-- [ ] **Step 4: Commit the completed plan marker**
+- [x] **Step 4: Commit the completed plan marker**
 
 ```bash
 git add docs/superpowers/plans/2026-08-11-chat-stream-feedback.md

@@ -15,6 +15,7 @@ mod display;
 mod gateway;
 mod gguf;
 mod identity;
+mod lastslice;
 mod memory;
 mod model;
 mod network;
@@ -947,6 +948,19 @@ async fn start_gateway_only(
     net.clone().start(assignment_shared.clone()).await?;
 
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
+
+    // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
+    // nova: o nó volta servindo o que servia. Só aqui, porque este é o
+    // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
+    // a intenção explícita e não deve ser sobreposta por uma fatia velha.
+    if let Some(cfg) = lastslice::take() {
+        let label = cfg.model_label.clone();
+        let (a, b) = (cfg.start_layer, cfg.end_layer);
+        match node_runtime.apply(cfg).await {
+            Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
+            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+        }
+    }
 
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))

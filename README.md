@@ -1,5 +1,13 @@
 # rdma-p2p
 
+> Architecture note: this repository is a Cargo workspace. The shipped
+> `rdma-p2p` binary is the `node` package in `crates/node`; public routing
+> crates live in `crates/routing-contract` and `crates/routing-base`. The
+> contract extraction is complete, but runtime provider selection remains on
+> the existing node planner while equivalence coverage is expanded. A future
+> enterprise provider is a separate private local plugin, never a dependency of
+> this repository. See `docs/architecture/routing-plugin-contract.md`.
+
 **P2P Distributed LLM Inference with RDMA-sim layer**
 
 Cada nó aloca uma fatia de RAM, calcula automaticamente quantas camadas do modelo cabem, e se coordena com outros nós via UDP P2P para cobrir o modelo completo.
@@ -113,16 +121,29 @@ Cada 5 segundos o nó:
 
 ---
 
-## Arquitetura dos módulos
+## Estrutura do workspace
 
 ```
-src/
-├── main.rs       # CLI, startup, display loop
-├── model.rs      # Perfis de modelos, cálculo de camadas
-├── network.rs    # UDP P2P, gossip, peer discovery
-├── identity.rs   # Ed25519 keypair, Node ID
-└── display.rs    # Terminal UI, layer map, peer table
+Cargo.toml                     # workspace e dependências compartilhadas
+crates/
+├── node/                      # pacote que produz o binário rdma-p2p
+│   ├── src/main.rs             # CLI e orquestração de inicialização
+│   ├── src/models/             # catálogo, GGUF, perfis e fatiamento
+│   ├── src/network/            # descoberta, identidade e transporte P2P
+│   ├── src/routing/            # planejador de pipeline atual
+│   ├── src/backend/            # gateway HTTP, API e interface administrativa
+│   └── src/utils/              # configuração, TUI e monitoramento
+├── routing-contract/           # contrato serializável e versionado de roteamento
+├── routing-base/               # planejador determinístico independente de infraestrutura
+├── config/                     # ponto de extração para esquemas de configuração públicos
+└── types/                      # ponto de extração para tipos de domínio públicos
+apps/frontend/                  # fonte React/Vite embutido pelo build do node
+old/                            # ferramentas Python e scripts legados, fora do runtime suportado
 ```
+
+`cargo build`, `cargo test` e `cargo run --bin rdma-p2p -- <argumentos>` na
+raiz usam `crates/node` como membro padrão do workspace. Para validar todos os
+crates públicos e o nó, use `cargo test --workspace`.
 
 ### Protocolo de mensagens (UDP JSON)
 

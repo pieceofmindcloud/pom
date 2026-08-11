@@ -586,6 +586,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "config"
+version = "0.1.0"
+
+[[package]]
 name = "const-oid"
 version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2746,6 +2750,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "node"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "axum",
+ "chrono",
+ "clap",
+ "ed25519-dalek 2.2.0",
+ "futures",
+ "half",
+ "hex",
+ "libc",
+ "libp2p",
+ "llama-cpp-sys-2",
+ "md-5",
+ "memmap2",
+ "mime_guess",
+ "pkarr",
+ "rand 0.8.5",
+ "reqwest 0.12.28",
+ "routing-contract",
+ "rust-embed",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
 name = "nohash-hasher"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3324,41 +3364,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rdma-p2p"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "async-trait",
- "axum",
- "chrono",
- "clap",
- "ed25519-dalek 2.2.0",
- "futures",
- "half",
- "hex",
- "libc",
- "libp2p",
- "llama-cpp-sys-2",
- "md-5",
- "memmap2",
- "mime_guess",
- "pkarr",
- "rand 0.8.5",
- "reqwest 0.12.28",
- "rust-embed",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "tokio-util",
- "tower",
- "tracing",
- "tracing-subscriber",
- "uuid",
- "zstd",
-]
-
-[[package]]
 name = "redox_syscall"
 version = "0.5.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3497,6 +3502,21 @@ dependencies = [
  "libc",
  "untrusted",
  "windows-sys 0.52.0",
+]
+
+[[package]]
+name = "routing-base"
+version = "0.1.0"
+dependencies = [
+ "routing-contract",
+]
+
+[[package]]
+name = "routing-contract"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4354,6 +4374,10 @@ name = "typenum"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
+
+[[package]]
+name = "types"
+version = "0.1.0"
 
 [[package]]
 name = "uint"

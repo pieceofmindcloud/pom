@@ -22,6 +22,7 @@ mod openai;
 mod pipeline;
 mod prefill;
 mod reqlog;
+mod respawn;
 mod pkarr_node;
 mod plan;
 mod runtime;
@@ -243,6 +244,7 @@ fn parse_layers_from_filename(path: &str) -> Option<(u32, u32)> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    respawn::remember_argv(std::env::args().collect());
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),

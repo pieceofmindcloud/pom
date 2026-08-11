@@ -150,8 +150,7 @@ export function WholeModels() {
                 </Link>
               }
             >
-              A varredura cobriu as pastas listadas abaixo e não achou nenhum `.gguf`
-              completo.
+              {t("models.emptyDetail")}
             </Empty>
           ) : (
             <div className="divide-y divide-line">

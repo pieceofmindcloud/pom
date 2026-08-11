@@ -55,7 +55,7 @@ function NodeChip() {
           {t("topbar.nodeCount", { count: c.peers.length })}
           {c.total_layers > 0 && (
             <span className="font-mono">
-              · {c.covered_layers}/{c.total_layers} camadas
+              · {t("topbar.layers", { covered: c.covered_layers, total: c.total_layers })}
             </span>
           )}
         </Badge>
@@ -184,18 +184,13 @@ function NodeActions() {
         open={pending === "unload"}
         title={t("topbar.unloadTitle")}
         description={
-          <>
-            O servidor de inferência para e a memória é liberada. Enquanto isso, a rede
-            fica sem as camadas{" "}
-            <span className="font-mono text-fg">
-              {node.data?.config
-                ? `${node.data.config.start_layer}–${node.data.config.end_layer}`
-                : t("topbar.thisNode")}
-            </span>
-            , e nenhuma requisição completa.
-          </>
+          t("topbar.unloadRangeDescription", {
+            range: node.data?.config
+              ? `${node.data.config.start_layer}–${node.data.config.end_layer}`
+              : t("topbar.thisNode"),
+          })
         }
-        confirmLabel="Descarregar"
+        confirmLabel={t("topbar.unload")}
         tone="danger"
         busy={busy}
         onConfirm={() => run("unload")}

@@ -247,16 +247,22 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               }
               detail={
                 system
-                  ? `${megabytes(system.ram.used_mb)} de ${megabytes(system.ram.total_mb)}`
+                  ? t("dashboard.usedOf", {
+                      used: megabytes(system.ram.used_mb),
+                      total: megabytes(system.ram.total_mb),
+                    })
                   : "—"
               }
             />
             {system?.gpu_kind === "nvidia" && gpu ? (
               <Meter
-                label={`VRAM · ${gpu.name.replace(/^NVIDIA\s+/i, "")}`}
+                label={t("dashboard.vram", { name: gpu.name.replace(/^NVIDIA\s+/i, "") })}
                 value={gpu.vram_used_pct ?? null}
                 tone={(gpu.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
-                detail={`${megabytes(gpu.vram_used_mb)} de ${megabytes(gpu.vram_total_mb)}`}
+                detail={t("dashboard.usedOf", {
+                  used: megabytes(gpu.vram_used_mb),
+                  total: megabytes(gpu.vram_total_mb),
+                })}
               />
             ) : (
               <Meter
@@ -271,7 +277,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               />
             )}
             <Meter
-              label={`Disco · ${system?.disk.mount_point || "—"}`}
+              label={t("dashboard.disk", { path: system?.disk.mount_point || "—" })}
               value={
                 system && system.disk.total_mb > 0
                   ? ((system.disk.total_mb - system.disk.free_mb) / system.disk.total_mb) *

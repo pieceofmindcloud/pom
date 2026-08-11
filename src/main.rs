@@ -1,3 +1,6 @@
+/// Commit this binary was built from, stamped by `build.rs`.
+pub const BUILD_COMMIT: &str = env!("RDMA_P2P_BUILD_COMMIT");
+
 mod admin;
 mod bitswap;
 mod infer_server;

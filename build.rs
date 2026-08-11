@@ -39,6 +39,45 @@ fn main() {
     };
 
     println!("cargo:rustc-env=CODAI_UI_DIST={}", dist.display());
+    emit_build_id(&root);
+}
+
+/// Stamp the binary with the commit it was built from.
+///
+/// A cluster is many machines, and "which build is that peer running?" was not
+/// answerable without a shell on it. A peer running yesterday's binary looks
+/// exactly like a peer with a fresh bug — the same layer range, the same
+/// healthy `/health`, and an error from a code path that was already fixed.
+/// Diagnosing one such peer cost an afternoon, so the answer now travels with
+/// the node, in `/api/ui/node`.
+fn emit_build_id(root: &Path) {
+    let commit = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .unwrap_or_else(|| "desconhecido".into());
+
+    // A dirty tree is a build that matches no commit; saying so is the point.
+    let dirty = Command::new("git")
+        .args(["status", "--porcelain", "--untracked-files=no"])
+        .current_dir(root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| !o.stdout.is_empty())
+        .unwrap_or(false);
+
+    println!(
+        "cargo:rustc-env=RDMA_P2P_BUILD_COMMIT={}{}",
+        commit,
+        if dirty { "-sujo" } else { "" }
+    );
+    // Without this the stamp freezes at whatever the first build saw.
+    println!("cargo:rerun-if-changed=.git/HEAD");
+    println!("cargo:rerun-if-changed=.git/index");
 }
 
 /// Embed the committed bundle, but only if it still matches the source.

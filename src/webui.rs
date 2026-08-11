@@ -83,6 +83,9 @@ pub struct NodeInfo {
     pub node_id: String,
     pub short_id: String,
     pub hostname: String,
+    /// Commit this binary was built from, so "which build is that peer running?"
+    /// is answerable without a shell on the machine.
+    pub build_commit: String,
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
@@ -108,6 +111,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
         hostname: system.hostname.clone(),
+        build_commit: crate::BUILD_COMMIT.to_string(),
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),

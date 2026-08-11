@@ -688,6 +688,44 @@ OpenAI-compatível arbitrário por env var.
 mostra a memória wired, que é onde ficam os buffers do Metal, em vez de inventar
 um número.
 
+### Atualizar um nó pela própria interface (só em desenvolvimento)
+
+`src/devupdate.rs`. O card de cada peer ganha "Atualizar e reiniciar" quando
+aquele processo subiu com `RDMA_P2P_DEV_UPDATE=1` - variável de ambiente, por
+processo, porque a config é reescrita pela própria interface e um campo lá
+deixaria o portão ligável pela rede. `RDMA_P2P_BUILD_FEATURES=cuda` (ou `metal`)
+diz com que features a máquina compila; sem isso a ksia perde a GPU no primeiro
+clique, que foi o engano já cometido à mão em 2026-08-10.
+
+O painel só fala com o próprio nó (caminhos relativos em `web-ui/src/lib/api.ts`),
+então agir sobre outro peer é **repasse**: `POST /api/ui/dev/update` com
+`{"node_id": "..."}` faz o nó local encaminhar ao peer, como `webui::launch` já
+faz com `stop-inference`. O portão é verificado **no destino**, nunca em quem
+repassa - checá-lo antes da decisão impedia o painel de um nó comum de atualizar
+um peer que tinha o portão aberto, enquanto a tela mostrava o botão baseada no
+`dev_update` do alvo.
+
+A sequência recusa branch fora do `main`, HEAD destacado e árvore suja, e só
+então faz `git pull --ff-only` e `cargo build --release`. **Nenhum comando
+destrutivo entra nisso** - não há `reset`, `checkout`, `clean` nem `stash` -
+então numa máquina onde alguém está codificando o botão falha e explica, em vez
+de arrumar a casa alheia. Falhou em qualquer passo, ninguém reinicia.
+
+Cada nó reinicia **a si mesmo** (`/api/ui/dev/restart`): nenhum consegue
+respawnar o irmão, porque não conhece o `RDMA_P2P_CONFIG` nem o
+`RDMA_P2P_NODE_KEY` dele. Irmão é peer com o mesmo hostname **e** o mesmo host de
+rede (`same_machine`) - hostname sozinho casaria duas VMs chamadas `ubuntu` e
+reiniciaria máquina alheia; peer com `addr` `0.0.0.0`/`::` é descartado, porque
+esse endereço não reescrito aponta para o próprio nó. A fatia servida é anotada
+em `<config>.last-slice.json` (derivado da config, senão dois nós da mesma
+máquina se sobrescrevem) e reaplicada no arranque.
+
+`/api/ui/node` devolve `build_commit`, carimbado pelo `build.rs`, com sufixo
+`-sujo` quando a árvore tinha alterações. É como se descobre um peer
+desatualizado sem shell na máquina: em 2026-08-10 um peer respondia
+`residual capture did not fire`, erro já corrigido, e achar que era binário
+velho custou uma tarde.
+
 ## Maintaining this file
 
 Keep this file for knowledge useful to almost every future agent session in this project.

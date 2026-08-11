@@ -32,8 +32,10 @@ import { since } from "../lib/format";
 import { useCluster, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 function Bubble({ message }: { message: ChatMessage }) {
+  const { locale } = useI18n();
   const isUser = message.role === "user";
   return (
     <motion.div
@@ -55,7 +57,7 @@ function Bubble({ message }: { message: ChatMessage }) {
             <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
               <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
               <p className="break-path text-[0.82rem] leading-relaxed text-muted">
-                {message.error}
+                {localizeServerText(locale, message.error)}
               </p>
             </div>
           )}

@@ -67,7 +67,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "errorBoundary.detail": () => "The rest of the interface is still available: use the menu to open another screen. If it happens again, the detail below is what the browser recorded.",
     "common.loadFailed": () => "Could not load",
    "common.retry": () => "Retry",
-    "common.cancel": () => "Cancel",
+   "common.cancel": () => "Cancel",
+    "common.serverDetails": () => "The node returned details in an unsupported language.",
     "nav.dashboard": () => "Dashboard",
     "nav.testChat": () => "Test chat",
     "nav.models": () => "Models",
@@ -645,7 +646,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "errorBoundary.detail": () => "O resto da interface continua de pé: use o menu para ir a outra tela. Se insistir, o detalhe abaixo é o que o navegador registrou.",
     "common.loadFailed": () => "Não deu para carregar",
    "common.retry": () => "Tentar de novo",
-    "common.cancel": () => "Cancelar",
+   "common.cancel": () => "Cancelar",
+    "common.serverDetails": () => "O nó retornou detalhes em um idioma não suportado.",
     "nav.dashboard": () => "Painel",
     "nav.testChat": () => "Chat de teste",
     "nav.models": () => "Modelos",
@@ -1200,4 +1202,23 @@ export function formatMessage(locale: Locale, key: string, values: MessageValues
   const message = messages[locale][key] ?? messages.en[key];
   if (!message) return key;
   return message(values, locale);
+}
+
+/**
+ * Nodes can still be running an older binary that sends human text in
+ * Portuguese. Keep the UI language contract even during a rolling upgrade.
+ */
+export function localizeServerText(locale: Locale, text: string, fallbackKey = "common.serverDetails"): string {
+  if (locale === "pt-BR" || !text) return text;
+  const known: Record<string, string> = {
+    pronto: "Ready",
+    erro: "Error",
+    falhou: "Failed",
+    gravando: "Writing",
+    "subindo os nós": "Starting nodes",
+    "atribuindo as faixas": "Assigning ranges",
+  };
+  if (known[text]) return known[text];
+  const portuguese = /[ãõç]|\b(não|nenhuma|nenhum|camadas|fatias|memória|modelo|máquina|servidor|falhou|pronto|erro)\b/i;
+  return portuguese.test(text) ? formatMessage(locale, fallbackKey) : text;
 }

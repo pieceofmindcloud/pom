@@ -31,8 +31,11 @@ import {
 import { since } from "../lib/format";
 import { useCluster, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 function Bubble({ message }: { message: ChatMessage }) {
+  const { locale } = useI18n();
   const isUser = message.role === "user";
   return (
     <motion.div
@@ -54,7 +57,7 @@ function Bubble({ message }: { message: ChatMessage }) {
             <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
               <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-rose" />
               <p className="break-path text-[0.82rem] leading-relaxed text-muted">
-                {message.error}
+                {localizeServerText(locale, message.error)}
               </p>
             </div>
           )}
@@ -80,6 +83,7 @@ function SessionList({
   onNew: () => void;
   onDelete: (id: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <aside className="hidden w-[248px] shrink-0 flex-col border-r border-line bg-surface md:flex">
       <div className="p-3">
@@ -89,13 +93,13 @@ function SessionList({
           icon={<Plus className="h-4 w-4" />}
           onClick={onNew}
         >
-          Conversa nova
+          {t("chat.new")}
         </Button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-3">
         {sessions.length === 0 ? (
           <p className="px-3 py-6 text-center text-xs leading-relaxed text-faint">
-            As conversas ficam neste navegador.
+            {t("chat.localOnly")}
           </p>
         ) : (
           sessions.map((s) => (
@@ -113,12 +117,12 @@ function SessionList({
                 <span className="block truncate text-[0.82rem] text-fg">{s.title}</span>
                 <span className="block text-[0.68rem] text-faint">
                   {since(s.updatedAt)} · {s.messages.length}{" "}
-                  {s.messages.length === 1 ? "mensagem" : "mensagens"}
+                  {t("chat.message", { count: s.messages.length })}
                 </span>
               </button>
               <button
                 onClick={() => onDelete(s.id)}
-                aria-label={`Apagar ${s.title}`}
+                aria-label={t("chat.delete", { title: s.title })}
                 className="absolute right-1.5 top-1/2 hidden -translate-y-1/2 rounded p-1.5 text-faint transition-colors hover:text-rose group-hover:block"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -132,6 +136,7 @@ function SessionList({
 }
 
 export function Chat() {
+  const { t } = useI18n();
   const { sessions, upsert, remove } = useChatSessions();
   const models = useServableModels();
   const cluster = useCluster();
@@ -233,19 +238,19 @@ export function Chat() {
       if (!text) {
         patchReply({
           error:
-            "A rede respondeu sem nenhum token. Confira no Painel se a cobertura de camadas está fechada.",
+            t("chat.emptyResponse"),
         });
       }
     } catch (e) {
       if (controller.signal.aborted) {
-        patchReply({ error: "Interrompido." });
+        patchReply({ error: t("chat.interrupted") });
       } else {
         const detail = e instanceof Error ? e.message : String(e);
         patchReply({ error: detail });
         if (e instanceof ApiError && (e.status === 401 || e.status === 403)) {
           toast.error(
-            "A chave de conexão foi recusada",
-            "Recarregue a página para pegar a chave atual do nó.",
+            t("chat.keyRejected"),
+            t("chat.keyRejectedDetail"),
           );
         }
       }
@@ -286,10 +291,10 @@ export function Chat() {
         <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
           <div className="flex min-w-0 items-center gap-2">
             <h1 className="truncate font-display text-[0.95rem] font-semibold text-fg">
-              {session.messages.length ? session.title : "Chat de teste"}
+              {session.messages.length ? session.title : t("chat.test")}
             </h1>
             {cluster.data && !cluster.data.complete && (
-              <Badge tone="amber">cobertura incompleta</Badge>
+              <Badge tone="amber">{t("chat.incomplete")}</Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
@@ -300,7 +305,7 @@ export function Chat() {
                 value={model}
                 onChange={(e) => setSession({ ...session, model: e.target.value })}
                 className="w-44"
-                aria-label="Modelo"
+                aria-label={t("chat.model")}
               >
                 {available.map((m) => (
                   <option key={m} value={m}>
@@ -318,7 +323,7 @@ export function Chat() {
               onClick={startNew}
               className="md:hidden"
             >
-              Nova
+              {t("chat.newShort")}
             </Button>
           </div>
         </div>
@@ -331,13 +336,13 @@ export function Chat() {
                   icon={<MessagesSquare className="h-5 w-5" />}
                   title={
                     noModel
-                      ? "A rede não está servindo nenhum modelo"
-                      : "Pergunte alguma coisa à rede"
+                      ? t("chat.noModel")
+                      : t("chat.ask")
                   }
                 >
                   {noModel
-                    ? "Atribua um modelo aos nós em Configurações antes de testar."
-                    : "As mensagens percorrem as máquinas na ordem do Painel e voltam token a token."}
+                    ? t("chat.noModelDetail")
+                    : t("chat.askDetail")}
                 </Empty>
               </div>
             ) : (
@@ -362,7 +367,7 @@ export function Chat() {
                           />
                         ))}
                       </span>
-                      atravessando o pipeline
+                      {t("chat.through")}
                     </div>
                   )}
               </div>
@@ -378,7 +383,7 @@ export function Chat() {
                 ref={composer}
                 rows={1}
                 value={draft}
-                placeholder="Escreva para a rede…"
+                placeholder={t("chat.placeholder")}
                 onChange={(e) => {
                   setDraft(e.target.value);
                   grow();
@@ -397,14 +402,14 @@ export function Chat() {
                   icon={<Square className="h-3.5 w-3.5" />}
                   onClick={() => abort.current?.abort()}
                 >
-                  Parar
+                  {t("chat.stop")}
                 </Button>
               ) : (
                 <Button
                   variant="primary"
                   disabled={!draft.trim()}
                   onClick={() => void send()}
-                  aria-label="Enviar"
+                  aria-label={t("chat.send")}
                   className="w-9 px-0"
                 >
                   <ArrowUp className="h-4 w-4" />
@@ -412,8 +417,7 @@ export function Chat() {
               )}
             </div>
             <p className="mt-2 text-center text-[0.7rem] text-faint">
-              Enter envia, Shift+Enter quebra a linha. Mesmo caminho de um harness:{" "}
-              <span className="font-mono">POST /v1/chat/completions</span>.
+              {t("chat.composerHint")}
             </p>
           </div>
         </div>

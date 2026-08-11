@@ -17,6 +17,8 @@ import { bytes, duration, rate, since } from "../lib/format";
 import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { Badge, Button, Empty, Progress } from "./ui";
+import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 function Row({
   icon,
@@ -55,6 +57,7 @@ function Row({
 }
 
 export function Notifications() {
+  const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -88,11 +91,11 @@ export function Notifications() {
   async function answerOffer(id: string, accept: boolean) {
     try {
       await api.post(`/api/transfer/offers/${id}/${accept ? "accept" : "reject"}`);
-      toast.success(accept ? "Transferência iniciada" : "Oferta recusada");
+      toast.success(accept ? t("notifications.transferStarted") : t("notifications.offerRejected"));
       void offers.refetch();
       void transfers.refetch();
     } catch (e) {
-      toast.fromError("A oferta não pôde ser respondida", e);
+      toast.fromError(t("notifications.offerFailed"), e);
     }
   }
 
@@ -100,7 +103,7 @@ export function Notifications() {
     <div className="relative" ref={ref}>
       <button
         onClick={() => setOpen((o) => !o)}
-        aria-label={count ? `${count} atividades em andamento` : "Nada em andamento"}
+        aria-label={t("notifications.activityAria", { count })}
         aria-expanded={open}
         className={clsx(
           "relative flex h-9 w-9 items-center justify-center rounded-lg border transition-colors duration-150",
@@ -128,7 +131,7 @@ export function Notifications() {
           >
             <div className="flex items-center justify-between border-b border-line px-4 py-3">
               <span className="font-display text-sm font-semibold text-fg">
-                Em andamento
+                {t("notifications.title")}
               </span>
               <Badge tone={count ? "iris" : "neutral"} mono>
                 {count}
@@ -137,9 +140,8 @@ export function Notifications() {
 
             <div className="max-h-[26rem] divide-y divide-line overflow-y-auto">
               {count === 0 && (
-                <Empty icon={<Inbox className="h-5 w-5" />} title="Nada acontecendo">
-                  Fatiamentos e transferências aparecem aqui enquanto rodam, mesmo depois
-                  de recarregar a página.
+                <Empty icon={<Inbox className="h-5 w-5" />} title={t("notifications.empty")}>
+                  {t("notifications.emptyDetail")}
                 </Empty>
               )}
 
@@ -147,31 +149,35 @@ export function Notifications() {
                 <Row
                   key={j.id}
                   icon={<Scissors className="h-3.5 w-3.5" />}
-                  title={j.title ?? j.step}
-                  detail={j.message || undefined}
+                  title={localizeServerText(locale, j.title ?? j.step)}
+                  detail={j.message ? localizeServerText(locale, j.message) : undefined}
                   progress={j.progress}
                   footer={
                     <span className="font-mono text-[0.7rem] text-faint">
-                      começou {since(j.started_at)}
+                      {t("notifications.started")} {since(j.started_at)}
                     </span>
                   }
                 />
               ))}
 
-              {downloads.map((t) => (
+              {downloads.map((job) => (
                 <Row
-                  key={t.id}
+                  key={job.id}
                   icon={<Download className="h-3.5 w-3.5" />}
-                  title={t.name}
-                  detail={`de ${t.from_host} · ${t.detail}`}
+                  title={job.name}
+                  detail={t("notifications.downloadDetail", { host: job.from_host, detail: job.detail })}
                   progress={
-                    t.bytes_total > 0 ? (t.bytes_done / t.bytes_total) * 100 : null
+                    job.bytes_total > 0 ? (job.bytes_done / job.bytes_total) * 100 : null
                   }
                   tone="aqua"
                   footer={
                     <span className="font-mono text-[0.7rem] text-faint">
-                      {bytes(t.bytes_done)} de {bytes(t.bytes_total)} · {rate(t.bytes_per_sec)}
-                      {t.eta_secs != null && ` · faltam ${duration(t.eta_secs)}`}
+                      {t("notifications.downloadProgress", {
+                        done: bytes(job.bytes_done),
+                        total: bytes(job.bytes_total),
+                        rate: rate(job.bytes_per_sec),
+                        remaining: job.eta_secs != null ? duration(job.eta_secs) : "",
+                      })}
                     </span>
                   }
                 />
@@ -181,7 +187,7 @@ export function Notifications() {
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
-                  title={`${o.from_host} quer enviar ${o.name}`}
+                  title={t("notifications.offerTitle", { host: o.from_host, name: o.name })}
                   detail={`${bytes(o.size_bytes)} · ${o.remote_path}`}
                   footer={
                     <>
@@ -191,7 +197,7 @@ export function Notifications() {
                         icon={<Check className="h-3.5 w-3.5" />}
                         onClick={() => answerOffer(o.id, true)}
                       >
-                        Aceitar
+                        {t("notifications.accept")}
                       </Button>
                       <Button
                         size="sm"
@@ -199,7 +205,7 @@ export function Notifications() {
                         icon={<X className="h-3.5 w-3.5" />}
                         onClick={() => answerOffer(o.id, false)}
                       >
-                        Recusar
+                        {t("notifications.reject")}
                       </Button>
                     </>
                   }
@@ -214,7 +220,7 @@ export function Notifications() {
               }}
               className="w-full border-t border-line px-4 py-2.5 text-center text-[0.8rem] text-muted transition-colors hover:bg-line/40 hover:text-fg"
             >
-              Ver todas as transferências
+              {t("notifications.allTransfers")}
             </button>
           </motion.div>
         )}

@@ -8,6 +8,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect } from "react";
 import { Button } from "./ui";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 export function Confirm({
   open,
@@ -28,6 +29,7 @@ export function Confirm({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
+  const cancelLabel = formatMessage(getActiveLocale(), "common.cancel");
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onCancel();
@@ -65,7 +67,7 @@ export function Confirm({
             </div>
             <div className="flex justify-end gap-2 border-t border-line bg-raised px-5 py-3">
               <Button variant="ghost" onClick={onCancel} disabled={busy}>
-                Cancelar
+                {cancelLabel}
               </Button>
               <Button variant={tone} loading={busy} onClick={onConfirm}>
                 {confirmLabel}

@@ -25,6 +25,7 @@ import { bytes, layerRange, num } from "../lib/format";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { DiscoveredModel, PeerCatalog, ShardSet } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 /** Peers of the same machine share a hostname; the short id disambiguates. */
 function uniqueName(peer: { hostname?: string | null; node_id: string }, all: PeerCatalog[]) {
@@ -68,23 +69,20 @@ function ShardCard({
   aloneInNetwork: boolean;
   onSend: (shard: DiscoveredModel, nodeId: string) => void;
 }) {
+  const { t } = useI18n();
   return (
     <Panel>
       <PanelHeader
-        eyebrow="Conjunto de fatias"
+        eyebrow={t("shards.set")}
         title={set.group}
         subtitle={
           set.total_layers != null
-            ? `${set.shards.length} ${set.shards.length === 1 ? "fatia" : "fatias"} de um modelo de ${num(set.total_layers)} camadas${
-                set.total_layers_inferred
-                  ? " (contagem deduzida das próprias fatias — estas não trazem o metadado rdmap2p)"
-                  : ""
-              }`
-            : `${set.shards.length} fatias`
+            ? t("shards.setDetail", { count: set.shards.length, total: num(set.total_layers) })
+            : t("shards.setUnknown", { count: set.shards.length })
         }
         actions={
           <Badge tone={set.complete ? "aqua" : "amber"}>
-            {set.complete ? "cobre o modelo" : "cobertura incompleta"}
+            {set.complete ? t("shards.complete") : t("shards.incomplete")}
           </Badge>
         }
       />
@@ -104,7 +102,7 @@ function ShardCard({
                   <span className="font-mono text-sm text-iris">
                     {s.shard_range
                       ? layerRange(s.shard_range[0], s.shard_range[1])
-                      : "faixa desconhecida"}
+                      : t("shards.unknownRange")}
                   </span>
                   <span className="truncate text-[0.82rem] text-fg">{s.name}</span>
                 </div>
@@ -118,16 +116,16 @@ function ShardCard({
               <div className="flex shrink-0 items-center gap-2">
                 {missing.length === 0 ? (
                   <span className="text-[0.78rem] text-faint">
-                    {aloneInNetwork ? "nenhuma outra máquina" : "todas já têm"}
+                    {aloneInNetwork ? t("shards.noOtherMachine") : t("shards.everyoneHas")}
                   </span>
                 ) : (
                   <Select
                     className="w-52"
                     value=""
-                    aria-label={`Enviar ${s.name} para`}
+                    aria-label={t("shards.sendAria", { name: s.name })}
                     onChange={(e) => e.target.value && onSend(s, e.target.value)}
                   >
-                    <option value="">Enviar para…</option>
+                    <option value="">{t("shards.sendTo")}</option>
                     {missing.map((p) => (
                       <option key={p.node_id} value={p.node_id}>
                         {uniqueName(p, missing)}
@@ -145,6 +143,7 @@ function ShardCard({
 }
 
 export function Shards() {
+  const { t } = useI18n();
   const catalog = useLocalCatalog();
   const cluster = useCluster();
   const clusterCatalog = useClusterCatalog();
@@ -167,11 +166,11 @@ export function Shards() {
     try {
       await api.post("/api/transfer/send", { to_node_id: nodeId, path: shard.path });
       toast.success(
-        "Oferta enviada",
-        "O outro lado precisa aceitar antes de a transferência começar.",
+        t("shards.offerSent"),
+        t("shards.offerSentDetail"),
       );
     } catch (e) {
-      toast.fromError("A oferta não saiu", e);
+      toast.fromError(t("shards.offerFailed"), e);
     } finally {
       setSending(null);
     }
@@ -180,10 +179,10 @@ export function Shards() {
   return (
     <>
       <PageHeader
-        title="Fatias nesta máquina"
+        title={t("shards.title")}
         subtitle={
           selfId
-            ? "Toda fatia local aparece aqui, mesmo quando todo mundo já tem uma cópia. O destino é que se restringe a quem ainda não tem."
+            ? t("shards.subtitle")
             : undefined
         }
         actions={
@@ -195,7 +194,7 @@ export function Shards() {
               void clusterCatalog.refetch();
             }}
           >
-            Varrer de novo
+            {t("shards.rescan")}
           </Button>
         }
       />
@@ -209,10 +208,9 @@ export function Shards() {
         <Panel>
           <Empty
             icon={<PackageOpen className="h-5 w-5" />}
-            title="Nenhuma fatia nesta máquina"
+            title={t("shards.empty")}
           >
-            Fatias aparecem aqui depois de um fatiamento local ou de uma transferência
-            aceita. Elas são gravadas na pasta de fatias configurada.
+            {t("shards.emptyDetail")}
           </Empty>
         </Panel>
       )}
@@ -235,8 +233,8 @@ export function Shards() {
           icon={<Layers className="h-3.5 w-3.5" />}
         >
           {sending
-            ? "Enviando oferta…"
-            : "Enviar cria uma oferta: o dono da outra máquina aceita, e só então os bytes saem daqui."}
+            ? t("shards.sending")
+            : t("shards.offerDetail")}
         </Footnote>
       )}
     </>

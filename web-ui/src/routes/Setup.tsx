@@ -18,6 +18,7 @@ import { api } from "../lib/api";
 import { Logo } from "../components/Logo";
 import { Button, Field, Footnote, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { useToast } from "../lib/toast";
+import { LanguageSelect, useI18n } from "../i18n/provider";
 
 type Role = "principal" | "node";
 
@@ -27,6 +28,7 @@ interface SetupKey {
 }
 
 export function Setup() {
+  const { t } = useI18n();
   const [role, setRole] = useState<Role | null>(null);
   const [key, setKey] = useState<SetupKey | null>(null);
   const [keyError, setKeyError] = useState<string | null>(null);
@@ -64,7 +66,7 @@ export function Setup() {
       setSaved(true);
       setTimeout(() => window.location.reload(), 4000);
     } catch (e) {
-      toast.fromError("A configuração não foi salva", e);
+      toast.fromError(t("setup.saveFailed"), e);
       setSaving(false);
     }
   }
@@ -76,6 +78,9 @@ export function Setup() {
   return (
     <div className="min-h-full bg-ink px-4 py-10 sm:px-6">
       <div className="mx-auto w-full max-w-2xl">
+        <div className="flex justify-end">
+          <LanguageSelect />
+        </div>
         <motion.div
           initial={{ opacity: 0, y: 12 }}
           animate={{ opacity: 1, y: 0 }}
@@ -84,11 +89,10 @@ export function Setup() {
         >
           <Logo size={48} />
           <h1 className="mt-5 font-display text-2xl font-bold tracking-tight text-fg">
-            Configuração inicial
+            {t("setup.title")}
           </h1>
           <p className="mt-2 max-w-md text-sm leading-relaxed text-muted">
-            Esta máquina ainda não faz parte de nenhuma rede. Escolha o papel dela
-            para começar.
+            {t("setup.subtitle")}
           </p>
         </motion.div>
 
@@ -106,11 +110,10 @@ export function Setup() {
                     <Check className="h-6 w-6" />
                   </div>
                   <p className="font-display text-base font-semibold text-fg">
-                    Configuração salva
+                    {t("setup.saved")}
                   </p>
                   <p className="mt-2 max-w-sm text-sm leading-relaxed text-muted">
-                    O nó está reiniciando para valer a configuração nova. Esta tela
-                    volta sozinha para o painel em alguns segundos.
+                    {t("setup.savedDetail")}
                   </p>
                   <div className="mt-5 w-40">
                     <Skeleton className="h-1.5 w-full" />
@@ -123,15 +126,15 @@ export function Setup() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <RoleCard
                   icon={<Landmark className="h-5 w-5" />}
-                  title="Principal"
-                  detail="Cria a chave do cluster e é o endereço que os outros procuram."
+                  title={t("setup.principal")}
+                  detail={t("setup.principalDetail")}
                   selected={role === "principal"}
                   onSelect={() => setRole("principal")}
                 />
                 <RoleCard
                   icon={<Server className="h-5 w-5" />}
-                  title="Nó da rede"
-                  detail="Entra numa rede que já existe, com a chave que o principal gerou."
+                  title={t("setup.node")}
+                  detail={t("setup.nodeDetail")}
                   selected={role === "node"}
                   onSelect={() => setRole("node")}
                 />
@@ -142,14 +145,14 @@ export function Setup() {
                   <Reveal key="principal">
                     <Panel>
                       <PanelHeader
-                        eyebrow="Guarde antes de seguir"
-                        title="Chave de conexão do cluster"
-                        subtitle="É a mesma string em todas as máquinas: credencial de operador e chave da API. Cada nó novo entra com ela."
+                        eyebrow={t("setup.keepBeforeContinue")}
+                        title={t("setup.connectionKey")}
+                        subtitle={t("setup.connectionKeyDetail")}
                       />
                       <div className="space-y-4 px-5 py-4">
                         {keyError ? (
                           <p className="text-sm text-rose">
-                            Não deu para gerar a chave: {keyError}
+                            {t("setup.keyFailed", { error: keyError })}
                           </p>
                         ) : !key ? (
                           <Skeleton className="h-9 w-full" />
@@ -175,14 +178,14 @@ export function Setup() {
                                   setTimeout(() => setCopied(false), 1800);
                                 }}
                               >
-                                {copied ? "Copiada" : "Copiar"}
+                                {copied ? t("setup.copied") : t("setup.copy")}
                               </Button>
                             </div>
 
                             {key.addresses.length > 0 && (
                               <div>
                                 <div className="eyebrow mb-2">
-                                  Endereços que os outros nós devem usar
+                                  {t("setup.addresses")}
                                 </div>
                                 <ul className="space-y-1">
                                   {key.addresses.map((a) => (
@@ -199,9 +202,7 @@ export function Setup() {
                           </>
                         )}
                         <Footnote icon={<KeyRound className="h-3.5 w-3.5" />}>
-                          A chave pode ser trocada depois em Configurações › Chaves de
-                          conexão, mas trocar numa máquina só derruba as outras até
-                          serem atualizadas.
+                          {t("setup.keyNote")}
                         </Footnote>
                       </div>
                     </Panel>
@@ -212,13 +213,13 @@ export function Setup() {
                   <Reveal key="node">
                     <Panel>
                       <PanelHeader
-                        title="Onde fica o principal"
-                        subtitle="Peça os dois valores a quem configurou a primeira máquina."
+                        title={t("setup.wherePrincipal")}
+                        subtitle={t("setup.wherePrincipalDetail")}
                       />
                       <div className="space-y-4 px-5 py-4">
                         <Field
-                          label="Endereço do principal"
-                          hint="Host e porta P2P, como aparece na tela dele. Ex.: 192.168.1.5:42777"
+                          label={t("setup.principalAddress")}
+                          hint={t("setup.principalAddressHint")}
                         >
                           <Input
                             value={bootstrap}
@@ -228,14 +229,14 @@ export function Setup() {
                           />
                         </Field>
                         <Field
-                          label="Chave de conexão"
-                          hint="A mesma string gerada na máquina principal."
+                          label={t("setup.connectionKey")}
+                          hint={t("setup.connectionKeyHint")}
                         >
                           <Input
                             type="password"
                             value={pastedKey}
                             spellCheck={false}
-                            placeholder="Cole a chave aqui"
+                            placeholder={t("setup.pasteKey")}
                             onChange={(e) => setPastedKey(e.target.value)}
                           />
                         </Field>
@@ -255,7 +256,7 @@ export function Setup() {
                       icon={<ArrowRight className="h-4 w-4" />}
                       onClick={() => void save()}
                     >
-                      Salvar e iniciar
+                      {t("setup.saveStart")}
                     </Button>
                   </div>
                 </Reveal>
@@ -265,8 +266,7 @@ export function Setup() {
         </AnimatePresence>
 
         <Footnote icon={<Network className="h-3.5 w-3.5" />} className="mt-8 justify-center">
-          O nó reinicia sozinho depois de salvar. Nada é enviado para fora desta
-          rede.
+          {t("setup.restartNote")}
         </Footnote>
       </div>
     </div>

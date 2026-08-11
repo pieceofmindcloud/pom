@@ -9,6 +9,8 @@ import clsx from "clsx";
 import { motion } from "framer-motion";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import type { ReactNode } from "react";
+import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 // ── Surfaces ─────────────────────────────────────────────────────────────────
 
@@ -365,7 +367,7 @@ export function Skeleton({ className }: { className?: string }) {
 }
 
 export function ErrorState({
-  title = "Não deu para carregar",
+  title,
   error,
   onRetry,
 }: {
@@ -373,17 +375,18 @@ export function ErrorState({
   error: unknown;
   onRetry?: () => void;
 }) {
+  const { t, locale } = useI18n();
   const message = error instanceof Error ? error.message : String(error);
   return (
     <div className="flex items-start gap-3 rounded-xl border border-rose/30 bg-rose/[0.07] px-4 py-3.5">
       <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-fg">{title}</p>
-        <p className="break-path mt-1 text-sm text-muted">{message}</p>
+        <p className="text-sm font-medium text-fg">{title ?? t("common.loadFailed")}</p>
+        <p className="break-path mt-1 text-sm text-muted">{localizeServerText(locale, message)}</p>
       </div>
       {onRetry && (
         <Button size="sm" variant="ghost" onClick={onRetry}>
-          Tentar de novo
+          {t("common.retry")}
         </Button>
       )}
     </div>

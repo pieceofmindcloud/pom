@@ -5,6 +5,7 @@ import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { Logo } from "./Logo";
 import { NAV, type NavSection } from "./nav";
+import { useI18n } from "../i18n/provider";
 
 function sectionHoldsPath(section: NavSection, pathname: string) {
   return (section.children ?? []).some((c) =>
@@ -14,15 +15,16 @@ function sectionHoldsPath(section: NavSection, pathname: string) {
 
 function Leaf({
   to,
-  label,
+  labelKey,
   end,
   onNavigate,
 }: {
   to: string;
-  label: string;
+  labelKey: string;
   end?: boolean;
   onNavigate?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <NavLink to={to} end={end} onClick={onNavigate}>
       {({ isActive }) => (
@@ -40,7 +42,7 @@ function Leaf({
               transition={{ type: "spring", stiffness: 520, damping: 42 }}
             />
           )}
-          <span className="relative truncate">{label}</span>
+          <span className="relative truncate">{t(labelKey)}</span>
         </span>
       )}
     </NavLink>
@@ -54,6 +56,7 @@ function Section({
   section: NavSection;
   onNavigate?: () => void;
 }) {
+  const { t } = useI18n();
   const { pathname } = useLocation();
   const holdsPath = sectionHoldsPath(section, pathname);
   // A section the operator opened stays open; one holding the current page
@@ -84,7 +87,7 @@ function Section({
             <Icon
               className={clsx("relative h-[1.05rem] w-[1.05rem] shrink-0", isActive && "text-iris")}
             />
-            <span className="relative truncate">{section.label}</span>
+            <span className="relative truncate">{t(section.labelKey)}</span>
           </span>
         )}
       </NavLink>
@@ -105,7 +108,7 @@ function Section({
         <Icon
           className={clsx("h-[1.05rem] w-[1.05rem] shrink-0", holdsPath && "text-iris")}
         />
-        <span className="flex-1 truncate text-left">{section.label}</span>
+        <span className="flex-1 truncate text-left">{t(section.labelKey)}</span>
         <ChevronDown
           className={clsx(
             "h-3.5 w-3.5 shrink-0 text-faint transition-transform duration-200 ease-swift",
@@ -143,7 +146,7 @@ export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
       </div>
       <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4">
         {NAV.map((s) => (
-          <Section key={s.label} section={s} onNavigate={onNavigate} />
+          <Section key={s.labelKey} section={s} onNavigate={onNavigate} />
         ))}
       </nav>
     </>

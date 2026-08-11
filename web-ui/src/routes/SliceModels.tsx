@@ -32,6 +32,8 @@ import { bytes, layerRange, num } from "../lib/format";
 import { useInvalidate, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isWholeModel, type SizePlan } from "../lib/types";
+import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 /** One row of the builder. Empty means "the rest of the model". */
 interface SliceInput {
@@ -51,17 +53,18 @@ const row = (gb = ""): SliceInput => ({ id: nextId++, gb });
  * `plan.ranges.map`. Refusing it here turns that into the error panel this
  * screen already knows how to show.
  */
-function asPlan(value: unknown): SizePlan {
+function asPlan(value: unknown, invalidPlanMessage: string): SizePlan {
   const plan = value as SizePlan;
   if (!plan || !Array.isArray(plan.ranges) || !Array.isArray(plan.warnings)) {
     throw new Error(
-      "O nó respondeu 200 em /api/ui/slice/plan, mas o corpo não é um plano de fatiamento.",
+      invalidPlanMessage,
     );
   }
   return plan;
 }
 
 export function SliceModels() {
+  const { t, locale } = useI18n();
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
   const toast = useToast();
@@ -99,7 +102,7 @@ export function SliceModels() {
     const timer = window.setTimeout(async () => {
       setPlanning(true);
       try {
-        setPlan(asPlan(await api.post<SizePlan>("/api/ui/slice/plan", body)));
+        setPlan(asPlan(await api.post<SizePlan>("/api/ui/slice/plan", body), t("slice.invalidPlan")));
         setPlanError(null);
       } catch (e) {
         setPlan(null);
@@ -119,6 +122,7 @@ export function SliceModels() {
           model_path: path,
           equal_parts: parts,
         }),
+        t("slice.invalidPlan"),
       );
       // The shortcut only fills the form — the sizes stay editable, which is
       // the whole point of asymmetric slicing.
@@ -126,7 +130,7 @@ export function SliceModels() {
         equal.ranges.map((r) => row((r.bytes / 1024 ** 3).toFixed(2).replace(".", ","))),
       );
     } catch (e) {
-      toast.fromError("Não deu para dividir em partes iguais", e);
+      toast.fromError(t("slice.equalFailed"), e);
     }
   }
 
@@ -142,15 +146,15 @@ export function SliceModels() {
           return Number.isFinite(gb) && gb > 0 ? { target_mb: gb * 1024 } : {};
         }),
       });
-      if (!job_id) throw new Error("O nó aceitou o pedido mas não devolveu um job.");
+      if (!job_id) throw new Error(t("slice.noJob"));
       toast.success(
-        "Fatiamento começou",
-        `Acompanhe no sino ou em Modelos fatiados. Job ${job_id.slice(0, 8)}.`,
+        t("slice.started"),
+        t("slice.startedDetail", { job: job_id.slice(0, 8) }),
       );
       invalidate();
       navigate("/fatias/andamento");
     } catch (e) {
-      toast.fromError("O fatiamento não começou", e);
+      toast.fromError(t("slice.startFailed"), e);
     } finally {
       setStarting(false);
     }
@@ -159,8 +163,8 @@ export function SliceModels() {
   return (
     <>
       <PageHeader
-        title="Fatiar modelos"
-        subtitle="Escolha o modelo, diga quanto cada fatia deve pesar e confira a faixa de camadas que sai disso antes de gravar."
+        title={t("slice.title")}
+        subtitle={t("slice.subtitle")}
       />
 
       {catalog.isLoading && <Skeleton className="h-64 w-full" />}
@@ -170,8 +174,8 @@ export function SliceModels() {
 
       {catalog.data && models.length === 0 && (
         <Panel>
-          <Empty icon={<Layers className="h-5 w-5" />} title="Nenhum modelo para fatiar">
-            Não há nenhum GGUF completo nesta máquina. Confira as pastas em Configurações.
+          <Empty icon={<Layers className="h-5 w-5" />} title={t("slice.empty")}>
+            {t("slice.emptyDetail")}
           </Empty>
         </Panel>
       )}
@@ -180,9 +184,9 @@ export function SliceModels() {
         <div className="grid gap-5 xl:grid-cols-[minmax(0,22rem)_minmax(0,1fr)]">
           <div className="space-y-5">
             <Panel>
-              <PanelHeader title="Modelo de origem" />
+              <PanelHeader title={t("slice.source")} />
               <div className="space-y-4 px-5 py-4">
-                <Field label="Arquivo nesta máquina">
+                <Field label={t("slice.file")}>
                   <Select value={path} onChange={(e) => setPath(e.target.value)}>
                     {models.map((m) => (
                       <option key={m.id} value={m.path}>
@@ -194,11 +198,11 @@ export function SliceModels() {
                 {model && (
                   <dl className="grid grid-cols-2 gap-3 text-[0.82rem]">
                     <div>
-                      <dt className="eyebrow">Tamanho</dt>
+                      <dt className="eyebrow">{t("slice.size")}</dt>
                       <dd className="font-mono text-fg">{bytes(model.size_bytes)}</dd>
                     </div>
                     <div>
-                      <dt className="eyebrow">Camadas</dt>
+                      <dt className="eyebrow">{t("slice.layers")}</dt>
                       <dd className="font-mono text-fg">
                         {plan ? num(plan.total_layers) : (model.total_layers ?? "—")}
                       </dd>
@@ -210,8 +214,8 @@ export function SliceModels() {
 
             <Panel>
               <PanelHeader
-                title="Fatias"
-                subtitle="Um alvo em GB por fatia. Deixe em branco para levar o resto do modelo."
+                title={t("slice.shards")}
+                subtitle={t("slice.shardsDetail")}
                 actions={
                   <Select
                     className="w-[8.5rem]"
@@ -219,12 +223,12 @@ export function SliceModels() {
                     onChange={(e) =>
                       e.target.value && void fillEqual(Number(e.target.value))
                     }
-                    aria-label="Dividir em partes iguais"
+                    aria-label={t("slice.equalAria")}
                   >
-                    <option value="">Dividir em…</option>
+                    <option value="">{t("slice.equalPlaceholder")}</option>
                     {[2, 3, 4, 5, 6, 8].map((n) => (
                       <option key={n} value={n}>
-                        {n} iguais
+                        {t("slice.equal", { count: n })}
                       </option>
                     ))}
                   </Select>
@@ -248,8 +252,8 @@ export function SliceModels() {
                       <Input
                         value={s.gb}
                         inputMode="decimal"
-                        placeholder="o resto"
-                        aria-label={`Tamanho da fatia ${i + 1} em GB`}
+                        placeholder={t("slice.rest")}
+                        aria-label={t("slice.sizeAria", { count: i + 1 })}
                         onChange={(e) =>
                           setSlices((list) =>
                             list.map((x) =>
@@ -264,7 +268,7 @@ export function SliceModels() {
                           setSlices((list) => list.filter((x) => x.id !== s.id))
                         }
                         disabled={slices.length <= 1}
-                        aria-label={`Remover fatia ${i + 1}`}
+                        aria-label={t("slice.removeAria", { count: i + 1 })}
                         className="rounded p-1.5 text-faint transition-colors hover:text-rose disabled:pointer-events-none disabled:opacity-30"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -279,7 +283,7 @@ export function SliceModels() {
                   onClick={() => setSlices((l) => [...l, row()])}
                   disabled={slices.length >= 64}
                 >
-                  Mais uma fatia
+                  {t("slice.add")}
                 </Button>
               </div>
             </Panel>
@@ -287,9 +291,9 @@ export function SliceModels() {
 
           <Panel className="self-start">
             <PanelHeader
-              eyebrow="Prévia"
-              title="O que sai disso"
-              subtitle="O arredondamento é sempre para camada inteira, e aparece aqui: o alvo pedido, a faixa que saiu e o peso real."
+              eyebrow={t("slice.preview")}
+              title={t("slice.result")}
+              subtitle={t("slice.previewDetail")}
               actions={
                 <Button
                   variant="primary"
@@ -298,14 +302,14 @@ export function SliceModels() {
                   loading={starting}
                   onClick={() => void start()}
                 >
-                  Fatiar agora
+                  {t("slice.now")}
                 </Button>
               }
             />
 
             {planError && (
               <div className="p-5">
-                <ErrorState title="A prévia não fechou" error={planError} />
+                <ErrorState title={t("slice.previewFailed")} error={planError} />
               </div>
             )}
 
@@ -323,7 +327,7 @@ export function SliceModels() {
                   <table className="w-full min-w-[36rem] border-collapse text-[0.82rem]">
                     <thead>
                       <tr className="border-b border-line text-left">
-                        {["#", "Alvo", "Camadas", "Faixa", "Peso real"].map((h) => (
+                        {["#", t("slice.target"), t("slice.layers"), t("slice.range"), t("slice.actualSize")].map((h) => (
                           <th key={h} className="px-5 py-2.5 font-medium text-muted">
                             {h}
                           </th>
@@ -340,7 +344,7 @@ export function SliceModels() {
                             {r.index + 1}
                           </td>
                           <td className="px-5 py-2.5 text-muted">
-                            {r.is_rest ? "o resto" : `${num(r.target_mb! / 1024, 2)} GB`}
+                            {r.is_rest ? t("slice.rest") : `${num(r.target_mb! / 1024, 2)} GB`}
                           </td>
                           <td className="px-5 py-2.5 font-mono text-fg">
                             {r.empty ? "—" : num(r.layers)}
@@ -352,7 +356,7 @@ export function SliceModels() {
                             {r.empty ? "—" : bytes(r.bytes)}
                             {r.too_small && (
                               <Badge tone="rose" className="ml-2">
-                                pequena demais
+                                {t("slice.tooSmall")}
                               </Badge>
                             )}
                           </td>
@@ -364,16 +368,16 @@ export function SliceModels() {
 
                 <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
                   <span className="text-[0.82rem] text-muted">
-                    Cobre{" "}
-                    <span className="font-mono text-fg">
-                      {plan.covered_layers}/{plan.total_layers}
-                    </span>{" "}
-                    camadas · {bytes(plan.model_bytes)} no total
+                    {t("slice.covers", {
+                      covered: plan.covered_layers,
+                      total: plan.total_layers,
+                      size: bytes(plan.model_bytes),
+                    })}
                   </span>
                   <Badge tone={plan.complete ? "aqua" : "amber"}>
-                    {plan.complete ? "modelo inteiro coberto" : "cobertura parcial"}
+                    {plan.complete ? t("slice.complete") : t("slice.partial")}
                   </Badge>
-                  {planning && <span className="text-xs text-faint">recalculando…</span>}
+                  {planning && <span className="text-xs text-faint">{t("slice.recalculating")}</span>}
                 </div>
 
                 {plan.warnings.length > 0 && (
@@ -384,7 +388,7 @@ export function SliceModels() {
                           className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${plan.blocked ? "text-rose" : "text-amber"}`}
                         />
                         <span className="text-[0.82rem] leading-relaxed text-muted">
-                          {w}
+                          {localizeServerText(locale, w)}
                         </span>
                       </li>
                     ))}
@@ -395,9 +399,7 @@ export function SliceModels() {
                   className="border-t border-line px-5 py-3"
                   icon={<Scissors className="h-3.5 w-3.5" />}
                 >
-                  A maior parte do tempo é antes de gravar: empacotar o cabeçalho passa
-                  duas vezes pelo tokenizer. A barra só vira percentual quando a escrita
-                  começa.
+                  {t("slice.footnote")}
                 </Footnote>
               </>
             )}

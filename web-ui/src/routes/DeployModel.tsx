@@ -76,6 +76,8 @@ import type {
   DeployStep,
   RuntimeParams,
 } from "../lib/types";
+import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 const rangeKey = (start: number, end: number) => `${start}-${end}`;
 
@@ -166,6 +168,7 @@ function Coverage({
   total: number | null;
   rows: DeploySelection[];
 }) {
+  const { t } = useI18n();
   if (!total || total <= 0) return null;
 
   const owner = new Array<number>(total).fill(-1);
@@ -183,14 +186,14 @@ function Coverage({
   return (
     <div className="min-w-0">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="eyebrow">Camadas cobertas pela escolha</span>
+        <span className="eyebrow">{t("deploy.coverage")}</span>
         <span className="font-mono text-[0.72rem] text-muted">
           {covered}/{total}
           {covered < total && (
-            <span className="ml-2 text-amber">faltam {total - covered}</span>
+            <span className="ml-2 text-amber">{t("deploy.missing", { count: total - covered })}</span>
           )}
           {overlapped > 0 && (
-            <span className="ml-2 text-rose">{overlapped} em duas fatias</span>
+            <span className="ml-2 text-rose">{t("deploy.overlapped", { count: overlapped })}</span>
           )}
         </span>
       </div>
@@ -200,10 +203,10 @@ function Coverage({
             key={l}
             title={
               doubled[l]
-                ? `Camada ${l} — em mais de uma fatia escolhida`
+                ? t("deploy.overlapTitle", { layer: l })
                 : o === -1
-                  ? `Camada ${l} — fora da escolha`
-                  : `Camada ${l} — ${rangeKey(rows[o].start_layer, rows[o].end_layer)}`
+                  ? t("deploy.excludedTitle", { layer: l })
+                  : t("deploy.layerTitle", { layer: l, range: rangeKey(rows[o].start_layer, rows[o].end_layer) })
             }
             className={
               doubled[l]
@@ -233,47 +236,37 @@ function Coverage({
  */
 const KNOBS: Array<{
   key: keyof RuntimeParams;
-  label: string;
-  hint?: string;
   min: number;
   max?: number;
   step?: number;
 }> = [
   {
     key: "n_gpu_layers",
-    label: "Camadas na GPU",
-    hint: "Padrão do cluster; cada máquina pode ter o seu.",
     min: 0,
   },
   {
     key: "n_ctx",
-    label: "Contexto (n_ctx)",
-    hint: "Dividido entre as requisições simultâneas.",
     min: 512,
     max: 250000,
     step: 512,
   },
   {
     key: "n_batch",
-    label: "Lote (n_batch)",
-    hint: "Teto de um pedaço de prompt.",
     min: 32,
     step: 32,
   },
-  { key: "max_new_tokens", label: "Máx. tokens novos", min: 16 },
+  { key: "max_new_tokens", min: 16 },
   {
     key: "max_sessions",
-    label: "Requisições simultâneas",
-    hint: "Divide o contexto: mais concorrência, menos janela.",
     min: 1,
     max: 16,
   },
-  { key: "prefill_chunk_tokens", label: "Tokens por pedaço", min: 32, step: 32 },
-  { key: "temperature", label: "Temperatura", min: 0, max: 2, step: 0.05 },
-  { key: "top_p", label: "top_p", min: 0, max: 1, step: 0.05 },
-  { key: "top_k", label: "top_k", min: 0 },
-  { key: "repeat_penalty", label: "Penalidade de repetição", min: 1, max: 2, step: 0.01 },
-  { key: "repeat_last_n", label: "Janela da penalidade", min: 0 },
+  { key: "prefill_chunk_tokens", min: 32, step: 32 },
+  { key: "temperature", min: 0, max: 2, step: 0.05 },
+  { key: "top_p", min: 0, max: 1, step: 0.05 },
+  { key: "top_k", min: 0 },
+  { key: "repeat_penalty", min: 1, max: 2, step: 0.01 },
+  { key: "repeat_last_n", min: 0 },
 ];
 
 function Switch({
@@ -327,10 +320,11 @@ function OrderRail({
   rows: DeploySelection[];
   labelOf: (id: string) => string;
 }) {
+  const { t } = useI18n();
   return (
     <div className="-mx-1 overflow-x-auto px-1 pb-1">
       <div className="flex items-stretch gap-1 py-1">
-        <Terminus icon={<MessageSquareText className="h-4 w-4" />} label="prompt" />
+        <Terminus icon={<MessageSquareText className="h-4 w-4" />} label={t("deploy.prompt")} />
         <Arrow />
         {rows.map((r, i) => {
           const track = trackOf(i);
@@ -343,10 +337,10 @@ function OrderRail({
                 {/* Fixed height so the layer range sits on the same baseline in
                     every card, badge or no badge. */}
                 <div className="flex h-5 items-center gap-1.5">
-                  <span className="font-mono text-[0.7rem] text-faint">{i + 1}º</span>
+                  <span className="font-mono text-[0.7rem] text-faint">{t("deploy.orderPosition", { count: i + 1 })}</span>
                   {i === 0 && (
                     <Badge tone="iris" className="px-1.5 py-0 text-[0.62rem] leading-4">
-                      processa o prompt
+                      {t("deploy.processesPrompt")}
                     </Badge>
                   )}
                 </div>
@@ -356,7 +350,7 @@ function OrderRail({
                 <div className="flex min-w-0 items-center gap-1.5 border-t border-line pt-2">
                   <ServerCog className="h-3.5 w-3.5 shrink-0 text-faint" />
                   <span className="truncate text-[0.78rem] text-fg">
-                    {r.target_node_id ? labelOf(r.target_node_id) : "sem máquina"}
+                    {r.target_node_id ? labelOf(r.target_node_id) : t("deploy.noMachine")}
                   </span>
                 </div>
               </div>
@@ -365,13 +359,14 @@ function OrderRail({
           );
         })}
         <Arrow />
-        <Terminus icon={<Sparkles className="h-4 w-4" />} label="resposta" />
+        <Terminus icon={<Sparkles className="h-4 w-4" />} label={t("deploy.response")} />
       </div>
     </div>
   );
 }
 
 export function DeployModel() {
+  const { t, locale } = useI18n();
   const cluster = useClusterCatalog();
   const [group, setGroup] = useState("");
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -555,12 +550,12 @@ export function DeployModel() {
       });
       setJobId(started.job_id);
       toast.success(
-        "Implantação começou",
-        "Acompanhe abaixo ou no sino: o progresso vem dos nós, então recarregar não perde nada.",
+        t("deploy.started"),
+        t("deploy.startedDetail"),
       );
       invalidate();
     } catch (e) {
-      toast.fromError("A implantação não começou", e);
+      toast.fromError(t("deploy.startFailed"), e);
     } finally {
       setRunning(false);
     }
@@ -599,8 +594,8 @@ export function DeployModel() {
   return (
     <>
       <PageHeader
-        title="Implantar um modelo fatiado"
-        subtitle="Pegue um conjunto de fatias que já existe e coloque-o para atender na rede. O nó sugere a distribuição; daqui em diante ela é sua."
+        title={t("deploy.title")}
+        subtitle={t("deploy.subtitle")}
       />
 
       {cluster.isLoading && <Skeleton className="h-40 w-full" />}
@@ -610,9 +605,8 @@ export function DeployModel() {
 
       {cluster.data && groups.length === 0 && (
         <Panel>
-          <Empty icon={<Layers className="h-5 w-5" />} title="Nenhum conjunto de fatias na rede">
-            Nenhuma máquina do cluster tem fatias. Fatie um modelo em Modelos ›
-            Fatiar, ou receba as fatias de outra máquina.
+          <Empty icon={<Layers className="h-5 w-5" />} title={t("deploy.empty")}>
+            {t("deploy.emptyDetail")}
           </Empty>
         </Panel>
       )}
@@ -621,8 +615,8 @@ export function DeployModel() {
         <div className="space-y-5">
           <Panel>
             <PanelHeader
-              title="Modelo a implantar"
-              subtitle="Conjuntos de fatias que alguma máquina do cluster já tem."
+              title={t("deploy.model")}
+              subtitle={t("deploy.modelDetail")}
               actions={
                 (selection || params) && (
                   <Button
@@ -634,14 +628,14 @@ export function DeployModel() {
                       setDrafts({});
                     }}
                   >
-                    Voltar ao plano do nó
+                    {t("deploy.restore")}
                   </Button>
                 )
               }
             />
             <div className="px-5 py-4">
               <Select
-                aria-label="Conjunto de fatias"
+                aria-label={t("deploy.groupAria")}
                 name="conjunto-de-fatias"
                 value={chosen}
                 onChange={(e) => {
@@ -680,7 +674,7 @@ export function DeployModel() {
                     <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-fg">
-                        Não dá para implantar deste jeito
+                        {t("deploy.blocked")}
                       </p>
                       <p className="mt-1 text-sm text-muted">{p.blocked}</p>
                     </div>
@@ -692,15 +686,13 @@ export function DeployModel() {
                     <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-fg">
-                        As fatias escolhidas não cobrem o modelo inteiro
+                        {t("deploy.incomplete")}
                       </p>
                       <p className="mt-1 text-sm text-muted">
                         {p.missing
                           .map(([a, b]) => (a === b ? `L${a}` : `L${a}–${b}`))
                           .join(", ")}{" "}
-                        {p.missing.length === 1 ? "ficou de fora" : "ficaram de fora"}. Dá
-                        para subir assim, mas o planejador recusa pipeline com buraco — a
-                        rede não vai atender até a cobertura fechar.
+                        {t("deploy.excludedLayers", { count: p.missing.length })}. {t("deploy.incompleteDetail")}
                       </p>
                     </div>
                   </div>
@@ -715,11 +707,10 @@ export function DeployModel() {
                     <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-fg">
-                        As fatias não dizem de que tamanho é o modelo
+                        {t("deploy.inferredTitle")}
                       </p>
                       <p className="mt-1 text-sm text-muted">
-                        {p.warnings.find((w) => w.includes("deduzido")) ??
-                          `O total foi deduzido da cobertura das fatias: ${p.total_layers} camadas.`}
+                        {t("deploy.inferredDetail", { count: p.total_layers ?? 0 })}
                       </p>
                     </div>
                   </div>
@@ -734,20 +725,20 @@ export function DeployModel() {
                         className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3"
                       >
                         <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
-                        <p className="min-w-0 text-sm text-muted">{w}</p>
+                        <p className="min-w-0 text-sm text-muted">{localizeServerText(locale, w)}</p>
                       </div>
                     ))}
 
                 <Panel>
                   <PanelHeader
-                    eyebrow={p.auto && !selection ? "Sugestão do nó" : "Sua escolha"}
-                    title="A ordem em que a requisição percorre as máquinas"
-                    subtitle="O pipeline roda em ordem de camada, então quem fica com a camada 0 recebe o prompt inteiro de cada requisição. Trocar a ordem é trocar quem fica com qual faixa."
+                    eyebrow={p.auto && !selection ? t("deploy.orderSuggestion") : t("deploy.yourChoice")}
+                    title={t("deploy.orderTitle")}
+                    subtitle={t("deploy.orderDetail")}
                   />
                   <div className="px-5 py-4">
                     {rows.length === 0 ? (
                       <p className="py-6 text-center text-sm text-muted">
-                        Nenhuma fatia escolhida — marque ao menos uma na tabela abaixo.
+                        {t("deploy.noSelection")}
                       </p>
                     ) : (
                       <OrderRail rows={rows} labelOf={labelOf} />
@@ -760,8 +751,8 @@ export function DeployModel() {
 
                 <Panel>
                   <PanelHeader
-                    title="Quais fatias entram, e em qual máquina"
-                    subtitle="Todas as faixas que existem no cluster, inclusive as de fatiamentos diferentes. Marque as que devem subir e escolha o destino de cada uma."
+                    title={t("deploy.shardSelection")}
+                    subtitle={t("deploy.allRanges")}
                     actions={
                       <Button
                         variant="primary"
@@ -770,7 +761,7 @@ export function DeployModel() {
                         disabled={!canDeploy}
                         onClick={() => (p.complete ? void deploy() : setAsked(true))}
                       >
-                        Implantar
+                        {t("deploy.deploy")}
                       </Button>
                     }
                   />
@@ -779,8 +770,8 @@ export function DeployModel() {
                     <Switch
                       checked={effMerge}
                       onChange={(v) => setMerge(v)}
-                      label="Juntar fatias vizinhas na mesma máquina"
-                      hint="Duas faixas adjacentes podem ficar na mesma máquina: elas são fundidas num arquivo só antes de subir. Sem isto, cada máquina continua servindo uma faixa."
+                      label={t("deploy.merge")}
+                      hint={t("deploy.mergeHint")}
                     />
                   </div>
 
@@ -789,13 +780,13 @@ export function DeployModel() {
                       <thead>
                         <tr className="border-b border-line text-left">
                           {[
-                            "Entra",
-                            "Camadas",
-                            "Fatia",
-                            "Tamanho",
-                            "Vai para",
-                            "Ordem",
-                            "O que acontece",
+                            t("deploy.included"),
+                            t("deploy.layers"),
+                            t("deploy.shard"),
+                            t("deploy.size"),
+                            t("deploy.destination"),
+                            t("deploy.order"),
+                            t("deploy.happens"),
                           ].map((h) => (
                             <th key={h} className="px-5 py-2.5 text-xs font-medium text-faint">
                               {h}
@@ -829,7 +820,7 @@ export function DeployModel() {
                               <td className="py-3 pl-5 pr-2">
                                 <Tick
                                   on={on}
-                                  label={`Incluir ${layerRange(c.start_layer, c.end_layer)}`}
+                                  label={t("deploy.include", { range: layerRange(c.start_layer, c.end_layer) })}
                                   onToggle={() => toggle(c.start_layer, c.end_layer)}
                                 />
                               </td>
@@ -866,20 +857,20 @@ export function DeployModel() {
                               <td className="w-[18rem] px-5 py-3">
                                 {on ? (
                                   <Select
-                                    aria-label={`Máquina para ${layerRange(c.start_layer, c.end_layer)}`}
+                                    aria-label={t("deploy.machineFor", { range: layerRange(c.start_layer, c.end_layer) })}
                                     name={`destino-${rangeKey(c.start_layer, c.end_layer)}`}
                                     className="h-8 text-[0.82rem]"
                                     value={row?.target_node_id ?? ""}
                                     onChange={(e) => assign(at, e.target.value)}
                                   >
-                                    <option value="">— escolher máquina —</option>
+                                    <option value="">{t("deploy.chooseMachine")}</option>
                                     {p.machines.map((m) => (
                                       <option key={m.node_id} value={m.node_id}>
                                         {/* The cost of the choice is spelled out
                                             in the last column; here it only has
                                             to say whether it means a copy. */}
                                         {m.label}
-                                        {c.holders.includes(m.node_id) ? " · já tem" : " · copiar"}
+                                        {c.holders.includes(m.node_id) ? t("deploy.alreadyHas") : t("deploy.copy")}
                                       </option>
                                     ))}
                                   </Select>
@@ -892,7 +883,7 @@ export function DeployModel() {
                                   <span className="flex items-center gap-1">
                                     <button
                                       type="button"
-                                      aria-label={`Adiantar ${layerRange(c.start_layer, c.end_layer)} na ordem`}
+                                      aria-label={t("deploy.moveUp", { range: layerRange(c.start_layer, c.end_layer) })}
                                       disabled={at === 0}
                                       onClick={() => move(at, -1)}
                                       className="flex h-7 w-7 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-line-strong hover:text-fg disabled:pointer-events-none disabled:opacity-35"
@@ -901,7 +892,7 @@ export function DeployModel() {
                                     </button>
                                     <button
                                       type="button"
-                                      aria-label={`Atrasar ${layerRange(c.start_layer, c.end_layer)} na ordem`}
+                                      aria-label={t("deploy.moveDown", { range: layerRange(c.start_layer, c.end_layer) })}
                                       disabled={at === rows.length - 1}
                                       onClick={() => move(at, 1)}
                                       className="flex h-7 w-7 items-center justify-center rounded-md border border-line text-muted transition-colors hover:border-line-strong hover:text-fg disabled:pointer-events-none disabled:opacity-35"
@@ -917,13 +908,13 @@ export function DeployModel() {
                                 {!on ? (
                                   <span className="text-[0.8rem] text-faint">
                                     {c.holders.length === 0
-                                      ? "em nenhuma máquina"
+                                      ? t("deploy.noneMachine")
                                       : c.holders.length > 2
-                                        ? `em ${c.holders.length} máquinas`
-                                        : `em ${c.holders.map(labelOf).join(", ")}`}
+                                        ? t("deploy.heldOnMachines", { count: c.holders.length })
+                                        : t("deploy.heldOn", { machines: c.holders.map(labelOf).join(", ") })}
                                   </span>
                                 ) : !step ? (
-                                  <span className="text-[0.8rem] text-faint">conferindo…</span>
+                                  <span className="text-[0.8rem] text-faint">{t("deploy.checking")}</span>
                                 ) : step.problem ? (
                                   <span className="flex items-start gap-1.5 text-[0.8rem] text-rose">
                                     <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -932,22 +923,24 @@ export function DeployModel() {
                                 ) : step.merged ? (
                                   part?.ready ? (
                                     <span className="text-[0.8rem] text-muted">
-                                      já está lá · funde em {layerRange(step.start_layer, step.end_layer)}
+                                      {t("deploy.mergedThere", { range: layerRange(step.start_layer, step.end_layer) })}
                                     </span>
                                   ) : (
                                     <span className="flex items-start gap-1.5 text-[0.8rem] text-amber">
                                       <Download className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                      copiar de {part?.source_host ?? "—"} e fundir em{" "}
-                                      {layerRange(step.start_layer, step.end_layer)}
+                                      {t("deploy.copyAndMerge", {
+                                        host: part?.source_host ?? "—",
+                                        range: layerRange(step.start_layer, step.end_layer),
+                                      })}
                                       {step.note ? ` · ${step.note}` : ""}
                                     </span>
                                   )
                                 ) : step.ready ? (
-                                  <span className="text-[0.8rem] text-muted">já está lá</span>
+                                  <span className="text-[0.8rem] text-muted">{t("deploy.alreadyThere")}</span>
                                 ) : (
                                   <span className="flex items-start gap-1.5 text-[0.8rem] text-amber">
                                     <Download className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                                    copiar de {step.source_host ?? "—"}
+                                    {t("deploy.copyFrom", { host: step.source_host ?? "—" })}
                                     {step.note ? ` · ${step.note}` : ""}
                                   </span>
                                 )}
@@ -961,27 +954,25 @@ export function DeployModel() {
 
                   <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
                     <span className="text-[0.82rem] text-muted">
-                      {rows.length} de {p.available.length}{" "}
-                      {p.available.length === 1 ? "fatia" : "fatias"} ·{" "}
+                      {t("deploy.selectedShards", { count: rows.length, total: p.available.length })} ·{" "}
                       {p.total_layers === null ? (
                         <span className="text-rose">
-                          tamanho do modelo desconhecido
+                          {t("deploy.unknownModelSize")}
                         </span>
                       ) : (
                         <>
-                          {p.total_layers} camadas no modelo
+                          {t("deploy.modelLayers", { count: p.total_layers })}
                           {p.total_layers_inferred && (
-                            <span className="text-amber"> (deduzidas)</span>
+                            <span className="text-amber"> {t("deploy.inferred")}</span>
                           )}
                         </>
                       )}
                     </span>
                     {copies.length === 0 ? (
-                      <Badge tone="aqua">nada a copiar</Badge>
+                      <Badge tone="aqua">{t("deploy.nothingToCopy")}</Badge>
                     ) : (
                       <Badge tone="amber">
-                        {copies.length} {copies.length === 1 ? "cópia" : "cópias"} ·{" "}
-                        {bytes(copyBytes)} pela rede
+                        {t("deploy.copySummary", { count: copies.length, size: bytes(copyBytes) })}
                       </Badge>
                     )}
                   </div>
@@ -990,8 +981,8 @@ export function DeployModel() {
                 {job && (
                   <Panel>
                     <PanelHeader
-                      eyebrow="Em andamento"
-                      title={job.title ?? "Implantação"}
+                      eyebrow={t("deploy.progress")}
+                      title={job.title ?? t("deploy.deployment")}
                       subtitle={job.message}
                     />
                     <div className="space-y-2.5 px-5 py-4">
@@ -1017,9 +1008,12 @@ export function DeployModel() {
 
                 <Panel>
                   <PanelHeader
-                    eyebrow="Execução"
-                    title="Ajustes avançados"
-                    subtitle={`Cada requisição aceita até ${num(p.prompt_tokens)} tokens de prompt, em pedaços de ${num(p.chunk_tokens)}. Passar disso é recusado antes de chegar ao llama.cpp.`}
+                    eyebrow={t("deploy.execution")}
+                    title={t("deploy.advanced")}
+                    subtitle={t("deploy.advancedDetail", {
+                      prompt: num(p.prompt_tokens),
+                      chunk: num(p.chunk_tokens),
+                    })}
                     actions={
                       <Button
                         size="sm"
@@ -1032,7 +1026,7 @@ export function DeployModel() {
                         }
                         onClick={() => setAdvanced((v) => !v)}
                       >
-                        {advanced ? "Esconder" : "Mostrar"}
+                        {advanced ? t("deploy.hide") : t("deploy.show")}
                       </Button>
                     }
                   />
@@ -1040,7 +1034,7 @@ export function DeployModel() {
                     <div className="space-y-5 px-5 py-4">
                       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
                         {KNOBS.map((k) => (
-                          <Field key={k.key} label={k.label} hint={k.hint}>
+                          <Field key={k.key} label={t("deploy.knob." + k.key)}>
                             <Input
                               type="number"
                               name={k.key}
@@ -1064,20 +1058,20 @@ export function DeployModel() {
                         <Switch
                           checked={eff.offload_kqv ?? true}
                           onChange={(v) => setParams({ ...eff, offload_kqv: v })}
-                          label="KV cache na GPU"
-                          hint="Desligue para guardar o KV cache na RAM e priorizar contexto grande em hardware com RAM suficiente."
+                          label={t("deploy.offloadKqv")}
+                          hint={t("deploy.offloadKqvHint")}
                         />
                         <Switch
                           checked={eff.no_thinking ?? true}
                           onChange={(v) => setParams({ ...eff, no_thinking: v })}
-                          label="Desligar o bloco de raciocínio"
-                          hint="O modelo responde direto, sem o preâmbulo entre tags."
+                          label={t("deploy.noThinking")}
+                          hint={t("deploy.noThinkingHint")}
                         />
                         <Switch
                           checked={eff.no_embeddings ?? false}
                           onChange={(v) => setParams({ ...eff, no_embeddings: v })}
-                          label="Forçar sem embeddings (todos os peers)"
-                          hint="Normalmente é automático — só o último peer dispensa. Ligar aqui impede o primeiro de extrair o estado oculto, e o pipeline para de funcionar."
+                          label={t("deploy.noEmbeddings")}
+                          hint={t("deploy.noEmbeddingsHint")}
                         />
                       </div>
                     </div>
@@ -1086,21 +1080,21 @@ export function DeployModel() {
 
                 <Panel>
                   <PanelHeader
-                    eyebrow="Máquinas"
-                    title="O que cada uma tem e quanto lhe sobra"
-                    subtitle="A memória livre é o que a fatia precisa caber: VRAM onde há placa dedicada, RAM disponível no resto. A última coluna é quantas camadas esta máquina põe na GPU — em branco, vale o padrão do cluster."
+                    eyebrow={t("deploy.machines")}
+                    title={t("deploy.machineTitle")}
+                    subtitle={t("deploy.machineDetail")}
                   />
                   <ScrollX>
                     <table className="w-full min-w-[40rem] text-sm">
                       <thead>
                         <tr className="border-b border-line text-left">
                           {[
-                            "Máquina",
-                            "Memória livre",
-                            "Disco livre",
-                            "Fatias que já tem",
-                            "Nesta implantação",
-                            "GPU nesta máquina",
+                            t("deploy.machine"),
+                            t("deploy.freeMemory"),
+                            t("deploy.freeDisk"),
+                            t("deploy.heldShards"),
+                            t("deploy.thisDeployment"),
+                            t("deploy.gpuHere"),
                           ].map(
                             (h) => (
                               <th key={h} className="px-5 py-2.5 text-xs font-medium text-faint">
@@ -1136,7 +1130,7 @@ export function DeployModel() {
                               </td>
                               <td className="px-5 py-3 font-mono text-[0.8rem] text-muted">
                                 {m.holds.length === 0
-                                  ? "nenhuma"
+                                  ? t("deploy.none")
                                   : m.holds.map(([a, b]) => layerRange(a, b)).join(" · ")}
                               </td>
                               <td className="whitespace-nowrap px-5 py-3">
@@ -1150,7 +1144,7 @@ export function DeployModel() {
                                     )}
                                   </Badge>
                                 ) : (
-                                  <span className="text-[0.8rem] text-faint">fica de fora</span>
+                                  <span className="text-[0.8rem] text-faint">{t("deploy.excluded")}</span>
                                 )}
                               </td>
                               {/* Offload is the one setting a machine gets to
@@ -1161,7 +1155,7 @@ export function DeployModel() {
                                   <Input
                                     type="number"
                                     min={0}
-                                    aria-label={`Camadas na GPU em ${m.label}`}
+                                    aria-label={t("deploy.gpuAria", { machine: m.label })}
                                     name={`gpu-${m.node_id}`}
                                     className="h-8 w-24 text-[0.82rem]"
                                     placeholder={String(eff.n_gpu_layers)}
@@ -1188,9 +1182,7 @@ export function DeployModel() {
                 </Panel>
 
                 <Footnote icon={<ArrowRight className="h-3.5 w-3.5" />}>
-                  As cópias usam o mesmo transporte da tela de Transferências, com
-                  retomada e conferência de MD5. O progresso fica no sino e vem dos
-                  nós, então fechar esta aba não interrompe nada.
+                  {t("deploy.transferNote")}
                 </Footnote>
               </motion.div>
             )}
@@ -1200,18 +1192,16 @@ export function DeployModel() {
 
       <Confirm
         open={asked}
-        title="Subir com camadas de fora?"
+        title={t("deploy.partialTitle")}
         description={
           <>
             {p?.missing
               .map(([a, b]) => (a === b ? `L${a}` : `L${a}–${b}`))
               .join(", ")}{" "}
-            não {(p?.missing.length ?? 0) === 1 ? "está" : "estão"} em nenhuma fatia
-            escolhida. Os nós sobem e as fatias são copiadas, mas a rede só volta a
-            responder quando a cobertura fechar.
+            {t("deploy.partialConfirm")}
           </>
         }
-        confirmLabel="Implantar assim"
+        confirmLabel={t("deploy.deploy")}
         busy={running}
         onConfirm={() => void deploy()}
         onCancel={() => setAsked(false)}

@@ -13,6 +13,7 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { RotateCw, Unplug } from "lucide-react";
 import { Button, Empty, Panel } from "./ui";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 interface Props {
   /** Changing this clears the error — the route path, in practice. */
@@ -45,6 +46,7 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
 
   render() {
     const { error } = this.state;
+    const t = (key: string) => formatMessage(getActiveLocale(), key);
     if (!error) return this.props.children;
     if (this.props.fallback !== undefined) return this.props.fallback;
 
@@ -52,19 +54,18 @@ export class ErrorBoundary extends Component<Props, { error: Error | null }> {
       <Panel>
         <Empty
           icon={<Unplug className="h-5 w-5" />}
-          title="Esta tela parou de funcionar"
+          title={t("errorBoundary.title")}
           action={
             <Button
               variant="primary"
               icon={<RotateCw className="h-3.5 w-3.5" />}
               onClick={() => this.setState({ error: null })}
             >
-              Tentar montar de novo
+              {t("errorBoundary.retry")}
             </Button>
           }
         >
-          O resto da interface continua de pé: use o menu para ir a outra tela. Se
-          insistir, o detalhe abaixo é o que o navegador registrou.
+          {t("errorBoundary.detail")}
         </Empty>
         <pre className="overflow-x-auto border-t border-line px-5 py-3 font-mono text-xs leading-relaxed text-faint">
           {error.message || String(error)}

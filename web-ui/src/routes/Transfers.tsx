@@ -16,8 +16,10 @@ import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
 import { useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useI18n } from "../i18n/provider";
 
 export function Transfers() {
+  const { t } = useI18n();
   const transfers = useTransfers();
   const offers = useOffers();
   const toast = useToast();
@@ -30,23 +32,23 @@ export function Transfers() {
   async function answer(id: string, accept: boolean) {
     try {
       await api.post(`/api/transfer/offers/${id}/${accept ? "accept" : "reject"}`);
-      toast.success(accept ? "Transferência iniciada" : "Oferta recusada");
+      toast.success(accept ? t("transfers.offerAccepted") : t("transfers.offerRejected"));
       void offers.refetch();
       void transfers.refetch();
     } catch (e) {
-      toast.fromError("A oferta não pôde ser respondida", e);
+      toast.fromError(t("transfers.offerFailed"), e);
     }
   }
 
   return (
     <>
       <PageHeader
-        title="Transferências"
-        subtitle="Uma fatia de 10 GB leva minutos no enlace real, então tudo aqui retoma de onde parou e confere o MD5 antes de o arquivo tomar o nome final."
+        title={t("transfers.title")}
+        subtitle={t("transfers.subtitle")}
         actions={
           <Link to="/transferencias/enviar">
             <Button variant="primary" icon={<Upload className="h-3.5 w-3.5" />}>
-              Enviar um arquivo
+              {t("transfers.sendFile")}
             </Button>
           </Link>
         }
@@ -63,9 +65,9 @@ export function Transfers() {
         {waiting.length > 0 && (
           <Panel>
             <PanelHeader
-              eyebrow="Precisa da sua resposta"
-              title={`${waiting.length} ${waiting.length === 1 ? "oferta" : "ofertas"} de outra máquina`}
-              subtitle="Nada é gravado no disco desta máquina antes de você aceitar."
+              eyebrow={t("transfers.replyNeeded")}
+              title={t("transfers.offersFromMachine", { count: waiting.length })}
+              subtitle={t("transfers.offerDetail")}
             />
             <div className="divide-y divide-line">
               {waiting.map((o) => (
@@ -83,7 +85,7 @@ export function Transfers() {
                       )}
                     </div>
                     <p className="break-path mt-0.5 text-[0.78rem] text-muted">
-                      de <span className="text-fg">{o.from_host}</span> · {bytes(o.size_bytes)}{" "}
+                      {t("transfers.from")} <span className="text-fg">{o.from_host}</span> · {bytes(o.size_bytes)}{" "}
                       · <span className="font-mono text-faint">{o.remote_path}</span>
                     </p>
                   </div>
@@ -94,7 +96,7 @@ export function Transfers() {
                       icon={<Check className="h-3.5 w-3.5" />}
                       onClick={() => void answer(o.id, true)}
                     >
-                      Aceitar
+                      {t("transfers.accept")}
                     </Button>
                     <Button
                       variant="ghost"
@@ -102,7 +104,7 @@ export function Transfers() {
                       icon={<X className="h-3.5 w-3.5" />}
                       onClick={() => void answer(o.id, false)}
                     >
-                      Recusar
+                      {t("transfers.reject")}
                     </Button>
                   </div>
                 </div>
@@ -118,10 +120,10 @@ export function Transfers() {
             <PanelHeader
               title={
                 active.length
-                  ? `${active.length} ${active.length === 1 ? "transferência" : "transferências"} em andamento`
-                  : "Nada em andamento"
+                  ? t("transfers.activeTitle", { count: active.length })
+                  : t("transfers.nothingRunning")
               }
-              subtitle="O andamento vem do nó, então recarregar a página não perde a barra."
+              subtitle={t("transfers.progressDetail")}
             />
           )}
           {transfers.isLoading ? (
@@ -129,30 +131,29 @@ export function Transfers() {
               <Skeleton className="h-12 w-full" />
             </div>
           ) : active.length === 0 ? (
-            <Empty icon={<Download className="h-5 w-5" />} title="Nada em andamento">
-              Os arquivos recebidos vão para a subpasta <span className="font-mono">recebidos/</span>{" "}
-              da pasta de fatias configurada.
+            <Empty icon={<Download className="h-5 w-5" />} title={t("transfers.nothingRunning")}>
+              {t("transfers.receivedDetail")}
             </Empty>
           ) : (
             <div className="divide-y divide-line">
-              {active.map((t) => (
-                <div key={t.id} className="px-5 py-4">
+              {active.map((job) => (
+                <div key={job.id} className="px-5 py-4">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                    <span className="font-medium text-fg">{t.name}</span>
+                    <span className="font-medium text-fg">{job.name}</span>
                     <span className="font-mono text-[0.78rem] text-muted">
-                      {bytes(t.bytes_done)} de {bytes(t.bytes_total)}
+                      {bytes(job.bytes_done)} de {bytes(job.bytes_total)}
                     </span>
                   </div>
                   <Progress
                     className="mt-2.5"
                     tone="aqua"
-                    value={t.bytes_total > 0 ? (t.bytes_done / t.bytes_total) * 100 : null}
+                    value={job.bytes_total > 0 ? (job.bytes_done / job.bytes_total) * 100 : null}
                   />
                   <p className="mt-2 flex flex-wrap gap-x-4 font-mono text-[0.7rem] text-faint">
-                    <span>de {t.from_host}</span>
-                    <span>{rate(t.bytes_per_sec)}</span>
-                    {t.eta_secs != null && <span>faltam {duration(t.eta_secs)}</span>}
-                    <span>{t.detail}</span>
+                    <span>{t("transfers.from")} {job.from_host}</span>
+                    <span>{rate(job.bytes_per_sec)}</span>
+                    {job.eta_secs != null && <span>{t("transfers.remaining")} {duration(job.eta_secs)}</span>}
+                    <span>{job.detail}</span>
                   </p>
                 </div>
               ))}
@@ -162,20 +163,20 @@ export function Transfers() {
 
         {finished.length > 0 && (
           <Panel>
-            <PanelHeader title="Terminadas" />
+            <PanelHeader title={t("transfers.finished")} />
             <div className="divide-y divide-line">
-              {finished.map((t) => (
+              {finished.map((job) => (
                 <div
-                  key={t.id}
+                  key={job.id}
                   className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-3"
                 >
-                  <span className="min-w-0 truncate text-[0.88rem] text-fg">{t.name}</span>
+                  <span className="min-w-0 truncate text-[0.88rem] text-fg">{job.name}</span>
                   <div className="flex shrink-0 items-center gap-3">
                     <span className="font-mono text-[0.75rem] text-faint">
-                      {bytes(t.bytes_total)}
+                      {bytes(job.bytes_total)}
                     </span>
-                    <Badge tone={t.state === "done" ? "aqua" : "rose"}>
-                      {t.state === "done" ? "concluída" : t.detail || "falhou"}
+                    <Badge tone={job.state === "done" ? "aqua" : "rose"}>
+                      {job.state === "done" ? t("transfers.completed") : job.detail || t("transfers.failed")}
                     </Badge>
                   </div>
                 </div>
@@ -190,7 +191,7 @@ export function Transfers() {
           className="mt-4"
           icon={<Inbox className="h-3.5 w-3.5" />}
         >
-          Ofertas recebidas também aparecem no sino, no topo da tela.
+          {t("transfers.bellNote")}
         </Footnote>
       )}
     </>

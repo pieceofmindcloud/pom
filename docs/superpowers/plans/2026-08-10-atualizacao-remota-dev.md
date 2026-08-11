@@ -68,13 +68,15 @@ mod tests {
         );
     }
 
-    /// Sem ninguém ter chamado remember_argv (testes, binários auxiliares) a
-    /// resposta é uma lista vazia, não um panic.
+    /// Um nó subido sem argumento nenhum volta sem argumento nenhum — e a
+    /// lista vazia não pode virar um argumento vazio na linha de comando.
     #[test]
-    fn sem_argv_lembrado_a_lista_e_vazia() {
-        // O OnceLock já pode ter sido preenchido pelo teste acima; o contrato
-        // testado aqui é só que a função nunca entra em panic.
-        let _ = original_argv();
+    fn argv_so_com_o_programa_nao_gera_argumento() {
+        assert!(argv_rest(vec!["./target/release/rdma-p2p".to_string()]).is_empty());
+        assert_eq!(
+            argv_rest(vec!["rdma-p2p".into(), "--no-discovery".into()]),
+            vec!["--no-discovery".to_string()]
+        );
     }
 }
 ```
@@ -105,8 +107,13 @@ static ARGV: OnceLock<Vec<String>> = OnceLock::new();
 
 /// Guarda o `argv` do arranque. Chamada uma vez, no início de `main`.
 pub fn remember_argv(args: Vec<String>) {
-    let rest = args.into_iter().skip(1).collect();
-    let _ = ARGV.set(rest);
+    let _ = ARGV.set(argv_rest(args));
+}
+
+/// Os argumentos sem o `argv[0]`. Separada de `remember_argv` porque o
+/// `OnceLock` só aceita um valor por processo e um teste não pode desfazê-lo.
+fn argv_rest(args: Vec<String>) -> Vec<String> {
+    args.into_iter().skip(1).collect()
 }
 
 /// Os argumentos do arranque, sem o `argv[0]`.

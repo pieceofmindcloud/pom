@@ -82,17 +82,50 @@ fn build_args(features: Option<&str>) -> Vec<String> {
 /// URLs de gateway dos peers que rodam na mesma máquina que este nó.
 ///
 /// A entrada é `(hostname, addr, gateway_port)` de cada peer vivo. Peer sem
-/// porta de gateway fica de fora: não há como pedir nada a ele.
-fn sibling_urls(my_hostname: &str, peers: &[(&str, &str, Option<u16>)]) -> Vec<String> {
+/// porta de gateway fica de fora: não há como pedir nada a ele. Hostname
+/// repetido não basta — duas VMs chamadas `ubuntu` não são a mesma máquina —
+/// então `same_host` também precisa aprovar o endereço; quem decide a lógica
+/// de rede fica de fora desta função para ela continuar testável sem sockets.
+///
+/// A URL é montada com `network::ip_host`, a mesma função por trás de
+/// `PeerInfo::gateway_url()` — não uma reimplementação com `rsplit_once`, que
+/// quebra em IPv6 sem colchetes.
+fn sibling_urls(
+    my_hostname: &str,
+    peers: &[(&str, &str, Option<u16>)],
+    same_host: impl Fn(&str) -> bool,
+) -> Vec<String> {
     peers
         .iter()
         .filter(|(h, _, _)| *h == my_hostname)
+        .filter(|(_, addr, _)| {
+            // `0.0.0.0`/`::` é o sentinela "endereço ainda não reescrito"
+            // (`Network::announce_addr`) de um peer chegado por libp2p; sem
+            // este descarte explícito o POST iria para este próprio nó, que
+            // se reiniciaria antes de o job ser marcado como `done`.
+            let host = crate::network::ip_host(addr);
+            host != "0.0.0.0" && host != "::" && host != "[::]" && same_host(addr)
+        })
         .filter_map(|(_, addr, port)| {
             let port = (*port)?;
-            let host = addr.rsplit_once(':').map(|(h, _)| h)?;
-            Some(format!("http://{host}:{port}"))
+            Some(format!("http://{}:{}", crate::network::ip_host(addr), port))
         })
         .collect()
+}
+
+/// Este endereço pertence à máquina onde este processo está rodando?
+///
+/// Conecta um socket UDP (sem tráfego, só fixa a rota) ao IP do peer e
+/// compara o endereço local resultante com o do peer: se o peer é este
+/// próprio host, o roteamento do SO devolve o mesmo IP. Endereço que não
+/// resolve para um IP válido nunca é a mesma máquina.
+fn same_machine(addr: &str) -> bool {
+    let host = crate::network::ip_host(addr);
+    let bare = host.trim_start_matches('[').trim_end_matches(']');
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(ip) => crate::transfer::local_ip_towards(ip) == host,
+        Err(_) => false,
+    }
 }
 
 async fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
@@ -194,31 +227,65 @@ async fn update_endpoint(
             .map(|p| (p.hostname.as_str(), p.addr.as_str(), p.gateway_port))
             .collect();
         let key = { state.auth.read().await.connection_key.clone() };
-        for url in sibling_urls(&me, &tuples) {
-            let _ = state
+        let alvos = sibling_urls(&me, &tuples, same_machine);
+
+        // Máquina de outra pessoa: um irmão que não responde não pode
+        // desaparecer em silêncio, ou o operador fica com um nó rodando
+        // binário velho e nenhuma pista. Mas nenhum irmão respondendo não
+        // impede este nó de reiniciar — cada máquina se anota por conta
+        // própria.
+        let mut reiniciados = 0usize;
+        let mut falharam: Vec<String> = Vec::new();
+        for url in &alvos {
+            match state
                 .http
                 .post(format!("{url}/api/ui/dev/restart"))
                 .bearer_auth(&key)
                 .timeout(std::time::Duration::from_secs(10))
                 .send()
-                .await;
+                .await
+            {
+                Ok(resp) if resp.status().is_success() => reiniciados += 1,
+                Ok(resp) => {
+                    tracing::warn!("irmão {url} recusou o reinício: {}", resp.status());
+                    falharam.push(url.clone());
+                }
+                Err(e) => {
+                    tracing::warn!("não deu para reiniciar o irmão {url}: {e}");
+                    falharam.push(url.clone());
+                }
+            }
         }
+
+        let irmaos_msg = if alvos.is_empty() {
+            String::new()
+        } else if falharam.is_empty() {
+            format!(" {reiniciados} irmão(s) desta máquina também reiniciaram.")
+        } else {
+            format!(
+                " {reiniciados} irmão(s) desta máquina reiniciaram, {} falharam: {}.",
+                falharam.len(),
+                falharam.join(", ")
+            )
+        };
 
         {
             let mut jobs = crate::webui::jobs().write().await;
             if let Some(j) = jobs.get_mut(&job_id) {
                 j.state = "done";
                 j.step = "pronto".into();
-                j.message = "código atualizado; esta máquina está reiniciando".into();
+                j.message = format!("código atualizado; esta máquina está reiniciando.{irmaos_msg}");
                 j.finished_at = Some(chrono::Utc::now().to_rfc3339());
             }
         }
 
         // Este nó por último, para o job chegar a ser marcado como pronto.
         if let Some(cfg) = state.runtime.config().await {
-            let _ = crate::lastslice::save(&cfg);
+            if let Err(e) = crate::lastslice::save(&cfg) {
+                tracing::warn!("não deu para anotar a fatia antes do reinício: {e}");
+            }
         }
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
         tracing::error!("respawn falhou, o nó segue no ar: {e}");
     });
@@ -404,12 +471,16 @@ mod tests {
     /// peers — ele reinicia por último, por conta própria.
     #[test]
     fn irmaos_sao_os_peers_do_mesmo_hostname() {
-        let alvos = sibling_urls("ksia", &[
-            ("ksia", "[2804:d55::1]:42777", Some(8090)),
-            ("ksia", "[2804:d55::1]:42778", Some(8094)),
-            ("tiago-pc", "[2804:f30::9]:42777", Some(8080)),
-            ("ksia", "[2804:d55::1]:42779", None),
-        ]);
+        let alvos = sibling_urls(
+            "ksia",
+            &[
+                ("ksia", "[2804:d55::1]:42777", Some(8090)),
+                ("ksia", "[2804:d55::1]:42778", Some(8094)),
+                ("tiago-pc", "[2804:f30::9]:42777", Some(8080)),
+                ("ksia", "[2804:d55::1]:42779", None),
+            ],
+            |_| true,
+        );
         assert_eq!(
             alvos,
             vec![
@@ -418,5 +489,43 @@ mod tests {
             ],
             "outra máquina fica de fora, e peer sem gateway_port não dá para chamar"
         );
+    }
+
+    /// Hostname repetido não basta: duas VMs chamadas `ksia` não são a mesma
+    /// máquina. `same_host` é quem decide isso de verdade; aqui simulamos a
+    /// recusa para um dos dois endereços.
+    #[test]
+    fn mesmo_hostname_em_maquina_diferente_nao_entra() {
+        let alvos = sibling_urls(
+            "ksia",
+            &[
+                ("ksia", "[2804:d55::1]:42777", Some(8090)),
+                ("ksia", "203.0.113.9:42777", Some(8091)),
+            ],
+            |addr| addr.starts_with("[2804:d55::1]"),
+        );
+        assert_eq!(
+            alvos,
+            vec!["http://[2804:d55::1]:8090".to_string()],
+            "a VM em 203.0.113.9 tem o mesmo hostname mas não é esta máquina"
+        );
+    }
+
+    /// `0.0.0.0`/`::` é o sentinela de um peer chegado por libp2p cujo
+    /// endereço ainda não foi reescrito com a origem real. Batendo como
+    /// irmão, o POST iria para este próprio nó — que se reiniciaria antes do
+    /// job ser marcado como `done`. Por isso o descarte é explícito e não
+    /// depende de `same_host` aprovar ou não.
+    #[test]
+    fn endereco_0_0_0_0_nao_entra() {
+        let alvos = sibling_urls(
+            "ksia",
+            &[
+                ("ksia", "0.0.0.0:42777", Some(8090)),
+                ("ksia", "[::]:42778", Some(8091)),
+            ],
+            |_| true,
+        );
+        assert!(alvos.is_empty(), "sentinela não reescrito não pode virar alvo: {alvos:?}");
     }
 }

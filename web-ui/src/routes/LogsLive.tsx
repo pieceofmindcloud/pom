@@ -25,8 +25,10 @@ import {
 import { clock, ms, num } from "../lib/format";
 import { useCluster, useRequestLog } from "../lib/queries";
 import type { RequestLogEntry } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 export function LogsLive() {
+  const { t } = useI18n();
   const [live, setLive] = useState(true);
   const cluster = useCluster();
   const log = useRequestLog();
@@ -50,14 +52,14 @@ export function LogsLive() {
   return (
     <>
       <PageHeader
-        title="Requisições em tempo real"
-        subtitle="Cada linha é uma geração que a rede atendeu, com o caminho que ela percorreu entre as máquinas."
+        title={t("liveLogs.title")}
+        subtitle={t("liveLogs.subtitle")}
         actions={
           <Button
             icon={live ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
             onClick={toggle}
           >
-            {live ? "Pausar" : "Retomar"}
+            {live ? t("liveLogs.pause") : t("liveLogs.resume")}
           </Button>
         }
       />
@@ -68,18 +70,17 @@ export function LogsLive() {
       {log.data && (
         <Panel>
           <PanelHeader
-            title="Fluxo"
+            title={t("liveLogs.flow")}
             actions={
               <Badge tone={live ? "aqua" : "neutral"}>
                 <Dot tone={live ? "aqua" : "neutral"} pulse={live} />
-                {live ? "ao vivo" : "pausado"}
+                {live ? t("liveLogs.live") : t("liveLogs.paused")}
               </Badge>
             }
           />
           {entries.length === 0 ? (
-            <Empty icon={<Radio className="h-5 w-5" />} title="Silêncio na rede">
-              Nada chegou ainda. Mande uma mensagem pelo chat de teste ou aponte um harness
-              para <span className="font-mono">/v1</span> nesta porta.
+            <Empty icon={<Radio className="h-5 w-5" />} title={t("liveLogs.silence")}>
+              {t("liveLogs.empty")}
             </Empty>
           ) : (
             <div className="max-h-[62vh] divide-y divide-line overflow-y-auto">
@@ -121,8 +122,7 @@ export function LogsLive() {
             className="border-t border-line px-5 py-3"
             icon={<Activity className="h-3.5 w-3.5" />}
           >
-            Uma linha com dois ou mais saltos é a prova de que a inferência foi conjunta.
-            Um salto só, ou nenhum, significa que o planejador não fechou a cobertura.
+            {t("liveLogs.footnote")}
           </Footnote>
         </Panel>
       )}

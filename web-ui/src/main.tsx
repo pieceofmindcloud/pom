@@ -6,6 +6,7 @@ import App from "./App";
 import "./index.css";
 import { ThemeProvider } from "./lib/theme";
 import { ToastProvider } from "./lib/toast";
+import { LocaleProvider } from "./i18n/provider";
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -22,8 +23,9 @@ const queryClient = new QueryClient({
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-        <ToastProvider>
+      <LocaleProvider>
+        <ThemeProvider>
+          <ToastProvider>
           {/* Opt in to the v7 behaviour now: it is what this app already
               assumes, and it keeps the dev console free of deprecation noise
               so a real warning stands out. */}
@@ -32,8 +34,9 @@ createRoot(document.getElementById("root")!).render(
           >
             <App />
           </BrowserRouter>
-        </ToastProvider>
-      </ThemeProvider>
+          </ToastProvider>
+        </ThemeProvider>
+      </LocaleProvider>
     </QueryClientProvider>
   </StrictMode>,
 );

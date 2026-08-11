@@ -43,9 +43,11 @@ import {
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { PeerView } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 /** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
 function UpdateNode({ nodeId, hostname, isSelf }: { nodeId: string; hostname: string; isSelf: boolean }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
@@ -56,12 +58,12 @@ function UpdateNode({ nodeId, hostname, isSelf }: { nodeId: string; hostname: st
     try {
       await devUpdate(isSelf ? undefined : nodeId);
       toast.success(
-        `Atualizando ${hostname}`,
-        "O código foi puxado e o build está rodando; a máquina reinicia sozinha ao terminar.",
+        t("dashboard.updateNode", { hostname }),
+        t("dashboard.updateDetail"),
       );
       invalidate();
     } catch (e) {
-      toast.fromError(`Não deu para atualizar ${hostname}`, e);
+      toast.fromError(t("dashboard.updateFailed", { hostname }), e);
     } finally {
       setBusy(false);
       setOpen(false);
@@ -72,26 +74,23 @@ function UpdateNode({ nodeId, hostname, isSelf }: { nodeId: string; hostname: st
     <>
       <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
         <RefreshCw className="h-3.5 w-3.5" />
-        Atualizar e reiniciar
+        {t("dashboard.updateRestart")}
       </Button>
       <Confirm
         open={open}
         busy={busy}
         tone="primary"
-        title="Atualizar esta máquina?"
-        confirmLabel="Atualizar e reiniciar"
+        title={t("dashboard.updateTitle")}
+        confirmLabel={t("dashboard.updateRestart")}
         onCancel={() => setOpen(false)}
         onConfirm={() => void run()}
         description={
           <>
             <p>
-              Puxa o código do <code className="font-mono">main</code>, recompila e reinicia
-              todos os nós de <strong className="text-fg">{hostname}</strong>.
+              {t("dashboard.updateDescription")}
             </p>
             <p className="mt-2 text-xs text-faint">
-              Para se houver alterações não commitadas ou se o repositório estiver em outro
-              branch. Um <code className="font-mono">cargo build</code> aberto nessa máquina
-              será serializado com este, e o binário dela também é substituído.
+              {t("dashboard.updateWarning")}
             </p>
           </>
         }
@@ -103,9 +102,10 @@ function UpdateNode({ nodeId, hostname, isSelf }: { nodeId: string; hostname: st
 type View = "minima" | "estendida";
 
 function ViewSwitch({ view, onChange }: { view: View; onChange: (v: View) => void }) {
+  const { t } = useI18n();
   const options: Array<{ id: View; label: string; icon: typeof RouteIcon }> = [
-    { id: "minima", label: "Fluxo", icon: RouteIcon },
-    { id: "estendida", label: "Detalhes", icon: LayoutGrid },
+    { id: "minima", label: t("dashboard.flow"), icon: RouteIcon },
+    { id: "estendida", label: t("dashboard.details"), icon: LayoutGrid },
   ];
   return (
     <div className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1">
@@ -169,6 +169,7 @@ function ClusterStat({
 
 /** Everything one machine reports, laid out the same way for every machine. */
 function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
+  const { t } = useI18n();
   const track = trackOf(index);
   const n = peer.node;
   const system = n?.system;
@@ -199,7 +200,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               </h3>
               {peer.is_self && (
                 <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">
-                  aqui
+                  {t("dashboard.here")}
                 </Badge>
               )}
             </div>
@@ -229,9 +230,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
 
       {peer.unreachable ? (
         <div className="px-5 py-5 text-sm text-muted">
-          O peer está anunciado na rede mas não respondeu a{" "}
-          <span className="font-mono text-fg">/api/ui/node</span>: {peer.unreachable}. As
-          camadas dele contam para a cobertura, mas nada abaixo pode ser lido.
+          {t("dashboard.unreachable", { error: peer.unreachable })}
         </div>
       ) : (
         <>
@@ -261,7 +260,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               />
             ) : (
               <Meter
-                label="Memória wired (buffers do Metal)"
+                label={t("dashboard.wiredMemory")}
                 value={
                   system?.wired_mb != null && system.ram.total_mb > 0
                     ? (system.wired_mb / system.ram.total_mb) * 100
@@ -281,11 +280,11 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               }
               tone="amber"
               detail={
-                system ? `${megabytes(system.disk.free_mb)} livres` : "—"
+                system ? megabytes(system.disk.free_mb) + " " + t("dashboard.free") : "—"
               }
             />
             <Meter
-              label={`Carga · ${system?.cpu_count ?? "—"} núcleos`}
+              label={t("dashboard.load", { count: system?.cpu_count ?? "—" })}
               value={
                 system && system.cpu_count > 0
                   ? Math.min(100, (system.load_avg[0] / system.cpu_count) * 100)
@@ -307,54 +306,54 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
           )}
 
           <dl className="grid gap-x-6 gap-y-4 border-t border-line px-5 py-4 sm:grid-cols-2">
-            <KeyValue label="Modelo">
+            <KeyValue label={t("dashboard.model")}>
               {cfg?.model_label ? (
                 <span className="font-mono">{cfg.model_label}</span>
               ) : (
-                <span className="text-muted">nenhum carregado</span>
+                <span className="text-muted">{t("dashboard.noneLoaded")}</span>
               )}
             </KeyValue>
-            <KeyValue label="Papel">
+            <KeyValue label={t("dashboard.role")}>
               {cfg
                 ? cfg.single_peer
-                  ? "sozinho no modelo"
+                  ? t("dashboard.single")
                   : cfg.start_layer === 0
-                    ? "processa o prompt"
+                    ? t("dashboard.prompt")
                     : cfg.end_layer + 1 >= cfg.total_layers
-                      ? "gera os tokens"
-                      : "camada intermediária"
+                      ? t("dashboard.tokens")
+                      : t("dashboard.middle")
                 : (n?.role ?? "—")}
             </KeyValue>
-            <KeyValue label="Arquivo">
+            <KeyValue label={t("dashboard.file")}>
               {cfg?.model_path ? (
                 <span className="font-mono text-xs">{cfg.model_path}</span>
               ) : (
                 "—"
               )}
             </KeyValue>
-            <KeyValue label="Contexto">
+            <KeyValue label={t("dashboard.context")}>
               {cfg ? (
                 <span className="font-mono text-xs">
                   n_ctx {num(cfg.n_ctx)} · n_batch {num(cfg.n_batch)} · {cfg.max_sessions}{" "}
-                  {cfg.max_sessions === 1 ? "sessão" : "sessões"}
+                  {t("dashboard.session", { count: cfg.max_sessions })}
                 </span>
               ) : (
                 "—"
               )}
             </KeyValue>
-            <KeyValue label="Inferência">
+            <KeyValue label={t("dashboard.inference")}>
               {peer.inference_url ? (
                 <span className="font-mono text-xs">{peer.inference_url}</span>
               ) : (
-                "não anunciada"
+                t("dashboard.notAdvertised")
               )}
             </KeyValue>
-            <KeyValue label="Servidor">
+            <KeyValue label={t("dashboard.server")}>
               {n ? (
                 <span className="text-xs">
                   {n.status.detail || serverStateLabel(n.status.state)}
                   {n.status.pid ? ` · pid ${n.status.pid}` : ""}
-                  {n.status.restarts > 0 ? ` · ${n.status.restarts} reinícios` : ""}
+                  {n.status.restarts > 0 ? " · " + t("dashboard.restarts", { count: n.status.restarts }) : ""}
                 </span>
               ) : (
                 "—"
@@ -371,8 +370,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
           {n?.dev_update && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
               <Footnote icon={<RefreshCw className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
-                Esta máquina aceita atualizar-se pela interface (
-                <span className="font-mono text-muted">RDMA_P2P_DEV_UPDATE=1</span>).
+                {t("dashboard.devUpdate")}
               </Footnote>
               <UpdateNode
                 nodeId={peer.node_id}
@@ -384,7 +382,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
 
           {system && system.gpu_processes.length > 0 && (
             <div className="border-t border-line px-5 py-3">
-              <div className="eyebrow mb-2">Processos na GPU</div>
+              <div className="eyebrow mb-2">{t("dashboard.gpuProcesses")}</div>
               <ul className="space-y-1">
                 {system.gpu_processes.map((p) => (
                   <li
@@ -407,6 +405,7 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
 }
 
 export function Dashboard() {
+  const { t } = useI18n();
   const [view, setView] = useState<View>("minima");
   const [selected, setSelected] = useState<string | null>(null);
   const cluster = useCluster();
@@ -420,18 +419,18 @@ export function Dashboard() {
   return (
     <>
       <PageHeader
-        title="Painel"
+        title={t("dashboard.title")}
         subtitle={
           c?.active_model
-            ? `Rede servindo ${c.active_model}.`
-            : "Máquinas da rede e o caminho que uma requisição percorre entre elas."
+            ? t("dashboard.activeModel", { model: c.active_model })
+            : t("dashboard.subtitle")
         }
         actions={<ViewSwitch view={view} onChange={setView} />}
       />
 
       {cluster.isError && (
         <ErrorState
-          title="O nó não respondeu"
+          title={t("dashboard.nodeNoResponse")}
           error={cluster.error}
           onRetry={() => void cluster.refetch()}
         />
@@ -448,13 +447,13 @@ export function Dashboard() {
         <div className="space-y-5">
           <Panel className="grid grid-cols-2 divide-x divide-y divide-line sm:grid-cols-4 sm:divide-y-0">
             <ClusterStat
-              label="Máquinas"
+              label={t("dashboard.machines")}
               value={num(c.peers.length)}
-              detail={`${serving} servindo`}
+              detail={num(serving) + " " + t("dashboard.serving")}
               tone="iris"
             />
             <ClusterStat
-              label="Cobertura"
+              label={t("dashboard.coverage")}
               value={
                 c.total_layers > 0
                   ? pct((c.covered_layers / c.total_layers) * 100)
@@ -462,22 +461,22 @@ export function Dashboard() {
               }
               detail={
                 c.total_layers > 0
-                  ? `${c.covered_layers} de ${c.total_layers} camadas`
-                  : "nenhum modelo atribuído"
+                  ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers })
+                  : t("dashboard.noModelAssigned")
               }
               tone={c.complete ? "aqua" : "amber"}
             />
             <ClusterStat
-              label="Modelo"
+              label={t("dashboard.model")}
               value={c.active_model || "—"}
-              detail={c.complete ? "pipeline fechado" : "pipeline incompleto"}
+              detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")}
               tone={c.complete ? "aqua" : "amber"}
             />
             <ClusterStat
-              label="Em voo"
+              label={t("dashboard.inFlight")}
               value={num(inFlight)}
               detail={
-                node.data ? `este nó: ${num(node.data.load)}` : "requisições agora"
+                node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")
               }
               tone={inFlight > 0 ? "amber" : "neutral"}
             />
@@ -487,13 +486,7 @@ export function Dashboard() {
             <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
               <CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
               <p className="text-sm leading-relaxed text-muted">
-                Faltam{" "}
-                <span className="font-mono text-fg">
-                  {c.total_layers - c.covered_layers}
-                </span>{" "}
-                camadas para o pipeline fechar. Enquanto houver buraco na cobertura,
-                nenhuma requisição é atendida em conjunto — a resposta volta com{" "}
-                <span className="font-mono text-fg">"source": "none"</span>.
+                {t("dashboard.missingLayers", { count: c.total_layers - c.covered_layers })}
               </p>
             </div>
           )}
@@ -509,13 +502,13 @@ export function Dashboard() {
               >
                 <Panel>
                   <PanelHeader
-                    eyebrow="Ordem de execução"
-                    title="Caminho da requisição"
-                    subtitle="Da esquerda para a direita: quem recebe o prompt, por onde o estado oculto passa e quem devolve os tokens."
+                    eyebrow={t("dashboard.executionOrder")}
+                    title={t("dashboard.requestPath")}
+                    subtitle={t("dashboard.requestPathDetail")}
                     actions={
                       <Badge tone={c.complete ? "aqua" : "amber"}>
                         <Activity className="h-3 w-3" />
-                        {c.complete ? "pronto para servir" : "cobertura incompleta"}
+                        {c.complete ? t("dashboard.ready") : t("dashboard.incompletePipeline")}
                       </Badge>
                     }
                   />
@@ -550,10 +543,9 @@ export function Dashboard() {
                   <Panel>
                     <Empty
                       icon={<MemoryStick className="h-5 w-5" />}
-                      title="Nenhuma máquina para detalhar"
+                      title={t("dashboard.noMachines")}
                     >
-                      Assim que um peer for encontrado, a memória, o disco e o modelo dele
-                      aparecem aqui.
+                      {t("dashboard.noMachinesDetail")}
                     </Empty>
                   </Panel>
                 ) : (
@@ -567,8 +559,7 @@ export function Dashboard() {
                 <Footnote
                   icon={<Zap className="h-3.5 w-3.5" />}
                 >
-                  Amostrado {since(node.data?.system.sampled_at)} · memória unificada não
-                  reporta VRAM dedicada, por isso o Mac mostra memória wired.
+                  {t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}
                 </Footnote>
               </motion.div>
             )}
@@ -578,9 +569,8 @@ export function Dashboard() {
 
       {c && c.peers.length === 0 && (
         <Panel className="mt-5">
-          <Empty icon={<HardDrive className="h-5 w-5" />} title="A rede está vazia">
-            Nem este nó aparece na lista de peers, o que normalmente significa que ele
-            ainda não anunciou. Confira Configurações › Rede.
+          <Empty icon={<HardDrive className="h-5 w-5" />} title={t("dashboard.emptyNetwork")}>
+            {t("dashboard.emptyNetworkDetail")}
           </Empty>
         </Panel>
       )}

@@ -24,8 +24,10 @@ import { api } from "../lib/api";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings() {
+  const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
   const nodes = useAdminNodes();
@@ -45,10 +47,10 @@ export function NetworkSettings() {
     setBusy(true);
     try {
       await api.post(`/admin/nodes/${id}/${blocked ? "block" : "unblock"}`);
-      toast.success(blocked ? "Nó bloqueado" : "Nó liberado");
+      toast.success(blocked ? t("network.blocked") : t("network.unblocked"));
       void nodes.refetch();
     } catch (e) {
-      toast.fromError(blocked ? "O nó não foi bloqueado" : "O nó não foi liberado", e);
+      toast.fromError(blocked ? t("network.blockFailed") : t("network.unblockFailed"), e);
     } finally {
       setBusy(false);
       setPending(null);
@@ -59,10 +61,10 @@ export function NetworkSettings() {
     setBusy(true);
     try {
       await api.post(detached ? "/api/ui/rejoin" : "/api/ui/leave");
-      toast.success(detached ? "De volta à rede" : "Fora da rede");
+      toast.success(detached ? t("network.back") : t("network.detached"));
       invalidate();
     } catch (e) {
-      toast.fromError("A operação não foi aceita pelo nó", e);
+      toast.fromError(t("network.operationFailed"), e);
     } finally {
       setBusy(false);
     }
@@ -71,19 +73,19 @@ export function NetworkSettings() {
   return (
     <>
       <PageHeader
-        title="Rede"
-        subtitle="Quem este nó enxerga, e quem ele se recusa a atender."
+        title={t("network.title")}
+        subtitle={t("network.subtitle")}
       />
 
       <div className="space-y-5">
         <Panel>
           <PanelHeader
-            eyebrow="Esta máquina"
+            eyebrow={t("network.thisMachine")}
             title={node.data?.hostname ?? "—"}
             subtitle={
               detached
-                ? "Fora da rede: parou de anunciar e esqueceu os peers que conhecia."
-                : "Na rede, anunciando a cada cinco segundos."
+                ? t("network.offlineDetail")
+                : t("network.onlineDetail")
             }
             actions={
               <Button
@@ -94,7 +96,7 @@ export function NetworkSettings() {
                 }
                 onClick={() => void toggleMembership()}
               >
-                {detached ? "Voltar para a rede" : "Sair da rede"}
+                {detached ? t("network.rejoin") : t("network.leave")}
               </Button>
             }
           />
@@ -103,20 +105,23 @@ export function NetworkSettings() {
               <KeyValue label="node_id">
                 <Mono>{node.data.node_id}</Mono>
               </KeyValue>
-              <KeyValue label="Portas">
+              <KeyValue label={t("network.ports")}>
                 <Mono>
-                  P2P {node.data.p2p_port} · gateway {node.data.gateway_port} · inferência{" "}
-                  {node.data.inference_port ?? "—"}
+                  {t("network.portValues", {
+                    p2p: node.data.p2p_port,
+                    gateway: node.data.gateway_port,
+                    inference: node.data.inference_port ?? "—",
+                  })}
                 </Mono>
               </KeyValue>
-              <KeyValue label="Papel">{node.data.role}</KeyValue>
+              <KeyValue label={t("network.role")}>{node.data.role}</KeyValue>
             </dl>
           )}
         </Panel>
 
         {nodes.isError && (
           <ErrorState
-            title="A lista de nós não veio"
+            title={t("network.listFailed")}
             error={nodes.error}
             onRetry={() => void nodes.refetch()}
           />
@@ -126,13 +131,12 @@ export function NetworkSettings() {
         {nodes.data && (
           <Panel>
             <PanelHeader
-              title={`${nodes.data.length} ${nodes.data.length === 1 ? "nó conhecido" : "nós conhecidos"}`}
-              subtitle="Bloquear um nó exclui sua identidade do painel, da implantação e da inferência deste processo."
+              title={t("network.knownCount", { count: nodes.data.length })}
+              subtitle={t("network.knownDetail")}
             />
             {nodes.data.length === 0 ? (
-              <Empty icon={<Network className="h-5 w-5" />} title="Nenhum nó conhecido">
-                Nem esta máquina aparece, o que normalmente quer dizer que ela não está
-                anunciando.
+              <Empty icon={<Network className="h-5 w-5" />} title={t("network.noNodes")}>
+                {t("network.noNodesDetail")}
               </Empty>
             ) : (
               <div className="divide-y divide-line">
@@ -149,14 +153,14 @@ export function NetworkSettings() {
                         </span>
                         {n.is_self && (
                           <Badge tone="neutral" className="px-1.5 py-0 text-[0.62rem]">
-                            aqui
+                            {t("network.here")}
                           </Badge>
                         )}
-                        {n.blocked && <Badge tone="rose">bloqueado</Badge>}
-                        {n.verified && <Badge tone="aqua">verificado</Badge>}
+                        {n.blocked && <Badge tone="rose">{t("network.blockedLabel")}</Badge>}
+                        {n.verified && <Badge tone="aqua">{t("network.verified")}</Badge>}
                       </div>
                       <p className="mt-0.5 font-mono text-[0.7rem] text-faint">
-                        {n.short_id} · {n.addr || "sem endereço"}
+                        {n.short_id} · {n.addr || t("network.noAddress")}
                       </p>
                     </div>
                     {n.total_layers ? (
@@ -166,7 +170,7 @@ export function NetworkSettings() {
                     ) : null}
                     <span className="flex shrink-0 items-center gap-1.5 text-[0.78rem] text-muted">
                       <Dot tone={n.connected ? "aqua" : "neutral"} />
-                      {n.connected ? "conectado" : "ausente"}
+                      {n.connected ? t("network.connected") : t("network.away")}
                     </span>
                     {!n.is_self && (
                       <Button
@@ -185,7 +189,7 @@ export function NetworkSettings() {
                             : setPending({ id: n.node_id, hostname: n.hostname || n.short_id })
                         }
                       >
-                        {n.blocked ? "Liberar" : "Bloquear"}
+                        {n.blocked ? t("network.unblock") : t("network.block")}
                       </Button>
                     )}
                   </div>
@@ -196,9 +200,7 @@ export function NetworkSettings() {
               className="border-t border-line px-5 py-3"
               icon={<ShieldOff className="h-3.5 w-3.5" />}
             >
-              A identidade de uma máquina é o node_id, guardado em{" "}
-              <span className="font-mono">.rdma-p2p-node.key</span>. Apagar esse arquivo cria
-              uma máquina nova aos olhos dos outros peers — e o bloqueio deixa de valer.
+              {t("network.identityNote")}
             </Footnote>
           </Panel>
         )}
@@ -206,9 +208,9 @@ export function NetworkSettings() {
 
       <Confirm
         open={pending !== null}
-        title={`Bloquear ${pending?.hostname}?`}
-        description="Este nó deixa de usar a identidade dessa máquina no painel, implantação e inferência. Se ela estiver servindo camadas agora, o pipeline se abre e as requisições param de completar."
-        confirmLabel="Bloquear"
+        title={t("network.blockTitle", { hostname: pending?.hostname ?? "" })}
+        description={t("network.blockDescription")}
+        confirmLabel={t("network.block")}
         tone="danger"
         busy={busy}
         onConfirm={() => pending && void setBlocked(pending.id, true)}

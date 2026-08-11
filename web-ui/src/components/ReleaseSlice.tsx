@@ -19,6 +19,7 @@ import { useToast } from "../lib/toast";
 import { layerRange } from "../lib/format";
 import { Confirm } from "./Confirm";
 import { Button, Footnote } from "./ui";
+import { useI18n } from "../i18n/provider";
 
 interface Candidate {
   node_id: string;
@@ -50,6 +51,7 @@ export function ReleaseSlice({
   startLayer: number;
   endLayer: number;
 }) {
+  const { t } = useI18n();
   const [probe, setProbe] = useState<CandidateProbe | null>(null);
   const [probing, setProbing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -78,19 +80,19 @@ export function ReleaseSlice({
       const r = await api.post<ReleaseResult>("/api/ui/release", {});
       if (r.reassigned_to) {
         toast.success(
-          `${range} agora é de ${r.reassigned_to.hostname}`,
-          "A memória deste nó foi liberada e a rede continua atendendo.",
+          t("release.reassigned", { range, hostname: r.reassigned_to.hostname }),
+          t("release.reassignedDetail"),
         );
       } else {
         toast.warning(
-          `${range} ficou sem ninguém`,
+          t("release.uncovered", { range }),
           r.reason ??
-            "A memória foi liberada. O modelo para de atender até alguém assumir esta faixa.",
+            t("release.uncoveredDetail"),
         );
       }
       invalidate();
     } catch (e) {
-      toast.fromError("A fatia continua carregada", e);
+      toast.fromError(t("release.failed"), e);
     } finally {
       setBusy(false);
       setProbe(null);
@@ -103,9 +105,7 @@ export function ReleaseSlice({
     <>
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
         <Footnote icon={<HandCoins className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
-          Precisa da memória desta máquina agora? Devolva{" "}
-          <span className="font-mono text-muted">{range}</span> — o nó continua na
-          rede e a faixa vai para outro, se houver quem a tenha.
+          {t("release.note", { range })}
         </Footnote>
         <Button
           size="sm"
@@ -114,7 +114,7 @@ export function ReleaseSlice({
           onClick={() => void ask()}
           className="shrink-0"
         >
-          Liberar memória
+          {t("release.button")}
         </Button>
       </div>
 
@@ -122,28 +122,20 @@ export function ReleaseSlice({
         open={probe != null}
         busy={busy}
         tone={successor ? "primary" : "danger"}
-        title={`Liberar ${range}?`}
-        confirmLabel={successor ? "Liberar e passar adiante" : "Liberar mesmo assim"}
+        title={t("release.title", { range })}
+        confirmLabel={successor ? t("release.withSuccessor") : t("release.alone")}
         onCancel={() => setProbe(null)}
         onConfirm={() => void release()}
         description={
           successor ? (
             <>
-              A memória desta máquina é devolvida agora, e{" "}
-              <span className="font-medium text-fg">{successor.hostname}</span> está
-              ocioso com esta fatia no disco — ele assume a faixa em seguida. O
-              modelo continua atendendo.
+              {t("release.successorDetail", { hostname: successor.hostname })}
             </>
           ) : (
             <span className="flex items-start gap-2">
               <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
               <span>
-                Nenhum outro nó está ocioso e com esta fatia no disco.{" "}
-                <span className="font-medium text-fg">
-                  {range} fica descoberta e o modelo para de atender
-                </span>{" "}
-                até alguém assumir. A memória é liberada de qualquer forma — a
-                escolha é desta máquina.
+                {t("release.noSuccessor", { range })}
               </span>
             </span>
           )

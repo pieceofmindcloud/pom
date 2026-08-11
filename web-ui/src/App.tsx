@@ -20,6 +20,7 @@ import { ConnectionKeys, TokenKeys } from "./routes/Keys";
 import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
 import { WholeModels } from "./routes/WholeModels";
+import { useI18n } from "./i18n/provider";
 
 /**
  * Route changes cross-fade upward by a few pixels — enough to read as a new
@@ -44,6 +45,7 @@ function Page({ children }: { children: React.ReactNode }) {
  * page transition: unmounting it to animate would drop tokens mid-answer.
  */
 export default function App() {
+  const { t } = useI18n();
   const location = useLocation();
   const isChat = location.pathname === "/chat";
   /*
@@ -75,7 +77,7 @@ export default function App() {
         <ErrorBoundary
           fallback={
             <div className="border-b border-line px-4 py-3 text-xs text-faint">
-              A barra superior falhou. O resto da interface continua.
+              {t("app.topbarFailed")}
             </div>
           }
         >

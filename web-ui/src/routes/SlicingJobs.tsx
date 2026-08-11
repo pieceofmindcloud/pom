@@ -14,16 +14,18 @@ import {
 import { clock, since } from "../lib/format";
 import { useJobs } from "../lib/queries";
 import type { Job } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 // Written out rather than composed: Tailwind only emits classes it can find as
 // literal strings, so `text-${tone}` would produce no CSS at all.
 const STATE = {
-  running: { tone: "iris", color: "text-iris", label: "rodando", icon: CircleDot },
-  done: { tone: "aqua", color: "text-aqua", label: "pronto", icon: CheckCircle2 },
-  failed: { tone: "rose", color: "text-rose", label: "falhou", icon: XCircle },
+  running: { tone: "iris", color: "text-iris", labelKey: "jobs.running", icon: CircleDot },
+  done: { tone: "aqua", color: "text-aqua", labelKey: "jobs.ready", icon: CheckCircle2 },
+  failed: { tone: "rose", color: "text-rose", labelKey: "jobs.failed", icon: XCircle },
 } as const;
 
 function JobCard({ job }: { job: Job }) {
+  const { t } = useI18n();
   const meta = STATE[job.state] ?? STATE.running;
   const Icon = meta.icon;
   return (
@@ -41,7 +43,7 @@ function JobCard({ job }: { job: Job }) {
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-2">
-          <Badge tone={meta.tone}>{meta.label}</Badge>
+          <Badge tone={meta.tone}>{t(meta.labelKey)}</Badge>
           {job.kind && (
             <Badge mono tone="neutral">
               {job.kind}
@@ -55,8 +57,8 @@ function JobCard({ job }: { job: Job }) {
       )}
 
       <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 font-mono text-[0.7rem] text-faint">
-        <span>começou {since(job.started_at)}</span>
-        {job.finished_at && <span>terminou {clock(job.finished_at)}</span>}
+        <span>{t("jobs.started")} {since(job.started_at)}</span>
+        {job.finished_at && <span>{t("jobs.finishedAt")} {clock(job.finished_at)}</span>}
         {job.progress != null && job.state === "running" && (
           <span>{job.progress.toFixed(0)}%</span>
         )}
@@ -77,6 +79,7 @@ function JobCard({ job }: { job: Job }) {
 }
 
 export function SlicingJobs() {
+  const { t } = useI18n();
   const jobs = useJobs();
   const list = jobs.data?.jobs ?? [];
   const running = list.filter((j) => j.state === "running");
@@ -84,12 +87,12 @@ export function SlicingJobs() {
   return (
     <>
       <PageHeader
-        title="Fatiamentos em andamento"
-        subtitle="O progresso é do nó, não do navegador: recarregar a página não perde nada, e fechar a aba não interrompe nada."
+        title={t("jobs.title")}
+        subtitle={t("jobs.subtitle")}
         actions={
           <Link to="/modelos/fatiar">
             <Button variant="primary" icon={<Scissors className="h-3.5 w-3.5" />}>
-              Fatiar um modelo
+              {t("jobs.sliceModel")}
             </Button>
           </Link>
         }
@@ -106,16 +109,15 @@ export function SlicingJobs() {
             <PanelHeader
               title={
                 running.length
-                  ? `${running.length} ${running.length === 1 ? "trabalho rodando" : "trabalhos rodando"}`
-                  : "Nada rodando agora"
+                  ? t("jobs.runningCount", { count: running.length })
+                  : t("jobs.nothingRunning")
               }
-              subtitle="Trabalhos terminados ficam listados por dez minutos."
+              subtitle={t("jobs.finishedDetail")}
             />
           )}
           {list.length === 0 ? (
-            <Empty icon={<ListTree className="h-5 w-5" />} title="Nada rodando agora">
-              Fatiamentos e atribuições de modelo aparecem aqui enquanto rodam, e por dez
-              minutos depois de terminarem.
+            <Empty icon={<ListTree className="h-5 w-5" />} title={t("jobs.nothingRunning")}>
+              {t("jobs.emptyDetail")}
             </Empty>
           ) : (
             <div className="divide-y divide-line">

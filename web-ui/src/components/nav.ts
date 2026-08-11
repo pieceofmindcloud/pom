@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 
 export interface NavLeaf {
-  label: string;
+  labelKey: string;
   to: string;
   icon?: LucideIcon;
   /** Matches child routes too — used by the sidebar to mark a section open. */
@@ -26,7 +26,7 @@ export interface NavLeaf {
 }
 
 export interface NavSection {
-  label: string;
+  labelKey: string;
   icon: LucideIcon;
   /** A section either navigates somewhere itself, or holds children. */
   to?: string;
@@ -38,49 +38,49 @@ export interface NavSection {
  * to it, then feed it models, move files, read what happened, and configure.
  */
 export const NAV: NavSection[] = [
-  { label: "Painel", icon: Gauge, to: "/" },
-  { label: "Chat de teste", icon: MessagesSquare, to: "/chat" },
+  { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
+  { labelKey: "nav.testChat", icon: MessagesSquare, to: "/chat" },
   {
-    label: "Modelos",
+    labelKey: "nav.models",
     icon: Boxes,
     children: [
-      { label: "Modelos inteiros", to: "/modelos", icon: Boxes, end: true },
-      { label: "Fatiar modelos", to: "/modelos/fatiar", icon: Scissors },
+      { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
+      { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
     ],
   },
   {
-    label: "Modelos fatiados",
+    labelKey: "nav.shardedModels",
     icon: Layers,
     children: [
-      { label: "Fatias", to: "/fatias", icon: Layers, end: true },
-      { label: "Implantar na rede", to: "/fatias/implantar", icon: Rocket },
-      { label: "Fatiamentos em andamento", to: "/fatias/andamento", icon: ListTree },
+      { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
+      { labelKey: "nav.deploy", to: "/fatias/implantar", icon: Rocket },
+      { labelKey: "nav.slicing", to: "/fatias/andamento", icon: ListTree },
     ],
   },
   {
-    label: "Transferências",
+    labelKey: "nav.transfers",
     icon: Send,
     children: [
-      { label: "Enviar um arquivo", to: "/transferencias/enviar", icon: Upload },
-      { label: "Em andamento", to: "/transferencias", icon: Send, end: true },
+      { labelKey: "nav.sendFile", to: "/transferencias/enviar", icon: Upload },
+      { labelKey: "nav.inProgress", to: "/transferencias", icon: Send, end: true },
     ],
   },
   {
-    label: "Logs",
+    labelKey: "nav.logs",
     icon: Radio,
     children: [
-      { label: "Por token e por nó", to: "/logs", icon: ListTree, end: true },
-      { label: "Ao vivo", to: "/logs/ao-vivo", icon: Radio },
+      { labelKey: "nav.byToken", to: "/logs", icon: ListTree, end: true },
+      { labelKey: "nav.live", to: "/logs/ao-vivo", icon: Radio },
     ],
   },
   {
-    label: "Configurações",
+    labelKey: "nav.settings",
     icon: Settings,
     children: [
-      { label: "Rede", to: "/config/rede", icon: Network },
-      { label: "API keys", to: "/config/keys/api", icon: KeyRound },
-      { label: "Chaves de conexão", to: "/config/keys/conexao", icon: SlidersHorizontal },
-      { label: "Pastas de modelos", to: "/config/pastas", icon: FolderTree },
+      { labelKey: "nav.network", to: "/config/rede", icon: Network },
+      { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
+      { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
+      { labelKey: "nav.modelFolders", to: "/config/pastas", icon: FolderTree },
     ],
   },
 ];

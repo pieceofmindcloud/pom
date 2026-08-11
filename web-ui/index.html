@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR" data-theme="dark">
+<html lang="en" data-theme="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -9,7 +9,7 @@
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23090a10'/%3E%3Cpath d='M8 11h5.5M8 16h9M8 21h5.5' stroke='%238a7cff' stroke-width='2.4' stroke-linecap='round'/%3E%3Ccircle cx='23' cy='16' r='3' fill='%2343e0c8'/%3E%3C/svg%3E"
     />
     <title>CODAI-SERVER</title>
-    <script>
+      <script>
       // Applied before first paint so the app never flashes the wrong theme.
       (function () {
         try {
@@ -21,6 +21,28 @@
             saved === "light" ? "light" : "dark";
         } catch (e) {
           document.documentElement.dataset.theme = "dark";
+        }
+      })();
+    </script>
+    <script>
+      (function () {
+        try {
+          var saved = localStorage.getItem("codai.locale");
+          var locales = navigator.languages || [navigator.language];
+          var locale = saved === "en" || saved === "pt-BR" ? saved : "en";
+          if (saved !== "en" && saved !== "pt-BR") {
+            for (var i = 0; i < locales.length; i++) {
+              var hint = String(locales[i] || "").toLowerCase();
+              if (hint === "pt" || hint.indexOf("pt-") === 0) {
+                locale = "pt-BR";
+                break;
+              }
+              if (hint === "en" || hint.indexOf("en-") === 0) break;
+            }
+          }
+          document.documentElement.lang = locale;
+        } catch (e) {
+          document.documentElement.lang = "en";
         }
       })();
     </script>

@@ -24,8 +24,10 @@ import {
 import { api } from "../lib/api";
 import { useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useI18n } from "../i18n/provider";
 
 export function SendFile() {
+  const { t } = useI18n();
   const [params] = useSearchParams();
   const cluster = useCluster();
   const catalog = useLocalCatalog();
@@ -50,12 +52,12 @@ export function SendFile() {
         path: path.trim(),
       });
       toast.success(
-        "Oferta enviada",
-        "O dono da outra máquina precisa aceitar; só então os bytes saem daqui.",
+        t("sendFile.offerSent"),
+        t("sendFile.offerSentDetail"),
       );
       setPath("");
     } catch (e) {
-      toast.fromError("A oferta não saiu", e);
+      toast.fromError(t("sendFile.offerFailed"), e);
     } finally {
       setSending(false);
     }
@@ -64,42 +66,42 @@ export function SendFile() {
   return (
     <>
       <PageHeader
-        title="Enviar um arquivo desta máquina"
-        subtitle="Para o que a varredura não acha: digite o caminho, escolha o destino. Vale qualquer arquivo legível daqui."
+        title={t("sendFile.title")}
+        subtitle={t("sendFile.subtitle")}
       />
 
       {cluster.isLoading && <Skeleton className="h-56 w-full" />}
 
       {cluster.data && peers.length === 0 ? (
         <Panel>
-          <Empty icon={<Send className="h-5 w-5" />} title="Nenhuma outra máquina na rede">
-            Não há para quem enviar. Confira a descoberta em Configurações › Rede.
+          <Empty icon={<Send className="h-5 w-5" />} title={t("sendFile.noPeers")}>
+            {t("sendFile.noPeersDetail")}
           </Empty>
         </Panel>
       ) : (
         <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,20rem)]">
           <Panel>
-            <PanelHeader title="Arquivo e destino" />
+            <PanelHeader title={t("sendFile.fileAndTarget")} />
             <div className="space-y-4 px-5 py-4">
               <Field
-                label="Caminho nesta máquina"
-                hint="Caminho absoluto. Um GGUF do LM Studio, um blob do Ollama ou qualquer arquivo solto serve."
+                label={t("sendFile.path")}
+                hint={t("sendFile.pathHint")}
               >
                 <Input
                   value={path}
                   onChange={(e) => setPath(e.target.value)}
-                  placeholder="/Users/você/models/qwen/qwen_0_15.gguf"
+                  placeholder="/path/to/models/qwen/qwen_0_15.gguf"
                   spellCheck={false}
                 />
               </Field>
 
               {local.length > 0 && (
                 <Field
-                  label="Ou escolha um dos arquivos que a varredura achou"
-                  hint="Preenche o campo acima; ainda dá para editar."
+                  label={t("sendFile.pickFound")}
+                  hint={t("sendFile.pickFoundHint")}
                 >
                   <Select value="" onChange={(e) => e.target.value && setPath(e.target.value)}>
-                    <option value="">Escolher da lista…</option>
+                    <option value="">{t("sendFile.pickFromList")}</option>
                     {local.map((m) => (
                       <option key={m.id} value={m.path}>
                         {m.name}
@@ -109,9 +111,9 @@ export function SendFile() {
                 </Field>
               )}
 
-              <Field label="Máquina de destino">
+              <Field label={t("sendFile.destination")}>
                 <Select value={target} onChange={(e) => setTarget(e.target.value)}>
-                  <option value="">Escolher…</option>
+                  <option value="">{t("sendFile.choose")}</option>
                   {peers.map((p) => (
                     <option key={p.node_id} value={p.node_id}>
                       {p.node?.hostname || p.short_id} · {p.addr}
@@ -127,36 +129,30 @@ export function SendFile() {
                 disabled={!path.trim() || !target}
                 onClick={() => void send()}
               >
-                Oferecer o arquivo
+                {t("sendFile.offer")}
               </Button>
             </div>
           </Panel>
 
           <Panel className="self-start">
-            <PanelHeader eyebrow="Como funciona" title="Oferta, não escrita" />
+            <PanelHeader eyebrow={t("sendFile.howItWorks")} title={t("sendFile.offerNotWrite")} />
             <ul className="space-y-3.5 px-5 py-4 text-[0.83rem] leading-relaxed text-muted">
               <li className="flex gap-2.5">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-aqua" />
                 <span className="min-w-0">
-                  Nada é gravado no disco alheio sem convite: o outro lado vê a oferta no
-                  sino e decide.
+                  {t("sendFile.inviteOnly")}
                 </span>
               </li>
               <li className="flex gap-2.5">
                 <FolderInput className="mt-0.5 h-4 w-4 shrink-0 text-sky" />
                 <span className="min-w-0">
-                  Aceita, a máquina de destino busca o arquivo e o grava em{" "}
-                  <span className="font-mono text-fg">recebidos/</span>, dentro da pasta
-                  de fatias dela.
+                  {t("sendFile.received")}
                 </span>
               </li>
               <li className="flex gap-2.5">
                 <Send className="mt-0.5 h-4 w-4 shrink-0 text-iris" />
                 <span className="min-w-0">
-                  A transferência retoma por{" "}
-                  <span className="font-mono text-fg">Range</span> e o MD5 é conferido
-                  antes de o arquivo tomar o nome final. Se não bater, o parcial é
-                  apagado.
+                  {t("sendFile.resume")}
                 </span>
               </li>
             </ul>

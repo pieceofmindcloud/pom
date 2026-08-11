@@ -2,9 +2,10 @@
 
 import type { ServerState } from "./types";
 import type { Tone } from "../components/ui";
+import { getActiveLocale } from "../i18n/locales";
 
 const nf = (digits: number) =>
-  new Intl.NumberFormat("pt-BR", {
+  new Intl.NumberFormat(getActiveLocale(), {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   });
@@ -64,18 +65,19 @@ export function since(iso: string | null | undefined): string {
   const then = Date.parse(iso);
   if (Number.isNaN(then)) return "—";
   const secs = (Date.now() - then) / 1000;
-  if (secs < 5) return "agora";
-  if (secs < 60) return `há ${Math.round(secs)}s`;
-  if (secs < 3600) return `há ${Math.round(secs / 60)} min`;
-  if (secs < 86_400) return `há ${Math.round(secs / 3600)} h`;
-  return `há ${Math.round(secs / 86_400)} d`;
+  const portuguese = getActiveLocale() === "pt-BR";
+  if (secs < 5) return portuguese ? "agora" : "now";
+  if (secs < 60) return portuguese ? `há ${Math.round(secs)}s` : `${Math.round(secs)}s ago`;
+  if (secs < 3600) return portuguese ? `há ${Math.round(secs / 60)} min` : `${Math.round(secs / 60)} min ago`;
+  if (secs < 86_400) return portuguese ? `há ${Math.round(secs / 3600)} h` : `${Math.round(secs / 3600)} h ago`;
+  return portuguese ? `há ${Math.round(secs / 86_400)} d` : `${Math.round(secs / 86_400)} d ago`;
 }
 
 export function clock(iso: string | null | undefined): string {
   if (!iso) return "—";
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleTimeString("pt-BR", {
+  return d.toLocaleTimeString(getActiveLocale(), {
     hour: "2-digit",
     minute: "2-digit",
     second: "2-digit",
@@ -106,17 +108,18 @@ export function isServing(state: ServerState | undefined): boolean {
 }
 
 export function serverStateLabel(state: ServerState | undefined): string {
+  const portuguese = getActiveLocale() === "pt-BR";
   switch (state) {
     case "ready":
-      return "servindo";
+      return portuguese ? "servindo" : "serving";
     case "starting":
-      return "carregando";
+      return portuguese ? "carregando" : "loading";
     case "failed":
-      return "falhou";
+      return portuguese ? "falhou" : "failed";
     case "disabled":
-      return "sem modelo";
+      return portuguese ? "sem modelo" : "no model";
     default:
-      return "desconhecido";
+      return portuguese ? "desconhecido" : "unknown";
   }
 }
 

@@ -22,6 +22,7 @@ import {
 } from "../lib/format";
 import { MachineIcon, machineKind } from "./MachineIcon";
 import { Badge, Dot, Footnote } from "./ui";
+import { useI18n } from "../i18n/provider";
 
 /** Track colours, in the order peers appear along the pipeline. */
 const TRACKS = [
@@ -127,6 +128,7 @@ function PeerCard({
   onSelect?: (id: string) => void;
   selected?: boolean;
 }) {
+  const { t } = useI18n();
   const track = trackOf(index);
   const system = peer.node?.system;
   const kind = machineKind(system);
@@ -162,7 +164,7 @@ function PeerCard({
         </div>
         {peer.is_self && (
           <Badge tone="neutral" className="shrink-0 px-1.5 py-0 text-[0.62rem]">
-            aqui
+            {t("pipeline.here")}
           </Badge>
         )}
       </div>
@@ -186,13 +188,13 @@ function PeerCard({
           />
           <span className="truncate text-[0.72rem] text-muted">
             {unreachable
-              ? "sem resposta"
+              ? t("pipeline.noResponse")
               : serverStateLabel(peer.node?.status.state)}
           </span>
         </span>
         {peer.load > 0 && (
           <span className="shrink-0 font-mono text-[0.68rem] text-amber">
-            {peer.load} em voo
+            {t("pipeline.inFlight", { count: peer.load })}
           </span>
         )}
       </div>
@@ -201,6 +203,7 @@ function PeerCard({
 }
 
 export function LayerRibbon({ cluster }: { cluster: ClusterView }) {
+  const { t } = useI18n();
   const peers = pipelinePeers(cluster);
   const total = cluster.total_layers;
   if (total <= 0) return null;
@@ -216,12 +219,12 @@ export function LayerRibbon({ cluster }: { cluster: ClusterView }) {
   return (
     <div className="min-w-0">
       <div className="mb-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-        <span className="eyebrow">Cobertura de camadas</span>
+        <span className="eyebrow">{t("pipeline.layerCoverage")}</span>
         <span className="font-mono text-[0.72rem] text-muted">
           {cluster.covered_layers}/{total}
           {!cluster.complete && (
             <span className="ml-2 text-amber">
-              faltam {total - cluster.covered_layers}
+              {t("pipeline.missing", { count: total - cluster.covered_layers })}
             </span>
           )}
         </span>
@@ -232,8 +235,8 @@ export function LayerRibbon({ cluster }: { cluster: ClusterView }) {
             key={l}
             title={
               o === -1
-                ? `Camada ${l} — sem nenhum nó`
-                : `Camada ${l} — ${peers[o].node?.hostname ?? peers[o].short_id}`
+                ? t("pipeline.layerNone", { layer: l })
+                : t("pipeline.layerOwner", { layer: l, hostname: peers[o].node?.hostname ?? peers[o].short_id })
             }
             className={clsx(
               "min-w-0 flex-1 rounded-[2px] transition-colors duration-300",
@@ -258,6 +261,7 @@ export function PipelineRail({
   onSelect?: (id: string) => void;
   selected?: string | null;
 }) {
+  const { t } = useI18n();
   const peers = pipelinePeers(cluster);
   const flowing =
     cluster.complete && peers.some((p) => isServing(p.node?.status.state));
@@ -267,11 +271,10 @@ export function PipelineRail({
       <div className="flex flex-col items-center gap-3 py-12 text-center">
         <CircleDashed className="h-6 w-6 text-faint" />
         <p className="font-display text-[0.95rem] font-semibold text-fg">
-          Nenhuma máquina na rede
+          {t("pipeline.empty")}
         </p>
         <p className="max-w-sm text-sm text-muted">
-          Este nó ainda não encontrou peers. Confira o endereço de bootstrap em
-          Configurações › Rede.
+          {t("pipeline.emptyDetail")}
         </p>
       </div>
     );
@@ -296,7 +299,7 @@ export function PipelineRail({
         <div className="flex items-stretch gap-1 py-1">
           <Terminus
             icon={<MessageSquareText className="h-4 w-4" />}
-            label="Requisição"
+            label={t("pipeline.request")}
             sublabel="prompt"
           />
           <Conduit label={null} active={flowing} />
@@ -319,7 +322,7 @@ export function PipelineRail({
           <Conduit label={null} active={flowing} />
           <Terminus
             icon={<Sparkles className="h-4 w-4" />}
-            label="Resposta"
+            label={t("pipeline.response")}
             sublabel="tokens"
           />
         </div>
@@ -328,8 +331,7 @@ export function PipelineRail({
       <LayerRibbon cluster={cluster} />
 
       <Footnote icon={<ArrowRight className="h-3.5 w-3.5" />}>
-        Cada conexão carrega o estado oculto em f16. A ordem na tela é a ordem em que a
-        requisição percorre as máquinas.
+        {t("pipeline.footnote")}
       </Footnote>
     </div>
   );

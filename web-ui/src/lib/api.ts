@@ -10,6 +10,8 @@
  * then sign the routes that do demand it (`/admin/*`, `/api/ui/apply`, `/v1`).
  */
 
+import { getActiveLocale } from "../i18n/locales";
+
 const KEY_STORAGE = "codai.connectionKey";
 
 let connectionKey: string = localStorage.getItem(KEY_STORAGE) ?? "";
@@ -121,7 +123,14 @@ export async function* streamSse(
     signal,
   });
   if (!res.ok) throw new ApiError(res.status, await explain(res));
-  if (!res.body) throw new ApiError(0, "a resposta não trouxe corpo para ler");
+  if (!res.body) {
+    throw new ApiError(
+      0,
+      getActiveLocale() === "pt-BR"
+        ? "a resposta não trouxe corpo para ler"
+        : "the response did not include a readable body",
+    );
+  }
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();

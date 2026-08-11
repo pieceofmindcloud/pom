@@ -25,14 +25,16 @@ import { api } from "../lib/api";
 import { useInvalidate, usePaths } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { PathsResponse } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 const KIND: Record<string, { label: string; tone: "sky" | "amber" | "neutral" }> = {
   lmstudio: { label: "LM Studio", tone: "sky" },
   ollama: { label: "Ollama", tone: "amber" },
-  folder: { label: "Pasta", tone: "neutral" },
+  folder: { label: "Folder", tone: "neutral" },
 };
 
 export function ModelPaths() {
+  const { t } = useI18n();
   const paths = usePaths();
   const toast = useToast();
   const invalidate = useInvalidate();
@@ -59,10 +61,10 @@ export function ModelPaths() {
       });
       setDirs(saved.model_dirs.map((d) => d.path));
       setShardDir(saved.shard_dir.path);
-      toast.success("Pastas salvas", "A varredura recomeça em segundo plano.");
+      toast.success(t("paths.saved"), t("paths.savedDetail"));
       invalidate();
     } catch (e) {
-      toast.fromError("As pastas não foram salvas", e);
+      toast.fromError(t("paths.saveFailed"), e);
     } finally {
       setSaving(false);
     }
@@ -74,8 +76,8 @@ export function ModelPaths() {
   return (
     <>
       <PageHeader
-        title="Pastas de modelos"
-        subtitle="Onde procurar modelos inteiros, e onde gravar as fatias."
+        title={t("paths.title")}
+        subtitle={t("paths.subtitle")}
         actions={
           <Button
             variant="primary"
@@ -84,7 +86,7 @@ export function ModelPaths() {
             onClick={() => void save()}
             disabled={!loaded}
           >
-            Salvar
+            {t("paths.save")}
           </Button>
         }
       />
@@ -97,13 +99,13 @@ export function ModelPaths() {
           <div className="space-y-5">
             <Panel>
               <PanelHeader
-                title="Modelos inteiros"
-                subtitle="Só leitura. Cada pasta é lida pelo que ela é: store do Ollama, biblioteca do LM Studio, ou pasta qualquer de .gguf."
+                title={t("paths.fullModels")}
+                subtitle={t("paths.fullDetail")}
                 actions={
                   paths.data.using_defaults ? (
-                    <Badge tone="amber">detecção automática</Badge>
+                    <Badge tone="amber">{t("paths.autoDetect")}</Badge>
                   ) : (
-                    <Badge tone="neutral">lista sua</Badge>
+                    <Badge tone="neutral">{t("paths.customList")}</Badge>
                   )
                 }
               />
@@ -122,14 +124,14 @@ export function ModelPaths() {
                       <Input
                         value={d}
                         spellCheck={false}
-                        aria-label={`Pasta ${i + 1}`}
+                        aria-label={t("paths.folderAria", { count: i + 1 })}
                         onChange={(e) =>
                           setDirs((l) => l.map((x, j) => (j === i ? e.target.value : x)))
                         }
                       />
                       <button
                         onClick={() => setDirs((l) => l.filter((_, j) => j !== i))}
-                        aria-label={`Remover ${d}`}
+                        aria-label={t("paths.removeFolderAria", { path: d })}
                         className="shrink-0 rounded p-1.5 text-faint transition-colors hover:text-rose"
                       >
                         <Trash2 className="h-3.5 w-3.5" />
@@ -143,12 +145,11 @@ export function ModelPaths() {
                   icon={<Plus className="h-3.5 w-3.5" />}
                   onClick={() => setDirs((l) => [...l, ""])}
                 >
-                  Mais uma pasta
+                  {t("paths.addFolder")}
                 </Button>
                 {dirs.length === 0 && (
                   <p className="pt-1 text-xs leading-relaxed text-amber">
-                    Lista vazia significa "não procure em lugar nenhum" — e não "volte a
-                    detectar". Salvar assim deixa o catálogo de modelos inteiros vazio.
+                    {t("paths.emptyList")}
                   </p>
                 )}
               </div>
@@ -156,13 +157,13 @@ export function ModelPaths() {
 
             <Panel>
               <PanelHeader
-                title="Pasta de fatias"
-                subtitle="Uma só. Destino do fatiamento local, dos arquivos recebidos e a única pasta de onde um peer pode puxar um arquivo."
+                title={t("paths.shardFolder")}
+                subtitle={t("paths.shardDetail")}
               />
               <div className="space-y-3 px-5 py-4">
                 <Field
-                  label="Caminho"
-                  hint={`Em branco volta para o padrão: ${paths.data.default_shard_dir}`}
+                  label={t("paths.path")}
+                  hint={t("paths.defaultHint", { path: paths.data.default_shard_dir })}
                 >
                   <Input
                     value={shardDir}
@@ -172,8 +173,7 @@ export function ModelPaths() {
                   />
                 </Field>
                 <Footnote icon={<HardDriveDownload className="h-3.5 w-3.5" />}>
-                  Os arquivos que chegam de outra máquina vão para a subpasta{" "}
-                  <span className="font-mono">recebidos/</span> dentro desta.
+                  {t("paths.received")}
                 </Footnote>
               </div>
             </Panel>
@@ -181,22 +181,22 @@ export function ModelPaths() {
 
           <Panel className="self-start">
             <PanelHeader
-              title="Detectadas nesta máquina"
-              subtitle="O que a detecção automática encontraria."
+              title={t("paths.detected")}
+              subtitle={t("paths.detectedSubtitle")}
             />
             <div className="space-y-2 px-5 py-4">
               {detected.length === 0 && (
                 <p className="text-[0.82rem] text-faint">
-                  Nem LM Studio nem Ollama foram encontrados aqui.
+                  {t("paths.noneDetected")}
                 </p>
               )}
               {detected.map((d) => (
                 <div key={d.path} className="min-w-0">
                   <div className="flex items-center gap-2">
                     <Badge tone={KIND[d.kind]?.tone ?? "neutral"}>
-                      {KIND[d.kind]?.label ?? d.kind}
+                      {d.kind === "folder" ? t("paths.folder") : (KIND[d.kind]?.label ?? d.kind)}
                     </Badge>
-                    {!d.exists && <Badge tone="rose">não existe</Badge>}
+                    {!d.exists && <Badge tone="rose">{t("paths.missing")}</Badge>}
                   </div>
                   <p className="break-path mt-1 font-mono text-[0.72rem] text-muted">
                     {d.path}
@@ -213,7 +213,7 @@ export function ModelPaths() {
                     setDirs((l) => [...l, ...notYetAdded.map((d) => d.path)])
                   }
                 >
-                  Adicionar {notYetAdded.length === 1 ? "a que falta" : "as que faltam"}
+                  {t("paths.addMissing", { count: notYetAdded.length })}
                 </Button>
               )}
             </div>
@@ -221,9 +221,7 @@ export function ModelPaths() {
               className="border-t border-line px-5 py-3"
               icon={<FolderTree className="h-3.5 w-3.5" />}
             >
-              Salvar recusa caminho que não exista ou que não seja uma pasta — um erro de
-              digitação aqui só apareceria muito depois, como um peer que não acha o modelo
-              que mandaram ele fatiar.
+              {t("paths.validation")}
             </Footnote>
           </Panel>
         </div>

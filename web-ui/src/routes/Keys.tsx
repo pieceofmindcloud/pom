@@ -38,8 +38,10 @@ import { api } from "../lib/api";
 import { since } from "../lib/format";
 import { useApiKeys, useCluster, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { useI18n } from "../i18n/provider";
 
 function Secret({ value, label }: { value: string; label: string }) {
+  const { t } = useI18n();
   const [shown, setShown] = useState(false);
   const [copied, setCopied] = useState(false);
   return (
@@ -50,14 +52,14 @@ function Secret({ value, label }: { value: string; label: string }) {
       <Button
         size="sm"
         variant="ghost"
-        aria-label={shown ? `Esconder ${label}` : `Mostrar ${label}`}
+        aria-label={shown ? t("keys.hide", { label }) : t("keys.show", { label })}
         onClick={() => setShown((s) => !s)}
         icon={shown ? <EyeOff className="h-3.5 w-3.5" /> : <Eye className="h-3.5 w-3.5" />}
       />
       <Button
         size="sm"
         variant="ghost"
-        aria-label={`Copiar ${label}`}
+        aria-label={t("keys.copy", { label })}
         onClick={() => {
           void navigator.clipboard.writeText(value);
           setCopied(true);
@@ -78,6 +80,7 @@ function Secret({ value, label }: { value: string; label: string }) {
 // ── API tokens ───────────────────────────────────────────────────────────────
 
 export function TokenKeys() {
+  const { t } = useI18n();
   const keys = useApiKeys();
   const cluster = useCluster();
   const toast = useToast();
@@ -90,20 +93,20 @@ export function TokenKeys() {
 
   const nameOf = (id: string) =>
     cluster.data?.peers.find((p) => p.node_id === id)?.node?.hostname ??
-    (id ? `${id.slice(0, 8)}…` : "toda a rede");
+    (id ? `${id.slice(0, 8)}…` : t("keys.allNetwork"));
 
   async function create() {
     setCreating(true);
     try {
       await api.post("/admin/api-keys", {
-        label: label.trim() || "sem nome",
+        label: label.trim() || t("keys.unnamed"),
         node_id: nodeId || null,
       });
-      toast.success("Token criado", "Copie agora: ele fica listado, mas mascarado.");
+      toast.success(t("keys.created"), t("keys.createdDetail"));
       setLabel("");
       void keys.refetch();
     } catch (e) {
-      toast.fromError("O token não foi criado", e);
+      toast.fromError(t("keys.createFailed"), e);
     } finally {
       setCreating(false);
     }
@@ -113,10 +116,10 @@ export function TokenKeys() {
     setBusy(true);
     try {
       await api.del(`/admin/api-keys/${encodeURIComponent(key)}`);
-      toast.success("Token revogado");
+      toast.success(t("keys.revoked"));
       void keys.refetch();
     } catch (e) {
-      toast.fromError("O token não foi revogado", e);
+      toast.fromError(t("keys.revokeFailed"), e);
     } finally {
       setBusy(false);
       setRevoking(null);
@@ -126,8 +129,8 @@ export function TokenKeys() {
   return (
     <>
       <PageHeader
-        title="API keys"
-        subtitle="Um token por nó, ou por harness. Toda requisição que chega com um token fica atribuída a ele na tela de Logs."
+        title={t("keys.title")}
+        subtitle={t("keys.tokenSubtitle")}
       />
 
       <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,22rem)]">
@@ -140,8 +143,8 @@ export function TokenKeys() {
           {keys.data && (
             <Panel>
               <PanelHeader
-                title={`${keys.data.length} ${keys.data.length === 1 ? "token" : "tokens"}`}
-                subtitle="Tokens convivem: criar um novo não revoga os anteriores."
+                title={t("keys.tokenCount", { count: keys.data.length })}
+                subtitle={t("keys.tokensCoexist")}
                 actions={
                   <Button
                     size="sm"
@@ -149,14 +152,13 @@ export function TokenKeys() {
                     loading={keys.isFetching}
                     onClick={() => void keys.refetch()}
                   >
-                    Atualizar
+                    {t("keys.refresh")}
                   </Button>
                 }
               />
               {keys.data.length === 0 ? (
-                <Empty icon={<KeyRound className="h-5 w-5" />} title="Nenhum token ainda">
-                  Enquanto não houver token, a chave de conexão do cluster é a única
-                  credencial que abre as rotas <span className="font-mono">/v1</span>.
+                <Empty icon={<KeyRound className="h-5 w-5" />} title={t("keys.empty")}>
+                  {t("keys.connectionOnly")}
                 </Empty>
               ) : (
                 <div className="divide-y divide-line">
@@ -166,25 +168,25 @@ export function TokenKeys() {
                         <div className="flex min-w-0 flex-wrap items-center gap-2">
                           <span className="font-medium text-fg">{k.label}</span>
                           <Badge tone={k.active ? "aqua" : "neutral"}>
-                            {k.active ? "ativo" : "inativo"}
+                            {k.active ? t("keys.active") : t("keys.inactive")}
                           </Badge>
                           <Badge tone="neutral">{nameOf(k.node_id)}</Badge>
                         </div>
                         <div className="flex shrink-0 items-center gap-3">
                           <span className="text-[0.72rem] text-faint">
-                            criado {since(k.created_at)}
+                            {t("keys.createdAt")} {since(k.created_at)}
                           </span>
                           <Button
                             size="sm"
                             variant="ghost"
-                            aria-label={`Revogar ${k.label}`}
+                            aria-label={t("keys.revoke", { label: k.label })}
                             icon={<Trash2 className="h-3.5 w-3.5" />}
                             onClick={() => setRevoking({ key: k.key, label: k.label })}
                           />
                         </div>
                       </div>
                       <div className="mt-2.5">
-                        <Secret value={k.key} label={`token ${k.label}`} />
+                        <Secret value={k.key} label={t("keys.tokenLabel", { label: k.label })} />
                       </div>
                     </div>
                   ))}
@@ -195,9 +197,9 @@ export function TokenKeys() {
         </div>
 
         <Panel className="self-start">
-          <PanelHeader title="Novo token" />
+          <PanelHeader title={t("keys.newToken")} />
           <div className="space-y-4 px-5 py-4">
-            <Field label="Para que serve" hint="Aparece na tela de Logs em cada requisição.">
+            <Field label={t("keys.purpose")} hint={t("keys.purposeHint")}>
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
@@ -205,11 +207,11 @@ export function TokenKeys() {
               />
             </Field>
             <Field
-              label="Nó da rede"
-              hint="Serve para saber de onde vieram as chamadas. Não restringe o token a esse nó — qualquer peer aceita qualquer token do cluster."
+              label={t("keys.networkNode")}
+              hint={t("keys.nodeHint")}
             >
               <Select value={nodeId} onChange={(e) => setNodeId(e.target.value)}>
-                <option value="">Toda a rede</option>
+                <option value="">{t("keys.allNetwork")}</option>
                 {(cluster.data?.peers ?? []).map((p) => (
                   <option key={p.node_id} value={p.node_id}>
                     {p.node?.hostname || p.short_id}
@@ -223,7 +225,7 @@ export function TokenKeys() {
               loading={creating}
               onClick={() => void create()}
             >
-              Criar token
+              {t("keys.create")}
             </Button>
           </div>
         </Panel>
@@ -231,9 +233,9 @@ export function TokenKeys() {
 
       <Confirm
         open={revoking !== null}
-        title={`Revogar o token ${revoking?.label}?`}
-        description="Quem estiver usando este token passa a receber 403 na próxima chamada. Não há como recuperá-lo."
-        confirmLabel="Revogar"
+        title={t("keys.revokeTitle", { label: revoking?.label ?? "" })}
+        description={t("keys.revokeDescription")}
+        confirmLabel={t("keys.revoke")}
         tone="danger"
         busy={busy}
         onConfirm={() => revoking && void revoke(revoking.key)}
@@ -246,6 +248,7 @@ export function TokenKeys() {
 // ── Connection key ───────────────────────────────────────────────────────────
 
 export function ConnectionKeys() {
+  const { t } = useI18n();
   const node = useNode();
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
@@ -255,13 +258,10 @@ export function ConnectionKeys() {
     setBusy(true);
     try {
       await api.post("/admin/regenerate-key");
-      toast.success(
-        "Chave trocada",
-        "Os outros nós precisam da nova para continuar conversando com este.",
-      );
+      toast.success(t("keys.rotated"), t("keys.rotatedDetail"));
       void node.refetch();
     } catch (e) {
-      toast.fromError("A chave não foi trocada", e);
+      toast.fromError(t("keys.rotateFailed"), e);
     } finally {
       setBusy(false);
       setConfirming(false);
@@ -271,8 +271,8 @@ export function ConnectionKeys() {
   return (
     <>
       <PageHeader
-        title="Chaves de conexão"
-        subtitle="A credencial de operador do cluster: a mesma string em todas as máquinas."
+        title={t("keys.connectionTitle")}
+        subtitle={t("keys.connectionSubtitle")}
       />
 
       {node.isLoading && <Skeleton className="h-48 w-full" />}
@@ -283,23 +283,23 @@ export function ConnectionKeys() {
           <Panel>
             <PanelHeader
               eyebrow={node.data.hostname}
-              title="Chave deste cluster"
-              subtitle="É o que se cola na tela de configuração de uma máquina nova para ela entrar na rede."
+              title={t("keys.clusterKey")}
+              subtitle={t("keys.clusterKeySubtitle")}
               actions={
                 <Button
                   variant="danger"
                   icon={<RefreshCw className="h-3.5 w-3.5" />}
                   onClick={() => setConfirming(true)}
                 >
-                  Gerar outra
+                  {t("keys.generateAnother")}
                 </Button>
               }
             />
             <div className="space-y-4 px-5 py-4">
-              <Secret value={node.data.connection_key} label="chave de conexão" />
+              <Secret value={node.data.connection_key} label={t("keys.connectionKey")} />
               <dl className="grid gap-4 sm:grid-cols-2">
                 <div>
-                  <dt className="eyebrow mb-1">Endereço de bootstrap</dt>
+                  <dt className="eyebrow mb-1">{t("keys.bootstrapAddress")}</dt>
                   <dd>
                     <Mono className="text-fg">
                       {node.data.system.hostname}:{node.data.p2p_port}
@@ -307,7 +307,7 @@ export function ConnectionKeys() {
                   </dd>
                 </div>
                 <div>
-                  <dt className="eyebrow mb-1">Base URL da API</dt>
+                  <dt className="eyebrow mb-1">{t("keys.apiBaseUrl")}</dt>
                   <dd>
                     <Mono className="text-fg">
                       http://{node.data.system.hostname}:{node.data.gateway_port}/v1
@@ -319,20 +319,17 @@ export function ConnectionKeys() {
           </Panel>
 
           <Panel className="self-start">
-            <PanelHeader title="O que esta chave abre" />
+            <PanelHeader title={t("keys.keyAccess")} />
             <ul className="space-y-3 px-5 py-4 text-[0.83rem] leading-relaxed text-muted">
               <li>
-                As rotas de administração (<span className="font-mono">/admin/*</span>) e de
-                configuração de cluster deste nó e dos peers.
+                {t("keys.adminAccess")}
               </li>
               <li>
-                As rotas compatíveis com OpenAI (<span className="font-mono">/v1</span>) —
-                por isso o chat de teste funciona sem criar token nenhum.
+                {t("keys.openaiAccess")}
               </li>
               <li className="flex gap-2.5 pt-1">
                 <ShieldAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
-                Trocar a chave aqui muda só esta máquina. As outras continuam com a antiga
-                até serem atualizadas, e param de aceitar as chamadas desta.
+                {t("keys.rotationWarning")}
               </li>
             </ul>
           </Panel>
@@ -341,9 +338,9 @@ export function ConnectionKeys() {
 
       <Confirm
         open={confirming}
-        title="Gerar outra chave de conexão?"
-        description="A chave atual deixa de valer nesta máquina imediatamente. Todos os outros nós e harnesses precisam receber a nova, senão o cluster se parte."
-        confirmLabel="Gerar outra"
+        title={t("keys.rotateTitle")}
+        description={t("keys.rotateDescription")}
+        confirmLabel={t("keys.generateAnother")}
         tone="danger"
         busy={busy}
         onConfirm={() => void regenerate()}

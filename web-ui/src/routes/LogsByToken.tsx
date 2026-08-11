@@ -8,7 +8,6 @@
  */
 import { KeyRound, Radio, Server } from "lucide-react";
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import {
   Badge,
   Empty,
@@ -24,6 +23,7 @@ import {
 import { clock, ms, num, since } from "../lib/format";
 import { useCluster, useRequestLog } from "../lib/queries";
 import type { RequestLogEntry } from "../lib/types";
+import { useI18n } from "../i18n/provider";
 
 /** Peer names, so a log line reads as machines rather than as hex. */
 function useNodeNames() {
@@ -36,8 +36,9 @@ function useNodeNames() {
 }
 
 export function HopChain({ entry, name }: { entry: RequestLogEntry; name: (id: string) => string }) {
+  const { t } = useI18n();
   if (entry.hops.length === 0) {
-    return <span className="text-[0.78rem] text-faint">sem pipeline</span>;
+    return <span className="text-[0.78rem] text-faint">{t("tokenLogs.noPipeline")}</span>;
   }
   return (
     <span className="flex flex-wrap items-center gap-1">
@@ -91,6 +92,7 @@ function Tally({
 }
 
 export function LogsByToken() {
+  const { t } = useI18n();
   const [nodeFilter, setNodeFilter] = useState("");
   const cluster = useCluster();
   const log = useRequestLog(nodeFilter ? { node_id: nodeFilter } : {});
@@ -114,16 +116,16 @@ export function LogsByToken() {
   return (
     <>
       <PageHeader
-        title="Requisições por token e por nó"
-        subtitle="O que a rede foi chamada a gerar, com a credencial que pagou por cada chamada e as máquinas que participaram."
+        title={t("tokenLogs.title")}
+        subtitle={t("tokenLogs.subtitle")}
         actions={
           <Select
             className="w-56"
             value={nodeFilter}
             onChange={(e) => setNodeFilter(e.target.value)}
-            aria-label="Filtrar por nó"
+            aria-label={t("tokenLogs.filter")}
           >
-            <option value="">Todos os nós</option>
+            <option value="">{t("tokenLogs.allNodes")}</option>
             {(cluster.data?.peers ?? []).map((p) => (
               <option key={p.node_id} value={p.node_id}>
                 {p.node?.hostname || p.short_id}
@@ -140,46 +142,41 @@ export function LogsByToken() {
         <div className="space-y-5">
           <div className="grid gap-5 lg:grid-cols-2">
             <Tally
-              title="Por API token"
+              title={t("tokenLogs.byToken")}
               icon={<KeyRound className="h-3 w-3" />}
               rows={byToken}
-              emptyLabel="Nenhuma requisição registrada ainda."
+              emptyLabel={t("tokenLogs.noRequests")}
             />
             <Tally
-              title="Por nó da rede"
+              title={t("tokenLogs.byNode")}
               icon={<Server className="h-3 w-3" />}
               rows={byNode}
-              emptyLabel="Nenhum salto registrado ainda."
+              emptyLabel={t("tokenLogs.noHops")}
             />
           </div>
 
           <Panel>
             <PanelHeader
-              title={`${num(data.total)} ${data.total === 1 ? "requisição" : "requisições"} na memória deste nó`}
-              subtitle="O registro vive na memória do processo: reiniciar o nó começa do zero. Só as mais recentes ficam."
+              title={t("tokenLogs.count", { count: num(data.total) })}
+              subtitle={t("tokenLogs.memoryDetail")}
               actions={
                 data.errors ? (
                   <Badge tone="rose">
-                    {num(data.errors)} {data.errors === 1 ? "erro" : "erros"}
+                    {t("tokenLogs.errors", { count: num(data.errors) })}
                   </Badge>
                 ) : undefined
               }
             />
             {data.entries.length === 0 ? (
-              <Empty icon={<Radio className="h-5 w-5" />} title="Nada registrado ainda">
-                Assim que a rede atender uma requisição, ela aparece aqui. Você pode
-                provocar uma no{" "}
-                <Link to="/chat" className="text-iris hover:underline">
-                  chat de teste
-                </Link>
-                .
+              <Empty icon={<Radio className="h-5 w-5" />} title={t("tokenLogs.empty")}>
+                {t("tokenLogs.emptyDetail")}
               </Empty>
             ) : (
               <ScrollX>
                 <table className="w-full min-w-[52rem] border-collapse text-[0.82rem]">
                   <thead>
                     <tr className="border-b border-line text-left">
-                      {["Hora", "Token", "Rota", "Caminho", "Tokens", "Duração", ""].map(
+                      {[t("tokenLogs.time"), t("tokenLogs.token"), t("tokenLogs.route"), t("tokenLogs.path"), t("tokenLogs.tokens"), t("tokenLogs.duration"), ""].map(
                         (h) => (
                           <th key={h} className="px-4 py-2.5 font-medium text-muted">
                             {h}

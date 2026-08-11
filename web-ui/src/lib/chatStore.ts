@@ -8,6 +8,7 @@
  * follow you to another browser, and clearing site data clears them.
  */
 import { useCallback, useEffect, useState } from "react";
+import { getActiveLocale } from "../i18n/locales";
 
 export interface ChatMessage {
   id: string;
@@ -56,13 +57,15 @@ export const newId = () =>
 /** The first thing the operator said, which is what they will recognise it by. */
 export function titleFrom(text: string): string {
   const line = text.trim().split("\n")[0] ?? "";
-  return line.length > 52 ? `${line.slice(0, 52)}…` : line || "Conversa sem título";
+  return line.length > 52
+    ? line.slice(0, 52) + "…"
+    : line || (getActiveLocale() === "pt-BR" ? "Conversa sem título" : "Untitled chat");
 }
 
 export function emptySession(model: string | null): ChatSession {
   return {
     id: newId(),
-    title: "Conversa nova",
+    title: getActiveLocale() === "pt-BR" ? "Conversa nova" : "New chat",
     model,
     messages: [],
     updatedAt: new Date().toISOString(),

@@ -16,6 +16,7 @@ import { isServing } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 import { useToast } from "../lib/toast";
+import { LanguageSelect, useI18n } from "../i18n/provider";
 import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
 import { SidebarContent } from "./Sidebar";
@@ -23,6 +24,7 @@ import { Badge, Dot, Skeleton } from "./ui";
 
 /** One line saying what this node is and whether the pipeline is closed. */
 function NodeChip() {
+  const { t } = useI18n();
   const node = useNode();
   const cluster = useCluster();
 
@@ -30,7 +32,7 @@ function NodeChip() {
   if (node.isError)
     return (
       <Badge tone="rose">
-        <Dot tone="rose" /> Sem contato com o nó
+        <Dot tone="rose" /> {t("topbar.nodeUnreachable")}
       </Badge>
     );
 
@@ -50,7 +52,7 @@ function NodeChip() {
       </Badge>
       {c && c.peers.length > 0 && (
         <Badge tone={complete ? "aqua" : "amber"} className="hidden md:inline-flex">
-          {c.peers.length} {c.peers.length === 1 ? "nó" : "nós"}
+          {t("topbar.nodeCount", { count: c.peers.length })}
           {c.total_layers > 0 && (
             <span className="font-mono">
               · {c.covered_layers}/{c.total_layers} camadas
@@ -65,6 +67,7 @@ function NodeChip() {
 type PendingAction = "unload" | "leave" | null;
 
 function NodeActions() {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<PendingAction>(null);
   const [busy, setBusy] = useState(false);
@@ -89,18 +92,18 @@ function NodeActions() {
     try {
       if (action === "unload") {
         await api.post("/api/ui/unload");
-        toast.success("Modelo descarregado", "A memória deste nó foi liberada.");
+        toast.success(t("topbar.unloaded"), t("topbar.unloadedDetail"));
       } else {
         await api.post("/api/ui/leave");
         toast.success(
-          "Nó fora da rede",
-          "Parou de anunciar e esqueceu os peers. Reconecte pela aba Rede.",
+          t("topbar.left"),
+          t("topbar.leftDetail"),
         );
       }
       invalidate();
     } catch (e) {
       toast.fromError(
-        action === "unload" ? "O modelo continua carregado" : "O nó continua na rede",
+        action === "unload" ? t("topbar.unloadFailed") : t("topbar.leaveFailed"),
         e,
       );
     } finally {
@@ -121,7 +124,7 @@ function NodeActions() {
             : "border-line bg-raised text-muted hover:border-line-strong hover:text-fg",
         )}
       >
-        <span className="hidden sm:inline">Este nó</span>
+        <span className="hidden sm:inline">{t("topbar.thisNode")}</span>
         <ChevronDown
           className={clsx("h-3.5 w-3.5 transition-transform duration-200", open && "rotate-180")}
         />
@@ -147,12 +150,12 @@ function NodeActions() {
               <PowerOff className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
               <span className="min-w-0">
                 <span className="block text-[0.84rem] font-medium text-fg">
-                  Descarregar modelo
+                  {t("topbar.unloadModel")}
                 </span>
                 <span className="block text-xs leading-relaxed text-muted">
                   {loaded
-                    ? "Para o servidor de inferência e libera a memória."
-                    : "Nenhum modelo carregado neste nó."}
+                    ? t("topbar.unloadDetail")
+                    : t("topbar.noModel")}
                 </span>
               </span>
             </button>
@@ -166,10 +169,10 @@ function NodeActions() {
               <LogOut className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
               <span className="min-w-0">
                 <span className="block text-[0.84rem] font-medium text-fg">
-                  Sair da rede
+                  {t("topbar.leaveNetwork")}
                 </span>
                 <span className="block text-xs leading-relaxed text-muted">
-                  Descarrega o modelo, para de anunciar e esquece os peers.
+                  {t("topbar.leaveDetail")}
                 </span>
               </span>
             </button>
@@ -179,7 +182,7 @@ function NodeActions() {
 
       <Confirm
         open={pending === "unload"}
-        title="Descarregar o modelo deste nó?"
+        title={t("topbar.unloadTitle")}
         description={
           <>
             O servidor de inferência para e a memória é liberada. Enquanto isso, a rede
@@ -187,7 +190,7 @@ function NodeActions() {
             <span className="font-mono text-fg">
               {node.data?.config
                 ? `${node.data.config.start_layer}–${node.data.config.end_layer}`
-                : "atribuídas a este nó"}
+                : t("topbar.thisNode")}
             </span>
             , e nenhuma requisição completa.
           </>
@@ -200,9 +203,9 @@ function NodeActions() {
       />
       <Confirm
         open={pending === "leave"}
-        title="Tirar este nó da rede?"
-        description="O nó para de anunciar, esquece os peers que conhece e descarrega o modelo. A interface continua no ar; para voltar, use Configurações › Rede."
-        confirmLabel="Sair da rede"
+        title={t("topbar.leaveTitle")}
+        description={t("topbar.leaveDescription")}
+        confirmLabel={t("topbar.leaveNetwork")}
         tone="danger"
         busy={busy}
         onConfirm={() => run("leave")}
@@ -214,10 +217,11 @@ function NodeActions() {
 
 function ThemeToggle() {
   const { theme, toggle } = useTheme();
+  const { t } = useI18n();
   return (
     <button
       onClick={toggle}
-      aria-label={theme === "dark" ? "Usar tema claro" : "Usar tema escuro"}
+      aria-label={theme === "dark" ? t("topbar.useLightTheme") : t("topbar.useDarkTheme")}
       className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-raised text-muted transition-colors duration-150 hover:border-line-strong hover:text-fg"
     >
       <AnimatePresence mode="wait" initial={false}>
@@ -236,6 +240,7 @@ function ThemeToggle() {
 }
 
 export function Topbar() {
+  const { t } = useI18n();
   const [drawer, setDrawer] = useState(false);
 
   return (
@@ -243,7 +248,7 @@ export function Topbar() {
       <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center gap-3 border-b border-line bg-surface/85 px-4 backdrop-blur-md sm:px-6">
         <button
           onClick={() => setDrawer(true)}
-          aria-label="Abrir menu"
+          aria-label={t("topbar.openMenu")}
           className="flex h-9 w-9 items-center justify-center rounded-lg border border-line bg-raised text-muted transition-colors hover:text-fg lg:hidden"
         >
           <Menu className="h-4 w-4" />
@@ -259,13 +264,14 @@ export function Topbar() {
             target="_blank"
             rel="noreferrer"
             className="hidden h-9 items-center gap-1.5 rounded-lg border border-line bg-raised px-2.5 text-[0.82rem] text-muted transition-colors hover:border-line-strong hover:text-fg xl:flex"
-            title="API compatível com OpenAI servida por este nó"
+            title={t("topbar.apiTitle")}
           >
             <Cpu className="h-3.5 w-3.5" />
             <span className="font-mono">/v1</span>
           </a>
           <Notifications />
           <NodeActions />
+          <LanguageSelect className="hidden sm:block" />
           <ThemeToggle />
         </div>
       </header>
@@ -293,7 +299,7 @@ export function Topbar() {
             >
               <button
                 onClick={() => setDrawer(false)}
-                aria-label="Fechar menu"
+                aria-label={t("topbar.closeMenu")}
                 className="absolute right-3 top-5 flex h-8 w-8 items-center justify-center rounded-lg text-faint transition-colors hover:text-fg"
               >
                 <X className="h-4 w-4" />

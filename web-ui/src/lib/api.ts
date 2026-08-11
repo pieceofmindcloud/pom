@@ -87,6 +87,21 @@ export const api = {
     request<T>(path, { ...opts, method: "DELETE" }),
 };
 
+/**
+ * Atualiza e reinicia uma máquina do cluster.
+ *
+ * Sem `nodeId`, ou com o `node_id` deste próprio nó, atualiza esta máquina.
+ * Com o `node_id` de outro peer, este nó repassa a chamada para o
+ * `/api/ui/dev/update` daquele peer (`src/devupdate.rs`) — o painel nunca fala
+ * direto com outro peer, `api.ts` só usa caminhos relativos.
+ */
+export function devUpdate(nodeId?: string) {
+  return api.post<{ job_id: string }>(
+    "/api/ui/dev/update",
+    nodeId ? { node_id: nodeId } : {},
+  );
+}
+
 /** Open an SSE stream and yield each `data:` payload as it lands. */
 export async function* streamSse(
   path: string,

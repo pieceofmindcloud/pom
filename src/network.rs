@@ -99,7 +99,7 @@ pub struct PeerInfo {
 
 /// Extract the host part of an addr string for use in HTTP URLs.
 /// IPv4 `"1.2.3.4:port"` → `"1.2.3.4"`, IPv6 `"[::1]:port"` → `"[::1]"`.
-fn ip_host(addr: &str) -> &str {
+pub(crate) fn ip_host(addr: &str) -> &str {
     if addr.starts_with('[') {
         // "[::1]:port" — keep the brackets so the URL is valid
         match addr.find(']') {

@@ -614,7 +614,7 @@ fn url_host(base: &str) -> &str {
 ///
 /// Returned bracketed when it is IPv6, because the only caller interpolates it
 /// straight into a URL.
-fn local_ip_towards(dest: std::net::IpAddr) -> String {
+pub(crate) fn local_ip_towards(dest: std::net::IpAddr) -> String {
     // A connected UDP socket performs no traffic but fixes the route. It has to
     // be bound in the destination's family: connecting a v4 socket to a v6
     // address fails outright.

@@ -86,6 +86,9 @@ pub struct NodeInfo {
     /// Commit this binary was built from, so "which build is that peer running?"
     /// is answerable without a shell on the machine.
     pub build_commit: String,
+    /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
+    /// quando isto é verdade, para nunca oferecer o que vai dar 403.
+    pub dev_update: bool,
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
@@ -112,6 +115,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         node_id: state.network.node_id.clone(),
         hostname: system.hostname.clone(),
         build_commit: crate::BUILD_COMMIT.to_string(),
+        dev_update: crate::devupdate::enabled(),
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),
@@ -2014,17 +2018,10 @@ pub async fn save_setup(
         Ok(()) => {
             // Trigger restart: spawn a new instance and exit.
             // The new instance will find the config file and start in full mode.
-            let gateway_port = cfg.gateway_port;
             tokio::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(800)).await;
-                let exe = std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("rdma-p2p"));
-                let _ = std::process::Command::new(&exe)
-                    .arg("--gateway-port")
-                    .arg(gateway_port.to_string())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-                std::process::exit(0);
+                let e = crate::respawn::respawn_self();
+                tracing::error!("respawn falhou, o nó segue no ar: {e}");
             });
             Json(json!({"saved": true, "restart": true, "message": "Configuracao salva. Reiniciando..."})).into_response()
         }

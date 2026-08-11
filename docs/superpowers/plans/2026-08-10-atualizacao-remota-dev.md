@@ -804,6 +804,11 @@ fn build_args(features: Option<&str>) -> Vec<String> {
 ///
 /// A entrada é `(hostname, addr, gateway_port)` de cada peer vivo. Peer sem
 /// porta de gateway fica de fora: não há como pedir nada a ele.
+///
+/// REVISÃO 2026-08-10: hostname sozinho não identifica uma máquina — dois
+/// `ubuntu` em hosts diferentes casariam, e a rota reiniciaria nó alheio. Vale
+/// hostname **e** host de rede, e `addr` com `0.0.0.0`/`::` é descartado: um
+/// endereço não reescrito aponta para o próprio nó.
 fn sibling_urls(my_hostname: &str, peers: &[(&str, &str, Option<u16>)]) -> Vec<String> {
     peers
         .iter()
@@ -982,6 +987,22 @@ estava, servindo o binario que ja esta em memoria."
 ---
 
 ### Task 7: O botão no card
+
+> **CORREÇÃO 2026-08-10, descoberta na implementação.** O plano supunha um
+> helper `peerBaseUrl` no front-end. Ele não existe: `web-ui/src/lib/api.ts`
+> usa caminhos **relativos** de propósito — o painel só fala com o próprio nó,
+> e falar direto com outro peer esbarraria em origem cruzada. O padrão do
+> projeto para agir sobre outro peer é o nó local **repassar** a chamada, como
+> `webui::launch` faz com `stop-inference`: acha o peer por `node_id`, monta
+> `p.gateway_url()` e chama com `bearer_auth`.
+>
+> Então esta tarefa também implementa o repasse: `POST /api/ui/dev/update`
+> passa a aceitar um corpo opcional `{"node_id": "..."}`. Sem ele, ou com o
+> `node_id` deste nó, atualiza esta máquina. Com o `node_id` de outro peer,
+> repassa a requisição para o `/api/ui/dev/update` daquele peer e devolve a
+> resposta dele. O portão continua sendo verificado **no destino** — repassar
+> não fura o portão de ninguém: um peer sem `RDMA_P2P_DEV_UPDATE=1` responde
+> 403 e o operador vê isso.
 
 **Files:**
 - Modify: `web-ui/src/lib/types.ts` (campos `build_commit` e `dev_update` em `NodeInfo`)

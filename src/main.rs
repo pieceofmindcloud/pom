@@ -9,6 +9,7 @@ mod catalog;
 mod config;
 mod auth;
 mod session;
+mod devupdate;
 mod discovery;
 mod display;
 mod gateway;

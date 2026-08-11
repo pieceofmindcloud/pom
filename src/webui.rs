@@ -86,6 +86,9 @@ pub struct NodeInfo {
     /// Commit this binary was built from, so "which build is that peer running?"
     /// is answerable without a shell on the machine.
     pub build_commit: String,
+    /// Este nó aceita atualizar-se pela interface. A tela só desenha o botão
+    /// quando isto é verdade, para nunca oferecer o que vai dar 403.
+    pub dev_update: bool,
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
@@ -112,6 +115,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         node_id: state.network.node_id.clone(),
         hostname: system.hostname.clone(),
         build_commit: crate::BUILD_COMMIT.to_string(),
+        dev_update: crate::devupdate::enabled(),
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),

@@ -1463,6 +1463,9 @@ async fn run(
         State(state),
         Json(LaunchRequest {
             base_name: plan.group.clone(),
+            // `group` is the selected value from the deployment model picker.
+            // Its name is the cluster identity, not a heuristic profile name.
+            model_label: Some(plan.group.clone()),
             total_layers,
             targets,
             primary_node_id: primary,

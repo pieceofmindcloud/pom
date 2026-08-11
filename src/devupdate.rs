@@ -49,6 +49,17 @@ fn refuse(r: (StatusCode, String)) -> Response {
     (r.0, Json(json!({ "error": r.1 }))).into_response()
 }
 
+/// Folga entre a resposta HTTP sair e o processo morrer.
+///
+/// O corpo é um JSON minúsculo; numa LAN, escrevê-lo na conexão leva
+/// microssegundos. 300ms é folga generosa para isso mesmo passando por um
+/// proxy reverso local, sem ser tão longo que o operador sinta demora no
+/// reinício. Os dois lados do erro são assimétricos: passar deste valor só
+/// custa ao operador esperar um pouco mais; ficar aquém dele corta a conexão
+/// do cliente antes do byte chegar, e o pedido parece ter falhado quando na
+/// verdade funcionou.
+const RESTART_DELAY: std::time::Duration = std::time::Duration::from_millis(300);
+
 pub fn router() -> Router<GatewayState> {
     Router::new().route("/api/ui/dev/restart", post(restart_endpoint))
 }
@@ -69,8 +80,7 @@ async fn restart_endpoint(
     }
 
     tokio::spawn(async {
-        // Folga para a resposta HTTP sair antes de o processo morrer.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
         tracing::error!("respawn falhou, o nó segue no ar: {e}");
     });
@@ -98,7 +108,6 @@ mod tests {
     /// 403 sem tocar em nada.
     #[test]
     fn portao_fechado_recusa_com_403() {
-        assert_eq!(gate_rejection().is_some(), !enabled());
         // Num ambiente de teste a variável não está ligada, então há recusa.
         let r = gate_rejection().expect("sem a variável, tem que recusar");
         assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);

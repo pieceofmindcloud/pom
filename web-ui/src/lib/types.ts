@@ -116,6 +116,10 @@ export interface NodeInfo {
   active_model: string;
   /** True while the operator has taken this node off the network. */
   detached?: boolean;
+  /** Commit de que o binário foi construído. */
+  build_commit: string;
+  /** Este nó aceita atualizar-se pela interface (RDMA_P2P_DEV_UPDATE=1). */
+  dev_update: boolean;
 }
 
 export interface PeerView {

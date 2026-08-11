@@ -146,12 +146,83 @@ async fn git(root: &std::path::Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+/// Corpo opcional de `POST /api/ui/dev/update`.
+///
+/// `Option<Json<T>>` em vez de `Json<T>`: um corpo vazio (o botão da tela hoje
+/// manda `{}`, mas um `curl` sem `-d` nenhum manda corpo zero) faria o
+/// extractor `Json<T>` falhar antes mesmo de o handler rodar, e a mensagem de
+/// erro do axum não é a que este endpoint quer mostrar. Com `Option`, corpo
+/// ausente e corpo `{}` chegam ambos como `node_id: None` — executa aqui.
+#[derive(Debug, Default, serde::Deserialize)]
+struct UpdateRequest {
+    node_id: Option<String>,
+}
+
+/// Este pedido é para repassar a outro peer, ou para executar aqui?
+///
+/// Função pura para ficar testável sem subir rede: sem `node_id`, ou com o
+/// `node_id` deste próprio nó, executa aqui; qualquer outro id repassa.
+fn deve_repassar(node_id_pedido: Option<&str>, meu_node_id: &str) -> bool {
+    matches!(node_id_pedido, Some(id) if id != meu_node_id)
+}
+
 async fn update_endpoint(
     _auth: crate::auth::ConnectionAuth,
     State(state): State<GatewayState>,
+    body: Option<Json<UpdateRequest>>,
 ) -> Response {
     if let Some(r) = gate_rejection() {
         return refuse(r);
+    }
+
+    let node_id_pedido = body.and_then(|Json(b)| b.node_id);
+    if deve_repassar(node_id_pedido.as_deref(), &state.network.node_id) {
+        // O portão é checado no destino, não aqui: repassar não pode furar o
+        // portão de ninguém. Um peer sem RDMA_P2P_DEV_UPDATE=1 responde 403 e
+        // este nó devolve exatamente esse status e corpo ao navegador.
+        let alvo = node_id_pedido.expect("deve_repassar só é verdadeiro com Some");
+        let peers = state.network.alive_peers().await;
+        let Some(base) = peers
+            .iter()
+            .find(|p| p.node_id == alvo)
+            .and_then(|p| p.gateway_url())
+        else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({
+                    "error": format!(
+                        "peer {alvo} não está anunciando gateway ou não é mais visto na rede"
+                    )
+                })),
+            )
+                .into_response();
+        };
+        let key = { state.auth.read().await.connection_key.clone() };
+        let url = format!("{base}/api/ui/dev/update");
+        return match state
+            .http
+            .post(&url)
+            .bearer_auth(&key)
+            .timeout(crate::webui::PEER_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(resp) => {
+                let status = resp.status();
+                let corpo = resp
+                    .text()
+                    .await
+                    .unwrap_or_else(|e| format!("{{\"error\":\"resposta do peer {alvo} sem corpo legível: {e}\"}}"));
+                (status, corpo).into_response()
+            }
+            Err(e) => (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({
+                    "error": format!("não deu para repassar a atualização para {alvo}: {e}")
+                })),
+            )
+                .into_response(),
+        };
     }
 
     let id = uuid::Uuid::new_v4().to_string();
@@ -464,6 +535,21 @@ mod tests {
         assert_eq!(
             build_args(Some("metal")),
             vec!["build", "--release", "--features", "metal"]
+        );
+    }
+
+    /// Sem `node_id`, com o `node_id` deste nó, e com o de outro peer: as três
+    /// respostas que decidem entre executar aqui e repassar.
+    #[test]
+    fn deve_repassar_so_com_node_id_de_outro_peer() {
+        assert!(!deve_repassar(None, "meu-id"), "sem node_id, executa aqui");
+        assert!(
+            !deve_repassar(Some("meu-id"), "meu-id"),
+            "node_id igual ao meu, executa aqui"
+        );
+        assert!(
+            deve_repassar(Some("outro-id"), "meu-id"),
+            "node_id de outro peer, repassa"
         );
     }
 

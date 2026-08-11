@@ -6,15 +6,18 @@ import {
   HardDrive,
   LayoutGrid,
   MemoryStick,
+  RefreshCw,
   Route as RouteIcon,
   Zap,
 } from "lucide-react";
 import { useState } from "react";
+import { Confirm } from "../components/Confirm";
 import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
 import {
   Badge,
+  Button,
   Dot,
   Empty,
   ErrorState,
@@ -26,6 +29,7 @@ import {
   PanelHeader,
   Skeleton,
 } from "../components/ui";
+import { devUpdate } from "../lib/api";
 import {
   isServing,
   layerRange,
@@ -36,8 +40,65 @@ import {
   serverStateTone,
   since,
 } from "../lib/format";
-import { useCluster, useNode } from "../lib/queries";
+import { useCluster, useInvalidate, useNode } from "../lib/queries";
+import { useToast } from "../lib/toast";
 import type { PeerView } from "../lib/types";
+
+/** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
+function UpdateNode({ nodeId, hostname, isSelf }: { nodeId: string; hostname: string; isSelf: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+  const invalidate = useInvalidate();
+
+  async function run() {
+    setBusy(true);
+    try {
+      await devUpdate(isSelf ? undefined : nodeId);
+      toast.success(
+        `Atualizando ${hostname}`,
+        "O código foi puxado e o build está rodando; a máquina reinicia sozinha ao terminar.",
+      );
+      invalidate();
+    } catch (e) {
+      toast.fromError(`Não deu para atualizar ${hostname}`, e);
+    } finally {
+      setBusy(false);
+      setOpen(false);
+    }
+  }
+
+  return (
+    <>
+      <Button size="sm" variant="outline" onClick={() => setOpen(true)}>
+        <RefreshCw className="h-3.5 w-3.5" />
+        Atualizar e reiniciar
+      </Button>
+      <Confirm
+        open={open}
+        busy={busy}
+        tone="primary"
+        title="Atualizar esta máquina?"
+        confirmLabel="Atualizar e reiniciar"
+        onCancel={() => setOpen(false)}
+        onConfirm={() => void run()}
+        description={
+          <>
+            <p>
+              Puxa o código do <code className="font-mono">main</code>, recompila e reinicia
+              todos os nós de <strong className="text-fg">{hostname}</strong>.
+            </p>
+            <p className="mt-2 text-xs text-faint">
+              Para se houver alterações não commitadas ou se o repositório estiver em outro
+              branch. Um <code className="font-mono">cargo build</code> aberto nessa máquina
+              será serializado com este, e o binário dela também é substituído.
+            </p>
+          </>
+        }
+      />
+    </>
+  );
+}
 
 type View = "minima" | "estendida";
 
@@ -143,6 +204,11 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               )}
             </div>
             <p className="truncate text-xs text-muted">{kind.label}</p>
+            {n?.build_commit && (
+              <p className="mt-0.5 truncate font-mono text-[0.62rem] text-faint">
+                {n.build_commit}
+              </p>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -300,6 +366,20 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               that owns the memory, never by a coordinator reaching in. */}
           {peer.is_self && cfg && (
             <ReleaseSlice startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
+          )}
+
+          {n?.dev_update && (
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
+              <Footnote icon={<RefreshCw className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
+                Esta máquina aceita atualizar-se pela interface (
+                <span className="font-mono text-muted">RDMA_P2P_DEV_UPDATE=1</span>).
+              </Footnote>
+              <UpdateNode
+                nodeId={peer.node_id}
+                hostname={n.hostname || peer.short_id}
+                isSelf={peer.is_self}
+              />
+            </div>
           )}
 
           {system && system.gpu_processes.length > 0 && (

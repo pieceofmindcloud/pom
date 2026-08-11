@@ -157,6 +157,20 @@ a versão anterior tinha um `mock-server.mjs` e ele foi removido.
 | Implantar modelo fatiado | `POST /api/ui/deploy/plan`, `POST /api/ui/deploy`, `GET /api/ui/jobs` |
 | Liberar fatia | `GET /api/ui/release/candidate`, `POST /api/ui/release` |
 
+### Nós bloqueados e disponibilidade para inferência
+
+Bloquear um `node_id` remove imediatamente esse peer remoto da visão operacional
+do cluster: ele não aparece no Painel, não participa do catálogo e do plano de
+implantação, e não pode receber tráfego de inferência. Anúncios UDP que já
+estejam chegando não desfazem esse bloqueio. A tela de Rede ainda o lista como
+bloqueado, para que o operador possa desbloqueá-lo ou removê-lo.
+
+Antes de montar um pipeline, cada requisição também consulta `GET /health` de
+cada endpoint de inferência candidato, em paralelo, com limite de dez segundos.
+Só peers que respondem com sucesso entram no plano daquela requisição. Assim um
+anúncio UDP antigo ou um servidor de inferência parado não fecha artificialmente
+a cobertura de camadas nem faz a requisição esperar por um hop indisponível.
+
 **API token por nó está ligado de verdade**, não é maquete: os tokens são
 emitidos, listados e revogados em `/admin/api-keys`, ficam em `api_keys` no
 `rdma-p2p.json`, valem como credencial nas rotas `/v1` (`ApiKeyAuth`, `src/auth.rs`),

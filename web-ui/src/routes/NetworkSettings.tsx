@@ -127,7 +127,7 @@ export function NetworkSettings() {
           <Panel>
             <PanelHeader
               title={`${nodes.data.length} ${nodes.data.length === 1 ? "nó conhecido" : "nós conhecidos"}`}
-              subtitle="Bloquear um nó vale para este processo: ele deixa de ser aceito no handshake."
+              subtitle="Bloquear um nó exclui sua identidade do painel, da implantação e da inferência deste processo."
             />
             {nodes.data.length === 0 ? (
               <Empty icon={<Network className="h-5 w-5" />} title="Nenhum nó conhecido">
@@ -207,7 +207,7 @@ export function NetworkSettings() {
       <Confirm
         open={pending !== null}
         title={`Bloquear ${pending?.hostname}?`}
-        description="Este nó deixa de aceitar o handshake dessa máquina. Se ela estiver servindo camadas agora, o pipeline se abre e as requisições param de completar."
+        description="Este nó deixa de usar a identidade dessa máquina no painel, implantação e inferência. Se ela estiver servindo camadas agora, o pipeline se abre e as requisições param de completar."
         confirmLabel="Bloquear"
         tone="danger"
         busy={busy}

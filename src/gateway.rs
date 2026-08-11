@@ -23,6 +23,10 @@ use uuid::Uuid;
 
 /// Tokens `/api/generate` will produce before stopping on its own.
 const DEFAULT_MAX_TOKENS: u32 = 512;
+/// A peer that cannot answer its inference health endpoint is not eligible for
+/// a new pipeline. UDP discovery is deliberately lightweight and may still
+/// hear an isolated or old node, so it is not sufficient proof of a usable hop.
+const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Characters per token, used only to size up a prompt before sending it.
 /// Deliberately pessimistic — the real tokenizer lives in the first peer's
@@ -59,6 +63,43 @@ impl axum::extract::FromRef<GatewayState> for AuthState {
     }
 }
 
+/// The connection key gives the operator authority over which remote identities
+/// this node trusts. A blocked peer may keep broadcasting UDP announcements,
+/// but it must not enter the dashboard, deployment survey, or inference plan.
+fn peers_visible_to_cluster(peers: Vec<PeerInfo>, blocked: &[String]) -> Vec<PeerInfo> {
+    peers
+        .into_iter()
+        .filter(|peer| !blocked.contains(&peer.node_id))
+        .collect()
+}
+
+/// Keep only peers whose actual inference endpoint can answer now. This is a
+/// per-request admission check: a stale UDP announcer must not poison the
+/// layer count or leave a request waiting for a hop that no longer serves HTTP.
+async fn ready_for_pipeline(
+    http: &reqwest::Client,
+    peers: Vec<PeerInfo>,
+    timeout: Duration,
+) -> Vec<PeerInfo> {
+    futures::future::join_all(peers.into_iter().map(|peer| {
+        let http = http.clone();
+        async move {
+            let Some(base) = peer.inference_url() else {
+                return None;
+            };
+            let url = format!("{base}/health");
+            match tokio::time::timeout(timeout, http.get(url).send()).await {
+                Ok(Ok(response)) if response.status().is_success() => Some(peer),
+                _ => None,
+            }
+        }
+    }))
+    .await
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
 impl GatewayState {
     /// Model label the pipeline planner matches on right now.
     pub async fn active_model(&self) -> String {
@@ -92,7 +133,8 @@ impl GatewayState {
     /// Alive peers plus this node, so the local assignment participates in
     /// planning exactly like a remote one.
     pub async fn all_peers(&self) -> Vec<PeerInfo> {
-        let mut peers = self.network.alive_peers().await;
+        let blocked = self.auth.read().await.blocked_nodes.clone();
+        let mut peers = peers_visible_to_cluster(self.network.alive_peers().await, &blocked);
         // This machine is always part of the cluster, model or no model. Hiding
         // it when there is no assignment made the whole machine list disappear
         // on a node configured through the web UI.
@@ -396,7 +438,12 @@ pub async fn generate_stream(
         }
     }
 
-    let peers = state.all_peers().await;
+    let peers = ready_for_pipeline(
+        &state.http,
+        state.all_peers().await,
+        PIPELINE_HEALTH_TIMEOUT,
+    )
+    .await;
 
     // Total layers for THIS model, as reported by a peer that serves it.
     let total_layers = peers
@@ -973,5 +1020,81 @@ mod budget_tests {
     fn zero_sessions_does_not_divide_by_zero() {
         let c = cfg(8192, 8192, 256, 0);
         assert_eq!(prompt_budget(&c), 8192 - 256);
+    }
+}
+
+#[cfg(test)]
+mod peer_visibility_tests {
+    use super::*;
+
+    fn peer(id: &str) -> PeerInfo {
+        PeerInfo {
+            node_id: id.into(),
+            pubkey: String::new(),
+            addr: "127.0.0.1:42777".into(),
+            model: "qwen35".into(),
+            start_layer: 0,
+            end_layer: 15,
+            total_layers: 32,
+            memory_mb: 0.0,
+            last_seen: chrono::Utc::now(),
+            ollama_port: None,
+            inference_port: Some(8181),
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(8090),
+            role: String::new(),
+            hostname: String::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+        }
+    }
+
+    #[test]
+    fn a_blocked_peer_is_excluded_from_cluster_planning() {
+        let visible = peers_visible_to_cluster(
+            vec![peer("current"), peer("stale")],
+            &["stale".to_string()],
+        );
+
+        assert_eq!(visible.len(), 1);
+        assert_eq!(visible[0].node_id, "current");
+    }
+
+    #[tokio::test]
+    async fn a_peer_whose_inference_health_times_out_is_excluded_from_the_plan() {
+        let healthy_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let healthy_port = healthy_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+            axum::serve(healthy_listener, app).await.unwrap();
+        });
+
+        let stalled_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .unwrap();
+        let stalled_port = stalled_listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _connection = stalled_listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+
+        let mut healthy = peer("healthy");
+        healthy.inference_port = Some(healthy_port);
+        let mut stalled = peer("stalled");
+        stalled.inference_port = Some(stalled_port);
+
+        let reachable = ready_for_pipeline(
+            &reqwest::Client::new(),
+            vec![healthy, stalled],
+            Duration::from_millis(25),
+        )
+        .await;
+
+        assert_eq!(reachable.len(), 1);
+        assert_eq!(reachable[0].node_id, "healthy");
     }
 }

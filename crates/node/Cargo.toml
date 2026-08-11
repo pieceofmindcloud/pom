@@ -9,9 +9,6 @@ name = "rdma-p2p"
 path = "src/main.rs"
 
 [features]
-# Kept as a compatibility alias for existing release commands. Every build now
-# compiles the frontend locally, so this no longer selects a committed bundle.
-release-bundle = []
 default = []
 cuda = ["llama-cpp-sys-2/cuda"]
 metal = ["llama-cpp-sys-2/metal"]
@@ -46,7 +43,6 @@ libp2p = { version = "0.56", features = [
 ] }
 pkarr = "6"
 async-trait = "0.1"
-rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
 mime_guess = "2"
 zstd = "0.13"
 routing-contract = { path = "../routing-contract" }

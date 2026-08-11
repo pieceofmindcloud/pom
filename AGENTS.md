@@ -20,8 +20,9 @@ cargo build                    # Debug build
 
 # Interface web + API OpenAI — servidas por TODO no na --gateway-port.
 # Abra http://localhost:8080/ ; ver "Interface web, API OpenAI e monitor" abaixo.
-# Atencao: a interface e o build de web-ui/, embutido pelo build.rs, entao
-# `cargo build` PRECISA de Node/npm e reconstroi a tela junto.
+# Atencao: a interface e lida do disco em apps/frontend/dist em tempo de execucao
+# (nao embutida), entao rode `npm run build` la depois de editar; `cargo build`
+# nao precisa de Node/npm e nao reconstroi a tela.
 
 # Multi-node test on same machine (different ports)
 ./target/release/rdma-p2p --model gemma3 --memory 4GB --port 42777
@@ -92,8 +93,9 @@ Single-binary Rust application for decentralized LLM layer coordination with Oll
 - `pipeline.rs` — `LoadTracker` (RAII per-peer counters), `PipelinePlan` / `PipelineStep`, `plan_pipeline()` greedy planner
 - `gateway.rs` — `axum` HTTP server; owns the single generation path (`generate_stream`), `POST /api/generate`, `GET /peers`, `GET /health`
 - `openai.rs` — OpenAI-compatible routes on top of `generate_stream` (protocol only)
-- `webui.rs` — control API (`/api/ui/*`). The interface itself is `web-ui/` (React),
-  built by `build.rs` and embedded by `webapp.rs`; `web/` no longer exists
+- `webui.rs` — control API (`/api/ui/*`). The interface itself is `apps/frontend/` (React),
+  built with `npm run build` and read from disk at runtime by `webapp.rs`
+  (`config::ui_dist_dir()`, `$RDMA_P2P_UI_DIST` overrides); `web/` no longer exists
 - `catalog.rs` + `gguf.rs` — installed-model discovery over the directories in `rdma-p2p.json`, and a GGUF header/tensor-table reader
 - `plan.rs` — layer planning: `plan_split` from per-peer memory budgets, `plan_by_size` from per-slice target sizes, `even_split`/`plan_equal` for the "cut it in N" shortcut; on-demand slicing with progress
 - `sysmon.rs` — RAM / VRAM sampling per platform
@@ -290,14 +292,16 @@ outra *casa*, via `RDMA_P2P_HOME`:
 ```bash
 B=/home/jairpereira/workspace/rdma-p2p-b
 mkdir -p $B && cd $B
-for f in models venv inference_server.py split_model.py; do ln -s ../rdma-p2p/$f $f; done
+for f in models venv inference_server.py split_model.py apps; do ln -s ../rdma-p2p/$f $f; done
 # a config nao e herdada: sem ela o no sobe em modo setup e nao carrega modelo.
 # copie a do peer A trocando gateway_port, p2p_port e bootstrap_nodes.
 RDMA_P2P_HOME=$B ../rdma-p2p/target/release/rdma-p2p --model ./models/qwen/qwen_16_31.gguf \
     --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091 --inference-port 8182 ...
 ```
 
-Os assets da UI são embutidos no binário, então a casa nova não precisa deles. Confira que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
+A UI é lida do disco em `<RDMA_P2P_HOME>/apps/frontend/dist`, daí o symlink de
+`apps` — sem ele o segundo peer sobe, mas responde 500 na interface. Confira
+que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
 
 ### Estado do cenário "peers em redes diferentes, pela internet"
 
@@ -446,9 +450,10 @@ Verificado em 2026-08-07 com MacBook + ksia.
 ### Como a interface sobe
 
 Não sobe separado: **todo nó já serve a UI** na `--gateway-port`, junto da API.
-Abra `http://<peer>:<porta>/`. A interface é o build de `web-ui/`, embutido no binário
-pelo `build.rs` (ver `src/webapp.rs`), então **editar `web-ui/` exige `cargo build`** —
-recarregar o navegador não basta.
+Abra `http://<peer>:<porta>/`. A interface é o build de `apps/frontend/`, lido do
+disco em tempo de execução por `webapp.rs` (`config::ui_dist_dir()`) — não
+embutido no binário. **Editar `apps/frontend/` exige `npm run build` lá dentro**,
+não `cargo build`; recarregar o navegador depois basta.
 
 - MacBook: `./run-p1.sh` → <http://localhost:8080/>
 - ksia: `./run-p2.sh` → <http://192.168.100.138:8090/>. **A 8080 do ksia é do

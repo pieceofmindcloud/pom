@@ -1,0 +1,52 @@
+# 3-node local dev/test cluster.
+#
+# Host networking is required, same as the manual `docker run --net host`
+# this replaces: P2P discovery broadcasts to 255.255.255.255:42777 and the
+# gateway/inference ports are only reachable that way. Because every node
+# shares the host's network namespace, each one's rdma-p2p.json must pick its
+# own gateway_port/p2p_port/inference_port so they don't collide (see
+# old/scripts/run-p1.sh + run-p2.sh for the same pattern on bare metal).
+#
+# Each node's state — rdma-p2p.json, .rdma-p2p-node.key, models/ — lives under
+# its own directory in ./tests/fixtures (RDMA_P2P_HOME below), gitignored so
+# generated keys and models never land in the repo. A node with nothing in
+# its directory yet just boots into setup mode
+# (https://<host>:<gateway_port>/) same as on bare metal. RDMA_P2P_UI_DIST is
+# pinned to the path baked into the image because RDMA_P2P_HOME no longer
+# points at /app, and the web interface would otherwise be looked for under
+# the (bind-mounted, UI-less) data directory instead.
+x-node: &node
+  build: .
+  image: pom:latest
+  network_mode: host
+  environment:
+    RDMA_P2P_HOME: /data
+    RDMA_P2P_UI_DIST: /app/apps/frontend/dist
+
+services:
+  node-gpu:
+    <<: *node
+    container_name: rdma-p2p-node-gpu
+    volumes:
+      - ./tests/fixtures/node-gpu:/data
+    # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
+    # Toolkit on the host; omitted entirely on the other two nodes.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  node-cpu-1:
+    <<: *node
+    container_name: rdma-p2p-node-cpu-1
+    volumes:
+      - ./tests/fixtures/node-cpu-1:/data
+
+  node-cpu-2:
+    <<: *node
+    container_name: rdma-p2p-node-cpu-2
+    volumes:
+      - ./tests/fixtures/node-cpu-2:/data

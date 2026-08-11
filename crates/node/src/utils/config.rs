@@ -238,6 +238,16 @@ pub fn default_shard_dir() -> PathBuf {
     project_root().join("models")
 }
 
+/// Where the built web interface (`apps/frontend/dist`) is read from at
+/// runtime. `$RDMA_P2P_UI_DIST` overrides it — the runtime Docker image sets
+/// it explicitly rather than relying on `project_root()` detection, and a dev
+/// setup that keeps the bundle elsewhere can point straight at it.
+pub fn ui_dist_dir() -> PathBuf {
+    std::env::var("RDMA_P2P_UI_DIST")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| project_root().join("apps/frontend/dist"))
+}
+
 #[cfg(test)]
 mod tests {
     /// A peer address with no port is what produces `invalid port value` — the

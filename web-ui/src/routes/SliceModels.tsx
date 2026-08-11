@@ -33,6 +33,7 @@ import { useInvalidate, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isWholeModel, type SizePlan } from "../lib/types";
 import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 /** One row of the builder. Empty means "the rest of the model". */
 interface SliceInput {
@@ -63,7 +64,7 @@ function asPlan(value: unknown, invalidPlanMessage: string): SizePlan {
 }
 
 export function SliceModels() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
   const toast = useToast();
@@ -387,7 +388,7 @@ export function SliceModels() {
                           className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${plan.blocked ? "text-rose" : "text-amber"}`}
                         />
                         <span className="text-[0.82rem] leading-relaxed text-muted">
-                          {w}
+                          {localizeServerText(locale, w)}
                         </span>
                       </li>
                     ))}

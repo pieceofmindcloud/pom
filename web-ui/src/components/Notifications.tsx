@@ -18,6 +18,7 @@ import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { Badge, Button, Empty, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
+import { localizeServerText } from "../i18n/locales";
 
 function Row({
   icon,
@@ -56,7 +57,7 @@ function Row({
 }
 
 export function Notifications() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -148,8 +149,8 @@ export function Notifications() {
                 <Row
                   key={j.id}
                   icon={<Scissors className="h-3.5 w-3.5" />}
-                  title={j.title ?? j.step}
-                  detail={j.message || undefined}
+                  title={localizeServerText(locale, j.title ?? j.step)}
+                  detail={j.message ? localizeServerText(locale, j.message) : undefined}
                   progress={j.progress}
                   footer={
                     <span className="font-mono text-[0.7rem] text-faint">

@@ -21,6 +21,63 @@ fn enabled_from(v: Option<&str>) -> bool {
     v == Some("1")
 }
 
+use crate::gateway::GatewayState;
+use axum::{
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::post,
+    Json, Router,
+};
+use serde_json::json;
+
+/// A recusa do portão, ou `None` quando ele está aberto.
+fn gate_rejection() -> Option<(StatusCode, String)> {
+    if enabled() {
+        return None;
+    }
+    Some((
+        StatusCode::FORBIDDEN,
+        format!(
+            "atualização remota desligada neste nó. Suba o processo com \
+             {ENV_GATE}=1 para habilitar."
+        ),
+    ))
+}
+
+fn refuse(r: (StatusCode, String)) -> Response {
+    (r.0, Json(json!({ "error": r.1 }))).into_response()
+}
+
+pub fn router() -> Router<GatewayState> {
+    Router::new().route("/api/ui/dev/restart", post(restart_endpoint))
+}
+
+async fn restart_endpoint(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> Response {
+    if let Some(r) = gate_rejection() {
+        return refuse(r);
+    }
+
+    // Anota a fatia antes de sair, para voltar servindo o mesmo.
+    if let Some(cfg) = state.runtime.config().await {
+        if let Err(e) = crate::lastslice::save(&cfg) {
+            tracing::warn!("não deu para anotar a fatia antes do reinício: {e}");
+        }
+    }
+
+    tokio::spawn(async {
+        // Folga para a resposta HTTP sair antes de o processo morrer.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let e = crate::respawn::respawn_self();
+        tracing::error!("respawn falhou, o nó segue no ar: {e}");
+    });
+
+    Json(json!({ "restarting": true })).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -35,5 +92,20 @@ mod tests {
         assert!(!enabled_from(Some("true")));
         assert!(!enabled_from(Some("")));
         assert!(!enabled_from(None));
+    }
+
+    /// Com o portão fechado a rota não existe para efeitos práticos: responde
+    /// 403 sem tocar em nada.
+    #[test]
+    fn portao_fechado_recusa_com_403() {
+        assert_eq!(gate_rejection().is_some(), !enabled());
+        // Num ambiente de teste a variável não está ligada, então há recusa.
+        let r = gate_rejection().expect("sem a variável, tem que recusar");
+        assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);
+        assert!(
+            r.1.contains(ENV_GATE),
+            "a mensagem tem que dizer qual variável liga: {}",
+            r.1
+        );
     }
 }

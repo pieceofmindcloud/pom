@@ -617,6 +617,14 @@ inference_port,
     // ── Runtime: owns the model configuration and the inference server ──────
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
 
+    // `--model` na linha de comando é intenção explícita e vence qualquer
+    // fatia anotada por um reinício anterior. Este caminho nunca consome o
+    // arquivo (só o caminho sem `--model`, mais abaixo, faz isso) — sem esta
+    // chamada, um nó que sempre sobe com `--model` deixaria um
+    // `*.last-slice.json` órfão no disco para sempre, escrito por uma rota de
+    // restart que nunca seria lida de volta.
+    let _ = lastslice::take();
+
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
             model_path: model_name.clone(),

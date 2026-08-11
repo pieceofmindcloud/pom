@@ -16,7 +16,7 @@ use crate::wire::{self, WireDtype};
 use anyhow::{bail, Result};
 use axum::{
     body::Bytes,
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -34,6 +34,47 @@ use tokio::net::TcpListener;
 use tracing::{info, warn};
 
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
+/// Upper bound for one binary f16 hidden-state frame received from a peer.
+///
+/// A normal 512-token chunk with a 4096-wide hidden state is 4 MiB before its
+/// small wire header. Keeping this limit explicit at 16 MiB allows the
+/// documented 8 MiB frame while still rejecting unbounded peer input.
+const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
+fn inference_frame_body_limit() -> usize {
+    INFERENCE_FRAME_BODY_LIMIT
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        extract::DefaultBodyLimit,
+        http::Request,
+    };
+    use tower::ServiceExt;
+
+    async fn accept_frame(body: Bytes) -> StatusCode {
+        assert_eq!(body.len(), 4 * 1024 * 1024);
+        StatusCode::NO_CONTENT
+    }
+
+    #[tokio::test]
+    async fn prefill_route_accepts_a_default_f16_frame_larger_than_axums_two_mib_default() {
+        let app = Router::new()
+            .route("/v1/prefill", post(accept_frame))
+            .layer(DefaultBodyLimit::max(inference_frame_body_limit()));
+        let request = Request::post("/v1/prefill")
+            .body(Body::from(vec![0_u8; 4 * 1024 * 1024]))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        assert!(to_bytes(response.into_body(), 1024).await.unwrap().is_empty());
+    }
+}
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
@@ -198,8 +239,14 @@ pub async fn run(
     let state: SharedState = Arc::new(Mutex::new(state_inner));
 
     let router = Router::new()
-        .route("/v1/prefill", post(handle_prefill))
-        .route("/v1/step", post(handle_step))
+        .route(
+            "/v1/prefill",
+            post(handle_prefill).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+        )
+        .route(
+            "/v1/step",
+            post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+        )
         .route("/v1/session/release", post(handle_release))
         .route("/health", get(handle_health))
         .with_state(state);

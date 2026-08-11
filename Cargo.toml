@@ -51,3 +51,6 @@ async-trait = "0.1"
 # binary reads the bundle off disk at runtime and stops being self-contained.
 rust-embed = { version = "8", features = ["interpolate-folder-path", "debug-embed"] }
 mime_guess = "2"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

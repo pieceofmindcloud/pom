@@ -786,6 +786,10 @@ pub struct ApplyRequest {
     /// Shared across peers so every shard resolves to the same model label —
     /// the pipeline planner only chains peers whose label matches exactly.
     pub base_name: String,
+    /// Operator-visible model identity. When supplied by deployment it must be
+    /// preserved exactly instead of collapsing model families into profiles.
+    #[serde(default)]
+    pub model_label: Option<String>,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -831,6 +835,14 @@ impl ApplyRequest {
             !self.single_peer() && self.is_last_peer()
         }
     }
+}
+
+fn model_label(req: &ApplyRequest) -> String {
+    req.model_label
+        .as_deref()
+        .filter(|label| !label.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| crate::model::ModelProfile::guess_from_name(&req.base_name).name)
 }
 
 // ── Job tracking ─────────────────────────────────────────────────────────────
@@ -1087,9 +1099,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     )
     .await;
 
-    // The label must be derived from the *shared* base name, not the local
-    // filename, so peers holding different quantisations still agree.
-    let label = crate::model::ModelProfile::guess_from_name(&req.base_name).name;
+    // The selected deployment label is shared by every peer. Old callers that
+    // do not send it retain the profile-derived compatibility fallback.
+    let label = model_label(&req);
 
     let inference_port = state
         .network
@@ -1758,6 +1770,7 @@ async fn release_slice(
     let apply_req = ApplyRequest {
         source_model_path: candidate.path.clone(),
         base_name: cfg.model_label.clone(),
+        model_label: Some(cfg.model_label.clone()),
         start_layer: cfg.start_layer,
         end_layer: cfg.end_layer,
         total_layers: cfg.total_layers,
@@ -1862,6 +1875,10 @@ pub struct LaunchTarget {
 #[derive(Debug, Deserialize)]
 pub struct LaunchRequest {
     pub base_name: String,
+    /// The identity selected in the deployment screen, propagated unchanged
+    /// to every apply request. Missing values keep older callers compatible.
+    #[serde(default)]
+    pub model_label: Option<String>,
     pub total_layers: u32,
     pub targets: Vec<LaunchTarget>,
     /// Node that should act as the entry point.
@@ -1972,6 +1989,7 @@ pub(crate) async fn launch(
         let apply_req = ApplyRequest {
             source_model_path: target.source_model_path.clone(),
             base_name: req.base_name.clone(),
+            model_label: req.model_label.clone(),
             start_layer: target.start_layer,
             end_layer: target.end_layer,
             total_layers: req.total_layers,
@@ -2185,6 +2203,7 @@ mod tests {
         ApplyRequest {
             source_model_path: "/m.gguf".into(),
             base_name: "m".into(),
+            model_label: None,
             start_layer: start,
             end_layer: end,
             total_layers: total,
@@ -2234,6 +2253,14 @@ mod tests {
         assert!(!p.no_thinking);
         assert!(!p.offload_kqv);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
+    }
+
+    #[test]
+    fn selected_model_label_is_not_normalized_to_a_profile_name() {
+        let mut request = req(0, 31, 32, 1);
+        request.model_label = Some("Qwen3.5-9B-Instruct".into());
+
+        assert_eq!(model_label(&request), "Qwen3.5-9B-Instruct");
     }
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {

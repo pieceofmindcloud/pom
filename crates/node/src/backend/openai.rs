@@ -564,6 +564,7 @@ fn sse_stream(
                         s.mode,
                         json!({ "role": "assistant", "content": "" }),
                         None,
+                        None,
                     );
                     return Some((Ok(Event::default().data(chunk)), s));
                 }
@@ -577,7 +578,7 @@ fn sse_stream(
                     Mode::Chat => json!({ "content": text }),
                     Mode::Completion => json!(text),
                 };
-                let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, None);
+                let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
                 return Some((Ok(Event::default().data(chunk)), s));
             }
             Some(GenEvent::Done(summary)) => {
@@ -586,7 +587,15 @@ fn sse_stream(
                     Mode::Chat => json!({}),
                     Mode::Completion => json!(""),
                 };
-                let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, Some(reason));
+                let chunk = chunk_json(
+                    &s.id,
+                    s.created,
+                    &s.model,
+                    s.mode,
+                    delta,
+                    Some(reason),
+                    Some(&summary),
+                );
                 s.trailer = Some(Event::default().data("[DONE]"));
                 return Some((Ok(Event::default().data(chunk)), s));
             }
@@ -611,19 +620,29 @@ fn chunk_json(
     mode: Mode,
     delta: serde_json::Value,
     finish: Option<&str>,
+    summary: Option<&crate::gateway::GenSummary>,
 ) -> String {
     let choice = match mode {
         Mode::Chat => json!({ "index": 0, "delta": delta, "finish_reason": finish }),
         Mode::Completion => json!({ "index": 0, "text": delta, "finish_reason": finish }),
     };
-    json!({
+    let mut payload = json!({
         "id": id,
         "object": mode.object(true),
         "created": created,
         "model": model,
         "choices": [choice],
-    })
-    .to_string()
+    });
+    if let Some(summary) = summary {
+        payload["x_rdma_p2p"] = json!({
+            "source": summary.source,
+            "tokens_per_sec": summary.tokens_per_sec,
+            "tokens_generated": summary.tokens_generated,
+            "duration_ms": summary.duration_ms,
+            "partial": summary.partial,
+        });
+    }
+    payload.to_string()
 }
 
 fn error_response(status: StatusCode, message: impl Into<String>) -> Response {
@@ -746,5 +765,29 @@ mod tests {
         };
         assert_eq!(finish_reason(&summary(5), 100), "stop");
         assert_eq!(finish_reason(&summary(100), 100), "length");
+    }
+
+    #[test]
+    fn final_stream_chunk_carries_generation_summary() {
+        let summary = crate::gateway::GenSummary {
+            source: "pipeline:a→b".into(),
+            tokens_generated: 12,
+            tokens_per_sec: 4.5,
+            duration_ms: 2666,
+            partial: false,
+        };
+        let payload: serde_json::Value = serde_json::from_str(&chunk_json(
+            "chatcmpl-test",
+            1,
+            "qwen35",
+            Mode::Chat,
+            json!({}),
+            Some("stop"),
+            Some(&summary),
+        ))
+        .expect("JSON válido");
+
+        assert_eq!(payload["x_rdma_p2p"]["tokens_per_sec"], 4.5);
+        assert_eq!(payload["x_rdma_p2p"]["tokens_generated"], 12);
     }
 }

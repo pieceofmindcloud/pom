@@ -20,6 +20,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
 import { Badge, Button, Empty, Select } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
+import { isNearBottom } from "../lib/chatScroll";
+import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
 import {
   emptySession,
   newId,
@@ -34,9 +36,12 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
 
-function Bubble({ message }: { message: ChatMessage }) {
+function Bubble({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
   const { locale } = useI18n();
   const isUser = message.role === "user";
+  const labels = locale === "pt-BR"
+    ? { thinking: "Pensamento", speed: "tok/s", tokens: "tokens", time: "s" }
+    : { thinking: "Thinking", speed: "tok/s", tokens: "tokens", time: "s" };
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -52,6 +57,12 @@ function Bubble({ message }: { message: ChatMessage }) {
         </div>
       ) : (
         <div className="min-w-0 flex-1">
+          {message.reasoning && (
+            <details open={streaming} className="mb-3 rounded-xl border border-iris/25 bg-iris/[0.05] px-3 py-2.5">
+              <summary className="cursor-pointer select-none text-xs font-medium text-iris">{labels.thinking}</summary>
+              <div className="mt-2 text-sm text-muted"><Markdown>{message.reasoning}</Markdown></div>
+            </details>
+          )}
           {message.content && <Markdown>{message.content}</Markdown>}
           {message.error && (
             <div className="mt-2 flex items-start gap-2.5 rounded-lg border border-rose/30 bg-rose/[0.07] px-3 py-2.5">
@@ -63,6 +74,13 @@ function Bubble({ message }: { message: ChatMessage }) {
           )}
           {message.source && (
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
+          )}
+          {message.tokensPerSecond != null && (
+            <p className="mt-2 font-mono text-[0.68rem] text-faint">
+              {message.tokensPerSecond.toFixed(1)} {labels.speed}
+              {message.tokensGenerated != null && ` · ${message.tokensGenerated} ${labels.tokens}`}
+              {message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${labels.time}`}
+            </p>
           )}
         </div>
       )}
@@ -151,14 +169,16 @@ export function Chat() {
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
   const abort = useRef<AbortController | null>(null);
-  const bottom = useRef<HTMLDivElement>(null);
+  const thread = useRef<HTMLDivElement>(null);
+  const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
 
   // A session with no model yet takes whatever the network is serving.
   const model = session.model ?? available[0] ?? cluster.data?.active_model ?? "";
 
   useEffect(() => {
-    bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const element = thread.current;
+    if (element && autoFollow.current) element.scrollTop = element.scrollHeight;
   }, [session.messages, streaming]);
 
   useEffect(() => () => abort.current?.abort(), []);
@@ -199,6 +219,7 @@ export function Chat() {
     setSession(live);
     setDraft("");
     setStreaming(true);
+    autoFollow.current = true;
     window.requestAnimationFrame(grow);
 
     const controller = new AbortController();
@@ -213,7 +234,7 @@ export function Chat() {
     };
 
     try {
-      let text = "";
+      let streamed = emptyChatStream();
       for await (const data of streamSse(
         "/v1/chat/completions",
         {
@@ -228,14 +249,28 @@ export function Chat() {
           const chunk = JSON.parse(data);
           const delta = chunk?.choices?.[0]?.delta?.content;
           if (typeof delta === "string" && delta) {
-            text += delta;
-            patchReply({ content: text });
+            streamed = consumeChatDelta(streamed, delta);
+            patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+          }
+          const metrics = chunk?.x_rdma_p2p;
+          if (metrics && typeof metrics === "object") {
+            streamed = finishChatStream(streamed, metrics);
+            patchReply({
+              content: streamed.content,
+              reasoning: streamed.reasoning || undefined,
+              tokensPerSecond: streamed.tokensPerSecond,
+              tokensGenerated: streamed.tokensGenerated,
+              durationMs: streamed.durationMs,
+              source: typeof metrics.source === "string" ? metrics.source : undefined,
+            });
           }
         } catch {
           /* a keep-alive or a partial frame — nothing to render */
         }
       }
-      if (!text) {
+      streamed = finishChatStream(streamed);
+      patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+      if (!streamed.content && !streamed.reasoning) {
         patchReply({
           error:
             t("chat.emptyResponse"),
@@ -328,7 +363,7 @@ export function Chat() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+        <div ref={thread} onScroll={(event) => { autoFollow.current = isNearBottom(event.currentTarget); }} className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
           <div className="mx-auto w-full max-w-3xl px-4 py-6 sm:px-6">
             {session.messages.length === 0 ? (
               <div className="pt-[12vh]">
@@ -349,7 +384,7 @@ export function Chat() {
               <div className="space-y-6">
                 <AnimatePresence initial={false}>
                   {session.messages.map((m) => (
-                    <Bubble key={m.id} message={m} />
+                    <Bubble key={m.id} message={m} streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id} />
                   ))}
                 </AnimatePresence>
                 {streaming &&
@@ -372,7 +407,6 @@ export function Chat() {
                   )}
               </div>
             )}
-            <div ref={bottom} className="h-4" />
           </div>
         </div>
 

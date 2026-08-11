@@ -687,6 +687,54 @@ mod tests {
     /// graph. With that inverted, the forward pass stopped at the input
     /// embedding, `llama_decode` still returned success, and the peer answered
     /// "residual capture did not fire".
+
+    /// The middle-peer path: a hidden state comes in, the residual must come
+    /// out. This is the one the pipeline actually breaks on and the one the
+    /// token test above cannot reach — `decode_hidden` builds a different batch
+    /// (`batch.token = NULL`, data in `batch.embd`) and therefore a different
+    /// graph. Set `RDMA_P2P_TEST_GPU_LAYERS=99` to run it with the weights
+    /// offloaded, which is how every real peer runs it.
+    #[test]
+    fn residual_capture_fires_for_an_injected_hidden_state() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
+            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let n_gpu_layers = std::env::var("RDMA_P2P_TEST_GPU_LAYERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            n_batch: 512,
+            n_gpu_layers,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: true,
+        };
+        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+
+        let n_tokens = 4;
+        // Values in the range a real residual carries; zeros would let a graph
+        // that never ran look identical to one that did.
+        let hidden: Vec<f32> = (0..n_tokens * engine.n_embd)
+            .map(|i| ((i % 97) as f32 - 48.0) / 48.0)
+            .collect();
+        engine
+            .decode_hidden(&hidden, n_tokens, 0, 0, true)
+            .expect("decode of an injected hidden state succeeds");
+
+        let residual = engine
+            .take_residual(n_tokens)
+            .expect("the capture callback must fire on the hidden-state path too");
+        assert_eq!(residual.len(), n_tokens * engine.n_embd);
+        assert!(
+            residual.iter().any(|v| *v != 0.0 && v.is_finite()),
+            "residual is all zeros or non-finite — the graph did not run"
+        );
+    }
+
     #[test]
     fn residual_capture_fires_with_one_row_per_token() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());

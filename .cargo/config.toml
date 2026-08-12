@@ -4,10 +4,23 @@
 [env]
 BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = false }
 
+# Este perfil vale para o codigo *Rust*. O llama.cpp vem do cmake com
+# `--config Release` e sempre esteve otimizado - o que estava em opt-level 0 era
+# o nosso lado: sampler, wire.rs (f16, zstd), HTTP.
+#
+# Medido no sampler com o vocabulario do Qwen3 (151.936 tokens), mesmo codigo:
+#
+#   opt-level = 0   7,77 ms/token
+#   opt-level = 3   0,26 ms/token      (30x)
+#
+# `incremental` fica desligado porque ele quebra o crate em mais unidades de
+# codegen e impede inline entre elas, que e justamente o que faz o laco quente
+# do sampler render. Se o tempo de build incomodar, religar e uma linha - e
+# custa aquele 30x.
 [profile.release]
-opt-level = 0          # Keep at 0 for fast compilation, or set to 1 for mild optimization
+opt-level = 3
 debug = 0              # Reduce debug info levels (e.g., line numbers only) to speed up builds
-incremental = true     # Ensure incremental compilation is enabled
+incremental = false
 
 [target.'cfg(target_os = "linux1")']
 linker = "clang"

@@ -938,8 +938,13 @@ mod tests {
         }
     }
 
+    /// The two boundaries that belong to the *caller* stay at zero here.
+    ///
+    /// Reading the logits out of llama.cpp and turning a token id into text are
+    /// measured by `infer_server`, on either side of this call. If the sampler
+    /// ever started reporting them, a cost would be counted twice.
     #[test]
-    fn profiled_sampler_separates_cpu_work_from_logit_access() {
+    fn profiled_sampler_leaves_the_callers_boundaries_alone() {
         let cfg = SamplingConfig {
             temperature: 0.7,
             top_p: 0.9,
@@ -951,7 +956,6 @@ mod tests {
         let (_token, timings) = sample_token_profiled(&[0.1, 0.3, 0.8], &[], &cfg);
 
         assert_eq!(timings.logits_access_us, 0);
-        assert_eq!(timings.logits_clone_us, 0);
         assert_eq!(timings.token_text_us, 0);
     }
 

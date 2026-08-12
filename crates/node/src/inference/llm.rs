@@ -29,7 +29,7 @@ use llama_cpp_sys_2 as sys;
 
 static CAPTURE_WANT: Mutex<Option<CString>> = Mutex::new(None);
 static CAPTURE_BUF: Mutex<Option<Vec<f32>>> = Mutex::new(None);
-static CAPTURE_COPY_MS: Mutex<u64> = Mutex::new(0);
+static CAPTURE_COPY_US: Mutex<u64> = Mutex::new(0);
 
 unsafe extern "C" fn capture_callback(
     t: *mut sys::ggml_tensor,
@@ -87,8 +87,8 @@ unsafe extern "C" fn capture_callback(
             *buf = Some(floats);
         }
     }
-    if let Ok(mut elapsed) = CAPTURE_COPY_MS.lock() {
-        *elapsed += copy_started.elapsed().as_millis() as u64;
+    if let Ok(mut elapsed) = CAPTURE_COPY_US.lock() {
+        *elapsed += copy_started.elapsed().as_micros() as u64;
     }
     true
 }
@@ -120,15 +120,15 @@ pub struct LlmEngine {
     offload_kqv: bool,
 }
 
-/// A diagnostic boundary around `llama_decode`. `backend_completion_ms` is
+/// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
 /// measured with the public `llama_synchronize` API and therefore includes all
 /// queued backend work and output transfers that must complete. It is not
 /// labelled as pure kernel time.
 #[derive(Debug, Clone, Default)]
 pub struct DecodeTimings {
-    pub enqueue_ms: u64,
-    pub backend_completion_ms: u64,
-    pub residual_capture_d2h_sync_ms: u64,
+    pub enqueue_us: u64,
+    pub backend_completion_us: u64,
+    pub residual_capture_d2h_sync_us: u64,
 }
 
 /// Off by default: the extra `llama_synchronize` is a measurement barrier, and
@@ -446,7 +446,7 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        *CAPTURE_COPY_MS.lock().unwrap() = 0;
+        *CAPTURE_COPY_US.lock().unwrap() = 0;
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -472,14 +472,14 @@ impl LlmEngine {
             bail!("llama_decode failed rc={rc}");
         }
         let mut timings = DecodeTimings {
-            enqueue_ms: enqueue_started.elapsed().as_millis() as u64,
-            residual_capture_d2h_sync_ms: *CAPTURE_COPY_MS.lock().unwrap(),
+            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            residual_capture_d2h_sync_us: *CAPTURE_COPY_US.lock().unwrap(),
             ..Default::default()
         };
         if profile_backend_sync() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_ms = completion_started.elapsed().as_millis() as u64;
+            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
         Ok(timings)
     }
@@ -493,7 +493,7 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        *CAPTURE_COPY_MS.lock().unwrap() = 0;
+        *CAPTURE_COPY_US.lock().unwrap() = 0;
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -531,14 +531,14 @@ impl LlmEngine {
             bail!("llama_decode (hidden) failed rc={rc}");
         }
         let mut timings = DecodeTimings {
-            enqueue_ms: enqueue_started.elapsed().as_millis() as u64,
-            residual_capture_d2h_sync_ms: *CAPTURE_COPY_MS.lock().unwrap(),
+            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            residual_capture_d2h_sync_us: *CAPTURE_COPY_US.lock().unwrap(),
             ..Default::default()
         };
         if profile_backend_sync() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
-            timings.backend_completion_ms = completion_started.elapsed().as_millis() as u64;
+            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
         Ok(timings)
     }
@@ -617,16 +617,20 @@ pub struct SamplingConfig {
 
 /// CPU-only sampling boundaries. GPU/backend completion is measured before
 /// this function, so a long CPU sampler cannot hide a pending CUDA stream.
+///
+/// Measured in **microseconds**. Milliseconds truncated every stage that cost
+/// less than 1 ms to zero, which after this rewrite is every stage — the whole
+/// sampler now costs less than one of the old millisecond ticks.
 #[derive(Debug, Clone, Default)]
 pub struct SamplingTimings {
-    pub logits_access_ms: u64,
-    pub logits_clone_ms: u64,
-    pub repetition_penalty_ms: u64,
-    pub softmax_ms: u64,
-    pub top_k_ms: u64,
-    pub top_p_ms: u64,
-    pub selection_ms: u64,
-    pub token_text_ms: u64,
+    pub logits_access_us: u64,
+    pub logits_clone_us: u64,
+    pub repetition_penalty_us: u64,
+    pub softmax_us: u64,
+    pub top_k_us: u64,
+    pub top_p_us: u64,
+    pub selection_us: u64,
+    pub token_text_us: u64,
 }
 
 /// Temperature + top-k + top-p + repetition-penalty sampling.
@@ -643,7 +647,7 @@ pub fn sample_token_profiled(
     }
     let clone_started = Instant::now();
     let mut logits = logits.to_vec();
-    timings.logits_clone_ms = clone_started.elapsed().as_millis() as u64;
+    timings.logits_clone_us = clone_started.elapsed().as_micros() as u64;
 
     // Repetition penalty.
     let repetition_started = Instant::now();
@@ -662,83 +666,96 @@ pub fn sample_token_profiled(
             }
         }
     }
-    timings.repetition_penalty_ms = repetition_started.elapsed().as_millis() as u64;
+    timings.repetition_penalty_us = repetition_started.elapsed().as_micros() as u64;
 
     if cfg.temperature <= 0.0 {
         let selection_started = Instant::now();
-        let token = logits
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i as i32)
-            .unwrap_or(0);
-        timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+        let token = argmax(&logits);
+        timings.selection_us = selection_started.elapsed().as_micros() as u64;
         return (token, timings);
     }
 
-    // Apply temperature.
-    let softmax_started = Instant::now();
-    let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-    let mut probs: Vec<f32> = logits
-        .iter()
-        .map(|&l| ((l - max_l) / cfg.temperature).exp())
-        .collect();
-    timings.softmax_ms = softmax_started.elapsed().as_millis() as u64;
-
-    // Top-K filter.
+    // ── Top-K, on the raw logits ─────────────────────────────────────────────
+    //
+    // `exp` is strictly increasing, so the k largest logits are the k largest
+    // probabilities — the cut can be made before the softmax and without
+    // sorting. `select_nth_unstable_by` partitions in O(V) instead of the
+    // O(V log V) full sort this used to do, and everything downstream then
+    // works on k values instead of the whole vocabulary.
+    //
+    // On a 152k-token vocabulary with the default k of 40, that is the
+    // difference between ~30 ms and a few microseconds per token.
     let top_k_started = Instant::now();
-    if cfg.top_k > 0 && (cfg.top_k as usize) < probs.len() {
+    let kept_ids: Vec<usize> = if cfg.top_k > 0 && (cfg.top_k as usize) < logits.len() {
         let k = cfg.top_k as usize;
-        let mut sorted = probs.clone();
-        sorted.sort_by(|a, b| b.partial_cmp(a).unwrap());
-        let threshold = sorted[k - 1];
-        probs.iter_mut().for_each(|p| {
-            if *p < threshold {
-                *p = 0.0;
-            }
-        });
-    }
-    timings.top_k_ms = top_k_started.elapsed().as_millis() as u64;
+        let mut scratch = logits.clone();
+        let (_, kth, _) = scratch.select_nth_unstable_by(k - 1, |a, b| b.total_cmp(a));
+        let threshold = *kth;
+        // `>=` keeps ties at the cut, exactly as the old `p < threshold` did.
+        (0..logits.len())
+            .filter(|&i| logits[i] >= threshold)
+            .collect()
+    } else {
+        (0..logits.len()).collect()
+    };
+    timings.top_k_us = top_k_started.elapsed().as_micros() as u64;
 
-    // Top-P (nucleus) filter.
+    // ── Softmax, over the survivors only ─────────────────────────────────────
+    //
+    // The shift uses the largest surviving logit, which is the largest logit
+    // overall — the argmax always survives a top-k. So the values here are bit
+    // for bit what a softmax over the whole vocabulary produced.
+    let softmax_started = Instant::now();
+    let max_l = kept_ids
+        .iter()
+        .map(|&i| logits[i])
+        .fold(f32::NEG_INFINITY, f32::max);
+    let mut kept: Vec<(usize, f32)> = kept_ids
+        .into_iter()
+        .map(|i| (i, ((logits[i] - max_l) / cfg.temperature).exp()))
+        .collect();
+    timings.softmax_us = softmax_started.elapsed().as_micros() as u64;
+
+    // ── Top-P (nucleus) ──────────────────────────────────────────────────────
+    //
+    // Sorting is unavoidable here, but it now runs over k elements. Note that
+    // the walk is over UNNORMALISED probabilities, which is a defect kept
+    // deliberately: the largest is always `exp(0) == 1.0`, so any `top_p <= 1`
+    // is met by the first element and the draw collapses to greedy. Fixing it
+    // changes what the cluster generates, so it is a separate decision — see
+    // `top_p_below_one_currently_collapses_to_greedy`.
     let top_p_started = Instant::now();
     if cfg.top_p < 1.0 {
-        let mut indexed: Vec<(usize, f32)> = probs.iter().copied().enumerate().collect();
-        indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+        let mut by_prob: Vec<f32> = kept.iter().map(|(_, p)| *p).collect();
+        by_prob.sort_unstable_by(|a, b| b.total_cmp(a));
         let mut cumsum = 0.0f32;
         let mut cutoff = f32::NEG_INFINITY;
-        for (_, p) in &indexed {
+        for p in &by_prob {
             cumsum += p;
             if cumsum >= cfg.top_p {
                 cutoff = *p;
                 break;
             }
         }
-        probs.iter_mut().for_each(|p| {
-            if *p < cutoff {
-                *p = 0.0;
-            }
-        });
+        kept.retain(|(_, p)| *p >= cutoff);
     }
-    timings.top_p_ms = top_p_started.elapsed().as_millis() as u64;
+    timings.top_p_us = top_p_started.elapsed().as_micros() as u64;
 
+    // ── Multinomial draw ─────────────────────────────────────────────────────
+    //
+    // `kept` is still in ascending index order, and the entries left out are
+    // exactly the ones that used to hold 0.0, so this walks the same cumulative
+    // sums as the old full-vocabulary loop and lands on the same token.
     let selection_started = Instant::now();
-    let total: f32 = probs.iter().sum();
+    let total: f32 = kept.iter().map(|(_, p)| *p).sum();
     if total <= 0.0 {
-        let token = logits
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i as i32)
-            .unwrap_or(0);
-        timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+        let token = argmax(&logits);
+        timings.selection_us = selection_started.elapsed().as_micros() as u64;
         return (token, timings);
     }
-    probs.iter_mut().for_each(|p| *p /= total);
 
-    // Multinomial sample.
-    let mut rng_val: f32 = unsafe {
-        // Use a simple LCG seeded from the system clock to avoid pulling in `rand`.
+    let rng_val: f32 = {
+        // A simple LCG, to avoid pulling in `rand`.
         static RNG: Mutex<u64> = Mutex::new(0x853c49e6748fea9b);
         let mut r = RNG.lock().unwrap();
         *r = r
@@ -747,22 +764,34 @@ pub fn sample_token_profiled(
         let bits = ((*r >> 33) as u32) | 0x3f800000;
         f32::from_bits(bits) - 1.0
     };
+
     let mut cumsum = 0.0f32;
-    for (i, &p) in probs.iter().enumerate() {
-        cumsum += p;
+    let mut best = (0usize, f32::NEG_INFINITY);
+    for (i, p) in &kept {
+        let normalised = *p / total;
+        cumsum += normalised;
         if rng_val <= cumsum {
-            timings.selection_ms = selection_started.elapsed().as_millis() as u64;
-            return (i as i32, timings);
+            timings.selection_us = selection_started.elapsed().as_micros() as u64;
+            return (*i as i32, timings);
+        }
+        // Rounding can leave `rng_val` just past the final cumulative sum; the
+        // most likely token is the answer then, matching the old fallback.
+        if normalised >= best.1 {
+            best = (*i, normalised);
         }
     }
-    let token = probs
+    timings.selection_us = selection_started.elapsed().as_micros() as u64;
+    (best.0 as i32, timings)
+}
+
+/// Index of the largest value, matching `max_by`'s "last one wins" on ties.
+fn argmax(values: &[f32]) -> i32 {
+    values
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i as i32)
-        .unwrap_or(0);
-    timings.selection_ms = selection_started.elapsed().as_millis() as u64;
-    (token, timings)
+        .unwrap_or(0)
 }
 
 /// Compatibility wrapper for callers that do not need a diagnostic breakdown.
@@ -788,6 +817,127 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
 mod tests {
     use super::*;
 
+    /// Characterisation tests: they pin the sampler's *current* choices so the
+    /// O(V log V) → O(V) rewrite below can be proven not to change which token
+    /// comes out. They are deliberately about behaviour, not speed.
+    mod sampler_behaviour {
+        use super::*;
+
+        fn cfg(temperature: f32, top_k: i32, top_p: f32) -> SamplingConfig {
+            SamplingConfig {
+                temperature,
+                top_p,
+                top_k,
+                repeat_penalty: 1.0,
+                repeat_last_n: 0,
+            }
+        }
+
+        /// Zero temperature is argmax, and argmax is the highest logit.
+        #[test]
+        fn zero_temperature_is_argmax() {
+            let logits = [0.1, 9.0, 0.3, 2.0];
+            assert_eq!(sample_token(&logits, &[], &cfg(0.0, 40, 1.0)), 1);
+        }
+
+        /// With top-p disabled, top-k has to be the only thing narrowing the
+        /// field: no token outside the k highest logits may ever be drawn.
+        #[test]
+        fn top_k_confines_the_draw_to_the_k_highest_logits() {
+            // Indices 3 and 1 hold the two highest logits.
+            let logits = [0.0, 5.0, 1.0, 9.0, 2.0, 0.5];
+            let c = cfg(1.0, 2, 1.0);
+
+            for _ in 0..500 {
+                let picked = sample_token(&logits, &[], &c);
+                assert!(picked == 1 || picked == 3, "saiu fora do top-2: {picked}");
+            }
+        }
+
+        /// Ties at the cut are kept rather than broken arbitrarily, so a k of 1
+        /// over three equal maxima can still draw any of them.
+        #[test]
+        fn a_tie_at_the_cut_survives() {
+            let logits = [7.0, 7.0, 7.0, 1.0];
+            let c = cfg(1.0, 1, 1.0);
+
+            let mut seen = [false; 3];
+            for _ in 0..500 {
+                let picked = sample_token(&logits, &[], &c);
+                assert!(picked != 3, "o logit baixo nunca deveria sair");
+                seen[picked as usize] = true;
+            }
+            assert!(seen.iter().all(|s| *s), "os três empatados têm que sair");
+        }
+
+        /// The repetition penalty divides positive logits, which can move a
+        /// token out of the running entirely.
+        #[test]
+        fn the_repetition_penalty_can_push_a_token_out_of_the_top_k() {
+            let logits = [10.0, 9.0, 0.0];
+            let penalised = SamplingConfig {
+                repeat_penalty: 4.0,
+                repeat_last_n: 4,
+                ..cfg(0.0, 40, 1.0)
+            };
+            // Index 0 falls to 2.5 and index 1 wins.
+            assert_eq!(sample_token(&logits, &[0], &penalised), 1);
+        }
+
+        /// The measurement behind the rewrite, on a real Qwen vocabulary.
+        ///
+        /// Ignored because a wall-clock assertion belongs nowhere near CI, and
+        /// because the debug profile makes the number meaningless. Run it the
+        /// way the claim was made:
+        ///
+        /// ```text
+        /// cargo test -p node --release sampler_cost_on_a_real_vocabulary -- --ignored --nocapture
+        /// ```
+        #[test]
+        #[ignore = "medição de tempo: rode à mão, em --release"]
+        fn sampler_cost_on_a_real_vocabulary() {
+            const V: usize = 151_936; // Qwen3
+            let logits: Vec<f32> = (0..V).map(|i| ((i % 977) as f32) * 0.01).collect();
+            let c = cfg(0.7, 40, 1.0);
+
+            let started = Instant::now();
+            const ROUNDS: u32 = 50;
+            for _ in 0..ROUNDS {
+                std::hint::black_box(sample_token(&logits, &[], &c));
+            }
+            let per_token = started.elapsed() / ROUNDS;
+            println!("amostragem: {per_token:?}/token com vocabulário de {V}");
+
+            // The full-sort version cost ~30 ms/token here. Anything in that
+            // range means the O(V) selection is not being taken.
+            assert!(
+                per_token < std::time::Duration::from_millis(5),
+                "amostragem em {per_token:?}/token — o sort completo voltou?"
+            );
+        }
+
+        /// Documents a real defect, so the rewrite preserves it instead of
+        /// silently changing what the cluster generates. `probs` are NOT
+        /// normalised when top-p walks them: the largest is always exactly
+        /// `exp(0) == 1.0`, so any `top_p <= 1.0` is satisfied by the first
+        /// element alone and everything else is cut. Every request with the
+        /// default `top_p` of 0.9 is therefore greedy, and temperature and
+        /// top_k have no effect at all.
+        #[test]
+        fn top_p_below_one_currently_collapses_to_greedy() {
+            let logits = [1.0, 8.0, 7.9, 7.8];
+            let c = cfg(1.0, 40, 0.9);
+
+            for _ in 0..200 {
+                assert_eq!(
+                    sample_token(&logits, &[], &c),
+                    1,
+                    "top_p < 1.0 hoje só deixa passar o argmax"
+                );
+            }
+        }
+    }
+
     #[test]
     fn profiled_sampler_separates_cpu_work_from_logit_access() {
         let cfg = SamplingConfig {
@@ -800,9 +950,9 @@ mod tests {
 
         let (_token, timings) = sample_token_profiled(&[0.1, 0.3, 0.8], &[], &cfg);
 
-        assert_eq!(timings.logits_access_ms, 0);
-        assert_eq!(timings.logits_clone_ms, 0);
-        assert_eq!(timings.token_text_ms, 0);
+        assert_eq!(timings.logits_access_us, 0);
+        assert_eq!(timings.logits_clone_us, 0);
+        assert_eq!(timings.token_text_us, 0);
     }
 
     /// The capture target and buffer are process-global — the module doc

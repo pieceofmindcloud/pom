@@ -46,49 +46,53 @@ const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
 /// and the CUDA stream synchronization performed by `take_residual()`.
 #[derive(Default)]
 struct NodeTimings {
-    frame_decode_ms: u64,
-    input_prepare_ms: u64,
-    queue_ms: u64,
-    setup_ms: u64,
-    decode_ms: u64,
-    backend_enqueue_ms: u64,
-    backend_completion_ms: u64,
-    residual_capture_d2h_sync_ms: u64,
-    residual_ms: u64,
-    logits_access_ms: u64,
-    logits_clone_ms: u64,
-    repetition_penalty_ms: u64,
-    softmax_ms: u64,
-    top_k_ms: u64,
-    top_p_ms: u64,
-    selection_ms: u64,
-    token_text_ms: u64,
-    sampling_ms: u64,
-    encode_ms: u64,
+    frame_decode_us: u64,
+    input_prepare_us: u64,
+    queue_us: u64,
+    setup_us: u64,
+    decode_us: u64,
+    backend_enqueue_us: u64,
+    backend_completion_us: u64,
+    residual_capture_d2h_sync_us: u64,
+    residual_us: u64,
+    logits_access_us: u64,
+    logits_clone_us: u64,
+    repetition_penalty_us: u64,
+    softmax_us: u64,
+    top_k_us: u64,
+    top_p_us: u64,
+    selection_us: u64,
+    token_text_us: u64,
+    sampling_us: u64,
+    encode_us: u64,
 }
 
 impl NodeTimings {
     fn json(&self) -> Value {
+        // Counters are kept in microseconds so a stage costing less than a
+        // millisecond is not truncated to zero on every call and lost in the
+        // sum. The wire stays in milliseconds, which is what the screen reads.
+        let ms = |us: u64| us / 1_000;
         json!({
-            "frame_decode_ms": self.frame_decode_ms,
-            "input_prepare_ms": self.input_prepare_ms,
-            "queue_ms": self.queue_ms,
-            "setup_ms": self.setup_ms,
-            "decode_ms": self.decode_ms,
-            "backend_enqueue_ms": self.backend_enqueue_ms,
-            "backend_completion_ms": self.backend_completion_ms,
-            "residual_capture_d2h_sync_ms": self.residual_capture_d2h_sync_ms,
-            "residual_ms": self.residual_ms,
-            "logits_access_ms": self.logits_access_ms,
-            "logits_clone_ms": self.logits_clone_ms,
-            "repetition_penalty_ms": self.repetition_penalty_ms,
-            "softmax_ms": self.softmax_ms,
-            "top_k_ms": self.top_k_ms,
-            "top_p_ms": self.top_p_ms,
-            "selection_ms": self.selection_ms,
-            "token_text_ms": self.token_text_ms,
-            "sampling_ms": self.sampling_ms,
-            "encode_ms": self.encode_ms,
+            "frame_decode_ms": ms(self.frame_decode_us),
+            "input_prepare_ms": ms(self.input_prepare_us),
+            "queue_ms": ms(self.queue_us),
+            "setup_ms": ms(self.setup_us),
+            "decode_ms": ms(self.decode_us),
+            "backend_enqueue_ms": ms(self.backend_enqueue_us),
+            "backend_completion_ms": ms(self.backend_completion_us),
+            "residual_capture_d2h_sync_ms": ms(self.residual_capture_d2h_sync_us),
+            "residual_ms": ms(self.residual_us),
+            "logits_access_ms": ms(self.logits_access_us),
+            "logits_clone_ms": ms(self.logits_clone_us),
+            "repetition_penalty_ms": ms(self.repetition_penalty_us),
+            "softmax_ms": ms(self.softmax_us),
+            "top_k_ms": ms(self.top_k_us),
+            "top_p_ms": ms(self.top_p_us),
+            "selection_ms": ms(self.selection_us),
+            "token_text_ms": ms(self.token_text_us),
+            "sampling_ms": ms(self.sampling_us),
+            "encode_ms": ms(self.encode_us),
         })
     }
 }
@@ -435,7 +439,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
-    let frame_decode_ms = frame_decode_started.elapsed().as_millis() as u64;
+    let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
 
     let sid_key = meta
         .get("session_id")
@@ -477,7 +481,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         }
         None => None,
     };
-    let input_prepare_ms = input_prepare_started.elapsed().as_millis() as u64;
+    let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
 
     let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
@@ -498,8 +502,8 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
 
     match result {
         Ok(Ok(mut reply)) => {
-            reply.timings.frame_decode_ms = frame_decode_ms;
-            reply.timings.input_prepare_ms = input_prepare_ms;
+            reply.timings.frame_decode_us = frame_decode_us;
+            reply.timings.input_prepare_us = input_prepare_us;
             match add_processing_time(reply, processing_started.elapsed()) {
                 Ok(bytes) => (
                     StatusCode::OK,
@@ -539,7 +543,7 @@ fn prefill_blocking(
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
     let mut timings = NodeTimings {
-        queue_ms: queued_at.elapsed().as_millis() as u64,
+        queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
     };
     let mut s = state.lock().unwrap();
@@ -567,7 +571,7 @@ fn prefill_blocking(
             s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
         }
     }
-    timings.setup_ms += setup_started.elapsed().as_millis() as u64;
+    timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
     let expected_pos = chunk_index * chunk_size;
@@ -625,10 +629,10 @@ fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
-    timings.decode_ms += decode_started.elapsed().as_millis() as u64;
-    timings.backend_enqueue_ms += engine_timing.enqueue_ms;
-    timings.backend_completion_ms += engine_timing.backend_completion_ms;
-    timings.residual_capture_d2h_sync_ms += engine_timing.residual_capture_d2h_sync_ms;
+    timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    timings.backend_enqueue_us += engine_timing.enqueue_us;
+    timings.backend_completion_us += engine_timing.backend_completion_us;
+    timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
 
     // ── Session update ───────────────────────────────────────────────────────
     {
@@ -659,17 +663,17 @@ fn prefill_blocking(
                 None,
                 wire_dtype,
             )?;
-            timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+            timings.encode_us += encode_started.elapsed().as_micros() as u64;
             return Ok(TimedReply { bytes, timings });
         }
         let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
-        let logits_access_ms = logits_access_started.elapsed().as_millis() as u64;
+        let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
         let text = s.engine.token_to_piece(next_id, false);
-        let token_text_ms = token_text_started.elapsed().as_millis() as u64;
+        let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
         s.sessions
             .get_mut(&sid_key)
@@ -679,35 +683,35 @@ fn prefill_blocking(
         if done {
             s.finish(&sid_key);
         }
-        timings.sampling_ms += logits_access_ms
-            + sampling_timing.logits_clone_ms
-            + sampling_timing.repetition_penalty_ms
-            + sampling_timing.softmax_ms
-            + sampling_timing.top_k_ms
-            + sampling_timing.top_p_ms
-            + sampling_timing.selection_ms
-            + token_text_ms;
-        timings.logits_access_ms += logits_access_ms;
-        timings.logits_clone_ms += sampling_timing.logits_clone_ms;
-        timings.repetition_penalty_ms += sampling_timing.repetition_penalty_ms;
-        timings.softmax_ms += sampling_timing.softmax_ms;
-        timings.top_k_ms += sampling_timing.top_k_ms;
-        timings.top_p_ms += sampling_timing.top_p_ms;
-        timings.selection_ms += sampling_timing.selection_ms;
-        timings.token_text_ms += token_text_ms;
+        timings.sampling_us += logits_access_us
+            + sampling_timing.logits_clone_us
+            + sampling_timing.repetition_penalty_us
+            + sampling_timing.softmax_us
+            + sampling_timing.top_k_us
+            + sampling_timing.top_p_us
+            + sampling_timing.selection_us
+            + token_text_us;
+        timings.logits_access_us += logits_access_us;
+        timings.logits_clone_us += sampling_timing.logits_clone_us;
+        timings.repetition_penalty_us += sampling_timing.repetition_penalty_us;
+        timings.softmax_us += sampling_timing.softmax_us;
+        timings.top_k_us += sampling_timing.top_k_us;
+        timings.top_p_us += sampling_timing.top_p_us;
+        timings.selection_us += sampling_timing.selection_us;
+        timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
         let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
             None,
             wire_dtype,
         )?;
-        timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+        timings.encode_us += encode_started.elapsed().as_micros() as u64;
         return Ok(TimedReply { bytes, timings });
     }
 
     let residual_started = Instant::now();
     let residual = s.engine.take_residual(n_tokens)?;
-    timings.residual_ms += residual_started.elapsed().as_millis() as u64;
+    timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let n_embd = s.engine.n_embd;
     let encode_started = Instant::now();
@@ -716,7 +720,7 @@ fn prefill_blocking(
         Some((&residual, [n_tokens, n_embd])),
         wire_dtype,
     )?;
-    timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+    timings.encode_us += encode_started.elapsed().as_micros() as u64;
     Ok(TimedReply { bytes, timings })
 }
 
@@ -729,7 +733,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
-    let frame_decode_ms = frame_decode_started.elapsed().as_millis() as u64;
+    let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
 
     let sid_key = meta
         .get("session_id")
@@ -758,7 +762,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         }
         None => None,
     };
-    let input_prepare_ms = input_prepare_started.elapsed().as_millis() as u64;
+    let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
 
     let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
@@ -770,8 +774,8 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
 
     match result {
         Ok(Ok(mut reply)) => {
-            reply.timings.frame_decode_ms = frame_decode_ms;
-            reply.timings.input_prepare_ms = input_prepare_ms;
+            reply.timings.frame_decode_us = frame_decode_us;
+            reply.timings.input_prepare_us = input_prepare_us;
             match add_processing_time(reply, processing_started.elapsed()) {
                 Ok(bytes) => (
                     StatusCode::OK,
@@ -817,7 +821,7 @@ fn step_blocking(
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
-        queue_ms: queued_at.elapsed().as_millis() as u64,
+        queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
     };
     let mut s = state.lock().unwrap();
@@ -829,7 +833,7 @@ fn step_blocking(
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id;
-    timings.setup_ms += setup_started.elapsed().as_millis() as u64;
+    timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -848,10 +852,10 @@ fn step_blocking(
         let logits_all = !is_last;
         engine_timing = s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
     }
-    timings.decode_ms += decode_started.elapsed().as_millis() as u64;
-    timings.backend_enqueue_ms += engine_timing.enqueue_ms;
-    timings.backend_completion_ms += engine_timing.backend_completion_ms;
-    timings.residual_capture_d2h_sync_ms += engine_timing.residual_capture_d2h_sync_ms;
+    timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    timings.backend_enqueue_us += engine_timing.enqueue_us;
+    timings.backend_completion_us += engine_timing.backend_completion_us;
+    timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
@@ -862,11 +866,11 @@ fn step_blocking(
         let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
-        let logits_access_ms = logits_access_started.elapsed().as_millis() as u64;
+        let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
         let text = s.engine.token_to_piece(next_id, false);
-        let token_text_ms = token_text_started.elapsed().as_millis() as u64;
+        let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
         s.sessions
             .get_mut(&sid_key)
@@ -876,41 +880,41 @@ fn step_blocking(
         if done {
             s.finish(&sid_key);
         }
-        timings.sampling_ms += logits_access_ms
-            + sampling_timing.logits_clone_ms
-            + sampling_timing.repetition_penalty_ms
-            + sampling_timing.softmax_ms
-            + sampling_timing.top_k_ms
-            + sampling_timing.top_p_ms
-            + sampling_timing.selection_ms
-            + token_text_ms;
-        timings.logits_access_ms += logits_access_ms;
-        timings.logits_clone_ms += sampling_timing.logits_clone_ms;
-        timings.repetition_penalty_ms += sampling_timing.repetition_penalty_ms;
-        timings.softmax_ms += sampling_timing.softmax_ms;
-        timings.top_k_ms += sampling_timing.top_k_ms;
-        timings.top_p_ms += sampling_timing.top_p_ms;
-        timings.selection_ms += sampling_timing.selection_ms;
-        timings.token_text_ms += token_text_ms;
+        timings.sampling_us += logits_access_us
+            + sampling_timing.logits_clone_us
+            + sampling_timing.repetition_penalty_us
+            + sampling_timing.softmax_us
+            + sampling_timing.top_k_us
+            + sampling_timing.top_p_us
+            + sampling_timing.selection_us
+            + token_text_us;
+        timings.logits_access_us += logits_access_us;
+        timings.logits_clone_us += sampling_timing.logits_clone_us;
+        timings.repetition_penalty_us += sampling_timing.repetition_penalty_us;
+        timings.softmax_us += sampling_timing.softmax_us;
+        timings.top_k_us += sampling_timing.top_k_us;
+        timings.top_p_us += sampling_timing.top_p_us;
+        timings.selection_us += sampling_timing.selection_us;
+        timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
         let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text}),
             None,
             wire_dtype,
         )?;
-        timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+        timings.encode_us += encode_started.elapsed().as_micros() as u64;
         return Ok(TimedReply { bytes, timings });
     }
 
     let residual_started = Instant::now();
     let residual = s.engine.take_residual(n_tokens)?;
-    timings.residual_ms += residual_started.elapsed().as_millis() as u64;
+    timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let encode_started = Instant::now();
     let bytes = wire::encode(
         &json!({"done": false}),
         Some((&residual, [n_tokens, s.engine.n_embd])),
         wire_dtype,
     )?;
-    timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+    timings.encode_us += encode_started.elapsed().as_micros() as u64;
     Ok(TimedReply { bytes, timings })
 }

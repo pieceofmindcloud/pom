@@ -43,6 +43,7 @@ pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/node", get(node_info))
         .route("/api/ui/models", get(models))
+        .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
@@ -2293,6 +2294,131 @@ pub async fn save_setup(
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/// Um blob do store do Ollama: `<raiz>/blobs/sha256-…`, com `<raiz>/manifests`
+/// ao lado.
+///
+/// O manifesto é que dá nome ao modelo, e ele não é reescrito quando o blob é
+/// apagado por fora. A conferência do `manifests/` ao lado importa porque a
+/// biblioteca do LM Studio também tem uma pasta `blobs/` — vazia (ver
+/// `catalog::detect_source`).
+fn is_ollama_blob(path: &std::path::Path) -> bool {
+    let Some(parent) = path.parent() else {
+        return false;
+    };
+    if parent.file_name().and_then(|n| n.to_str()) != Some("blobs") {
+        return false;
+    }
+    parent
+        .parent()
+        .map(|root| root.join("manifests").is_dir())
+        .unwrap_or(false)
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteRequest {
+    pub path: String,
+    /// Sem isto, avisos viram 409 e nada é apagado.
+    #[serde(default)]
+    pub force: bool,
+}
+
+/// Apaga um GGUF do disco desta máquina.
+///
+/// Avisa, mas não impede: quem opera decide. O que não se faz é apagar em
+/// silêncio algo que está no ar — a resposta nomeia o que segura o arquivo.
+async fn delete_model(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<DeleteRequest>,
+) -> Response {
+    let path = match std::path::Path::new(&req.path).canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": format!("arquivo não encontrado: {}", req.path) })),
+            )
+                .into_response()
+        }
+    };
+
+    // O mesmo portão que governa o que sai da máquina governa o que some dela.
+    if let Err(e) = crate::transfer::ensure_gguf(&path) {
+        return bad_request(e);
+    }
+
+    let size = tokio::fs::metadata(&path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut warnings = Vec::new();
+
+    // Servindo agora: apagar tira o modelo do ar sem que nada na tela diga, e
+    // o nó segue anunciando cobertura até a próxima requisição quebrar.
+    if let Some(cfg) = state.runtime.config().await {
+        if std::path::Path::new(&cfg.model_path)
+            .canonicalize()
+            .map(|p| p == path)
+            .unwrap_or(false)
+        {
+            warnings.push(json!({
+                "kind": "serving",
+                "message": format!(
+                    "este nó está servindo as camadas {}-{} deste arquivo; apagar tira o modelo do ar",
+                    cfg.start_layer, cfg.end_layer
+                ),
+            }));
+        }
+    }
+
+    // Em trânsito: apagar por baixo de uma transferência em curso.
+    let target = path.to_string_lossy().to_string();
+    let in_flight: Vec<String> = state
+        .transfers
+        .jobs
+        .read()
+        .await
+        .values()
+        .filter(|j| j.path == target && (j.state == "running" || j.state == "verifying"))
+        .map(|j| j.id.clone())
+        .collect();
+    for id in &in_flight {
+        warnings.push(json!({
+            "kind": "transfer",
+            "message": format!("há uma transferência em curso com este arquivo (job {id})"),
+        }));
+    }
+
+    if is_ollama_blob(&path) {
+        warnings.push(json!({
+            "kind": "ollama_store",
+            "message": "este arquivo está dentro do store do Ollama; apagá-lo deixa o manifesto do Ollama órfão. O certo lá é `ollama rm`",
+        }));
+    }
+
+    if !warnings.is_empty() && !req.force {
+        return (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "warnings": warnings,
+                "path": target,
+                "size_bytes": size,
+            })),
+        )
+            .into_response();
+    }
+
+    if let Err(e) = tokio::fs::remove_file(&path).await {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("não deu para apagar: {e}") })),
+        )
+            .into_response();
+    }
+    info!("🗑️  apagado do disco: {}", path.display());
+    Json(json!({ "deleted": true, "path": target, "freed_bytes": size })).into_response()
+}
+
 fn bad_request(message: impl Into<String>) -> Response {
     (
         StatusCode::BAD_REQUEST,
@@ -2305,6 +2431,41 @@ fn bad_request(message: impl Into<String>) -> Response {
 /// so future filters have an obvious home.
 #[allow(dead_code)]
 type UiQuery = Query<HashMap<String, String>>;
+
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+
+    /// O aviso do store do Ollama existe porque apagar um blob de lá deixa o
+    /// manifesto apontando para nada — o store fica quebrado, e ele não é
+    /// nosso para consertar.
+    #[test]
+    fn an_ollama_blob_is_recognised_by_its_layout() {
+        let root = std::env::temp_dir().join(format!("rdma-del-{}", std::process::id()));
+        let blobs = root.join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(root.join("manifests")).unwrap();
+        let blob = blobs.join("sha256-abc");
+        std::fs::write(&blob, b"GGUF").unwrap();
+
+        assert!(is_ollama_blob(&blob));
+
+        // Um `blobs/` sem `manifests/` ao lado não é o store do Ollama — o
+        // LM Studio também tem uma pasta com esse nome, e vazia.
+        let outro = std::env::temp_dir().join(format!("rdma-del2-{}", std::process::id()));
+        std::fs::create_dir_all(outro.join("blobs")).unwrap();
+        let solto = outro.join("blobs").join("sha256-xyz");
+        std::fs::write(&solto, b"GGUF").unwrap();
+        assert!(!is_ollama_blob(&solto));
+
+        let fatia = root.join("solto.gguf");
+        std::fs::write(&fatia, b"GGUF").unwrap();
+        assert!(!is_ollama_blob(&fatia));
+
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&outro).ok();
+    }
+}
 
 #[cfg(test)]
 mod tests {

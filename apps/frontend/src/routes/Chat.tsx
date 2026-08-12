@@ -31,7 +31,7 @@ import {
   type ChatSession,
 } from "../lib/chatStore";
 import { bytes, since } from "../lib/format";
-import type { RequestTrace } from "../lib/chatStream";
+import type { HopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import { useCluster, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -88,26 +88,79 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
   );
 }
 
-function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
+export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted" open>
     <summary className="cursor-pointer font-medium text-fg">Telemetria da execução {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{trace.input_tokens} in</span><span>{trace.output_tokens} out</span><span>{trace.prefill_ms} ms prefill</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
-    <div className="mt-2 space-y-2">{trace.hops.map((hop) => {
-      const nodeTotal = hop.prefill_ms + hop.decode_ms;
-      const namedNode = hop.node_frame_decode_ms + hop.node_input_prepare_ms + hop.node_queue_ms + hop.node_setup_ms + hop.node_decode_ms + hop.node_residual_ms + hop.node_sampling_ms + hop.node_encode_ms;
-      const nodeOther = Math.max(0, nodeTotal - namedNode);
-      return <div key={`${hop.node_id}:${hop.start_layer}`} className="rounded border border-line/70 bg-ink/40 px-2.5 py-2">
-        <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-fg"><span>L{hop.start_layer}-L{hop.end_layer} · {hop.node_id.slice(0, 10)}</span><span className="font-mono text-faint">{hop.calls} chamadas · {hop.prefill_calls} prefill + {hop.decode_calls} tokens · {bytes(hop.bytes_sent + hop.bytes_received)}</span></div>
-        <div className="mt-1.5 grid gap-1 font-mono text-[0.66rem] leading-relaxed sm:grid-cols-2">
-          <span>gateway: codificar {hop.client_encode_ms} ms · até headers {hop.response_headers_ms} ms · corpo {hop.response_body_ms} ms · decodificar {hop.client_decode_ms} ms</span>
-          <span>nó: frame {hop.node_frame_decode_ms} ms · preparar {hop.node_input_prepare_ms} ms · fila {hop.node_queue_ms} ms · setup {hop.node_setup_ms} ms</span>
-          <span>GPU/engine decode {hop.node_decode_ms} ms · residual D2H/sync {hop.node_residual_ms} ms · sampling {hop.node_sampling_ms} ms · frame out {hop.node_encode_ms} ms</span>
-          <span>decode/token p50 {hop.node_decode_p50_ms} ms · p95 {hop.node_decode_p95_ms} ms · residual HTTP {hop.network_ms} ms{nodeOther > 0 ? ` · nó não atribuído ${nodeOther} ms` : ""}</span>
-        </div>
-      </div>;
-    })}</div>
-    <p className="mt-2 text-faint">“Até headers” inclui upload, rede e trabalho do nó. “Residual HTTP” é a parte da ida e volta fora do handler do nó, não latência de pacote pura. Residual D2H/sync mede a leitura do estado oculto que força GPU → CPU.</p>
+    <div className="mt-2 overflow-x-auto">
+      <table className="w-full min-w-[46rem] border-collapse font-mono text-[0.66rem] leading-relaxed">
+        <thead className="text-faint">
+          <tr className="border-b border-line/70 text-left">
+            <th className="py-1 pr-3 font-normal">hop</th>
+            <th className="py-1 pr-3 font-normal">fase</th>
+            <th className="py-1 pr-3 text-right font-normal">chamadas</th>
+            <th className="py-1 pr-3 text-right font-normal">gateway</th>
+            <th className="py-1 pr-3 text-right font-normal">backend</th>
+            <th className="py-1 pr-3 text-right font-normal">residual</th>
+            <th className="py-1 pr-3 text-right font-normal">sampling</th>
+            <th className="py-1 pr-3 text-right font-normal">transporte</th>
+            <th className="py-1 text-right font-normal">bytes</th>
+          </tr>
+        </thead>
+        <tbody>
+          {trace.hops.flatMap((hop) => [
+            <PhaseRow key={`${hop.node_id}:${hop.start_layer}:prefill`} hop={hop} label="prefill" phase={hop.prefill} first />,
+            <PhaseRow key={`${hop.node_id}:${hop.start_layer}:decode`} hop={hop} label="decode" phase={hop.decode} />,
+          ])}
+        </tbody>
+      </table>
+    </div>
+    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; com <code>RDMA_P2P_PROFILE_SYNC=1</code> a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code>, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura.</p>
   </details>;
+}
+
+function PhaseRow({
+  hop,
+  label,
+  phase,
+  first,
+}: {
+  hop: HopTrace;
+  label: string;
+  phase: PhaseTrace;
+  first?: boolean;
+}) {
+  const gatewayMs = phase.client_encode_ms + phase.client_decode_ms;
+  const named =
+    phase.node_frame_decode_ms + phase.node_input_prepare_ms + phase.node_queue_ms +
+    phase.node_setup_ms + phase.node_decode_ms + phase.node_residual_ms +
+    phase.node_sampling_ms + phase.node_encode_ms;
+  const unattributed = Math.max(0, phase.processing_ms - named);
+  const idle = phase.calls === 0;
+
+  return <>
+    <tr className={clsx("border-t border-line/40", first && "border-t-line/70", idle && "text-faint")}>
+      {first
+        ? <td className="py-1 pr-3 align-top text-fg" rowSpan={4}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
+        : null}
+      <td className="py-1 pr-3">{label}</td>
+      <td className="py-1 pr-3 text-right">{phase.calls}</td>
+      <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
+      <td className="py-1 pr-3 text-right">{phase.node_decode_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{phase.node_residual_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{phase.node_sampling_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{phase.network_ms} ms</td>
+      <td className="py-1 text-right">{bytes(phase.bytes_sent + phase.bytes_received)}</td>
+    </tr>
+    <tr className="text-faint">
+      <td className="pb-1.5 pr-3 align-top" colSpan={8}>
+        <span className="block">nó: frame {phase.node_frame_decode_ms} ms · preparar {phase.node_input_prepare_ms} ms · fila {phase.node_queue_ms} ms · setup {phase.node_setup_ms} ms · frame out {phase.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
+        <span className="block">backend: enfileirar {phase.node_backend_enqueue_ms} ms · conclusão {phase.node_backend_completion_ms} ms{phase.node_backend_completion_ms === 0 ? " (sync desligado)" : ""} · D2H da captura {phase.node_residual_capture_d2h_sync_ms} ms · p50 {phase.node_p50_ms} ms · p95 {phase.node_p95_ms} ms</span>
+        <span className="block">sampling: acesso {phase.node_logits_access_ms} ms · clone {phase.node_logits_clone_ms} ms · penalidade {phase.node_repetition_penalty_ms} ms · softmax {phase.node_softmax_ms} ms · top-k {phase.node_top_k_ms} ms · top-p {phase.node_top_p_ms} ms · seleção {phase.node_selection_ms} ms · texto {phase.node_token_text_ms} ms</span>
+        <span className="block">gateway: codificar {phase.client_encode_ms} ms · até headers {phase.response_headers_ms} ms · corpo {phase.response_body_ms} ms · decodificar {phase.client_decode_ms} ms</span>
+      </td>
+    </tr>
+  </>;
 }
 
 function SessionList({

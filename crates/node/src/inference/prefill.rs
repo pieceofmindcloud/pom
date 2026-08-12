@@ -50,19 +50,19 @@ pub struct PrefillOutcome {
     pub trace: RequestTrace,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct HopTrace {
-    pub node_id: String,
-    pub start_layer: u32,
-    pub end_layer: u32,
-    pub prefill_ms: u64,
-    pub decode_ms: u64,
+/// Everything one hop spent inside a single phase. Prefill and decode are kept
+/// apart because they are different workloads: prefill moves a whole prompt
+/// through the peer once, decode moves one token at a time. Averaging them
+/// together hides which of the two is slow.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct PhaseTrace {
+    /// Time the peer reported for itself (`processing_ms` on the wire).
+    pub processing_ms: u64,
+    /// Round trip minus what the peer claimed: the residual HTTP time.
     pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
     pub calls: u32,
-    pub prefill_calls: u32,
-    pub decode_calls: u32,
     pub client_encode_ms: u64,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
@@ -72,17 +72,127 @@ pub struct HopTrace {
     pub node_queue_ms: u64,
     pub node_setup_ms: u64,
     pub node_decode_ms: u64,
+    /// Time to hand the batch to the backend — not the time it ran.
+    pub node_backend_enqueue_ms: u64,
+    /// Queued backend work plus already-queued output transfer, measured with
+    /// `llama_synchronize`. Zero unless the peer runs with
+    /// `RDMA_P2P_PROFILE_SYNC=1`; it is a diagnostic boundary, not kernel time.
+    pub node_backend_completion_ms: u64,
+    /// Device-to-host copy of the residual, measured inside the capture hook.
+    pub node_residual_capture_d2h_sync_ms: u64,
     pub node_residual_ms: u64,
+    pub node_logits_access_ms: u64,
+    pub node_logits_clone_ms: u64,
+    pub node_repetition_penalty_ms: u64,
+    pub node_softmax_ms: u64,
+    pub node_top_k_ms: u64,
+    pub node_top_p_ms: u64,
+    pub node_selection_ms: u64,
+    pub node_token_text_ms: u64,
     pub node_sampling_ms: u64,
     pub node_encode_ms: u64,
-    pub node_prefill_p50_ms: u64,
-    pub node_prefill_p95_ms: u64,
-    pub node_decode_p50_ms: u64,
-    pub node_decode_p95_ms: u64,
+    /// Percentiles over the peer's own `decode_ms`, per call in this phase.
+    pub node_p50_ms: u64,
+    pub node_p95_ms: u64,
     #[serde(skip)]
-    node_prefill_samples_ms: Vec<u64>,
-    #[serde(skip)]
-    node_decode_samples_ms: Vec<u64>,
+    node_samples_ms: Vec<u64>,
+}
+
+impl PhaseTrace {
+    fn record(
+        &mut self,
+        round_trip_ms: u64,
+        processing_ms: u64,
+        bytes_sent: u64,
+        bytes_received: u64,
+        client_encode_ms: u64,
+        response_headers_ms: u64,
+        response_body_ms: u64,
+        client_decode_ms: u64,
+        node: &serde_json::Value,
+    ) {
+        let node_ms = |key: &str| node[key].as_u64().unwrap_or(0);
+        let node_decode_ms = node_ms("decode_ms");
+
+        self.processing_ms += processing_ms;
+        self.network_ms += round_trip_ms.saturating_sub(processing_ms);
+        self.bytes_sent += bytes_sent;
+        self.bytes_received += bytes_received;
+        self.calls += 1;
+        self.client_encode_ms += client_encode_ms;
+        self.response_headers_ms += response_headers_ms;
+        self.response_body_ms += response_body_ms;
+        self.client_decode_ms += client_decode_ms;
+        self.node_frame_decode_ms += node_ms("frame_decode_ms");
+        self.node_input_prepare_ms += node_ms("input_prepare_ms");
+        self.node_queue_ms += node_ms("queue_ms");
+        self.node_setup_ms += node_ms("setup_ms");
+        self.node_decode_ms += node_decode_ms;
+        self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
+        self.node_backend_completion_ms += node_ms("backend_completion_ms");
+        self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
+        self.node_residual_ms += node_ms("residual_ms");
+        self.node_logits_access_ms += node_ms("logits_access_ms");
+        self.node_logits_clone_ms += node_ms("logits_clone_ms");
+        self.node_repetition_penalty_ms += node_ms("repetition_penalty_ms");
+        self.node_softmax_ms += node_ms("softmax_ms");
+        self.node_top_k_ms += node_ms("top_k_ms");
+        self.node_top_p_ms += node_ms("top_p_ms");
+        self.node_selection_ms += node_ms("selection_ms");
+        self.node_token_text_ms += node_ms("token_text_ms");
+        self.node_sampling_ms += node_ms("sampling_ms");
+        self.node_encode_ms += node_ms("encode_ms");
+
+        self.node_samples_ms.push(node_decode_ms);
+        self.refresh_percentiles();
+    }
+
+    fn merge(&mut self, next: &PhaseTrace) {
+        self.processing_ms += next.processing_ms;
+        self.network_ms += next.network_ms;
+        self.bytes_sent += next.bytes_sent;
+        self.bytes_received += next.bytes_received;
+        self.calls += next.calls;
+        self.client_encode_ms += next.client_encode_ms;
+        self.response_headers_ms += next.response_headers_ms;
+        self.response_body_ms += next.response_body_ms;
+        self.client_decode_ms += next.client_decode_ms;
+        self.node_frame_decode_ms += next.node_frame_decode_ms;
+        self.node_input_prepare_ms += next.node_input_prepare_ms;
+        self.node_queue_ms += next.node_queue_ms;
+        self.node_setup_ms += next.node_setup_ms;
+        self.node_decode_ms += next.node_decode_ms;
+        self.node_backend_enqueue_ms += next.node_backend_enqueue_ms;
+        self.node_backend_completion_ms += next.node_backend_completion_ms;
+        self.node_residual_capture_d2h_sync_ms += next.node_residual_capture_d2h_sync_ms;
+        self.node_residual_ms += next.node_residual_ms;
+        self.node_logits_access_ms += next.node_logits_access_ms;
+        self.node_logits_clone_ms += next.node_logits_clone_ms;
+        self.node_repetition_penalty_ms += next.node_repetition_penalty_ms;
+        self.node_softmax_ms += next.node_softmax_ms;
+        self.node_top_k_ms += next.node_top_k_ms;
+        self.node_top_p_ms += next.node_top_p_ms;
+        self.node_selection_ms += next.node_selection_ms;
+        self.node_token_text_ms += next.node_token_text_ms;
+        self.node_sampling_ms += next.node_sampling_ms;
+        self.node_encode_ms += next.node_encode_ms;
+        self.node_samples_ms.extend_from_slice(&next.node_samples_ms);
+        self.refresh_percentiles();
+    }
+
+    fn refresh_percentiles(&mut self) {
+        self.node_p50_ms = percentile(&self.node_samples_ms, 50);
+        self.node_p95_ms = percentile(&self.node_samples_ms, 95);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HopTrace {
+    pub node_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub prefill: PhaseTrace,
+    pub decode: PhaseTrace,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -165,32 +275,8 @@ impl RequestTrace {
                     node_id: (*node_id).into(),
                     start_layer: *start_layer,
                     end_layer: *end_layer,
-                    prefill_ms: 0,
-                    decode_ms: 0,
-                    network_ms: 0,
-                    bytes_sent: 0,
-                    bytes_received: 0,
-                    calls: 0,
-                    prefill_calls: 0,
-                    decode_calls: 0,
-                    client_encode_ms: 0,
-                    response_headers_ms: 0,
-                    response_body_ms: 0,
-                    client_decode_ms: 0,
-                    node_frame_decode_ms: 0,
-                    node_input_prepare_ms: 0,
-                    node_queue_ms: 0,
-                    node_setup_ms: 0,
-                    node_decode_ms: 0,
-                    node_residual_ms: 0,
-                    node_sampling_ms: 0,
-                    node_encode_ms: 0,
-                    node_prefill_p50_ms: 0,
-                    node_prefill_p95_ms: 0,
-                    node_decode_p50_ms: 0,
-                    node_decode_p95_ms: 0,
-                    node_prefill_samples_ms: Vec::new(),
-                    node_decode_samples_ms: Vec::new(),
+                    prefill: PhaseTrace::default(),
+                    decode: PhaseTrace::default(),
                 })
                 .collect(),
         }
@@ -230,39 +316,21 @@ impl RequestTrace {
         let Some(entry) = self.hops.get_mut(hop) else {
             return;
         };
-        let node_decode_ms = node["decode_ms"].as_u64().unwrap_or(0);
-        match phase {
-            Phase::Prefill => {
-                entry.prefill_ms += processing_ms;
-                entry.prefill_calls += 1;
-                entry.node_prefill_samples_ms.push(node_decode_ms);
-                entry.node_prefill_p50_ms = percentile(&entry.node_prefill_samples_ms, 50);
-                entry.node_prefill_p95_ms = percentile(&entry.node_prefill_samples_ms, 95);
-            }
-            Phase::Decode => {
-                entry.decode_ms += processing_ms;
-                entry.decode_calls += 1;
-                entry.node_decode_samples_ms.push(node_decode_ms);
-                entry.node_decode_p50_ms = percentile(&entry.node_decode_samples_ms, 50);
-                entry.node_decode_p95_ms = percentile(&entry.node_decode_samples_ms, 95);
-            }
-        }
-        entry.network_ms += round_trip_ms.saturating_sub(processing_ms);
-        entry.bytes_sent += bytes_sent;
-        entry.bytes_received += bytes_received;
-        entry.calls += 1;
-        entry.client_encode_ms += client_encode_ms;
-        entry.response_headers_ms += response_headers_ms;
-        entry.response_body_ms += response_body_ms;
-        entry.client_decode_ms += client_decode_ms;
-        entry.node_frame_decode_ms += node["frame_decode_ms"].as_u64().unwrap_or(0);
-        entry.node_input_prepare_ms += node["input_prepare_ms"].as_u64().unwrap_or(0);
-        entry.node_queue_ms += node["queue_ms"].as_u64().unwrap_or(0);
-        entry.node_setup_ms += node["setup_ms"].as_u64().unwrap_or(0);
-        entry.node_decode_ms += node_decode_ms;
-        entry.node_residual_ms += node["residual_ms"].as_u64().unwrap_or(0);
-        entry.node_sampling_ms += node["sampling_ms"].as_u64().unwrap_or(0);
-        entry.node_encode_ms += node["encode_ms"].as_u64().unwrap_or(0);
+        let slot = match phase {
+            Phase::Prefill => &mut entry.prefill,
+            Phase::Decode => &mut entry.decode,
+        };
+        slot.record(
+            round_trip_ms,
+            processing_ms,
+            bytes_sent,
+            bytes_received,
+            client_encode_ms,
+            response_headers_ms,
+            response_body_ms,
+            client_decode_ms,
+            node,
+        );
         self.total_bytes_sent += bytes_sent;
         self.total_bytes_received += bytes_received;
     }
@@ -271,36 +339,8 @@ impl RequestTrace {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
         for (current, next) in self.hops.iter_mut().zip(&other.hops) {
-            current.prefill_ms += next.prefill_ms;
-            current.decode_ms += next.decode_ms;
-            current.network_ms += next.network_ms;
-            current.bytes_sent += next.bytes_sent;
-            current.bytes_received += next.bytes_received;
-            current.calls += next.calls;
-            current.prefill_calls += next.prefill_calls;
-            current.decode_calls += next.decode_calls;
-            current.client_encode_ms += next.client_encode_ms;
-            current.response_headers_ms += next.response_headers_ms;
-            current.response_body_ms += next.response_body_ms;
-            current.client_decode_ms += next.client_decode_ms;
-            current.node_frame_decode_ms += next.node_frame_decode_ms;
-            current.node_input_prepare_ms += next.node_input_prepare_ms;
-            current.node_queue_ms += next.node_queue_ms;
-            current.node_setup_ms += next.node_setup_ms;
-            current.node_decode_ms += next.node_decode_ms;
-            current.node_residual_ms += next.node_residual_ms;
-            current.node_sampling_ms += next.node_sampling_ms;
-            current.node_encode_ms += next.node_encode_ms;
-            current
-                .node_prefill_samples_ms
-                .extend_from_slice(&next.node_prefill_samples_ms);
-            current
-                .node_decode_samples_ms
-                .extend_from_slice(&next.node_decode_samples_ms);
-            current.node_prefill_p50_ms = percentile(&current.node_prefill_samples_ms, 50);
-            current.node_prefill_p95_ms = percentile(&current.node_prefill_samples_ms, 95);
-            current.node_decode_p50_ms = percentile(&current.node_decode_samples_ms, 50);
-            current.node_decode_p95_ms = percentile(&current.node_decode_samples_ms, 95);
+            current.prefill.merge(&next.prefill);
+            current.decode.merge(&next.decode);
         }
     }
 }
@@ -721,10 +761,10 @@ mod tests {
             &json!({"decode_ms": 5}),
         );
 
-        assert_eq!(trace.hops[0].prefill_ms, 7);
-        assert_eq!(trace.hops[0].network_ms, 11);
-        assert_eq!(trace.hops[0].bytes_sent, 1_024);
-        assert_eq!(trace.hops[0].bytes_received, 2_048);
+        assert_eq!(trace.hops[0].prefill.processing_ms, 7);
+        assert_eq!(trace.hops[0].prefill.network_ms, 11);
+        assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
+        assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
     }
 
     #[test]
@@ -742,18 +782,37 @@ mod tests {
             25,
             1,
             1,
-            &json!({"decode_ms": 11, "residual_ms": 4}),
+            &json!({"decode_ms": 11, "residual_ms": 4, "top_p_ms": 3, "backend_completion_ms": 9}),
         );
 
         request.merge(&token);
 
         let hop = &request.hops[0];
-        assert_eq!(hop.decode_calls, 1);
-        assert_eq!(hop.client_encode_ms, 2);
-        assert_eq!(hop.node_decode_ms, 11);
-        assert_eq!(hop.node_residual_ms, 4);
-        assert_eq!(hop.node_decode_p50_ms, 11);
-        assert_eq!(hop.node_decode_p95_ms, 11);
+        assert_eq!(hop.decode.calls, 1);
+        assert_eq!(hop.decode.client_encode_ms, 2);
+        assert_eq!(hop.decode.node_decode_ms, 11);
+        assert_eq!(hop.decode.node_residual_ms, 4);
+        assert_eq!(hop.decode.node_top_p_ms, 3);
+        assert_eq!(hop.decode.node_backend_completion_ms, 9);
+        assert_eq!(hop.decode.node_p50_ms, 11);
+        assert_eq!(hop.decode.node_p95_ms, 11);
+        // A decode-only trace must leave prefill untouched.
+        assert_eq!(hop.prefill.calls, 0);
+        assert_eq!(hop.prefill.node_decode_ms, 0);
+    }
+
+    #[test]
+    fn hop_trace_keeps_prefill_and_decode_transport_independent() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0, Phase::Prefill, 10, 6, 100, 200, 1, 8, 1, 0, &json!({}),
+        );
+        trace.record_hop(
+            0, Phase::Decode, 20, 9, 10, 20, 1, 18, 1, 0, &json!({}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.network_ms, 4);
+        assert_eq!(trace.hops[0].decode.network_ms, 11);
     }
 
     #[test]

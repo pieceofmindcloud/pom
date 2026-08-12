@@ -20,6 +20,7 @@ use anyhow::{bail, Context, Result};
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
 use std::sync::Mutex;
+use std::time::Instant;
 use tracing::warn;
 
 use llama_cpp_sys_2 as sys;
@@ -28,6 +29,7 @@ use llama_cpp_sys_2 as sys;
 
 static CAPTURE_WANT: Mutex<Option<CString>> = Mutex::new(None);
 static CAPTURE_BUF: Mutex<Option<Vec<f32>>> = Mutex::new(None);
+static CAPTURE_COPY_MS: Mutex<u64> = Mutex::new(0);
 
 unsafe extern "C" fn capture_callback(
     t: *mut sys::ggml_tensor,
@@ -69,6 +71,7 @@ unsafe extern "C" fn capture_callback(
     }
 
     // Compute phase: copy the tensor bytes.
+    let copy_started = Instant::now();
     let n_bytes = unsafe { sys::ggml_nbytes(t) } as usize;
     let n_floats = n_bytes / 4;
     let mut raw = vec![0u8; n_bytes];
@@ -83,6 +86,9 @@ unsafe extern "C" fn capture_callback(
         if let Ok(mut buf) = CAPTURE_BUF.lock() {
             *buf = Some(floats);
         }
+    }
+    if let Ok(mut elapsed) = CAPTURE_COPY_MS.lock() {
+        *elapsed += copy_started.elapsed().as_millis() as u64;
     }
     true
 }
@@ -112,6 +118,25 @@ pub struct LlmEngine {
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
     offload_kqv: bool,
+}
+
+/// A diagnostic boundary around `llama_decode`. `backend_completion_ms` is
+/// measured with the public `llama_synchronize` API and therefore includes all
+/// queued backend work and output transfers that must complete. It is not
+/// labelled as pure kernel time.
+#[derive(Debug, Clone, Default)]
+pub struct DecodeTimings {
+    pub enqueue_ms: u64,
+    pub backend_completion_ms: u64,
+    pub residual_capture_d2h_sync_ms: u64,
+}
+
+/// Off by default: the extra `llama_synchronize` is a measurement barrier, and
+/// leaving it on would charge every request for a diagnostic nobody asked for.
+fn profile_backend_sync() -> bool {
+    std::env::var("RDMA_P2P_PROFILE_SYNC")
+        .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
+        .unwrap_or(false)
 }
 
 // SAFETY: We serialise all GPU calls behind a `Mutex<LlmEngine>` in the HTTP
@@ -420,7 +445,9 @@ impl LlmEngine {
         pos_offset: u32,
         seq_id: u32,
         logits_all: bool,
-    ) -> Result<()> {
+    ) -> Result<DecodeTimings> {
+        *CAPTURE_COPY_MS.lock().unwrap() = 0;
+        let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
@@ -444,7 +471,17 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
         }
-        Ok(())
+        let mut timings = DecodeTimings {
+            enqueue_ms: enqueue_started.elapsed().as_millis() as u64,
+            residual_capture_d2h_sync_ms: *CAPTURE_COPY_MS.lock().unwrap(),
+            ..Default::default()
+        };
+        if profile_backend_sync() {
+            let completion_started = Instant::now();
+            unsafe { sys::llama_synchronize(self.ctx) };
+            timings.backend_completion_ms = completion_started.elapsed().as_millis() as u64;
+        }
+        Ok(timings)
     }
 
     /// Decode a batch of embedding vectors (hidden states from the previous peer).
@@ -455,7 +492,9 @@ impl LlmEngine {
         pos_offset: u32,
         seq_id: u32,
         logits_all: bool,
-    ) -> Result<()> {
+    ) -> Result<DecodeTimings> {
+        *CAPTURE_COPY_MS.lock().unwrap() = 0;
+        let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
                 "hidden state length {} != n_tokens {} × n_embd {}",
@@ -491,7 +530,17 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
         }
-        Ok(())
+        let mut timings = DecodeTimings {
+            enqueue_ms: enqueue_started.elapsed().as_millis() as u64,
+            residual_capture_d2h_sync_ms: *CAPTURE_COPY_MS.lock().unwrap(),
+            ..Default::default()
+        };
+        if profile_backend_sync() {
+            let completion_started = Instant::now();
+            unsafe { sys::llama_synchronize(self.ctx) };
+            timings.backend_completion_ms = completion_started.elapsed().as_millis() as u64;
+        }
+        Ok(timings)
     }
 
     // ── Residual extraction ───────────────────────────────────────────────────
@@ -566,16 +615,38 @@ pub struct SamplingConfig {
     pub repeat_last_n: usize,
 }
 
+/// CPU-only sampling boundaries. GPU/backend completion is measured before
+/// this function, so a long CPU sampler cannot hide a pending CUDA stream.
+#[derive(Debug, Clone, Default)]
+pub struct SamplingTimings {
+    pub logits_access_ms: u64,
+    pub logits_clone_ms: u64,
+    pub repetition_penalty_ms: u64,
+    pub softmax_ms: u64,
+    pub top_k_ms: u64,
+    pub top_p_ms: u64,
+    pub selection_ms: u64,
+    pub token_text_ms: u64,
+}
+
 /// Temperature + top-k + top-p + repetition-penalty sampling.
 ///
 /// Returns the sampled token id. When `temperature <= 0` this is greedy argmax.
-pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32 {
+pub fn sample_token_profiled(
+    logits: &[f32],
+    recent: &[i32],
+    cfg: &SamplingConfig,
+) -> (i32, SamplingTimings) {
+    let mut timings = SamplingTimings::default();
     if logits.is_empty() {
-        return 0;
+        return (0, timings);
     }
+    let clone_started = Instant::now();
     let mut logits = logits.to_vec();
+    timings.logits_clone_ms = clone_started.elapsed().as_millis() as u64;
 
     // Repetition penalty.
+    let repetition_started = Instant::now();
     if cfg.repeat_penalty != 1.0 && !recent.is_empty() {
         let window_start = recent.len().saturating_sub(cfg.repeat_last_n);
         let window: std::collections::HashSet<i32> =
@@ -591,24 +662,31 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
             }
         }
     }
+    timings.repetition_penalty_ms = repetition_started.elapsed().as_millis() as u64;
 
     if cfg.temperature <= 0.0 {
-        return logits
+        let selection_started = Instant::now();
+        let token = logits
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .map(|(i, _)| i as i32)
             .unwrap_or(0);
+        timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+        return (token, timings);
     }
 
     // Apply temperature.
+    let softmax_started = Instant::now();
     let max_l = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     let mut probs: Vec<f32> = logits
         .iter()
         .map(|&l| ((l - max_l) / cfg.temperature).exp())
         .collect();
+    timings.softmax_ms = softmax_started.elapsed().as_millis() as u64;
 
     // Top-K filter.
+    let top_k_started = Instant::now();
     if cfg.top_k > 0 && (cfg.top_k as usize) < probs.len() {
         let k = cfg.top_k as usize;
         let mut sorted = probs.clone();
@@ -620,8 +698,10 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
             }
         });
     }
+    timings.top_k_ms = top_k_started.elapsed().as_millis() as u64;
 
     // Top-P (nucleus) filter.
+    let top_p_started = Instant::now();
     if cfg.top_p < 1.0 {
         let mut indexed: Vec<(usize, f32)> = probs.iter().copied().enumerate().collect();
         indexed.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
@@ -640,15 +720,19 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
             }
         });
     }
+    timings.top_p_ms = top_p_started.elapsed().as_millis() as u64;
 
+    let selection_started = Instant::now();
     let total: f32 = probs.iter().sum();
     if total <= 0.0 {
-        return logits
+        let token = logits
             .iter()
             .enumerate()
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .map(|(i, _)| i as i32)
             .unwrap_or(0);
+        timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+        return (token, timings);
     }
     probs.iter_mut().for_each(|p| *p /= total);
 
@@ -667,15 +751,23 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
     for (i, &p) in probs.iter().enumerate() {
         cumsum += p;
         if rng_val <= cumsum {
-            return i as i32;
+            timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+            return (i as i32, timings);
         }
     }
-    probs
+    let token = probs
         .iter()
         .enumerate()
         .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
         .map(|(i, _)| i as i32)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    timings.selection_ms = selection_started.elapsed().as_millis() as u64;
+    (token, timings)
+}
+
+/// Compatibility wrapper for callers that do not need a diagnostic breakdown.
+pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32 {
+    sample_token_profiled(logits, recent, cfg).0
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -695,6 +787,23 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profiled_sampler_separates_cpu_work_from_logit_access() {
+        let cfg = SamplingConfig {
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 2,
+            repeat_penalty: 1.0,
+            repeat_last_n: 0,
+        };
+
+        let (_token, timings) = sample_token_profiled(&[0.1, 0.3, 0.8], &[], &cfg);
+
+        assert_eq!(timings.logits_access_ms, 0);
+        assert_eq!(timings.logits_clone_ms, 0);
+        assert_eq!(timings.token_text_ms, 0);
+    }
 
     /// The capture target and buffer are process-global — the module doc
     /// explains why that is sound in production, where one engine exists per

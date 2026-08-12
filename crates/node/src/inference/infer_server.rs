@@ -10,7 +10,7 @@
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-use crate::llm::{sample_token, EngineConfig, LlmEngine, SamplingConfig};
+use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, SamplingConfig};
 use crate::runtime::NodeConfig;
 use crate::wire::{self, WireDtype};
 use anyhow::{bail, Result};
@@ -51,7 +51,18 @@ struct NodeTimings {
     queue_ms: u64,
     setup_ms: u64,
     decode_ms: u64,
+    backend_enqueue_ms: u64,
+    backend_completion_ms: u64,
+    residual_capture_d2h_sync_ms: u64,
     residual_ms: u64,
+    logits_access_ms: u64,
+    logits_clone_ms: u64,
+    repetition_penalty_ms: u64,
+    softmax_ms: u64,
+    top_k_ms: u64,
+    top_p_ms: u64,
+    selection_ms: u64,
+    token_text_ms: u64,
     sampling_ms: u64,
     encode_ms: u64,
 }
@@ -64,7 +75,18 @@ impl NodeTimings {
             "queue_ms": self.queue_ms,
             "setup_ms": self.setup_ms,
             "decode_ms": self.decode_ms,
+            "backend_enqueue_ms": self.backend_enqueue_ms,
+            "backend_completion_ms": self.backend_completion_ms,
+            "residual_capture_d2h_sync_ms": self.residual_capture_d2h_sync_ms,
             "residual_ms": self.residual_ms,
+            "logits_access_ms": self.logits_access_ms,
+            "logits_clone_ms": self.logits_clone_ms,
+            "repetition_penalty_ms": self.repetition_penalty_ms,
+            "softmax_ms": self.softmax_ms,
+            "top_k_ms": self.top_k_ms,
+            "top_p_ms": self.top_p_ms,
+            "selection_ms": self.selection_ms,
+            "token_text_ms": self.token_text_ms,
             "sampling_ms": self.sampling_ms,
             "encode_ms": self.encode_ms,
         })
@@ -588,19 +610,25 @@ fn prefill_blocking(
 
     let n_tokens;
     let decode_started = Instant::now();
+    let engine_timing;
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
-        s.engine
+        engine_timing = s
+            .engine
             .decode_hidden(&hidden, n_tokens, n_past, seq_id, !is_last)?;
     } else {
         if tokens_for_chunk.is_empty() {
             bail!("chunk {chunk_index} não tem tokens");
         }
         n_tokens = tokens_for_chunk.len();
-        s.engine
+        engine_timing = s
+            .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
     timings.decode_ms += decode_started.elapsed().as_millis() as u64;
+    timings.backend_enqueue_ms += engine_timing.enqueue_ms;
+    timings.backend_completion_ms += engine_timing.backend_completion_ms;
+    timings.residual_capture_d2h_sync_ms += engine_timing.residual_capture_d2h_sync_ms;
 
     // ── Session update ───────────────────────────────────────────────────────
     {
@@ -634,11 +662,14 @@ fn prefill_blocking(
             timings.encode_ms += encode_started.elapsed().as_millis() as u64;
             return Ok(TimedReply { bytes, timings });
         }
-        let sampling_started = Instant::now();
+        let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
-        let logits = s.engine.logits_ith(n_tokens as i32 - 1).to_vec();
-        let next_id = sample_token(&logits, &recent, &sampling);
+        let logits = s.engine.logits_ith(n_tokens as i32 - 1);
+        let logits_access_ms = logits_access_started.elapsed().as_millis() as u64;
+        let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let token_text_started = Instant::now();
         let text = s.engine.token_to_piece(next_id, false);
+        let token_text_ms = token_text_started.elapsed().as_millis() as u64;
         let done = next_id == eos;
         s.sessions
             .get_mut(&sid_key)
@@ -648,7 +679,22 @@ fn prefill_blocking(
         if done {
             s.finish(&sid_key);
         }
-        timings.sampling_ms += sampling_started.elapsed().as_millis() as u64;
+        timings.sampling_ms += logits_access_ms
+            + sampling_timing.logits_clone_ms
+            + sampling_timing.repetition_penalty_ms
+            + sampling_timing.softmax_ms
+            + sampling_timing.top_k_ms
+            + sampling_timing.top_p_ms
+            + sampling_timing.selection_ms
+            + token_text_ms;
+        timings.logits_access_ms += logits_access_ms;
+        timings.logits_clone_ms += sampling_timing.logits_clone_ms;
+        timings.repetition_penalty_ms += sampling_timing.repetition_penalty_ms;
+        timings.softmax_ms += sampling_timing.softmax_ms;
+        timings.top_k_ms += sampling_timing.top_k_ms;
+        timings.top_p_ms += sampling_timing.top_p_ms;
+        timings.selection_ms += sampling_timing.selection_ms;
+        timings.token_text_ms += token_text_ms;
         let encode_started = Instant::now();
         let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
@@ -787,20 +833,25 @@ fn step_blocking(
 
     let n_tokens;
     let decode_started = Instant::now();
+    let engine_timing;
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state.
         n_tokens = shape[0];
         let logits_all = !is_last;
-        s.engine
+        engine_timing = s
+            .engine
             .decode_hidden(&hidden, n_tokens, n_past, seq_id, logits_all)?;
     } else {
         // First peer: receives the token ID sampled by the previous last peer.
         let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
         n_tokens = 1;
         let logits_all = !is_last;
-        s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
+        engine_timing = s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
     }
     timings.decode_ms += decode_started.elapsed().as_millis() as u64;
+    timings.backend_enqueue_ms += engine_timing.enqueue_ms;
+    timings.backend_completion_ms += engine_timing.backend_completion_ms;
+    timings.residual_capture_d2h_sync_ms += engine_timing.residual_capture_d2h_sync_ms;
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
@@ -808,11 +859,14 @@ fn step_blocking(
     let eos = s.engine.eos_token();
 
     if is_last {
-        let sampling_started = Instant::now();
+        let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
-        let logits = s.engine.logits_ith(n_tokens as i32 - 1).to_vec();
-        let next_id = sample_token(&logits, &recent, &sampling);
+        let logits = s.engine.logits_ith(n_tokens as i32 - 1);
+        let logits_access_ms = logits_access_started.elapsed().as_millis() as u64;
+        let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let token_text_started = Instant::now();
         let text = s.engine.token_to_piece(next_id, false);
+        let token_text_ms = token_text_started.elapsed().as_millis() as u64;
         let done = next_id == eos;
         s.sessions
             .get_mut(&sid_key)
@@ -822,7 +876,22 @@ fn step_blocking(
         if done {
             s.finish(&sid_key);
         }
-        timings.sampling_ms += sampling_started.elapsed().as_millis() as u64;
+        timings.sampling_ms += logits_access_ms
+            + sampling_timing.logits_clone_ms
+            + sampling_timing.repetition_penalty_ms
+            + sampling_timing.softmax_ms
+            + sampling_timing.top_k_ms
+            + sampling_timing.top_p_ms
+            + sampling_timing.selection_ms
+            + token_text_ms;
+        timings.logits_access_ms += logits_access_ms;
+        timings.logits_clone_ms += sampling_timing.logits_clone_ms;
+        timings.repetition_penalty_ms += sampling_timing.repetition_penalty_ms;
+        timings.softmax_ms += sampling_timing.softmax_ms;
+        timings.top_k_ms += sampling_timing.top_k_ms;
+        timings.top_p_ms += sampling_timing.top_p_ms;
+        timings.selection_ms += sampling_timing.selection_ms;
+        timings.token_text_ms += token_text_ms;
         let encode_started = Instant::now();
         let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text}),

@@ -12,35 +12,50 @@ export interface RequestTrace {
   prefill_ms: number;
   total_bytes_sent: number;
   total_bytes_received: number;
-  hops: Array<{
-    node_id: string;
-    start_layer: number;
-    end_layer: number;
-    prefill_ms: number;
-    decode_ms: number;
-    network_ms: number;
-    bytes_sent: number;
-    bytes_received: number;
-    calls: number;
-    prefill_calls: number;
-    decode_calls: number;
-    client_encode_ms: number;
-    response_headers_ms: number;
-    response_body_ms: number;
-    client_decode_ms: number;
-    node_frame_decode_ms: number;
-    node_input_prepare_ms: number;
-    node_queue_ms: number;
-    node_setup_ms: number;
-    node_decode_ms: number;
-    node_residual_ms: number;
-    node_sampling_ms: number;
-    node_encode_ms: number;
-    node_prefill_p50_ms: number;
-    node_prefill_p95_ms: number;
-    node_decode_p50_ms: number;
-    node_decode_p95_ms: number;
-  }>;
+  hops: HopTrace[];
+}
+
+/** One hop's totals inside a single phase. Prefill and decode never mix. */
+export interface PhaseTrace {
+  processing_ms: number;
+  network_ms: number;
+  bytes_sent: number;
+  bytes_received: number;
+  calls: number;
+  client_encode_ms: number;
+  response_headers_ms: number;
+  response_body_ms: number;
+  client_decode_ms: number;
+  node_frame_decode_ms: number;
+  node_input_prepare_ms: number;
+  node_queue_ms: number;
+  node_setup_ms: number;
+  node_decode_ms: number;
+  node_backend_enqueue_ms: number;
+  /** Zero unless the peer runs with RDMA_P2P_PROFILE_SYNC=1. */
+  node_backend_completion_ms: number;
+  node_residual_capture_d2h_sync_ms: number;
+  node_residual_ms: number;
+  node_logits_access_ms: number;
+  node_logits_clone_ms: number;
+  node_repetition_penalty_ms: number;
+  node_softmax_ms: number;
+  node_top_k_ms: number;
+  node_top_p_ms: number;
+  node_selection_ms: number;
+  node_token_text_ms: number;
+  node_sampling_ms: number;
+  node_encode_ms: number;
+  node_p50_ms: number;
+  node_p95_ms: number;
+}
+
+export interface HopTrace {
+  node_id: string;
+  start_layer: number;
+  end_layer: number;
+  prefill: PhaseTrace;
+  decode: PhaseTrace;
 }
 
 export interface ChatStreamState {

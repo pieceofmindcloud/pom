@@ -18,9 +18,11 @@ BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include
 # do sampler render. Se o tempo de build incomodar, religar e uma linha - e
 # custa aquele 30x.
 [profile.release]
-opt-level = 3
+opt-level = 3          # Maximize CPU execution speed and loop vectorization
+lto = "fat"            # Enable heavy Link-Time Optimization across crates
+codegen-units = 1
 debug = 0              # Reduce debug info levels (e.g., line numbers only) to speed up builds
-incremental = false
+incremental = true
 
 [target.'cfg(target_os = "linux1")']
 linker = "clang"

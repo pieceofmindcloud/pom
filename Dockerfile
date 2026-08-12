@@ -49,7 +49,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cp target/release/rdma-p2p /build/rdma-p2p
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM nvidia/cuda:13.0.3-runtime-ubuntu24.04
+FROM nvidia/cuda:13.0.3-base-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -66,7 +66,7 @@ EXPOSE 42777/udp
 EXPOSE 8080/tcp
 EXPOSE 8181/tcp
 
-ENV LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat/
+ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/:/usr/local/cuda-13.0/compat/
 # project_root() would otherwise need models/ or rdma-p2p.json in /app to
 # recognize it; this makes the resolution explicit instead of incidental.
 ENV RDMA_P2P_HOME=/app

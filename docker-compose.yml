@@ -29,6 +29,7 @@ services:
     container_name: rdma-p2p-node-gpu
     volumes:
       - ./tests/fixtures/node-gpu:/data
+      - ./models:/data/models
     # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
     # Toolkit on the host; omitted entirely on the other two nodes.
     deploy:
@@ -44,9 +45,11 @@ services:
     container_name: rdma-p2p-node-cpu-1
     volumes:
       - ./tests/fixtures/node-cpu-1:/data
+      - ./models:/data/models
 
   node-cpu-2:
     <<: *node
     container_name: rdma-p2p-node-cpu-2
     volumes:
       - ./tests/fixtures/node-cpu-2:/data
+      - ./models:/data/models

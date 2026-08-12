@@ -126,6 +126,46 @@ pub type Transfers = Arc<TransferState>;
 
 // ── Path safety ──────────────────────────────────────────────────────────────
 
+/// Assinatura de um arquivo GGUF: os 4 primeiros bytes.
+const GGUF_MAGIC: &[u8; 4] = b"GGUF";
+
+/// O único tipo de arquivo que pode sair desta máquina ou ser apagado por ela.
+///
+/// Conjunção de propósito: o conteúdo tem que ser GGUF, e o nome não pode
+/// mentir sobre isso. Só o cabeçalho deixaria passar um `notas.txt` renomeado
+/// por engano; só a extensão barraria o store inteiro do Ollama, que guarda os
+/// modelos como `blobs/sha256-<hash>`, sem extensão nenhuma.
+pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
+    use std::io::Read;
+
+    if !path.is_file() {
+        return Err(format!("não é um arquivo: {}", path.display()));
+    }
+
+    if let Some(ext) = path.extension() {
+        if !ext.eq_ignore_ascii_case("gguf") {
+            return Err(format!(
+                "só arquivos GGUF: {} tem extensão .{}",
+                path.display(),
+                ext.to_string_lossy()
+            ));
+        }
+    }
+
+    let mut head = [0u8; 4];
+    let mut file = std::fs::File::open(path)
+        .map_err(|e| format!("não deu para abrir {}: {e}", path.display()))?;
+    file.read_exact(&mut head)
+        .map_err(|_| format!("{} é curto demais para ser um GGUF", path.display()))?;
+    if &head != GGUF_MAGIC {
+        return Err(format!(
+            "{} não é um GGUF (assinatura {head:02x?})",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Resolve a requested path inside the models directory, or refuse.
 ///
 /// The path arrives from another machine, so it is untrusted: without this a
@@ -159,14 +199,19 @@ fn safe_model_path(models_dir: &Path, requested: &str) -> Result<PathBuf, String
 /// - `path` — nobody here chose anything (the pull direction, where a peer asks
 ///   us for a file on its own initiative), so `models/` is the whole world.
 async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, String> {
-    if let Some(id) = q.grant.as_deref() {
-        return grant_path(state, id).await;
-    }
-    let requested = q
-        .path
-        .as_deref()
-        .ok_or_else(|| "informe ?grant= ou ?path=".to_string())?;
-    safe_model_path(&state.shard_dir().await, requested)
+    let path = if let Some(id) = q.grant.as_deref() {
+        grant_path(state, id).await?
+    } else {
+        let requested = q
+            .path
+            .as_deref()
+            .ok_or_else(|| "informe ?grant= ou ?path=".to_string())?;
+        safe_model_path(&state.shard_dir().await, requested)?
+    };
+    // Também no caminho da concessão: é por ali que sai um arquivo de fora de
+    // `models/`, e era a única porta sem checagem de tipo.
+    ensure_gguf(&path)?;
+    Ok(path)
 }
 
 /// Look up a grant. A stale or invented id is simply not a file here.
@@ -500,6 +545,7 @@ fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     if !full.is_file() {
         return Err(format!("não é um arquivo: {requested}"));
     }
+    ensure_gguf(&full)?;
     Ok(full)
 }
 
@@ -914,11 +960,65 @@ async fn run_download(
 mod tests {
     use super::*;
 
+    /// A regra é conjunção: assinatura no cabeçalho E, se houver extensão,
+    /// `.gguf`. Blob do Ollama não tem extensão nenhuma e precisa passar.
+    #[test]
+    fn only_real_gguf_files_pass_the_gate() {
+        let dir = std::env::temp_dir().join(format!("rdma-gguf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let ok = dir.join("fatia.gguf");
+        std::fs::write(&ok, b"GGUF\x03\x00\x00\x00").unwrap();
+        assert!(ensure_gguf(&ok).is_ok());
+
+        // Como o Ollama guarda: sem extensão, o conteúdo é o que manda.
+        let blob = dir.join("sha256-abc123");
+        std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
+        assert!(ensure_gguf(&blob).is_ok());
+
+        // O nome mente sobre o conteúdo.
+        let fake = dir.join("mentira.gguf");
+        std::fs::write(&fake, b"NOTG____").unwrap();
+        assert!(ensure_gguf(&fake).is_err());
+
+        // Conteúdo certo, extensão errada: ainda é não.
+        let wrong_ext = dir.join("modelo.txt");
+        std::fs::write(&wrong_ext, b"GGUF\x03\x00\x00\x00").unwrap();
+        assert!(ensure_gguf(&wrong_ext).is_err());
+
+        // Maiúsculas não importam.
+        let upper = dir.join("FATIA.GGUF");
+        std::fs::write(&upper, b"GGUF\x03\x00\x00\x00").unwrap();
+        assert!(ensure_gguf(&upper).is_ok());
+
+        // Menor que a própria assinatura.
+        let tiny = dir.join("curto.gguf");
+        std::fs::write(&tiny, b"GG").unwrap();
+        assert!(ensure_gguf(&tiny).is_err());
+
+        assert!(ensure_gguf(&dir).is_err(), "diretório não é arquivo");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// O que o operador escolhe na própria tela ainda precisa ser um GGUF.
+    #[test]
+    fn the_operator_cannot_send_a_non_gguf() {
+        let dir = std::env::temp_dir().join(format!("rdma-xfer-nogguf-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("anotacoes.txt");
+        std::fs::write(&f, b"nada a ver").unwrap();
+
+        assert!(local_send_path(f.to_str().unwrap()).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_peer_cannot_ask_for_files_outside_the_models_dir() {
         let dir = std::env::temp_dir().join(format!("rdma-xfer-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
-        std::fs::write(dir.join("sub/ok.gguf"), b"x").unwrap();
+        std::fs::write(dir.join("sub/ok.gguf"), b"GGUF\x03\x00\x00\x00").unwrap();
 
         assert!(safe_model_path(&dir, "sub/ok.gguf").is_ok());
         assert!(safe_model_path(&dir, "../../../etc/passwd").is_err());
@@ -932,7 +1032,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdma-xfer-abs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("slice.gguf");
-        std::fs::write(&f, b"x").unwrap();
+        std::fs::write(&f, b"GGUF\x03\x00\x00\x00").unwrap();
 
         let resolved = safe_model_path(&dir, f.to_str().unwrap()).unwrap();
         assert_eq!(resolved.file_name().unwrap(), "slice.gguf");
@@ -947,7 +1047,7 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("rdma-xfer-any-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("solto.gguf");
-        std::fs::write(&f, b"x").unwrap();
+        std::fs::write(&f, b"GGUF\x03\x00\x00\x00").unwrap();
 
         // Nothing here is under a models dir, and that is the point.
         let resolved = local_send_path(f.to_str().unwrap()).unwrap();

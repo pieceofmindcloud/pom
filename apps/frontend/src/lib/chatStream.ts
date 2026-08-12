@@ -2,6 +2,27 @@ export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
   duration_ms?: number;
+  trace?: RequestTrace;
+}
+
+export interface RequestTrace {
+  model: string;
+  input_tokens: number;
+  output_tokens: number;
+  prefill_ms: number;
+  total_bytes_sent: number;
+  total_bytes_received: number;
+  hops: Array<{
+    node_id: string;
+    start_layer: number;
+    end_layer: number;
+    prefill_ms: number;
+    decode_ms: number;
+    network_ms: number;
+    bytes_sent: number;
+    bytes_received: number;
+    calls: number;
+  }>;
 }
 
 export interface ChatStreamState {
@@ -12,6 +33,7 @@ export interface ChatStreamState {
   tokensPerSecond?: number;
   tokensGenerated?: number;
   durationMs?: number;
+  trace?: RequestTrace;
 }
 
 const OPEN = "<think>";
@@ -65,5 +87,6 @@ export function finishChatStream(previous: ChatStreamState, metrics?: StreamMetr
   if (metrics?.tokens_per_sec != null) state = { ...state, tokensPerSecond: metrics.tokens_per_sec };
   if (metrics?.tokens_generated != null) state = { ...state, tokensGenerated: metrics.tokens_generated };
   if (metrics?.duration_ms != null) state = { ...state, durationMs: metrics.duration_ms };
+  if (metrics?.trace) state = { ...state, trace: metrics.trace };
   return state;
 }

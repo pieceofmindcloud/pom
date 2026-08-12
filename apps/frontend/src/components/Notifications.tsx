@@ -16,6 +16,7 @@ import { api } from "../lib/api";
 import { bytes, duration, rate, since } from "../lib/format";
 import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { isActiveTransfer } from "../lib/transferStatus";
 import { Badge, Button, Empty, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -68,9 +69,7 @@ export function Notifications() {
   const offers = useOffers();
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
-  const downloads = (transfers.data?.jobs ?? []).filter(
-    (t) => t.state !== "done" && t.state !== "failed",
-  );
+  const downloads = (transfers.data?.jobs ?? []).filter((transfer) => isActiveTransfer(transfer.state));
   const waiting = offers.data?.offers ?? [];
   const count = running.length + downloads.length + waiting.length;
 

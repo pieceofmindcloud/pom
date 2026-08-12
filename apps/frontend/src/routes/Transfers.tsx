@@ -1,4 +1,4 @@
-import { Check, Download, Inbox, Upload, X } from "lucide-react";
+import { Check, CheckCircle2, Download, Inbox, Upload, X } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   Badge,
@@ -16,6 +16,7 @@ import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
 import { useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import { isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { useI18n } from "../i18n/provider";
 
 export function Transfers() {
@@ -25,8 +26,8 @@ export function Transfers() {
   const toast = useToast();
 
   const jobs = transfers.data?.jobs ?? [];
-  const active = jobs.filter((j) => j.state !== "done" && j.state !== "failed");
-  const finished = jobs.filter((j) => j.state === "done" || j.state === "failed");
+  const active = jobs.filter((j) => isActiveTransfer(j.state));
+  const finished = jobs.filter((j) => isFinishedTransfer(j.state));
   const waiting = offers.data?.offers ?? [];
 
   async function answer(id: string, accept: boolean) {
@@ -166,17 +167,35 @@ export function Transfers() {
             <PanelHeader title={t("transfers.finished")} />
             <div className="divide-y divide-line">
               {finished.map((job) => (
-                <div
-                  key={job.id}
-                  className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 px-5 py-3"
-                >
-                  <span className="min-w-0 truncate text-[0.88rem] text-fg">{job.name}</span>
+                <div key={job.id} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 px-5 py-3">
+                  <div className="flex min-w-0 items-center gap-2.5">
+                    {job.state === "done" ? (
+                      <CheckCircle2 className="h-4 w-4 shrink-0 text-aqua" aria-hidden="true" />
+                    ) : (
+                      <X className="h-4 w-4 shrink-0 text-rose" aria-hidden="true" />
+                    )}
+                    <div className="min-w-0">
+                      <span className="block truncate text-[0.88rem] text-fg">{job.name}</span>
+                      {job.detail && (
+                        <span className="block truncate text-[0.72rem] text-muted" title={job.detail}>
+                          {job.detail}
+                        </span>
+                      )}
+                    </div>
+                  </div>
                   <div className="flex shrink-0 items-center gap-3">
                     <span className="font-mono text-[0.75rem] text-faint">
                       {bytes(job.bytes_total)}
                     </span>
                     <Badge tone={job.state === "done" ? "aqua" : "rose"}>
-                      {job.state === "done" ? t("transfers.completed") : job.detail || t("transfers.failed")}
+                      {job.state === "done" ? (
+                        <span className="flex items-center gap-1">
+                          <Check className="h-3 w-3" aria-hidden="true" />
+                          {t("transfers.completed")}
+                        </span>
+                      ) : (
+                        t("transfers.failed")
+                      )}
                     </Badge>
                   </div>
                 </div>

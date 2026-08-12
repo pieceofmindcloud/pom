@@ -50,6 +50,13 @@ const CHUNK: usize = 1024 * 1024;
 /// Headroom demanded on top of the file size before a download starts.
 const DISK_HEADROOM_MB: u64 = 512;
 
+/// Stable wire values consumed by the web UI. Keep these as protocol terms;
+/// presentation is localized in the client.
+const TRANSFER_RUNNING: &str = "running";
+const TRANSFER_VERIFYING: &str = "verifying";
+const TRANSFER_DONE: &str = "done";
+const TRANSFER_FAILED: &str = "failed";
+
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         // Serving side
@@ -733,7 +740,7 @@ async fn spawn_download(
         id: job_id.clone(),
         name: name.clone(),
         from_host: from_host.clone(),
-        state: "baixando".into(),
+        state: TRANSFER_RUNNING.into(),
         bytes_done: 0,
         bytes_total: total,
         bytes_per_sec: 0.0,
@@ -766,7 +773,7 @@ async fn spawn_download(
             let _ = tokio::fs::remove_file(&part).await;
             let mut jobs = task_state.transfers.jobs.write().await;
             if let Some(j) = jobs.get_mut(&job_id) {
-                j.state = "falhou".into();
+                j.state = TRANSFER_FAILED.into();
                 j.detail = e;
             }
         }
@@ -859,7 +866,7 @@ async fn run_download(
     {
         let mut jobs = state.transfers.jobs.write().await;
         if let Some(j) = jobs.get_mut(job_id) {
-            j.state = "verificando".into();
+            j.state = TRANSFER_VERIFYING.into();
             j.bytes_done = done;
         }
     }
@@ -894,7 +901,7 @@ async fn run_download(
 
     let mut jobs = state.transfers.jobs.write().await;
     if let Some(j) = jobs.get_mut(job_id) {
-        j.state = "concluída".into();
+        j.state = TRANSFER_DONE.into();
         j.bytes_done = total;
         j.eta_secs = Some(0);
         j.detail = format!("MD5 conferido · {}", dest.display());

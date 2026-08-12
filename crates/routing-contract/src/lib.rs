@@ -17,6 +17,10 @@ pub struct ModelCapability {
     /// node wire format. A future wire version can move to an exclusive end.
     pub start_layer: u32,
     pub end_layer: u32,
+    /// Total transformer layers in this model revision. Optional preserves
+    /// interoperability with peers that announced the first inventory format.
+    #[serde(default)]
+    pub total_layers: Option<u32>,
     pub supports_inference: bool,
 }
 
@@ -150,12 +154,14 @@ mod tests {
                     model_id: "qwen35@r1".into(),
                     start_layer: 0,
                     end_layer: 2,
+                    total_layers: Some(7),
                     supports_inference: true,
                 },
                 ModelCapability {
                     model_id: "ornith@r7".into(),
                     start_layer: 0,
                     end_layer: 2,
+                    total_layers: Some(11),
                     supports_inference: true,
                 },
             ],

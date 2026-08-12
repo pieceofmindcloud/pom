@@ -387,6 +387,77 @@ struct RoutingEdgeView {
     to_start_layer: u32,
 }
 
+/// All viable handoffs observed in the model inventory. These are candidates,
+/// not routing commands: the planner remains the sole authority selecting the
+/// live path and balancing load.
+fn candidate_edges(views: &[PeerView]) -> Vec<RoutingEdgeView> {
+    let mut edges = Vec::new();
+    for from in views {
+        for from_capability in &from.capabilities {
+            if !from_capability.supports_inference {
+                continue;
+            }
+            for to in views {
+                if to.node_id == from.node_id {
+                    continue;
+                }
+                for to_capability in &to.capabilities {
+                    if !to_capability.supports_inference
+                        || to_capability.model_id != from_capability.model_id
+                        || to_capability.end_layer <= from_capability.end_layer
+                        || to_capability.start_layer > from_capability.end_layer.saturating_add(1)
+                    {
+                        continue;
+                    }
+                    edges.push(RoutingEdgeView {
+                        from_node_id: from.node_id.clone(),
+                        to_node_id: to.node_id.clone(),
+                        model_id: from_capability.model_id.clone(),
+                        from_end_layer: from_capability.end_layer,
+                        to_start_layer: to_capability.start_layer,
+                    });
+                }
+            }
+        }
+    }
+    edges.sort_by(|left, right| {
+        (
+            &left.model_id,
+            &left.from_node_id,
+            &left.to_node_id,
+            left.from_end_layer,
+            left.to_start_layer,
+        )
+            .cmp(&(
+                &right.model_id,
+                &right.from_node_id,
+                &right.to_node_id,
+                right.from_end_layer,
+                right.to_start_layer,
+            ))
+    });
+    edges.dedup_by(|left, right| {
+        left.model_id == right.model_id
+            && left.from_node_id == right.from_node_id
+            && left.to_node_id == right.to_node_id
+            && left.from_end_layer == right.from_end_layer
+            && left.to_start_layer == right.to_start_layer
+    });
+    edges
+}
+
+/// Coverage is calculated per advertised model, not just the model currently
+/// selected for generation. The dashboard may observe every model without
+/// affecting the routing decision.
+#[derive(Debug, Serialize)]
+struct ModelCoverageView {
+    model_id: String,
+    total_layers: u32,
+    covered_layers: usize,
+    coverage: Vec<bool>,
+    complete: bool,
+}
+
 async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
@@ -440,6 +511,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
                     model_id: p.model.clone(),
                     start_layer: p.start_layer,
                     end_layer: p.end_layer,
+                    total_layers: Some(p.total_layers),
                     supports_inference: p.inference_port.is_some(),
                 }]
             } else {
@@ -456,22 +528,84 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
 
     views.sort_by_key(|v| (v.start_layer, v.short_id.clone()));
 
-    // Layer coverage for the model this node is serving.
-    let active = state.active_model().await;
-    let total = views
+    // Layer coverage for every model in the inventory. Older peers do not
+    // advertise `total_layers` per capability, so use their legacy peer total
+    // when the model matches, otherwise infer the smallest possible total from
+    // the greatest advertised layer.
+    let mut model_ids: Vec<_> = views
         .iter()
-        .find(|v| v.model == active)
-        .map(|v| v.total_layers)
-        .unwrap_or(0);
-    let mut covered = vec![false; total as usize];
-    for v in views.iter().filter(|v| v.model == active) {
-        for l in v.start_layer..=v.end_layer.min(total.saturating_sub(1)) {
-            if let Some(slot) = covered.get_mut(l as usize) {
-                *slot = true;
+        .flat_map(|view| {
+            view.capabilities
+                .iter()
+                .map(|capability| capability.model_id.clone())
+        })
+        .collect();
+    model_ids.sort();
+    model_ids.dedup();
+    let model_inventory: Vec<ModelCoverageView> = model_ids
+        .into_iter()
+        .map(|model_id| {
+            let requested_model = &model_id;
+            let capabilities: Vec<_> = views
+                .iter()
+                .flat_map(|view| {
+                    view.capabilities
+                        .iter()
+                        .filter(move |capability| capability.model_id == *requested_model)
+                        .map(move |capability| (view, capability))
+                })
+                .collect();
+            let total_layers = capabilities
+                .iter()
+                .filter_map(|(view, capability)| {
+                    capability.total_layers.or_else(|| {
+                        (view.model == model_id && view.total_layers > 0)
+                            .then_some(view.total_layers)
+                    })
+                })
+                .max()
+                .unwrap_or_else(|| {
+                    capabilities
+                        .iter()
+                        .map(|(_, capability)| capability.end_layer + 1)
+                        .max()
+                        .unwrap_or(0)
+                });
+            let mut coverage = vec![false; total_layers as usize];
+            for (_, capability) in capabilities {
+                for layer in capability.start_layer
+                    ..=capability.end_layer.min(total_layers.saturating_sub(1))
+                {
+                    if let Some(slot) = coverage.get_mut(layer as usize) {
+                        *slot = true;
+                    }
+                }
             }
-        }
-    }
-    let covered_count = covered.iter().filter(|c| **c).count();
+            let covered_layers = coverage.iter().filter(|covered| **covered).count();
+            ModelCoverageView {
+                model_id,
+                total_layers,
+                covered_layers,
+                complete: total_layers > 0 && covered_layers == total_layers as usize,
+                coverage,
+            }
+        })
+        .collect();
+
+    // Preserve the legacy active-model fields for existing UI consumers.
+    let active = state.active_model().await;
+    let active_coverage = model_inventory
+        .iter()
+        .find(|inventory| inventory.model_id == active);
+    let total = active_coverage
+        .map(|inventory| inventory.total_layers)
+        .unwrap_or(0);
+    let covered_count = active_coverage
+        .map(|inventory| inventory.covered_layers)
+        .unwrap_or(0);
+    let covered = active_coverage
+        .map(|inventory| inventory.coverage.clone())
+        .unwrap_or_default();
 
     // Ask the same planner used by generation which handoffs it selected.
     // This is observability only: the UI cannot influence routing or load
@@ -495,6 +629,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
             })
             .unwrap_or_default()
     };
+    let candidate_edges = candidate_edges(&views);
 
     let self_node = serde_json::to_value(node_info(State(state.clone())).await.0).ok();
 
@@ -504,9 +639,11 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         "total_layers": total,
         "covered_layers": covered_count,
         "coverage": covered,
-        "complete": total > 0 && covered_count == total as usize,
+        "complete": active_coverage.is_some_and(|inventory| inventory.complete),
+        "model_inventory": model_inventory,
         "peers": views,
         "routing_edges": routing_edges,
+        "candidate_edges": candidate_edges,
         "node": self_node,
     }))
 }

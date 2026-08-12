@@ -30,7 +30,8 @@ import {
   type ChatMessage,
   type ChatSession,
 } from "../lib/chatStore";
-import { since } from "../lib/format";
+import { bytes, since } from "../lib/format";
+import type { RequestTrace } from "../lib/chatStream";
 import { useCluster, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -76,16 +77,24 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
             <p className="mt-2 font-mono text-[0.68rem] text-faint">{message.source}</p>
           )}
           {message.tokensPerSecond != null && (
-            <p className="mt-2 font-mono text-[0.68rem] text-faint">
-              {message.tokensPerSecond.toFixed(1)} {labels.speed}
-              {message.tokensGenerated != null && ` · ${message.tokensGenerated} ${labels.tokens}`}
-              {message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${labels.time}`}
-            </p>
+            <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
+              <span>{message.tokensPerSecond.toFixed(1)} {labels.speed}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${labels.tokens}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${labels.time}`}</span>
+              {message.trace && <ExecutionTelemetry trace={message.trace} source={message.source} />}
+            </div>
           )}
         </div>
       )}
     </motion.div>
   );
+}
+
+function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
+  return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted" open>
+    <summary className="cursor-pointer font-medium text-fg">Telemetria da execução {source ? `· ${source}` : ""}</summary>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{trace.input_tokens} in</span><span>{trace.output_tokens} out</span><span>{trace.prefill_ms} ms prefill</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className="mt-2 space-y-1.5">{trace.hops.map((hop) => <div key={`${hop.node_id}:${hop.start_layer}`} className="flex flex-wrap justify-between gap-x-3 rounded bg-ink/40 px-2 py-1"><span>L{hop.start_layer}-L{hop.end_layer} · {hop.node_id.slice(0, 10)}</span><span className="font-mono">cpu {hop.prefill_ms + hop.decode_ms} ms · transporte+overhead {hop.network_ms} ms · {hop.calls}x · {bytes(hop.bytes_sent + hop.bytes_received)}</span></div>)}</div>
+    <p className="mt-2 text-faint">Transporte inclui overhead HTTP e serialização, não é latência de pacote pura.</p>
+  </details>;
 }
 
 function SessionList({
@@ -161,8 +170,8 @@ export function Chat() {
   const toast = useToast();
 
   const available = useMemo(
-    () => (models.data ?? []).map((m) => m.id).filter(Boolean),
-    [models.data],
+    () => Array.from(new Set([...(models.data ?? []).map((m) => m.id), ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? [])])).filter(Boolean).sort(),
+    [cluster.data?.model_inventory, models.data],
   );
 
   const [session, setSession] = useState<ChatSession>(() => sessions[0] ?? emptySession(null));
@@ -174,7 +183,7 @@ export function Chat() {
   const composer = useRef<HTMLTextAreaElement>(null);
 
   // A session with no model yet takes whatever the network is serving.
-  const model = session.model ?? available[0] ?? cluster.data?.active_model ?? "";
+  const model = session.model && available.includes(session.model) ? session.model : available[0] ?? cluster.data?.active_model ?? "";
 
   useEffect(() => {
     const element = thread.current;
@@ -261,6 +270,7 @@ export function Chat() {
               tokensPerSecond: streamed.tokensPerSecond,
               tokensGenerated: streamed.tokensGenerated,
               durationMs: streamed.durationMs,
+              trace: streamed.trace,
               source: typeof metrics.source === "string" ? metrics.source : undefined,
             });
           }
@@ -333,9 +343,7 @@ export function Chat() {
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {/* One model is a fact, not a choice — the picker only earns its
-                space when the network is serving more than one. */}
-            {available.length > 1 ? (
+            {available.length > 0 ? (
               <Select
                 value={model}
                 onChange={(e) => setSession({ ...session, model: e.target.value })}

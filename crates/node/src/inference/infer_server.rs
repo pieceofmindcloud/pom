@@ -22,13 +22,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde::Deserialize;
+use serde_json::json;
 use std::{
     collections::HashMap,
-    net::SocketAddr,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -395,7 +394,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         .get("is_last")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let mut is_final_chunk = meta
+    let is_final_chunk = meta
         .get("is_final_chunk")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
@@ -417,6 +416,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         None => None,
     };
 
+    let processing_started = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         prefill_blocking(
             state,
@@ -433,12 +433,15 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
     .await;
 
     match result {
-        Ok(Ok(bytes)) => (
-            StatusCode::OK,
-            [("content-type", "application/octet-stream")],
-            bytes,
-        )
-            .into_response(),
+        Ok(Ok(bytes)) => match add_processing_time(bytes, processing_started.elapsed()) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        },
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida")
                 || e.to_string().contains("fora de ordem")
@@ -638,18 +641,22 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         None => None,
     };
 
+    let processing_started = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         step_blocking(state, sid_key, is_last, wire_dtype, token_id, tensor)
     })
     .await;
 
     match result {
-        Ok(Ok(bytes)) => (
-            StatusCode::OK,
-            [("content-type", "application/octet-stream")],
-            bytes,
-        )
-            .into_response(),
+        Ok(Ok(bytes)) => match add_processing_time(bytes, processing_started.elapsed()) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        },
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida") {
                 StatusCode::BAD_REQUEST
@@ -659,6 +666,18 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
             (code, e.to_string()).into_response()
         }
         Err(e) => err500(e),
+    }
+}
+
+/// Adds node-side compute time to every binary inference reply. The gateway
+/// measures the complete HTTP round-trip, so it can expose the remainder as
+/// transport latency without guessing from a separate ping.
+fn add_processing_time(bytes: Vec<u8>, elapsed: Duration) -> Result<Vec<u8>> {
+    let (mut meta, tensor) = wire::decode(&bytes)?;
+    meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    match tensor {
+        Some((values, shape)) => wire::encode(&meta, Some((&values, shape)), WireDtype::F16),
+        None => wire::encode(&meta, None, WireDtype::F16),
     }
 }
 

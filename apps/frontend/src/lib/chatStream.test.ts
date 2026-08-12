@@ -30,4 +30,13 @@ describe("chat stream parsing", () => {
     expect(state.tokensGenerated).toBe(312);
     expect(state.durationMs).toBe(16956);
   });
+
+  it("keeps the final distributed trace for the debug view", () => {
+    const state = finishChatStream(emptyChatStream(), {
+      trace: { model: "qwen", input_tokens: 12, output_tokens: 4, prefill_ms: 90, total_bytes_sent: 10, total_bytes_received: 20, hops: [] },
+    });
+
+    expect(state.trace?.model).toBe("qwen");
+    expect(state.trace?.input_tokens).toBe(12);
+  });
 });

@@ -790,6 +790,7 @@ async fn main() -> Result<()> {
                             model_id: a.model.clone(),
                             start_layer: a.start_layer,
                             end_layer: a.end_layer,
+                            total_layers: Some(a.total_layers),
                             supports_inference: net_disc.inference_port.is_some(),
                         }],
                         disk_total_mb: 0,

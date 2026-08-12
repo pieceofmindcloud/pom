@@ -1,8 +1,6 @@
 import clsx from "clsx";
-import { AnimatePresence, motion } from "framer-motion";
+import { motion } from "framer-motion";
 import {
-  Activity,
-  CircleSlash,
   HardDrive,
   LayoutGrid,
   MemoryStick,
@@ -15,7 +13,6 @@ import { Confirm } from "../components/Confirm";
 import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
-import { ModelNetworkDemo } from "../components/ModelNetworkDemo";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import {
   Badge,
@@ -26,9 +23,7 @@ import {
   Footnote,
   KeyValue,
   Meter,
-  PageHeader,
   Panel,
-  PanelHeader,
   Skeleton,
 } from "../components/ui";
 import { devUpdate } from "../lib/api";
@@ -144,11 +139,13 @@ function ClusterStat({
   label,
   value,
   detail,
+  progress,
   tone = "neutral",
 }: {
   label: string;
   value: string;
   detail?: string;
+  progress?: number | null;
   tone?: "neutral" | "aqua" | "amber" | "rose" | "iris";
 }) {
   const color = {
@@ -165,6 +162,11 @@ function ClusterStat({
         {value}
       </div>
       {detail && <div className="mt-0.5 truncate text-xs text-muted">{detail}</div>}
+      {progress != null && (
+        <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-line" aria-label={`${label}: ${value}`}>
+          <div className={clsx("h-full rounded-full", tone === "amber" ? "bg-amber" : "bg-aqua")} style={{ width: `${Math.max(0, Math.min(100, progress))}%` }} />
+        </div>
+      )}
     </div>
   );
 }
@@ -418,173 +420,48 @@ export function Dashboard() {
   const [selected, setSelected] = useState<string | null>(null);
   const cluster = useCluster();
   const node = useNode();
-  const demo = new URLSearchParams(window.location.search).get("demo") === "network";
 
   const c = cluster.data;
   const peers = c ? pipelinePeers(c) : [];
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlight = peers.reduce((sum, p) => sum + p.load, 0);
 
-  return (
-    <>
-      <PageHeader
-        title={t("dashboard.title")}
-        subtitle={
-          c?.active_model
-            ? t("dashboard.activeModel", { model: c.active_model })
-            : t("dashboard.subtitle")
-        }
-        actions={<ViewSwitch view={view} onChange={setView} />}
-      />
+  if (cluster.isError) {
+    return <div className="p-6"><ErrorState title={t("dashboard.nodeNoResponse")} error={cluster.error} onRetry={() => void cluster.refetch()} /></div>;
+  }
 
-      {cluster.isError && (
-        <ErrorState
-          title={t("dashboard.nodeNoResponse")}
-          error={cluster.error}
-          onRetry={() => void cluster.refetch()}
-        />
-      )}
+  if (cluster.isLoading || !c) {
+    return <div className="grid h-full place-items-center p-6"><div className="w-full max-w-xl space-y-4"><Skeleton className="h-16 w-full" /><Skeleton className="h-[32rem] w-full" /></div></div>;
+  }
 
-      {cluster.isLoading && (
-        <div className="space-y-4">
-          <Skeleton className="h-24 w-full" />
-          <Skeleton className="h-56 w-full" />
-        </div>
-      )}
+  return <div className="flex h-full min-h-0 flex-col bg-ink">
+    <div className="relative z-30 flex shrink-0 flex-wrap items-stretch justify-between gap-2 border-b border-line bg-surface/95 px-3 py-2 shadow-panel backdrop-blur-md">
+      <div className="grid min-w-0 flex-1 grid-cols-2 divide-x divide-y divide-line rounded-lg border border-line bg-raised/75 sm:flex sm:divide-y-0">
+        <ClusterStat label={t("dashboard.coverage")} value={c.total_layers > 0 ? pct((c.covered_layers / c.total_layers) * 100) : "—"} detail={c.total_layers > 0 ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers }) : t("dashboard.noModelAssigned")} progress={c.total_layers > 0 ? (c.covered_layers / c.total_layers) * 100 : null} tone={c.complete ? "aqua" : "amber"} />
+        <ClusterStat label={t("dashboard.machines")} value={num(c.peers.length)} detail={num(serving) + " " + t("dashboard.serving")} tone="iris" />
+        <ClusterStat label={t("dashboard.model")} value={c.active_model || "—"} detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")} tone={c.complete ? "aqua" : "amber"} />
+        <ClusterStat label={t("dashboard.inFlight")} value={num(inFlight)} detail={node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")} tone={inFlight > 0 ? "amber" : "neutral"} />
+      </div>
+      <ViewSwitch view={view} onChange={setView} />
+    </div>
 
-      {c && (
-        <div className="space-y-5">
-          {demo && <ModelNetworkDemo />}
-          {!demo && <ModelNetworkCanvas cluster={c} />}
-          <Panel className="grid grid-cols-2 divide-x divide-y divide-line sm:grid-cols-4 sm:divide-y-0">
-            <ClusterStat
-              label={t("dashboard.machines")}
-              value={num(c.peers.length)}
-              detail={num(serving) + " " + t("dashboard.serving")}
-              tone="iris"
-            />
-            <ClusterStat
-              label={t("dashboard.coverage")}
-              value={
-                c.total_layers > 0
-                  ? pct((c.covered_layers / c.total_layers) * 100)
-                  : "—"
-              }
-              detail={
-                c.total_layers > 0
-                  ? t("dashboard.layers", { covered: c.covered_layers, total: c.total_layers })
-                  : t("dashboard.noModelAssigned")
-              }
-              tone={c.complete ? "aqua" : "amber"}
-            />
-            <ClusterStat
-              label={t("dashboard.model")}
-              value={c.active_model || "—"}
-              detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")}
-              tone={c.complete ? "aqua" : "amber"}
-            />
-            <ClusterStat
-              label={t("dashboard.inFlight")}
-              value={num(inFlight)}
-              detail={
-                node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")
-              }
-              tone={inFlight > 0 ? "amber" : "neutral"}
-            />
-          </Panel>
+    {view === "minima" ? (
+      <div className="min-h-0 flex-1"><ModelNetworkCanvas cluster={c} /></div>
+    ) : (
+      <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">
+        {peers.length === 0 ? (
+          <Panel><Empty icon={<MemoryStick className="h-5 w-5" />} title={t("dashboard.noMachines")}>{t("dashboard.noMachinesDetail")}</Empty></Panel>
+        ) : (
+          <div className="grid gap-5 xl:grid-cols-2">{peers.map((p, i) => <PeerDetailCard key={p.node_id} peer={p} index={i} />)}</div>
+        )}
+        <Footnote icon={<Zap className="h-3.5 w-3.5" />} className="mt-5">{t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}</Footnote>
+      </div>
+    )}
 
-          {!c.complete && c.total_layers > 0 && (
-            <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
-              <CircleSlash className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
-              <p className="text-sm leading-relaxed text-muted">
-                {t("dashboard.missingLayers", { count: c.total_layers - c.covered_layers })}
-              </p>
-            </div>
-          )}
+    {/* Keep the former execution-order rail available for a later surface; the
+        graph above is now the primary operational view. */}
+    <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
 
-          <AnimatePresence mode="wait">
-            {view === "minima" ? (
-              <motion.div
-                key="minima"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-              >
-                <Panel>
-                  <PanelHeader
-                    eyebrow={t("dashboard.executionOrder")}
-                    title={t("dashboard.requestPath")}
-                    subtitle={t("dashboard.requestPathDetail")}
-                    actions={
-                      <Badge tone={c.complete ? "aqua" : "amber"}>
-                        <Activity className="h-3 w-3" />
-                        {c.complete ? t("dashboard.ready") : t("dashboard.incompletePipeline")}
-                      </Badge>
-                    }
-                  />
-                  {/* The flow is the whole point of this view: it takes the
-                      height rather than leaving the screen half empty. */}
-                  <div className="flex min-h-[min(30rem,calc(100vh-24rem))] flex-col justify-center px-5 py-7">
-                    <PipelineRail
-                      cluster={c}
-                      selected={selected}
-                      onSelect={(id) => {
-                        setSelected(id);
-                        setView("estendida");
-                      }}
-                    />
-                  </div>
-                </Panel>
-              </motion.div>
-            ) : (
-              <motion.div
-                key="estendida"
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, y: -8 }}
-                transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-                className="space-y-5"
-              >
-                <Panel className="px-5 py-4">
-                  <LayerRibbon cluster={c} />
-                </Panel>
-
-                {peers.length === 0 ? (
-                  <Panel>
-                    <Empty
-                      icon={<MemoryStick className="h-5 w-5" />}
-                      title={t("dashboard.noMachines")}
-                    >
-                      {t("dashboard.noMachinesDetail")}
-                    </Empty>
-                  </Panel>
-                ) : (
-                  <div className="grid gap-5 xl:grid-cols-2">
-                    {peers.map((p, i) => (
-                      <PeerDetailCard key={p.node_id} peer={p} index={i} />
-                    ))}
-                  </div>
-                )}
-
-                <Footnote
-                  icon={<Zap className="h-3.5 w-3.5" />}
-                >
-                  {t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}
-                </Footnote>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
-
-      {c && c.peers.length === 0 && (
-        <Panel className="mt-5">
-          <Empty icon={<HardDrive className="h-5 w-5" />} title={t("dashboard.emptyNetwork")}>
-            {t("dashboard.emptyNetworkDetail")}
-          </Empty>
-        </Panel>
-      )}
-    </>
-  );
+    {c.peers.length === 0 && <div className="absolute inset-x-0 bottom-0 z-20 p-4"><Panel><Empty icon={<HardDrive className="h-5 w-5" />} title={t("dashboard.emptyNetwork")}>{t("dashboard.emptyNetworkDetail")}</Empty></Panel></div>}
+  </div>;
 }

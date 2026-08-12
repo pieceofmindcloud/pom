@@ -33,7 +33,7 @@ function Page({ children }: { children: React.ReactNode }) {
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -6 }}
       transition={{ duration: 0.19, ease: [0.22, 1, 0.36, 1] }}
-      className="min-w-0"
+      className="h-full min-w-0"
     >
       {children}
     </motion.div>
@@ -48,7 +48,7 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const isChat = location.pathname === "/chat";
-  const isNetworkDemo = location.pathname === "/" && new URLSearchParams(location.search).get("demo") === "network";
+  const isDashboard = location.pathname === "/";
   /*
    * A node with no `rdma-p2p.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -86,7 +86,7 @@ export default function App() {
         </ErrorBoundary>
         <main
           className={
-            isChat
+            isChat || isDashboard
               ? "min-h-0 flex-1 overflow-hidden"
               : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
           }
@@ -96,7 +96,7 @@ export default function App() {
               <Chat />
             </ErrorBoundary>
           ) : (
-            <div className={isNetworkDemo ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+            <div className={isDashboard ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
               <ErrorBoundary resetKey={location.pathname}>
                 <AnimatePresence mode="wait">
                   <Routes location={location} key={location.pathname}>

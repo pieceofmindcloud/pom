@@ -440,6 +440,7 @@ impl Network {
                         model_id: a.model.clone(),
                         start_layer: a.start_layer,
                         end_layer: a.end_layer,
+                        total_layers: Some(a.total_layers),
                         supports_inference: self.inference_port.is_some(),
                     }]
                 })

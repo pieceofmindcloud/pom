@@ -144,7 +144,16 @@ export interface ModelCapability {
   model_id: string;
   start_layer: number;
   end_layer: number;
+  total_layers: number | null;
   supports_inference: boolean;
+}
+
+export interface ModelCoverage {
+  model_id: string;
+  total_layers: number;
+  covered_layers: number;
+  coverage: boolean[];
+  complete: boolean;
 }
 
 /** A handoff selected by the backend routing planner for the active model. */
@@ -163,8 +172,10 @@ export interface ClusterView {
   covered_layers: number;
   coverage: boolean[];
   complete: boolean;
+  model_inventory: ModelCoverage[];
   peers: PeerView[];
   routing_edges: RoutingEdge[];
+  candidate_edges: RoutingEdge[];
   node: NodeInfo | null;
 }
 
@@ -254,7 +265,7 @@ export interface TransferJob {
   id: string;
   name: string;
   from_host: string;
-  state: string;
+  state: "running" | "verifying" | "done" | "failed";
   bytes_done: number;
   bytes_total: number;
   bytes_per_sec: number;

@@ -166,6 +166,7 @@ impl GatewayState {
                             model_id: l.model.clone(),
                             start_layer: l.start_layer,
                             end_layer: l.end_layer,
+                            total_layers: Some(l.total_layers),
                             supports_inference: self.network.inference_port.is_some(),
                         }]
                     })
@@ -277,6 +278,7 @@ pub struct GenerateResponse {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub trace: Option<crate::prefill::RequestTrace>,
 }
 
 #[derive(Debug, Serialize)]
@@ -327,6 +329,8 @@ pub struct GenSummary {
     pub duration_ms: u64,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
+    /// Detailed per-request observations. It never affects planning.
+    pub trace: Option<crate::prefill::RequestTrace>,
 }
 
 /// Execute a single forward pass through the pipeline.
@@ -509,6 +513,7 @@ pub async fn generate_stream(
         // back the first token once the whole prompt is in.
         let first = match crate::prefill::run(
             &plan,
+            &model,
             &session_id,
             &prompt,
             chunk_tokens,
@@ -535,6 +540,7 @@ pub async fn generate_stream(
         };
 
         let mut next_token = first.token_id;
+        let mut trace = first.trace;
         tokens_generated += 1;
         if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
             info!("cliente desconectou logo após o prompt");
@@ -542,6 +548,8 @@ pub async fn generate_stream(
         }
         if first.done {
             let elapsed = gen_start.elapsed();
+            trace.output_tokens = tokens_generated;
+            trace.complete = true;
             let _ = tx
                 .send(GenEvent::Done(GenSummary {
                     source: format!("pipeline:{}", plan.hop_chain()),
@@ -549,6 +557,7 @@ pub async fn generate_stream(
                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                     duration_ms: elapsed.as_millis() as u64,
                     partial: false,
+                    trace: Some(trace),
                 }))
                 .await;
             return;
@@ -556,10 +565,12 @@ pub async fn generate_stream(
 
         for i in 0..max_tokens {
             let res =
-                crate::prefill::step(&plan, &session_id, next_token, dtype, &state.http).await;
+                crate::prefill::step(&plan, &model, &session_id, next_token, dtype, &state.http)
+                    .await;
 
             match res {
-                Ok((token_id, text, done)) => {
+                Ok((token_id, text, done, step_trace)) => {
+                    trace.merge(&step_trace);
                     next_token = token_id;
                     let step = StepResult {
                         text,
@@ -575,6 +586,8 @@ pub async fn generate_stream(
 
                     if step.done || i == max_tokens - 1 {
                         let elapsed = gen_start.elapsed();
+                        trace.output_tokens = tokens_generated;
+                        trace.complete = true;
                         info!(
                             "✅ Pipeline completo: {} tokens em {:.1}s ({:.1} tok/s)",
                             tokens_generated,
@@ -588,6 +601,7 @@ pub async fn generate_stream(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: false,
+                                trace: Some(trace),
                             }))
                             .await;
                         return;
@@ -606,6 +620,10 @@ pub async fn generate_stream(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: true,
+                                trace: {
+                                    trace.output_tokens = tokens_generated;
+                                    Some(trace)
+                                },
                             }))
                             .await;
                     } else {
@@ -835,6 +853,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    trace: None,
                 }),
             )
                 .into_response();
@@ -872,6 +891,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: summary.tokens_generated,
                 tokens_per_sec: summary.tokens_per_sec,
                 duration_ms: summary.duration_ms,
+                trace: summary.trace,
             }),
         )
             .into_response(),
@@ -885,6 +905,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,
                 duration_ms: 0,
+                trace: None,
             }),
         )
             .into_response(),

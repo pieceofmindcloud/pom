@@ -9,6 +9,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { getActiveLocale } from "../i18n/locales";
+import type { RequestTrace } from "./chatStream";
 
 export interface ChatMessage {
   id: string;
@@ -24,6 +25,8 @@ export interface ChatMessage {
   tokensPerSecond?: number;
   tokensGenerated?: number;
   durationMs?: number;
+  /** Detailed execution trace returned only after a completed request. */
+  trace?: RequestTrace;
   at: string;
 }
 

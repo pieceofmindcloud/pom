@@ -458,6 +458,7 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "partial": summary.partial,
+                        "trace": summary.trace,
                     },
                 })),
             )
@@ -640,6 +641,7 @@ fn chunk_json(
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
             "partial": summary.partial,
+            "trace": summary.trace,
         });
     }
     payload.to_string()
@@ -762,6 +764,7 @@ mod tests {
             tokens_per_sec: 1.0,
             duration_ms: 10,
             partial: false,
+            trace: None,
         };
         assert_eq!(finish_reason(&summary(5), 100), "stop");
         assert_eq!(finish_reason(&summary(100), 100), "length");
@@ -775,6 +778,10 @@ mod tests {
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             partial: false,
+            trace: Some(crate::prefill::RequestTrace::new(
+                "qwen35",
+                &[("no1", 0, 15)],
+            )),
         };
         let payload: serde_json::Value = serde_json::from_str(&chunk_json(
             "chatcmpl-test",
@@ -789,5 +796,6 @@ mod tests {
 
         assert_eq!(payload["x_rdma_p2p"]["tokens_per_sec"], 4.5);
         assert_eq!(payload["x_rdma_p2p"]["tokens_generated"], 12);
+        assert_eq!(payload["x_rdma_p2p"]["trace"]["model"], "qwen35");
     }
 }

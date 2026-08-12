@@ -21,8 +21,9 @@
 use crate::pipeline::PipelinePlan;
 use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
+use serde::Serialize;
 use serde_json::json;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -46,6 +47,166 @@ pub struct PrefillOutcome {
     /// Prompt length as counted by the peer that tokenised it.
     pub prompt_tokens: u32,
     pub chunks: u32,
+    pub trace: RequestTrace,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HopTrace {
+    pub node_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub prefill_ms: u64,
+    pub decode_ms: u64,
+    pub network_ms: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub calls: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RequestTrace {
+    pub model: String,
+    pub input_tokens: u32,
+    pub output_tokens: u32,
+    pub prefill_ms: u64,
+    pub total_bytes_sent: u64,
+    pub total_bytes_received: u64,
+    pub hops: Vec<HopTrace>,
+    pub issues: Vec<TraceIssue>,
+    pub dropped_issues: u32,
+    pub complete: bool,
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    Prefill,
+    Decode,
+}
+
+const TRACE_ISSUE_LIMIT: usize = 32;
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TraceIssueKind {
+    Timeout,
+    Transport,
+    Http,
+    Protocol,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TraceIssue {
+    pub hop: Option<usize>,
+    pub node_id: String,
+    pub phase: Phase,
+    pub kind: TraceIssueKind,
+    pub attempt: u32,
+    pub message: String,
+}
+
+impl TraceIssue {
+    pub fn new(
+        hop: Option<usize>,
+        node_id: impl Into<String>,
+        phase: Phase,
+        kind: TraceIssueKind,
+        attempt: u32,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            hop,
+            node_id: node_id.into(),
+            phase,
+            kind,
+            attempt,
+            message: message.into(),
+        }
+    }
+}
+
+impl RequestTrace {
+    pub fn new(model: impl Into<String>, steps: &[(&str, u32, u32)]) -> Self {
+        Self {
+            model: model.into(),
+            input_tokens: 0,
+            output_tokens: 0,
+            prefill_ms: 0,
+            total_bytes_sent: 0,
+            total_bytes_received: 0,
+            issues: Vec::new(),
+            dropped_issues: 0,
+            complete: false,
+            hops: steps
+                .iter()
+                .map(|(node_id, start_layer, end_layer)| HopTrace {
+                    node_id: (*node_id).into(),
+                    start_layer: *start_layer,
+                    end_layer: *end_layer,
+                    prefill_ms: 0,
+                    decode_ms: 0,
+                    network_ms: 0,
+                    bytes_sent: 0,
+                    bytes_received: 0,
+                    calls: 0,
+                })
+                .collect(),
+        }
+    }
+
+    pub fn record_issue(&mut self, issue: TraceIssue) {
+        if self.issues.len() < TRACE_ISSUE_LIMIT {
+            self.issues.push(issue);
+        } else {
+            self.dropped_issues += 1;
+        }
+    }
+
+    pub fn from_plan(model: &str, plan: &PipelinePlan) -> Self {
+        let steps: Vec<_> = plan
+            .steps
+            .iter()
+            .map(|step| (step.node_id.as_str(), step.start_layer, step.end_layer))
+            .collect();
+        Self::new(model, &steps)
+    }
+
+    pub fn record_hop(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        round_trip_ms: u64,
+        processing_ms: u64,
+        bytes_sent: u64,
+        bytes_received: u64,
+    ) {
+        let Some(entry) = self.hops.get_mut(hop) else {
+            return;
+        };
+        match phase {
+            Phase::Prefill => entry.prefill_ms += processing_ms,
+            Phase::Decode => entry.decode_ms += processing_ms,
+        }
+        entry.network_ms += round_trip_ms.saturating_sub(processing_ms);
+        entry.bytes_sent += bytes_sent;
+        entry.bytes_received += bytes_received;
+        entry.calls += 1;
+        self.total_bytes_sent += bytes_sent;
+        self.total_bytes_received += bytes_received;
+    }
+
+    pub fn merge(&mut self, other: &RequestTrace) {
+        self.total_bytes_sent += other.total_bytes_sent;
+        self.total_bytes_received += other.total_bytes_received;
+        for (current, next) in self.hops.iter_mut().zip(&other.hops) {
+            current.prefill_ms += next.prefill_ms;
+            current.decode_ms += next.decode_ms;
+            current.network_ms += next.network_ms;
+            current.bytes_sent += next.bytes_sent;
+            current.bytes_received += next.bytes_received;
+            current.calls += next.calls;
+        }
+    }
 }
 
 /// How many chunks a prompt of `tokens` needs.
@@ -57,6 +218,7 @@ pub fn chunk_count(tokens: u32, chunk_size: u32) -> u32 {
 /// Push the whole prompt through the pipeline, chunk by chunk.
 pub async fn run(
     plan: &PipelinePlan,
+    model: &str,
     session_id: &str,
     prompt: &str,
     chunk_size: u32,
@@ -71,6 +233,8 @@ pub async fn run(
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let started = Instant::now();
+    let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
         // ── First peer: it owns the tokenizer and decides whether more remain.
@@ -99,6 +263,9 @@ pub async fn run(
             dtype,
             FrameEncoding::F16,
             chunk_index,
+            &mut trace,
+            0,
+            Phase::Prefill,
         )
         .await?;
 
@@ -137,6 +304,9 @@ pub async fn run(
                 dtype,
                 step.frame_encoding(),
                 chunk_index,
+                &mut trace,
+                i,
+                Phase::Prefill,
             )
             .await?;
             meta = m;
@@ -163,6 +333,11 @@ pub async fn run(
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
                 chunks,
+                trace: {
+                    trace.input_tokens = prompt_tokens;
+                    trace.prefill_ms = started.elapsed().as_millis() as u64;
+                    trace
+                },
             });
         }
 
@@ -184,6 +359,9 @@ async fn send_chunk(
     dtype: WireDtype,
     encoding: FrameEncoding,
     chunk_index: u32,
+    trace: &mut RequestTrace,
+    hop: usize,
+    phase: Phase,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
     let body = match (tensor, dtype) {
         (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
@@ -193,6 +371,7 @@ async fn send_chunk(
     let mut last_error = String::new();
 
     for attempt in 1..=CHUNK_ATTEMPTS {
+        let started = Instant::now();
         let sent = http
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -204,11 +383,46 @@ async fn send_chunk(
         match sent {
             Ok(r) if r.status().is_success() => {
                 let bytes = r.bytes().await?;
-                return wire::decode(&bytes);
+                let decoded = match wire::decode(&bytes) {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        trace.record_issue(TraceIssue::new(
+                            Some(hop),
+                            node_id,
+                            phase,
+                            TraceIssueKind::Protocol,
+                            attempt,
+                            error.to_string(),
+                        ));
+                        return Err(error.into());
+                    }
+                };
+                let processing_ms = decoded
+                    .0
+                    .get("processing_ms")
+                    .and_then(|value| value.as_u64())
+                    .unwrap_or(0);
+                trace.record_hop(
+                    hop,
+                    phase,
+                    started.elapsed().as_millis() as u64,
+                    processing_ms,
+                    body.len() as u64,
+                    bytes.len() as u64,
+                );
+                return Ok(decoded);
             }
             Ok(r) => {
                 let code = r.status();
                 let text = r.text().await.unwrap_or_default();
+                trace.record_issue(TraceIssue::new(
+                    Some(hop),
+                    node_id,
+                    phase,
+                    TraceIssueKind::Http,
+                    attempt,
+                    format!("HTTP {code}: {text}"),
+                ));
                 // A refusal is the peer's considered answer, not a hiccup;
                 // repeating it would only waste the link.
                 return Err(anyhow!(
@@ -217,6 +431,18 @@ async fn send_chunk(
             }
             Err(e) => {
                 last_error = e.to_string();
+                trace.record_issue(TraceIssue::new(
+                    Some(hop),
+                    node_id,
+                    phase,
+                    if e.is_timeout() {
+                        TraceIssueKind::Timeout
+                    } else {
+                        TraceIssueKind::Transport
+                    },
+                    attempt,
+                    &last_error,
+                ));
                 warn!(
                     "pedaço {chunk_index} para {node_id} falhou (tentativa {attempt}/{CHUNK_ATTEMPTS}): {last_error}"
                 );
@@ -235,14 +461,16 @@ async fn send_chunk(
 /// One generated token through the whole pipeline, framed like the prefill.
 pub async fn step(
     plan: &PipelinePlan,
+    model: &str,
     session_id: &str,
     token_id: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
-) -> Result<(u32, String, bool)> {
+) -> Result<(u32, String, bool, RequestTrace)> {
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
     let mut meta = serde_json::Value::Null;
+    let mut trace = RequestTrace::from_plan(model, plan);
 
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
@@ -262,6 +490,8 @@ pub async fn step(
         };
 
         let url = format!("{}/v1/step", peer.inference_url);
+        let started = Instant::now();
+        let bytes_sent = body.len() as u64;
         let resp = http
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
@@ -278,6 +508,18 @@ pub async fn step(
         }
         let bytes = resp.bytes().await?;
         let (m, t) = wire::decode(&bytes)?;
+        let processing_ms = m
+            .get("processing_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        trace.record_hop(
+            i,
+            Phase::Decode,
+            started.elapsed().as_millis() as u64,
+            processing_ms,
+            bytes_sent,
+            bytes.len() as u64,
+        );
         meta = m;
         tensor = t;
     }
@@ -293,6 +535,7 @@ pub async fn step(
             .unwrap_or_default()
             .to_string(),
         meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+        trace,
     ))
 }
 
@@ -329,5 +572,33 @@ mod tests {
     #[test]
     fn a_zero_chunk_size_does_not_divide_by_zero() {
         assert_eq!(chunk_count(10, 0), 10);
+    }
+
+    #[test]
+    fn hop_trace_separates_peer_compute_from_transport_time() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(0, Phase::Prefill, 18, 7, 1_024, 2_048);
+
+        assert_eq!(trace.hops[0].prefill_ms, 7);
+        assert_eq!(trace.hops[0].network_ms, 11);
+        assert_eq!(trace.hops[0].bytes_sent, 1_024);
+        assert_eq!(trace.hops[0].bytes_received, 2_048);
+    }
+
+    #[test]
+    fn a_trace_keeps_its_issue_budget() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for attempt in 1..=33 {
+            trace.record_issue(TraceIssue::new(
+                Some(0),
+                "no1",
+                Phase::Prefill,
+                TraceIssueKind::Transport,
+                attempt,
+                "offline",
+            ));
+        }
+        assert_eq!(trace.issues.len(), 32);
+        assert_eq!(trace.dropped_issues, 1);
     }
 }

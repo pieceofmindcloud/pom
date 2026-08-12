@@ -36,7 +36,7 @@ use axum::{
 use md5::{Digest, Md5};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -56,6 +56,12 @@ const TRANSFER_RUNNING: &str = "running";
 const TRANSFER_VERIFYING: &str = "verifying";
 const TRANSFER_DONE: &str = "done";
 const TRANSFER_FAILED: &str = "failed";
+const TRANSFER_CANCELLED: &str = "cancelled";
+
+/// Direções do mesmo job. O id é um só nas duas máquinas; o que muda é de que
+/// lado dele cada uma está.
+const TRANSFER_SENDING: &str = "sending";
+const TRANSFER_RECEIVING: &str = "receiving";
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -69,6 +75,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/transfer/offers/:id/accept", post(accept_offer))
         .route("/api/transfer/offers/:id/reject", post(reject_offer))
         .route("/api/transfer/jobs", get(list_jobs))
+        .route("/api/transfer/jobs/:id/cancel", post(cancel_job))
         // Push direction, driven from this node's screen
         .route("/api/transfer/send", post(send_to_peer))
 }
@@ -79,7 +86,14 @@ pub fn routes() -> Router<GatewayState> {
 pub struct TransferJob {
     pub id: String,
     pub name: String,
-    pub from_host: String,
+    /// `sending` ou `receiving`. O mesmo id existe nas duas máquinas, com
+    /// direções opostas — é assim que os dois lados falam da mesma
+    /// transferência sem inventar um segundo vocabulário.
+    pub direction: &'static str,
+    /// A outra máquina. Substitui `from_host`, que mentia na direção de envio.
+    pub peer_host: String,
+    /// Arquivo local envolvido. A exclusão precisa saber o que está em trânsito.
+    pub path: String,
     pub state: String,
     pub bytes_done: u64,
     pub bytes_total: u64,
@@ -120,6 +134,81 @@ pub struct TransferState {
     /// screen — so the path is always someone's local choice, never a remote
     /// request. See [`grant_path`].
     grants: RwLock<HashMap<String, PathBuf>>,
+    /// Ids cancelados. Guardados mesmo para job que ainda não existe aqui: o
+    /// aviso do outro lado pode chegar antes de o download começar, e sem isso
+    /// a transferência arrancaria já cancelada e ninguém a pararia.
+    cancelled: RwLock<HashSet<String>>,
+}
+
+impl TransferState {
+    /// Registra uma transferência em curso. Chamado pelos dois lados, com o
+    /// mesmo id.
+    pub async fn start_job(
+        &self,
+        id: &str,
+        name: &str,
+        direction: &'static str,
+        peer_host: &str,
+        path: &str,
+        bytes_total: u64,
+    ) {
+        self.jobs.write().await.insert(
+            id.to_string(),
+            TransferJob {
+                id: id.to_string(),
+                name: name.to_string(),
+                direction,
+                peer_host: peer_host.to_string(),
+                path: path.to_string(),
+                state: TRANSFER_RUNNING.into(),
+                bytes_done: 0,
+                bytes_total,
+                bytes_per_sec: 0.0,
+                eta_secs: None,
+                detail: String::new(),
+            },
+        );
+    }
+
+    /// Progresso, com a mesma aritmética nos dois lados.
+    ///
+    /// `moved` é o que andou nesta tentativa, que não é `done` quando a
+    /// transferência retomou de um `.part`: usar `done` inflaria a velocidade
+    /// com bytes que já estavam no disco.
+    pub async fn progress(&self, id: &str, done: u64, moved: u64, elapsed: Duration) {
+        let secs = elapsed.as_secs_f64().max(0.001);
+        let rate = moved as f64 / secs;
+        let mut jobs = self.jobs.write().await;
+        if let Some(j) = jobs.get_mut(id) {
+            j.bytes_done = done;
+            j.bytes_per_sec = rate;
+            j.eta_secs = if rate > 1.0 {
+                Some(((j.bytes_total.saturating_sub(done)) as f64 / rate) as u64)
+            } else {
+                None
+            };
+        }
+    }
+
+    pub async fn is_cancelled(&self, id: &str) -> bool {
+        self.cancelled.read().await.contains(id)
+    }
+
+    /// Marca o cancelamento e rotula o job com quem pediu.
+    ///
+    /// "Cancelado por ksia" e "falhou" são coisas diferentes para quem olha a
+    /// tela: a primeira foi decisão de alguém, a segunda é motivo para tentar
+    /// de novo.
+    pub async fn cancel(&self, id: &str, by: &str) {
+        self.cancelled.write().await.insert(id.to_string());
+        let mut jobs = self.jobs.write().await;
+        if let Some(j) = jobs.get_mut(id) {
+            if j.state != TRANSFER_DONE {
+                j.state = TRANSFER_CANCELLED.into();
+                j.detail = format!("cancelado por {by}");
+            }
+        }
+    }
 }
 
 pub type Transfers = Arc<TransferState>;
@@ -282,6 +371,14 @@ pub struct PathQuery {
     /// Opaque id of a file our operator offered; may point anywhere.
     #[serde(default)]
     pub grant: Option<String>,
+    /// Id cunhado pelo receptor. Ausente quando o peer é de uma versão antiga:
+    /// a transferência funciona igual, só sem visão deste lado.
+    #[serde(default)]
+    pub job: Option<String>,
+    /// `node_id` do receptor. Resolvido para nome pela tabela de peers local —
+    /// nada que descreva o outro lado vem escrito no pedido.
+    #[serde(default)]
+    pub peer: Option<String>,
 }
 
 /// What the receiver needs before it commits to a multi-gigabyte download.
@@ -344,8 +441,31 @@ async fn download(
         return (StatusCode::INTERNAL_SERVER_ERROR, "seek falhou").into_response();
     }
 
-    let stream = tokio_util::io::ReaderStream::with_capacity(file, CHUNK);
-    let body = Body::from_stream(stream);
+    // O lado que envia entra na própria lista de transferências. Ele é quem
+    // transmite os bytes, então já sabe o progresso: não há relato de volta
+    // para se perder, e o número continua certo com a tela do outro fechada.
+    if let Some(job_id) = q.job.as_deref() {
+        let peer_host = peer_label(&state, q.peer.as_deref()).await;
+        state
+            .transfers
+            .start_job(
+                job_id,
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("fatia.gguf"),
+                TRANSFER_SENDING,
+                &peer_host,
+                &path.to_string_lossy(),
+                total,
+            )
+            .await;
+    }
+
+    let reader = tokio_util::io::ReaderStream::with_capacity(file, CHUNK);
+    let body = match q.job.clone() {
+        Some(job_id) => Body::from_stream(served_stream(state.clone(), job_id, reader, start)),
+        None => Body::from_stream(reader),
+    };
     let remaining = total - start;
 
     let status = if start > 0 {
@@ -365,6 +485,68 @@ async fn download(
         );
     }
     resp.body(body).unwrap().into_response()
+}
+
+/// Nome legível do peer que está do outro lado, a partir do `node_id` que ele
+/// mandou. A tradução sai da tabela local: o pedido nunca traz o nome pronto.
+async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
+    let Some(node_id) = node_id else {
+        return "desconhecido".to_string();
+    };
+    let short = |id: &str| id[..12.min(id.len())].to_string();
+    state
+        .all_peers()
+        .await
+        .iter()
+        .find(|p| p.node_id == node_id)
+        .map(|p| {
+            if p.hostname.is_empty() {
+                short(&p.node_id)
+            } else {
+                p.hostname.clone()
+            }
+        })
+        .unwrap_or_else(|| short(node_id))
+}
+
+/// Envolve o stream do arquivo para contar o que já saiu e para parar cedo
+/// quando o job é cancelado.
+fn served_stream(
+    state: GatewayState,
+    job_id: String,
+    inner: tokio_util::io::ReaderStream<tokio::fs::File>,
+    already: u64,
+) -> impl futures::Stream<Item = std::io::Result<axum::body::Bytes>> {
+    use futures::StreamExt;
+
+    let started = Instant::now();
+    futures::stream::unfold(
+        (inner, state, job_id, already, already, started, Instant::now()),
+        |(mut inner, state, job_id, mut done, already, started, mut last)| async move {
+            if state.transfers.is_cancelled(&job_id).await {
+                // Terminar o corpo aqui corta a transferência: o receptor vê o
+                // stream acabar antes do Content-Length prometido.
+                return None;
+            }
+            let chunk = inner.next().await?;
+            if let Ok(ref b) = chunk {
+                done += b.len() as u64;
+                if last.elapsed() >= Duration::from_millis(500) {
+                    last = Instant::now();
+                    state
+                        .transfers
+                        .progress(
+                            &job_id,
+                            done,
+                            done.saturating_sub(already),
+                            started.elapsed(),
+                        )
+                        .await;
+                }
+            }
+            Some((chunk, (inner, state, job_id, done, already, started, last)))
+        },
+    )
 }
 
 // ── Offers (push direction) ──────────────────────────────────────────────────
@@ -521,6 +703,84 @@ async fn list_jobs(_auth: ConnectionAuth, State(state): State<GatewayState>) -> 
         .collect();
     jobs.sort_by(|a, b| a.name.cmp(&b.name));
     Json(json!({ "jobs": jobs })).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CancelRequest {
+    /// Máquina que pediu o cancelamento, para o outro lado poder dizer quem foi.
+    #[serde(default)]
+    pub by: Option<String>,
+    /// `true` quando a chamada veio do peer. Evita o eco: quem foi avisado não
+    /// avisa de volta.
+    #[serde(default)]
+    pub from_peer: bool,
+}
+
+/// Cancela uma transferência.
+///
+/// A mesma rota serve para a tela local e para o aviso que o outro lado manda —
+/// um verbo só, com a mesma semântica nas duas pontas.
+async fn cancel_job(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    AxumPath(id): AxumPath<String>,
+    body: Option<Json<CancelRequest>>,
+) -> Response {
+    let req = body.map(|Json(b)| b).unwrap_or(CancelRequest {
+        by: None,
+        from_peer: false,
+    });
+    let by = req.by.unwrap_or_else(|| state.network.hostname.clone());
+
+    let peer_host = state
+        .transfers
+        .jobs
+        .read()
+        .await
+        .get(&id)
+        .map(|j| j.peer_host.clone());
+
+    state.transfers.cancel(&id, &by).await;
+    info!("🛑 transferência {id} cancelada por {by}");
+
+    // Avisar é o que separa "cancelado" de "caiu a rede" na tela do outro lado.
+    // Se o aviso não chegar, o cancelamento local continua valendo e o outro
+    // lado cai no caminho de conexão morta, que reporta o motivo real.
+    if !req.from_peer {
+        if let Some(host) = peer_host {
+            notify_peer_cancel(&state, &id, &by, &host).await;
+        }
+    }
+
+    Json(json!({ "cancelled": true })).into_response()
+}
+
+/// Repassa o cancelamento ao peer que está do outro lado desta transferência.
+async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host: &str) {
+    let peers = state.all_peers().await;
+    let Some(peer) = peers
+        .iter()
+        .find(|p| p.hostname == peer_host || p.node_id.starts_with(peer_host))
+    else {
+        warn!("não deu para avisar {peer_host} do cancelamento de {id}: peer desconhecido");
+        return;
+    };
+    let Some(base) = peer.gateway_url() else {
+        warn!("não deu para avisar {peer_host}: peer não anuncia porta de gateway");
+        return;
+    };
+    let key = state.auth.read().await.connection_key.clone();
+    let sent = state
+        .http
+        .post(format!("{base}/api/transfer/jobs/{id}/cancel"))
+        .bearer_auth(&key)
+        .json(&json!({ "by": by, "from_peer": true }))
+        .timeout(Duration::from_secs(10))
+        .send()
+        .await;
+    if let Err(e) = sent {
+        warn!("aviso de cancelamento não chegou em {peer_host}: {e}");
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -740,12 +1000,21 @@ async fn spawn_download(
 ) -> Result<String, String> {
     let key = state.auth.read().await.connection_key.clone();
 
+    // O id nasce aqui e viaja no pedido: o outro lado registra o mesmo id, e é
+    // isso que faz "cancelar" valer para a transferência inteira, dos dois
+    // lados, em vez de só para a metade local.
+    let job_id = uuid::Uuid::new_v4().simple().to_string();
+
     // A grant, when we have one, is the only locator the serving side needs —
     // and the only one that reaches a file outside its `models/`.
-    let locator: Vec<(&str, String)> = match &grant {
+    let mut locator: Vec<(&str, String)> = match &grant {
         Some(g) => vec![("grant", g.clone())],
         None => vec![("path", remote_path.clone())],
     };
+    // Opcionais de propósito: um peer que ainda não tenha esta versão ignora os
+    // dois e a transferência funciona como antes, só sem visão do lado que envia.
+    locator.push(("job", job_id.clone()));
+    locator.push(("peer", state.network.node_id.clone()));
 
     // Ask first: size and digest decide whether this is even worth starting.
     let manifest: serde_json::Value = state
@@ -781,19 +1050,17 @@ async fn spawn_download(
         .await
         .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
 
-    let job_id = uuid::Uuid::new_v4().simple().to_string();
-    let job = TransferJob {
-        id: job_id.clone(),
-        name: name.clone(),
-        from_host: from_host.clone(),
-        state: TRANSFER_RUNNING.into(),
-        bytes_done: 0,
-        bytes_total: total,
-        bytes_per_sec: 0.0,
-        eta_secs: None,
-        detail: String::new(),
-    };
-    set_job(&state, job).await;
+    state
+        .transfers
+        .start_job(
+            &job_id,
+            &name,
+            TRANSFER_RECEIVING,
+            &from_host,
+            &dir.join(&name).to_string_lossy(),
+            total,
+        )
+        .await;
 
     let task_state = state.clone();
     let task_job_id = job_id.clone();
@@ -819,8 +1086,12 @@ async fn spawn_download(
             let _ = tokio::fs::remove_file(&part).await;
             let mut jobs = task_state.transfers.jobs.write().await;
             if let Some(j) = jobs.get_mut(&job_id) {
-                j.state = TRANSFER_FAILED.into();
-                j.detail = e;
+                // `cancel` já rotulou este job com quem pediu; sobrescrever
+                // trocaria uma decisão de alguém por um "falhou" anônimo.
+                if j.state != TRANSFER_CANCELLED {
+                    j.state = TRANSFER_FAILED.into();
+                    j.detail = e;
+                }
             }
         }
     });
@@ -881,26 +1152,23 @@ async fn run_download(
     let mut stream = resp.bytes_stream();
 
     while let Some(chunk) = stream.next().await {
+        if state.transfers.is_cancelled(job_id).await {
+            drop(file);
+            // Cancelar é desistir: o parcial sai do disco. Guardá-lo ocuparia
+            // gigabytes que a tela não mostra.
+            let _ = tokio::fs::remove_file(part).await;
+            return Err("cancelado".to_string());
+        }
         let chunk = chunk.map_err(|e| e.to_string())?;
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         done += chunk.len() as u64;
 
         if last_report.elapsed() >= Duration::from_millis(500) {
             last_report = Instant::now();
-            let moved = done.saturating_sub(already) as f64;
-            let secs = started.elapsed().as_secs_f64().max(0.001);
-            let rate = moved / secs;
-            let eta = if rate > 1.0 {
-                Some(((total.saturating_sub(done)) as f64 / rate) as u64)
-            } else {
-                None
-            };
-            let mut jobs = state.transfers.jobs.write().await;
-            if let Some(j) = jobs.get_mut(job_id) {
-                j.bytes_done = done;
-                j.bytes_per_sec = rate;
-                j.eta_secs = eta;
-            }
+            state
+                .transfers
+                .progress(job_id, done, done.saturating_sub(already), started.elapsed())
+                .await;
         }
     }
     file.flush().await.map_err(|e| e.to_string())?;
@@ -959,6 +1227,61 @@ async fn run_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O remetente precisa aparecer na própria lista, com direção e o mesmo id
+    /// que o receptor cunhou - é o id compartilhado que torna o cancelamento
+    /// simétrico possível.
+    #[tokio::test]
+    async fn a_served_download_registers_a_sending_job() {
+        let transfers = TransferState::default();
+
+        transfers
+            .start_job(
+                "job-1",
+                "fatia_0_15.gguf",
+                TRANSFER_SENDING,
+                "ksia",
+                "/models/fatia_0_15.gguf",
+                4_096,
+            )
+            .await;
+
+        let jobs = transfers.jobs.read().await;
+        let job = jobs.get("job-1").expect("job registrado");
+        assert_eq!(job.direction, TRANSFER_SENDING);
+        assert_eq!(job.peer_host, "ksia");
+        assert_eq!(job.bytes_total, 4_096);
+        assert_eq!(job.state, TRANSFER_RUNNING);
+        assert_eq!(job.path, "/models/fatia_0_15.gguf");
+    }
+
+    /// Cancelar é idempotente e não depende de o job existir: o aviso do outro
+    /// lado pode chegar antes de a transferência ter sido registrada aqui.
+    #[tokio::test]
+    async fn cancelling_marks_the_job_and_holds_for_a_job_not_yet_known() {
+        let transfers = TransferState::default();
+        transfers
+            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10)
+            .await;
+
+        transfers.cancel("job-1", "macbook").await;
+        assert!(transfers.is_cancelled("job-1").await);
+        {
+            let jobs = transfers.jobs.read().await;
+            let job = jobs.get("job-1").unwrap();
+            assert_eq!(job.state, TRANSFER_CANCELLED);
+            assert!(job.detail.contains("macbook"), "detail: {}", job.detail);
+        }
+
+        // Duas vezes é igual a uma.
+        transfers.cancel("job-1", "macbook").await;
+        assert!(transfers.is_cancelled("job-1").await);
+
+        // Um id que ainda não chegou aqui fica marcado assim mesmo, para o loop
+        // que começar depois já nascer cancelado.
+        transfers.cancel("job-desconhecido", "ksia").await;
+        assert!(transfers.is_cancelled("job-desconhecido").await);
+    }
 
     /// A regra é conjunção: assinatura no cabeçalho E, se houver extensão,
     /// `.gguf`. Blob do Ollama não tem extensão nenhuma e precisa passar.

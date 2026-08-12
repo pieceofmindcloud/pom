@@ -114,7 +114,11 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
-        hostname: system.hostname.clone(),
+        // Not `system.hostname`: that's the raw OS hostname, and ignores
+        // `node_name` from rdma-p2p.json. `network.hostname` is what
+        // `with_identity` (main.rs) actually announces to peers — the same
+        // value `/admin/nodes` already shows correctly on the Network tab.
+        hostname: state.network.hostname.clone(),
         build_commit: crate::BUILD_COMMIT.to_string(),
         dev_update: crate::devupdate::enabled(),
         role,

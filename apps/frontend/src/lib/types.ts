@@ -264,8 +264,13 @@ export interface Job {
 export interface TransferJob {
   id: string;
   name: string;
-  from_host: string;
-  state: "running" | "verifying" | "done" | "failed";
+  /** De que lado desta máquina a transferência está. O id é o mesmo nas duas. */
+  direction: "sending" | "receiving";
+  /** A outra máquina. */
+  peer_host: string;
+  /** Arquivo local envolvido. */
+  path: string;
+  state: "running" | "verifying" | "done" | "failed" | "cancelled";
   bytes_done: number;
   bytes_total: number;
   bytes_per_sec: number;

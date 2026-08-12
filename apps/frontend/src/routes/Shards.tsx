@@ -6,7 +6,7 @@
  * exactly when it looks like sending a slice is impossible. Here the slice is
  * always there and the destination picker is the one that narrows.
  */
-import { Layers, PackageOpen, RefreshCw } from "lucide-react";
+import { Layers, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   Badge,
@@ -22,6 +22,7 @@ import {
 } from "../components/ui";
 import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
+import { deleteModel } from "../lib/deleteModel";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { DiscoveredModel, PeerCatalog, ShardSet } from "../lib/types";
@@ -61,6 +62,7 @@ function ShardCard({
   peersMissing,
   aloneInNetwork,
   onSend,
+  onDelete,
 }: {
   set: ShardSet;
   peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
@@ -68,6 +70,7 @@ function ShardCard({
       already has this slice", and the label has to say so. */
   aloneInNetwork: boolean;
   onSend: (shard: DiscoveredModel, nodeId: string) => void;
+  onDelete: (shard: DiscoveredModel) => void;
 }) {
   const { t } = useI18n();
   return (
@@ -113,6 +116,15 @@ function ShardCard({
               <span className="shrink-0 font-mono text-[0.82rem] text-muted">
                 {bytes(s.size_bytes)}
               </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                icon={<Trash2 className="h-3.5 w-3.5" />}
+                aria-label={`Excluir ${s.name} do disco`}
+                onClick={() => onDelete(s)}
+              >
+                Excluir
+              </Button>
               <div className="flex shrink-0 items-center gap-2">
                 {missing.length === 0 ? (
                   <span className="text-[0.78rem] text-faint">
@@ -160,6 +172,18 @@ export function Shards() {
       const known = [...(p.models ?? []), ...(p.shard_sets ?? []).flatMap((s) => s.shards)];
       return !known.some((m) => m.name === shard.name);
     });
+
+  async function remove(shard: DiscoveredModel) {
+    try {
+      const out = await deleteModel(shard.path, shard.name, (m) => window.confirm(m));
+      if (out.status === "deleted") {
+        toast.success(`${shard.name} apagado · ${bytes(out.freedBytes)} liberados`);
+        void catalog.refetch();
+      }
+    } catch (e) {
+      toast.fromError("Não deu para apagar", e);
+    }
+  }
 
   async function send(shard: DiscoveredModel, nodeId: string) {
     setSending(shard.id);
@@ -223,6 +247,7 @@ export function Shards() {
             peersMissing={peersMissing}
             aloneInNetwork={others.length === 0}
             onSend={(shard, nodeId) => void send(shard, nodeId)}
+            onDelete={(shard) => void remove(shard)}
           />
         ))}
       </div>

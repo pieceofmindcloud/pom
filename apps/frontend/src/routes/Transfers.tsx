@@ -16,7 +16,7 @@ import { api } from "../lib/api";
 import { bytes, duration, layerRange, rate } from "../lib/format";
 import { useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
+import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
 import { useI18n } from "../i18n/provider";
 
 export function Transfers() {
@@ -29,6 +29,16 @@ export function Transfers() {
   const active = jobs.filter((j) => isActiveTransfer(j.state));
   const finished = jobs.filter((j) => isFinishedTransfer(j.state));
   const waiting = offers.data?.offers ?? [];
+
+  async function cancel(id: string) {
+    try {
+      await api.post(`/api/transfer/jobs/${id}/cancel`);
+      toast.success("Transferência cancelada");
+      void transfers.refetch();
+    } catch (e) {
+      toast.fromError("Não deu para cancelar", e);
+    }
+  }
 
   async function answer(id: string, accept: boolean) {
     try {
@@ -140,9 +150,27 @@ export function Transfers() {
               {active.map((job) => (
                 <div key={job.id} className="px-5 py-4">
                   <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-                    <span className="font-medium text-fg">{job.name}</span>
-                    <span className="font-mono text-[0.78rem] text-muted">
-                      {bytes(job.bytes_done)} de {bytes(job.bytes_total)}
+                    <span className="flex items-center gap-2 font-medium text-fg">
+                      {job.direction === "sending" ? (
+                        <Upload className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />
+                      ) : (
+                        <Download className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />
+                      )}
+                      {job.name}
+                    </span>
+                    <span className="flex items-center gap-3">
+                      <span className="font-mono text-[0.78rem] text-muted">
+                        {bytes(job.bytes_done)} de {bytes(job.bytes_total)}
+                      </span>
+                      {canCancel(job.state) && (
+                        <Button
+                          variant="ghost"
+                          icon={<X className="h-3.5 w-3.5" />}
+                          onClick={() => void cancel(job.id)}
+                        >
+                          Cancelar
+                        </Button>
+                      )}
                     </span>
                   </div>
                   <Progress
@@ -151,7 +179,9 @@ export function Transfers() {
                     value={job.bytes_total > 0 ? (job.bytes_done / job.bytes_total) * 100 : null}
                   />
                   <p className="mt-2 flex flex-wrap gap-x-4 font-mono text-[0.7rem] text-faint">
-                    <span>{t("transfers.from")} {job.from_host}</span>
+                    <span>
+                      {job.direction === "sending" ? "enviando para" : "recebendo de"} {job.peer_host}
+                    </span>
                     <span>{rate(job.bytes_per_sec)}</span>
                     {job.eta_secs != null && <span>{t("transfers.remaining")} {duration(job.eta_secs)}</span>}
                     <span>{job.detail}</span>

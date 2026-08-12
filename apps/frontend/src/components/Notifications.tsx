@@ -164,7 +164,7 @@ export function Notifications() {
                   key={job.id}
                   icon={<Download className="h-3.5 w-3.5" />}
                   title={job.name}
-                  detail={t("notifications.downloadDetail", { host: job.from_host, detail: job.detail })}
+                  detail={t("notifications.downloadDetail", { host: job.peer_host, detail: job.detail })}
                   progress={
                     job.bytes_total > 0 ? (job.bytes_done / job.bytes_total) * 100 : null
                   }

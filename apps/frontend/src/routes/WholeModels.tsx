@@ -1,4 +1,4 @@
-import { Boxes, FolderSearch, RefreshCw, Scissors, Upload } from "lucide-react";
+import { Boxes, FolderSearch, RefreshCw, Scissors, Trash2, Upload } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   Badge,
@@ -12,7 +12,9 @@ import {
   Skeleton,
 } from "../components/ui";
 import { bytes, num } from "../lib/format";
+import { deleteModel } from "../lib/deleteModel";
 import { useLocalCatalog } from "../lib/queries";
+import { useToast } from "../lib/toast";
 import { isWholeModel, type DiscoveredModel, type ModelSource } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -100,6 +102,19 @@ export function ScannedRoots({
 export function WholeModels() {
   const { t } = useI18n();
   const catalog = useLocalCatalog();
+  const toast = useToast();
+
+  async function remove(path: string, name: string) {
+    try {
+      const out = await deleteModel(path, name, (m) => window.confirm(m));
+      if (out.status === "deleted") {
+        toast.success(`${name} apagado · ${bytes(out.freedBytes)} liberados`);
+        void catalog.refetch();
+      }
+    } catch (e) {
+      toast.fromError("Não deu para apagar", e);
+    }
+  }
   // Fatias têm `shard_range` preenchido e ficam fora da lista de modelos
   // inteiros — o catálogo continua trazendo as duas, e quem precisa das fatias
   // lê `shard_sets` (ou faz a pergunta inversa).
@@ -179,6 +194,15 @@ export function WholeModels() {
                           {t("models.send")}
                         </Button>
                       </Link>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={<Trash2 className="h-3.5 w-3.5" />}
+                        aria-label={`Excluir ${m.name} do disco`}
+                        onClick={() => void remove(m.path, m.name)}
+                      >
+                        Excluir
+                      </Button>
                     </>
                   }
                 />

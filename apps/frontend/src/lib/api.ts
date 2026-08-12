@@ -31,24 +31,33 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /**
+     * Corpo decodificado da resposta, quando era JSON.
+     *
+     * Uma recusa às vezes traz mais do que uma frase: a exclusão devolve 409
+     * com a lista de avisos que a tela precisa mostrar antes de perguntar se
+     * o operador quer forçar. Achatar isso numa string perderia a lista.
+     */
+    readonly body?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
   }
 }
 
-async function explain(res: Response): Promise<string> {
+async function explain(res: Response): Promise<{ message: string; body?: unknown }> {
   const text = await res.text().catch(() => "");
-  if (!text) return `HTTP ${res.status}`;
+  if (!text) return { message: `HTTP ${res.status}` };
   try {
     const body = JSON.parse(text);
     const detail =
       body?.error?.message ?? body?.error ?? body?.message ?? body?.detail;
-    if (typeof detail === "string" && detail) return detail;
+    if (typeof detail === "string" && detail) return { message: detail, body };
+    return { message: text.slice(0, 400), body };
   } catch {
     /* not JSON — the raw body is the best explanation available */
   }
-  return text.slice(0, 400);
+  return { message: text.slice(0, 400) };
 }
 
 export interface RequestOptions {
@@ -74,7 +83,10 @@ export async function request<T>(
     signal,
   });
 
-  if (!res.ok) throw new ApiError(res.status, await explain(res));
+  if (!res.ok) {
+    const { message, body: detail } = await explain(res);
+    throw new ApiError(res.status, message, detail);
+  }
   if (res.status === 204) return undefined as T;
 
   const text = await res.text();
@@ -122,7 +134,10 @@ export async function* streamSse(
     body: JSON.stringify(body),
     signal,
   });
-  if (!res.ok) throw new ApiError(res.status, await explain(res));
+  if (!res.ok) {
+    const { message, body: detail } = await explain(res);
+    throw new ApiError(res.status, message, detail);
+  }
   if (!res.body) {
     throw new ApiError(
       0,

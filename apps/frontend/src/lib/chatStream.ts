@@ -22,6 +22,24 @@ export interface RequestTrace {
     bytes_sent: number;
     bytes_received: number;
     calls: number;
+    prefill_calls: number;
+    decode_calls: number;
+    client_encode_ms: number;
+    response_headers_ms: number;
+    response_body_ms: number;
+    client_decode_ms: number;
+    node_frame_decode_ms: number;
+    node_input_prepare_ms: number;
+    node_queue_ms: number;
+    node_setup_ms: number;
+    node_decode_ms: number;
+    node_residual_ms: number;
+    node_sampling_ms: number;
+    node_encode_ms: number;
+    node_prefill_p50_ms: number;
+    node_prefill_p95_ms: number;
+    node_decode_p50_ms: number;
+    node_decode_p95_ms: number;
   }>;
 }
 

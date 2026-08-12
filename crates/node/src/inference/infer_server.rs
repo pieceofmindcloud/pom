@@ -23,7 +23,7 @@ use axum::{
     Json, Router,
 };
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
@@ -39,6 +39,42 @@ const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// small wire header. Keeping this limit explicit at 16 MiB allows the
 /// documented 8 MiB frame while still rejecting unbounded peer input.
 const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+
+/// Timings measured on the inference node itself. The names deliberately name
+/// the boundary being measured instead of guessing whether a CUDA call is
+/// asynchronous. In particular, `residual_ms` contains the GPU -> host copy
+/// and the CUDA stream synchronization performed by `take_residual()`.
+#[derive(Default)]
+struct NodeTimings {
+    frame_decode_ms: u64,
+    input_prepare_ms: u64,
+    queue_ms: u64,
+    setup_ms: u64,
+    decode_ms: u64,
+    residual_ms: u64,
+    sampling_ms: u64,
+    encode_ms: u64,
+}
+
+impl NodeTimings {
+    fn json(&self) -> Value {
+        json!({
+            "frame_decode_ms": self.frame_decode_ms,
+            "input_prepare_ms": self.input_prepare_ms,
+            "queue_ms": self.queue_ms,
+            "setup_ms": self.setup_ms,
+            "decode_ms": self.decode_ms,
+            "residual_ms": self.residual_ms,
+            "sampling_ms": self.sampling_ms,
+            "encode_ms": self.encode_ms,
+        })
+    }
+}
+
+struct TimedReply {
+    bytes: Vec<u8>,
+    timings: NodeTimings,
+}
 
 fn inference_frame_body_limit() -> usize {
     INFERENCE_FRAME_BODY_LIMIT
@@ -371,10 +407,13 @@ async fn handle_release(
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
 async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
+    let processing_started = Instant::now();
+    let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
+    let frame_decode_ms = frame_decode_started.elapsed().as_millis() as u64;
 
     let sid_key = meta
         .get("session_id")
@@ -406,6 +445,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         .map(|s| s.to_string());
 
     // Scale the hidden state once before moving into spawn_blocking.
+    let input_prepare_started = Instant::now();
     let tensor = match tensor {
         Some((mut values, shape)) => {
             if scale != 1.0 {
@@ -415,8 +455,9 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         }
         None => None,
     };
+    let input_prepare_ms = input_prepare_started.elapsed().as_millis() as u64;
 
-    let processing_started = Instant::now();
+    let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         prefill_blocking(
             state,
@@ -428,20 +469,25 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
             wire_dtype,
             prompt,
             tensor,
+            queued_at,
         )
     })
     .await;
 
     match result {
-        Ok(Ok(bytes)) => match add_processing_time(bytes, processing_started.elapsed()) {
-            Ok(bytes) => (
-                StatusCode::OK,
-                [("content-type", "application/octet-stream")],
-                bytes,
-            )
-                .into_response(),
-            Err(e) => err500(e),
-        },
+        Ok(Ok(mut reply)) => {
+            reply.timings.frame_decode_ms = frame_decode_ms;
+            reply.timings.input_prepare_ms = input_prepare_ms;
+            match add_processing_time(reply, processing_started.elapsed()) {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [("content-type", "application/octet-stream")],
+                    bytes,
+                )
+                    .into_response(),
+                Err(e) => err500(e),
+            }
+        }
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida")
                 || e.to_string().contains("fora de ordem")
@@ -463,15 +509,22 @@ fn prefill_blocking(
     chunk_index: u32,
     chunk_size: u32,
     is_last: bool,
-    mut is_final_chunk: bool,
+    is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
-) -> Result<Vec<u8>> {
+    queued_at: Instant,
+) -> Result<TimedReply> {
+    let mut is_final_chunk = is_final_chunk;
+    let mut timings = NodeTimings {
+        queue_ms: queued_at.elapsed().as_millis() as u64,
+        ..Default::default()
+    };
     let mut s = state.lock().unwrap();
 
     // ── Session setup ────────────────────────────────────────────────────────
 
+    let setup_started = Instant::now();
     s.get_or_create(&sid_key, chunk_index == 0)?;
 
     // First peer: tokenize the prompt on chunk 0.
@@ -492,6 +545,7 @@ fn prefill_blocking(
             s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
         }
     }
+    timings.setup_ms += setup_started.elapsed().as_millis() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
     let expected_pos = chunk_index * chunk_size;
@@ -533,6 +587,7 @@ fn prefill_blocking(
     };
 
     let n_tokens;
+    let decode_started = Instant::now();
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
         s.engine
@@ -545,6 +600,7 @@ fn prefill_blocking(
         s.engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
+    timings.decode_ms += decode_started.elapsed().as_millis() as u64;
 
     // ── Session update ───────────────────────────────────────────────────────
     {
@@ -569,13 +625,16 @@ fn prefill_blocking(
 
     if is_last {
         if !is_final_chunk {
-            let out = wire::encode(
+            let encode_started = Instant::now();
+            let bytes = wire::encode(
                 &json!({"done": false, "more_chunks": more}),
                 None,
                 wire_dtype,
             )?;
-            return Ok(out);
+            timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+            return Ok(TimedReply { bytes, timings });
         }
+        let sampling_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1).to_vec();
         let next_id = sample_token(&logits, &recent, &sampling);
@@ -589,30 +648,42 @@ fn prefill_blocking(
         if done {
             s.finish(&sid_key);
         }
-        return wire::encode(
+        timings.sampling_ms += sampling_started.elapsed().as_millis() as u64;
+        let encode_started = Instant::now();
+        let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
             None,
             wire_dtype,
-        );
+        )?;
+        timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+        return Ok(TimedReply { bytes, timings });
     }
 
+    let residual_started = Instant::now();
     let residual = s.engine.take_residual(n_tokens)?;
+    timings.residual_ms += residual_started.elapsed().as_millis() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let n_embd = s.engine.n_embd;
-    wire::encode(
+    let encode_started = Instant::now();
+    let bytes = wire::encode(
         &json!({"done": false, "more_chunks": more, "n_prompt_tokens": n_prompt_tokens}),
         Some((&residual, [n_tokens, n_embd])),
         wire_dtype,
-    )
+    )?;
+    timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+    Ok(TimedReply { bytes, timings })
 }
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
 
 async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
+    let processing_started = Instant::now();
+    let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
+    let frame_decode_ms = frame_decode_started.elapsed().as_millis() as u64;
 
     let sid_key = meta
         .get("session_id")
@@ -631,6 +702,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
 
+    let input_prepare_started = Instant::now();
     let tensor = match tensor {
         Some((mut values, shape)) => {
             if scale != 1.0 {
@@ -640,23 +712,30 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         }
         None => None,
     };
+    let input_prepare_ms = input_prepare_started.elapsed().as_millis() as u64;
 
-    let processing_started = Instant::now();
+    let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
-        step_blocking(state, sid_key, is_last, wire_dtype, token_id, tensor)
+        step_blocking(
+            state, sid_key, is_last, wire_dtype, token_id, tensor, queued_at,
+        )
     })
     .await;
 
     match result {
-        Ok(Ok(bytes)) => match add_processing_time(bytes, processing_started.elapsed()) {
-            Ok(bytes) => (
-                StatusCode::OK,
-                [("content-type", "application/octet-stream")],
-                bytes,
-            )
-                .into_response(),
-            Err(e) => err500(e),
-        },
+        Ok(Ok(mut reply)) => {
+            reply.timings.frame_decode_ms = frame_decode_ms;
+            reply.timings.input_prepare_ms = input_prepare_ms;
+            match add_processing_time(reply, processing_started.elapsed()) {
+                Ok(bytes) => (
+                    StatusCode::OK,
+                    [("content-type", "application/octet-stream")],
+                    bytes,
+                )
+                    .into_response(),
+                Err(e) => err500(e),
+            }
+        }
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida") {
                 StatusCode::BAD_REQUEST
@@ -672,9 +751,10 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
 /// Adds node-side compute time to every binary inference reply. The gateway
 /// measures the complete HTTP round-trip, so it can expose the remainder as
 /// transport latency without guessing from a separate ping.
-fn add_processing_time(bytes: Vec<u8>, elapsed: Duration) -> Result<Vec<u8>> {
-    let (mut meta, tensor) = wire::decode(&bytes)?;
+fn add_processing_time(reply: TimedReply, elapsed: Duration) -> Result<Vec<u8>> {
+    let (mut meta, tensor) = wire::decode(&reply.bytes)?;
     meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    meta["node_timings"] = reply.timings.json();
     match tensor {
         Some((values, shape)) => wire::encode(&meta, Some((&values, shape)), WireDtype::F16),
         None => wire::encode(&meta, None, WireDtype::F16),
@@ -688,17 +768,25 @@ fn step_blocking(
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
-) -> Result<Vec<u8>> {
+    queued_at: Instant,
+) -> Result<TimedReply> {
+    let mut timings = NodeTimings {
+        queue_ms: queued_at.elapsed().as_millis() as u64,
+        ..Default::default()
+    };
     let mut s = state.lock().unwrap();
 
+    let setup_started = Instant::now();
     let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
         anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
     })?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
     let seq_id = session.seq_id;
+    timings.setup_ms += setup_started.elapsed().as_millis() as u64;
 
     let n_tokens;
+    let decode_started = Instant::now();
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state.
         n_tokens = shape[0];
@@ -712,6 +800,7 @@ fn step_blocking(
         let logits_all = !is_last;
         s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
     }
+    timings.decode_ms += decode_started.elapsed().as_millis() as u64;
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
@@ -719,6 +808,7 @@ fn step_blocking(
     let eos = s.engine.eos_token();
 
     if is_last {
+        let sampling_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1).to_vec();
         let next_id = sample_token(&logits, &recent, &sampling);
@@ -732,17 +822,26 @@ fn step_blocking(
         if done {
             s.finish(&sid_key);
         }
-        return wire::encode(
+        timings.sampling_ms += sampling_started.elapsed().as_millis() as u64;
+        let encode_started = Instant::now();
+        let bytes = wire::encode(
             &json!({"done": done, "token_id": next_id, "text": text}),
             None,
             wire_dtype,
-        );
+        )?;
+        timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+        return Ok(TimedReply { bytes, timings });
     }
 
+    let residual_started = Instant::now();
     let residual = s.engine.take_residual(n_tokens)?;
-    wire::encode(
+    timings.residual_ms += residual_started.elapsed().as_millis() as u64;
+    let encode_started = Instant::now();
+    let bytes = wire::encode(
         &json!({"done": false}),
         Some((&residual, [n_tokens, s.engine.n_embd])),
         wire_dtype,
-    )
+    )?;
+    timings.encode_ms += encode_started.elapsed().as_millis() as u64;
+    Ok(TimedReply { bytes, timings })
 }

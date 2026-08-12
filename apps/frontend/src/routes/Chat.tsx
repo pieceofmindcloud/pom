@@ -92,8 +92,21 @@ function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: s
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted" open>
     <summary className="cursor-pointer font-medium text-fg">Telemetria da execução {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{trace.input_tokens} in</span><span>{trace.output_tokens} out</span><span>{trace.prefill_ms} ms prefill</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
-    <div className="mt-2 space-y-1.5">{trace.hops.map((hop) => <div key={`${hop.node_id}:${hop.start_layer}`} className="flex flex-wrap justify-between gap-x-3 rounded bg-ink/40 px-2 py-1"><span>L{hop.start_layer}-L{hop.end_layer} · {hop.node_id.slice(0, 10)}</span><span className="font-mono">cpu {hop.prefill_ms + hop.decode_ms} ms · transporte+overhead {hop.network_ms} ms · {hop.calls}x · {bytes(hop.bytes_sent + hop.bytes_received)}</span></div>)}</div>
-    <p className="mt-2 text-faint">Transporte inclui overhead HTTP e serialização, não é latência de pacote pura.</p>
+    <div className="mt-2 space-y-2">{trace.hops.map((hop) => {
+      const nodeTotal = hop.prefill_ms + hop.decode_ms;
+      const namedNode = hop.node_frame_decode_ms + hop.node_input_prepare_ms + hop.node_queue_ms + hop.node_setup_ms + hop.node_decode_ms + hop.node_residual_ms + hop.node_sampling_ms + hop.node_encode_ms;
+      const nodeOther = Math.max(0, nodeTotal - namedNode);
+      return <div key={`${hop.node_id}:${hop.start_layer}`} className="rounded border border-line/70 bg-ink/40 px-2.5 py-2">
+        <div className="flex flex-wrap justify-between gap-x-3 gap-y-1 text-fg"><span>L{hop.start_layer}-L{hop.end_layer} · {hop.node_id.slice(0, 10)}</span><span className="font-mono text-faint">{hop.calls} chamadas · {hop.prefill_calls} prefill + {hop.decode_calls} tokens · {bytes(hop.bytes_sent + hop.bytes_received)}</span></div>
+        <div className="mt-1.5 grid gap-1 font-mono text-[0.66rem] leading-relaxed sm:grid-cols-2">
+          <span>gateway: codificar {hop.client_encode_ms} ms · até headers {hop.response_headers_ms} ms · corpo {hop.response_body_ms} ms · decodificar {hop.client_decode_ms} ms</span>
+          <span>nó: frame {hop.node_frame_decode_ms} ms · preparar {hop.node_input_prepare_ms} ms · fila {hop.node_queue_ms} ms · setup {hop.node_setup_ms} ms</span>
+          <span>GPU/engine decode {hop.node_decode_ms} ms · residual D2H/sync {hop.node_residual_ms} ms · sampling {hop.node_sampling_ms} ms · frame out {hop.node_encode_ms} ms</span>
+          <span>decode/token p50 {hop.node_decode_p50_ms} ms · p95 {hop.node_decode_p95_ms} ms · residual HTTP {hop.network_ms} ms{nodeOther > 0 ? ` · nó não atribuído ${nodeOther} ms` : ""}</span>
+        </div>
+      </div>;
+    })}</div>
+    <p className="mt-2 text-faint">“Até headers” inclui upload, rede e trabalho do nó. “Residual HTTP” é a parte da ida e volta fora do handler do nó, não latência de pacote pura. Residual D2H/sync mede a leitura do estado oculto que força GPU → CPU.</p>
   </details>;
 }
 

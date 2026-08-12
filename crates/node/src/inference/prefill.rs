@@ -61,6 +61,28 @@ pub struct HopTrace {
     pub bytes_sent: u64,
     pub bytes_received: u64,
     pub calls: u32,
+    pub prefill_calls: u32,
+    pub decode_calls: u32,
+    pub client_encode_ms: u64,
+    pub response_headers_ms: u64,
+    pub response_body_ms: u64,
+    pub client_decode_ms: u64,
+    pub node_frame_decode_ms: u64,
+    pub node_input_prepare_ms: u64,
+    pub node_queue_ms: u64,
+    pub node_setup_ms: u64,
+    pub node_decode_ms: u64,
+    pub node_residual_ms: u64,
+    pub node_sampling_ms: u64,
+    pub node_encode_ms: u64,
+    pub node_prefill_p50_ms: u64,
+    pub node_prefill_p95_ms: u64,
+    pub node_decode_p50_ms: u64,
+    pub node_decode_p95_ms: u64,
+    #[serde(skip)]
+    node_prefill_samples_ms: Vec<u64>,
+    #[serde(skip)]
+    node_decode_samples_ms: Vec<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -149,6 +171,26 @@ impl RequestTrace {
                     bytes_sent: 0,
                     bytes_received: 0,
                     calls: 0,
+                    prefill_calls: 0,
+                    decode_calls: 0,
+                    client_encode_ms: 0,
+                    response_headers_ms: 0,
+                    response_body_ms: 0,
+                    client_decode_ms: 0,
+                    node_frame_decode_ms: 0,
+                    node_input_prepare_ms: 0,
+                    node_queue_ms: 0,
+                    node_setup_ms: 0,
+                    node_decode_ms: 0,
+                    node_residual_ms: 0,
+                    node_sampling_ms: 0,
+                    node_encode_ms: 0,
+                    node_prefill_p50_ms: 0,
+                    node_prefill_p95_ms: 0,
+                    node_decode_p50_ms: 0,
+                    node_decode_p95_ms: 0,
+                    node_prefill_samples_ms: Vec::new(),
+                    node_decode_samples_ms: Vec::new(),
                 })
                 .collect(),
         }
@@ -179,18 +221,48 @@ impl RequestTrace {
         processing_ms: u64,
         bytes_sent: u64,
         bytes_received: u64,
+        client_encode_ms: u64,
+        response_headers_ms: u64,
+        response_body_ms: u64,
+        client_decode_ms: u64,
+        node: &serde_json::Value,
     ) {
         let Some(entry) = self.hops.get_mut(hop) else {
             return;
         };
+        let node_decode_ms = node["decode_ms"].as_u64().unwrap_or(0);
         match phase {
-            Phase::Prefill => entry.prefill_ms += processing_ms,
-            Phase::Decode => entry.decode_ms += processing_ms,
+            Phase::Prefill => {
+                entry.prefill_ms += processing_ms;
+                entry.prefill_calls += 1;
+                entry.node_prefill_samples_ms.push(node_decode_ms);
+                entry.node_prefill_p50_ms = percentile(&entry.node_prefill_samples_ms, 50);
+                entry.node_prefill_p95_ms = percentile(&entry.node_prefill_samples_ms, 95);
+            }
+            Phase::Decode => {
+                entry.decode_ms += processing_ms;
+                entry.decode_calls += 1;
+                entry.node_decode_samples_ms.push(node_decode_ms);
+                entry.node_decode_p50_ms = percentile(&entry.node_decode_samples_ms, 50);
+                entry.node_decode_p95_ms = percentile(&entry.node_decode_samples_ms, 95);
+            }
         }
         entry.network_ms += round_trip_ms.saturating_sub(processing_ms);
         entry.bytes_sent += bytes_sent;
         entry.bytes_received += bytes_received;
         entry.calls += 1;
+        entry.client_encode_ms += client_encode_ms;
+        entry.response_headers_ms += response_headers_ms;
+        entry.response_body_ms += response_body_ms;
+        entry.client_decode_ms += client_decode_ms;
+        entry.node_frame_decode_ms += node["frame_decode_ms"].as_u64().unwrap_or(0);
+        entry.node_input_prepare_ms += node["input_prepare_ms"].as_u64().unwrap_or(0);
+        entry.node_queue_ms += node["queue_ms"].as_u64().unwrap_or(0);
+        entry.node_setup_ms += node["setup_ms"].as_u64().unwrap_or(0);
+        entry.node_decode_ms += node_decode_ms;
+        entry.node_residual_ms += node["residual_ms"].as_u64().unwrap_or(0);
+        entry.node_sampling_ms += node["sampling_ms"].as_u64().unwrap_or(0);
+        entry.node_encode_ms += node["encode_ms"].as_u64().unwrap_or(0);
         self.total_bytes_sent += bytes_sent;
         self.total_bytes_received += bytes_received;
     }
@@ -205,8 +277,42 @@ impl RequestTrace {
             current.bytes_sent += next.bytes_sent;
             current.bytes_received += next.bytes_received;
             current.calls += next.calls;
+            current.prefill_calls += next.prefill_calls;
+            current.decode_calls += next.decode_calls;
+            current.client_encode_ms += next.client_encode_ms;
+            current.response_headers_ms += next.response_headers_ms;
+            current.response_body_ms += next.response_body_ms;
+            current.client_decode_ms += next.client_decode_ms;
+            current.node_frame_decode_ms += next.node_frame_decode_ms;
+            current.node_input_prepare_ms += next.node_input_prepare_ms;
+            current.node_queue_ms += next.node_queue_ms;
+            current.node_setup_ms += next.node_setup_ms;
+            current.node_decode_ms += next.node_decode_ms;
+            current.node_residual_ms += next.node_residual_ms;
+            current.node_sampling_ms += next.node_sampling_ms;
+            current.node_encode_ms += next.node_encode_ms;
+            current
+                .node_prefill_samples_ms
+                .extend_from_slice(&next.node_prefill_samples_ms);
+            current
+                .node_decode_samples_ms
+                .extend_from_slice(&next.node_decode_samples_ms);
+            current.node_prefill_p50_ms = percentile(&current.node_prefill_samples_ms, 50);
+            current.node_prefill_p95_ms = percentile(&current.node_prefill_samples_ms, 95);
+            current.node_decode_p50_ms = percentile(&current.node_decode_samples_ms, 50);
+            current.node_decode_p95_ms = percentile(&current.node_decode_samples_ms, 95);
         }
     }
+}
+
+fn percentile(samples: &[u64], percentile: u64) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let index = ((sorted.len() - 1) * percentile as usize + 50) / 100;
+    sorted[index]
 }
 
 /// How many chunks a prompt of `tokens` needs.
@@ -363,10 +469,12 @@ async fn send_chunk(
     hop: usize,
     phase: Phase,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
+    let encode_started = Instant::now();
     let body = match (tensor, dtype) {
         (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
         (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
     };
+    let client_encode_ms = encode_started.elapsed().as_millis() as u64;
     let url = format!("{inference_url}/v1/prefill");
     let mut last_error = String::new();
 
@@ -382,7 +490,11 @@ async fn send_chunk(
 
         match sent {
             Ok(r) if r.status().is_success() => {
+                let response_headers_ms = started.elapsed().as_millis() as u64;
+                let response_body_started = Instant::now();
                 let bytes = r.bytes().await?;
+                let response_body_ms = response_body_started.elapsed().as_millis() as u64;
+                let client_decode_started = Instant::now();
                 let decoded = match wire::decode(&bytes) {
                     Ok(decoded) => decoded,
                     Err(error) => {
@@ -397,6 +509,7 @@ async fn send_chunk(
                         return Err(error.into());
                     }
                 };
+                let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
                 let processing_ms = decoded
                     .0
                     .get("processing_ms")
@@ -409,6 +522,11 @@ async fn send_chunk(
                     processing_ms,
                     body.len() as u64,
                     bytes.len() as u64,
+                    client_encode_ms,
+                    response_headers_ms,
+                    response_body_ms,
+                    client_decode_ms,
+                    &decoded.0["node_timings"],
                 );
                 return Ok(decoded);
             }
@@ -482,12 +600,14 @@ pub async fn step(
 
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
+        let encode_started = Instant::now();
         let body = match (as_ref, dtype) {
             (Some(tensor), WireDtype::F16) => {
                 wire::encode_with_encoding(&body_meta, Some(tensor), peer.frame_encoding())?
             }
             (tensor, dtype) => wire::encode(&body_meta, tensor, dtype)?,
         };
+        let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
         let url = format!("{}/v1/step", peer.inference_url);
         let started = Instant::now();
@@ -500,14 +620,19 @@ pub async fn step(
             .send()
             .await
             .map_err(|e| anyhow!("peer {} não respondeu: {e}", peer.node_id))?;
+        let response_headers_ms = started.elapsed().as_millis() as u64;
 
         if !resp.status().is_success() {
             let code = resp.status();
             let text = resp.text().await.unwrap_or_default();
             return Err(anyhow!("peer {} respondeu {code}: {text}", peer.node_id));
         }
+        let response_body_started = Instant::now();
         let bytes = resp.bytes().await?;
+        let response_body_ms = response_body_started.elapsed().as_millis() as u64;
+        let client_decode_started = Instant::now();
         let (m, t) = wire::decode(&bytes)?;
+        let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
         let processing_ms = m
             .get("processing_ms")
             .and_then(|value| value.as_u64())
@@ -519,6 +644,11 @@ pub async fn step(
             processing_ms,
             bytes_sent,
             bytes.len() as u64,
+            client_encode_ms,
+            response_headers_ms,
+            response_body_ms,
+            client_decode_ms,
+            &m["node_timings"],
         );
         meta = m;
         tensor = t;
@@ -577,12 +707,53 @@ mod tests {
     #[test]
     fn hop_trace_separates_peer_compute_from_transport_time() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
-        trace.record_hop(0, Phase::Prefill, 18, 7, 1_024, 2_048);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            1_024,
+            2_048,
+            1,
+            2,
+            3,
+            4,
+            &json!({"decode_ms": 5}),
+        );
 
         assert_eq!(trace.hops[0].prefill_ms, 7);
         assert_eq!(trace.hops[0].network_ms, 11);
         assert_eq!(trace.hops[0].bytes_sent, 1_024);
         assert_eq!(trace.hops[0].bytes_received, 2_048);
+    }
+
+    #[test]
+    fn merged_token_traces_keep_per_call_timings_and_percentiles() {
+        let mut request = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        let mut token = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        token.record_hop(
+            0,
+            Phase::Decode,
+            30,
+            20,
+            100,
+            200,
+            2,
+            25,
+            1,
+            1,
+            &json!({"decode_ms": 11, "residual_ms": 4}),
+        );
+
+        request.merge(&token);
+
+        let hop = &request.hops[0];
+        assert_eq!(hop.decode_calls, 1);
+        assert_eq!(hop.client_encode_ms, 2);
+        assert_eq!(hop.node_decode_ms, 11);
+        assert_eq!(hop.node_residual_ms, 4);
+        assert_eq!(hop.node_decode_p50_ms, 11);
+        assert_eq!(hop.node_decode_p95_ms, 11);
     }
 
     #[test]

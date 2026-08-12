@@ -31,7 +31,8 @@ import {
   type ChatSession,
 } from "../lib/chatStore";
 import { bytes, since } from "../lib/format";
-import type { HopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
+import { isPhasedHop } from "../lib/chatStream";
+import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import { useCluster, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
@@ -108,10 +109,14 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
           </tr>
         </thead>
         <tbody>
-          {trace.hops.flatMap((hop) => [
-            <PhaseRow key={`${hop.node_id}:${hop.start_layer}:prefill`} hop={hop} label="prefill" phase={hop.prefill} first />,
-            <PhaseRow key={`${hop.node_id}:${hop.start_layer}:decode`} hop={hop} label="decode" phase={hop.decode} />,
-          ])}
+          {trace.hops.flatMap((hop) => {
+            const id = `${hop.node_id}:${hop.start_layer}`;
+            if (!isPhasedHop(hop)) return [<LegacyHopRows key={id} hop={hop} />];
+            return [
+              <PhaseRow key={`${id}:prefill`} hop={hop} label="prefill" phase={hop.prefill} first />,
+              <PhaseRow key={`${id}:decode`} hop={hop} label="decode" phase={hop.decode} />,
+            ];
+          })}
         </tbody>
       </table>
     </div>
@@ -125,7 +130,7 @@ function PhaseRow({
   phase,
   first,
 }: {
-  hop: HopTrace;
+  hop: PhasedHopTrace;
   label: string;
   phase: PhaseTrace;
   first?: boolean;
@@ -158,6 +163,44 @@ function PhaseRow({
         <span className="block">backend: enfileirar {phase.node_backend_enqueue_ms} ms · conclusão {phase.node_backend_completion_ms} ms{phase.node_backend_completion_ms === 0 ? " (sync desligado)" : ""} · D2H da captura {phase.node_residual_capture_d2h_sync_ms} ms · p50 {phase.node_p50_ms} ms · p95 {phase.node_p95_ms} ms</span>
         <span className="block">sampling: acesso {phase.node_logits_access_ms} ms · clone {phase.node_logits_clone_ms} ms · penalidade {phase.node_repetition_penalty_ms} ms · softmax {phase.node_softmax_ms} ms · top-k {phase.node_top_k_ms} ms · top-p {phase.node_top_p_ms} ms · seleção {phase.node_selection_ms} ms · texto {phase.node_token_text_ms} ms</span>
         <span className="block">gateway: codificar {phase.client_encode_ms} ms · até headers {phase.response_headers_ms} ms · corpo {phase.response_body_ms} ms · decodificar {phase.client_decode_ms} ms</span>
+      </td>
+    </tr>
+  </>;
+}
+
+/**
+ * A hop recorded before prefill and decode were split apart.
+ *
+ * Its timings and bytes were already summed across both phases when they
+ * reached us, so there is nothing to split. Printing the same total on a
+ * "prefill" row and again on a "decode" row would put numbers under labels they
+ * do not belong to - the row says the split is missing instead.
+ */
+function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
+  const gatewayMs = hop.client_encode_ms + hop.client_decode_ms;
+  const named =
+    hop.node_frame_decode_ms + hop.node_input_prepare_ms + hop.node_queue_ms +
+    hop.node_setup_ms + hop.node_decode_ms + hop.node_residual_ms +
+    hop.node_sampling_ms + hop.node_encode_ms;
+  const unattributed = Math.max(0, hop.prefill_ms + hop.decode_ms - named);
+
+  return <>
+    <tr className="border-t border-line/70">
+      <td className="py-1 pr-3 align-top text-fg" rowSpan={2}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
+      <td className="py-1 pr-3">as duas</td>
+      <td className="py-1 pr-3 text-right">{hop.calls}</td>
+      <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
+      <td className="py-1 pr-3 text-right">{hop.node_decode_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{hop.node_residual_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{hop.node_sampling_ms} ms</td>
+      <td className="py-1 pr-3 text-right">{hop.network_ms} ms</td>
+      <td className="py-1 text-right">{bytes(hop.bytes_sent + hop.bytes_received)}</td>
+    </tr>
+    <tr className="text-faint">
+      <td className="pb-1.5 pr-3 align-top" colSpan={8}>
+        <span className="block">telemetria antiga: esta execução foi gravada antes da separação por fase, então os números acima somam prefill e decode ({hop.prefill_calls} prefill + {hop.decode_calls} tokens) e não dá para separá-los agora.</span>
+        <span className="block">nó: frame {hop.node_frame_decode_ms} ms · preparar {hop.node_input_prepare_ms} ms · fila {hop.node_queue_ms} ms · setup {hop.node_setup_ms} ms · frame out {hop.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
+        <span className="block">decode/token p50 {hop.node_decode_p50_ms} ms · p95 {hop.node_decode_p95_ms} ms · gateway: codificar {hop.client_encode_ms} ms · até headers {hop.response_headers_ms} ms · corpo {hop.response_body_ms} ms · decodificar {hop.client_decode_ms} ms</span>
       </td>
     </tr>
   </>;

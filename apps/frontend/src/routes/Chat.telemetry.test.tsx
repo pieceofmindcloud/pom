@@ -78,4 +78,57 @@ describe("ExecutionTelemetry", () => {
     render(<ExecutionTelemetry trace={trace} />);
     expect(screen.getAllByText(/sync desligado/).length).toBe(2);
   });
+
+  /**
+   * A session saved before the phase split, or a peer still on the old binary,
+   * hands us a hop with no `prefill` object. That crashed the whole screen.
+   */
+  it("renders a hop from before the phase split instead of crashing", () => {
+    const legacy = {
+      model: "qwen",
+      input_tokens: 12,
+      output_tokens: 4,
+      prefill_ms: 90,
+      total_bytes_sent: 10,
+      total_bytes_received: 20,
+      hops: [
+        {
+          node_id: "abcdef0123456789",
+          start_layer: 0,
+          end_layer: 15,
+          prefill_ms: 80,
+          decode_ms: 40,
+          network_ms: 15,
+          bytes_sent: 1_024,
+          bytes_received: 2_048,
+          calls: 6,
+          prefill_calls: 2,
+          decode_calls: 4,
+          client_encode_ms: 3,
+          response_headers_ms: 7,
+          response_body_ms: 2,
+          client_decode_ms: 1,
+          node_frame_decode_ms: 1,
+          node_input_prepare_ms: 2,
+          node_queue_ms: 3,
+          node_setup_ms: 4,
+          node_decode_ms: 95,
+          node_residual_ms: 6,
+          node_sampling_ms: 7,
+          node_encode_ms: 8,
+          node_decode_p50_ms: 9,
+          node_decode_p95_ms: 11,
+        },
+      ],
+    } as unknown as RequestTrace;
+
+    render(<ExecutionTelemetry trace={legacy} />);
+
+    // The numbers it does have still show up...
+    expect(screen.getByText("95 ms")).toBeTruthy();
+    expect(screen.getByText("L0-L15")).toBeTruthy();
+    // ...and the row says why there is no prefill/decode split, rather than
+    // printing one total twice under two labels.
+    expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();
+  });
 });

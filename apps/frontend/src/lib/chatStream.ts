@@ -50,12 +50,60 @@ export interface PhaseTrace {
   node_p95_ms: number;
 }
 
-export interface HopTrace {
+export interface PhasedHopTrace {
   node_id: string;
   start_layer: number;
   end_layer: number;
   prefill: PhaseTrace;
   decode: PhaseTrace;
+}
+
+/**
+ * The shape hops had before prefill and decode were split apart.
+ *
+ * Two places still hand us one: a chat session saved in localStorage before the
+ * change, and a peer still running the older binary. Neither can be told to go
+ * away, so the table has to render both shapes.
+ */
+export interface LegacyHopTrace {
+  node_id: string;
+  start_layer: number;
+  end_layer: number;
+  prefill_ms: number;
+  decode_ms: number;
+  network_ms: number;
+  bytes_sent: number;
+  bytes_received: number;
+  calls: number;
+  prefill_calls: number;
+  decode_calls: number;
+  client_encode_ms: number;
+  response_headers_ms: number;
+  response_body_ms: number;
+  client_decode_ms: number;
+  node_frame_decode_ms: number;
+  node_input_prepare_ms: number;
+  node_queue_ms: number;
+  node_setup_ms: number;
+  node_decode_ms: number;
+  node_residual_ms: number;
+  node_sampling_ms: number;
+  node_encode_ms: number;
+  node_decode_p50_ms: number;
+  node_decode_p95_ms: number;
+}
+
+export type HopTrace = PhasedHopTrace | LegacyHopTrace;
+
+/**
+ * A legacy hop cannot be split after the fact: its timings and bytes were summed
+ * across both phases before they ever reached us. Inventing a prefill row and a
+ * decode row out of one total would put a number under a label it does not
+ * belong to, so the table says so instead.
+ */
+export function isPhasedHop(hop: HopTrace): hop is PhasedHopTrace {
+  return typeof (hop as PhasedHopTrace).prefill === "object"
+    && (hop as PhasedHopTrace).prefill !== null;
 }
 
 export interface ChatStreamState {

@@ -1,9 +1,11 @@
-//! Serving the CODAI-SERVER interface out of the binary.
+//! Serving the CODAI-SERVER interface off disk.
 //!
-//! The bundle is compiled in from wherever `build.rs` pointed `CODAI_UI_DIST`,
-//! so a node needs nothing on disk beside it to serve the panel — the same
-//! property the old single-file `include_str!` had, extended to a real bundle
-//! with hashed asset names.
+//! The bundle lives wherever `config::ui_dist_dir()` points — by default
+//! `<project_root>/apps/frontend/dist`, built independently with
+//! `npm run build` in `apps/frontend`. Nothing here is compiled into the
+//! binary, so editing the interface no longer touches the Rust build: run
+//! `npm run build` (or point `RDMA_P2P_UI_DIST` at a Vite watch build) and
+//! reload the browser.
 //!
 //! The routing rule is the part worth reading. A single-page app owns paths
 //! that do not exist as files: reloading the browser on `/config/keys/api` has
@@ -14,6 +16,8 @@
 //! So the fallback is deliberately narrow: real files win, the API prefixes are
 //! never touched, and anything left over that looks like a page gets the app.
 
+use std::path::{Component, Path, PathBuf};
+
 use axum::{
     body::Body,
     extract::Path as AxumPath,
@@ -22,11 +26,6 @@ use axum::{
     routing::get,
     Router,
 };
-use rust_embed::RustEmbed;
-
-#[derive(RustEmbed)]
-#[folder = "$CODAI_UI_DIST"]
-struct Bundle;
 
 /// Path prefixes the node owns. Nothing under these ever falls back to the app.
 ///
@@ -48,13 +47,17 @@ where
 }
 
 async fn index() -> Response {
-    serve("index.html").unwrap_or_else(missing_bundle)
+    let base = crate::config::ui_dist_dir();
+    serve(&base, "index.html")
+        .await
+        .unwrap_or_else(|| missing_bundle(&base))
 }
 
 async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
+    let base = crate::config::ui_dist_dir();
     let trimmed = path.trim_start_matches('/');
 
-    if let Some(hit) = serve(trimmed) {
+    if let Some(hit) = serve(&base, trimmed).await {
         return hit;
     }
 
@@ -80,14 +83,35 @@ async fn asset(AxumPath(path): AxumPath<String>, uri: Uri) -> Response {
         return (StatusCode::NOT_FOUND, "asset não encontrado").into_response();
     }
 
-    serve("index.html").unwrap_or_else(missing_bundle)
+    serve(&base, "index.html")
+        .await
+        .unwrap_or_else(|| missing_bundle(&base))
 }
 
-fn serve(path: &str) -> Option<Response> {
-    let file = Bundle::get(path)?;
-    let mime = mime_guess::from_path(path).first_or_octet_stream();
+/// Join a request path onto the bundle directory without ever leaving it.
+///
+/// Unlike the old embedded lookup (a fixed compile-time file list), this reads
+/// real files at a path built from user input, so `..` has to be rejected
+/// explicitly rather than just failing to match — `/../../etc/passwd` must not
+/// resolve outside `base`.
+fn resolve(base: &Path, path: &str) -> Option<PathBuf> {
+    let mut full = base.to_path_buf();
+    for part in Path::new(path).components() {
+        match part {
+            Component::Normal(seg) => full.push(seg),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    Some(full)
+}
 
-    let mut res = Response::new(Body::from(file.data.into_owned()));
+async fn serve(base: &Path, path: &str) -> Option<Response> {
+    let file_path = resolve(base, path)?;
+    let bytes = tokio::fs::read(&file_path).await.ok()?;
+    let mime = mime_guess::from_path(&file_path).first_or_octet_stream();
+
+    let mut res = Response::new(Body::from(bytes));
     res.headers_mut().insert(
         header::CONTENT_TYPE,
         HeaderValue::from_str(mime.as_ref())
@@ -109,12 +133,16 @@ fn serve(path: &str) -> Option<Response> {
     Some(res)
 }
 
-/// The bundle is compiled in, so an empty one means the build went wrong rather
-/// than anything the operator can fix at runtime — say that, instead of 404.
-fn missing_bundle() -> Response {
+/// The bundle is read from disk, so a miss here means it was never built —
+/// say that, instead of a bare 404.
+fn missing_bundle(base: &Path) -> Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
-        "A interface não foi embutida neste binário. Recompile com `cargo build --release`.",
+        format!(
+            "A interface não foi encontrada em {}. Rode `npm run build` em apps/frontend \
+             (ou aponte RDMA_P2P_UI_DIST para o bundle).",
+            base.display()
+        ),
     )
         .into_response()
 }
@@ -123,24 +151,48 @@ fn missing_bundle() -> Response {
 mod tests {
     use super::*;
 
-    /// The bundle has to actually be in the binary. Without this, a broken
-    /// build.rs would only show up as a blank page on a deployed node.
+    /// `..` must never walk the resolved path outside the bundle directory,
+    /// no matter how it is spelled in the request.
     #[test]
-    fn the_interface_is_embedded() {
-        let index = Bundle::get("index.html").expect("index.html embutido");
-        let html = String::from_utf8_lossy(&index.data);
-        assert!(
-            html.contains("CODAI-SERVER"),
-            "o index.html embutido nao parece ser o do CODAI-SERVER: {html:.200}"
+    fn parent_dir_segments_are_rejected() {
+        let base = Path::new("/srv/dist");
+        assert_eq!(resolve(base, "../../etc/passwd"), None);
+        assert_eq!(resolve(base, "assets/../../secret"), None);
+        assert_eq!(resolve(base, "./index.html"), Some(base.join("index.html")));
+        assert_eq!(
+            resolve(base, "assets/app.js"),
+            Some(base.join("assets/app.js"))
         );
-        assert!(
-            Bundle::iter().any(|f| f.ends_with(".js")),
-            "nenhum javascript no pacote embutido"
-        );
-        assert!(
-            Bundle::iter().any(|f| f.ends_with(".css")),
-            "nenhum css no pacote embutido — foi assim que a tela crua passou batida"
-        );
+    }
+
+    /// A rooted or absolute-looking segment must not escape `base` either.
+    #[test]
+    fn absolute_looking_paths_are_rejected() {
+        let base = Path::new("/srv/dist");
+        assert_eq!(resolve(base, "/etc/passwd"), None);
+    }
+
+    /// Serving from a real temp directory exercises the actual filesystem
+    /// path, not just the pure path-joining logic above.
+    #[tokio::test]
+    async fn serves_files_from_the_bundle_directory() {
+        let dir = std::env::temp_dir().join(format!("rdma-p2p-webapp-test-{}", uuid::Uuid::new_v4()));
+        tokio::fs::create_dir_all(dir.join("assets"))
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("index.html"), "<html>CODAI-SERVER</html>")
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("assets/app.js"), "console.log(1)")
+            .await
+            .unwrap();
+
+        assert!(serve(&dir, "index.html").await.is_some());
+        assert!(serve(&dir, "assets/app.js").await.is_some());
+        assert!(serve(&dir, "assets/missing.js").await.is_none());
+        assert!(serve(&dir, "../outside").await.is_none());
+
+        tokio::fs::remove_dir_all(&dir).await.ok();
     }
 
     /// Both halves of the routing rule, which are easy to get backwards.

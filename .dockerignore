@@ -9,3 +9,5 @@ models/
 *.key
 rdma-p2p.json
 docs/
+apps/frontend/node_modules
+apps/frontend/dist*

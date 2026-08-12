@@ -137,7 +137,7 @@ crates/
 ├── routing-base/               # planejador determinístico independente de infraestrutura
 ├── config/                     # ponto de extração para esquemas de configuração públicos
 └── types/                      # ponto de extração para tipos de domínio públicos
-apps/frontend/                  # fonte React/Vite embutido pelo build do node
+apps/frontend/                  # fonte React/Vite; build lido do disco pelo node em runtime
 old/                            # ferramentas Python e scripts legados, fora do runtime suportado
 ```
 

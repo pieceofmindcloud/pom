@@ -1,7 +1,7 @@
 # CODAI-SERVER — interface web
 
-Interface administrativa do `rdma-p2p`. **É a interface do produto**: o binário
-embute o build de produção deste diretório e o serve na porta do gateway (8080
+Interface administrativa do `rdma-p2p`. **É a interface do produto**: o nó lê o
+build de produção deste diretório do disco e o serve na porta do gateway (8080
 por padrão), incluindo a tela de configuração inicial. O antigo `web/` foi
 removido.
 
@@ -14,14 +14,27 @@ continuam `rdma-p2p`.
 
 ## Como o binário serve a interface
 
-`cargo build` **reconstrói a interface** (`build.rs` chama o Vite) e embute o
-resultado com `rust-embed`. Portanto, Node e npm são necessários somente na
-máquina que compila, inclusive no corte de release. O binário pronto contém os
-assets e não precisa de Node, npm ou de uma pasta `dist` ao ser executado.
+O nó lê os arquivos de `apps/frontend/dist` **do disco, a cada requisição**
+(`crates/node/src/backend/webapp.rs`), em vez de embuti-los no binário. Nada no
+`cargo build` toca esse diretório — editar a interface não recompila o Rust.
+Para ter algo em `dist/`:
 
-`dist/` e `dist-release/` são artefatos locais e ignorados pelo Git. Assim cada
-release é sempre produzido a partir do fonte atual da interface, sem risco de
-embarcar uma tela compilada em outro commit.
+```bash
+cd apps/frontend
+npm install
+npm run build
+```
+
+`config::ui_dist_dir()` decide onde procurar: por padrão
+`<project_root>/apps/frontend/dist` (o mesmo `project_root()` usado por
+`rdma-p2p.json` e `models/`); `RDMA_P2P_UI_DIST` sobrescreve, para um container
+ou um layout de disco diferente — é o que a imagem Docker usa, apontando para
+onde o `dist` gerado no build foi copiado.
+
+Sem esse diretório (ou sem `index.html` dentro dele) o nó sobe normalmente e
+responde 500 nas rotas da interface, com a mensagem dizendo onde procurou.
+
+`dist/` e `dist-release/` são artefatos locais e ignorados pelo Git.
 
 ### Roteamento
 
@@ -383,9 +396,9 @@ por máquina.
 
 ## Detalhes que economizam tempo depois
 
-- **Editar `apps/frontend/` exige `cargo build`** para valer no binário, porque o bundle
-  é embutido em tempo de compilação. Durante o desenvolvimento use o dev server,
-  que tem hot reload.
+- **Editar `apps/frontend/` só exige `npm run build`** para valer no nó — o bundle é
+  lido do disco a cada requisição, não embutido. Durante o desenvolvimento use o
+  dev server, que tem hot reload.
 - **`Footnote`** (`src/components/ui.tsx`) existe porque a marcação óbvia é uma
   armadilha: um `<p className="flex">` com um `<span>` no meio da frase faz do
   span um item de flex próprio e a frase se parte em colunas. Use o componente,

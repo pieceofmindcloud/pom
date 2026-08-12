@@ -1,13 +1,12 @@
-# ── Stage 1: dependency planner ──────────────────────────────────────────────
-FROM lukemathwalker/cargo-chef:latest-rust-1 AS planner
-WORKDIR /build
-COPY . .
-RUN cargo chef prepare --recipe-path recipe.json
+# syntax=docker/dockerfile:1
 
-# ── Stage 2: builder ──────────────────────────────────────────────────────────
-FROM ubuntu:24.04 AS builder
+# ── Stage 1: builder ────────────────────────────────────────────────────────
+FROM nvidia/cuda:13.0.3-devel-ubuntu24.04 as builder
 
 ENV DEBIAN_FRONTEND=noninteractive
+
+# Download and import the NodeSource security keys and repository (Node 22 example)
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
@@ -16,6 +15,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     pkg-config \
     libssl-dev \
+    gnupg \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
 
 ENV CARGO_HOME=/root/.cargo \
@@ -24,22 +26,30 @@ ENV CARGO_HOME=/root/.cargo \
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
-
-RUN cargo install cargo-chef --locked
+RUN rustup component add rustfmt
 
 WORKDIR /build
 
-# Cook dependencies without GPU features (CPU-only default).
-# Cached as long as Cargo.toml / Cargo.lock don't change.
-COPY --from=planner /build/recipe.json recipe.json
-RUN cargo chef cook --release --no-default-features --recipe-path recipe.json
+# The web interface is read from disk at runtime (src/backend/webapp.rs), not
+# embedded in the binary, so building it is independent of the Rust build and
+# only touches this layer's cache when apps/frontend actually changes.
+COPY apps/frontend/package.json apps/frontend/package-lock.json apps/frontend/
+RUN --mount=type=cache,target=/root/.npm \
+    cd apps/frontend && npm ci --no-audit --no-fund
 
-# Build the real binary. web/ assets are embedded via include_str!.
 COPY . .
-RUN cargo build --release --no-default-features
+RUN cd apps/frontend && npm run build
 
-# ── Stage 3: runtime ──────────────────────────────────────────────────────────
-FROM ubuntu:24.04
+# Cache mounts persist the registry, git checkouts, and incremental build
+# artifacts across builds, so unchanged dependencies aren't recompiled.
+RUN --mount=type=cache,target=/root/.cargo/registry \
+    --mount=type=cache,target=/root/.cargo/git \
+    --mount=type=cache,target=/build/target \
+    cargo build --release --features cuda && \
+    cp target/release/rdma-p2p /build/rdma-p2p
+
+# ── Stage 2: runtime ──────────────────────────────────────────────────────────
+FROM nvidia/cuda:13.0.3-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -48,11 +58,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/target/release/rdma-p2p /usr/local/bin/rdma-p2p
+COPY --from=builder /build/rdma-p2p /usr/local/bin/rdma-p2p
+COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist
 
 # P2P UDP, HTTP gateway, inference server
 EXPOSE 42777/udp
 EXPOSE 8080/tcp
 EXPOSE 8181/tcp
 
+ENV LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat/
+# project_root() would otherwise need models/ or rdma-p2p.json in /app to
+# recognize it; this makes the resolution explicit instead of incidental.
+ENV RDMA_P2P_HOME=/app
+
+WORKDIR /app
 ENTRYPOINT ["rdma-p2p"]

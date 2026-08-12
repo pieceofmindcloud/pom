@@ -1,0 +1,14 @@
+# bindgen needs to find stdbool.h when generating llama-cpp-sys-2 bindings.
+# Ubuntu ships clang without its bundled C headers; point bindgen at GCC's copy
+# instead. On macOS, Apple Clang has complete headers so this is harmless.
+[env]
+BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include", force = false }
+
+[profile.release]
+opt-level = 0          # Keep at 0 for fast compilation, or set to 1 for mild optimization
+debug = 0              # Reduce debug info levels (e.g., line numbers only) to speed up builds
+incremental = true     # Ensure incremental compilation is enabled
+
+[target.'cfg(target_os = "linux1")']
+linker = "clang"
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

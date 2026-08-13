@@ -235,3 +235,92 @@ captain**, por degradar a resposta em silêncio.
 Não é plano de implementação. Cada mudança de código acima precisa do seu próprio
 spec e plano antes de virar código — em particular a 2 e a 3, que mexem em
 protocolo entre nós e em semântica de amostragem.
+
+---
+
+## O que foi medido e decidido em 2026-08-13
+
+Fechando as lacunas do documento acima. Cada número aqui saiu de execução nesta
+data, e o teste que o produz ficou no repositório.
+
+### Mudança 6 — respondida: era a GPU, cobrada na etapa errada
+
+`llm.rs::logits_access_versus_backend_completion` (ignorado por padrão; pede
+`RDMA_P2P_TEST_GGUF`) decide isso numa máquina só. Fatia final de 16 camadas,
+Metal, `n_gpu_layers=99`, 16 tokens por rodada, duas rodadas de cada modo:
+
+| | total por token | enfileirar | conclusão | acesso aos logits |
+|---|---|---|---|---|
+| `PROFILE_SYNC=0` | 33,28 / 34,27 ms | 0,85 / 0,78 | 0 | **32,42 / 33,49** |
+| `PROFILE_SYNC=1` | 33,06 / 32,27 ms | 1,50 / 1,65 | **31,55 / 30,62** | 0 |
+
+O tempo migra inteiro de "acesso" para "conclusão" e **o total não muda** — a
+hipótese da Mudança 6 estava certa e não há bug: é a GPU terminando o trabalho,
+cobrada no primeiro toque de CPU nos logits.
+
+Como a barreira não cria espera, só a nomeia, `RDMA_P2P_PROFILE_SYNC` passou a
+ser **ligada por padrão**; `=0` desliga. A telemetria de todo mundo passa a
+dizer a verdade sobre onde o tempo foi.
+
+### Mudança 5 — o callback de captura agora é derivado, não copiado
+
+A condição já existia (`no_embeddings`), mas era decidida **só** em
+`webui::ApplyRequest`. O nó subido por linha de comando mandava sempre
+`no_embeddings: false`, então uma fatia final subida por `run-p2.sh` instalava o
+callback e pagava os ~8 ms/token para capturar um residual que ninguém lê.
+
+Agora quem responde é `NodeConfig::needs_residual_export` (`runtime.rs`), usada
+por `infer_server::run`: quem serve a última camada, ou é o último da divisão,
+nunca exporta. Errar para menos não corrompe em silêncio — `take_residual`
+recusa com "residual capture did not fire".
+
+### Mudança 7 — a premissa só vale para o prefill
+
+`wire::zstd_level_ratio_versus_encode_time` mede razão e tempo por nível num
+tensor f16 de hidden_dim 4096:
+
+| regime | nível 3 | nível 6 | nível 9 |
+|---|---|---|---|
+| prefill compressível (512x4096) | 1,56x / 14,9 ms | 1,73x / 32,5 ms | 1,75x / 39,6 ms |
+| decode de alta entropia (1x4096) | 1,08x / 0,025 ms | 1,08x / 0,056 ms | 1,08x / 0,144 ms |
+
+**No decode o nível não muda um byte**: 7.570 bytes em 1, 3, 6, 9 e 12. Subir o
+nível ali não é alavanca nenhuma, ao contrário do que este documento supunha.
+
+No prefill vale: do 3 para o 6 são 268 KB a menos, 21,4 ms de rede economizados
+num enlace de 100 Mbps por 17,6 ms de CPU. Do 6 para o 9 são 2,5 ms de rede por
+7 ms de CPU — negativo. Escolhido **nível 6** (`wire::ZSTD_LEVEL`).
+
+### Mudança 3d — este GGUF não tem cabeças MTP
+
+Lido o cabeçalho e a tensor table das fatias de
+`lmstudio-community-Qwen3.6-35B-A3B-GGUF` (`general.architecture = qwen35moe`,
+`rdmap2p.original_block_count = 40`, `embedding_length = 2048`):
+
+- tensores fora de `blk.*`: `token_embd.weight`, `output_norm.weight`,
+  `output.weight`. Nada de `nextn`, `mtp`, `eh_proj` ou `shared_head`;
+- nenhum KV do tipo `*.nextn.*`.
+
+**Não há MTP de graça.** O modelo rascunho separado também não foi feito: exige
+um segundo GGUF denso com o mesmo vocabulário (não existe nas máquinas), um
+segundo motor supervisionado por `runtime.rs` e memória sobrando na máquina do
+gateway — a mesma que já processa o prompt inteiro de cada requisição por servir
+a camada 0. Custo alto, e nada disso está medido.
+
+O que foi feito no lugar: **melhorar o prompt-lookup**. `find_draft` passou a
+tratar `speculative_lookup_window` como o **maior** n-grama tentado, não o
+único: a busca desce `m, m-1, … 1` e para no primeiro que casa, e o quanto da
+continuação é aproveitado escala com o comprimento casado (`len` tokens de
+contexto autorizam no máximo `len + 1` palpites). Antes, uma janela que não
+casasse não rascunhava nada; agora degrada para um palpite mais fraco em vez de
+para palpite nenhum, o que é o regime certo num MoE, onde verificar K tokens
+custa quase o mesmo que verificar 1.
+
+Nota lateral que muda a conta de bytes deste documento: o hidden_dim deste
+modelo é **2048**, não 4096 — são 4.096 bytes por token por salto em f16.
+
+### Interface
+
+`speculative_decoding_enabled`, `_k` e `_lookup_window` existiam no backend e
+não tinham controle. Agora estão em Implantar na rede → ajustes avançados: um
+interruptor, e os dois números só aparecem com ele ligado.

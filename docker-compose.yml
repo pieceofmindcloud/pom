@@ -1,88 +1,71 @@
-# Cluster local de 5 nos.
+# 3-node local dev/test cluster.
 #
-# Host networking e obrigatorio, igual ao `docker run --net host` que isto
-# substitui: a descoberta P2P transmite para 255.255.255.255:42777 e as portas
-# de gateway e inferencia so sao alcancaveis assim. Como os cinco compartilham
-# a pilha de rede da maquina, cada um precisa das suas proprias portas. Elas
-# vem da config de cada no, gerada por scripts/gen-node-configs.py:
+# Host networking is required, same as the manual `docker run --net host`
+# this replaces: P2P discovery broadcasts to 255.255.255.255:42777 and the
+# gateway/inference ports are only reachable that way. Because every node
+# shares the host's network namespace, each one's rdma-p2p.json must pick its
+# own gateway_port/p2p_port/inference_port so they don't collide (see
+# old/scripts/run-p1.sh + run-p2.sh for the same pattern on bare metal).
 #
-#   no      papel      gateway  p2p    inferencia  GPU
-#   node-1  principal  8080     42777  8092        sim
-#   node-2  node       8081     42778  8182        sim
-#   node-3  node       8082     42779  8183        sim
-#   node-4  node       8083     42780  8184        nao
-#   node-5  node       8084     42781  8185        nao
-#
-# O estado de cada no (rdma-p2p.json, .rdma-p2p-node.key) vive no seu proprio
-# diretorio em ./tests/fixtures, montado como /data (RDMA_P2P_HOME). Diretorios
-# separados sao o que da a cada no uma identidade propria: o cluster indexa
-# peers por node_id, e dois processos lendo a mesma chave viram um peer so.
-#
-# RDMA_P2P_UI_DIST aponta para dentro da imagem porque RDMA_P2P_HOME nao e mais
-# /app, e a interface seria procurada dentro do diretorio de dados.
-#
-# models_sliced e compartilhado de proposito: uma fatia gerada por um no tem que
-# ser vista pelos outros, senao cada um refatiaria dentro da sua pasta isolada.
-# O Downloads e montado no mesmo caminho que tem na maquina para que o
-# model_dirs das configs continue valendo sem traducao.
-#
-# Nao existe `command:` aqui: as portas vem da config, e um --gateway-port na
-# linha de comando so valeria no modo setup (diretorio de dados vazio).
+# Each node's state — rdma-p2p.json, .rdma-p2p-node.key, models/ — lives under
+# its own directory in ./tests/fixtures (RDMA_P2P_HOME below), gitignored so
+# generated keys and models never land in the repo. A node with nothing in
+# its directory yet just boots into setup mode
+# (https://<host>:<gateway_port>/) same as on bare metal. RDMA_P2P_UI_DIST is
+# pinned to the path baked into the image because RDMA_P2P_HOME no longer
+# points at /app, and the web interface would otherwise be looked for under
+# the (bind-mounted, UI-less) data directory instead.
 x-node: &node
   build: .
   image: pom:latest
   network_mode: host
-  restart: unless-stopped
   environment:
     RDMA_P2P_HOME: /data
     RDMA_P2P_UI_DIST: /app/apps/frontend/dist
 
-# Acesso a GPU, equivalente ao `docker run --gpus all`. Exige o NVIDIA Container
-# Toolkit registrado no daemon (`nvidia-ctk runtime configure --runtime=docker`);
-# sem isso o container nem inicia, com "could not select device driver nvidia".
-x-gpu: &gpu
-  resources:
-    reservations:
-      devices:
-        - driver: nvidia
-          count: all
-          capabilities: [gpu]
-
 services:
-  node-1:
+  node-gpu:
     <<: *node
-    deploy: *gpu
+    container_name: rdma-p2p-node-gpu
     volumes:
-      - ./tests/fixtures/node-1:/data
+      - ./tests/fixtures/node-gpu:/data
       - ./models:/data/models
-      - ./models_sliced:/data/models_sliced
+    # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
+    # Toolkit on the host; omitted entirely on the other two nodes.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  node-2:
+  node-gpu2:
     <<: *node
-    deploy: *gpu
+    container_name: rdma-p2p-node-gpu2
     volumes:
-      - ./tests/fixtures/node-2:/data
+      - ./tests/fixtures/node-gpu-2:/data
       - ./models:/data/models
-      - ./models_sliced:/data/models_sliced
+    # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
+    # Toolkit on the host; omitted entirely on the other two nodes.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
 
-  node-3:
+  node-cpu-1:
     <<: *node
-    deploy: *gpu
+    container_name: rdma-p2p-node-cpu-1
     volumes:
-      - ./tests/fixtures/node-3:/data
+      - ./tests/fixtures/node-cpu-1:/data
       - ./models:/data/models
-      - ./models_sliced:/data/models_sliced
 
-  node-4:
+  node-cpu-2:
     <<: *node
+    container_name: rdma-p2p-node-cpu-2
     volumes:
-      - ./tests/fixtures/node-4:/data
+      - ./tests/fixtures/node-cpu-2:/data
       - ./models:/data/models
-      - ./models_sliced:/data/models_sliced
-
-  node-5:
-    <<: *node
-    volumes:
-      - ./tests/fixtures/node-5:/data
-      - ./models:/data/models
-      - ./models_sliced:/data/models_sliced

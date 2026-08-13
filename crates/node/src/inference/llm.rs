@@ -131,12 +131,28 @@ pub struct DecodeTimings {
     pub residual_capture_d2h_sync_us: u64,
 }
 
-/// Off by default: the extra `llama_synchronize` is a measurement barrier, and
-/// leaving it on would charge every request for a diagnostic nobody asked for.
+/// **Ligado por padrão** desde 2026-08-13; `RDMA_P2P_PROFILE_SYNC=0` desliga.
+///
+/// O `llama_synchronize` é uma barreira de medição, e a suspeita de que ela
+/// custasse tempo foi o motivo de nascer desligada. Medido em
+/// `logits_access_versus_backend_completion` (fatia final de 16 camadas, Metal,
+/// 16 tokens por rodada, duas rodadas intercaladas de cada modo):
+///
+/// | | total por token | conclusão | acesso aos logits |
+/// |---|---|---|---|
+/// | desligado | 33,28 / 34,27 ms | 0 | 32,42 / 33,49 ms |
+/// | ligado | 33,06 / 32,27 ms | 31,55 / 30,62 ms | 0 |
+///
+/// O total não muda (o modo ligado ficou até marginalmente mais rápido, dentro
+/// do ruído): a barreira **não cria espera, só a nomeia**. Sem ela a espera
+/// existia igual, cobrada no primeiro toque de CPU nos logits, e a telemetria
+/// dizia que o gargalo era "acesso aos logits" quando era a GPU terminando.
+/// Foi essa conta errada que a Mudança 6 do spec de 2026-08-12 pedia para
+/// fechar.
 fn profile_backend_sync() -> bool {
     std::env::var("RDMA_P2P_PROFILE_SYNC")
         .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 // SAFETY: We serialise all GPU calls behind a `Mutex<LlmEngine>` in the HTTP
@@ -1066,6 +1082,78 @@ mod tests {
             residual.iter().any(|v| *v != 0.0 && v.is_finite()),
             "residual is all zeros or non-finite — the graph did not run"
         );
+    }
+
+    /// Mudança 6 do spec de 2026-08-12: `node_logits_access_ms` marcava ~4,9 ms
+    /// por token no nó da LM head, com `backend_completion_ms` em zero porque o
+    /// `llama_synchronize` de diagnóstico está desligado por padrão. A hipótese
+    /// é que esses milissegundos são a GPU terminando o trabalho, cobrados na
+    /// etapa errada — o primeiro toque de CPU nos logits é quem espera.
+    ///
+    /// Este teste decide isso sem precisar de duas máquinas: decodifica um
+    /// token na mesma fatia duas vezes, uma com `RDMA_P2P_PROFILE_SYNC`
+    /// desligado e outra com ele ligado, e imprime para onde o tempo foi.
+    ///
+    /// ```text
+    /// RDMA_P2P_TEST_GGUF=<fatia final>.gguf RDMA_P2P_TEST_GPU_LAYERS=99 \
+    ///   cargo test -p node --release --features metal logits_access_versus -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn logits_access_versus_backend_completion() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
+            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            offload_kqv: true,
+            n_batch: 512,
+            n_gpu_layers: test_gpu_layers(),
+            n_threads: 0,
+            max_sessions: 1,
+            // O nó da LM head não exporta residual — é o ponto da Mudança 5.
+            need_embeddings: false,
+        };
+        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let tokens = engine.tokenize("Explique o que e RDMA em uma frase.", true, true);
+
+        for sync in [false, true, false, true] {
+            std::env::set_var("RDMA_P2P_PROFILE_SYNC", if sync { "1" } else { "0" });
+            engine.kv_remove(0, 0, -1);
+            let mut pos = 0u32;
+            engine
+                .decode_tokens(&tokens, pos, 0, false)
+                .expect("prefill decodes");
+            let _ = engine.logits_ith(tokens.len() as i32 - 1)[0];
+            pos += tokens.len() as u32;
+
+            let mut access_us = 0u64;
+            let mut completion_us = 0u64;
+            let mut enqueue_us = 0u64;
+            let reps = 16;
+            let wall_started = Instant::now();
+            for _ in 0..reps {
+                let t = engine.decode_tokens(&[1i32], pos, 0, false).unwrap();
+                let started = Instant::now();
+                let logits = engine.logits_ith(0);
+                let _touch = logits[0] + logits[logits.len() - 1];
+                access_us += started.elapsed().as_micros() as u64;
+                completion_us += t.backend_completion_us;
+                enqueue_us += t.enqueue_us;
+                pos += 1;
+            }
+            let wall = wall_started.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+            println!(
+                "PROFILE_SYNC={}: TOTAL {wall:.2} ms/token | enfileirar {:.2} ms | conclusão {:.2} ms | acesso aos logits {:.2} ms",
+                sync as u8,
+                enqueue_us as f64 / reps as f64 / 1000.0,
+                completion_us as f64 / reps as f64 / 1000.0,
+                access_us as f64 / reps as f64 / 1000.0,
+            );
+        }
+        std::env::remove_var("RDMA_P2P_PROFILE_SYNC");
     }
 
     #[test]

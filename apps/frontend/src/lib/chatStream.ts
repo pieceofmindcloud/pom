@@ -32,7 +32,7 @@ export interface PhaseTrace {
   node_setup_ms: number;
   node_decode_ms: number;
   node_backend_enqueue_ms: number;
-  /** Zero unless the peer runs with RDMA_P2P_PROFILE_SYNC=1. */
+  /** Zero only when the peer runs with RDMA_P2P_PROFILE_SYNC=0. */
   node_backend_completion_ms: number;
   node_residual_capture_d2h_sync_ms: number;
   node_residual_ms: number;

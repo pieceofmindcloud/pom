@@ -120,7 +120,7 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
         </tbody>
       </table>
     </div>
-    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; com <code>RDMA_P2P_PROFILE_SYNC=1</code> a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code>, que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura.</p>
+    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code> (salvo com <code>RDMA_P2P_PROFILE_SYNC=0</code>), que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura.</p>
   </details>;
 }
 

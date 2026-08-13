@@ -1040,6 +1040,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/health", get(handle_health))
         .route("/handshake", post(session::handle_handshake))
         .merge(crate::openai::routes())
+        .merge(crate::messages::routes())
         .merge(crate::webui::routes())
         .merge(crate::deploy::routes())
         .merge(crate::transfer::routes())
@@ -1062,7 +1063,8 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
     info!(
         "🌐 Interface e API em http://localhost:{port}  \
-         — UI /  ·  OpenAI /v1/chat/completions  ·  POST /api/generate  ·  GET /peers /health"
+         — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \
+         POST /api/generate  ·  GET /peers /health"
     );
     axum::serve(listener, app).await?;
     Ok(())

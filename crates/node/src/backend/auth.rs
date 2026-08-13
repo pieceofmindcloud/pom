@@ -86,18 +86,22 @@ where
             .await
             .map_err(|_| AuthRejection::MissingHeader)?;
 
-        let header = parts
+        // `Authorization: Bearer <key>` (OpenAI/`ANTHROPIC_AUTH_TOKEN` style) or
+        // `x-api-key: <key>` (Anthropic Messages API style, what `ANTHROPIC_API_KEY`
+        // sends) — a client picks whichever env var it has, and both name the
+        // same credential, so either header is accepted.
+        let token = parts
             .headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
+            .map(|h| h.strip_prefix("Bearer ").unwrap_or(h))
+            .or_else(|| parts.headers.get("x-api-key").and_then(|v| v.to_str().ok()))
             .ok_or(AuthRejection::MissingHeader)?;
-
-        let token = header.strip_prefix("Bearer ").unwrap_or(header);
 
         let cfg = config.read().await;
         // The connection key is this cluster's operator credential; it also
-        // opens the OpenAI routes, so the built-in test panel and any operator
-        // can call them without first minting an API key.
+        // opens the OpenAI/Anthropic routes, so the built-in test panel and
+        // any operator can call them without first minting an API key.
         let is_operator = !cfg.connection_key.is_empty() && token == cfg.connection_key;
         if is_operator {
             return Ok(ApiKeyAuth(crate::reqlog::Caller::operator()));

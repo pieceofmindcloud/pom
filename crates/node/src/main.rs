@@ -33,6 +33,8 @@ mod lastslice;
 mod llm;
 #[path = "models/memory.rs"]
 mod memory;
+#[path = "backend/messages.rs"]
+mod messages;
 #[path = "models/model.rs"]
 mod model;
 #[path = "network/network.rs"]

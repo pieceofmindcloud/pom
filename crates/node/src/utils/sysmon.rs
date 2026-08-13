@@ -34,7 +34,10 @@ mod win {
     /// Layout de `MEMORYSTATUSEX` (winbase.h). Os dois `u32` iniciais somam 8
     /// bytes, então os `u64` já caem alinhados: `repr(C)` reproduz o struct
     /// exatamente.
+    /// A maior parte dos campos não é lida por nós, mas todos precisam existir:
+    /// o kernel escreve o struct inteiro a partir de `dw_length`.
     #[repr(C)]
+    #[allow(dead_code)]
     pub struct MemoryStatusEx {
         pub dw_length: u32,
         pub dw_memory_load: u32,

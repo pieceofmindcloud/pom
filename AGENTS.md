@@ -364,7 +364,13 @@ Três defeitos reais, todos com o mesmo sintoma ("os peers não se veem"):
    peer em 30s. `Network::normalize` mapeia para `::ffff:a.b.c.d`; há teste em
    `src/network.rs` porque a regressão é silenciosa e só aparece numa das
    plataformas.
-3. **Broadcast v4 não sai de socket IPv6** — mesmo mapeamento resolve.
+3. **Broadcast v4 não sai de socket IPv6** - mesmo mapeamento resolve.
+4. **`IPV6_V6ONLY` só vale antes do `bind`.** O socket UDP do P2P e o listener
+   do servidor de inferência são montados com `socket2` justamente por isso.
+   No Linux e no macOS o padrão do sistema é 0 e o antigo `setsockopt` pós-bind
+   passava por acidente; no Windows o padrão é 1, e um nó ligado em `[::]` não
+   receberia anúncio nenhum de peer IPv4 - a LAN inteira. Cada um leva um teste
+   que fala IPv4 de verdade (`network.rs`, `infer_server.rs`).
 
 Ao diagnosticar: `RUST_LOG=info` já mostra `Contacting bootstrap node`,
 `🆕 New peer`, `Failed to send to` e `🧹 Removed N timed-out peers`. A ausência

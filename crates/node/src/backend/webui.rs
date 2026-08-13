@@ -1384,6 +1384,15 @@ async fn merge_parts(
             let id = progress_job.clone();
             tokio::spawn(async move { set_job_progress(&id, pct).await });
         })?;
+        // No Windows o rename não substitui um destino que já existe. A fusão
+        // só chega aqui quando o arquivo junto não estava lá, então um destino
+        // ocupado é outra fusão que terminou primeiro: o resultado é o mesmo
+        // arquivo, e ficar com o que já está pronto é o certo.
+        #[cfg(windows)]
+        if dst.exists() {
+            let _ = std::fs::remove_file(&temp);
+            return Ok(std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(n));
+        }
         std::fs::rename(&temp, &dst)
             .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
         Ok(n)

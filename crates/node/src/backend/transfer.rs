@@ -1209,6 +1209,15 @@ async fn run_download(
         ));
     }
 
+    // No Windows o rename não substitui: se o destino existe, ele falha com
+    // "acesso negado" em vez de trocar o arquivo. Chegar aqui com o destino
+    // ocupado significa que o arquivo foi rebaixado enquanto este download
+    // corria, e o que acabou de passar pelo MD5 é o bom.
+    #[cfg(windows)]
+    if dest.exists() {
+        let _ = tokio::fs::remove_file(dest).await;
+    }
+
     tokio::fs::rename(part, dest)
         .await
         .map_err(|e| e.to_string())?;

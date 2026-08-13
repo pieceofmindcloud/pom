@@ -166,6 +166,75 @@ mod tests {
         assert!(conectou, "um cliente IPv4 não conseguiu conectar em [::]");
         assert!(aceito.join().unwrap(), "a conexão IPv4 não foi aceita");
     }
+
+    /// Porta ocupada tem que falhar *antes* de o modelo ser carregado.
+    ///
+    /// O `run` ligava o socket depois do `LlmEngine::load`, então cada uma das
+    /// 10 tentativas do supervisor carregava um modelo inteiro na VRAM para
+    /// descobrir, no fim, que a porta estava tomada - minutos por tentativa, e
+    /// memória de GPU presa em cargas descartadas. O sintoma no log era
+    /// "encerrou com erro: Address already in use" logo depois de
+    /// "llama context ready".
+    ///
+    /// Aqui isso vira uma garantia estrutural: `serve_port` é o primeiro passo
+    /// do `run`, e devolve `Err` sem que nada caro tenha acontecido.
+    #[tokio::test]
+    async fn porta_ocupada_falha_de_imediato() {
+        let ocupante = match listener_dual_stack(0) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let port = ocupante.local_addr().unwrap().port();
+
+        // O caminho de um modelo que nao existe: se o `run` carregasse antes de
+        // ligar, o erro falaria do arquivo (ou o processo morreria dentro do
+        // llama.cpp). Falar de porta ocupada e a prova de que a ordem esta certa.
+        let mut cfg = crate::runtime::NodeConfig {
+            model_path: "/nao/existe/modelo.gguf".into(),
+            model_label: "qwen35".into(),
+            start_layer: 0,
+            end_layer: 15,
+            total_layers: 32,
+            peer_count: 2,
+            peer_index: 0,
+            primary: true,
+            inference_port: port,
+            n_gpu_layers: 99,
+            n_ctx: 8192,
+            offload_kqv: true,
+            max_sessions: 1,
+            prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            n_batch: 512,
+            max_new_tokens: 256,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.15,
+            repeat_last_n: 64,
+            no_thinking: true,
+            single_peer: false,
+            no_embeddings: false,
+            speculative_decoding_enabled: false,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
+        };
+        cfg.inference_port = port;
+        let (_tx, rx) = tokio::sync::watch::channel(0u64);
+
+        let comecou = std::time::Instant::now();
+        let erro = run(cfg, rx, 0).await.expect_err("porta ocupada devia falhar");
+
+        assert!(
+            erro.to_string().to_lowercase().contains("address")
+                || erro.to_string().contains("use"),
+            "o erro tinha que ser o da porta, e foi: {erro}"
+        );
+        assert!(
+            comecou.elapsed() < std::time::Duration::from_secs(1),
+            "falhou depois de carregar alguma coisa: levou {:?}",
+            comecou.elapsed()
+        );
+    }
 }
 
 /// `relay_and_bubble` against a real (in-process, on a loopback port) fake
@@ -498,6 +567,24 @@ pub async fn run(
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
     // callback de captura e pagava ~8 ms por token para capturar um residual
     // que ninguém lê. Ver `NodeConfig::needs_residual_export`.
+    // A porta primeiro, o modelo depois. Ligar o socket custa microssegundos e
+    // e a unica coisa aqui que falha por causa do mundo externo; carregar o
+    // modelo custa minutos e gigabytes de VRAM. Na ordem inversa, cada uma das
+    // 10 tentativas do supervisor carregava o modelo inteiro para descobrir no
+    // fim que a porta estava tomada - o log mostrava "llama context ready"
+    // seguido de "Address already in use", dez vezes, com a VRAM presa em
+    // cargas descartadas.
+    // A porta primeiro, o modelo depois. Ligar o socket custa microssegundos e
+    // e a unica coisa aqui que falha por causa do mundo externo; carregar o
+    // modelo custa minutos e gigabytes de VRAM. Na ordem inversa, cada uma das
+    // 10 tentativas do supervisor carregava o modelo inteiro para descobrir no
+    // fim que a porta estava tomada - o log mostrava "llama context ready"
+    // seguido de "Address already in use", dez vezes, com a VRAM presa em
+    // cargas descartadas.
+    let port = cfg.inference_port;
+    let listener = bind_dual_stack(port).await?;
+    info!("porta {port} ligada; carregando o modelo");
+
     let need_embeddings = cfg.needs_residual_export();
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
@@ -536,8 +623,6 @@ pub async fn run(
         .route("/health", get(handle_health))
         .with_state(state);
 
-    let port = cfg.inference_port;
-    let listener = bind_dual_stack(port).await?;
     info!("inference server pronto em [::]:{port}");
 
     axum::serve(listener, router)

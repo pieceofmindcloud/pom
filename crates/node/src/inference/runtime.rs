@@ -338,15 +338,16 @@ impl NodeRuntime {
         let port = cfg.inference_port;
 
         tokio::spawn(async move {
-            // Kill anything already holding our port (e.g. a stale process from
-            // a previous run of rdma-p2p).
-            free_port(port).await;
-
             let mut restarts = 0u32;
             loop {
                 if *gen_rx.borrow() != generation {
                     return; // superseded by a newer configuration
                 }
+                // A cada tentativa, não só antes do laço: quem segura a porta
+                // pode ter aparecido depois, ou não ter morrido na primeira
+                // investida. Limpar uma vez só fazia as outras nove tentativas
+                // baterem na mesma porta ocupada.
+                free_port(port).await;
                 if restarts > 0 {
                     warn!(
                         "reiniciando servidor de inferência (tentativa {}/{})",

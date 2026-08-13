@@ -2068,6 +2068,19 @@ pub struct LaunchTarget {
     /// before this the whole launch had to settle on one.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// Posição deste peer no pipeline, quando ela não é a posição dele nesta
+    /// requisição.
+    ///
+    /// `launch` deduz `peer_index`/`peer_count` da lista de alvos, o que só
+    /// vale quando a requisição descreve o pipeline inteiro. Quem soma uma
+    /// máquina de cada vez (`deploy::add_node_endpoint`) manda um alvo e
+    /// precisa dizer a posição real - sem isto o nó somado se declara o último
+    /// da divisão, sobe sem captura de residual e a inferência morre no
+    /// primeiro token com "no embeddings".
+    #[serde(default)]
+    pub peer_index: Option<u32>,
+    #[serde(default)]
+    pub peer_count: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2191,8 +2204,8 @@ pub(crate) async fn launch(
             start_layer: target.start_layer,
             end_layer: target.end_layer,
             total_layers: req.total_layers,
-            peer_count,
-            peer_index: index as u32,
+            peer_count: target.peer_count.unwrap_or(peer_count),
+            peer_index: target.peer_index.unwrap_or(index as u32),
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             skip_split: target.skip_split,
             merge: target.merge.clone(),
@@ -2557,6 +2570,8 @@ mod tests {
             skip_split: true,
             merge: None,
             n_gpu_layers: gpu,
+            peer_index: None,
+            peer_count: None,
         };
 
         let cpu_only = params_for(&base, &target(Some(0)));

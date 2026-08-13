@@ -80,6 +80,26 @@ pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u3
         .collect()
 }
 
+/// Posicao desta faixa na ordem das camadas, e quantas faixas ficam no total.
+///
+/// `peer_index`/`peer_count` nao sao a lista de alvos de uma implantacao: sao
+/// a posicao no pipeline, que e a ordem das camadas. Quem soma um no de cada
+/// vez precisa dizer isso explicitamente, senao o unico alvo da requisicao
+/// vira "peer 1 de 1" e todo no somado se declara o ultimo da divisao.
+///
+/// Uma faixa identica a uma existente e substituicao, nao um peer a mais.
+pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32) {
+    let mut faixas: Vec<(u32, u32)> = existentes
+        .iter()
+        .copied()
+        .filter(|f| *f != nova)
+        .collect();
+    faixas.push(nova);
+    faixas.sort();
+    let index = faixas.iter().position(|f| *f == nova).unwrap_or(0) as u32;
+    (index, faixas.len() as u32)
+}
+
 /// Camadas que ficam sem ninguem depois de tirar esta maquina.
 ///
 /// Vazio significa que outra maquina cobre a mesma faixa - a rede perde uma
@@ -1441,6 +1461,10 @@ async fn run(
                 skip_split: true,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
+                // A implantação completa descreve o pipeline inteiro, então a
+                // posição na lista de alvos é a posição real.
+                peer_index: None,
+                peer_count: None,
             });
             continue;
         }
@@ -1464,6 +1488,8 @@ async fn run(
             skip_split: true,
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
+            peer_index: None,
+            peer_count: None,
         });
     }
 
@@ -1586,9 +1612,10 @@ async fn add_node_endpoint(
 
     // `peer_index`/`peer_count` alimentam duas decisoes so: se este no exporta
     // o estado residual e se ele pula os embeddings. As duas perguntam "sou o
-    // ultimo?", e a resposta aqui vem da faixa, nao de uma posicao numa lista
-    // que este caminho nao monta.
-    let serve_o_fim = req.end_layer + 1 >= total_layers;
+    // ultimo?", e a resposta vem da ordem das camadas no cluster - nao da
+    // posicao numa lista de alvos que este caminho, por existir para tocar uma
+    // maquina so, nunca vai montar.
+    let (peer_index, peer_count) = split_position(&outras, (req.start_layer, req.end_layer));
     let target_node_id = req.target_node_id.clone();
     let response = crate::webui::launch(
         ConnectionAuth,
@@ -1607,6 +1634,10 @@ async fn add_node_endpoint(
                 skip_split: true,
                 merge: None,
                 n_gpu_layers: None,
+                // Um alvo por requisição, mas a posição é a do pipeline: sem
+                // isto o nó somado se diz o último da divisão.
+                peer_index: Some(peer_index),
+                peer_count: Some(peer_count),
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
             // a camada 0 recebe o prompt, e o `launch` so marca `primary` no
@@ -1629,7 +1660,8 @@ async fn add_node_endpoint(
     Json(json!({
         "applied": true,
         "overlapping_layers": sobrepostas,
-        "peer_index": if serve_o_fim { 1 } else { 0 },
+        "peer_index": peer_index,
+        "peer_count": peer_count,
     }))
     .into_response()
 }
@@ -1804,6 +1836,37 @@ async fn wait_for_transfers(
 
 #[cfg(test)]
 mod tests {
+    /// Um no somado no meio do pipeline NAO e o ultimo da divisao.
+    ///
+    /// `peer_index`/`peer_count` respondem a uma pergunta so - "sou o ultimo?" -
+    /// e dela saem duas decisoes do llama.cpp: exportar o estado residual e
+    /// pular os embeddings. O caminho incremental manda um alvo por vez, e
+    /// deixar o `launch` deduzir a posicao da lista faria todo no somado se
+    /// declarar o ultimo. O sintoma e o peer do meio responder
+    /// "get_embeddings_ith: invalid embeddings id 0, reason: no embeddings",
+    /// porque o motor subiu sem captura e a inferencia so descobre no primeiro
+    /// token.
+    #[test]
+    fn a_node_added_in_the_middle_is_not_the_tail_of_the_split() {
+        let (index, count) = super::split_position(&[(0, 11), (32, 39)], (12, 31));
+        assert_eq!(count, 3, "tres faixas depois de somar esta");
+        assert_eq!(index, 1, "12-31 fica no meio, entre 0-11 e 32-39");
+        assert!(index + 1 < count, "nao pode se dizer o ultimo da divisao");
+    }
+
+    #[test]
+    fn a_node_added_at_the_tail_is_the_tail_of_the_split() {
+        let (index, count) = super::split_position(&[(0, 11), (12, 31)], (32, 39));
+        assert_eq!((index, count), (2, 3));
+    }
+
+    /// Substituir quem ja serve aquela faixa nao inventa um peer a mais.
+    #[test]
+    fn replacing_the_same_range_keeps_the_count() {
+        let (index, count) = super::split_position(&[(0, 11), (12, 31)], (12, 31));
+        assert_eq!((index, count), (1, 2));
+    }
+
     /// Faixa sobreposta no cluster deixa de ser erro: e assim que se soma uma
     /// rota paralela. A invariante "uma camada, um no" continua valendo, mas
     /// dentro de um plano, e quem a garante e `plan_pipeline`, que varre camada

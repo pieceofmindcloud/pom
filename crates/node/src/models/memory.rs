@@ -70,8 +70,8 @@ pub fn load_layer_memory(
 // ── Ollama blob discovery ─────────────────────────────────────────────────────
 
 fn find_ollama_blob(model_name: &str) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    let base = PathBuf::from(home).join(".ollama").join("models");
+    // `catalog::home_dir` já sabe que no Windows quem responde é USERPROFILE.
+    let base = crate::catalog::home_dir()?.join(".ollama").join("models");
 
     let (name, tag) = model_name.split_once(':').unwrap_or((model_name, "latest"));
 

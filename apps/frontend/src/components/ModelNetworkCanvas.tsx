@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { machineKind, MachineIcon } from "./MachineIcon";
 import { Button, Dot } from "./ui";
 import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
+import { useI18n } from "../i18n/provider";
 import {
   clearPositions,
   deploymentLayoutKey,
@@ -14,6 +15,20 @@ import {
 } from "../lib/networkLayout";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
 import type { ClusterView, RoutingEdge } from "../lib/types";
+
+export type EdgeState = "principal" | "paralela" | "inativa";
+
+/** Três estados, porque com réplicas "escolhida ou não" deixou de bastar:
+ *  uma aresta pode não estar em uso e ainda assim ser um caminho pronto. */
+export function edgeStyle(state: EdgeState) {
+  if (state === "principal") {
+    return { className: "fill-none stroke-aqua", strokeWidth: "3", strokeDasharray: undefined, markerEnd: "url(#route-arrow)" };
+  }
+  if (state === "paralela") {
+    return { className: "fill-none stroke-iris", strokeWidth: "2", strokeDasharray: undefined, markerEnd: undefined };
+  }
+  return { className: "fill-none stroke-faint/70", strokeWidth: "2", strokeDasharray: "7 7", markerEnd: undefined };
+}
 
 const CARD_WIDTH = 264;
 const CARD_HEIGHT = 202;
@@ -76,6 +91,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
 }
 
 export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
+  const { t } = useI18n();
   const graph = useMemo(() => graphFromCluster(cluster), [cluster]);
   const [model, setModel] = useState<string | undefined>();
   const [zoom, setZoom] = useState(1);
@@ -95,6 +111,7 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
   const selectedEdges = selected ? cluster.routing_edges.filter((edge) => edge.model_id === selected) : [];
   const candidates = selected ? cluster.candidate_edges.filter((edge) => edge.model_id === selected) : [];
   const selectedEdgeIds = new Set(selectedEdges.map((edge) => `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`));
+  const candidateIds = new Set(candidates.map((edge) => `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`));
   const edges = [...candidates, ...selectedEdges.filter((edge) => !candidates.some((candidate) => candidate.from_node_id === edge.from_node_id && candidate.to_node_id === edge.to_node_id && candidate.from_end_layer === edge.from_end_layer && candidate.to_start_layer === edge.to_start_layer))];
 
   useEffect(() => { setPositions(readPositions(layoutKey)); }, [layoutKey]);
@@ -144,7 +161,7 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
     </div>
     {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">Nenhuma capacidade de inferência anunciada ainda.</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
-        <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-iris" /></marker></defs>
+        <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
         {edges.map((edge) => {
           const from = rangeForEdge(ranges, edge, "from"); const to = rangeForEdge(ranges, edge, "to");
           if (!from || !to) return null;
@@ -152,12 +169,16 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
           const a = positionOf(from, fromIndex); const b = positionOf(to, toIndex);
           const x1 = a.left + CARD_WIDTH; const y1 = a.top + CARD_HEIGHT / 2; const x2 = b.left; const y2 = b.top + CARD_HEIGHT / 2; const bend = Math.max(60, Math.abs(x2 - x1) * .42);
           const id = `${edge.from_node_id}:${edge.to_node_id}:${edge.from_end_layer}:${edge.to_start_layer}`;
-          const selectedRoute = selectedEdgeIds.has(id);
-          return <path key={id} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={clsx("fill-none", selectedRoute ? "stroke-iris" : "stroke-faint/70")} strokeWidth={selectedRoute ? "3" : "2"} strokeDasharray={selectedRoute ? undefined : "7 7"} markerEnd={selectedRoute ? "url(#route-arrow)" : undefined} />;
+          // Uma aresta que está num `candidate_edges` é caminho pronto, não
+          // tráfego hipotético: com réplicas, é por onde a rede serviria se a
+          // principal saísse.
+          const state: EdgeState = selectedEdgeIds.has(id) ? "principal" : candidateIds.has(id) ? "paralela" : "inativa";
+          const style = edgeStyle(state);
+          return <path key={id} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
       </svg>
       {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />)}
     </div>}
-    {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />Rota escolhida</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />Tráfego possível</span></div>}
+    {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-aqua" />{t("canvas.legendPrimary")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />{t("canvas.legendParallel")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />{t("canvas.legendInactive")}</span></div>}
   </section>;
 }

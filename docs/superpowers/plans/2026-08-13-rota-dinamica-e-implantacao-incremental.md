@@ -818,26 +818,46 @@ impl RouteTable {
 }
 ```
 
-Em `Network`, acrescente o campo `pub routes: Arc<crate::network::route::RouteTable>`, inicializado em `Network::new` com `Arc::new(RouteTable::new())`. No laço de gossip de `Network::start`, depois do `discovery_sweep`, acrescente:
+Em `Network`, acrescente o campo `pub routes: Arc<crate::network::route::RouteTable>`, inicializado em `Network::new` com `Arc::new(RouteTable::new())`.
+
+A medição vai numa task **própria**, nunca dentro do laço de gossip. Com 9 peers
+e até 4 candidatos cada, um timeout de 3 s por sonda bloquearia o tique de
+gossip por mais de um minuto - e é esse laço que anuncia o nó e expira peers
+mortos. O cluster se desmontaria justamente quando um peer ficasse lento, que é o
+oposto do que esta mudança existe para fazer. Em `Network::start`:
 
 ```rust
-                // Mede quem esta vencido. O `precisa_medir` e o que mantem isto
-                // barato: no regime normal, quase todo tique nao mede ninguem.
-                let http = reqwest::Client::new();
-                for peer in net_gossip.alive_peers().await {
-                    if !net_gossip.routes.precisa_medir(&peer.node_id) {
+        // Medicao de rotas, em task propria: uma sonda lenta nao pode segurar o
+        // anuncio nem a limpeza de peers mortos.
+        let net_routes = self.clone();
+        tokio::spawn(async move {
+            let http = reqwest::Client::new();
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if net_routes.is_detached() {
+                    continue;
+                }
+                for peer in net_routes.alive_peers().await {
+                    if !net_routes.routes.precisa_medir(&peer.node_id) {
                         continue;
                     }
                     let candidatos = peer.inference_candidates();
                     if candidatos.is_empty() {
                         continue;
                     }
-                    net_gossip
+                    net_routes
                         .routes
                         .measure_peer(&http, &peer.node_id, &candidatos)
                         .await;
                 }
+            }
+        });
 ```
+
+O tique de 30 s é só a checagem; quem decide se mede de verdade é
+`precisa_medir`, com o intervalo de 5 minutos da spec. No regime normal quase
+todo tique não mede ninguém.
 
 - [ ] **Step 4: Run test to verify it passes**
 

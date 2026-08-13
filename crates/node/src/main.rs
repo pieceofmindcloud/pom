@@ -43,6 +43,8 @@ mod ollama;
 mod openai;
 #[path = "routing/pipeline.rs"]
 mod pipeline;
+#[path = "network/addrs.rs"]
+pub mod addrs;
 #[path = "network/route.rs"]
 pub mod route;
 #[path = "network/pkarr_node.rs"]

@@ -535,6 +535,9 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.noThinkingHint": () => "The model responds directly without the preamble between tags.",
     "deploy.noEmbeddings": () => "Force no embeddings (all peers)",
     "deploy.noEmbeddingsHint": () => "Normally automatic - only the last peer does without it. Turning this on prevents the first peer from extracting hidden state, and the pipeline stops working.",
+    "deploy.speculative": () => "Speculative decoding",
+    "deploy.speculativeHint": () =>
+      "Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.",
     "deploy.machines": () => "Machines",
     "deploy.machineTitle": () => "What each machine has and what remains",
     "deploy.machineDetail": () => "Free memory is where a shard must fit: VRAM where there is a dedicated GPU, available RAM elsewhere. The last column sets how many layers this machine puts on the GPU. Blank uses the cluster default.",
@@ -595,6 +598,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.top_k": () => "top_k",
     "deploy.knob.repeat_penalty": () => "Repeat penalty",
     "deploy.knob.repeat_last_n": () => "Penalty window",
+    "deploy.knob.speculative_k": () => "Draft width (K)",
+    "deploy.knob.speculative_kHint": () =>
+      "The confirmed token plus up to K-1 guesses in one batch. Higher means more tokens per round trip and more wasted work when the guess is wrong.",
+    "deploy.knob.speculative_lookup_window": () => "Lookup window",
+    "deploy.knob.speculative_lookup_windowHint": () =>
+      "Longest n-gram searched for a prior repeat. Shorter n-grams are tried after it, so this is the ceiling, not the only length.",
   },
   "pt-BR": {
     "cluster.peerCount": ({ count }) =>
@@ -1114,6 +1123,9 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.noThinkingHint": () => "O modelo responde direto, sem o preâmbulo entre tags.",
     "deploy.noEmbeddings": () => "Forçar sem embeddings (todos os peers)",
     "deploy.noEmbeddingsHint": () => "Normalmente é automático - só o último peer dispensa. Ligar aqui impede o primeiro de extrair o estado oculto, e o pipeline para de funcionar.",
+    "deploy.speculative": () => "Decodificação especulativa",
+    "deploy.speculativeHint": () =>
+      "Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo.",
     "deploy.machines": () => "Máquinas",
     "deploy.machineTitle": () => "O que cada uma tem e quanto lhe sobra",
     "deploy.machineDetail": () => "A memória livre é o que a fatia precisa caber: VRAM onde há placa dedicada, RAM disponível no resto. A última coluna é quantas camadas esta máquina põe na GPU. Em branco, vale o padrão do cluster.",
@@ -1174,6 +1186,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.top_k": () => "top_k",
     "deploy.knob.repeat_penalty": () => "Penalidade de repetição",
     "deploy.knob.repeat_last_n": () => "Janela da penalidade",
+    "deploy.knob.speculative_k": () => "Largura do rascunho (K)",
+    "deploy.knob.speculative_kHint": () =>
+      "O token confirmado mais até K-1 palpites num lote só. Maior rende mais tokens por ida e volta e desperdiça mais trabalho quando o palpite erra.",
+    "deploy.knob.speculative_lookup_window": () => "Janela de busca",
+    "deploy.knob.speculative_lookup_windowHint": () =>
+      "Maior n-grama procurado numa repetição anterior. N-gramas menores são tentados depois dele, então isto é o teto, não o único tamanho.",
   },
 };
 

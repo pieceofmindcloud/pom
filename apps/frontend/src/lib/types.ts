@@ -98,6 +98,9 @@ export interface NodeConfig {
   no_thinking: boolean;
   single_peer: boolean;
   no_embeddings: boolean;
+  speculative_decoding_enabled: boolean;
+  speculative_k: number;
+  speculative_lookup_window: number;
 }
 
 export interface NodeInfo {
@@ -502,6 +505,13 @@ export interface RuntimeParams {
   repeat_last_n: number;
   no_thinking: boolean;
   no_embeddings: boolean;
+  /** Kill-switch do operador: mesmo com todos os peers capazes, a
+   *  especulação só liga aqui. */
+  speculative_decoding_enabled: boolean;
+  /** Largura do rascunho: o token confirmado mais até `k - 1` palpites. */
+  speculative_k: number;
+  /** Maior n-grama que o rascunho por prompt-lookup procura repetir. */
+  speculative_lookup_window: number;
 }
 
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */

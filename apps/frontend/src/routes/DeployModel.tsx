@@ -269,6 +269,18 @@ const KNOBS: Array<{
   { key: "repeat_last_n", min: 0 },
 ];
 
+/// Só aparecem com a especulação ligada: fora dali são dois números sem efeito
+/// nenhum, e a aba já tem onze campos.
+const SPECULATIVE_KNOBS: Array<{
+  key: keyof RuntimeParams;
+  min: number;
+  max?: number;
+  step?: number;
+}> = [
+  { key: "speculative_k", min: 1, max: 16 },
+  { key: "speculative_lookup_window", min: 1, max: 8 },
+];
+
 function Switch({
   checked,
   onChange,
@@ -1073,7 +1085,43 @@ export function DeployModel() {
                           label={t("deploy.noEmbeddings")}
                           hint={t("deploy.noEmbeddingsHint")}
                         />
+                        <Switch
+                          checked={eff.speculative_decoding_enabled ?? false}
+                          onChange={(v) =>
+                            setParams({ ...eff, speculative_decoding_enabled: v })
+                          }
+                          label={t("deploy.speculative")}
+                          hint={t("deploy.speculativeHint")}
+                        />
                       </div>
+
+                      {(eff.speculative_decoding_enabled ?? false) && (
+                        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 lg:grid-cols-3">
+                          {SPECULATIVE_KNOBS.map((k) => (
+                            <Field
+                              key={k.key}
+                              label={t("deploy.knob." + k.key)}
+                              hint={t("deploy.knob." + k.key + "Hint")}
+                            >
+                              <Input
+                                type="number"
+                                name={k.key}
+                                min={k.min}
+                                max={k.max}
+                                step={k.step}
+                                value={drafts[k.key] ?? String(eff[k.key] ?? "")}
+                                onChange={(e) => setKnob(k.key, e.target.value)}
+                                onBlur={() =>
+                                  setDrafts((d) => {
+                                    const { [k.key]: _drop, ...rest } = d;
+                                    return rest;
+                                  })
+                                }
+                              />
+                            </Field>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
                 </Panel>

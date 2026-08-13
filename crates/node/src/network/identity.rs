@@ -79,6 +79,11 @@ impl Identity {
                 path.display()
             );
         } else {
+            // No Windows não há equivalente disto sem mexer em ACL, e a ACL
+            // herdada de um diretório do perfil do usuário já não dá leitura a
+            // outras contas. Não fingimos apertar o que não apertamos: quem
+            // guardar a chave numa pasta compartilhada está exposto, e isso
+            // vale a mesma advertência que vale em Unix.
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;

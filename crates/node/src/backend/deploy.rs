@@ -66,6 +66,29 @@ pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/deploy/plan", post(plan_endpoint))
         .route("/api/ui/deploy", post(deploy_endpoint))
+        .route("/api/ui/deploy/node", post(add_node_endpoint))
+        .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
+}
+
+/// Camadas que a faixa nova compartilha com as que ja estao no ar.
+///
+/// Nao e recusa: e o que a tela mostra ao operador para ele saber que esta
+/// criando uma rota paralela em vez de preencher um buraco.
+pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u32> {
+    (nova.0..=nova.1)
+        .filter(|c| existentes.iter().any(|(i, f)| c >= i && c <= f))
+        .collect()
+}
+
+/// Camadas que ficam sem ninguem depois de tirar esta maquina.
+///
+/// Vazio significa que outra maquina cobre a mesma faixa - a rede perde uma
+/// rota paralela e segue servindo, e o aviso ao operador e ameno. Nao vazio
+/// significa buraco, e ai a confirmacao e explicita.
+pub fn uncovered_after_removal(restantes: &[(u32, u32)], removida: (u32, u32)) -> Vec<u32> {
+    (removida.0..=removida.1)
+        .filter(|c| !restantes.iter().any(|(i, f)| c >= i && c <= f))
+        .collect()
 }
 
 /// One line of the operator's own answer: this range, on that machine.
@@ -1480,6 +1503,193 @@ async fn run(
     Ok(())
 }
 
+// ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
+//
+// Os dois caminhos tocam **uma** maquina. `deploy_endpoint` reimplanta o
+// conjunto inteiro, e usar aquele caminho aqui pararia a inferencia de quem ja
+// esta servindo - exatamente o que somar uma maquina existe para evitar.
+
+#[derive(Debug, Deserialize)]
+pub struct AddNodeRequest {
+    pub group: String,
+    pub target_node_id: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    #[serde(default)]
+    pub params: RuntimeParams,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RemoveNodeRequest {
+    pub group: String,
+    pub target_node_id: String,
+}
+
+/// Faixas que este grupo tem no ar agora, uma por peer que o esta servindo.
+async fn live_ranges(state: &GatewayState, group: &str) -> Vec<(String, u32, u32)> {
+    state
+        .all_peers()
+        .await
+        .into_iter()
+        .filter(|p| p.model == group && p.total_layers > 0)
+        .map(|p| (p.node_id, p.start_layer, p.end_layer))
+        .collect()
+}
+
+async fn add_node_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<AddNodeRequest>,
+) -> Response {
+    if req.start_layer > req.end_layer {
+        return bad(json!({ "error": "faixa de camadas invertida" }));
+    }
+
+    // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
+    // maquina que saiu nesse meio tempo receberia uma fatia.
+    let machines = survey(&state, &req.group).await;
+    let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
+        return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
+    };
+    let Some(shard) = target.holds(req.start_layer, req.end_layer) else {
+        return bad(json!({
+            "error": format!(
+                "{} nao tem a fatia L{}-{}; mande-a para la antes",
+                target.label(), req.start_layer, req.end_layer
+            )
+        }));
+    };
+    let source_model_path = shard.path.clone();
+
+    let outras: Vec<(u32, u32)> = live_ranges(&state, &req.group)
+        .await
+        .into_iter()
+        .filter(|(id, _, _)| id != &req.target_node_id)
+        .map(|(_, i, f)| (i, f))
+        .collect();
+    let sobrepostas = overlapping_layers(&outras, (req.start_layer, req.end_layer));
+
+    let candidatos = candidates(&machines);
+    let Some(total_layers) = model_size(&candidatos).value() else {
+        return bad(json!({
+            "error": format!("as fatias de {} nao dizem o total de camadas", req.group)
+        }));
+    };
+    if req.end_layer >= total_layers {
+        return bad(json!({
+            "error": format!(
+                "a fatia L{}-{} passa do fim de um modelo de {total_layers} camadas",
+                req.start_layer, req.end_layer
+            )
+        }));
+    }
+
+    // `peer_index`/`peer_count` alimentam duas decisoes so: se este no exporta
+    // o estado residual e se ele pula os embeddings. As duas perguntam "sou o
+    // ultimo?", e a resposta aqui vem da faixa, nao de uma posicao numa lista
+    // que este caminho nao monta.
+    let serve_o_fim = req.end_layer + 1 >= total_layers;
+    let target_node_id = req.target_node_id.clone();
+    let response = crate::webui::launch(
+        ConnectionAuth,
+        State(state),
+        Json(LaunchRequest {
+            base_name: req.group.clone(),
+            model_label: Some(req.group.clone()),
+            total_layers,
+            // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
+            // esta lista tem exatamente a maquina que esta entrando.
+            targets: vec![LaunchTarget {
+                node_id: target_node_id.clone(),
+                source_model_path,
+                start_layer: req.start_layer,
+                end_layer: req.end_layer,
+                skip_split: true,
+                merge: None,
+                n_gpu_layers: None,
+            }],
+            // Quem e a entrada do pipeline nao muda por isto: so quem fica com
+            // a camada 0 recebe o prompt, e o `launch` so marca `primary` no
+            // alvo que ele recebe.
+            primary_node_id: if req.start_layer == 0 {
+                Some(target_node_id)
+            } else {
+                None
+            },
+            params: req.params,
+        }),
+    )
+    .await;
+
+    if !response.status().is_success() {
+        let reason = refusal(response).await;
+        return bad(json!({ "error": reason }));
+    }
+
+    Json(json!({
+        "applied": true,
+        "overlapping_layers": sobrepostas,
+        "peer_index": if serve_o_fim { 1 } else { 0 },
+    }))
+    .into_response()
+}
+
+async fn remove_node_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<RemoveNodeRequest>,
+) -> Response {
+    let vivas = live_ranges(&state, &req.group).await;
+    let Some((_, inicio, fim)) = vivas
+        .iter()
+        .find(|(id, _, _)| id == &req.target_node_id)
+        .cloned()
+    else {
+        return bad(json!({ "error": "essa maquina nao esta servindo este modelo" }));
+    };
+    let restantes: Vec<(u32, u32)> = vivas
+        .iter()
+        .filter(|(id, _, _)| id != &req.target_node_id)
+        .map(|(_, i, f)| (*i, *f))
+        .collect();
+    let descobertas = uncovered_after_removal(&restantes, (inicio, fim));
+
+    // Quem libera a memoria e o dono dela, como no botao "Liberar fatia": este
+    // no so encaminha o pedido.
+    let key = state.auth.read().await.connection_key.clone();
+    if req.target_node_id == state.network.node_id {
+        state.runtime.stop().await;
+    } else {
+        let Some(base) = gateway_of(&state, &req.target_node_id).await else {
+            return bad(json!({ "error": "peer sem porta de gateway anunciada" }));
+        };
+        match state
+            .http
+            .post(format!("{base}/api/ui/unload"))
+            .bearer_auth(&key)
+            .timeout(PEER_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => {
+                return bad(json!({ "error": format!("o peer recusou: HTTP {}", r.status()) }))
+            }
+            Err(e) => return bad(json!({ "error": format!("peer inacessivel: {e}") })),
+        }
+    }
+
+    Json(json!({
+        "removed": true,
+        "uncovered_layers": descobertas,
+    }))
+    .into_response()
+}
+
+fn bad(body: serde_json::Value) -> Response {
+    (axum::http::StatusCode::BAD_REQUEST, Json(body)).into_response()
+}
+
 /// The reason a refused launch gives, not just its status code.
 ///
 /// `launch` answers `{"error": "..."}` and the operator only ever saw
@@ -1594,6 +1804,54 @@ async fn wait_for_transfers(
 
 #[cfg(test)]
 mod tests {
+    /// Faixa sobreposta no cluster deixa de ser erro: e assim que se soma uma
+    /// rota paralela. A invariante "uma camada, um no" continua valendo, mas
+    /// dentro de um plano, e quem a garante e `plan_pipeline`, que varre camada
+    /// a camada escolhendo um peer por posicao.
+    #[test]
+    fn overlapping_ranges_are_reported_but_not_refused() {
+        let sobrepostas = super::overlapping_layers(&[(0, 19), (20, 39)], (0, 19));
+        assert_eq!(sobrepostas, (0..=19).collect::<Vec<u32>>());
+    }
+
+    #[test]
+    fn a_range_that_fills_a_gap_overlaps_nothing() {
+        assert!(super::overlapping_layers(&[(0, 19)], (20, 39)).is_empty());
+    }
+
+    #[test]
+    fn a_partial_overlap_reports_only_the_shared_layers() {
+        assert_eq!(
+            super::overlapping_layers(&[(0, 19)], (15, 25)),
+            vec![15, 16, 17, 18, 19]
+        );
+    }
+
+    /// Tirar uma replica nao descobre camada nenhuma: a rede so perde uma rota
+    /// paralela. Avisar de buraco aqui seria mentira.
+    #[test]
+    fn removing_a_replica_uncovers_nothing() {
+        assert!(super::uncovered_after_removal(&[(0, 19), (20, 39)], (0, 19)).is_empty());
+    }
+
+    /// Tirar a ultima daquela faixa descobre as camadas dela, e o pipeline para
+    /// de planejar ate alguem assumir.
+    #[test]
+    fn removing_the_last_holder_uncovers_its_layers() {
+        assert_eq!(
+            super::uncovered_after_removal(&[(20, 39)], (0, 19)),
+            (0..=19).collect::<Vec<u32>>(),
+        );
+    }
+
+    #[test]
+    fn a_partially_replicated_range_uncovers_only_the_rest() {
+        assert_eq!(
+            super::uncovered_after_removal(&[(0, 9), (20, 39)], (0, 19)),
+            (10..=19).collect::<Vec<u32>>()
+        );
+    }
+
     use super::*;
 
     const GIB: u64 = 1_073_741_824;

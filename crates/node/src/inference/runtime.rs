@@ -107,6 +107,27 @@ impl NodeConfig {
         self.end_layer.saturating_sub(self.start_layer) + 1
     }
 
+    /// Este nó precisa mesmo entregar o estado oculto ao sucessor?
+    ///
+    /// É a **única** condição que justifica instalar o
+    /// `ggml_backend_sched_eval_callback` de captura em `llm.rs`: o callback
+    /// muda como o scheduler do ggml agrupa os nós do grafo e custou 7,8-8,2 ms
+    /// por token na medição de 2026-08-12, contra 0,14-0,67 ms no hop que não o
+    /// instala — mesmo número de camadas, e o que não instala ainda carrega a
+    /// LM head. O custo segue a posição, não a máquina.
+    ///
+    /// Errar para menos não corrompe em silêncio: `LlmEngine::hidden_state`
+    /// recusa com "residual capture did not fire" em vez de devolver o
+    /// pós-norm.
+    pub fn needs_residual_export(&self) -> bool {
+        if self.single_peer || self.no_embeddings {
+            return false;
+        }
+        let serves_last_layer = self.end_layer + 1 >= self.total_layers;
+        let last_in_split = self.peer_index + 1 >= self.peer_count;
+        !serves_last_layer && !last_in_split
+    }
+
     fn validate(&self) -> Result<()> {
         if self.model_path.trim().is_empty() {
             bail!("model_path é obrigatório");
@@ -590,6 +611,47 @@ mod tests {
             speculative_k: 4,
             speculative_lookup_window: 3,
         }
+    }
+
+    /// O callback de captura do residual custa ~8 ms por token (medido em
+    /// 2026-08-12: 7,8 e 8,2 ms no hop que o instala, contra 0,14 e 0,67 no que
+    /// não instala). Quem serve a última camada amostra tokens e não tem para
+    /// quem exportar — instalar ali é pagar 11% do orçamento por nada. A
+    /// derivação tem que valer também para o nó subido por linha de comando,
+    /// que não passa por `ApplyRequest` e sempre mandava `no_embeddings: false`.
+    #[test]
+    fn a_slice_that_serves_the_last_layer_never_exports_the_residual() {
+        let mut c = cfg();
+        assert!(c.needs_residual_export(), "0-15 de 32 tem sucessor");
+
+        c.start_layer = 16;
+        c.end_layer = 31;
+        assert!(
+            !c.needs_residual_export(),
+            "16-31 de 32 amostra tokens, não exporta estado"
+        );
+    }
+
+    #[test]
+    fn single_peer_and_the_operator_kill_switch_still_win() {
+        let mut c = cfg();
+        c.single_peer = true;
+        assert!(!c.needs_residual_export());
+
+        let mut c = cfg();
+        c.no_embeddings = true;
+        assert!(!c.needs_residual_export());
+    }
+
+    /// O último da divisão pode não ser o último em camadas quando o plano vem
+    /// da interface com `peer_index`/`peer_count`; os dois caminhos valem.
+    #[test]
+    fn the_last_peer_of_the_split_also_skips_it() {
+        let mut c = cfg();
+        c.peer_index = 1;
+        c.peer_count = 2;
+        c.end_layer = 15;
+        assert!(!c.needs_residual_export());
     }
 
     #[test]

@@ -468,7 +468,11 @@ pub async fn run(
     mut stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
 ) -> Result<()> {
-    let need_embeddings = !cfg.single_peer && !cfg.no_embeddings;
+    // Derivado, não copiado do pedido: o caminho de linha de comando nunca
+    // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
+    // callback de captura e pagava ~8 ms por token para capturar um residual
+    // que ninguém lê. Ver `NodeConfig::needs_residual_export`.
+    let need_embeddings = cfg.needs_residual_export();
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
         offload_kqv: cfg.offload_kqv,
@@ -1344,25 +1348,38 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// probabilities — it's a plain array search — which is exactly why
 /// verification (`longest_match`, below) can never trust it: the draft is
 /// only ever a guess about what to *batch*, never a substitute for sampling.
+/// `m` is the **longest** n-gram tried, not the only one: the search walks
+/// `m, m-1, … 1` and stops at the first length that matches, so a window that
+/// finds nothing degrades into a shorter, weaker guess instead of into no
+/// guess at all. Longer wins because it is stronger evidence; how much of the
+/// continuation is trusted scales with the matched length (`m` tokens of
+/// context authorise at most `m + 1` guesses), because a one-token match
+/// pointing anywhere in the history is nearly a coin flip and every extra
+/// drafted token widens the batch on every hop of the ring.
 fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
-    let m = m.max(1);
     let extra = k.saturating_sub(1) as usize;
-    if extra == 0 || history.len() <= m {
+    if extra == 0 {
         return Vec::new();
     }
-    let needle = &history[history.len() - m..];
-    // Most recent first: `start` walks backward from the last position a
-    // *prior* (non-overlapping-with-needle) occurrence could begin.
-    for start in (0..history.len() - m).rev() {
-        if &history[start..start + m] != needle {
+    for len in (1..=m.max(1)).rev() {
+        if history.len() <= len {
             continue;
         }
-        let continuation_start = start + m;
-        if continuation_start >= history.len() {
-            return Vec::new();
+        let needle = &history[history.len() - len..];
+        let allowed = extra.min(len + 1);
+        // Most recent first: `start` walks backward from the last position a
+        // *prior* (non-overlapping-with-needle) occurrence could begin.
+        for start in (0..history.len() - len).rev() {
+            if &history[start..start + len] != needle {
+                continue;
+            }
+            let continuation_start = start + len;
+            if continuation_start >= history.len() {
+                continue;
+            }
+            let continuation_end = (continuation_start + allowed).min(history.len());
+            return history[continuation_start..continuation_end].to_vec();
         }
-        let continuation_end = (continuation_start + extra).min(history.len());
-        return history[continuation_start..continuation_end].to_vec();
     }
     Vec::new()
 }
@@ -1427,6 +1444,42 @@ mod speculative_tests {
         // 99, the later (more recent) one by 88. The more recent one must win.
         let history = [1, 2, 3, 99, 1, 2, 3, 88, 1, 2, 3];
         assert_eq!(find_draft(&history, 3, 2), vec![88]);
+    }
+
+    /// A janela é o **maior** n-grama tentado, não o único. Sem o recuo, um
+    /// texto onde só o último token se repete não rascunha nada e a
+    /// especulação fica ociosa justamente onde ela é barata (verificar K
+    /// tokens num MoE custa quase o mesmo que verificar 1).
+    #[test]
+    fn find_draft_falls_back_to_a_shorter_ngram_when_the_window_does_not_match() {
+        // Janela 3 = [7,8,9], que nunca ocorreu antes. O sufixo [9] ocorreu,
+        // seguido de 42.
+        let history = [1, 9, 42, 43, 7, 8, 9];
+        assert_eq!(find_draft(&history, 3, 4), vec![42, 43]);
+    }
+
+    /// O n-grama mais longo continua tendo precedência: ele é a evidência mais
+    /// forte, e um casamento curto que aponte para outro lugar não pode
+    /// atropelá-lo.
+    #[test]
+    fn find_draft_prefers_the_longest_ngram_available() {
+        //           0  1  2  3   4  5  6  7
+        let history = [5, 6, 7, 90, 9, 70, 5, 6, 7];
+        // Janela 3 ([5,6,7]) casa em 0..3, seguido de 90. O sufixo [7] casa
+        // mais tarde (índice 2) — mas o de 3 vence.
+        assert_eq!(find_draft(&history, 3, 2), vec![90]);
+    }
+
+    /// Um casamento de um token só é evidência fraca; ele rascunha menos que um
+    /// casamento longo. Rejeição não corrompe nada (a verificação é sempre
+    /// contra o token amostrado de verdade), mas cada token rascunhado a mais
+    /// alarga o batch de todo hop do anel.
+    #[test]
+    fn find_draft_trusts_a_short_match_for_fewer_tokens() {
+        let history = [4, 1, 2, 3, 9, 9, 9, 4];
+        // Sufixo [4] casa no índice 0; k=8 pediria 7 tokens, mas um casamento
+        // de comprimento 1 só autoriza 2.
+        assert_eq!(find_draft(&history, 1, 8), vec![1, 2]);
     }
 
     #[test]

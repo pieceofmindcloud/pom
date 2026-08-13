@@ -6,6 +6,7 @@
 use crate::network::PeerInfo;
 use crate::wire::FrameEncoding;
 use routing_contract::{ClusterSnapshot, PeerCapacity, RoutingRequest, ROUTING_API_VERSION};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicU32, Ordering},
@@ -63,7 +64,12 @@ impl Drop for LoadGuard {
 // ── Pipeline types ────────────────────────────────────────────────────────────
 
 /// A single peer step within the inference pipeline.
-#[derive(Debug, Clone)]
+///
+/// Serializable because it travels on the wire as `next_hops` when relay
+/// mode is active (`CAP_RELAY_CHAIN`): a relaying hop pops itself off the
+/// front of the list it received and forwards the rest, unchanged, to the
+/// next hop's URL — see `inference/relay.rs` and `inference/infer_server.rs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PipelineStep {
     pub node_id: String,
     /// Full HTTP base URL, e.g. "http://192.168.1.5:8181"
@@ -74,6 +80,17 @@ pub struct PipelineStep {
     /// the v1 f16 contract so rolling upgrades keep working.
     pub inference_frame_capabilities: Vec<String>,
 }
+
+/// Advertised when a node can continue a relay itself — see the `next_hops`
+/// field threaded through `inference/wire.rs` meta — instead of requiring
+/// the gateway to call every hop directly. All-or-nothing per plan: if any
+/// step lacks it, the whole request falls back to the hub relay unchanged.
+pub const CAP_RELAY_CHAIN: &str = "relay/v1-chain";
+
+/// Advertised when a node can draft and verify a batch of candidate tokens
+/// in one decode (prompt-lookup speculative decoding) instead of exactly
+/// one token per call. Same all-or-nothing-per-plan fallback rule.
+pub const CAP_SPECULATE_LOOKUP: &str = "speculate/v1-lookup";
 
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
@@ -89,15 +106,19 @@ pub struct PipelineEdge {
 
 impl PipelineStep {
     pub fn frame_encoding(&self) -> FrameEncoding {
-        if self
-            .inference_frame_capabilities
-            .iter()
-            .any(|cap| cap == "frame/v2-zstd-f16")
-        {
+        if self.supports("frame/v2-zstd-f16") {
             FrameEncoding::ZstdF16
         } else {
             FrameEncoding::F16
         }
+    }
+
+    /// Whether this step's advertised `inference_frame_capabilities` list
+    /// contains a given capability string.
+    pub fn supports(&self, capability: &str) -> bool {
+        self.inference_frame_capabilities
+            .iter()
+            .any(|cap| cap == capability)
     }
 }
 
@@ -149,6 +170,20 @@ impl PipelinePlan {
             .map(|s| s.node_id[..s.node_id.len().min(8)].to_string())
             .collect::<Vec<_>>()
             .join("→")
+    }
+
+    /// True only when every step in the plan advertises `CAP_RELAY_CHAIN` —
+    /// a plan with one old peer in the middle falls back to the hub relay
+    /// entirely rather than mixing relay and hub calls mid-chain.
+    pub fn supports_relay_chain(&self) -> bool {
+        !self.steps.is_empty() && self.steps.iter().all(|s| s.supports(CAP_RELAY_CHAIN))
+    }
+
+    /// Same all-or-nothing rule as `supports_relay_chain`, for speculative
+    /// decoding: every hop must be able to decode a >1-token batch and, on
+    /// the tail, verify it.
+    pub fn supports_speculation(&self) -> bool {
+        !self.steps.is_empty() && self.steps.iter().all(|s| s.supports(CAP_SPECULATE_LOOKUP))
     }
 }
 
@@ -300,6 +335,42 @@ mod ipv6_tests {
             inference_frame_capabilities: vec!["frame/v2-zstd-f16".into()],
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::ZstdF16);
+    }
+
+    fn step(caps: &[&str]) -> PipelineStep {
+        PipelineStep {
+            node_id: "n".into(),
+            inference_url: "http://127.0.0.1:8181".into(),
+            start_layer: 0,
+            end_layer: 1,
+            inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
+        }
+    }
+
+    fn plan_of(steps: Vec<PipelineStep>) -> PipelinePlan {
+        PipelinePlan {
+            steps,
+            edges: Vec::new(),
+            total_layers: 32,
+        }
+    }
+
+    #[test]
+    fn relay_chain_requires_every_step_to_advertise_it() {
+        assert!(plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[CAP_RELAY_CHAIN])])
+            .supports_relay_chain());
+        assert!(!plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[])]).supports_relay_chain());
+        assert!(!plan_of(vec![]).supports_relay_chain());
+    }
+
+    #[test]
+    fn speculation_requires_every_step_to_advertise_it() {
+        assert!(
+            plan_of(vec![step(&[CAP_SPECULATE_LOOKUP]), step(&[CAP_SPECULATE_LOOKUP])])
+                .supports_speculation()
+        );
+        assert!(!plan_of(vec![step(&[CAP_SPECULATE_LOOKUP]), step(&[])]).supports_speculation());
+        assert!(!plan_of(vec![]).supports_speculation());
     }
 
     #[test]

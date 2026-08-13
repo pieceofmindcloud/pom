@@ -110,6 +110,9 @@ mod tests {
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
+            speculative_decoding_enabled: false,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
         })
         .unwrap()
     }

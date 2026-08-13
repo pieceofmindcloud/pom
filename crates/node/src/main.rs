@@ -49,6 +49,8 @@ mod pkarr_node;
 mod plan;
 #[path = "inference/prefill.rs"]
 mod prefill;
+#[path = "inference/relay.rs"]
+mod relay;
 #[path = "backend/reqlog.rs"]
 mod reqlog;
 #[path = "utils/respawn.rs"]
@@ -698,6 +700,11 @@ async fn main() -> Result<()> {
             no_thinking: args.no_thinking,
             single_peer: args.single_peer,
             no_embeddings: false,
+            // No CLI flags for these yet — off by default, same as the web
+            // UI's kill-switch; turn it on from Configurar → ajustes avançados.
+            speculative_decoding_enabled: false,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");
@@ -986,7 +993,8 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         .route("/api/setup/key", get(webui::get_setup_key))
         .route("/api/setup/save", axum::routing::post(webui::save_setup))
         .merge(crate::webapp::routes())
-        .with_state(config);
+        .with_state(config)
+        .layer(tower_http::compression::CompressionLayer::new());
 
     let addr = SocketAddr::from(([0, 0, 0, 0], gateway_port));
     info!("Setup page available at http://localhost:{}", gateway_port);

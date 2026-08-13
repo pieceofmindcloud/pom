@@ -1,16 +1,19 @@
 //! HTTP inference server — the Rust replacement for `inference_server.py`.
 //!
-//! Exposes the same four endpoints the Python server did:
+//! Exposes:
 //!
 //!   POST /v1/prefill          — one chunk of the prompt
-//!   POST /v1/step             — one autoregressive token step
+//!   POST /v1/step             — one autoregressive token step (optionally
+//!                                speculative — see `step_blocking`)
 //!   POST /v1/session/release  — free a session's KV slot
+//!   POST /v1/session/rollback — discard an unconfirmed speculative batch
 //!   GET  /health              — readiness probe
 //!
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
 use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, SamplingConfig};
+use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
 use crate::wire::{self, WireDtype};
 use anyhow::{bail, Result};
@@ -27,7 +30,7 @@ use serde_json::{json, Value};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
-    time::{Duration, Instant},
+    time::Instant,
 };
 use tokio::net::TcpListener;
 use tracing::{info, warn};
@@ -137,6 +140,184 @@ mod tests {
             .await
             .unwrap()
             .is_empty());
+    }
+}
+
+/// `relay_and_bubble` against a real (in-process, on a loopback port) fake
+/// next hop — a real `reqwest` round trip, not an in-process `oneshot` call,
+/// since that's what a relaying hop actually does. No `LlmEngine` involved:
+/// this is exactly the "new glue code" the plan flagged as the concentrated
+/// risk (the wire meta assembled by hand here, `more_chunks`-style, is what
+/// a bug like the prefill overlay issue would hide in).
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use axum::{body::to_bytes, routing::post as axum_post};
+
+    fn step(node_id: &str, url: String) -> PipelineStep {
+        PipelineStep {
+            node_id: node_id.into(),
+            inference_url: url,
+            start_layer: 16,
+            end_layer: 31,
+            inference_frame_capabilities: vec!["relay/v1-chain".into()],
+        }
+    }
+
+    async fn spawn_fake_hop(handler: impl Fn() -> Response + Clone + Send + Sync + 'static) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let router = Router::new().route(
+            "/v1/step",
+            axum_post(move |_body: Bytes| {
+                let handler = handler.clone();
+                async move { handler() }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn prepends_the_called_hops_own_entry_onto_the_bubbled_response() {
+        let url = spawn_fake_hop(|| {
+            let meta = json!({
+                "done": true,
+                "token_id": 42,
+                "text": "!",
+                "processing_ms": 5,
+                "node_timings": {"decode_ms": 3},
+            });
+            let bytes = wire::encode(&meta, None, WireDtype::F16).unwrap();
+            (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response()
+        })
+        .await;
+
+        let hops = vec![step("tail", url)];
+        let residual = vec![0.0f32; 8];
+        let http = reqwest::Client::new();
+
+        let meta = relay_and_bubble(
+            &http,
+            &hops,
+            "/v1/step",
+            json!({"session_id": "sess-1"}),
+            (&residual, [1, 8]),
+            1,
+            json!(7),
+            json!({"decode_ms": 2}),
+        )
+        .await
+        .expect("relay should succeed");
+
+        assert_eq!(meta["done"], true);
+        assert_eq!(meta["token_id"], 42);
+        assert_eq!(meta["text"], "!");
+        // Ours, not the tail's — the tail reported processing_ms=5.
+        assert_eq!(meta["processing_ms"], 7);
+        assert_eq!(meta["node_timings"]["decode_ms"], 2);
+
+        let hop_timings = meta["hop_timings"].as_array().expect("hop_timings array");
+        assert_eq!(hop_timings.len(), 1);
+        assert_eq!(hop_timings[0]["processing_ms"], 5, "the tail's self-reported processing_ms");
+        assert_eq!(hop_timings[0]["node_timings"]["decode_ms"], 3);
+    }
+
+    #[tokio::test]
+    async fn a_downstream_relay_failure_is_propagated_unchanged() {
+        let url = spawn_fake_hop(|| {
+            let failure = crate::relay::RelayFailure {
+                failed_node_id: "deep-hop".into(),
+                kind: "timeout".into(),
+                message: "no response".into(),
+            };
+            (StatusCode::BAD_GATEWAY, Json(failure)).into_response()
+        })
+        .await;
+
+        let hops = vec![step("directly-called-hop", url)];
+        let residual = vec![0.0f32; 8];
+        let http = reqwest::Client::new();
+
+        let response = relay_and_bubble(
+            &http,
+            &hops,
+            "/v1/step",
+            json!({"session_id": "sess-1"}),
+            (&residual, [1, 8]),
+            1,
+            json!(7),
+            json!({}),
+        )
+        .await
+        .expect_err("the fake hop always fails");
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let failure: crate::relay::RelayFailure = serde_json::from_slice(&body).unwrap();
+        // Not "directly-called-hop": the failure must still name the peer
+        // that actually died, several hops further down the chain.
+        assert_eq!(failure.failed_node_id, "deep-hop");
+        assert_eq!(failure.kind, "timeout");
+    }
+
+    /// The verified bug this ring implementation exists to not repeat: a
+    /// bubbled ring response's `more_chunks`/`n_prompt_tokens` come from the
+    /// *tail* (always `false`/absent, since only the head owns the prompt)
+    /// unless the head overwrites them. Without `overlay_head_authoritative_fields`,
+    /// a multi-chunk prompt on a ring pipeline would silently stop after one
+    /// chunk — this proves the head's values win.
+    #[test]
+    fn the_heads_more_chunks_overwrites_the_tails_bubbled_false() {
+        let local_meta = json!({
+            "owns_tokens": true,
+            "more_chunks": true,
+            "n_prompt_tokens": 900,
+        });
+        // What actually bubbled back from a tail that isn't the head.
+        let mut bubbled = json!({"done": false, "more_chunks": false, "hop_timings": []});
+
+        overlay_head_authoritative_fields(&local_meta, &mut bubbled);
+
+        assert_eq!(bubbled["more_chunks"], true);
+        assert_eq!(bubbled["n_prompt_tokens"], 900);
+    }
+
+    /// A middle hop (never the head) must leave the bubbled response alone —
+    /// its own `more_chunks`/`n_prompt_tokens` are meaningless placeholders,
+    /// not a second, competing source of truth.
+    #[test]
+    fn a_non_head_hop_never_overlays_its_own_placeholder_fields() {
+        let local_meta = json!({"owns_tokens": false, "more_chunks": false, "n_prompt_tokens": 0});
+        let mut bubbled = json!({"done": true, "token_id": 7, "more_chunks": false});
+        let before = bubbled.clone();
+
+        overlay_head_authoritative_fields(&local_meta, &mut bubbled);
+
+        assert_eq!(bubbled, before);
+    }
+
+    #[test]
+    fn is_final_chunk_for_forward_uses_the_heads_own_determination() {
+        let head = json!({"owns_tokens": true, "more_chunks": true});
+        assert!(!is_final_chunk_for_forward(&head, false));
+
+        let head_last_chunk = json!({"owns_tokens": true, "more_chunks": false});
+        assert!(is_final_chunk_for_forward(&head_last_chunk, false));
+    }
+
+    #[test]
+    fn is_final_chunk_for_forward_passes_through_for_a_non_head_hop() {
+        let middle = json!({"owns_tokens": false, "more_chunks": false});
+        assert!(is_final_chunk_for_forward(&middle, true));
+        assert!(!is_final_chunk_for_forward(&middle, false));
     }
 }
 
@@ -321,6 +502,7 @@ pub async fn run(
             post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
         )
         .route("/v1/session/release", post(handle_release))
+        .route("/v1/session/rollback", post(handle_rollback))
         .route("/health", get(handle_health))
         .with_state(state);
 
@@ -376,6 +558,15 @@ async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
+/// One shared outbound client, used only when relaying to this node's own
+/// next hop (`PipelineStep::supports(CAP_RELAY_CHAIN)`) — this server has no
+/// other reason to make outbound HTTP calls. Same lazy-static pattern as
+/// `webui::catalog_cache`.
+fn http_client() -> &'static reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT.get_or_init(reqwest::Client::new)
+}
+
 fn err400(msg: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
 }
@@ -402,7 +593,9 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
-        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16"],
+        // Keep in sync with network.rs's `self_announce`, gateway.rs's local
+        // peer entry, and the capability constants in routing/pipeline.rs.
+        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16", "relay/v1-chain", "speculate/v1-lookup"],
     }))
 }
 
@@ -430,6 +623,47 @@ async fn handle_release(
     }))
 }
 
+// ── /v1/session/rollback ─────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RollbackRequest {
+    session_id: String,
+    /// How many of the batch's positions are confirmed valid — see
+    /// `rollback_from`'s doc comment.
+    accept_count: u32,
+    /// How many positions the speculative decode actually wrote.
+    batch_width: u32,
+}
+
+/// Discard the KV cache entries for whatever part of a speculative batch
+/// didn't get confirmed. Fanned out by the gateway to *every* hop in the
+/// plan after each speculative round (`gateway::rollback_sessions`, mirroring
+/// `release_sessions`'s existing shape) — every hop decoded the full batch
+/// into its own cache, so every hop needs this, not just the tail. Same
+/// best-effort ethos as `/v1/session/release`: an unknown or already-reaped
+/// `session_id` is not an error, just a no-op.
+async fn handle_rollback(
+    State(state): State<SharedState>,
+    Json(req): Json<RollbackRequest>,
+) -> impl IntoResponse {
+    let mut s = state.lock().unwrap();
+    let Some((seq_id, n_past_after_batch)) = s
+        .sessions
+        .get(&req.session_id)
+        .map(|session| (session.seq_id, session.n_past))
+    else {
+        return Json(json!({"rolled_back": false}));
+    };
+    let new_n_past = rollback_from(n_past_after_batch, req.batch_width, req.accept_count);
+    if new_n_past < n_past_after_batch {
+        s.engine.kv_remove(seq_id, new_n_past as i32, -1);
+    }
+    if let Some(session) = s.sessions.get_mut(&req.session_id) {
+        session.n_past = new_n_past;
+    }
+    Json(json!({"rolled_back": true, "n_past": new_n_past}))
+}
+
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
 async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
@@ -455,10 +689,19 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         .get("chunk_size")
         .and_then(|v| v.as_u64())
         .unwrap_or(512) as u32;
-    let is_last = meta
-        .get("is_last")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // Same next_hops-derives-is_last rule as handle_step — see its comment.
+    let next_hops: Option<Vec<PipelineStep>> = meta
+        .get("next_hops")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let is_last = next_hops
+        .as_ref()
+        .map(|hops| hops.is_empty())
+        .unwrap_or_else(|| meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false));
+    // What *this* request says about chunking — correct as received for a
+    // middle/tail hop (which just passes it through); wrong for the head,
+    // which always gets `false` here (the sender can't know in advance) and
+    // must override it with its own determination before relaying onward —
+    // see the relay branch below and `owns_tokens` in `prefill_blocking`.
     let is_final_chunk = meta
         .get("is_final_chunk")
         .and_then(|v| v.as_bool())
@@ -482,6 +725,10 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         None => None,
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
+    // Neither of `prefill_blocking`'s non-final replies echoes `session_id`
+    // back — a relay branch that forwards to the next hop needs its own
+    // copy, taken before `sid_key` moves into the blocking closure below.
+    let sid_for_forward = sid_key.clone();
 
     let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
@@ -500,20 +747,8 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
     })
     .await;
 
-    match result {
-        Ok(Ok(mut reply)) => {
-            reply.timings.frame_decode_us = frame_decode_us;
-            reply.timings.input_prepare_us = input_prepare_us;
-            match add_processing_time(reply, processing_started.elapsed()) {
-                Ok(bytes) => (
-                    StatusCode::OK,
-                    [("content-type", "application/octet-stream")],
-                    bytes,
-                )
-                    .into_response(),
-                Err(e) => err500(e),
-            }
-        }
+    let mut reply = match result {
+        Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida")
                 || e.to_string().contains("fora de ordem")
@@ -522,9 +757,112 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            (code, e.to_string()).into_response()
+            return (code, e.to_string()).into_response();
         }
+        Err(e) => return err500(e),
+    };
+    reply.timings.frame_decode_us = frame_decode_us;
+    reply.timings.input_prepare_us = input_prepare_us;
+
+    // Same reasoning as handle_step: decode once so the relay branch below
+    // can inspect what came back, patch in this hop's own processing_ms/
+    // node_timings either way, and only then decide whether to relay or
+    // just re-encode and return.
+    let elapsed = processing_started.elapsed();
+    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
+        Ok(v) => v,
+        Err(e) => return err500(e),
+    };
+    local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    local_meta["node_timings"] = reply.timings.json();
+
+    let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
+    if !should_relay {
+        return match wire::encode(
+            &local_meta,
+            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
+            WireDtype::F16,
+        ) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        };
+    }
+
+    // Relay branch: this hop is not the tail, and the sender wants the rest
+    // of the chain reached directly instead of relaying back through it.
+    let hops = next_hops.expect("should_relay implies next_hops is Some");
+    let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
+    let is_final_chunk_for_forward = is_final_chunk_for_forward(&local_meta, is_final_chunk);
+
+    let mut bubbled = match relay_and_bubble(
+        http_client(),
+        &hops,
+        "/v1/prefill",
+        json!({
+            "session_id": sid_for_forward,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "is_final_chunk": is_final_chunk_for_forward,
+        }),
+        (&residual, shape),
+        crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+        local_meta["processing_ms"].clone(),
+        local_meta["node_timings"].clone(),
+    )
+    .await
+    {
+        Ok(bubbled) => bubbled,
+        Err(resp) => return resp,
+    };
+
+    overlay_head_authoritative_fields(&local_meta, &mut bubbled);
+
+    match wire::encode(&bubbled, None, WireDtype::F16) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
         Err(e) => err500(e),
+    }
+}
+
+fn owns_tokens(local_meta: &Value) -> bool {
+    local_meta
+        .get("owns_tokens")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
+
+/// Only the head (`owns_tokens`) can know whether this chunk was the last
+/// one — everyone else just passes through whatever `is_final_chunk` it was
+/// told, since it has no `prompt_tokens` of its own to check that against.
+fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool) -> bool {
+    if owns_tokens(local_meta) {
+        !local_meta
+            .get("more_chunks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    } else {
+        received_is_final_chunk
+    }
+}
+
+/// The verified fix: only the head's own `more_chunks`/`n_prompt_tokens` are
+/// authoritative. A bubbled ring response's `more_chunks`/`n_prompt_tokens`
+/// came from the *tail* (always `false`/absent there, since it never owns
+/// the prompt) unless overwritten — leaving it as-is would silently
+/// truncate every multi-chunk prompt on a ring pipeline after one chunk.
+fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
+    if owns_tokens(local_meta) {
+        bubbled["more_chunks"] = local_meta["more_chunks"].clone();
+        bubbled["n_prompt_tokens"] = local_meta["n_prompt_tokens"].clone();
     }
 }
 
@@ -716,7 +1054,19 @@ fn prefill_blocking(
     let n_embd = s.engine.n_embd;
     let encode_started = Instant::now();
     let bytes = wire::encode(
-        &json!({"done": false, "more_chunks": more, "n_prompt_tokens": n_prompt_tokens}),
+        &json!({
+            "done": false,
+            "more_chunks": more,
+            "n_prompt_tokens": n_prompt_tokens,
+            // Only meaningful when true: whether *this* peer is the one that
+            // tokenized the prompt, i.e. whether `more_chunks`/`n_prompt_tokens`
+            // above are its own authoritative determination rather than the
+            // `false`/`0` placeholder every other peer replies with. Ring
+            // mode's relay-and-bubble uses this to know which hop's reply is
+            // allowed to overwrite what the tail bubbles back — see
+            // `handle_prefill`.
+            "owns_tokens": owns_tokens,
+        }),
         Some((&residual, [n_tokens, n_embd])),
         wire_dtype,
     )?;
@@ -741,16 +1091,37 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         .filter(|s| !s.is_empty())
         .unwrap_or("__legacy__")
         .to_string();
-    let is_last = meta
-        .get("is_last")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false);
+    // Present and non-empty only when the sender negotiated relay mode
+    // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
+    // next hop through the tail. An empty list still parses as `Some(vec![])`
+    // and behaves exactly like `None`: this hop is the tail either way.
+    let next_hops: Option<Vec<PipelineStep>> = meta
+        .get("next_hops")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let is_last = next_hops
+        .as_ref()
+        .map(|hops| hops.is_empty())
+        .unwrap_or_else(|| meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false));
     let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let token_id = meta
         .get("token_id")
         .and_then(|v| v.as_i64())
         .map(|v| v as i32);
+    // Present only on the request to the head — see `step_blocking`'s
+    // `speculate` param doc.
+    let speculate: Option<(u32, u32)> = meta.get("speculate").and_then(|v| {
+        Some((
+            v.get("k")?.as_u64()? as u32,
+            v.get("m")?.as_u64()? as u32,
+        ))
+    });
+    // Present on every non-head request in a speculative round — see
+    // `step_blocking`'s `incoming_draft` param doc for why `None` and
+    // `Some(vec![])` mean different things here.
+    let incoming_draft: Option<Vec<i32>> = meta
+        .get("draft")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     let input_prepare_started = Instant::now();
     let tensor = match tensor {
@@ -763,54 +1134,338 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         None => None,
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
+    // Neither of `step_blocking`'s replies echoes `session_id` back — a
+    // relay branch that forwards to the next hop needs its own copy, taken
+    // before `sid_key` moves into the blocking closure below.
+    let sid_for_forward = sid_key.clone();
 
     let queued_at = Instant::now();
     let result = tokio::task::spawn_blocking(move || {
         step_blocking(
-            state, sid_key, is_last, wire_dtype, token_id, tensor, queued_at,
+            state,
+            sid_key,
+            is_last,
+            wire_dtype,
+            token_id,
+            tensor,
+            speculate,
+            incoming_draft,
+            queued_at,
         )
     })
     .await;
 
-    match result {
-        Ok(Ok(mut reply)) => {
-            reply.timings.frame_decode_us = frame_decode_us;
-            reply.timings.input_prepare_us = input_prepare_us;
-            match add_processing_time(reply, processing_started.elapsed()) {
-                Ok(bytes) => (
-                    StatusCode::OK,
-                    [("content-type", "application/octet-stream")],
-                    bytes,
-                )
-                    .into_response(),
-                Err(e) => err500(e),
-            }
-        }
+    let mut reply = match result {
+        Ok(Ok(reply)) => reply,
         Ok(Err(e)) => {
             let code = if e.to_string().contains("desconhecida") {
                 StatusCode::BAD_REQUEST
             } else {
                 StatusCode::INTERNAL_SERVER_ERROR
             };
-            (code, e.to_string()).into_response()
+            return (code, e.to_string()).into_response();
         }
+        Err(e) => return err500(e),
+    };
+    reply.timings.frame_decode_us = frame_decode_us;
+    reply.timings.input_prepare_us = input_prepare_us;
+
+    // Decode what step_blocking already encoded so we can tell a residual
+    // (needs relaying, if `next_hops` says so) from a final answer (the
+    // tail's `{token_id, text, done}`, with no tensor) — and, either way, to
+    // patch in this hop's own `processing_ms`/`node_timings` before it goes
+    // any further. `handle_prefill` does the identical patch for the same
+    // reason.
+    let elapsed = processing_started.elapsed();
+    let (mut local_meta, local_tensor) = match wire::decode(&reply.bytes) {
+        Ok(v) => v,
+        Err(e) => return err500(e),
+    };
+    local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
+    local_meta["node_timings"] = reply.timings.json();
+
+    let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
+    if !should_relay {
+        return match wire::encode(
+            &local_meta,
+            local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
+            WireDtype::F16,
+        ) {
+            Ok(bytes) => (
+                StatusCode::OK,
+                [("content-type", "application/octet-stream")],
+                bytes,
+            )
+                .into_response(),
+            Err(e) => err500(e),
+        };
+    }
+
+    // Relay branch: this hop is not the tail, and the sender wants the rest
+    // of the chain reached directly instead of relaying back through it.
+    let hops = next_hops.expect("should_relay implies next_hops is Some");
+    let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
+    let mut forward_meta = json!({"session_id": sid_for_forward});
+    // Keep threading the draft toward the tail — absent entirely (not just
+    // an empty array) when this round isn't speculative, same distinction
+    // `incoming_draft` relies on above.
+    if let Some(draft) = local_meta.get("draft") {
+        forward_meta["draft"] = draft.clone();
+    }
+
+    let bubbled = match relay_and_bubble(
+        http_client(),
+        &hops,
+        "/v1/step",
+        forward_meta,
+        (&residual, shape),
+        1, // a decode step has never retried — see relay_and_bubble's doc comment
+        local_meta["processing_ms"].clone(),
+        local_meta["node_timings"].clone(),
+    )
+    .await
+    {
+        Ok(bubbled) => bubbled,
+        Err(resp) => return resp,
+    };
+    match wire::encode(&bubbled, None, WireDtype::F16) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
         Err(e) => err500(e),
     }
 }
 
-/// Adds node-side compute time to every binary inference reply. The gateway
-/// measures the complete HTTP round-trip, so it can expose the remainder as
-/// transport latency without guessing from a separate ping.
-fn add_processing_time(reply: TimedReply, elapsed: Duration) -> Result<Vec<u8>> {
-    let (mut meta, tensor) = wire::decode(&reply.bytes)?;
-    meta["processing_ms"] = json!(elapsed.as_millis() as u64);
-    meta["node_timings"] = reply.timings.json();
-    match tensor {
-        Some((values, shape)) => wire::encode(&meta, Some((&values, shape)), WireDtype::F16),
-        None => wire::encode(&meta, None, WireDtype::F16),
+/// Relay a residual to `hops[0]` and bubble its reply back: the eventual
+/// tail's real answer, plus this hop's own already-known contribution
+/// (`local_processing_ms`/`local_node_timings`, computed by the caller from
+/// its own `NodeTimings`) prepended onto whatever `hop_timings` bubbled up
+/// from further down the chain. Returns the merged `meta` — *not* yet
+/// re-encoded — so a caller with phase-specific fields to overlay (prefill's
+/// `more_chunks`/`n_prompt_tokens`, see `handle_prefill`) can add them
+/// before the final `wire::encode`.
+///
+/// `base_meta` carries whatever the phase needs beyond what every relay call
+/// needs (`is_last`/`scale`/`next_hops`, added here): just `session_id` for
+/// `/v1/step`, plus `chunk_index`/`chunk_size`/`is_final_chunk` for
+/// `/v1/prefill`. `attempts` follows the same rule `send_chunk`/`step_ring`
+/// already do at the gateway: `CHUNK_ATTEMPTS` for a prefill chunk (retry-safe,
+/// KV-rollback protected), `1` for a decode step (not).
+///
+/// Split out from `handle_step`/`handle_prefill` (both call this with the
+/// same `hops`/tensor shape, differing only in `path` and `base_meta`) so
+/// it's directly testable against a fake next-hop server — see the
+/// `relay_tests` module — without needing a loaded `LlmEngine`.
+async fn relay_and_bubble(
+    http: &reqwest::Client,
+    hops: &[PipelineStep],
+    path: &str,
+    mut base_meta: Value,
+    tensor: (&[f32], [usize; 2]),
+    attempts: u32,
+    local_processing_ms: Value,
+    local_node_timings: Value,
+) -> std::result::Result<Value, Response> {
+    let next = &hops[0];
+    let remaining = &hops[1..];
+    base_meta["is_last"] = json!(remaining.is_empty());
+    base_meta["scale"] = json!(1.0);
+    base_meta["next_hops"] = json!(remaining);
+
+    let mut last_issue_kind = None;
+    let sent = crate::relay::send_frame(
+        http,
+        &next.inference_url,
+        path,
+        &base_meta,
+        Some(tensor),
+        WireDtype::F16,
+        next.frame_encoding(),
+        attempts,
+        &next.node_id,
+        |issue| last_issue_kind = Some(issue.kind),
+    )
+    .await;
+
+    match sent {
+        Ok(sent) => {
+            if sent.tensor.is_some() {
+                // A fully-bubbled reply is always the tail's final answer,
+                // which never carries a tensor — only a *forward* (not yet
+                // relayed) residual does. Getting here means some hop in the
+                // chain didn't relay when it should have; surviving loud
+                // rather than silently dropping the tensor.
+                warn!(
+                    "resposta de {} veio com tensor num retransmissão já borbulhada — descartando",
+                    next.node_id
+                );
+            }
+            let hop_timings = crate::relay::bubble_hop_timings(&sent);
+            let mut bubbled = sent.meta.clone();
+            bubbled["hop_timings"] = json!(hop_timings);
+            // Ours, not the next hop's: our caller needs these to build our
+            // own entry, the same way we just built the next hop's.
+            bubbled["processing_ms"] = local_processing_ms;
+            bubbled["node_timings"] = local_node_timings;
+            Ok(bubbled)
+        }
+        Err(e) => {
+            let failure = crate::relay::extract_relay_failure(&e).unwrap_or_else(|| {
+                crate::relay::RelayFailure {
+                    failed_node_id: next.node_id.clone(),
+                    kind: issue_kind_label(last_issue_kind).to_string(),
+                    message: e.to_string(),
+                }
+            });
+            Err((StatusCode::BAD_GATEWAY, Json(failure)).into_response())
+        }
     }
 }
 
+fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
+    match kind {
+        Some(crate::relay::SendIssueKind::Timeout) => "timeout",
+        Some(crate::relay::SendIssueKind::Transport) => "transport",
+        Some(crate::relay::SendIssueKind::Http) => "http",
+        Some(crate::relay::SendIssueKind::Protocol) => "protocol",
+        None => "unknown",
+    }
+}
+
+/// Search `history` for the most recent prior occurrence of its own trailing
+/// `m` tokens, and propose whatever followed there as a draft continuation
+/// of up to `k - 1` tokens. An empty result (no history, no match, or the
+/// match runs off the end of `history` with nothing after it) means "draft
+/// nothing" — the caller then decodes exactly `[confirmed_token]`, identical
+/// to today's non-speculative behavior. This never looks at model weights or
+/// probabilities — it's a plain array search — which is exactly why
+/// verification (`longest_match`, below) can never trust it: the draft is
+/// only ever a guess about what to *batch*, never a substitute for sampling.
+fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
+    let m = m.max(1);
+    let extra = k.saturating_sub(1) as usize;
+    if extra == 0 || history.len() <= m {
+        return Vec::new();
+    }
+    let needle = &history[history.len() - m..];
+    // Most recent first: `start` walks backward from the last position a
+    // *prior* (non-overlapping-with-needle) occurrence could begin.
+    for start in (0..history.len() - m).rev() {
+        if &history[start..start + m] != needle {
+            continue;
+        }
+        let continuation_start = start + m;
+        if continuation_start >= history.len() {
+            return Vec::new();
+        }
+        let continuation_end = (continuation_start + extra).min(history.len());
+        return history[continuation_start..continuation_end].to_vec();
+    }
+    Vec::new()
+}
+
+/// How many leading positions `sampled` and `drafted` agree on. `sampled`
+/// holds one real, freshly-sampled token per decoded position (always
+/// computed, whether or not it ends up "accepted"); `drafted` holds what was
+/// guessed for positions `1..`, one shorter than `sampled` since position 0
+/// is the already-confirmed seed token with nothing in `drafted` to compare
+/// it against. The accepted output is always `sampled[..=result]` — the
+/// matched prefix plus one more real sample, which is the genuine next token
+/// whether it means "the draft's next unverified guess" (full match) or
+/// "the correction at the first place the draft was wrong" (partial match).
+fn longest_match(sampled: &[i32], drafted: &[i32]) -> usize {
+    sampled
+        .iter()
+        .zip(drafted)
+        .take_while(|(a, b)| a == b)
+        .count()
+}
+
+/// New `n_past` after discarding the speculative positions that weren't
+/// confirmed. `batch_width` positions were decoded into the KV cache;
+/// `accept_count` of them (the confirmed seed token plus every draft token
+/// that matched — see `longest_match`) are valid and kept, the rest must be
+/// rolled back with `LlmEngine::kv_remove`. Saturating throughout: a caller
+/// passing a degenerate `accept_count > batch_width` gets "roll back
+/// nothing" rather than a panic or a wrapped position.
+fn rollback_from(n_past_after_batch: u32, batch_width: u32, accept_count: u32) -> u32 {
+    n_past_after_batch.saturating_sub(batch_width.saturating_sub(accept_count))
+}
+
+#[cfg(test)]
+mod speculative_tests {
+    use super::*;
+
+    #[test]
+    fn find_draft_returns_nothing_without_a_match() {
+        assert_eq!(find_draft(&[1, 2, 3, 4, 5], 3, 4), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn find_draft_proposes_what_followed_the_match() {
+        // Trailing 3 tokens [1,2,3] last occurred at index 1..4; [7,1]
+        // followed it there.
+        assert_eq!(find_draft(&[9, 1, 2, 3, 7, 1, 2, 3], 3, 3), vec![7, 1]);
+    }
+
+    #[test]
+    fn find_draft_needs_more_history_than_just_the_needle() {
+        assert_eq!(find_draft(&[1, 2, 3], 3, 5), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn find_draft_k_of_one_never_drafts_anything() {
+        assert_eq!(find_draft(&[1, 2, 3, 4, 5], 2, 1), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn find_draft_picks_the_most_recent_occurrence() {
+        // [1,2,3] occurs at 0..3 and 4..7; the earlier one is followed by
+        // 99, the later (more recent) one by 88. The more recent one must win.
+        let history = [1, 2, 3, 99, 1, 2, 3, 88, 1, 2, 3];
+        assert_eq!(find_draft(&history, 3, 2), vec![88]);
+    }
+
+    #[test]
+    fn longest_match_stops_at_the_first_disagreement() {
+        assert_eq!(longest_match(&[1, 2, 9, 4], &[1, 2, 3]), 2);
+    }
+
+    #[test]
+    fn longest_match_of_a_full_match_is_the_drafts_whole_length() {
+        assert_eq!(longest_match(&[1, 2, 3, 4], &[1, 2, 3]), 3);
+    }
+
+    #[test]
+    fn longest_match_against_an_empty_draft_is_zero() {
+        assert_eq!(longest_match(&[1, 2, 3], &[]), 0);
+    }
+
+    #[test]
+    fn rollback_from_a_full_match_is_a_no_op() {
+        assert_eq!(rollback_from(100, 4, 4), 100);
+    }
+
+    #[test]
+    fn rollback_from_a_partial_match_removes_the_gap() {
+        // n_past was 96 before the batch, 4 positions were decoded, only 2
+        // (the seed + one draft token) were confirmed — 2 must come off.
+        assert_eq!(rollback_from(100, 4, 2), 98);
+    }
+
+    #[test]
+    fn rollback_from_saturates_instead_of_underflowing() {
+        assert_eq!(rollback_from(100, 4, 0), 96);
+        // Degenerate: accept_count larger than batch_width still can't
+        // remove more than the whole batch.
+        assert_eq!(rollback_from(100, 4, 9), 100);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn step_blocking(
     state: SharedState,
     sid_key: String,
@@ -818,6 +1473,17 @@ fn step_blocking(
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    // (k, m): draft width and lookup window, present only for the head —
+    // everyone else either forwards `incoming_draft` untouched (not the
+    // tail) or verifies against it (the tail).
+    speculate: Option<(u32, u32)>,
+    // What a previous hop already decided, forwarded via the wire `draft`
+    // field. `None` means this round isn't speculative at all (the
+    // pre-existing, single-token wire format applies); `Some(vec![])` means
+    // it is speculative but nothing matched — still a batch of one, but
+    // through the *new* wire format, since the caller committed to it by
+    // asking to speculate in the first place.
+    incoming_draft: Option<Vec<i32>>,
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
@@ -838,19 +1504,48 @@ fn step_blocking(
     let n_tokens;
     let decode_started = Instant::now();
     let engine_timing;
+    let mut head_draft: Option<Vec<i32>> = None;
     if let Some((hidden, shape)) = tensor {
-        // Middle/last peer receiving a hidden state.
+        // Middle/last peer receiving a hidden state. `decode_hidden` already
+        // handles any `n_tokens` — a speculative batch needs no special
+        // handling here beyond what chunked prefill already exercises.
         n_tokens = shape[0];
-        let logits_all = !is_last;
+        let logits_all = incoming_draft.is_some() || !is_last;
         engine_timing = s
             .engine
             .decode_hidden(&hidden, n_tokens, n_past, seq_id, logits_all)?;
     } else {
         // First peer: receives the token ID sampled by the previous last peer.
         let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
-        n_tokens = 1;
-        let logits_all = !is_last;
-        engine_timing = s.engine.decode_tokens(&[tid], n_past, seq_id, logits_all)?;
+        // Only the tail pushed to `recent_tokens` before this fix, so on a
+        // real (head != tail) multi-hop pipeline the head's own history was
+        // permanently empty — harmless until something needed it (repetition
+        // penalty already reads only the tail's copy, correctly), but
+        // prompt-lookup drafting below needs the head's history to search.
+        s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(tid);
+
+        let batch: Vec<i32> = if let Some((k, m)) = speculate {
+            let draft = {
+                let session = &s.sessions[&sid_key];
+                let history: Vec<i32> = session
+                    .prompt_tokens
+                    .iter()
+                    .chain(session.recent_tokens.iter())
+                    .copied()
+                    .collect();
+                find_draft(&history, m as usize, k)
+            };
+            let mut batch = Vec::with_capacity(1 + draft.len());
+            batch.push(tid);
+            batch.extend_from_slice(&draft);
+            head_draft = Some(draft);
+            batch
+        } else {
+            vec![tid]
+        };
+        n_tokens = batch.len();
+        let logits_all = head_draft.is_some() || !is_last;
+        engine_timing = s.engine.decode_tokens(&batch, n_past, seq_id, logits_all)?;
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.backend_enqueue_us += engine_timing.enqueue_us;
@@ -859,10 +1554,80 @@ fn step_blocking(
 
     s.sessions.get_mut(&sid_key).unwrap().n_past += n_tokens as u32;
 
+    // Whichever hop decided it — computed just now (the head) or forwarded
+    // from one that did (everyone else) — this is what the tail verifies
+    // against, and what a non-tail relay branch echoes onward.
+    let draft = head_draft.or(incoming_draft);
+
     let sampling = s.sampling.clone();
     let eos = s.engine.eos_token();
 
     if is_last {
+        if let Some(draft) = draft {
+            // ── Speculative verification ─────────────────────────────────
+            //
+            // Never trusts the draft: every position is sampled for real,
+            // in order, through the exact same `sample_token_profiled` a
+            // plain step uses — the draft only ever decided what got
+            // batched, never what got output. Accepting positions this way
+            // makes the result identical in distribution to running the
+            // single-token path `keep` times in a row (see the "prompt
+            // lookup decoding" writeup this shipped with for the full
+            // argument); it is not an approximation.
+            let verification_started = Instant::now();
+            let mut recent = s.sessions[&sid_key].recent_tokens.clone();
+            let mut sampled: Vec<i32> = Vec::with_capacity(n_tokens);
+            let mut texts: Vec<String> = Vec::with_capacity(n_tokens);
+            for i in 0..n_tokens {
+                let logits = s.engine.logits_ith(i as i32);
+                let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
+                recent.push(id);
+                texts.push(s.engine.token_to_piece(id, false));
+                let is_eos = id == eos;
+                sampled.push(id);
+                if is_eos {
+                    // Nothing past EOS is worth sampling — generation is over
+                    // regardless of what the rest of the draft guessed.
+                    break;
+                }
+            }
+            timings.sampling_us += verification_started.elapsed().as_micros() as u64;
+
+            let accept_len = longest_match(&sampled, &draft);
+            let keep = (accept_len + 1).min(sampled.len());
+            let accepted_ids = &sampled[..keep];
+            let accepted_texts = &texts[..keep];
+            let done = accepted_ids.last().copied() == Some(eos);
+
+            s.sessions
+                .get_mut(&sid_key)
+                .unwrap()
+                .recent_tokens
+                .extend_from_slice(accepted_ids);
+            if done {
+                s.finish(&sid_key);
+            }
+
+            let accepted: Vec<Value> = accepted_ids
+                .iter()
+                .zip(accepted_texts)
+                .map(|(id, text)| json!({"token_id": id, "text": text}))
+                .collect();
+            let encode_started = Instant::now();
+            let bytes = wire::encode(
+                &json!({
+                    "done": done,
+                    "accepted": accepted,
+                    "accept_count": keep as u32,
+                    "batch_width": n_tokens as u32,
+                }),
+                None,
+                wire_dtype,
+            )?;
+            timings.encode_us += encode_started.elapsed().as_micros() as u64;
+            return Ok(TimedReply { bytes, timings });
+        }
+
         let logits_access_started = Instant::now();
         let recent = s.sessions[&sid_key].recent_tokens.clone();
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
@@ -909,9 +1674,16 @@ fn step_blocking(
     let residual_started = Instant::now();
     let residual = s.engine.take_residual(n_tokens)?;
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
+    let mut reply_meta = json!({"done": false});
+    // Whoever called us needs this to keep threading it toward the tail —
+    // see `draft`'s own comment above for why it's carried this way rather
+    // than recomputed at each hop.
+    if let Some(draft) = &draft {
+        reply_meta["draft"] = json!(draft);
+    }
     let encode_started = Instant::now();
     let bytes = wire::encode(
-        &json!({"done": false}),
+        &reply_meta,
         Some((&residual, [n_tokens, s.engine.n_embd])),
         wire_dtype,
     )?;

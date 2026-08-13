@@ -430,7 +430,15 @@ impl Network {
             timestamp: Utc::now(),
             ollama_port: self.ollama_port,
             inference_port: self.inference_port,
-            inference_frame_capabilities: vec!["frame/v1-f16".into(), "frame/v2-zstd-f16".into()],
+            // Keep this list in sync with the other two `Announce` builders
+            // (gateway.rs, infer_server.rs) and with the capability constants
+            // in routing/pipeline.rs (`CAP_RELAY_CHAIN`, `CAP_SPECULATE_LOOKUP`).
+            inference_frame_capabilities: vec![
+                "frame/v1-f16".into(),
+                "frame/v2-zstd-f16".into(),
+                "relay/v1-chain".into(),
+                "speculate/v1-lookup".into(),
+            ],
             gateway_port: self.gateway_port,
             role: self.role.clone(),
             hostname: self.hostname.clone(),

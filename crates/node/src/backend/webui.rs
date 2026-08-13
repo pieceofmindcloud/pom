@@ -834,6 +834,14 @@ pub struct RuntimeParams {
     /// Auto-set for the last peer of a multi-peer pipeline when true.
     #[serde(default)]
     pub no_embeddings: bool,
+    /// Operator kill-switch for speculative decoding — off by default even
+    /// on a cluster where every peer supports it (`speculate/v1-lookup`).
+    #[serde(default)]
+    pub speculative_decoding_enabled: bool,
+    #[serde(default = "d_speculative_k")]
+    pub speculative_k: u32,
+    #[serde(default = "d_speculative_lookup_window")]
+    pub speculative_lookup_window: u32,
 }
 
 fn d_gpu_layers() -> u32 {
@@ -872,6 +880,12 @@ fn d_repeat_last_n() -> u32 {
 fn d_true() -> bool {
     true
 }
+fn d_speculative_k() -> u32 {
+    4
+}
+fn d_speculative_lookup_window() -> u32 {
+    3
+}
 
 impl Default for RuntimeParams {
     fn default() -> Self {
@@ -890,6 +904,9 @@ impl Default for RuntimeParams {
             repeat_last_n: d_repeat_last_n(),
             no_thinking: d_true(),
             no_embeddings: false,
+            speculative_decoding_enabled: false,
+            speculative_k: d_speculative_k(),
+            speculative_lookup_window: d_speculative_lookup_window(),
         }
     }
 }
@@ -916,6 +933,9 @@ impl From<&NodeConfig> for RuntimeParams {
             repeat_last_n: c.repeat_last_n,
             no_thinking: c.no_thinking,
             no_embeddings: c.no_embeddings,
+            speculative_decoding_enabled: c.speculative_decoding_enabled,
+            speculative_k: c.speculative_k,
+            speculative_lookup_window: c.speculative_lookup_window,
         }
     }
 }
@@ -1275,6 +1295,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         no_thinking: req.params.no_thinking,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
+        speculative_decoding_enabled: req.params.speculative_decoding_enabled,
+        speculative_k: req.params.speculative_k,
+        speculative_lookup_window: req.params.speculative_lookup_window,
     };
 
     state.runtime.apply(cfg).await?;

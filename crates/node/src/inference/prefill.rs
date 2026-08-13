@@ -24,7 +24,7 @@ use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
 use std::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
 ///
@@ -35,8 +35,12 @@ use tracing::{info, warn};
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
 
-/// Attempts per chunk before the request is given up on.
-const CHUNK_ATTEMPTS: u32 = 3;
+/// Attempts per chunk before the request is given up on. Lives in `relay.rs`
+/// (`crate::relay::CHUNK_ATTEMPTS`) since a ring-mode relaying hop needs the
+/// same number for its own outbound prefill calls — a prefill chunk is
+/// retry-safe (the KV-rollback idempotency in `infer_server.rs`), a decode
+/// step is not, so the two must not share one constant that later drifts.
+use crate::relay::CHUNK_ATTEMPTS;
 
 /// What the last peer produced once the whole prompt is in.
 #[derive(Debug, Clone)]
@@ -54,7 +58,7 @@ pub struct PrefillOutcome {
 /// apart because they are different workloads: prefill moves a whole prompt
 /// through the peer once, decode moves one token at a time. Averaging them
 /// together hides which of the two is slow.
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
     pub processing_ms: u64,
@@ -186,7 +190,7 @@ impl PhaseTrace {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct HopTrace {
     pub node_id: String,
     pub start_layer: u32,
@@ -335,6 +339,29 @@ impl RequestTrace {
         self.total_bytes_received += bytes_received;
     }
 
+    /// Same accumulation as `record_hop`, reading the numbers from one
+    /// `hop_timings` array entry instead of taking them as call arguments —
+    /// this is what lets ring mode reconstruct the identical trace hub mode
+    /// builds live, from the array that bubbled back through the relay
+    /// chain (`relay::bubble_hop_timings`) instead of from calls this
+    /// process made itself.
+    pub fn record_hop_from_json(&mut self, hop: usize, phase: Phase, entry: &serde_json::Value) {
+        let get = |key: &str| entry.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
+        self.record_hop(
+            hop,
+            phase,
+            get("round_trip_ms"),
+            get("processing_ms"),
+            get("bytes_sent"),
+            get("bytes_received"),
+            get("client_encode_ms"),
+            get("response_headers_ms"),
+            get("response_body_ms"),
+            get("client_decode_ms"),
+            &entry["node_timings"],
+        );
+    }
+
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
@@ -375,6 +402,9 @@ pub async fn run(
     let n_peers = plan.steps.len();
     if n_peers == 0 {
         return Err(anyhow!("pipeline sem peers"));
+    }
+    if plan.supports_relay_chain() {
+        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http).await;
     }
 
     let mut chunk_index: u32 = 0;
@@ -491,10 +521,118 @@ pub async fn run(
     }
 }
 
+/// Same chunk-by-chunk loop as `run`, but each chunk makes exactly one
+/// outbound call — to the head — instead of one call per hop. The head
+/// relays to its own next hop, which relays to its own, and so on; the
+/// eventual answer (and, for the head, its authoritative `more_chunks`/
+/// `n_prompt_tokens` — see the overlay fix in `infer_server.rs`'s
+/// `handle_prefill`) bubbles back through that same chain of calls.
+async fn run_ring(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    prompt: &str,
+    chunk_size: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+) -> Result<PrefillOutcome> {
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+
+    let mut chunk_index: u32 = 0;
+    let mut prompt_tokens: u32 = 0;
+    let started = Instant::now();
+    let mut trace = RequestTrace::from_plan(model, plan);
+
+    loop {
+        let head_meta = json!({
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "is_last": next_hops.is_empty(),
+            // Same reasoning as `run`'s identical comment: the head is the
+            // only one who can know this, and overrides it locally before
+            // relaying onward — we always say false here.
+            "is_final_chunk": false,
+            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
+            "next_hops": next_hops,
+        });
+
+        let sent = crate::relay::send_frame(
+            http,
+            &head.inference_url,
+            "/v1/prefill",
+            &head_meta,
+            None,
+            dtype,
+            head.frame_encoding(),
+            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+            &head.node_id,
+            |_issue| {},
+        )
+        .await
+        .map_err(|e| ring_relay_error(&head.node_id, e))?;
+
+        for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+            trace.record_hop_from_json(i, Phase::Prefill, &entry);
+        }
+
+        if let Some(n) = sent.meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
+            prompt_tokens = n as u32;
+        }
+        let more = sent
+            .meta
+            .get("more_chunks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        let is_final_chunk = !more;
+
+        if is_final_chunk {
+            let token_id = sent
+                .meta
+                .get("token_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+                as u32;
+            let chunks = chunk_index + 1;
+            info!(
+                "prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens ({prompt_tokens} tokens) [anel]"
+            );
+            return Ok(PrefillOutcome {
+                token_id,
+                text: sent
+                    .meta
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                done: sent
+                    .meta
+                    .get("done")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                prompt_tokens,
+                chunks,
+                trace: {
+                    trace.input_tokens = prompt_tokens;
+                    trace.prefill_ms = started.elapsed().as_millis() as u64;
+                    trace
+                },
+            });
+        }
+
+        chunk_index += 1;
+    }
+}
+
 /// One chunk to one peer, retried on transport failure.
 ///
 /// Retrying is safe because the peer rewinds its KV cache to this chunk's
-/// position before redoing it — a repeat can never be counted twice.
+/// position before redoing it — a repeat can never be counted twice. Thin
+/// wrapper over `relay::send_frame`, which also backs the ring-mode relay
+/// calls a hop makes to its own next hop (`infer_server.rs`); this function
+/// just supplies the `/v1/prefill` path, the retry count, and turns
+/// `SendIssue`s into `TraceIssue`s on the gateway's `RequestTrace`.
 #[allow(clippy::too_many_arguments)]
 async fn send_chunk(
     http: &reqwest::Client,
@@ -509,111 +647,58 @@ async fn send_chunk(
     hop: usize,
     phase: Phase,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
-    let encode_started = Instant::now();
-    let body = match (tensor, dtype) {
-        (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
-        (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
-    };
-    let client_encode_ms = encode_started.elapsed().as_millis() as u64;
-    let url = format!("{inference_url}/v1/prefill");
-    let mut last_error = String::new();
+    let peer_label = format!("{node_id} (pedaço {chunk_index})");
+    let mut issues = Vec::new();
+    let result = crate::relay::send_frame(
+        http,
+        inference_url,
+        "/v1/prefill",
+        meta,
+        tensor,
+        dtype,
+        encoding,
+        CHUNK_ATTEMPTS,
+        &peer_label,
+        |issue| issues.push(issue),
+    )
+    .await;
 
-    for attempt in 1..=CHUNK_ATTEMPTS {
-        let started = Instant::now();
-        let sent = http
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(body.clone())
-            .timeout(Duration::from_secs(600))
-            .send()
-            .await;
-
-        match sent {
-            Ok(r) if r.status().is_success() => {
-                let response_headers_ms = started.elapsed().as_millis() as u64;
-                let response_body_started = Instant::now();
-                let bytes = r.bytes().await?;
-                let response_body_ms = response_body_started.elapsed().as_millis() as u64;
-                let client_decode_started = Instant::now();
-                let decoded = match wire::decode(&bytes) {
-                    Ok(decoded) => decoded,
-                    Err(error) => {
-                        trace.record_issue(TraceIssue::new(
-                            Some(hop),
-                            node_id,
-                            phase,
-                            TraceIssueKind::Protocol,
-                            attempt,
-                            error.to_string(),
-                        ));
-                        return Err(error.into());
-                    }
-                };
-                let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
-                let processing_ms = decoded
-                    .0
-                    .get("processing_ms")
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0);
-                trace.record_hop(
-                    hop,
-                    phase,
-                    started.elapsed().as_millis() as u64,
-                    processing_ms,
-                    body.len() as u64,
-                    bytes.len() as u64,
-                    client_encode_ms,
-                    response_headers_ms,
-                    response_body_ms,
-                    client_decode_ms,
-                    &decoded.0["node_timings"],
-                );
-                return Ok(decoded);
-            }
-            Ok(r) => {
-                let code = r.status();
-                let text = r.text().await.unwrap_or_default();
-                trace.record_issue(TraceIssue::new(
-                    Some(hop),
-                    node_id,
-                    phase,
-                    TraceIssueKind::Http,
-                    attempt,
-                    format!("HTTP {code}: {text}"),
-                ));
-                // A refusal is the peer's considered answer, not a hiccup;
-                // repeating it would only waste the link.
-                return Err(anyhow!(
-                    "peer {node_id} recusou o pedaço {chunk_index}: {code} {text}"
-                ));
-            }
-            Err(e) => {
-                last_error = e.to_string();
-                trace.record_issue(TraceIssue::new(
-                    Some(hop),
-                    node_id,
-                    phase,
-                    if e.is_timeout() {
-                        TraceIssueKind::Timeout
-                    } else {
-                        TraceIssueKind::Transport
-                    },
-                    attempt,
-                    &last_error,
-                ));
-                warn!(
-                    "pedaço {chunk_index} para {node_id} falhou (tentativa {attempt}/{CHUNK_ATTEMPTS}): {last_error}"
-                );
-                if attempt < CHUNK_ATTEMPTS {
-                    tokio::time::sleep(Duration::from_millis(400 * attempt as u64)).await;
-                }
-            }
-        }
+    for issue in issues {
+        trace.record_issue(TraceIssue::new(
+            Some(hop),
+            node_id,
+            phase,
+            match issue.kind {
+                crate::relay::SendIssueKind::Timeout => TraceIssueKind::Timeout,
+                crate::relay::SendIssueKind::Transport => TraceIssueKind::Transport,
+                crate::relay::SendIssueKind::Http => TraceIssueKind::Http,
+                crate::relay::SendIssueKind::Protocol => TraceIssueKind::Protocol,
+            },
+            issue.attempt,
+            issue.message,
+        ));
     }
 
-    Err(anyhow!(
-        "pedaço {chunk_index} não chegou em {node_id} após {CHUNK_ATTEMPTS} tentativas: {last_error}"
-    ))
+    let sent = result?;
+    let processing_ms = sent
+        .meta
+        .get("processing_ms")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    trace.record_hop(
+        hop,
+        phase,
+        sent.round_trip_ms,
+        processing_ms,
+        sent.bytes_sent,
+        sent.bytes_received,
+        sent.client_encode_ms,
+        sent.response_headers_ms,
+        sent.response_body_ms,
+        sent.client_decode_ms,
+        &sent.meta["node_timings"],
+    );
+    Ok((sent.meta, sent.tensor))
 }
 
 /// One generated token through the whole pipeline, framed like the prefill.
@@ -625,6 +710,10 @@ pub async fn step(
     dtype: WireDtype,
     http: &reqwest::Client,
 ) -> Result<(u32, String, bool, RequestTrace)> {
+    if plan.supports_relay_chain() {
+        return step_ring(plan, model, session_id, token_id, dtype, http).await;
+    }
+
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
     let mut meta = serde_json::Value::Null;
@@ -709,6 +798,281 @@ pub async fn step(
     ))
 }
 
+/// One generated token, relayed hop-to-hop instead of gateway-to-every-hop —
+/// see `PipelinePlan::supports_relay_chain`. This process makes exactly one
+/// outbound call (to the head); every other hop is reached by the head (and,
+/// transitively, each hop after it) relaying directly, and the tail's answer
+/// bubbles all the way back through that same chain of calls.
+async fn step_ring(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+) -> Result<(u32, String, bool, RequestTrace)> {
+    let mut trace = RequestTrace::from_plan(model, plan);
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+    let body_meta = json!({
+        "session_id": session_id,
+        "is_last": next_hops.is_empty(),
+        "token_id": token_id,
+        "next_hops": next_hops,
+    });
+
+    let sent = crate::relay::send_frame(
+        http,
+        &head.inference_url,
+        "/v1/step",
+        &body_meta,
+        None,
+        dtype,
+        head.frame_encoding(),
+        1, // decode has never retried — see relay::send_frame's doc comment
+        &head.node_id,
+        |_issue| {},
+    )
+    .await
+    .map_err(|e| ring_relay_error(&head.node_id, e))?;
+
+    for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+        trace.record_hop_from_json(i, Phase::Decode, &entry);
+    }
+
+    let token = sent
+        .meta
+        .get("token_id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
+    Ok((
+        token,
+        sent.meta
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        sent.meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+        trace,
+    ))
+}
+
+/// If the failure carries a `RelayFailure` from further down the chain (a
+/// hop's own outbound call to *its* next hop failed), name the peer that
+/// actually failed instead of `head_node_id` — the one this process
+/// happened to call directly.
+fn ring_relay_error(head_node_id: &str, e: anyhow::Error) -> anyhow::Error {
+    match crate::relay::extract_relay_failure(&e) {
+        Some(failure) => anyhow!(
+            "pipeline falhou em {} (retransmitido por {head_node_id}): {} — {}",
+            failure.failed_node_id,
+            failure.kind,
+            failure.message
+        ),
+        None => e,
+    }
+}
+
+// ── Speculative decoding (prompt-lookup) ────────────────────────────────────
+
+/// Outcome of one speculative round: possibly several confirmed tokens
+/// instead of the usual one, in generation order.
+#[derive(Debug)]
+pub struct SpeculativeStep {
+    pub accepted: Vec<(u32, String)>,
+    pub done: bool,
+    /// How many of the batch's positions the tail confirmed — passed
+    /// straight to `gateway::rollback_sessions` afterward.
+    pub accept_count: u32,
+    /// How many positions the head actually decoded (`1 + draft.len()`).
+    pub batch_width: u32,
+    pub trace: RequestTrace,
+}
+
+/// One speculative round: the head drafts up to `k` tokens from its own
+/// recent history (searching a trailing window of `m`), the whole batch is
+/// decoded through the pipeline in a single pass, and the tail verifies it —
+/// see `infer_server.rs`'s `step_blocking` for where the actual drafting and
+/// verification happen; this function only orchestrates getting the batch
+/// there and the answer back, exactly like `step` does for a single token.
+/// Composes with either relay mode transparently: ring when negotiated,
+/// hub otherwise — same rule `step`/`run` already follow.
+pub async fn step_speculative(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    k: u32,
+    m: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+) -> Result<SpeculativeStep> {
+    if plan.supports_relay_chain() {
+        return step_speculative_ring(plan, model, session_id, token_id, k, m, dtype, http).await;
+    }
+    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http).await
+}
+
+async fn step_speculative_hub(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    k: u32,
+    m: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+) -> Result<SpeculativeStep> {
+    let n_peers = plan.steps.len();
+    let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
+    let mut meta = serde_json::Value::Null;
+    let mut trace = RequestTrace::from_plan(model, plan);
+
+    for (i, peer) in plan.steps.iter().enumerate() {
+        let is_last = i == n_peers - 1;
+        let body_meta = if i == 0 {
+            json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "token_id": token_id,
+                "speculate": {"k": k, "m": m},
+            })
+        } else {
+            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            // Keep threading whatever the head decided — see `step_blocking`'s
+            // `draft`/`incoming_draft` doc comments for why absent vs. an
+            // empty array mean different things here.
+            if let Some(draft) = meta.get("draft") {
+                m["draft"] = draft.clone();
+            }
+            m
+        };
+
+        let payload = tensor.take();
+        let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
+        let peer_label = format!("{} (especulativo)", peer.node_id);
+        let sent = crate::relay::send_frame(
+            http,
+            &peer.inference_url,
+            "/v1/step",
+            &body_meta,
+            as_ref,
+            dtype,
+            peer.frame_encoding(),
+            1, // decode has never retried — see relay::send_frame's doc comment
+            &peer_label,
+            |_issue| {},
+        )
+        .await?;
+
+        let processing_ms = sent
+            .meta
+            .get("processing_ms")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        trace.record_hop(
+            i,
+            Phase::Decode,
+            sent.round_trip_ms,
+            processing_ms,
+            sent.bytes_sent,
+            sent.bytes_received,
+            sent.client_encode_ms,
+            sent.response_headers_ms,
+            sent.response_body_ms,
+            sent.client_decode_ms,
+            &sent.meta["node_timings"],
+        );
+        meta = sent.meta;
+        tensor = sent.tensor;
+    }
+
+    speculative_step_from_meta(&meta, trace)
+}
+
+async fn step_speculative_ring(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    k: u32,
+    m: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+) -> Result<SpeculativeStep> {
+    let mut trace = RequestTrace::from_plan(model, plan);
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+    let head_meta = json!({
+        "session_id": session_id,
+        "is_last": next_hops.is_empty(),
+        "token_id": token_id,
+        "speculate": {"k": k, "m": m},
+        "next_hops": next_hops,
+    });
+
+    let sent = crate::relay::send_frame(
+        http,
+        &head.inference_url,
+        "/v1/step",
+        &head_meta,
+        None,
+        dtype,
+        head.frame_encoding(),
+        1,
+        &head.node_id,
+        |_issue| {},
+    )
+    .await
+    .map_err(|e| ring_relay_error(&head.node_id, e))?;
+
+    for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+        trace.record_hop_from_json(i, Phase::Decode, &entry);
+    }
+
+    speculative_step_from_meta(&sent.meta, trace)
+}
+
+/// Parse the tail's verification reply (`{done, accepted, accept_count,
+/// batch_width}`) — shared by the hub and ring paths, which only differ in
+/// how they get to that reply.
+fn speculative_step_from_meta(meta: &serde_json::Value, trace: RequestTrace) -> Result<SpeculativeStep> {
+    let accepted: Vec<(u32, String)> = meta
+        .get("accepted")
+        .and_then(|v| v.as_array())
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|entry| {
+                    let id = entry.get("token_id")?.as_u64()? as u32;
+                    let text = entry.get("text")?.as_str()?.to_string();
+                    Some((id, text))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    if accepted.is_empty() {
+        return Err(anyhow!(
+            "último peer não devolveu nenhum token aceito na rodada especulativa"
+        ));
+    }
+    let accept_count = meta
+        .get("accept_count")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(accepted.len() as u64) as u32;
+    let batch_width = meta
+        .get("batch_width")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(accept_count.max(1) as u64) as u32;
+    Ok(SpeculativeStep {
+        accepted,
+        done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+        accept_count,
+        batch_width,
+        trace,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -765,6 +1129,49 @@ mod tests {
         assert_eq!(trace.hops[0].prefill.network_ms, 11);
         assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
         assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
+    }
+
+    /// Ring mode reconstructs a trace from a bubbled `hop_timings` array
+    /// entry (`record_hop_from_json`) instead of from a live HTTP response
+    /// (`record_hop`) — the two have to agree exactly, or ring and hub mode
+    /// would report different numbers for the identical request.
+    #[test]
+    fn record_hop_from_json_matches_record_hop() {
+        let node = json!({"decode_ms": 10, "residual_ms": 2});
+
+        let mut direct = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        direct.record_hop(0, Phase::Decode, 70, 13, 100, 200, 1, 2, 3, 4, &node);
+
+        let mut from_json = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        from_json.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 70,
+                "processing_ms": 13,
+                "bytes_sent": 100,
+                "bytes_received": 200,
+                "client_encode_ms": 1,
+                "response_headers_ms": 2,
+                "response_body_ms": 3,
+                "client_decode_ms": 4,
+                "node_timings": node,
+            }),
+        );
+
+        assert_eq!(direct.hops[0], from_json.hops[0]);
+        assert_eq!(direct.total_bytes_sent, from_json.total_bytes_sent);
+        assert_eq!(direct.total_bytes_received, from_json.total_bytes_received);
+    }
+
+    /// A missing `hop_timings` entry (index past the plan's step count) must
+    /// be a no-op, same as `record_hop` already is — a malformed or short
+    /// bubble must not panic on `self.hops[hop]`.
+    #[test]
+    fn record_hop_from_json_on_an_unknown_index_is_a_no_op() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop_from_json(5, Phase::Decode, &json!({"round_trip_ms": 70}));
+        assert_eq!(trace.total_bytes_sent, 0);
     }
 
     #[test]

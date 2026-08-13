@@ -152,9 +152,14 @@ impl GatewayState {
                 last_seen: chrono::Utc::now(),
                 ollama_port: self.network.ollama_port,
                 inference_port: self.network.inference_port,
+                // Keep in sync with network.rs's `self_announce` and
+                // infer_server.rs's health/announce builder, and with the
+                // capability constants in routing/pipeline.rs.
                 inference_frame_capabilities: vec![
                     "frame/v1-f16".into(),
                     "frame/v2-zstd-f16".into(),
+                    "relay/v1-chain".into(),
+                    "speculate/v1-lookup".into(),
                 ],
                 gateway_port: Some(self.gateway_port),
                 role: self.network.role.clone(),
@@ -218,6 +223,14 @@ pub fn prompt_chunk_tokens(cfg: &crate::runtime::NodeConfig) -> u32 {
 
 pub fn prompt_chunk_of(prefill_chunk_tokens: u32, n_batch: u32) -> u32 {
     prefill_chunk_tokens.max(1).min(n_batch.max(1))
+}
+
+/// Same clamp as `prompt_chunk_of`, for the same reason: a speculative batch
+/// (`1 + drafted tokens`) is decoded as one batch on the head too, so it
+/// can't exceed `n_batch` either. Trivially satisfied at the defaults (4 «
+/// 512), but an operator's `speculative_k` shouldn't be trusted alone.
+pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
+    speculative_k.max(1).min(n_batch.max(1))
 }
 
 // ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
@@ -492,15 +505,23 @@ pub async fn generate_stream(
     let mut tokens_generated: u32 = 0;
     let max_tokens = max_tokens.max(1);
 
-    // Chunk size and wire precision come from the node's configuration, so
-    // both are operator knobs rather than constants baked into the protocol.
-    let (chunk_tokens, dtype) = {
+    // Chunk size, wire precision, and the speculative-decoding knobs all come
+    // from the node's configuration, so they're operator knobs rather than
+    // constants baked into the protocol.
+    let (chunk_tokens, dtype, speculative_enabled, speculative_k, speculative_m) = {
         let cfg = state.runtime.config().await;
+        let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
             cfg.as_ref()
                 .map(|c| c.prefill_chunk_tokens)
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             crate::wire::WireDtype::F16,
+            cfg.as_ref().is_some_and(|c| c.speculative_decoding_enabled),
+            speculative_k_of(
+                cfg.as_ref().map(|c| c.speculative_k).unwrap_or(4),
+                n_batch,
+            ),
+            cfg.as_ref().map(|c| c.speculative_lookup_window).unwrap_or(3),
         )
     };
 
@@ -560,6 +581,116 @@ pub async fn generate_stream(
                     trace: Some(trace),
                 }))
                 .await;
+            return;
+        }
+
+        if plan.supports_speculation() && speculative_enabled {
+            while tokens_generated < max_tokens {
+                let res = crate::prefill::step_speculative(
+                    &plan,
+                    &model,
+                    &session_id,
+                    next_token,
+                    speculative_k,
+                    speculative_m,
+                    dtype,
+                    &state.http,
+                )
+                .await;
+
+                let step = match res {
+                    Ok(step) => step,
+                    Err(e) => {
+                        warn!("Erro na rodada especulativa (token {tokens_generated}): {e}");
+                        let elapsed = gen_start.elapsed();
+                        if tokens_generated > 0 {
+                            info!("devolvendo {tokens_generated} tokens parciais");
+                            let _ = tx
+                                .send(GenEvent::Done(GenSummary {
+                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                                    tokens_generated,
+                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                                    duration_ms: elapsed.as_millis() as u64,
+                                    partial: true,
+                                    trace: {
+                                        trace.output_tokens = tokens_generated;
+                                        Some(trace)
+                                    },
+                                }))
+                                .await;
+                        } else {
+                            let _ = tx
+                                .send(GenEvent::Failed(format!(
+                                    "Pipeline falhou na rodada especulativa: {e}"
+                                )))
+                                .await;
+                        }
+                        return;
+                    }
+                };
+                trace.merge(&step.trace);
+
+                // A round can confirm more tokens than remain in the budget —
+                // stream only what fits, and note it so `step.done` (which
+                // may refer to a position we never even looked at) isn't
+                // trusted past the cut.
+                let remaining = (max_tokens - tokens_generated) as usize;
+                let take = step.accepted.len().min(remaining);
+                let truncated_by_budget = take < step.accepted.len();
+
+                for (token_id, text) in step.accepted.iter().take(take) {
+                    next_token = *token_id;
+                    tokens_generated += 1;
+                    if !text.is_empty()
+                        && tx.send(GenEvent::Token(text.clone())).await.is_err()
+                    {
+                        info!("cliente desconectou após {tokens_generated} tokens");
+                        return;
+                    }
+                }
+
+                let finished =
+                    (step.done && !truncated_by_budget) || tokens_generated >= max_tokens;
+                if finished {
+                    let elapsed = gen_start.elapsed();
+                    trace.output_tokens = tokens_generated;
+                    trace.complete = true;
+                    info!(
+                        "✅ Pipeline completo (especulativo): {} tokens em {:.1}s ({:.1} tok/s)",
+                        tokens_generated,
+                        elapsed.as_secs_f64(),
+                        rate(tokens_generated, elapsed.as_secs_f64())
+                    );
+                    let _ = tx
+                        .send(GenEvent::Done(GenSummary {
+                            source: format!("pipeline:{}", plan.hop_chain()),
+                            tokens_generated,
+                            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                            duration_ms: elapsed.as_millis() as u64,
+                            partial: false,
+                            trace: Some(trace),
+                        }))
+                        .await;
+                    return;
+                }
+
+                // Continuing to another round: every hop decoded the full
+                // batch, so every hop needs to discard whatever this round
+                // didn't confirm before the next one starts. Skipped when
+                // finishing above — `release_sessions` right after this
+                // block wipes the whole session anyway, making a partial
+                // rollback moot.
+                if step.accept_count < step.batch_width {
+                    rollback_sessions(
+                        &plan,
+                        &session_id,
+                        step.accept_count,
+                        step.batch_width,
+                        &state.http,
+                    )
+                    .await;
+                }
+            }
             return;
         }
 
@@ -663,6 +794,43 @@ async fn release_sessions(plan: &PipelinePlan, session_id: &str, http: &reqwest:
                 r.status()
             ),
             Err(e) => warn!("release de sessão em {} falhou: {e}", step.node_id),
+        }
+    }
+}
+
+/// After a speculative decode round, tell every peer in the plan how much
+/// of the batch it just decoded was actually confirmed, so each can discard
+/// the rest from its own KV cache — every hop decoded the full batch, not
+/// just the tail, so every hop needs this. Same best-effort fan-out shape as
+/// `release_sessions`: streaming the accepted tokens to the client does not
+/// wait on this, only the *next* speculative round does.
+async fn rollback_sessions(
+    plan: &PipelinePlan,
+    session_id: &str,
+    accept_count: u32,
+    batch_width: u32,
+    http: &reqwest::Client,
+) {
+    for step in &plan.steps {
+        let url = format!("{}/v1/session/rollback", step.inference_url);
+        match http
+            .post(&url)
+            .json(&serde_json::json!({
+                "session_id": session_id,
+                "accept_count": accept_count,
+                "batch_width": batch_width,
+            }))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => warn!(
+                "rollback de sessão em {} respondeu {}",
+                step.node_id,
+                r.status()
+            ),
+            Err(e) => warn!("rollback de sessão em {} falhou: {e}", step.node_id),
         }
     }
 }
@@ -827,7 +995,15 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // unknown paths to the client router, so anything registered after it
         // would never be reached.
         .merge(crate::webapp::routes())
-        .with_state(state);
+        .with_state(state)
+        // JSON responses and the static UI bundle compress well; the default
+        // predicate already skips `text/event-stream`, so the SSE token
+        // stream in openai::routes() is untouched — compressing it would
+        // trade first-token latency for bytes on exactly the path that
+        // cares most about the former. Peer-to-peer tensor frames never pass
+        // through this router (see inference/infer_server.rs), so there is
+        // no risk of compressing already-zstd-compressed payloads here.
+        .layer(tower_http::compression::CompressionLayer::new());
 
     let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
     info!(
@@ -1007,6 +1183,9 @@ mod budget_tests {
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
+            speculative_decoding_enabled: false,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
         }
     }
 

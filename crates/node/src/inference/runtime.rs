@@ -71,6 +71,19 @@ pub struct NodeConfig {
     /// (observed with phi-4 where the model outputs EOS as first token).
     #[serde(default)]
     pub no_embeddings: bool,
+    /// Operator kill-switch, independent of whether every peer in a plan
+    /// negotiated `speculate/v1-lookup` — off by default so turning the
+    /// feature on is opt-in even on an all-capable cluster.
+    #[serde(default)]
+    pub speculative_decoding_enabled: bool,
+    /// Draft width: the confirmed seed token plus up to `speculative_k - 1`
+    /// guessed continuation tokens, batched through one decode.
+    #[serde(default = "default_speculative_k")]
+    pub speculative_k: u32,
+    /// How many trailing tokens of history define the pattern
+    /// `find_draft` searches for a prior repeat of.
+    #[serde(default = "default_speculative_lookup_window")]
+    pub speculative_lookup_window: u32,
 }
 
 fn default_max_sessions() -> u32 {
@@ -81,6 +94,12 @@ fn default_prefill_chunk() -> u32 {
 }
 fn default_offload_kqv() -> bool {
     true
+}
+fn default_speculative_k() -> u32 {
+    4
+}
+fn default_speculative_lookup_window() -> u32 {
+    3
 }
 
 impl NodeConfig {
@@ -567,6 +586,9 @@ mod tests {
             no_thinking: true,
             single_peer: false,
             no_embeddings: false,
+            speculative_decoding_enabled: false,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
         }
     }
 

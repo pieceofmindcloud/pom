@@ -140,13 +140,24 @@ impl GatewayState {
         // on a node configured through the web UI.
         {
             let local = self.local_assignment.read().await.clone();
-            // Not `127.0.0.1`: this entry travels as-is into `next_hops` for
-            // ring relaying, and a downstream hop on another machine dialing
-            // "127.0.0.1" reaches itself, not us. Hub mode dialing its own
-            // machine over the real LAN IP instead of loopback still works
-            // (the inference server binds `0.0.0.0`), so there is no
-            // hub-mode trade-off to make here.
-            let self_host = crate::pkarr_node::detect_local_ip().unwrap_or_else(|| "127.0.0.1".into());
+            // Não é `127.0.0.1`: esta entrada viaja como está dentro de
+            // `next_hops` para o repasse em anel, e um hop de outra máquina
+            // discando "127.0.0.1" alcança a si mesmo, não a nós. O modo hub
+            // discando a própria máquina pelo IP real em vez do loopback
+            // continua funcionando (o servidor de inferência liga em
+            // `0.0.0.0`), então não há troca a fazer aqui.
+            //
+            // E não é o IP da LAN quando existe `advertise_addr`: entre sites,
+            // um `192.168.x.y` é tão inalcançável para o outro lado quanto o
+            // loopback. O sintoma era mudo e assimétrico - com este nó de
+            // cabeça o pipeline ia, porque o gateway falava consigo mesmo pela
+            // LAN; com ele de sucessor, o hop remoto recebia um endereço
+            // privado e a requisição morria sem chegar a lugar nenhum.
+            // `advertised_host` já vem com colchetes quando é IPv6.
+            let self_host = self_dial_host(
+                self.network.advertised_host(),
+                crate::pkarr_node::detect_local_ip(),
+            );
             peers.push(PeerInfo {
                 node_id: self.network.node_id.clone(),
                 pubkey: self.network.pubkey.clone(),
@@ -191,6 +202,18 @@ impl GatewayState {
         }
         peers
     }
+}
+
+/// Host que os outros nós devem discar para chegar a este.
+///
+/// A ordem importa e é a razão do defeito de 2026-08-13: o endereço anunciado
+/// vem primeiro porque é o único que vale fora da LAN. Cair para o IP local é
+/// correto num cluster de uma rede só, e o loopback é o último recurso, bom
+/// apenas para um nó sozinho na própria máquina.
+fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> String {
+    advertised
+        .or(local_ip)
+        .unwrap_or_else(|| "127.0.0.1".into())
 }
 
 /// Prompt tokens a peer running `cfg` can accept.
@@ -1136,6 +1159,32 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
+    /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
+    /// disca um endereco que nao existe para ele - a requisicao morre sem
+    /// chegar a lugar nenhum, e so quando este no NAO e a cabeca do pipeline.
+    #[test]
+    fn an_advertised_address_beats_the_lan_ip_for_the_self_entry() {
+        assert_eq!(
+            self_dial_host(
+                Some("[2804:d55:5579:1000:89f3:3f94:7c07:e183]".into()),
+                Some("192.168.100.138".into()),
+            ),
+            "[2804:d55:5579:1000:89f3:3f94:7c07:e183]",
+        );
+    }
+
+    /// Sem endereco anunciado o IP da LAN continua valendo: num cluster de uma
+    /// rede so ele e alcancavel, e o loopback nao seria.
+    #[test]
+    fn without_an_advertised_address_the_lan_ip_is_kept() {
+        assert_eq!(
+            self_dial_host(None, Some("192.168.100.138".into())),
+            "192.168.100.138",
+        );
+        assert_eq!(self_dial_host(None, None), "127.0.0.1");
+    }
 
     #[test]
     fn token_estimate_is_pessimistic() {

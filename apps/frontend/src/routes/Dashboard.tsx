@@ -209,11 +209,6 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
               )}
             </div>
             <p className="truncate text-xs text-muted">{kind.label}</p>
-            {n?.build_commit && (
-              <p className="mt-0.5 truncate font-mono text-[0.62rem] text-faint">
-                {n.build_commit}
-              </p>
-            )}
           </div>
         </div>
         <div className="flex shrink-0 flex-col items-end gap-1.5">
@@ -365,6 +360,16 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
                   {n.status.pid ? ` · pid ${n.status.pid}` : ""}
                   {n.status.restarts > 0 ? " · " + t("dashboard.restarts", { count: n.status.restarts }) : ""}
                 </span>
+              ) : (
+                "—"
+              )}
+            </KeyValue>
+            {/* Logo abaixo do servidor, e não escondido no cabeçalho: a pergunta
+                que este campo responde é "os nós estão todos na mesma versão?",
+                e ela se responde comparando cards lado a lado. */}
+            <KeyValue label={t("dashboard.build")}>
+              {n?.build_commit ? (
+                <span className="font-mono text-xs">{n.build_commit}</span>
               ) : (
                 "—"
               )}

@@ -6,11 +6,16 @@ import { NavLink, useLocation } from "react-router-dom";
 import { Logo } from "./Logo";
 import { NAV, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
+import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 
 function SidebarUtilityControls() {
   const { locale, setLocale, t } = useI18n();
   const { theme, toggle } = useTheme();
+  // O commit deste nó, sempre visível: num cluster de várias máquinas, "qual
+  // build é esse?" não se responde sem shell na máquina, e um peer rodando
+  // binário velho parece sadio até a hora da inferência.
+  const { data: node } = useNode();
   return (
     <div className="border-t border-line p-3">
       <div role="group" aria-label={locale === "pt-BR" ? "Idioma" : "Language"} className="flex gap-1">
@@ -29,6 +34,14 @@ function SidebarUtilityControls() {
           {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
         </button>
       </div>
+      {node?.build_commit && (
+        <p
+          title={t("sidebar.buildTitle")}
+          className="mt-2 truncate px-1 font-mono text-[0.62rem] text-faint"
+        >
+          {t("sidebar.build")} {node.build_commit}
+        </p>
+      )}
     </div>
   );
 }

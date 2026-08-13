@@ -24,3 +24,7 @@ web-ui/dist/
 # embeds, and cut-ui-bundle.sh is what regenerates it.
 !web-ui/dist-release/
 *.tsbuildinfo
+
+# Compose da sua maquina: nomes de container e caminhos de modelo que nao
+# valem para mais ninguem. O docker-compose.yml versionado nao e tocado.
+docker-compose-ksia.yml

@@ -148,8 +148,16 @@ fn cached_info(path: &Path, size: u64, mtime: u64) -> Option<GgufInfo> {
 
 // ── Path resolution ──────────────────────────────────────────────────────────
 
-fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+/// O diretório do usuário, do jeito que cada sistema o chama.
+///
+/// No Windows não existe `HOME`: quem responde é `USERPROFILE`. Sem isto o
+/// catálogo não achava nem o LM Studio nem o Ollama daquela máquina e a tela
+/// de Modelos voltava vazia, sem nada que explicasse por quê.
+pub(crate) fn home_dir() -> Option<PathBuf> {
+    if let Some(h) = std::env::var_os("HOME") {
+        return Some(PathBuf::from(h));
+    }
+    std::env::var_os("USERPROFILE").map(PathBuf::from)
 }
 
 /// Every plausible LM Studio home on this machine, most specific first.

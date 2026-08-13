@@ -16,6 +16,27 @@ pub const DISCOVERY_PORT: u16 = 42777;
 pub const GOSSIP_INTERVAL_SECS: u64 = 5;
 pub const PEER_TIMEOUT_SECS: i64 = 30;
 
+/// De quantos em quantos tiques de gossip sai uma varredura de descoberta.
+///
+/// 6 tiques x 5 s = 30 s. Não pode ser todo tique: responder a um `PeerRequest`
+/// custa 1 `Announce` + os `PeerList` fatiados por MTU, então perguntar a todo
+/// peer a cada 5 s é tráfego O(peers²) num intervalo curto.
+pub const DISCOVERY_SWEEP_TICKS: u64 = 6;
+
+/// Quantos peers vivos são perguntados por varredura.
+///
+/// É um rodízio, não uma amostra: a varredura de índice `k` começa em
+/// `k * SWEEP_FANOUT` sobre a lista de peers ordenada por `node_id`, de modo que
+/// o cluster inteiro é coberto em `ceil(peers / SWEEP_FANOUT)` varreduras
+/// (2 minutos num cluster de 8) sem nunca passar de 3 perguntas por tique.
+///
+/// Custo num cluster de 8 nós: cada nó manda 3 `PeerRequest` a cada 30 s; cada
+/// resposta é 1 `Announce` (~700 B) + ~4 `PeerList` de 1200 B, ou seja ~5,5 kB.
+/// Por nó: ~16,5 kB / 30 s. Cluster todo: ~132 kB / 30 s ≈ 4,4 kB/s. Não há
+/// amplificação: a resposta a um `PeerRequest` são `Announce` e `PeerList`, e
+/// nenhuma das duas provoca outro `PeerRequest`.
+pub const SWEEP_FANOUT: usize = 3;
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -523,6 +544,54 @@ impl Network {
         Ok(())
     }
 
+    /// Varredura periódica de descoberta: repergunta quem são os peers dos
+    /// outros, para os bootstrap nodes e para um subconjunto rotativo dos peers
+    /// vivos.
+    ///
+    /// Sem isto a descoberta transitiva é um retrato do arranque: `PeerRequest`
+    /// só saía uma vez, e só para os bootstrap nodes. Na LAN o broadcast IPv4
+    /// escondia o defeito; entre sites, um nó que entrou depois no cluster do
+    /// vizinho nunca era aprendido.
+    ///
+    /// Devolve quantos peers foram perguntados neste tique (0 fora da varredura,
+    /// 0 se destacado), o que é o que os testes observam.
+    pub async fn discovery_sweep(&self, tick: u64) -> Result<usize> {
+        if self.is_detached() || tick == 0 || tick % DISCOVERY_SWEEP_TICKS != 0 {
+            return Ok(0);
+        }
+        let msg = P2PMessage::PeerRequest {
+            from: self.node_id.clone(),
+        };
+
+        for bootstrap in &self.bootstrap_nodes {
+            self.send_to(&msg, bootstrap).await?;
+        }
+
+        // Ordem estável (por node_id) para que o rodízio avance de fato em vez
+        // de sortear os mesmos peers a cada volta.
+        let mut targets: Vec<String> = {
+            let peers = self.peers.read().await;
+            let mut v: Vec<(&String, &PeerInfo)> =
+                peers.iter().filter(|(_, p)| p.is_alive()).collect();
+            v.sort_by(|a, b| a.0.cmp(b.0));
+            v.into_iter().map(|(_, p)| p.addr.clone()).collect()
+        };
+        if targets.is_empty() {
+            return Ok(0);
+        }
+
+        let sweep = (tick / DISCOVERY_SWEEP_TICKS) as usize;
+        let len = targets.len();
+        let start = sweep.wrapping_mul(SWEEP_FANOUT) % len;
+        targets.rotate_left(start);
+        targets.truncate(SWEEP_FANOUT.min(len));
+
+        for addr in &targets {
+            self.send_to(&msg, addr).await?;
+        }
+        Ok(targets.len())
+    }
+
     /// Get all covered layers in the network (by other peers)
     pub async fn get_covered_layers(&self, model: &str) -> Vec<u32> {
         let peers = self.peers.read().await;
@@ -557,13 +626,18 @@ impl Network {
         let assignment_gossip = assignment.clone();
         tokio::spawn(async move {
             let mut ticker = interval(Duration::from_secs(GOSSIP_INTERVAL_SECS));
+            let mut tick: u64 = 0;
             loop {
                 ticker.tick().await;
+                tick = tick.wrapping_add(1);
                 // Announce unconditionally: a node without a model still has to
                 // be discoverable, otherwise a freshly configured cluster is
                 // made of nodes that only listen and never speak.
                 let asgn = assignment_gossip.read().await.clone();
                 let _ = net_gossip.announce(asgn.as_ref()).await;
+                // Descoberta contínua: sem isto, quem só é alcançável fora da
+                // LAN nunca é aprendido depois do arranque.
+                let _ = net_gossip.discovery_sweep(tick).await;
                 net_gossip.cleanup_dead_peers().await;
             }
         });
@@ -957,6 +1031,136 @@ mod tests {
         net.announce(None).await.unwrap();
         net.bootstrap_discovery().await.unwrap();
         assert!(net.peers.read().await.is_empty());
+    }
+
+    /// Uma sonda: sobe um socket UDP local fingindo ser um peer, e devolve o
+    /// primeiro datagrama que chegar dentro do prazo.
+    async fn probe() -> (Arc<UdpSocket>, String) {
+        let sock = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = sock.local_addr().unwrap().to_string();
+        (Arc::new(sock), addr)
+    }
+
+    async fn recv_msg(sock: &UdpSocket, ms: u64) -> Option<P2PMessage> {
+        let mut buf = vec![0u8; 65535];
+        match tokio::time::timeout(Duration::from_millis(ms), sock.recv_from(&mut buf)).await {
+            Ok(Ok((len, _))) => serde_json::from_slice(&buf[..len]).ok(),
+            _ => None,
+        }
+    }
+
+    fn dummy_peer(node_id: &str, addr: &str) -> PeerInfo {
+        PeerInfo {
+            node_id: node_id.into(),
+            pubkey: "p".into(),
+            addr: addr.into(),
+            model: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            memory_mb: 0.0,
+            last_seen: Utc::now(),
+            ollama_port: None,
+            inference_port: None,
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: None,
+            role: String::new(),
+            hostname: String::new(),
+            capabilities: Vec::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+        }
+    }
+
+    /// A descoberta transitiva era de tiro único: `PeerRequest` só saía no
+    /// arranque e só para os bootstrap nodes. Fora da LAN (sem o broadcast IPv4
+    /// para mascarar) um peer conhecido nunca era perguntado de novo, então os
+    /// peers *dele* nunca eram aprendidos. O laço de gossip tem que voltar a
+    /// perguntar, periodicamente, também aos peers vivos.
+    #[tokio::test]
+    async fn a_known_peer_is_asked_for_its_peers_periodically() {
+        let (sock, addr) = probe().await;
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        net.peers
+            .write()
+            .await
+            .insert("peer-a".into(), dummy_peer("peer-a", &addr));
+
+        // Tique que cai numa varredura de descoberta.
+        net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap();
+
+        let msg = recv_msg(&sock, 500).await.expect("nada chegou no peer");
+        assert!(
+            matches!(msg, P2PMessage::PeerRequest { .. }),
+            "esperava PeerRequest, veio {msg:?}"
+        );
+    }
+
+    /// A varredura não pode perguntar a todo mundo em todo tique: isso é
+    /// O(peers²) de PeerList. Cada tique de varredura fala com no máximo
+    /// `SWEEP_FANOUT` peers, e o rodízio cobre o cluster inteiro ao longo do
+    /// tempo.
+    #[tokio::test]
+    async fn the_sweep_rotates_over_a_bounded_subset() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let mut probes = Vec::new();
+        {
+            let mut peers = net.peers.write().await;
+            for i in 0..8 {
+                let (sock, addr) = probe().await;
+                let id = format!("peer-{i}");
+                peers.insert(id.clone(), dummy_peer(&id, &addr));
+                probes.push((id, sock));
+            }
+        }
+
+        let mut asked: std::collections::HashSet<String> = Default::default();
+        let mut sweeps = 0u64;
+        // Percorre tiques suficientes para o rodízio dar a volta.
+        for tick in 1..=(DISCOVERY_SWEEP_TICKS * 8) {
+            let sent = net.discovery_sweep(tick).await.unwrap();
+            if tick % DISCOVERY_SWEEP_TICKS == 0 {
+                sweeps += 1;
+                assert!(
+                    sent <= SWEEP_FANOUT,
+                    "varredura falou com {sent} peers, acima do limite {SWEEP_FANOUT}"
+                );
+            } else {
+                assert_eq!(sent, 0, "tique fora da varredura não deve perguntar nada");
+            }
+        }
+        assert_eq!(sweeps, 8);
+
+        for (id, sock) in &probes {
+            if recv_msg(sock, 50).await.is_some() {
+                asked.insert(id.clone());
+            }
+        }
+        assert_eq!(asked.len(), 8, "o rodízio tem que cobrir todos os peers");
+    }
+
+    /// Mesma guarda de `a_detached_node_neither_announces_nor_looks_for_bootstrap`,
+    /// agora para o caminho novo.
+    #[tokio::test]
+    async fn a_detached_node_does_not_sweep() {
+        let (sock, addr) = probe().await;
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        net.peers
+            .write()
+            .await
+            .insert("peer-a".into(), dummy_peer("peer-a", &addr));
+        net.detach().await;
+
+        assert_eq!(net.discovery_sweep(DISCOVERY_SWEEP_TICKS).await.unwrap(), 0);
+        assert!(recv_msg(&sock, 300).await.is_none(), "nó destacado falou");
     }
 
     #[tokio::test]

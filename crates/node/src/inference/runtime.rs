@@ -483,10 +483,101 @@ fn port_is_free(port: u16) -> bool {
     }
 }
 
+/// Os PIDs que seguram `port`, lidos da saída do `netstat -ano` do Windows.
+///
+/// Separada da chamada de processo justamente para poder ser testada em
+/// qualquer sistema: é a parte que erra calado, e um PID lido errado aqui
+/// vira um `taskkill` em processo inocente.
+///
+/// Formato das linhas (o estado some nas de UDP, mas o PID é sempre o último
+/// campo):
+///
+/// ```text
+///   TCP    0.0.0.0:8181     0.0.0.0:0    LISTENING    1234
+///   TCP    [::]:8181        [::]:0       LISTENING    1234
+///   UDP    0.0.0.0:8181     *:*                       5678
+/// ```
+#[cfg_attr(not(windows), allow(dead_code))]
+fn parse_netstat_pids(saida: &str, port: u16) -> Vec<u32> {
+    let mut pids = Vec::new();
+    for linha in saida.lines() {
+        let campos: Vec<&str> = linha.split_whitespace().collect();
+        if campos.len() < 4 {
+            continue;
+        }
+        // O endereço local é o segundo campo. Comparar a porta como número, e
+        // não o sufixo textual, evita casar 18181 com 8181.
+        let local = campos[1];
+        let Some((_, porta)) = local.rsplit_once(':') else {
+            continue;
+        };
+        if porta.parse::<u16>() != Ok(port) {
+            continue;
+        }
+        if let Ok(pid) = campos[campos.len() - 1].parse::<u32>() {
+            // PID 0 é o processo ocioso do sistema: não é dono de nada que
+            // possamos matar, e mandar um taskkill nele só gera erro.
+            if pid != 0 && !pids.contains(&pid) {
+                pids.push(pid);
+            }
+        }
+    }
+    pids
+}
+
+/// Quem está segurando `port`, perguntado do jeito de cada sistema.
+async fn pids_segurando_porta(port: u16) -> Vec<u32> {
+    #[cfg(windows)]
+    {
+        let out = tokio::process::Command::new("netstat")
+            .args(["-ano"])
+            .output()
+            .await;
+        let Ok(out) = out else {
+            warn!("nao foi possivel executar netstat para verificar a porta {port}");
+            return Vec::new();
+        };
+        return parse_netstat_pids(&String::from_utf8_lossy(&out.stdout), port);
+    }
+
+    #[cfg(not(windows))]
+    {
+        let out = tokio::process::Command::new("lsof")
+            .args(["-ti", &format!(":{port}")])
+            .output()
+            .await;
+        let Ok(out) = out else {
+            warn!("nao foi possivel executar lsof para verificar a porta {port}");
+            return Vec::new();
+        };
+        String::from_utf8_lossy(&out.stdout)
+            .split_whitespace()
+            .filter_map(|s| s.parse::<u32>().ok())
+            .collect()
+    }
+}
+
+/// Mata `pid` à força.
+async fn matar_pid(pid: u32) {
+    #[cfg(windows)]
+    let _ = Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .output()
+        .await;
+
+    #[cfg(not(windows))]
+    let _ = Command::new("kill")
+        .arg("-9")
+        .arg(pid.to_string())
+        .output()
+        .await;
+}
+
 /// Kill any process holding `port` so the inference server can bind.
 ///
-/// Uses `lsof -ti :PORT` to find the PID, sends SIGKILL, then polls the port
-/// for up to 5 seconds until it is free.
+/// Unix: `lsof -ti :PORT` acha o PID e leva SIGKILL. Windows: `netstat -ano` e
+/// `taskkill /F /PID`, que são os equivalentes que vêm com o sistema. Depois,
+/// nos dois, a porta é sondada por até 5 segundos até ficar livre.
 async fn free_port(port: u16) {
     // Fast path: if we can bind, the port is already free.
     if port_is_free(port) {
@@ -495,36 +586,19 @@ async fn free_port(port: u16) {
 
     info!("porta {port} em uso — procurando processo para matar");
 
-    let output = tokio::process::Command::new("lsof")
-        .args(["-ti", &format!(":{port}")])
-        .output()
-        .await;
-
-    let Ok(out) = output else {
-        warn!("nao foi possivel executar lsof para verificar a porta {port}");
-        return;
-    };
-
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    if stdout.trim().is_empty() {
-        warn!("porta {port} ocupada mas lsof nao encontrou o processo");
+    let pids = pids_segurando_porta(port).await;
+    if pids.is_empty() {
+        warn!("porta {port} ocupada mas nao foi possivel descobrir o processo");
         return;
     }
 
-    for pid_str in stdout.split_whitespace() {
-        let Ok(pid) = pid_str.parse::<i32>() else {
-            continue;
-        };
+    for pid in pids {
         // Skip our own process - never kill ourselves.
-        if pid == std::process::id() as i32 {
+        if pid == std::process::id() {
             continue;
         }
         info!("matando processo {pid} que ocupa a porta {port}");
-        let _ = Command::new("kill")
-            .arg("-9")
-            .arg(pid.to_string())
-            .output()
-            .await;
+        matar_pid(pid).await;
     }
 
     // Poll for up to 5 seconds until the port is free.
@@ -701,5 +775,42 @@ mod tests {
     #[test]
     fn layers_count_is_inclusive() {
         assert_eq!(cfg().layers_count(), 16);
+    }
+
+    /// A saída do `netstat -ano` é a única pista de quem segura a porta no
+    /// Windows, e um PID lido errado ali vira um `taskkill` em processo
+    /// inocente. O teste roda em qualquer sistema de propósito: o parser é
+    /// código comum, só a chamada do processo é que muda por plataforma.
+    #[test]
+    fn netstat_da_os_pids_da_porta_pedida() {
+        let saida = "\
+Conexoes ativas
+
+  Proto  Endereco local         Endereco externo       Estado           PID
+  TCP    0.0.0.0:8181           0.0.0.0:0              LISTENING       1234
+  TCP    [::]:8181              [::]:0                 LISTENING       1234
+  TCP    127.0.0.1:52777        0.0.0.0:0              LISTENING       9999
+  UDP    0.0.0.0:8181          *:*                                     5678
+";
+        // 1234 aparece duas vezes (IPv4 e IPv6) e volta uma vez só.
+        assert_eq!(parse_netstat_pids(saida, 8181), vec![1234, 5678]);
+        assert_eq!(parse_netstat_pids(saida, 52777), vec![9999]);
+        assert!(parse_netstat_pids(saida, 8080).is_empty());
+    }
+
+    /// Comparar a porta como texto casaria 18181 com 8181 e mataria o nó
+    /// vizinho da mesma máquina.
+    #[test]
+    fn netstat_nao_confunde_porta_com_sufixo() {
+        let saida = "  TCP    0.0.0.0:18181    0.0.0.0:0    LISTENING    4242\n";
+        assert!(parse_netstat_pids(saida, 8181).is_empty());
+        assert_eq!(parse_netstat_pids(saida, 18181), vec![4242]);
+    }
+
+    /// PID 0 é o processo ocioso do sistema: mandar taskkill nele só gera erro.
+    #[test]
+    fn netstat_ignora_pid_zero() {
+        let saida = "  TCP    0.0.0.0:8181    0.0.0.0:0    LISTENING    0\n";
+        assert!(parse_netstat_pids(saida, 8181).is_empty());
     }
 }

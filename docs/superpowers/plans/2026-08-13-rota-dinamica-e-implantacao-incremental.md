@@ -51,7 +51,7 @@
 **Interfaces:**
 - Produces: `RouteChoice { addr: String, rtt_ms: f64 }`, `Measurement { addr: String, rtt_ms: Option<f64> }`, `pub fn choose_route(medidas: &[Measurement], atual: Option<&str>) -> Option<RouteChoice>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Crie `crates/node/src/network/route.rs` contendo apenas o bloco de testes abaixo (a implementação vem no passo 3):
 
@@ -123,12 +123,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node route::`
 Expected: FAIL na compilação, `cannot find type Measurement in this scope`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 No topo de `crates/node/src/network/route.rs`, antes do `mod tests`:
 
@@ -205,12 +205,12 @@ Em `crates/node/src/network/mod.rs`, acrescente a linha:
 pub mod route;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node route::`
 Expected: PASS, 7 testes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/network/route.rs crates/node/src/network/mod.rs
@@ -229,7 +229,7 @@ git commit -m "feat(rota): escolha de endereco com margem medida"
 - Consumes: nada.
 - Produces: `pub struct LocalAddr { pub ip: String, pub deprecated: bool, pub temporary: bool }`, `pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<String>`, `pub fn local_addrs() -> Vec<LocalAddr>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Crie `crates/node/src/network/addrs.rs` com só o bloco de testes:
 
@@ -296,12 +296,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node addrs::`
 Expected: FAIL, `cannot find type LocalAddr in this scope`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 No topo de `crates/node/src/network/addrs.rs`:
 
@@ -444,12 +444,12 @@ Em `crates/node/src/network/mod.rs`, acrescente:
 pub mod addrs;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node addrs::`
 Expected: PASS, 5 testes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/network/addrs.rs crates/node/src/network/mod.rs
@@ -468,7 +468,7 @@ git commit -m "feat(rota): enumeracao e filtragem dos enderecos locais"
 - Consumes: `addrs::filter_candidates`, `addrs::local_addrs`.
 - Produces: `PeerInfo.addr_candidates: Vec<String>`, `PeerInfo::inference_candidates(&self) -> Vec<String>`, `Network::self_addr_candidates(&self) -> Vec<String>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Acrescente ao `mod tests` de `crates/node/src/network/network.rs`:
 
@@ -510,12 +510,12 @@ fn a_peer_without_candidates_falls_back_to_its_single_addr() {
 
 Use o helper `fake_peer()` já existente no módulo de testes; se ele não existir com esse nome, crie-o a partir do `PeerInfo` montado no teste `peer_list_chunks` (linhas ~890) e reaproveite.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node network::tests::the_observed`
 Expected: FAIL, `no field addr_candidates on type PeerInfo`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `PeerInfo` (após o campo `addr`):
 
@@ -605,12 +605,12 @@ Em `gateway.rs`, no `PeerInfo` da entrada própria, acrescente
 Compile e corrija os demais literais de `PeerInfo` que o compilador apontar
 (testes e `webui.rs`) acrescentando `addr_candidates: Vec::new(),`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node`
 Expected: PASS, todos os testes anteriores mais os 3 novos.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/network/network.rs crates/node/src/backend/gateway.rs
@@ -629,7 +629,7 @@ git commit -m "feat(rota): Announce e PeerInfo carregam conjunto de enderecos"
 - Consumes: `choose_route`, `Measurement`, `PeerInfo::inference_candidates`.
 - Produces: `pub struct RouteTable`, `RouteTable::new()`, `RouteTable::resolve(&self, node_id: &str) -> Option<String>`, `RouteTable::measure_peer(&self, http: &reqwest::Client, node_id: &str, candidatos: &[String])`, `RouteTable::snapshot(&self) -> Vec<(String, RouteChoice)>`, `RouteTable::mark_failure(&self, node_id: &str, addr: &str)`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Acrescente ao `mod tests` de `route.rs`:
 
@@ -701,12 +701,12 @@ pub mod tests_support {
 }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node route::`
 Expected: FAIL, `cannot find type RouteTable in this scope`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `route.rs`, antes do `mod tests`:
 
@@ -859,12 +859,12 @@ O tique de 30 s é só a checagem; quem decide se mede de verdade é
 `precisa_medir`, com o intervalo de 5 minutos da spec. No regime normal quase
 todo tique não mede ninguém.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node route::`
 Expected: PASS, 10 testes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/network/route.rs crates/node/src/network/network.rs
@@ -883,7 +883,7 @@ git commit -m "feat(rota): medicao periodica por /health e tabela de rotas"
 - Consumes: `RouteTable::resolve`, `PeerInfo::inference_candidates`.
 - Produces: `PipelineStep.inference_candidates: Vec<String>`, `pub fn resolve_step_url(step: &PipelineStep, tabela: &RouteTable, fixadas: &mut HashMap<String, String>) -> String`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Em `pipeline.rs`, no `mod tests`:
 
@@ -938,12 +938,12 @@ Em `pipeline.rs`, no `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node pipeline::tests::a_step_without`
 Expected: FAIL, `no field inference_candidates on type PipelineStep`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `PipelineStep`, depois de `inference_url`:
 
@@ -991,12 +991,12 @@ Em `prefill.rs`, em `run_ring` e em `run`, substitua os usos de
 recebida por parâmetro a partir do `GatewayState`. Na falha de um salto,
 chame `tabela.mark_failure(&head.node_id, &url_usada)` antes de propagar o erro.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/routing/pipeline.rs crates/node/src/inference/prefill.rs
@@ -1017,7 +1017,7 @@ git commit -m "feat(rota): quem disca resolve o endereco, fixado por sessao"
 - Consumes: `RouteTable::snapshot`.
 - Produces: campo `route: { addr: string, rtt_ms: number } | null` em `PeerView`; chaves `dashboard.route` e `dashboard.routeUnmeasured`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Em `webui.rs`, no `mod tests`:
 
@@ -1032,12 +1032,12 @@ Em `webui.rs`, no `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node webui::tests::the_cluster_view`
 Expected: FAIL, `cannot find function route_view_for`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `webui.rs`:
 
@@ -1102,12 +1102,12 @@ e no bloco português:
     "dashboard.routeUnmeasured": () => "ainda não medida",
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node && cd apps/frontend && npm run build`
 Expected: PASS e build da interface sem erro de tipo.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/backend/webui.rs apps/frontend/src
@@ -1127,7 +1127,7 @@ git commit -m "feat(rota): rota escolhida e latencia no card de cada no"
 - Consumes: `SelectedSlice`, `RuntimeParams`.
 - Produces: rota `POST /api/ui/deploy/node`, `pub struct AddNodeRequest { pub group: String, pub target_node_id: String, pub start_layer: u32, pub end_layer: u32, pub params: RuntimeParams }`, `pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u32>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Em `deploy.rs`, no `mod tests`:
 
@@ -1153,12 +1153,12 @@ Em `deploy.rs`, no `mod tests`:
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node deploy::tests::overlapping`
 Expected: FAIL, `cannot find function overlapping_layers`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `deploy.rs`:
 
@@ -1196,12 +1196,12 @@ O handler aplica **somente** no nó alvo, reusando o caminho de `apply` que o
 a inferência das outras máquinas: derrubaria quem já está servindo, que é
 exatamente o que este caminho existe para evitar.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node deploy::`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/backend/deploy.rs
@@ -1219,7 +1219,7 @@ git commit -m "feat(implantacao): adicionar um no sem tocar nos demais"
 - Consumes: `overlapping_layers`.
 - Produces: rota `POST /api/ui/deploy/node/remove`, `pub fn uncovered_after_removal(restantes: &[(u32, u32)], removida: (u32, u32)) -> Vec<u32>`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```rust
     /// Tirar uma replica nao descobre camada nenhuma: a rede so perde uma rota
@@ -1245,12 +1245,12 @@ git commit -m "feat(implantacao): adicionar um no sem tocar nos demais"
     }
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cargo test -p node deploy::tests::removing_a_replica`
 Expected: FAIL, `cannot find function uncovered_after_removal`.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 ```rust
 /// Camadas que ficam sem ninguem depois de tirar esta maquina.
@@ -1274,12 +1274,12 @@ Acrescente a rota em `routes()`:
 O handler encaminha ao nó alvo o mesmo caminho que `ReleaseSlice` já usa (quem
 libera a memória é o dono dela) e devolve `{"uncovered_layers": [...]}`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cargo test -p node deploy::`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/node/src/backend/deploy.rs
@@ -1300,7 +1300,7 @@ git commit -m "feat(implantacao): remover no distinguindo replica de buraco"
 - Consumes: `POST /api/ui/deploy/node`, `POST /api/ui/deploy/node/remove`.
 - Produces: `addNode(req)`, `removeNode(nodeId, group)` em `api.ts`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Crie `apps/frontend/src/components/AddNodeDialog.test.tsx`:
 
@@ -1325,12 +1325,12 @@ describe("AddNodeDialog", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/frontend && npx vitest run src/components/AddNodeDialog.test.tsx`
 Expected: FAIL, módulo `./AddNodeDialog` não existe.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 `AddNodeDialog.tsx` monta três campos (nó, fatia, botão Implantar) e, quando a
 faixa escolhida se sobrepõe a `existingRanges`, mostra o aviso
@@ -1360,12 +1360,12 @@ Chaves novas em `locales.ts` (inglês e português):
     "deploy.removeReplica": () => "Outra máquina serve esta faixa. A rede perde uma rota paralela e continua servindo.",
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/frontend && npx vitest run && npm run build`
 Expected: PASS e build sem erro.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src
@@ -1383,7 +1383,7 @@ git commit -m "feat(implantacao): botoes de adicionar e remover no painel"
 **Interfaces:**
 - Consumes: `routing_edges` (rota principal) e `candidate_edges` (paralelas), já existentes em `ClusterView`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Crie `apps/frontend/src/components/ModelNetworkCanvas.test.tsx`:
 
@@ -1414,12 +1414,12 @@ describe("edgeStyle", () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `cd apps/frontend && npx vitest run src/components/ModelNetworkCanvas.test.tsx`
 Expected: FAIL, `edgeStyle` não é exportado.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Em `ModelNetworkCanvas.tsx`:
 
@@ -1445,12 +1445,12 @@ caso contrário `"inativa"`. Troque a seta do `marker` para `fill-aqua` e ajuste
 a legenda para três itens, com as chaves `canvas.legendPrimary`,
 `canvas.legendParallel` e `canvas.legendInactive`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `cd apps/frontend && npx vitest run && npm run build`
 Expected: PASS.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add apps/frontend/src
@@ -1461,9 +1461,9 @@ git commit -m "feat(painel): rota principal, paralelas e inativas na malha"
 
 ## Verificação final
 
-- [ ] `cargo build --release` termina sem erro.
-- [ ] `cargo test --release` passa; o total sobe dos 243 atuais para ~268.
-- [ ] `cd apps/frontend && npm run build` termina sem erro de tipo.
+- [x] `cargo build --release` termina sem erro.
+- [x] `cargo test --release` passa; o total sobe dos 243 atuais para ~268.
+- [x] `cd apps/frontend && npm run build` termina sem erro de tipo.
 - [ ] Num cluster de dois nós em redes diferentes, `/api/ui/cluster` mostra
       `route` preenchida para cada peer, e uma requisição completa nas **duas**
       ordens de pipeline - o caso que falhava em 2026-08-13.

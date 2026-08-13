@@ -374,6 +374,17 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
                 "—"
               )}
             </KeyValue>
+            {/* Por onde este nó fala com aquele: com vários endereços
+                anunciados, "qual deles ganhou" só se responde aqui. */}
+            <KeyValue label={t("dashboard.route")}>
+              {peer.route ? (
+                <span className="font-mono text-xs">
+                  {peer.route.addr} · {Math.round(peer.route.rtt_ms)} ms
+                </span>
+              ) : (
+                <span className="text-muted">{t("dashboard.routeUnmeasured")}</span>
+              )}
+            </KeyValue>
           </dl>
 
           {/* Only on this machine's own card: the slice is released by the node

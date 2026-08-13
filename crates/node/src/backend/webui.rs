@@ -374,6 +374,8 @@ struct PeerView {
     total_layers: u32,
     capabilities: Vec<routing_contract::ModelCapability>,
     inference_url: Option<String>,
+    /// Endereco por onde este no fala com o peer, e a latencia que mediu.
+    route: Option<RouteView>,
     gateway_url: Option<String>,
     load: u32,
     is_self: bool,
@@ -381,6 +383,27 @@ struct PeerView {
     node: Option<serde_json::Value>,
     /// Why the peer could not be reached, when it could not.
     unreachable: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RouteView {
+    pub addr: String,
+    pub rtt_ms: f64,
+}
+
+/// Rota escolhida para este peer, ou `None` quando ainda nao foi medida.
+///
+/// `None` e informacao: significa "ainda nao sei", e a tela diz isso em vez de
+/// mostrar um endereco que ninguem confirmou.
+pub fn route_view_for(node_id: &str, tabela: &crate::route::RouteTable) -> Option<RouteView> {
+    tabela
+        .snapshot()
+        .into_iter()
+        .find(|(id, _)| id == node_id)
+        .map(|(_, escolha)| RouteView {
+            addr: escolha.addr,
+            rtt_ms: escolha.rtt_ms,
+        })
 }
 
 #[derive(Debug, Serialize)]
@@ -523,6 +546,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
                 p.capabilities.clone()
             },
             inference_url: p.inference_url(),
+            route: route_view_for(&p.node_id, &state.network.routes),
             gateway_url: p.gateway_url(),
             load: state.loads.load(&p.node_id).await,
             is_self,
@@ -2506,6 +2530,15 @@ mod delete_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A rota escolhida tem que chegar a interface: sem ela, "por onde este
+    /// salto vai" so se responde com shell na maquina.
+    #[test]
+    fn the_cluster_view_carries_the_chosen_route() {
+        let tabela = crate::route::RouteTable::new();
+        let vista = route_view_for("n1", &tabela);
+        assert!(vista.is_none(), "peer nao medido nao inventa rota");
+    }
 
     /// The GPU number is the one setting a machine gets to disagree about, and
     /// disagreeing must not disturb anything else the pipeline relies on.

@@ -136,6 +136,8 @@ export interface PeerView {
   total_layers: number;
   capabilities: ModelCapability[];
   inference_url: string | null;
+  /** Endereço escolhido para falar com este peer, e a latência medida. */
+  route: { addr: string; rtt_ms: number } | null;
   gateway_url: string | null;
   load: number;
   is_self: boolean;

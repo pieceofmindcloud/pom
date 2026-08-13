@@ -10,12 +10,60 @@
 //!   separate VRAM pool: GPU buffers are wired pages of the same RAM. So the
 //!   GPU section reports `kind: "unified"` with the wired total, and no
 //!   `vram_total` at all, rather than inventing a dedicated-memory figure.
+//! * **Windows** - RAM e disco vêm direto do kernel32 (`GlobalMemoryStatusEx`,
+//!   `GetDiskFreeSpaceExW`), sem depender de nenhum executável externo. VRAM
+//!   continua saindo do `nvidia-smi`, que o driver da NVIDIA instala no PATH;
+//!   sem placa NVIDIA a seção de GPU volta vazia com um aviso, em vez de
+//!   inventar número. Windows não tem load average: os três valores ficam em
+//!   zero e a tela mostra isso como "não se aplica".
 
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::Mutex;
+
+/// Chamadas ao kernel32 declaradas à mão.
+///
+/// São duas funções estáveis desde o Windows 2000 e ambas de assinatura
+/// pequena, então declará-las aqui evita arrastar uma dependência inteira
+/// (`windows-sys`) que só compila num alvo e cujo nome de *feature* não teria
+/// como ser conferido a partir do macOS.
+#[cfg(windows)]
+mod win {
+    /// Layout de `MEMORYSTATUSEX` (winbase.h). Os dois `u32` iniciais somam 8
+    /// bytes, então os `u64` já caem alinhados: `repr(C)` reproduz o struct
+    /// exatamente.
+    #[repr(C)]
+    pub struct MemoryStatusEx {
+        pub dw_length: u32,
+        pub dw_memory_load: u32,
+        pub ull_total_phys: u64,
+        pub ull_avail_phys: u64,
+        pub ull_total_page_file: u64,
+        pub ull_avail_page_file: u64,
+        pub ull_total_virtual: u64,
+        pub ull_avail_virtual: u64,
+        pub ull_avail_extended_virtual: u64,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn GlobalMemoryStatusEx(buffer: *mut MemoryStatusEx) -> i32;
+        pub fn GetDiskFreeSpaceExW(
+            directory_name: *const u16,
+            free_bytes_available_to_caller: *mut u64,
+            total_number_of_bytes: *mut u64,
+            total_number_of_free_bytes: *mut u64,
+        ) -> i32;
+    }
+
+    /// Um caminho como o Win32 espera: UTF-16 terminado em zero.
+    pub fn wide(path: &std::path::Path) -> Vec<u16> {
+        use std::os::windows::ffi::OsStrExt;
+        path.as_os_str().encode_wide().chain(Some(0)).collect()
+    }
+}
 
 /// Samples are cached this long; the UI polls faster than the numbers move,
 /// and `nvidia-smi` costs a process spawn.
@@ -124,34 +172,63 @@ pub fn sample_disk() -> DiskStat {
     // working directory — see `config::project_root`.
     let cwd = crate::config::project_root();
     let mount = cwd.to_string_lossy().to_string();
-    let out = std::process::Command::new("df")
-        .arg("-m")
-        .arg(&cwd)
-        .output()
-        .ok()
-        .and_then(|o| String::from_utf8(o.stdout).ok());
 
-    if let Some(output) = out {
-        let lines: Vec<&str> = output.lines().collect();
-        if lines.len() >= 2 {
-            let fields: Vec<&str> = lines[1].split_whitespace().collect();
-            if fields.len() >= 4 {
-                if let (Ok(total), Ok(free)) = (fields[1].parse::<u64>(), fields[3].parse::<u64>())
-                {
-                    return DiskStat {
-                        total_mb: total,
-                        free_mb: free,
-                        mount_point: mount,
-                    };
+    // Windows não tem `df`; o volume que contém o diretório responde direto.
+    #[cfg(windows)]
+    {
+        let path = win::wide(&cwd);
+        let (mut free_caller, mut total, mut free_total) = (0u64, 0u64, 0u64);
+        let ok = unsafe {
+            win::GetDiskFreeSpaceExW(path.as_ptr(), &mut free_caller, &mut total, &mut free_total)
+        } != 0;
+        if ok {
+            // `free_caller` já desconta a cota do usuário, que é o número que
+            // importa para saber se uma fatia cabe.
+            return DiskStat {
+                total_mb: total / 1_048_576,
+                free_mb: free_caller / 1_048_576,
+                mount_point: mount,
+            };
+        }
+        return DiskStat {
+            total_mb: 0,
+            free_mb: 0,
+            mount_point: mount,
+        };
+    }
+
+    #[cfg(not(windows))]
+    {
+        let out = std::process::Command::new("df")
+            .arg("-m")
+            .arg(&cwd)
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok());
+
+        if let Some(output) = out {
+            let lines: Vec<&str> = output.lines().collect();
+            if lines.len() >= 2 {
+                let fields: Vec<&str> = lines[1].split_whitespace().collect();
+                if fields.len() >= 4 {
+                    if let (Ok(total), Ok(free)) =
+                        (fields[1].parse::<u64>(), fields[3].parse::<u64>())
+                    {
+                        return DiskStat {
+                            total_mb: total,
+                            free_mb: free,
+                            mount_point: mount,
+                        };
+                    }
                 }
             }
         }
-    }
 
-    DiskStat {
-        total_mb: 0,
-        free_mb: 0,
-        mount_point: mount,
+        DiskStat {
+            total_mb: 0,
+            free_mb: 0,
+            mount_point: mount,
+        }
     }
 }
 
@@ -245,6 +322,31 @@ async fn read_memory() -> (MemStat, Option<f64>) {
         return (MemStat::new(total_mb, 0.0), None);
     }
 
+    #[cfg(windows)]
+    {
+        // `ullAvailPhys` é o equivalente honesto do MemAvailable do Linux: o
+        // que uma carga nova conseguiria sem paginar.
+        let mut st = win::MemoryStatusEx {
+            dw_length: std::mem::size_of::<win::MemoryStatusEx>() as u32,
+            dw_memory_load: 0,
+            ull_total_phys: 0,
+            ull_avail_phys: 0,
+            ull_total_page_file: 0,
+            ull_avail_page_file: 0,
+            ull_total_virtual: 0,
+            ull_avail_virtual: 0,
+            ull_avail_extended_virtual: 0,
+        };
+        let ok = unsafe { win::GlobalMemoryStatusEx(&mut st) } != 0;
+        if ok {
+            let mb = |b: u64| b as f64 / 1_048_576.0;
+            return (MemStat::new(mb(st.ull_total_phys), mb(st.ull_avail_phys)), None);
+        }
+        // Falhou: zeros dizem "não sei", e é assim que o resto do sistema lê
+        // (ver os guardas `> 0` em `deploy.rs`).
+        return (MemStat::new(0.0, 0.0), None);
+    }
+
     #[allow(unreachable_code)]
     (MemStat::new(0.0, 0.0), None)
 }
@@ -335,8 +437,29 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
         }
     }
 
-    let _ = ram;
-    (GpuKind::None, None, Vec::new(), Vec::new())
+    #[cfg(windows)]
+    {
+        // Sem NVIDIA não há de onde ler VRAM sem falar com DXGI ou WMI, e
+        // nenhum dos dois diria quanto da placa está em uso pelo nosso
+        // processo. Então o honesto é não reportar GPU nenhuma e dizer por quê.
+        return (
+            GpuKind::None,
+            Some(
+                "Nenhuma GPU NVIDIA encontrada (o `nvidia-smi` não respondeu). \
+                 Neste alvo a inferência roda em CPU e não há leitura de VRAM \
+                 para mostrar."
+                    .to_string(),
+            ),
+            Vec::new(),
+            Vec::new(),
+        );
+    }
+
+    #[allow(unreachable_code)]
+    {
+        let _ = ram;
+        (GpuKind::None, None, Vec::new(), Vec::new())
+    }
 }
 
 /// Query NVIDIA cards. Returns `None` when `nvidia-smi` is absent or fails,
@@ -420,6 +543,11 @@ async fn mac_gpu_name() -> Option<String> {
 
 // ── Misc host facts ──────────────────────────────────────────────────────────
 
+/// Load average de 1/5/15 minutos.
+///
+/// Windows não tem o conceito: o contador equivalente do WMI mede fila de
+/// processador, que não é a mesma grandeza e enganaria quem compara os nós
+/// lado a lado. Lá os três valores ficam em zero de propósito.
 async fn read_load_avg() -> [f64; 3] {
     #[cfg(target_os = "linux")]
     {
@@ -464,14 +592,22 @@ async fn hostname() -> String {
     if let Some(h) = CACHED.get() {
         return h.clone();
     }
+    // No Windows o nome vem de COMPUTERNAME, que o sistema sempre define, e
+    // isso poupa um spawn de processo. O `hostname.exe` existe e responderia,
+    // mas cada spawn abre um console por um instante.
+    #[cfg(windows)]
+    let name = std::env::var("COMPUTERNAME").unwrap_or_default();
+
+    #[cfg(not(windows))]
     let name = match Command::new("hostname").output().await {
         Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
         Err(_) => String::new(),
     };
-    let name = if name.is_empty() {
+
+    let name = if name.trim().is_empty() {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
     } else {
-        name
+        name.trim().to_string()
     };
     let _ = CACHED.set(name.clone());
     name

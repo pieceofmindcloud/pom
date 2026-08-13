@@ -46,6 +46,10 @@ pub enum P2PMessage {
         node_id: String,
         pubkey: String,
         addr: String,
+        /// Todos os enderecos deste no. `serde(default)` mantem um no antigo
+        /// parseavel: sem candidatos, o `addr` unico continua valendo.
+        #[serde(default)]
+        addr_candidates: Vec<String>,
         model: String,
         start_layer: u32,
         end_layer: u32,
@@ -97,6 +101,13 @@ pub struct PeerInfo {
     pub node_id: String,
     pub pubkey: String,
     pub addr: String,
+    /// Todos os enderecos em que este peer pode ser encontrado.
+    ///
+    /// `addr` continua sendo o preferido historico e o unico que um no antigo
+    /// entende. Este conjunto e o que permite a quem vai discar escolher, em
+    /// vez de aceitar a escolha de quem planejou de outro lugar da rede.
+    #[serde(default)]
+    pub addr_candidates: Vec<String>,
     pub model: String,
     pub start_layer: u32,
     pub end_layer: u32,
@@ -164,6 +175,34 @@ impl PeerInfo {
     pub fn ollama_url(&self) -> Option<String> {
         self.ollama_port
             .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
+    }
+
+    /// Acrescenta o endereco de onde o pacote realmente veio.
+    ///
+    /// Nao substitui: um caminho que funcionou nao invalida os outros, e e este
+    /// o unico candidato que enxerga NAT.
+    pub fn merge_observed(&mut self, observado: &str) {
+        if !self.addr_candidates.iter().any(|c| c == observado) {
+            self.addr_candidates.push(observado.to_string());
+        }
+    }
+
+    /// URLs do servidor de inferencia, uma por candidato.
+    ///
+    /// Cai no `addr` unico quando o peer nao anunciou candidatos, que e o caso
+    /// de um no rodando binario anterior.
+    pub fn inference_candidates(&self) -> Vec<String> {
+        let Some(porta) = self.inference_port else {
+            return Vec::new();
+        };
+        let base: Vec<&String> = if self.addr_candidates.is_empty() {
+            vec![&self.addr]
+        } else {
+            self.addr_candidates.iter().collect()
+        };
+        base.iter()
+            .map(|a| format!("http://{}:{}", ip_host(a), porta))
+            .collect()
     }
 
     /// Full inference server URL for pipeline calls (None if not running).
@@ -397,6 +436,29 @@ impl Network {
             .map(|a| ip_host(a).to_string())
     }
 
+    /// Enderecos que este no anuncia de si.
+    ///
+    /// O endereco fixado pelo operador vem primeiro; o resto sai das interfaces
+    /// desta maquina, ja filtrado. Um no sem nenhum endereco enumeravel devolve
+    /// lista vazia, e o peer do outro lado cai no endereco observado - que e o
+    /// comportamento de sempre.
+    pub fn self_addr_candidates(&self) -> Vec<String> {
+        let porta = self.bind_addr.port();
+        crate::addrs::filter_candidates(
+            crate::addrs::local_addrs(),
+            self.advertised_host().as_deref(),
+        )
+        .into_iter()
+        .map(|ip| {
+            if ip.contains(':') && !ip.starts_with('[') {
+                format!("[{ip}]:{porta}")
+            } else {
+                format!("{ip}:{porta}")
+            }
+        })
+        .collect()
+    }
+
     /// What this node puts in `Announce.addr`.
     ///
     /// `0.0.0.0:<port>` is the "ask the receiver" sentinel: `handle_message`
@@ -462,6 +524,7 @@ impl Network {
             node_id: self.node_id.clone(),
             pubkey: self.pubkey.clone(),
             addr: self.announce_addr(),
+            addr_candidates: self.self_addr_candidates(),
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
@@ -700,6 +763,7 @@ impl Network {
                 node_id,
                 pubkey,
                 addr,
+                addr_candidates,
                 model,
                 start_layer,
                 end_layer,
@@ -730,10 +794,11 @@ impl Network {
                     addr.clone()
                 };
 
-                let peer = PeerInfo {
+                let mut peer = PeerInfo {
                     node_id: node_id.clone(),
                     pubkey,
-                    addr: peer_addr,
+                    addr: peer_addr.clone(),
+                    addr_candidates,
                     model: model.clone(),
                     start_layer,
                     end_layer,
@@ -778,6 +843,11 @@ impl Network {
                         end_layer
                     );
                 }
+
+                // O endereco de onde o pacote veio e o unico comprovadamente
+                // funcional, mas nao invalida os outros: por isso entra no
+                // conjunto em vez de substitui-lo.
+                peer.merge_observed(&peer_addr);
 
                 let mut peers = self.peers.write().await;
                 peers.insert(node_id, peer);
@@ -949,6 +1019,7 @@ mod tests {
             node_id: "n".into(),
             pubkey: "p".into(),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
+            addr_candidates: Vec::new(),
             model: "qwen35".into(),
             start_layer: 4,
             end_layer: 31,
@@ -985,6 +1056,7 @@ mod tests {
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
+            addr_candidates: Vec::new(),
             model: "qwen35".into(),
             start_layer: 4,
             end_layer: 31,
@@ -1020,6 +1092,89 @@ mod tests {
                     chunk.len()
                 );
             }
+        }
+    }
+
+    fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {
+        PeerInfo {
+            node_id: "n1".into(),
+            pubkey: "p".into(),
+            addr: "192.168.1.9:42777".into(),
+            addr_candidates: candidatos.into_iter().map(String::from).collect(),
+            model: "qwen35".into(),
+            start_layer: 0,
+            end_layer: 19,
+            total_layers: 40,
+            memory_mb: 1.0,
+            last_seen: Utc::now(),
+            ollama_port: None,
+            inference_port: Some(8181),
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(8080),
+            role: "node".into(),
+            hostname: "h".into(),
+            capabilities: Vec::new(),
+            connection_verified: false,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+        }
+    }
+
+    /// O endereco de origem do pacote e acrescentado, nao substitui: e o unico
+    /// caminho comprovadamente funcional, mas nao e o unico que existe.
+    /// Substituir era o que fazia dois nos da mesma LAN, que se conheceram pela
+    /// internet, nunca descobrirem que tambem eram vizinhos.
+    #[test]
+    fn the_observed_address_joins_the_candidate_set() {
+        let mut peer = peer_com_candidatos(vec!["192.168.1.9:42777"]);
+        peer.merge_observed("[2804:f30::1]:42777");
+        assert_eq!(
+            peer.addr_candidates,
+            vec!["192.168.1.9:42777".to_string(), "[2804:f30::1]:42777".to_string()],
+        );
+    }
+
+    #[test]
+    fn an_already_known_observed_address_is_not_duplicated() {
+        let mut peer = peer_com_candidatos(vec!["192.168.1.9:42777"]);
+        peer.merge_observed("192.168.1.9:42777");
+        assert_eq!(peer.addr_candidates.len(), 1);
+    }
+
+    /// Um no rodando binario anterior nao manda `addr_candidates`. O campo cai
+    /// no default e o `addr` unico dele vira o unico candidato: o cluster de
+    /// versoes misturadas continua funcionando.
+    #[test]
+    fn a_peer_without_candidates_falls_back_to_its_single_addr() {
+        let peer = peer_com_candidatos(vec![]);
+        assert_eq!(peer.inference_candidates(), vec!["http://192.168.1.9:8181".to_string()]);
+    }
+
+    /// Cada candidato vira uma URL de inferencia, com o IPv6 entre colchetes.
+    #[test]
+    fn every_candidate_becomes_an_inference_url() {
+        let peer = peer_com_candidatos(vec!["192.168.1.9:42777", "[2804:f30::1]:42777"]);
+        assert_eq!(
+            peer.inference_candidates(),
+            vec![
+                "http://192.168.1.9:8181".to_string(),
+                "http://[2804:f30::1]:8181".to_string(),
+            ],
+        );
+    }
+
+    /// Um no antigo manda Announce sem o campo novo. Se isso deixasse de
+    /// parsear, o cluster partiria ao meio numa atualizacao parcial.
+    #[test]
+    fn an_announce_without_candidates_still_parses() {
+        let antigo = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+            "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
+            "timestamp":"2026-08-13T00:00:00Z"}"#;
+        let msg: P2PMessage = serde_json::from_str(antigo).expect("Announce antigo tem que parsear");
+        match msg {
+            P2PMessage::Announce { addr_candidates, .. } => assert!(addr_candidates.is_empty()),
+            _ => panic!("esperava Announce"),
         }
     }
 
@@ -1073,6 +1228,7 @@ mod tests {
             node_id: node_id.into(),
             pubkey: "p".into(),
             addr: addr.into(),
+            addr_candidates: Vec::new(),
             model: String::new(),
             start_layer: 0,
             end_layer: 0,

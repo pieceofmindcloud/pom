@@ -284,6 +284,7 @@ async fn handle_event(
                 node_id,
                 pubkey,
                 addr,
+                addr_candidates,
                 model,
                 start_layer,
                 end_layer,
@@ -305,7 +306,13 @@ async fn handle_event(
                     .insert_peer(PeerInfo {
                         node_id,
                         pubkey,
-                        addr,
+                        // O caminho do gossipsub nao tem endereco de origem para
+                        // reescrever, e o anunciado costuma ser o literal
+                        // `0.0.0.0`. Com candidatos ha o que usar: o primeiro
+                        // deles e um endereco de verdade, e o `0.0.0.0` so
+                        // sobrevive quando o peer nao anunciou nenhum.
+                        addr: addr_candidates.first().cloned().unwrap_or(addr),
+                        addr_candidates,
                         model,
                         start_layer,
                         end_layer,

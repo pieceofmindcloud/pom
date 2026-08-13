@@ -782,6 +782,11 @@ async fn main() -> Result<()> {
                         node_id: net_disc.node_id.clone(),
                         pubkey: net_disc.pubkey.clone(),
                         addr: net_disc.announce_addr(),
+                        // Sem isto o anuncio por gossipsub viaja com o literal
+                        // `0.0.0.0`: o caminho libp2p nao tem endereco de
+                        // origem para reescrever, e quem so chegasse por ele
+                        // ficava com uma URL apontando para o proprio no.
+                        addr_candidates: net_disc.self_addr_candidates(),
                         model: a.model.clone(),
                         start_layer: a.start_layer,
                         end_layer: a.end_layer,

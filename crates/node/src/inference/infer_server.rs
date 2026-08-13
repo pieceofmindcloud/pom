@@ -183,6 +183,7 @@ mod relay_tests {
         PipelineStep {
             node_id: node_id.into(),
             inference_url: url,
+            inference_candidates: Vec::new(),
             start_layer: 16,
             end_layer: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],

@@ -398,6 +398,7 @@ pub async fn run(
     chunk_size: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<PrefillOutcome> {
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
@@ -405,7 +406,7 @@ pub async fn run(
         return Err(anyhow!("pipeline sem peers"));
     }
     if plan.supports_relay_chain() {
-        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http).await;
+        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http, routes).await;
     }
 
     let mut chunk_index: u32 = 0;
@@ -433,6 +434,7 @@ pub async fn run(
 
         let (mut meta, mut tensor) = send_chunk(
             http,
+            routes,
             &plan.steps[0].inference_url,
             &plan.steps[0].node_id,
             &head_meta,
@@ -474,6 +476,7 @@ pub async fn run(
             });
             let (m, t) = send_chunk(
                 http,
+                routes,
                 &step.inference_url,
                 &step.node_id,
                 &body_meta,
@@ -536,6 +539,7 @@ async fn run_ring(
     chunk_size: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -572,7 +576,10 @@ async fn run_ring(
             |_issue| {},
         )
         .await
-        .map_err(|e| ring_relay_error(&head.node_id, e))?;
+        .map_err(|e| {
+        routes.mark_failure(&head.node_id, &head.inference_url);
+        ring_relay_error(&head.node_id, e)
+    })?;
 
         for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
             trace.record_hop_from_json(i, Phase::Prefill, &entry);
@@ -637,6 +644,7 @@ async fn run_ring(
 #[allow(clippy::too_many_arguments)]
 async fn send_chunk(
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
     inference_url: &str,
     node_id: &str,
     meta: &serde_json::Value,
@@ -680,7 +688,12 @@ async fn send_chunk(
         ));
     }
 
-    let sent = result?;
+    let sent = result.map_err(|e| {
+        // Esperar o ciclo de 5 minutos significaria falhar tudo que chegasse
+        // nesse meio tempo. A proxima medicao reescolhe.
+        routes.mark_failure(node_id, inference_url);
+        e
+    })?;
     let processing_ms = sent
         .meta
         .get("processing_ms")
@@ -710,9 +723,10 @@ pub async fn step(
     token_id: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<(u32, String, bool, RequestTrace)> {
     if plan.supports_relay_chain() {
-        return step_ring(plan, model, session_id, token_id, dtype, http).await;
+        return step_ring(plan, model, session_id, token_id, dtype, http, routes).await;
     }
 
     let n_peers = plan.steps.len();
@@ -749,7 +763,10 @@ pub async fn step(
             .timeout(Duration::from_secs(600))
             .send()
             .await
-            .map_err(|e| anyhow!("peer {} não respondeu: {e}", peer.node_id))?;
+            .map_err(|e| {
+                routes.mark_failure(&peer.node_id, &peer.inference_url);
+                anyhow!("peer {} não respondeu: {e}", peer.node_id)
+            })?;
         let response_headers_ms = started.elapsed().as_millis() as u64;
 
         if !resp.status().is_success() {
@@ -811,6 +828,7 @@ async fn step_ring(
     token_id: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<(u32, String, bool, RequestTrace)> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
@@ -835,7 +853,10 @@ async fn step_ring(
         |_issue| {},
     )
     .await
-    .map_err(|e| ring_relay_error(&head.node_id, e))?;
+    .map_err(|e| {
+        routes.mark_failure(&head.node_id, &head.inference_url);
+        ring_relay_error(&head.node_id, e)
+    })?;
 
     for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
         trace.record_hop_from_json(i, Phase::Decode, &entry);
@@ -907,11 +928,13 @@ pub async fn step_speculative(
     m: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<SpeculativeStep> {
     if plan.supports_relay_chain() {
-        return step_speculative_ring(plan, model, session_id, token_id, k, m, dtype, http).await;
+        return step_speculative_ring(plan, model, session_id, token_id, k, m, dtype, http, routes)
+            .await;
     }
-    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http).await
+    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http, routes).await
 }
 
 async fn step_speculative_hub(
@@ -923,6 +946,7 @@ async fn step_speculative_hub(
     m: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<SpeculativeStep> {
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
@@ -964,7 +988,11 @@ async fn step_speculative_hub(
             &peer_label,
             |_issue| {},
         )
-        .await?;
+        .await
+        .map_err(|e| {
+            routes.mark_failure(&peer.node_id, &peer.inference_url);
+            e
+        })?;
 
         let processing_ms = sent
             .meta
@@ -1000,6 +1028,7 @@ async fn step_speculative_ring(
     m: u32,
     dtype: WireDtype,
     http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
 ) -> Result<SpeculativeStep> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
@@ -1025,7 +1054,10 @@ async fn step_speculative_ring(
         |_issue| {},
     )
     .await
-    .map_err(|e| ring_relay_error(&head.node_id, e))?;
+    .map_err(|e| {
+        routes.mark_failure(&head.node_id, &head.inference_url);
+        ring_relay_error(&head.node_id, e)
+    })?;
 
     for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
         trace.record_hop_from_json(i, Phase::Decode, &entry);

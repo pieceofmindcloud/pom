@@ -74,6 +74,13 @@ pub struct PipelineStep {
     pub node_id: String,
     /// Full HTTP base URL, e.g. "http://192.168.1.5:8181"
     pub inference_url: String,
+    /// Todos os enderecos por onde este hop pode ser alcancado.
+    ///
+    /// `inference_url` continua preenchido e e o que um no antigo le. Quem
+    /// disca prefere esta lista, porque a escolha tem que ser de quem mediu: o
+    /// plano pode ter sido montado por uma maquina noutra rede.
+    #[serde(default)]
+    pub inference_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
     /// Advertised receiver capabilities. An absent v2 signal must remain on
@@ -258,6 +265,7 @@ pub async fn plan_pipeline(
         steps.push(PipelineStep {
             node_id: chosen.node_id.clone(),
             inference_url,
+            inference_candidates: chosen.inference_candidates(),
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
@@ -281,6 +289,27 @@ pub async fn plan_pipeline(
         edges,
         total_layers,
     })
+}
+
+/// Endereco por onde falar com este hop, decidido por quem vai discar.
+///
+/// `fixadas` e a memoria da sessao: uma vez escolhido, o endereco daquele no
+/// nao muda ate a sessao acabar.
+pub fn resolve_step_url(
+    step: &PipelineStep,
+    tabela: &crate::route::RouteTable,
+    fixadas: &mut std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(ja) = fixadas.get(&step.node_id) {
+        return ja.clone();
+    }
+    let escolhido = tabela
+        .resolve(&step.node_id)
+        .filter(|url| step.inference_candidates.iter().any(|c| c == url))
+        .or_else(|| step.inference_candidates.first().cloned())
+        .unwrap_or_else(|| step.inference_url.clone());
+    fixadas.insert(step.node_id.clone(), escolhido.clone());
+    escolhido
 }
 
 #[cfg(test)]
@@ -319,6 +348,7 @@ mod ipv6_tests {
         let step = PipelineStep {
             node_id: "old".into(),
             inference_url: "http://127.0.0.1:8181".into(),
+            inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: Vec::new(),
@@ -331,6 +361,7 @@ mod ipv6_tests {
         let step = PipelineStep {
             node_id: "new".into(),
             inference_url: "http://127.0.0.1:8181".into(),
+            inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: vec!["frame/v2-zstd-f16".into()],
@@ -338,10 +369,60 @@ mod ipv6_tests {
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::ZstdF16);
     }
 
+    fn step_com(candidatos: Vec<&str>, url: &str) -> PipelineStep {
+        PipelineStep {
+            node_id: "n1".into(),
+            inference_url: url.into(),
+            inference_candidates: candidatos.into_iter().map(String::from).collect(),
+            start_layer: 0,
+            end_layer: 9,
+            inference_frame_capabilities: Vec::new(),
+        }
+    }
+
+    /// Um step sem candidatos e um no rodando binario anterior. Cair no
+    /// `inference_url` e o que impede um cluster de versoes misturadas de
+    /// partir ao meio.
+    #[test]
+    fn a_step_without_candidates_falls_back_to_the_resolved_url() {
+        let tabela = crate::route::RouteTable::new();
+        let mut fixadas = std::collections::HashMap::new();
+        let step = step_com(vec![], "http://192.168.1.9:8181");
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://192.168.1.9:8181",
+        );
+    }
+
+    /// A escolha da sessao nao muda no meio: o cache KV do outro lado e por
+    /// sessao, e trocar de endereco na metade e pior que a rota lenta.
+    #[test]
+    fn the_route_is_pinned_for_the_whole_session() {
+        let tabela = crate::route::RouteTable::new();
+        let mut fixadas = std::collections::HashMap::new();
+        fixadas.insert("n1".to_string(), "http://escolhido:8181".to_string());
+        let step = step_com(vec!["http://outro:8181"], "http://legado:8181");
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://escolhido:8181",
+        );
+    }
+
+    /// Sem medicao para aquele no, o primeiro candidato serve - e melhor que o
+    /// `inference_url`, que foi resolvido por outra maquina.
+    #[test]
+    fn without_a_measurement_the_first_candidate_is_used() {
+        let tabela = crate::route::RouteTable::new();
+        let mut fixadas = std::collections::HashMap::new();
+        let step = step_com(vec!["http://a:8181", "http://b:8181"], "http://legado:8181");
+        assert_eq!(resolve_step_url(&step, &tabela, &mut fixadas), "http://a:8181");
+    }
+
     fn step(caps: &[&str]) -> PipelineStep {
         PipelineStep {
             node_id: "n".into(),
             inference_url: "http://127.0.0.1:8181".into(),
+            inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),

@@ -515,7 +515,7 @@ pub async fn generate_stream(
     // call, so parallel requests keep isolated KV cache state.
     let session_id = Uuid::new_v4().to_string();
 
-    let Some(plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await else {
+    let Some(mut plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await else {
         let _ = tx
             .send(GenEvent::Failed(format!(
                 "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
@@ -523,6 +523,19 @@ pub async fn generate_stream(
             .await;
         return;
     };
+
+    // A rota e escolhida por quem vai discar, nao por quem planejou: o plano
+    // pode ter vindo de uma maquina noutra rede, e so este no mediu os
+    // candidatos. Resolver aqui, uma vez, fixa o endereco de cada hop para a
+    // sessao inteira - o cache KV do outro lado e por sessao, e trocar de
+    // endereco na metade e pior que a rota lenta.
+    {
+        let mut fixadas = std::collections::HashMap::new();
+        for step in plan.steps.iter_mut() {
+            step.inference_url =
+                crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
+        }
+    }
 
     info!(
         "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={}",
@@ -571,6 +584,7 @@ pub async fn generate_stream(
             chunk_tokens,
             dtype,
             &state.http,
+            &state.network.routes,
         )
         .await
         {
@@ -626,6 +640,7 @@ pub async fn generate_stream(
                     speculative_m,
                     dtype,
                     &state.http,
+                    &state.network.routes,
                 )
                 .await;
 
@@ -727,7 +742,15 @@ pub async fn generate_stream(
 
         for i in 0..max_tokens {
             let res =
-                crate::prefill::step(&plan, &model, &session_id, next_token, dtype, &state.http)
+                crate::prefill::step(
+                    &plan,
+                    &model,
+                    &session_id,
+                    next_token,
+                    dtype,
+                    &state.http,
+                    &state.network.routes,
+                )
                     .await;
 
             match res {

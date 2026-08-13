@@ -44,13 +44,13 @@ pub fn routes() -> Router<GatewayState> {
         .route("/v1/completions", axum::routing::options(preflight))
 }
 
-async fn preflight() -> impl IntoResponse {
+pub(crate) async fn preflight() -> impl IntoResponse {
     (StatusCode::NO_CONTENT, cors_headers())
 }
 
 /// The API is unauthenticated on a trusted LAN; allowing any origin keeps
 /// browser-based clients working without a proxy.
-fn cors_headers() -> HeaderMap {
+pub(crate) fn cors_headers() -> HeaderMap {
     let mut h = HeaderMap::new();
     h.insert(
         header::ACCESS_CONTROL_ALLOW_ORIGIN,
@@ -198,7 +198,7 @@ pub fn render_prompt(messages: &[ChatMessage]) -> String {
 /// peer's llama.cpp context. Completion tokens are counted exactly by the
 /// pipeline; prompt tokens are the usual ~4-chars-per-token approximation, kept
 /// only because clients expect the field to exist.
-fn approx_tokens(text: &str) -> u32 {
+pub(crate) fn approx_tokens(text: &str) -> u32 {
     ((text.chars().count() as f64) / 4.0).ceil() as u32
 }
 
@@ -213,7 +213,7 @@ struct ModelObject {
 }
 
 /// Models this cluster can actually serve: whatever labels the peers advertise.
-async fn model_ids(state: &GatewayState) -> Vec<String> {
+pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
     let mut ids: Vec<String> = state
         .all_peers()
         .await
@@ -382,7 +382,7 @@ async fn completions(
 
 /// Use the requested model when a peer serves it, otherwise fall back to
 /// whatever this cluster is actually running.
-async fn resolve_model(state: &GatewayState, requested: String) -> String {
+pub(crate) async fn resolve_model(state: &GatewayState, requested: String) -> String {
     if model_ids(state).await.contains(&requested) {
         requested
     } else {

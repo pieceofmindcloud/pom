@@ -141,6 +141,31 @@ mod tests {
             .unwrap()
             .is_empty());
     }
+
+    /// O socket tem que atender IPv4 mesmo estando ligado em `[::]`, e é isso
+    /// que `IPV6_V6ONLY=0` compra. O teste conecta por 127.0.0.1 de verdade,
+    /// porque o defeito que ele guarda não aparece na leitura do código: o
+    /// caminho antigo desligava a opção *depois* do bind, o que não tem efeito
+    /// nenhum. No Linux passava por acidente (o padrão do sistema já é 0) e no
+    /// Windows deixaria o servidor mudo para todo peer IPv4 da LAN.
+    #[test]
+    fn listener_em_ipv6_tambem_atende_ipv4() {
+        let l = match listener_dual_stack(0) {
+            Ok(l) => l,
+            // Máquina sem IPv6 cai no IPv4 puro, e aí não há o que provar.
+            Err(_) => return,
+        };
+        let port = l.local_addr().unwrap().port();
+        if l.local_addr().unwrap().is_ipv4() {
+            return;
+        }
+
+        let aceito = std::thread::spawn(move || l.accept().is_ok());
+        let conectou = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
+
+        assert!(conectou, "um cliente IPv4 não conseguiu conectar em [::]");
+        assert!(aceito.join().unwrap(), "a conexão IPv4 não foi aceita");
+    }
 }
 
 /// `relay_and_bubble` against a real (in-process, on a loopback port) fake
@@ -531,31 +556,49 @@ pub async fn run(
 
 // ── Socket ────────────────────────────────────────────────────────────────────
 
-async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
-    use std::net::TcpListener as StdTcp;
+/// Um listener que atende IPv6 e IPv4 no mesmo socket, caindo para IPv4 puro
+/// quando não há IPv6 na máquina.
+///
+/// `IPV6_V6ONLY` só vale se for desligado **antes** do `bind`, e é por isso que
+/// o socket é montado à mão em vez de sair do `TcpListener::bind`. O caminho
+/// antigo chamava `setsockopt` depois do bind: no Linux passava despercebido
+/// porque `net.ipv6.bindv6only` já é 0 por padrão, mas no Windows o padrão é 1
+/// e o servidor de inferência simplesmente não aceitaria nenhum peer IPv4 -
+/// que é como todo o cluster da LAN fala.
+///
+/// `SO_REUSEADDR` continua fora de propósito: no Windows ele deixa outro
+/// processo tomar uma porta já ligada, e é justamente o "address already in
+/// use" que denuncia um servidor velho ainda de pé.
+fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
+    use socket2::{Domain, Protocol, Socket, Type};
+    use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
-    // Try dual-stack (IPv6 with IPV6_V6ONLY=0 so IPv4 works too).
-    if let Ok(std_sock) = StdTcp::bind(format!("[::]:{port}")) {
-        #[cfg(target_os = "linux")]
-        {
-            use std::os::unix::io::AsRawFd;
-            unsafe {
-                let fd = std_sock.as_raw_fd();
-                let val: libc::c_int = 0;
-                libc::setsockopt(
-                    fd,
-                    libc::IPPROTO_IPV6,
-                    libc::IPV6_V6ONLY,
-                    &val as *const _ as *const libc::c_void,
-                    std::mem::size_of_val(&val) as libc::socklen_t,
-                );
-            }
+    // Backlog: o mesmo que o `TcpListener::bind` da std usa.
+    const BACKLOG: i32 = 128;
+
+    let v6 = (|| -> std::io::Result<std::net::TcpListener> {
+        let sock = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        sock.set_only_v6(false)?;
+        sock.bind(&SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port).into())?;
+        sock.listen(BACKLOG)?;
+        Ok(sock.into())
+    })();
+
+    match v6 {
+        Ok(l) => Ok(l),
+        Err(e) => {
+            // Sem IPv6 na máquina: IPv4 puro ainda serve o cluster inteiro.
+            tracing::debug!("bind IPv6 em [::]:{port} falhou ({e}); tentando IPv4");
+            let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            sock.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
+            sock.listen(BACKLOG)?;
+            Ok(sock.into())
         }
-        std_sock.set_nonblocking(true)?;
-        return Ok(TcpListener::from_std(std_sock)?);
     }
-    // IPv6 unavailable; fall back to IPv4.
-    let std_sock = StdTcp::bind(format!("0.0.0.0:{port}"))?;
+}
+
+async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
+    let std_sock = listener_dual_stack(port)?;
     std_sock.set_nonblocking(true)?;
     Ok(TcpListener::from_std(std_sock)?)
 }

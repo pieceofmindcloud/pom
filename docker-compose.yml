@@ -23,10 +23,18 @@ x-node: &node
     RDMA_P2P_HOME: /data
     RDMA_P2P_UI_DIST: /app/apps/frontend/dist
 
+# Cada no precisa da sua propria porta de gateway ANTES de existir um
+# rdma-p2p.json: com o diretorio de dados vazio o no sobe em modo setup, que
+# usa o --gateway-port da linha de comando. Sem isto os tres pedem a 8080 e
+# dois morrem com "Address already in use", que e o que acontecia num checkout
+# limpo. A 8080 fica de fora de proposito: na ksia ela e do code-server.
+# As portas P2P e de inferencia sao escolhidas depois, na tela de setup, e
+# tambem precisam ser distintas entre os tres.
 services:
   node-gpu:
     <<: *node
     container_name: rdma-p2p-node-gpu
+    command: ["--gateway-port", "8101"]
     volumes:
       - ./tests/fixtures/node-gpu:/data
       - ./models:/data/models
@@ -59,6 +67,7 @@ services:
   node-cpu-1:
     <<: *node
     container_name: rdma-p2p-node-cpu-1
+    command: ["--gateway-port", "8102"]
     volumes:
       - ./tests/fixtures/node-cpu-1:/data
       - ./models:/data/models
@@ -66,6 +75,7 @@ services:
   node-cpu-2:
     <<: *node
     container_name: rdma-p2p-node-cpu-2
+    command: ["--gateway-port", "8103"]
     volumes:
       - ./tests/fixtures/node-cpu-2:/data
       - ./models:/data/models

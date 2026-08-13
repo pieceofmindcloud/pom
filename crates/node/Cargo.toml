@@ -16,7 +16,7 @@ metal = ["llama-cpp-sys-2/metal"]
 [dependencies]
 llama-cpp-sys-2 = { version = "0.1.154", default-features = false }
 half = "2"
-libc = "0.2"
+socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 serde.workspace = true

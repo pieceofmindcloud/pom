@@ -305,6 +305,26 @@ pub fn advertised_addr(raw: &str, default_port: u16) -> Option<String> {
 }
 
 impl Network {
+    /// Socket UDP que enxerga IPv6 e IPv4 no mesmo descritor.
+    ///
+    /// `IPV6_V6ONLY` só tem efeito se for desligado **antes** do `bind`, e o
+    /// `UdpSocket::bind` da std já liga. No Linux e no macOS o padrão do
+    /// sistema é 0 e a descoberta funcionava por acidente; no Windows o padrão
+    /// é 1, e um nó ligado em `[::]` não receberia anúncio nenhum de peer IPv4
+    /// - ou seja, nenhum peer da LAN. É o mesmo tipo de defeito silencioso e
+    /// só-numa-plataforma que o `normalize` abaixo já guarda com teste.
+    fn bind_udp_dual_stack(addr: SocketAddr) -> std::io::Result<std::net::UdpSocket> {
+        use socket2::{Domain, Protocol, Socket, Type};
+
+        let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))?;
+        sock.set_only_v6(false)?;
+        // Broadcast v4 sai deste socket justamente por causa do only_v6=false.
+        let _ = sock.set_broadcast(true);
+        sock.bind(&addr.into())?;
+        sock.set_nonblocking(true)?;
+        Ok(sock.into())
+    }
+
     pub async fn new(
         node_id: String,
         pubkey: String,
@@ -318,11 +338,10 @@ impl Network {
         // Falls back to IPv4-only if the OS has IPv6 disabled.
         let (socket, bind_addr) = {
             let v6: SocketAddr = format!("[::]:{}", port).parse()?;
-            match UdpSocket::bind(v6).await {
+            match Self::bind_udp_dual_stack(v6) {
                 Ok(s) => {
-                    let _ = s.set_broadcast(true); // no-op on pure IPv6, ignored
                     info!("UDP socket bound to [::]:{} (dual-stack)", port);
-                    (s, v6)
+                    (UdpSocket::from_std(s)?, v6)
                 }
                 Err(e) => {
                     info!("{}", e);
@@ -1170,5 +1189,33 @@ mod tests {
             .unwrap();
         let v6: SocketAddr = "[fe80::1]:42777".parse().unwrap();
         assert_eq!(net.normalize(v6), v6);
+    }
+
+    /// O nó liga em `[::]` e precisa receber de um peer IPv4 - que é como toda
+    /// a LAN fala. Desligar `IPV6_V6ONLY` depois do bind não tem efeito, e no
+    /// Windows o padrão é ligado: sem este socket montado à mão, um nó lá não
+    /// veria anúncio nenhum e a descoberta ficaria muda sem dizer por quê.
+    #[tokio::test]
+    async fn socket_dual_stack_recebe_de_remetente_ipv4() {
+        let alvo: SocketAddr = "[::]:0".parse().unwrap();
+        let Ok(std_sock) = Network::bind_udp_dual_stack(alvo) else {
+            return; // máquina sem IPv6: o caminho v4 puro cobre esse caso
+        };
+        let port = std_sock.local_addr().unwrap().port();
+        let sock = UdpSocket::from_std(std_sock).unwrap();
+
+        let emissor = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        emissor.send_to(b"oi", ("127.0.0.1", port)).await.unwrap();
+
+        let mut buf = [0u8; 8];
+        let recebido = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            sock.recv_from(&mut buf),
+        )
+        .await
+        .expect("nada chegou de um remetente IPv4 no socket [::]")
+        .unwrap();
+
+        assert_eq!(&buf[..recebido.0], b"oi");
     }
 }

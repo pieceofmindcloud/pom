@@ -5,14 +5,17 @@ import {
   LayoutGrid,
   MemoryStick,
   RefreshCw,
+  Plus,
   Route as RouteIcon,
   Zap,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
 import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
+import { RemoveNode } from "../components/RemoveNode";
+import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import {
   Badge,
@@ -26,7 +29,7 @@ import {
   Panel,
   Skeleton,
 } from "../components/ui";
-import { devUpdate } from "../lib/api";
+import { api, devUpdate } from "../lib/api";
 import {
   isServing,
   layerRange,
@@ -39,7 +42,7 @@ import {
 } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { PeerView } from "../lib/types";
+import type { DeployPlan, PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 /** O botão de atualizar e reiniciar, só visível quando o peer aceita o pedido. */
@@ -172,7 +175,19 @@ function ClusterStat({
 }
 
 /** Everything one machine reports, laid out the same way for every machine. */
-function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
+function PeerDetailCard({
+  peer,
+  index,
+  group,
+  otherRanges,
+}: {
+  peer: PeerView;
+  index: number;
+  /** Modelo que o cluster está servindo, que é como o nó agrupa as fatias. */
+  group: string;
+  /** Faixas dos outros peers deste modelo, para saber se este é o último. */
+  otherRanges: [number, number][];
+}) {
   const { t } = useI18n();
   const track = trackOf(index);
   const n = peer.node;
@@ -393,6 +408,20 @@ function PeerDetailCard({ peer, index }: { peer: PeerView; index: number }) {
             <ReleaseSlice startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
           )}
 
+          {/* Tirar uma máquina do modelo é diferente de liberar a fatia da
+              própria: vale para qualquer peer, e quem libera a memória
+              continua sendo o dono dela - este botão só encaminha. */}
+          {serving && group && (
+            <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line px-5 py-3">
+              <RemoveNode
+                nodeId={peer.node_id}
+                group={group}
+                range={[peer.start_layer, peer.end_layer]}
+                existingRanges={otherRanges}
+              />
+            </div>
+          )}
+
           {n?.dev_update && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">
               <Footnote icon={<RefreshCw className="h-3.5 w-3.5" />} className="min-w-0 flex-1">
@@ -434,11 +463,38 @@ export function Dashboard() {
   const { t } = useI18n();
   const [view, setView] = useState<View>("minima");
   const [selected, setSelected] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  // As fatias oferecidas vêm do plano do próprio nó, não de um palpite da
+  // tela: é ele quem sabe o que existe em disco em cada máquina.
+  const [addSlices, setAddSlices] = useState<{ start_layer: number; end_layer: number; label: string }[]>([]);
   const cluster = useCluster();
   const node = useNode();
+  const invalidateAll = useInvalidate();
 
   const c = cluster.data;
   const peers = c ? pipelinePeers(c) : [];
+  const group = c?.active_model ?? "";
+
+  useEffect(() => {
+    if (!adding || !group) return;
+    let live = true;
+    void api
+      .post<DeployPlan>("/api/ui/deploy/plan", { group })
+      .then((plan) => {
+        if (!live) return;
+        setAddSlices(
+          plan.steps.map((step) => ({
+            start_layer: step.start_layer,
+            end_layer: step.end_layer,
+            label: layerRange(step.start_layer, step.end_layer),
+          })),
+        );
+      })
+      .catch(() => setAddSlices([]));
+    return () => {
+      live = false;
+    };
+  }, [adding, group]);
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlight = peers.reduce((sum, p) => sum + p.load, 0);
 
@@ -458,7 +514,13 @@ export function Dashboard() {
         <ClusterStat label={t("dashboard.model")} value={c.active_model || "—"} detail={c.complete ? t("dashboard.closedPipeline") : t("dashboard.incompletePipeline")} tone={c.complete ? "aqua" : "amber"} />
         <ClusterStat label={t("dashboard.inFlight")} value={num(inFlight)} detail={node.data ? t("dashboard.thisNode", { count: num(node.data.load) }) : t("dashboard.requestsNow")} tone={inFlight > 0 ? "amber" : "neutral"} />
       </div>
-      <ViewSwitch view={view} onChange={setView} />
+      <div className="flex items-center gap-2">
+        <Button size="sm" variant="outline" onClick={() => setAdding(true)}>
+          <Plus className="h-3.5 w-3.5" />
+          {t("deploy.addNode")}
+        </Button>
+        <ViewSwitch view={view} onChange={setView} />
+      </div>
     </div>
 
     {view === "minima" ? (
@@ -468,7 +530,7 @@ export function Dashboard() {
         {peers.length === 0 ? (
           <Panel><Empty icon={<MemoryStick className="h-5 w-5" />} title={t("dashboard.noMachines")}>{t("dashboard.noMachinesDetail")}</Empty></Panel>
         ) : (
-          <div className="grid gap-5 xl:grid-cols-2">{peers.map((p, i) => <PeerDetailCard key={p.node_id} peer={p} index={i} />)}</div>
+          <div className="grid gap-5 xl:grid-cols-2">{peers.map((p, i) => <PeerDetailCard key={p.node_id} peer={p} index={i} group={c.active_model} otherRanges={peers.filter((o) => o.node_id !== p.node_id).map((o) => [o.start_layer, o.end_layer] as [number, number])} />)}</div>
         )}
         <Footnote icon={<Zap className="h-3.5 w-3.5" />} className="mt-5">{t("dashboard.sampled", { time: since(node.data?.system.sampled_at) })}</Footnote>
       </div>
@@ -477,6 +539,16 @@ export function Dashboard() {
     {/* Keep the former execution-order rail available for a later surface; the
         graph above is now the primary operational view. */}
     <div className="hidden" aria-hidden="true"><LayerRibbon cluster={c} /><PipelineRail cluster={c} selected={selected} onSelect={setSelected} /></div>
+
+    <AddNodeDialog
+      open={adding}
+      group={group}
+      peers={c.peers.map((p) => ({ node_id: p.node_id, short_id: p.short_id, hostname: p.node?.hostname ?? p.short_id }))}
+      slices={addSlices}
+      existingRanges={peers.map((p) => [p.start_layer, p.end_layer] as [number, number])}
+      onClose={() => setAdding(false)}
+      onDone={() => invalidateAll()}
+    />
 
     {c.peers.length === 0 && <div className="absolute inset-x-0 bottom-0 z-20 p-4"><Panel><Empty icon={<HardDrive className="h-5 w-5" />} title={t("dashboard.emptyNetwork")}>{t("dashboard.emptyNetworkDetail")}</Empty></Panel></div>}
   </div>;

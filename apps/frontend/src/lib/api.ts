@@ -116,6 +116,38 @@ export function devUpdate(nodeId?: string) {
   );
 }
 
+/**
+ * Soma uma máquina a um modelo que já está no ar.
+ *
+ * Toca só o nó alvo: quem já está servindo não é reiniciado. A resposta traz
+ * as camadas que ficaram sobrepostas, que é como o operador sabe se criou uma
+ * rota paralela ou preencheu um buraco.
+ */
+export function addNode(req: {
+  group: string;
+  target_node_id: string;
+  start_layer: number;
+  end_layer: number;
+}) {
+  return api.post<{ applied: boolean; overlapping_layers: number[] }>(
+    "/api/ui/deploy/node",
+    req,
+  );
+}
+
+/**
+ * Tira uma máquina de um modelo, sem tocar nas outras.
+ *
+ * `uncovered_layers` vazio significa que outra máquina serve a mesma faixa: a
+ * rede perde uma rota paralela e continua servindo.
+ */
+export function removeNode(nodeId: string, group: string) {
+  return api.post<{ removed: boolean; uncovered_layers: number[] }>(
+    "/api/ui/deploy/node/remove",
+    { node_id: nodeId, group, target_node_id: nodeId },
+  );
+}
+
 /** Open an SSE stream and yield each `data:` payload as it lands. */
 export async function* streamSse(
   path: string,

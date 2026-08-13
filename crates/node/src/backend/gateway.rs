@@ -140,10 +140,17 @@ impl GatewayState {
         // on a node configured through the web UI.
         {
             let local = self.local_assignment.read().await.clone();
+            // Not `127.0.0.1`: this entry travels as-is into `next_hops` for
+            // ring relaying, and a downstream hop on another machine dialing
+            // "127.0.0.1" reaches itself, not us. Hub mode dialing its own
+            // machine over the real LAN IP instead of loopback still works
+            // (the inference server binds `0.0.0.0`), so there is no
+            // hub-mode trade-off to make here.
+            let self_host = crate::pkarr_node::detect_local_ip().unwrap_or_else(|| "127.0.0.1".into());
             peers.push(PeerInfo {
                 node_id: self.network.node_id.clone(),
                 pubkey: self.network.pubkey.clone(),
-                addr: format!("127.0.0.1:{}", self.network.bind_addr.port()),
+                addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 model: local.as_ref().map(|l| l.model.clone()).unwrap_or_default(),
                 start_layer: local.as_ref().map(|l| l.start_layer).unwrap_or(0),
                 end_layer: local.as_ref().map(|l| l.end_layer).unwrap_or(0),

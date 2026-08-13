@@ -23,6 +23,27 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::io::{Cursor, Read};
 
+/// Nível de compressão do corpo f16, medido e não escolhido de memória
+/// (`zstd_level_ratio_versus_encode_time`, neste arquivo, macOS arm64,
+/// zstd 0.13, tensor sintético de hidden_dim 4096):
+///
+/// | regime | nível 3 | nível 6 | nível 9 |
+/// |---|---|---|---|
+/// | prefill 512x4096 compressível | 1,56x / 14,9 ms | 1,73x / 32,5 ms | 1,75x / 39,6 ms |
+/// | decode 1x4096 (alta entropia) | 1,08x / 0,025 ms | 1,08x / 0,056 ms | 1,08x / 0,144 ms |
+///
+/// Do 3 para o 6, no regime compressível: 268 KB a menos, que num enlace de
+/// 100 Mbps são **21,4 ms de rede economizados por 17,6 ms de CPU** — positivo,
+/// e cresce quanto mais estreito o enlace. Do 6 para o 9 são 31 KB (2,5 ms de
+/// rede) por 7 ms de CPU — negativo, por isso 9 e 12 foram recusados.
+///
+/// No decode, onde o estado oculto é praticamente incompressível, o nível **não
+/// muda um byte**: 7.570 bytes em 1, 3, 6, 9 e 12. O custo de subir ali é de
+/// 0,03 ms por token, ruído dentro de um orçamento de 60 ms de RTT. Ou seja, a
+/// premissa da spec ("subir o nível é a alavanca barata") só vale para o
+/// prefill; no decode não há nada para ganhar em nível nenhum.
+pub const ZSTD_LEVEL: i32 = 6;
+
 /// Largest decoded tensor payload accepted from an inference peer. The Axum
 /// handlers apply the same body limit before this decoder sees the frame.
 pub const MAX_FRAME_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
@@ -110,7 +131,7 @@ pub fn encode_with_encoding(
                     meta["frame_version"] = Value::from(2);
                     meta["encoding"] = Value::from("zstd");
                     meta["uncompressed_payload_bytes"] = Value::from(expected as u64);
-                    zstd::stream::encode_all(Cursor::new(raw), 3)?
+                    zstd::stream::encode_all(Cursor::new(raw), ZSTD_LEVEL)?
                 }
             }
         }
@@ -354,6 +375,87 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Pseudo-random hidden state with the shape real activations have: mostly
+    /// unit-magnitude, roughly gaussian, a few large outliers. A constant
+    /// tensor would compress ~500x and teach nothing about the wire.
+    fn synthetic_hidden_state(rows: usize, dim: usize) -> Vec<f32> {
+        let mut state = 0x2545_F491_4F6C_DD1D_u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        (0..rows * dim)
+            .map(|i| {
+                // sum of 4 uniforms ≈ gaussian
+                let mut acc = 0.0f32;
+                for _ in 0..4 {
+                    acc += (next() >> 40) as f32 / 8_388_608.0 - 1.0;
+                }
+                let v = acc * 0.6;
+                if i % 4096 == 17 {
+                    v * 30.0
+                } else {
+                    v
+                }
+            })
+            .collect()
+    }
+
+    /// Measurement behind `--ignored`, kept in tree because the level chosen in
+    /// `encode_with_encoding` has to be re-justified whenever zstd or the
+    /// hidden dim changes. Run with:
+    ///
+    /// ```text
+    /// cargo test -p node --release zstd_level -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn zstd_level_ratio_versus_encode_time() {
+        let decode_tensor = synthetic_hidden_state(1, 4096);
+        let prefill_tensor = synthetic_hidden_state(512, 4096);
+        // Narrow band: post-layernorm residual, where the f16 exponent byte
+        // repeats and zstd has something to find.
+        let narrow: Vec<f32> = decode_tensor.iter().map(|v| v * 0.05).collect();
+        let narrow_prefill: Vec<f32> = prefill_tensor.iter().map(|v| v * 0.05).collect();
+        // Baixa entropia: metade dos valores repetida de um conjunto pequeno,
+        // que é o regime onde a razão medida em campo (~1,8x) apareceria.
+        let repetitive: Vec<f32> = prefill_tensor
+            .iter()
+            .enumerate()
+            .map(|(i, v)| if i % 2 == 0 { (i % 7) as f32 * 0.125 } else { *v })
+            .collect();
+        for (name, values) in [
+            ("decode 1x4096", &decode_tensor),
+            ("decode 1x4096 (banda estreita)", &narrow),
+            ("prefill 512x4096 (baixa entropia)", &repetitive),
+            ("prefill 512x4096", &prefill_tensor),
+            ("prefill 512x4096 (banda estreita)", &narrow_prefill),
+        ] {
+            let raw: Vec<u8> = values
+                .iter()
+                .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
+                .collect();
+            println!("\n{name}: {} bytes crus", raw.len());
+            for level in [1, 3, 6, 9, 12] {
+                let reps = if raw.len() > 1 << 20 { 5 } else { 200 };
+                let start = std::time::Instant::now();
+                let mut out = Vec::new();
+                for _ in 0..reps {
+                    out = zstd::stream::encode_all(Cursor::new(&raw[..]), level).unwrap();
+                }
+                let per = start.elapsed().as_secs_f64() * 1000.0 / reps as f64;
+                println!(
+                    "  nivel {level:2}: {} bytes ({:.2}x) em {per:.3} ms  -> 100Mbps: {:.3} ms de rede",
+                    out.len(),
+                    raw.len() as f64 / out.len() as f64,
+                    out.len() as f64 * 8.0 / 100_000.0
+                );
+            }
+        }
+    }
 
     #[test]
     fn compressed_f16_round_trip_is_bounded_and_preserves_the_tensor_shape() {

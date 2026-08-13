@@ -63,6 +63,125 @@ pub fn choose_route(medidas: &[Measurement], atual: Option<&str>) -> Option<Rout
     Some(RouteChoice { addr: melhor_addr.to_string(), rtt_ms: melhor_rtt })
 }
 
+use std::collections::HashMap;
+use std::sync::RwLock;
+use std::time::{Duration, Instant};
+
+/// De quanto em quanto tempo os candidatos sao remedidos.
+pub const INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
+/// Uma sonda que passa disso conta como falha.
+const TIMEOUT_SONDA: Duration = Duration::from_secs(3);
+
+struct Entrada {
+    escolha: RouteChoice,
+    medido_em: Instant,
+}
+
+/// Por onde este no fala com cada peer.
+///
+/// Vive so na memoria deste processo e nao e publicada no gossip: publicar
+/// tabela de medicao transformaria enderecamento em estado distribuido, e o
+/// `PeerList` ja esta no limite da MTU.
+#[derive(Default)]
+pub struct RouteTable {
+    por_no: RwLock<HashMap<String, Entrada>>,
+}
+
+impl RouteTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Endereco escolhido para este peer, se ja medido e ainda valido.
+    pub fn resolve(&self, node_id: &str) -> Option<String> {
+        self.por_no.read().ok()?.get(node_id).map(|e| e.escolha.addr.clone())
+    }
+
+    /// Rota e latencia de cada peer, para a interface mostrar.
+    pub fn snapshot(&self) -> Vec<(String, RouteChoice)> {
+        self.por_no
+            .read()
+            .map(|t| t.iter().map(|(k, v)| (k.clone(), v.escolha.clone())).collect())
+            .unwrap_or_default()
+    }
+
+    /// Tira uma rota de uso na hora, sem esperar o ciclo.
+    ///
+    /// Chamado quando uma requisicao real falhou naquele endereco: esperar 5
+    /// minutos significaria falhar tudo que chegasse nesse meio tempo.
+    pub fn mark_failure(&self, node_id: &str, addr: &str) {
+        if let Ok(mut t) = self.por_no.write() {
+            if t.get(node_id).map(|e| e.escolha.addr == addr).unwrap_or(false) {
+                t.remove(node_id);
+            }
+        }
+    }
+
+    /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
+    pub fn precisa_medir(&self, node_id: &str) -> bool {
+        self.por_no
+            .read()
+            .map(|t| match t.get(node_id) {
+                Some(e) => e.medido_em.elapsed() >= INTERVALO_MEDICAO,
+                None => true,
+            })
+            .unwrap_or(true)
+    }
+
+    /// Mede todos os candidatos e grava a escolha.
+    ///
+    /// A sonda e `GET /health` por HTTP na porta de inferencia, nao ICMP: mede
+    /// o caminho que a inferencia usa de verdade, com firewall e proxy no meio.
+    /// ICMP liberado onde o TCP nao esta mediria um caminho que ninguem percorre.
+    pub async fn measure_peer(&self, http: &reqwest::Client, node_id: &str, candidatos: &[String]) {
+        let mut medidas = Vec::with_capacity(candidatos.len());
+        for base in candidatos {
+            let inicio = Instant::now();
+            let resposta =
+                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{base}/health")).send()).await;
+            let rtt = match resposta {
+                Ok(Ok(r)) if r.status().is_success() => Some(inicio.elapsed().as_secs_f64() * 1000.0),
+                _ => None,
+            };
+            medidas.push(Measurement { addr: base.clone(), rtt_ms: rtt });
+        }
+        let atual = self.resolve(node_id);
+        if let Some(escolha) = choose_route(&medidas, atual.as_deref()) {
+            if let Ok(mut t) = self.por_no.write() {
+                t.insert(node_id.to_string(), Entrada { escolha, medido_em: Instant::now() });
+            }
+        } else if let Ok(mut t) = self.por_no.write() {
+            t.remove(node_id);
+        }
+    }
+}
+
+#[cfg(test)]
+pub mod tests_support {
+    use axum::{routing::get, Router};
+    use std::time::Duration;
+
+    /// Sobe um `/health` local que responde depois de `atraso_ms`, e devolve a
+    /// URL base. E o mesmo endpoint que a sonda usa em producao.
+    pub async fn health_server(atraso_ms: u64) -> String {
+        let app = Router::new().route(
+            "/health",
+            get(move || async move {
+                if atraso_ms > 0 {
+                    tokio::time::sleep(Duration::from_millis(atraso_ms)).await;
+                }
+                "ok"
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +245,60 @@ mod tests {
     fn an_exact_tie_is_broken_deterministically() {
         let medidas = vec![m("b:1", 5.0), m("a:1", 5.0)];
         assert_eq!(choose_route(&medidas, None).unwrap().addr, "a:1");
+    }
+
+    /// Dois servidores locais com atrasos diferentes: o mais rapido vence, e a
+    /// tabela passa a resolver aquele node_id para ele.
+    #[tokio::test]
+    async fn measuring_two_candidates_picks_the_faster_one() {
+        let rapido = tests_support::health_server(0).await;
+        let lento = tests_support::health_server(80).await;
+        let tabela = RouteTable::new();
+        let http = reqwest::Client::new();
+        tabela.measure_peer(&http, "n1", &[lento.clone(), rapido.clone()]).await;
+        assert_eq!(tabela.resolve("n1"), Some(rapido));
+    }
+
+    /// Uma falha marcada tira o endereco de uso imediatamente, sem esperar o
+    /// ciclo de 5 minutos: a proxima requisicao ja vai por outro caminho.
+    #[tokio::test]
+    async fn a_failure_drops_the_route_right_away() {
+        let vivo = tests_support::health_server(0).await;
+        let tabela = RouteTable::new();
+        let http = reqwest::Client::new();
+        tabela.measure_peer(&http, "n1", &[vivo.clone()]).await;
+        assert_eq!(tabela.resolve("n1"), Some(vivo.clone()));
+        tabela.mark_failure("n1", &vivo);
+        assert_eq!(tabela.resolve("n1"), None);
+    }
+
+    /// Candidato morto nao e escolhido so por estar na lista.
+    #[tokio::test]
+    async fn a_dead_candidate_is_never_chosen() {
+        let vivo = tests_support::health_server(0).await;
+        let tabela = RouteTable::new();
+        let http = reqwest::Client::new();
+        // Porta 1 fechada: a sonda falha rapido em vez de esperar o timeout.
+        tabela
+            .measure_peer(&http, "n1", &["http://127.0.0.1:1".to_string(), vivo.clone()])
+            .await;
+        assert_eq!(tabela.resolve("n1"), Some(vivo));
+    }
+
+    /// Um peer nunca medido nao resolve para nada - o chamador cai no
+    /// `inference_url` do plano, que e o comportamento de hoje.
+    #[test]
+    fn an_unmeasured_peer_resolves_to_nothing() {
+        assert_eq!(RouteTable::new().resolve("desconhecido"), None);
+    }
+
+    /// Recem-medido nao remede: e o que mantem a sonda barata no regime normal.
+    #[tokio::test]
+    async fn a_freshly_measured_peer_is_not_measured_again() {
+        let vivo = tests_support::health_server(0).await;
+        let tabela = RouteTable::new();
+        assert!(tabela.precisa_medir("n1"), "nunca medido precisa medir");
+        tabela.measure_peer(&reqwest::Client::new(), "n1", &[vivo]).await;
+        assert!(!tabela.precisa_medir("n1"));
     }
 }

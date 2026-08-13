@@ -252,6 +252,8 @@ pub struct Network {
     /// second half it would be re-discovered on the next gossip tick and the
     /// button would look like it did nothing.
     detached: AtomicBool,
+    /// Por onde este no fala com cada peer, medido por este processo.
+    pub routes: Arc<crate::route::RouteTable>,
 }
 
 /// Payload budget for one UDP datagram, in bytes.
@@ -407,6 +409,7 @@ impl Network {
             advertise_addr: None,
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
+            routes: Arc::new(crate::route::RouteTable::new()),
         })
     }
 
@@ -721,6 +724,35 @@ impl Network {
                 // LAN nunca é aprendido depois do arranque.
                 let _ = net_gossip.discovery_sweep(tick).await;
                 net_gossip.cleanup_dead_peers().await;
+            }
+        });
+
+        // Medicao de rotas, em task propria: uma sonda lenta nao pode segurar o
+        // anuncio nem a limpeza de peers mortos. Com 9 peers e ate 4 candidatos
+        // cada, o timeout de 3 s por sonda passaria de um minuto - e o laco de
+        // gossip e quem expira peer morto.
+        let net_routes = self.clone();
+        tokio::spawn(async move {
+            let http = reqwest::Client::new();
+            let mut ticker = interval(Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                if net_routes.is_detached() {
+                    continue;
+                }
+                for peer in net_routes.alive_peers().await {
+                    if !net_routes.routes.precisa_medir(&peer.node_id) {
+                        continue;
+                    }
+                    let candidatos = peer.inference_candidates();
+                    if candidatos.is_empty() {
+                        continue;
+                    }
+                    net_routes
+                        .routes
+                        .measure_peer(&http, &peer.node_id, &candidatos)
+                        .await;
+                }
             }
         });
 

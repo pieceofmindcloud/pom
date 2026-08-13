@@ -144,7 +144,7 @@ export function addNode(req: {
 export function removeNode(nodeId: string, group: string) {
   return api.post<{ removed: boolean; uncovered_layers: number[] }>(
     "/api/ui/deploy/node/remove",
-    { node_id: nodeId, group, target_node_id: nodeId },
+    { group, target_node_id: nodeId },
   );
 }
 

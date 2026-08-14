@@ -178,6 +178,21 @@ export function undeployPipeline(group: string) {
   return api.post<UndeployReport>("/api/ui/undeploy", { group });
 }
 
+/**
+ * Tira uma máquina da rede: ela descarrega o modelo, para de anunciar e esquece
+ * os peers. O gateway dela continua servindo a interface, que é por onde ela
+ * volta.
+ *
+ * Sem `nodeId` sai esta máquina. Com o `node_id` de outra, este nó repassa o
+ * pedido ao `/api/ui/leave` daquele peer — o painel só usa caminhos relativos.
+ */
+export function leaveNetwork(nodeId?: string) {
+  return api.post<{ detached: boolean }>(
+    "/api/ui/leave",
+    nodeId ? { node_id: nodeId } : {},
+  );
+}
+
 /** Open an SSE stream and yield each `data:` payload as it lands. */
 export async function* streamSse(
   path: string,

@@ -15,6 +15,7 @@ import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
 import { RemoveNode } from "../components/RemoveNode";
+import { LeaveNode } from "../components/LeaveNode";
 import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
@@ -409,19 +410,31 @@ function PeerDetailCard({
             <ReleaseSlice startLayer={cfg.start_layer} endLayer={cfg.end_layer} />
           )}
 
-          {/* Tirar uma máquina do modelo é diferente de liberar a fatia da
-              própria: vale para qualquer peer, e quem libera a memória
-              continua sendo o dono dela - este botão só encaminha. */}
-          {serving && group && (
-            <div className="flex flex-wrap items-center justify-end gap-3 border-t border-line px-5 py-3">
+          {/* Duas saídas diferentes, lado a lado porque são as duas coisas que
+              se pode querer fazer com *esta* máquina daqui:
+
+              - "Remover" a tira do modelo e a deixa no cluster, pronta para
+                receber outra faixa;
+              - "Sair da rede" a tira do cluster inteiro.
+
+              Nos dois casos quem libera a memória é o dono dela - estes botões
+              só encaminham. A saída da rede aparece sempre; tirar do modelo, só
+              quando há um modelo de onde tirar. */}
+          <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line px-5 py-3">
+            {serving && group && (
               <RemoveNode
                 nodeId={peer.node_id}
                 group={group}
                 range={[peer.start_layer, peer.end_layer]}
                 existingRanges={otherRanges}
               />
-            </div>
-          )}
+            )}
+            <LeaveNode
+              nodeId={peer.node_id}
+              hostname={n?.hostname || peer.short_id}
+              isSelf={peer.is_self}
+            />
+          </div>
 
           {n?.dev_update && (
             <div className="flex flex-wrap items-center justify-between gap-3 border-t border-line px-5 py-3">

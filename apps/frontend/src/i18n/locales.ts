@@ -377,6 +377,17 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.updateFailed": ({ hostname }) => "Could not update " + String(hostname),
     "dashboard.updateRestart": () => "Update and restart",
     "dashboard.updateTitle": () => "Update this machine?",
+    "dashboard.leaveNode": () => "Leave network",
+    "dashboard.leaveNodeTitle": ({ hostname }) =>
+      "Take " + String(hostname) + " off the network?",
+    "dashboard.leaveNodeDescription": ({ hostname }) =>
+      String(hostname) +
+      " unloads its model, stops announcing and forgets the peers it knows. Its interface stays up, and that is where it rejoins from.",
+    "dashboard.leftNode": ({ hostname }) => String(hostname) + " left the network",
+    "dashboard.leftNodeDetail": () =>
+      "It stopped announcing. Rejoin from that machine's own Network screen.",
+    "dashboard.leaveNodeFailed": ({ hostname }) =>
+      String(hostname) + " is still on the network",
     "dashboard.updateDescription": () => "Fetches main, rebuilds, and restarts every node on this machine.",
     "dashboard.updateWarning": () => "It stops if there are uncommitted changes or the repository is on another branch. An open cargo build is serialized with this one and the binary is replaced.",
     "dashboard.flow": () => "Flow",
@@ -1010,6 +1021,16 @@ const messages: Record<Locale, Record<string, Message>> = {
     "dashboard.updateFailed": ({ hostname }) => "Não deu para atualizar " + String(hostname),
     "dashboard.updateRestart": () => "Atualizar e reiniciar",
     "dashboard.updateTitle": () => "Atualizar esta máquina?",
+    "dashboard.leaveNode": () => "Sair da rede",
+    "dashboard.leaveNodeTitle": ({ hostname }) => "Tirar " + String(hostname) + " da rede?",
+    "dashboard.leaveNodeDescription": ({ hostname }) =>
+      String(hostname) +
+      " descarrega o modelo, para de anunciar e esquece os peers que conhece. A interface dela continua no ar, e é por lá que ela volta.",
+    "dashboard.leftNode": ({ hostname }) => String(hostname) + " saiu da rede",
+    "dashboard.leftNodeDetail": () =>
+      "Parou de anunciar. Para voltar, use a aba Rede da própria máquina.",
+    "dashboard.leaveNodeFailed": ({ hostname }) =>
+      String(hostname) + " continua na rede",
     "dashboard.updateDescription": () => "Puxa o main, recompila e reinicia todos os nós desta máquina.",
     "dashboard.updateWarning": () => "Para se houver alterações não commitadas ou se o repositório estiver em outro branch. Um cargo build aberto é serializado com este, e o binário é substituído.",
     "dashboard.flow": () => "Fluxo",

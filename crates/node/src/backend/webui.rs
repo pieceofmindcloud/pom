@@ -1776,14 +1776,69 @@ async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) 
     .into_response()
 }
 
-/// Take this node off the network: unload, stop announcing, forget the peers.
+/// A qual máquina o "sair da rede" se refere.
+#[derive(Debug, Default, Deserialize)]
+pub struct LeaveRequest {
+    /// Máquina que deve sair. Ausente, ou o próprio `node_id`, significa esta.
+    #[serde(default)]
+    pub node_id: Option<String>,
+}
+
+/// Take a node off the network: unload, stop announcing, forget the peers.
 ///
 /// The HTTP gateway keeps serving, because the way back in is this same screen.
-async fn leave_network(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+///
+/// Corpo ausente ou sem `node_id` mantém o comportamento antigo — este nó sai —,
+/// que é o que o menu "Este nó" e a tela de Rede sempre pediram. Com `node_id`
+/// de outra máquina o pedido é **repassado** à mesma rota lá, como
+/// `dev/update` já faz: o painel só fala com o próprio nó (caminhos relativos
+/// em `lib/api.ts`), e um card de peer no Painel precisa alcançar aquela
+/// máquina. Quem se desliga é sempre o dono da rede daquele processo; este nó
+/// não tem como detachar outro por fora.
+async fn leave_network(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    body: Option<Json<LeaveRequest>>,
+) -> Response {
+    let target = body.and_then(|Json(b)| b.node_id).unwrap_or_default();
+    if !target.is_empty() && target != state.network.node_id {
+        return forward_leave(&state, &target).await;
+    }
+
     state.runtime.stop().await;
     state.network.detach().await;
     info!("nó saiu da rede pela interface");
     Json(json!({ "detached": true })).into_response()
+}
+
+/// Repassa o "sair da rede" ao peer escolhido, sem `node_id` — lá ele é local.
+async fn forward_leave(state: &GatewayState, node_id: &str) -> Response {
+    let Some(base) = state
+        .all_peers()
+        .await
+        .iter()
+        .find(|p| p.node_id == node_id)
+        .and_then(|p| p.gateway_url())
+    else {
+        return bad_request("peer desconhecido ou sem porta de gateway anunciada");
+    };
+    let key = state.auth.read().await.connection_key.clone();
+    match state
+        .http
+        .post(format!("{base}/api/ui/leave"))
+        .bearer_auth(&key)
+        .json(&json!({}))
+        .timeout(PEER_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => {
+            info!("{node_id} saiu da rede a pedido deste nó");
+            Json(json!({ "detached": true, "node_id": node_id })).into_response()
+        }
+        Ok(r) => bad_request(format!("a máquina recusou: HTTP {}", r.status())),
+        Err(e) => bad_request(format!("máquina inacessível: {e}")),
+    }
 }
 
 // ── Releasing a slice, and the network taking it back up ─────────────────────
@@ -2574,6 +2629,113 @@ mod delete_tests {
 
         std::fs::remove_dir_all(&root).ok();
         std::fs::remove_dir_all(&outro).ok();
+    }
+}
+
+/// "Sair da rede" no card de uma máquina.
+#[cfg(test)]
+mod leave_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with};
+    use axum::routing::post as axum_post;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// Uma máquina que atende `/api/ui/leave` e conta os pedidos.
+    async fn fake_machine(status: StatusCode) -> (u16, Arc<AtomicU32>) {
+        let hits = Arc::new(AtomicU32::new(0));
+        let counter = hits.clone();
+        let app = Router::new().route(
+            "/api/ui/leave",
+            axum_post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (status, Json(json!({ "detached": true })))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, hits)
+    }
+
+    /// O card de um peer manda o nó local repassar: o painel só fala com o
+    /// próprio nó, e quem se desliga é sempre o dono daquele processo.
+    #[tokio::test]
+    async fn leaving_for_a_peer_is_forwarded_to_that_peer() {
+        let (port, hits) = fake_machine(StatusCode::OK).await;
+        let state = state_with("eu", vec![peer("outro", "ksia", port)]).await;
+
+        let resp = leave_network(
+            ConnectionAuth,
+            State(state.clone()),
+            Some(Json(LeaveRequest {
+                node_id: Some("outro".into()),
+            })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_of(resp).await["node_id"], "outro");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+
+        // E este nó continua na rede: o pedido era sobre a outra máquina.
+        assert!(
+            !state.network.is_detached(),
+            "repassar não pode desligar quem repassou"
+        );
+    }
+
+    /// Corpo ausente e o próprio `node_id` são a mesma coisa: este nó sai. É o
+    /// caminho que o menu "Este nó" e a tela de Rede sempre usaram.
+    #[tokio::test]
+    async fn leaving_without_a_target_still_detaches_this_node() {
+        let state = state_with("eu", vec![]).await;
+        let resp = leave_network(ConnectionAuth, State(state.clone()), None).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(state.network.is_detached());
+
+        let state = state_with("eu", vec![]).await;
+        let _ = leave_network(
+            ConnectionAuth,
+            State(state.clone()),
+            Some(Json(LeaveRequest {
+                node_id: Some("eu".into()),
+            })),
+        )
+        .await;
+        assert!(state.network.is_detached());
+    }
+
+    /// Uma máquina que não responde é recusa com motivo, não um "saiu" falso.
+    #[tokio::test]
+    async fn a_peer_that_refuses_is_not_reported_as_gone() {
+        let (port, _) = fake_machine(StatusCode::INTERNAL_SERVER_ERROR).await;
+        let state = state_with("eu", vec![peer("outro", "ksia", port)]).await;
+
+        let resp = leave_network(
+            ConnectionAuth,
+            State(state.clone()),
+            Some(Json(LeaveRequest {
+                node_id: Some("outro".into()),
+            })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert!(!state.network.is_detached());
+
+        // Peer que nem existe na tabela também não vira sucesso.
+        let resp = leave_network(
+            ConnectionAuth,
+            State(state.clone()),
+            Some(Json(LeaveRequest {
+                node_id: Some("fantasma".into()),
+            })),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
 

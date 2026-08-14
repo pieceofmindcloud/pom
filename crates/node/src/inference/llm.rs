@@ -12,9 +12,12 @@
 //! `ggml_backend_sched_eval_callback` that fires when the last block's output
 //! tensor (`l_out-<N>`) is computed and copies it before output_norm sees it.
 //!
-//! The callback is an `extern "C"` fn with no closure environment. We store the
-//! capture state in two process-global `Mutex`es. Because only one decode runs
-//! at a time (serialised by the HTTP server's per-engine mutex), this is safe.
+//! The callback is an `extern "C"` fn with no closure environment, so the
+//! capture state travels in llama.cpp's own `cb_eval_user_data`: each context
+//! owns a `CaptureSlot` and the callback is handed its address. It used to be
+//! two process-global `Mutex`es, safe only while a single decode ran at a time;
+//! with two contexts decoding in parallel that became a race in which one
+//! request would carry the other's residual - no error, just a wrong answer.
 
 use anyhow::{bail, Context, Result};
 use std::ffi::{c_void, CStr, CString};
@@ -25,28 +28,50 @@ use tracing::warn;
 
 use llama_cpp_sys_2 as sys;
 
-// ── Capture globals ───────────────────────────────────────────────────────────
+// ── Capture state, one per context ────────────────────────────────────────────
 
-static CAPTURE_WANT: Mutex<Option<CString>> = Mutex::new(None);
-static CAPTURE_BUF: Mutex<Option<Vec<f32>>> = Mutex::new(None);
-static CAPTURE_COPY_US: Mutex<u64> = Mutex::new(0);
+/// Estado da captura de um contexto.
+///
+/// Já foi global de processo, e o comentário do topo deste arquivo dizia que
+/// isso era seguro porque um decode rodava por vez. Deixou de ser verdade no
+/// momento em que dois contextos passaram a decodificar em paralelo: as duas
+/// requisições escreveriam no mesmo buffer e uma levaria o residual da outra -
+/// sem erro nenhum, só resposta errada. Agora cada contexto tem o seu, e o
+/// endereço viaja no `cb_eval_user_data` do próprio llama.cpp.
+struct CaptureSlot {
+    want: Option<CString>,
+    buf: Option<Vec<f32>>,
+    copy_us: u64,
+}
 
 unsafe extern "C" fn capture_callback(
     t: *mut sys::ggml_tensor,
     ask: bool,
-    _user_data: *mut c_void,
+    user_data: *mut c_void,
 ) -> bool {
-    let want = match CAPTURE_WANT.lock() {
+    if user_data.is_null() {
+        return true;
+    }
+    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load` registrou, e ele
+    // aponta para o `Box<Mutex<CaptureSlot>>` do mesmo `LlmEngine` que é dono
+    // deste contexto. O Box vive enquanto o contexto viver (ver `Drop`).
+    let slot = unsafe { &*(user_data as *const Mutex<CaptureSlot>) };
+    let mut slot = match slot.lock() {
         Ok(g) => g,
         Err(_) => return true,
     };
-    let Some(ref target) = *want else { return true };
+    if slot.want.is_none() {
+        return true;
+    }
 
     let name = unsafe { sys::ggml_get_name(t) };
     if name.is_null() {
         return true;
     }
-    let matches = unsafe { CStr::from_ptr(name) } == target.as_c_str();
+    let matches = slot
+        .want
+        .as_deref()
+        .is_some_and(|target| unsafe { CStr::from_ptr(name) } == target);
 
     // The two phases mean different things, and the return value means something
     // different in each — see `ggml_backend_sched_compute_splits`:
@@ -83,13 +108,9 @@ unsafe extern "C" fn capture_callback(
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     if floats.len() == n_floats {
-        if let Ok(mut buf) = CAPTURE_BUF.lock() {
-            *buf = Some(floats);
-        }
+        slot.buf = Some(floats);
     }
-    if let Ok(mut elapsed) = CAPTURE_COPY_US.lock() {
-        *elapsed += copy_started.elapsed().as_micros() as u64;
-    }
+    slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
 }
 
@@ -117,6 +138,9 @@ pub struct LlmEngine {
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
     capture_ok: bool,
+    /// Alvo e buffer da captura deste contexto. `Box` porque o endereço é
+    /// registrado no llama.cpp em `cb_eval_user_data` e não pode mudar.
+    capture: Box<Mutex<CaptureSlot>>,
     offload_kqv: bool,
 }
 
@@ -209,18 +233,23 @@ impl LlmEngine {
         }
 
         // ── Residual capture callback ────────────────────────────────────────
+        let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
+            want: None,
+            buf: None,
+            copy_us: 0,
+        }));
         let capture_ok = if cfg.need_embeddings {
             // Target tensor: l_out-<last_layer_index> of this slice.
             let n_layer = unsafe { sys::llama_model_n_layer(model) };
             let tensor_name =
                 CString::new(format!("l_out-{}", n_layer - 1)).expect("tensor name is valid ASCII");
-            *CAPTURE_WANT.lock().unwrap() = Some(tensor_name);
-            *CAPTURE_BUF.lock().unwrap() = None;
+            capture.lock().unwrap().want = Some(tensor_name);
             cparams.cb_eval = Some(capture_callback);
-            cparams.cb_eval_user_data = ptr::null_mut();
+            // O endereço do Box, não de uma global: é isto que separa a captura
+            // de um contexto da do vizinho quando os dois decodificam juntos.
+            cparams.cb_eval_user_data = &*capture as *const Mutex<CaptureSlot> as *mut c_void;
             true
         } else {
-            *CAPTURE_WANT.lock().unwrap() = None;
             false
         };
 
@@ -258,6 +287,7 @@ impl LlmEngine {
             n_embd,
             n_vocab,
             capture_ok,
+            capture,
             offload_kqv: cfg.offload_kqv,
         })
     }
@@ -462,7 +492,7 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        *CAPTURE_COPY_US.lock().unwrap() = 0;
+        self.capture.lock().unwrap().copy_us = 0;
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -489,7 +519,7 @@ impl LlmEngine {
         }
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: *CAPTURE_COPY_US.lock().unwrap(),
+            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
         if profile_backend_sync() {
@@ -509,7 +539,7 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        *CAPTURE_COPY_US.lock().unwrap() = 0;
+        self.capture.lock().unwrap().copy_us = 0;
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -548,7 +578,7 @@ impl LlmEngine {
         }
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
-            residual_capture_d2h_sync_us: *CAPTURE_COPY_US.lock().unwrap(),
+            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
         if profile_backend_sync() {
@@ -566,7 +596,7 @@ impl LlmEngine {
     /// Must be called exactly once per decode when `need_embeddings` is true.
     pub fn take_residual(&self, n_tokens: usize) -> Result<Vec<f32>> {
         if self.capture_ok {
-            let buf = CAPTURE_BUF.lock().unwrap().take();
+            let buf = self.capture.lock().unwrap().buf.take();
             match buf {
                 Some(v) if v.len() == n_tokens * self.n_embd => Ok(v),
                 Some(v) => bail!(

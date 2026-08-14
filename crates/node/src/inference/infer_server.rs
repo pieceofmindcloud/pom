@@ -167,6 +167,31 @@ mod tests {
         assert!(aceito.join().unwrap(), "a conexão IPv4 não foi aceita");
     }
 
+    /// O socket tem que pedir `SO_REUSEADDR`, como o `TcpListener::bind` da std
+    /// pede sozinho.
+    ///
+    /// Sem isso, toda conexao que ficou em TIME_WAIT naquela porta - e sempre
+    /// ha, porque o gateway sonda `/health` e manda inferencia o tempo todo -
+    /// impede o proximo servidor de ligar por ate um minuto. O sintoma e
+    /// "Address already in use" com `lsof` sem achar dono nenhum: TIME_WAIT nao
+    /// tem processo. Foi o que travou toda implantacao de versao nova, dez
+    /// tentativas seguidas.
+    ///
+    /// A flag se perdeu quando o socket passou a ser montado a mao com
+    /// `socket2` para o dual-stack; um socket cru nao herda o padrao da std.
+    #[test]
+    fn o_listener_pede_reuse_address() {
+        let l = match listener_dual_stack(0) {
+            Ok(l) => l,
+            Err(_) => return,
+        };
+        let sock = socket2::Socket::from(l);
+        assert!(
+            sock.reuse_address().unwrap(),
+            "sem SO_REUSEADDR, TIME_WAIT segura a porta por ~60s a cada troca de versao"
+        );
+    }
+
     /// Porta ocupada tem que falhar *antes* de o modelo ser carregado.
     ///
     /// O `run` ligava o socket depois do `LlmEngine::load`, então cada uma das
@@ -665,6 +690,12 @@ fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
     let v6 = (|| -> std::io::Result<std::net::TcpListener> {
         let sock = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
         sock.set_only_v6(false)?;
+        // O `TcpListener::bind` da std pede isto sozinho no Unix; um socket cru
+        // nao. Sem a flag, cada conexao em TIME_WAIT nesta porta - e o gateway
+        // deixa varias, sondando `/health` e mandando inferencia - impede o
+        // proximo servidor de ligar por ate um minuto, que e mais que as dez
+        // tentativas do supervisor. Toda implantacao de versao nova morria ai.
+        sock.set_reuse_address(true)?;
         sock.bind(&SocketAddr::new(Ipv6Addr::UNSPECIFIED.into(), port).into())?;
         sock.listen(BACKLOG)?;
         Ok(sock.into())
@@ -676,6 +707,7 @@ fn listener_dual_stack(port: u16) -> Result<std::net::TcpListener> {
             // Sem IPv6 na máquina: IPv4 puro ainda serve o cluster inteiro.
             tracing::debug!("bind IPv6 em [::]:{port} falhou ({e}); tentando IPv4");
             let sock = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+            sock.set_reuse_address(true)?;
             sock.bind(&SocketAddr::new(Ipv4Addr::UNSPECIFIED.into(), port).into())?;
             sock.listen(BACKLOG)?;
             Ok(sock.into())

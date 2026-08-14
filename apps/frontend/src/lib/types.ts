@@ -292,6 +292,11 @@ export interface TransferOffer {
   grant: string | null;
   name: string;
   size_bytes: number;
+  /**
+   * Sempre vazio. Quem confere o arquivo é este nó, depois de aceitar, com o
+   * digest que ele pede em `/api/transfer/manifest`; calculá-lo para oferecer
+   * segurava a notificação pelo tempo de ler o arquivo inteiro.
+   */
   md5: string;
   start_layer: number | null;
   end_layer: number | null;

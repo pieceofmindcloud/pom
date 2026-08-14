@@ -160,6 +160,15 @@ export function useTransfers() {
   });
 }
 
+/**
+ * Ofertas de fatia esperando uma resposta.
+ *
+ * Na mesma cadência das transferências, e não mais lenta: uma oferta é uma
+ * pergunta parada esperando por um humano, não uma barra de progresso. Enquanto
+ * o remetente hasheava o arquivo antes de oferecer, este intervalo era ruído
+ * (medidos 3 min 23 s de MD5 numa fatia de 4,2 GB contra 5 s de polling); com a
+ * oferta saindo em milissegundos, o que sobra da espera é justamente isto.
+ */
 export function useOffers() {
   return useQuery({
     queryKey: keys.offers,
@@ -167,7 +176,7 @@ export function useOffers() {
       optional(api.get<{ offers: TransferOffer[] }>("/api/transfer/offers"), {
         offers: [],
       }),
-    refetchInterval: 5000,
+    refetchInterval: 2000,
   });
 }
 

@@ -149,6 +149,14 @@ pub struct TransferOffer {
     pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
+    /// Vazio, e de propósito: **a oferta não carrega digest**.
+    ///
+    /// Quem confere o arquivo é o receptor, com o MD5 que ele mesmo pede em
+    /// `/api/transfer/manifest` depois de aceitar — este campo nunca foi lido
+    /// por ninguém. Calculá-lo aqui custava uma leitura do arquivo inteiro
+    /// *antes* de a oferta sair, e era isso que segurava a notificação do
+    /// outro lado por minutos. O campo continua na estrutura porque um peer de
+    /// versão anterior o exige no corpo do pedido.
     pub md5: String,
     pub start_layer: Option<u32>,
     pub end_layer: Option<u32>,
@@ -595,6 +603,10 @@ pub struct OfferRequest {
     pub grant: Option<String>,
     pub name: String,
     pub size_bytes: u64,
+    /// Opcional: um remetente atualizado não calcula digest para oferecer, e um
+    /// antigo ainda manda o dele. Nenhum dos dois é lido — ver
+    /// [`TransferOffer::md5`].
+    #[serde(default)]
     pub md5: String,
     #[serde(default)]
     pub start_layer: Option<u32>,
@@ -887,6 +899,16 @@ fn local_send_path(requested: &str) -> Result<PathBuf, String> {
 ///
 /// This only knocks on the door: the peer stores the offer and its owner
 /// decides. We never write to another machine's disk uninvited.
+///
+/// **Bater na porta não pode custar o preço de ler o arquivo.** Este caminho já
+/// calculou o MD5 da fatia antes de postar a oferta, e como o digest é uma
+/// leitura do arquivo inteiro, o sino do outro lado só acendia quando ela
+/// terminava: medidos 3 min 23 s para uma fatia de 4,2 GB no cartão SD
+/// (~20 MB/s). O cache por (caminho, mtime, tamanho) mascarava o atraso no
+/// segundo envio do mesmo arquivo, e era daí que vinha o "às vezes" do relato.
+/// O número nem era usado: quem confere o download é o receptor, com o MD5 que
+/// ele pede em `/api/transfer/manifest` depois de aceitar. Aqui basta o
+/// `stat` — tamanho e nome, que é o que a notificação mostra.
 async fn send_to_peer(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
@@ -897,12 +919,12 @@ async fn send_to_peer(
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
 
-    let (size, md5) = match file_digest(&state, &path).await {
-        Ok(v) => v,
+    let size = match tokio::fs::metadata(&path).await {
+        Ok(m) => m.len(),
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": e })),
+                Json(json!({ "error": format!("stat falhou: {e}") })),
             )
                 .into_response()
         }
@@ -963,7 +985,9 @@ async fn send_to_peer(
         "remote_path": path.to_string_lossy(),
         "name": name,
         "size_bytes": size,
-        "md5": md5,
+        // Sempre vazio. Viaja só porque um peer de versão anterior exige o
+        // campo — ver `TransferOffer::md5`.
+        "md5": "",
         "start_layer": shard.map(|(a, _)| a),
         "end_layer": shard.map(|(_, b)| b),
     });
@@ -1063,7 +1087,24 @@ async fn set_job(state: &GatewayState, job: TransferJob) {
         .insert(job.id.clone(), job);
 }
 
-/// Check the manifest and free space, then download in the background.
+/// Prazo do manifesto.
+///
+/// O manifesto é onde o MD5 do arquivo é finalmente calculado, e um digest é
+/// uma leitura do arquivo inteiro: no cartão SD do captain, 4,2 GB levam
+/// 3 min 23 s. Os 120 s de antes só passavam porque o remetente já tinha
+/// hasheado ao oferecer — o que era exatamente o defeito. Com o hash de volta
+/// para onde ele é preciso, o prazo tem que caber num volume lento; ele corre
+/// em segundo plano, então esperar aqui não prende ninguém.
+const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+
+/// Registra a transferência e faz o resto — manifesto, espaço em disco e
+/// download — em segundo plano.
+///
+/// Consultar o outro lado **não** acontece antes de devolver: o manifesto pode
+/// levar minutos (ver [`MANIFEST_TIMEOUT`]), e aceitar uma oferta é um clique,
+/// não uma espera. O que o operador ganha em troca é o job já na lista de
+/// transferências, dizendo em que etapa está; um erro de manifesto vira job
+/// `failed` com o motivo, no mesmo lugar onde ele já procuraria.
 async fn spawn_download(
     state: GatewayState,
     base_url: String,
@@ -1090,13 +1131,101 @@ async fn spawn_download(
     locator.push(("job", job_id.clone()));
     locator.push(("peer", state.network.node_id.clone()));
 
-    // Ask first: size and digest decide whether this is even worth starting.
+    // O diretório é a única coisa que precisa dar certo já: sem ele não há
+    // transferência nenhuma para pôr na lista.
+    let dir = state.shard_dir().await.join("recebidos");
+    tokio::fs::create_dir_all(&dir)
+        .await
+        .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
+
+    // `bytes_total` 0 até o manifesto responder — a barra fica indeterminada, o
+    // que é a verdade: ainda não se sabe o tamanho.
+    state
+        .transfers
+        .start_job(
+            &job_id,
+            &name,
+            TRANSFER_RECEIVING,
+            &from_host,
+            &dir.join(&name).to_string_lossy(),
+            0,
+        )
+        .await;
+    set_detail(&state, &job_id, "conferindo o arquivo na origem").await;
+
+    let task_state = state.clone();
+    let task_job_id = job_id.clone();
+    tokio::spawn(async move {
+        let job_id = task_job_id;
+        let dest = dir.join(&name);
+        let part = dir.join(format!("{name}.part"));
+        let outcome = async {
+            let (total, md5) =
+                fetch_manifest(&task_state, &base_url, &key, &locator, &from_host, &name).await?;
+            {
+                let mut jobs = task_state.transfers.jobs.write().await;
+                if let Some(j) = jobs.get_mut(&job_id) {
+                    j.bytes_total = total;
+                    j.detail = String::new();
+                }
+            }
+            run_download(
+                &task_state,
+                &job_id,
+                &base_url,
+                &key,
+                &locator,
+                &part,
+                &dest,
+                total,
+                &md5,
+            )
+            .await
+        }
+        .await;
+
+        if let Err(e) = outcome {
+            warn!("transferência de {name} falhou: {e}");
+            // A partial file must never look like a usable slice.
+            let _ = tokio::fs::remove_file(&part).await;
+            let mut jobs = task_state.transfers.jobs.write().await;
+            if let Some(j) = jobs.get_mut(&job_id) {
+                // `cancel` já rotulou este job com quem pediu; sobrescrever
+                // trocaria uma decisão de alguém por um "falhou" anônimo.
+                if j.state != TRANSFER_CANCELLED {
+                    j.state = TRANSFER_FAILED.into();
+                    j.detail = e;
+                }
+            }
+        }
+    });
+
+    Ok(job_id)
+}
+
+/// Etapa corrente de um job, para a tela ter o que dizer enquanto se espera.
+async fn set_detail(state: &GatewayState, job_id: &str, detail: &str) {
+    let mut jobs = state.transfers.jobs.write().await;
+    if let Some(j) = jobs.get_mut(job_id) {
+        j.detail = detail.to_string();
+    }
+}
+
+/// Tamanho e digest do arquivo do outro lado — o que decide se vale começar.
+async fn fetch_manifest(
+    state: &GatewayState,
+    base_url: &str,
+    key: &str,
+    locator: &[(&str, String)],
+    from_host: &str,
+    name: &str,
+) -> Result<(u64, String), String> {
     let manifest: serde_json::Value = state
         .http
         .get(format!("{base_url}/api/transfer/manifest"))
-        .bearer_auth(&key)
-        .query(&locator)
-        .timeout(Duration::from_secs(120))
+        .bearer_auth(key)
+        .query(locator)
+        .timeout(MANIFEST_TIMEOUT)
         .send()
         .await
         .map_err(|e| format!("não deu para falar com {from_host}: {e}"))?
@@ -1119,58 +1248,7 @@ async fn spawn_download(
         ));
     }
 
-    let dir = state.shard_dir().await.join("recebidos");
-    tokio::fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
-
-    state
-        .transfers
-        .start_job(
-            &job_id,
-            &name,
-            TRANSFER_RECEIVING,
-            &from_host,
-            &dir.join(&name).to_string_lossy(),
-            total,
-        )
-        .await;
-
-    let task_state = state.clone();
-    let task_job_id = job_id.clone();
-    tokio::spawn(async move {
-        let job_id = task_job_id;
-        let dest = dir.join(&name);
-        let part = dir.join(format!("{name}.part"));
-        if let Err(e) = run_download(
-            &task_state,
-            &job_id,
-            &base_url,
-            &key,
-            &locator,
-            &part,
-            &dest,
-            total,
-            &md5,
-        )
-        .await
-        {
-            warn!("transferência de {name} falhou: {e}");
-            // A partial file must never look like a usable slice.
-            let _ = tokio::fs::remove_file(&part).await;
-            let mut jobs = task_state.transfers.jobs.write().await;
-            if let Some(j) = jobs.get_mut(&job_id) {
-                // `cancel` já rotulou este job com quem pediu; sobrescrever
-                // trocaria uma decisão de alguém por um "falhou" anônimo.
-                if j.state != TRANSFER_CANCELLED {
-                    j.state = TRANSFER_FAILED.into();
-                    j.detail = e;
-                }
-            }
-        }
-    });
-
-    Ok(job_id)
+    Ok((total, md5))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1491,6 +1569,268 @@ mod tests {
 
         assert!(local_send_path(dir.to_str().unwrap()).is_err());
         assert!(local_send_path("/nao/existe/em/lugar/nenhum.gguf").is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+/// Quanto tempo a oferta leva para sair desta máquina.
+///
+/// O defeito que estes testes guardam: a oferta era postada **depois** do MD5
+/// do arquivo inteiro, então o sino do outro lado só acendia quando a leitura
+/// terminava. Medido no cartão SD do captain, `md5` de uma fatia de 4,2 GB
+/// custa 3 min 23 s (~20 MB/s) - exatamente o "às vezes 1 ou 2 minutos" do
+/// relato, com o cache de digest por (caminho, mtime, tamanho) mascarando o
+/// atraso no segundo envio do mesmo arquivo.
+#[cfg(test)]
+mod offer_latency_tests {
+    use super::*;
+    use crate::config::{Config, Role};
+    use crate::network::{Network, PeerInfo};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// Um GGUF de verdade, grande o bastante para que lê-lo inteiro apareça no
+    /// relógio se alguém voltar a ler.
+    fn write_gguf(path: &Path, mib: usize) {
+        let mut body = Vec::with_capacity(mib * 1024 * 1024);
+        body.extend_from_slice(GGUF_MAGIC);
+        body.resize(mib * 1024 * 1024, 0x5a);
+        std::fs::write(path, body).unwrap();
+    }
+
+    /// O peer que recebe a oferta, reduzido ao que importa: ele anota o corpo
+    /// que chegou e responde. É um servidor HTTP de verdade, na loopback.
+    async fn fake_peer() -> (u16, Arc<RwLock<Vec<serde_json::Value>>>) {
+        let seen: Arc<RwLock<Vec<serde_json::Value>>> = Arc::new(RwLock::new(Vec::new()));
+        let captured = seen.clone();
+        let app = Router::new().route(
+            "/api/transfer/offer",
+            post(move |Json(body): Json<serde_json::Value>| {
+                let captured = captured.clone();
+                async move {
+                    captured.write().await.push(body);
+                    Json(json!({ "accepted_for_review": true }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, seen)
+    }
+
+    /// Um nó remetente completo, com um peer já na tabela apontando para
+    /// `peer_port`. Nada de UDP sai daqui: a tabela é semeada à mão.
+    async fn sender_state(peer_port: u16) -> GatewayState {
+        let net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(1))
+            .await
+            .unwrap();
+        let mut peer = PeerInfo {
+            node_id: "peer-b".into(),
+            pubkey: "pk-b".into(),
+            addr: format!("127.0.0.1:{peer_port}"),
+            addr_candidates: Vec::new(),
+            model: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            memory_mb: 0.0,
+            last_seen: chrono::Utc::now(),
+            ollama_port: None,
+            inference_port: None,
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(peer_port),
+            role: String::new(),
+            hostname: "peer-b".into(),
+            capabilities: Vec::new(),
+            connection_verified: true,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+        };
+        peer.last_seen = chrono::Utc::now();
+        let net = Arc::new(net);
+        net.peers.write().await.insert("peer-b".into(), peer);
+
+        let assignment = Arc::new(RwLock::new(None));
+        GatewayState {
+            network: net.clone(),
+            ollama: Arc::new(crate::ollama::OllamaClient::new("http://127.0.0.1:1")),
+            default_model: String::new(),
+            local_assignment: assignment.clone(),
+            loads: Arc::new(crate::pipeline::LoadTracker::new()),
+            http: Arc::new(reqwest::Client::new()),
+            runtime: crate::runtime::NodeRuntime::new(net, assignment),
+            gateway_port: 8080,
+            auth: Arc::new(RwLock::new(Config {
+                role: Role::Principal,
+                node_name: None,
+                connection_key: "chave".into(),
+                gateway_port: 8080,
+                p2p_port: 42777,
+                inference_port: None,
+                bootstrap_nodes: vec![],
+                advertise_addr: None,
+                api_keys: vec![],
+                blocked_nodes: vec![],
+                model_dirs: None,
+                shard_dir: None,
+            })),
+            transfers: Default::default(),
+        }
+    }
+
+    /// A oferta é um convite, não a transferência: ela só precisa dizer o que é
+    /// o arquivo e onde buscá-lo. O MD5 quem confere é o receptor, depois de
+    /// aceitar, com o número que ele mesmo pede em `/api/transfer/manifest` -
+    /// hashear aqui era trabalho que ninguém consumia e que segurava o sino do
+    /// outro lado pelo tempo de ler o arquivo inteiro.
+    #[tokio::test]
+    async fn an_offer_leaves_without_reading_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("rdma-offer-fast-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("fatia_0_15.gguf");
+        write_gguf(&file, 24);
+
+        let (port, seen) = fake_peer().await;
+        let state = sender_state(port).await;
+
+        let started = Instant::now();
+        let resp = send_to_peer(
+            crate::auth::ConnectionAuth,
+            State(state.clone()),
+            Json(SendRequest {
+                to_node_id: "peer-b".into(),
+                path: file.to_string_lossy().into(),
+            }),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        assert_eq!(resp.status(), StatusCode::OK, "a oferta tem que ser aceita");
+
+        let offers = seen.read().await;
+        assert_eq!(offers.len(), 1, "o peer tem que ter recebido a oferta");
+        let offer = &offers[0];
+        assert_eq!(offer["name"], "fatia_0_15.gguf");
+        assert_eq!(offer["size_bytes"], 24 * 1024 * 1024);
+        assert_eq!(offer["start_layer"], 0);
+        assert_eq!(offer["end_layer"], 15);
+
+        // A prova de que nada foi lido: o cache de digest desta máquina segue
+        // vazio. Ele é populado por `file_digest` e por mais nada, então uma
+        // entrada aqui significa que alguém leu o arquivo inteiro antes de
+        // bater na porta do vizinho.
+        assert!(
+            state.transfers.digests.read().await.is_empty(),
+            "a oferta não pode hashear o arquivo: é o que fazia o sino do outro lado demorar"
+        );
+
+        // Cinturão e suspensórios: com o hash fora do caminho, o convite sai em
+        // milissegundos mesmo aqui, onde o arquivo é pequeno.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "oferta demorou {elapsed:?}; ela não pode depender do tamanho do arquivo"
+        );
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// O tamanho anunciado tem que ser o real: ele é o que o outro lado mostra
+    /// na notificação antes de decidir aceitar gigabytes.
+    #[tokio::test]
+    async fn the_offer_carries_the_real_size_without_a_digest() {
+        let dir = std::env::temp_dir().join(format!("rdma-offer-size-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("solto.gguf");
+        write_gguf(&file, 3);
+
+        let (port, seen) = fake_peer().await;
+        let state = sender_state(port).await;
+
+        let _ = send_to_peer(
+            crate::auth::ConnectionAuth,
+            State(state.clone()),
+            Json(SendRequest {
+                to_node_id: "peer-b".into(),
+                path: file.to_string_lossy().into(),
+            }),
+        )
+        .await;
+
+        let offers = seen.read().await;
+        assert_eq!(offers[0]["size_bytes"], 3 * 1024 * 1024);
+        // Compatibilidade: um peer antigo exige o campo, então ele continua
+        // viajando - vazio, que é como se diz "ainda não sei".
+        assert_eq!(offers[0]["md5"], "");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Aceitar não pode ficar preso ao outro lado. O manifesto é onde o MD5
+    /// finalmente é calculado, e num volume lento isso são minutos: se o clique
+    /// esperasse por ele, o operador teria trocado uma espera por outra.
+    #[tokio::test]
+    async fn accepting_returns_before_the_other_side_answers() {
+        let slow_hits = Arc::new(AtomicU64::new(0));
+        let hits = slow_hits.clone();
+        let app = Router::new().route(
+            "/api/transfer/manifest",
+            get(move || {
+                let hits = hits.clone();
+                async move {
+                    hits.fetch_add(1, Ordering::SeqCst);
+                    // O outro lado está lendo um arquivo de gigabytes.
+                    tokio::time::sleep(Duration::from_secs(30)).await;
+                    Json(json!({ "size_bytes": 1, "md5": "x" }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let state = sender_state(port).await;
+        let dir = std::env::temp_dir().join(format!("rdma-accept-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
+
+        let started = Instant::now();
+        let job_id = spawn_download(
+            state.clone(),
+            format!("http://127.0.0.1:{port}"),
+            "/qualquer/fatia.gguf".into(),
+            None,
+            "fatia.gguf".into(),
+            "peer-b".into(),
+        )
+        .await
+        .expect("aceitar registra a transferência na hora");
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "aceitar esperou o manifesto: {:?}",
+            started.elapsed()
+        );
+
+        // E o trabalho existe de verdade: o job está na lista, com o outro lado
+        // já sendo consultado em segundo plano.
+        let jobs = state.transfers.jobs.read().await;
+        assert!(jobs.contains_key(&job_id), "o job tem que aparecer na tela");
+        drop(jobs);
+        for _ in 0..50 {
+            if slow_hits.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert_eq!(
+            slow_hits.load(Ordering::SeqCst),
+            1,
+            "o manifesto tem que ter sido pedido em segundo plano"
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

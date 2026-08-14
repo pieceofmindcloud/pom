@@ -69,6 +69,8 @@ mod session;
 mod splitter;
 #[path = "utils/sysmon.rs"]
 mod sysmon;
+#[path = "backend/tool_call.rs"]
+mod tool_call;
 #[path = "backend/transfer.rs"]
 mod transfer;
 #[path = "backend/webapp.rs"]

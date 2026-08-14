@@ -13,6 +13,7 @@
 
 use crate::auth::ApiKeyAuth;
 use crate::gateway::{GatewayState, GenEvent};
+use crate::tool_call::{parse_output, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -23,6 +24,7 @@ use axum::{
 use futures::stream::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use tokio::sync::mpsc;
 use tracing::info;
@@ -105,10 +107,69 @@ pub struct ChatMessage {
     pub role: String,
     #[serde(default = "default_content")]
     pub content: Content,
+    /// Present on an assistant message that called a tool — OpenAI puts
+    /// these in a flat array alongside `content`, unlike Anthropic's ordered
+    /// content blocks. `id`/`tool_call_id` aren't needed for rendering (the
+    /// model doesn't need to see its own prior call's id, just what it was),
+    /// so — like `tool_choice` — they're accepted without a struct field.
+    #[serde(default)]
+    pub tool_calls: Option<Vec<ToolCallRef>>,
 }
 
 fn default_content() -> Content {
     Content::Null
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolCallRef {
+    #[serde(default)]
+    pub function: Option<FunctionCallRef>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct FunctionCallRef {
+    pub name: String,
+    /// OpenAI encodes this as a JSON **string**, not a nested object like
+    /// Anthropic's `input` — has to be re-parsed wherever it's rendered back
+    /// into a `<tool_call>` tag.
+    #[serde(default)]
+    pub arguments: String,
+}
+
+impl ChatMessage {
+    /// Content text empty *and* no tool calls. The plain
+    /// `!content.as_text().trim().is_empty()` check used before tool support
+    /// existed silently dropped an assistant message that was *only* a tool
+    /// call (`content: null`, non-empty `tool_calls`) — the call would never
+    /// reach the model on replay.
+    fn is_empty(&self) -> bool {
+        self.content.as_text().trim().is_empty()
+            && self.tool_calls.as_ref().is_none_or(|c| c.is_empty())
+    }
+
+    /// Content text, then each tool call rendered as `<tool_call>` — the
+    /// exact shape the model itself emits, so replayed history stays
+    /// self-consistent with what it wrote.
+    fn rendered_body(&self) -> String {
+        let mut parts = Vec::new();
+        let text = self.content.as_text();
+        if !text.trim().is_empty() {
+            parts.push(text);
+        }
+        if let Some(calls) = &self.tool_calls {
+            for tc in calls {
+                if let Some(f) = &tc.function {
+                    let arguments: serde_json::Value =
+                        serde_json::from_str(&f.arguments).unwrap_or_else(|_| json!({}));
+                    parts.push(format!(
+                        "<tool_call>\n{}\n</tool_call>",
+                        json!({ "name": f.name, "arguments": arguments })
+                    ));
+                }
+            }
+        }
+        parts.join("\n")
+    }
 }
 
 // ── Requests ─────────────────────────────────────────────────────────────────
@@ -125,6 +186,37 @@ pub struct ChatRequest {
     /// Newer name for `max_tokens`.
     #[serde(default)]
     pub max_completion_tokens: Option<u32>,
+    #[serde(default)]
+    pub tools: Vec<ChatToolDef>,
+}
+
+/// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
+/// Anthropic's flat `{name, description, input_schema}` — `ToolDef` (shared
+/// with `crate::messages`) matches the latter, so this unwraps into it via
+/// `ChatToolDef::into_tool_def` rather than pretending the two wire shapes
+/// are the same.
+#[derive(Debug, Deserialize)]
+pub struct ChatToolDef {
+    function: ChatFunctionDef,
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatFunctionDef {
+    name: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    parameters: serde_json::Value,
+}
+
+impl ChatToolDef {
+    fn into_tool_def(self) -> ToolDef {
+        ToolDef {
+            name: self.function.name,
+            description: self.function.description,
+            input_schema: self.function.parameters,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -149,24 +241,25 @@ impl ChatRequest {
 
 // ── Prompt rendering ─────────────────────────────────────────────────────────
 
-/// Flatten a conversation into the single prompt string the pipeline takes.
+/// Flatten a conversation (plus any declared tools) into the single prompt
+/// string the pipeline takes.
 ///
-/// The first peer's `inference_server.py` already wraps whatever it receives in
-/// the Qwen chat template (see `_apply_chat_template`), so emitting a second
-/// template here would nest one inside the other. Instead the turns are
-/// labelled in plain text and handed over as one user message.
+/// The first peer already applies the model's chat template once, so
+/// emitting a second one here would nest one inside the other. Instead the
+/// turns are labelled in plain text and handed over as one user message.
 ///
-/// A lone user message is passed through untouched, so a simple client behaves
-/// exactly like `POST /api/generate` does today.
-pub fn render_prompt(messages: &[ChatMessage]) -> String {
-    let non_empty: Vec<&ChatMessage> = messages
-        .iter()
-        .filter(|m| !m.content.as_text().trim().is_empty())
-        .collect();
+/// A lone user message with no tools passes through untouched, so a simple
+/// client behaves exactly like `POST /api/generate` does today.
+pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
+    let non_empty: Vec<&ChatMessage> = messages.iter().filter(|m| !m.is_empty()).collect();
 
-    if let [only] = non_empty.as_slice() {
-        if only.role == "user" {
-            return only.content.as_text();
+    let tools_block = render_tools_block(tools);
+
+    if tools_block.is_empty() {
+        if let [only] = non_empty.as_slice() {
+            if only.role == "user" {
+                return only.content.as_text();
+            }
         }
     }
 
@@ -174,18 +267,28 @@ pub fn render_prompt(messages: &[ChatMessage]) -> String {
     let mut turns: Vec<String> = Vec::new();
 
     for m in &non_empty {
-        let text = m.content.as_text();
         match m.role.as_str() {
-            "system" | "developer" => system.push(text),
-            "assistant" => turns.push(format!("Assistant: {text}")),
-            "tool" | "function" => turns.push(format!("Tool result: {text}")),
-            _ => turns.push(format!("User: {text}")),
+            "system" | "developer" => system.push(m.content.as_text()),
+            "assistant" => turns.push(format!("Assistant: {}", m.rendered_body())),
+            "tool" | "function" => {
+                let text = m.content.as_text();
+                turns.push(format!("User: <tool_response>\n{text}\n</tool_response>"));
+            }
+            _ => turns.push(format!("User: {}", m.content.as_text())),
         }
     }
 
+    let mut system_text = system.join("\n\n");
+    if !tools_block.is_empty() {
+        if !system_text.trim().is_empty() {
+            system_text.push_str("\n\n");
+        }
+        system_text.push_str(&tools_block);
+    }
+
     let mut out = String::new();
-    if !system.is_empty() {
-        out.push_str(&system.join("\n\n"));
+    if !system_text.trim().is_empty() {
+        out.push_str(system_text.trim());
         out.push_str("\n\n");
     }
     out.push_str(&turns.join("\n\n"));
@@ -291,14 +394,20 @@ async fn chat_completions(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let prompt = render_prompt(&req.messages);
     let max_tokens = req.max_tokens();
+    let tools: Vec<ToolDef> = req
+        .tools
+        .into_iter()
+        .map(ChatToolDef::into_tool_def)
+        .collect();
+    let prompt = render_prompt(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
 
     info!(
-        "🤖 /v1/chat/completions model={model} stream={} msgs={} prompt_len={}",
+        "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
         req.stream,
         req.messages.len(),
+        tools.len(),
         prompt.len()
     );
 
@@ -425,16 +534,20 @@ async fn blocking_response(
         .await
     {
         Ok((text, summary)) => {
-            let finish = finish_reason(&summary, max_tokens);
+            let (message_or_text, saw_tool_call): (serde_json::Value, bool) = match mode {
+                Mode::Chat => chat_message_json(&parse_output(&text)),
+                Mode::Completion => (json!(text), false),
+            };
+            let finish = finish_reason(&summary, max_tokens, saw_tool_call);
             let choice = match mode {
                 Mode::Chat => json!({
                     "index": 0,
-                    "message": { "role": "assistant", "content": text },
+                    "message": message_or_text,
                     "finish_reason": finish,
                 }),
                 Mode::Completion => json!({
                     "index": 0,
-                    "text": text,
+                    "text": message_or_text,
                     "finish_reason": finish,
                 }),
             };
@@ -468,12 +581,54 @@ async fn blocking_response(
     }
 }
 
-fn finish_reason(summary: &crate::gateway::GenSummary, max_tokens: u32) -> &'static str {
-    if summary.tokens_generated >= max_tokens {
+fn finish_reason(
+    summary: &crate::gateway::GenSummary,
+    max_tokens: u32,
+    saw_tool_call: bool,
+) -> &'static str {
+    if saw_tool_call {
+        "tool_calls"
+    } else if summary.tokens_generated >= max_tokens {
         "length"
     } else {
         "stop"
     }
+}
+
+/// An assistant message from parsed output: OpenAI's `content` is one flat
+/// string-or-null slot (unlike Anthropic's ordered content-block array), so
+/// text parts collapse into it rather than interleaving with tool calls.
+/// `tool_calls` collects every call found, `arguments` re-serialized back to
+/// a JSON string — the inverse of `ChatMessage::rendered_body`'s parsing.
+fn chat_message_json(parts: &[OutputPart]) -> (serde_json::Value, bool) {
+    let mut text = String::new();
+    let mut tool_calls = Vec::new();
+    for p in parts {
+        match p {
+            OutputPart::Text(s) => {
+                if !text.is_empty() {
+                    text.push('\n');
+                }
+                text.push_str(s);
+            }
+            OutputPart::ToolCall { name, arguments } => {
+                tool_calls.push(json!({
+                    "id": format!("call_{}", uuid::Uuid::new_v4().simple()),
+                    "type": "function",
+                    "function": { "name": name, "arguments": arguments.to_string() },
+                }));
+            }
+        }
+    }
+    let saw_tool_call = !tool_calls.is_empty();
+    let mut message = json!({
+        "role": "assistant",
+        "content": if text.is_empty() { serde_json::Value::Null } else { json!(text) },
+    });
+    if saw_tool_call {
+        message["tool_calls"] = json!(tool_calls);
+    }
+    (message, saw_tool_call)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -507,9 +662,63 @@ fn stream_response(
         .into_response()
 }
 
+/// Turns scanner events into OpenAI streaming `delta` values. Unlike
+/// Anthropic's content blocks, OpenAI's delta model has no block-index
+/// concept for plain text at all — just one implicit content stream, plus a
+/// separately-indexed `tool_calls` array (`tool_call_index`, bumped once per
+/// completed call). Synchronous and free of any axum/SSE type so it's
+/// directly unit-testable.
+///
+/// Tool-call arguments are emitted as a single delta carrying the whole JSON
+/// blob, not truly incrementally — same reasoning as the Anthropic adapter:
+/// the tool's name is only known once the entire `<tool_call>` tag closes,
+/// so there is nothing to stream before that point.
+fn apply_scan_events_openai(
+    events: Vec<ScanEvent>,
+    tool_call_index: &mut u32,
+    saw_tool_call: &mut bool,
+    out: &mut Vec<serde_json::Value>,
+) {
+    for e in events {
+        match e {
+            ScanEvent::Text(s) if !s.is_empty() => out.push(json!({ "content": s })),
+            ScanEvent::Text(_) | ScanEvent::ToolCallOpen | ScanEvent::ToolCallChunk(_) => {}
+            ScanEvent::ToolCallClose(Ok((name, arguments))) => {
+                *saw_tool_call = true;
+                let idx = *tool_call_index;
+                *tool_call_index += 1;
+                let id = format!("call_{}", uuid::Uuid::new_v4().simple());
+                out.push(json!({
+                    "tool_calls": [{
+                        "index": idx, "id": id, "type": "function",
+                        "function": { "name": name, "arguments": "" },
+                    }]
+                }));
+                out.push(json!({
+                    "tool_calls": [{
+                        "index": idx,
+                        "function": { "arguments": arguments.to_string() },
+                    }]
+                }));
+            }
+            ScanEvent::ToolCallClose(Err(raw)) => {
+                apply_scan_events_openai(
+                    vec![ScanEvent::Text(raw)],
+                    tool_call_index,
+                    saw_tool_call,
+                    out,
+                );
+            }
+        }
+    }
+}
+
 /// Turn generation events into the SSE chunk sequence clients expect:
-/// a role-only opening chunk, one chunk per token, a chunk carrying
-/// `finish_reason`, then the literal `[DONE]` sentinel.
+/// a role-only opening chunk, one chunk per token/tool-call delta (see
+/// `apply_scan_events_openai`), a chunk carrying `finish_reason`, then the
+/// literal `[DONE]` sentinel. `Mode::Completion` never touches the scanner —
+/// the real API has no tool-calling concept there either — so that path
+/// stays byte-for-byte what it was before tool support existed.
 fn sse_stream(
     rx: mpsc::Receiver<GenEvent>,
     id: String,
@@ -532,8 +741,10 @@ fn sse_stream(
         model: String,
         mode: Mode,
         max_tokens: u32,
-        /// Queued after the final content chunk.
-        trailer: Option<Event>,
+        queue: VecDeque<Event>,
+        scanner: TagScanner,
+        tool_call_index: u32,
+        saw_tool_call: bool,
     }
 
     let state = S {
@@ -544,70 +755,111 @@ fn sse_stream(
         model,
         mode,
         max_tokens,
-        trailer: None,
+        queue: VecDeque::new(),
+        scanner: TagScanner::new(),
+        tool_call_index: 0,
+        saw_tool_call: false,
     };
 
     futures::stream::unfold(state, |mut s| async move {
-        if let Some(trailer) = s.trailer.take() {
-            s.phase = Phase::Ended;
-            return Some((Ok(trailer), s));
-        }
+        loop {
+            if let Some(e) = s.queue.pop_front() {
+                return Some((Ok(e), s));
+            }
 
-        match s.phase {
-            Phase::Ended => return None,
-            Phase::Opening => {
-                s.phase = Phase::Streaming;
-                if s.mode == Mode::Chat {
-                    let chunk = chunk_json(
-                        &s.id,
-                        s.created,
-                        &s.model,
-                        s.mode,
-                        json!({ "role": "assistant", "content": "" }),
-                        None,
-                        None,
-                    );
-                    return Some((Ok(Event::default().data(chunk)), s));
+            match s.phase {
+                Phase::Ended => return None,
+                Phase::Opening => {
+                    s.phase = Phase::Streaming;
+                    if s.mode == Mode::Chat {
+                        let chunk = chunk_json(
+                            &s.id,
+                            s.created,
+                            &s.model,
+                            s.mode,
+                            json!({ "role": "assistant", "content": "" }),
+                            None,
+                            None,
+                        );
+                        s.queue.push_back(Event::default().data(chunk));
+                    }
+                    continue;
                 }
-            }
-            Phase::Streaming => {}
-        }
-
-        match s.rx.recv().await {
-            Some(GenEvent::Token(text)) => {
-                let delta = match s.mode {
-                    Mode::Chat => json!({ "content": text }),
-                    Mode::Completion => json!(text),
-                };
-                let chunk = chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
-                return Some((Ok(Event::default().data(chunk)), s));
-            }
-            Some(GenEvent::Done(summary)) => {
-                let reason = finish_reason(&summary, s.max_tokens);
-                let delta = match s.mode {
-                    Mode::Chat => json!({}),
-                    Mode::Completion => json!(""),
-                };
-                let chunk = chunk_json(
-                    &s.id,
-                    s.created,
-                    &s.model,
-                    s.mode,
-                    delta,
-                    Some(reason),
-                    Some(&summary),
-                );
-                s.trailer = Some(Event::default().data("[DONE]"));
-                return Some((Ok(Event::default().data(chunk)), s));
-            }
-            Some(GenEvent::Failed(err)) => {
-                let payload = json!({ "error": { "message": err, "type": "server_error" } });
-                s.trailer = Some(Event::default().data("[DONE]"));
-                return Some((Ok(Event::default().data(payload.to_string())), s));
-            }
-            None => {
-                s.phase = Phase::Ended;
-                return Some((Ok(Event::default().data("[DONE]")), s));
+                Phase::Streaming => match s.rx.recv().await {
+                    Some(GenEvent::Token(text)) => {
+                        match s.mode {
+                            Mode::Completion => {
+                                let chunk =
+                                    chunk_json(&s.id, s.created, &s.model, s.mode, json!(text), None, None);
+                                s.queue.push_back(Event::default().data(chunk));
+                            }
+                            Mode::Chat => {
+                                let events = s.scanner.feed(&text);
+                                let mut deltas = Vec::new();
+                                apply_scan_events_openai(
+                                    events,
+                                    &mut s.tool_call_index,
+                                    &mut s.saw_tool_call,
+                                    &mut deltas,
+                                );
+                                for delta in deltas {
+                                    let chunk =
+                                        chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
+                                    s.queue.push_back(Event::default().data(chunk));
+                                }
+                            }
+                        }
+                        continue;
+                    }
+                    Some(GenEvent::Done(summary)) => {
+                        if s.mode == Mode::Chat {
+                            let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
+                            let finish_events = scanner.finish();
+                            let mut deltas = Vec::new();
+                            apply_scan_events_openai(
+                                finish_events,
+                                &mut s.tool_call_index,
+                                &mut s.saw_tool_call,
+                                &mut deltas,
+                            );
+                            for delta in deltas {
+                                let chunk =
+                                    chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
+                                s.queue.push_back(Event::default().data(chunk));
+                            }
+                        }
+                        let reason = finish_reason(&summary, s.max_tokens, s.saw_tool_call);
+                        let delta = match s.mode {
+                            Mode::Chat => json!({}),
+                            Mode::Completion => json!(""),
+                        };
+                        let chunk = chunk_json(
+                            &s.id,
+                            s.created,
+                            &s.model,
+                            s.mode,
+                            delta,
+                            Some(reason),
+                            Some(&summary),
+                        );
+                        s.queue.push_back(Event::default().data(chunk));
+                        s.queue.push_back(Event::default().data("[DONE]"));
+                        s.phase = Phase::Ended;
+                        continue;
+                    }
+                    Some(GenEvent::Failed(err)) => {
+                        let payload = json!({ "error": { "message": err, "type": "server_error" } });
+                        s.queue.push_back(Event::default().data(payload.to_string()));
+                        s.queue.push_back(Event::default().data("[DONE]"));
+                        s.phase = Phase::Ended;
+                        continue;
+                    }
+                    None => {
+                        s.phase = Phase::Ended;
+                        s.queue.push_back(Event::default().data("[DONE]"));
+                        continue;
+                    }
+                },
             }
         }
     })
@@ -671,33 +923,39 @@ mod tests {
         ChatMessage {
             role: role.into(),
             content: Content::Text(text.into()),
+            tool_calls: None,
         }
     }
+
+    // ── render_prompt ────────────────────────────────────────────────────────
 
     #[test]
     fn single_user_message_passes_through_unchanged() {
         // Must stay byte-identical to what /api/generate would receive, so the
         // simple path behaves the same in both APIs.
         assert_eq!(
-            render_prompt(&[msg("user", "O que e RDMA?")]),
+            render_prompt(&[msg("user", "O que e RDMA?")], &[]),
             "O que e RDMA?"
         );
     }
 
     #[test]
     fn system_prompt_leads_the_conversation() {
-        let out = render_prompt(&[msg("system", "Fale em portugues."), msg("user", "Oi")]);
+        let out = render_prompt(&[msg("system", "Fale em portugues."), msg("user", "Oi")], &[]);
         assert!(out.starts_with("Fale em portugues."));
         assert!(out.ends_with("User: Oi"));
     }
 
     #[test]
     fn multi_turn_conversation_is_labelled() {
-        let out = render_prompt(&[
-            msg("user", "1+1?"),
-            msg("assistant", "2"),
-            msg("user", "e 2+2?"),
-        ]);
+        let out = render_prompt(
+            &[
+                msg("user", "1+1?"),
+                msg("assistant", "2"),
+                msg("user", "e 2+2?"),
+            ],
+            &[],
+        );
         assert!(out.contains("User: 1+1?"));
         assert!(out.contains("Assistant: 2"));
         assert!(out.trim_end().ends_with("User: e 2+2?"));
@@ -705,7 +963,7 @@ mod tests {
 
     #[test]
     fn empty_messages_are_dropped() {
-        let out = render_prompt(&[msg("system", "   "), msg("user", "oi")]);
+        let out = render_prompt(&[msg("system", "   "), msg("user", "oi")], &[]);
         assert_eq!(out, "oi");
     }
 
@@ -721,15 +979,16 @@ mod tests {
                     text: Some("linha 2".into()),
                 },
             ]),
+            tool_calls: None,
         };
-        assert_eq!(render_prompt(&[m]), "linha 1\nlinha 2");
+        assert_eq!(render_prompt(&[m], &[]), "linha 1\nlinha 2");
     }
 
     #[test]
     fn parses_array_content_from_real_clients() {
         let raw = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"oi"}]}]}"#;
         let req: ChatRequest = serde_json::from_str(raw).unwrap();
-        assert_eq!(render_prompt(&req.messages), "oi");
+        assert_eq!(render_prompt(&req.messages, &[]), "oi");
         assert!(!req.stream);
     }
 
@@ -738,7 +997,74 @@ mod tests {
         let raw =
             r#"{"messages":[{"role":"assistant","content":null},{"role":"user","content":"oi"}]}"#;
         let req: ChatRequest = serde_json::from_str(raw).unwrap();
-        assert_eq!(render_prompt(&req.messages), "oi");
+        assert_eq!(render_prompt(&req.messages, &[]), "oi");
+    }
+
+    /// Mirrors `chat_completions`'s own unwrap-the-wire-shape step.
+    fn tool_defs(req: &ChatRequest) -> Vec<ToolDef> {
+        req.tools
+            .iter()
+            .map(|t| ToolDef {
+                name: t.function.name.clone(),
+                description: t.function.description.clone(),
+                input_schema: t.function.parameters.clone(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn tool_role_message_renders_as_a_tool_response() {
+        let raw = r#"{"messages":[
+            {"role":"user","content":"list files"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}]},
+            {"role":"tool","tool_call_id":"call_1","content":"a.txt\nb.txt"}
+        ]}"#;
+        let req: ChatRequest = serde_json::from_str(raw).unwrap();
+        let out = render_prompt(&req.messages, &tool_defs(&req));
+        assert!(out.contains("<tool_call>"));
+        assert!(out.contains("\"name\":\"Bash\""));
+        assert!(out.contains("User: <tool_response>\na.txt\nb.txt\n</tool_response>"));
+    }
+
+    #[test]
+    fn assistant_message_with_only_tool_calls_is_not_dropped() {
+        // Regression guard: content:null + non-empty tool_calls used to be
+        // indistinguishable from a genuinely empty message and get filtered
+        // out of the prompt entirely, silently losing the call on replay.
+        let raw = r#"{"messages":[
+            {"role":"user","content":"list files"},
+            {"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"Bash","arguments":"{\"command\":\"ls\"}"}}]}
+        ]}"#;
+        let req: ChatRequest = serde_json::from_str(raw).unwrap();
+        let out = render_prompt(&req.messages, &tool_defs(&req));
+        assert!(out.contains("Assistant:"));
+        assert!(out.contains("<tool_call>"));
+        assert!(out.contains("Bash"));
+    }
+
+    #[test]
+    fn parses_a_request_with_tools_and_the_shortcut_yields_to_the_tools_block() {
+        // OpenAI wraps each tool in {"type":"function","function":{...}},
+        // unlike Anthropic's flat shape — this is the wire format Codex CLI
+        // / aider / LangChain actually send.
+        let raw = r#"{
+            "model": "gpt-4",
+            "messages": [{"role":"user","content":"list files"}],
+            "tools": [{"type":"function","function":{"name":"Bash","description":"Run a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}}]
+        }"#;
+        let req: ChatRequest = serde_json::from_str(raw).unwrap();
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].function.name, "Bash");
+        let out = render_prompt(&req.messages, &tool_defs(&req));
+        assert!(out.contains("<tools>"));
+        assert!(out.contains("Bash"));
+        assert!(out.ends_with("User: list files"));
+    }
+
+    #[test]
+    fn no_tools_renders_identically_to_before_tool_support() {
+        let out = render_prompt(&[msg("system", "Fale em portugues."), msg("user", "Oi")], &[]);
+        assert_eq!(out, "Fale em portugues.\n\nUser: Oi");
     }
 
     #[test]
@@ -757,7 +1083,7 @@ mod tests {
     }
 
     #[test]
-    fn finish_reason_reflects_the_limit() {
+    fn finish_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| crate::gateway::GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: n,
@@ -766,8 +1092,134 @@ mod tests {
             partial: false,
             trace: None,
         };
-        assert_eq!(finish_reason(&summary(5), 100), "stop");
-        assert_eq!(finish_reason(&summary(100), 100), "length");
+        assert_eq!(finish_reason(&summary(5), 100, false), "stop");
+        assert_eq!(finish_reason(&summary(100), 100, false), "length");
+        assert_eq!(finish_reason(&summary(5), 100, true), "tool_calls");
+    }
+
+    // ── chat_message_json ────────────────────────────────────────────────────
+
+    #[test]
+    fn chat_message_json_with_no_calls_is_plain_content() {
+        let (message, saw_tool_call) = chat_message_json(&[OutputPart::Text("hi there".into())]);
+        assert!(!saw_tool_call);
+        assert_eq!(message["content"], "hi there");
+        assert!(message.get("tool_calls").is_none());
+    }
+
+    #[test]
+    fn chat_message_json_with_text_and_a_call_has_both() {
+        let parts = vec![
+            OutputPart::Text("checking now".into()),
+            OutputPart::ToolCall {
+                name: "Bash".into(),
+                arguments: json!({"command": "ls"}),
+            },
+        ];
+        let (message, saw_tool_call) = chat_message_json(&parts);
+        assert!(saw_tool_call);
+        assert_eq!(message["content"], "checking now");
+        let calls = message["tool_calls"].as_array().unwrap();
+        assert_eq!(calls.len(), 1);
+        assert!(calls[0]["id"].as_str().unwrap().starts_with("call_"));
+        assert_eq!(calls[0]["type"], "function");
+        assert_eq!(calls[0]["function"]["name"], "Bash");
+        // arguments re-serialized back to a JSON string, OpenAI's convention.
+        assert_eq!(calls[0]["function"]["arguments"], r#"{"command":"ls"}"#);
+    }
+
+    #[test]
+    fn chat_message_json_with_only_a_call_has_null_content() {
+        let parts = vec![OutputPart::ToolCall {
+            name: "Bash".into(),
+            arguments: json!({}),
+        }];
+        let (message, saw_tool_call) = chat_message_json(&parts);
+        assert!(saw_tool_call);
+        assert!(message["content"].is_null());
+    }
+
+    // ── apply_scan_events_openai ─────────────────────────────────────────────
+
+    #[test]
+    fn apply_scan_events_openai_emits_a_content_delta_for_plain_text() {
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events_openai(
+            vec![ScanEvent::Text("hi".into())],
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert_eq!(out, vec![json!({ "content": "hi" })]);
+        assert!(!saw_tool_call);
+    }
+
+    #[test]
+    fn apply_scan_events_openai_emits_a_two_delta_tool_call_sequence() {
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events_openai(
+            vec![ScanEvent::ToolCallClose(Ok((
+                "Bash".into(),
+                json!({"command": "ls"}),
+            )))],
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert!(saw_tool_call);
+        assert_eq!(out.len(), 2);
+        let first = &out[0]["tool_calls"][0];
+        assert_eq!(first["index"], 0);
+        assert_eq!(first["type"], "function");
+        assert_eq!(first["function"]["name"], "Bash");
+        assert_eq!(first["function"]["arguments"], "");
+        let second = &out[1]["tool_calls"][0];
+        assert_eq!(second["index"], 0);
+        assert_eq!(second["function"]["arguments"], r#"{"command":"ls"}"#);
+        assert_eq!(tool_call_index, 1);
+    }
+
+    #[test]
+    fn apply_scan_events_openai_indexes_two_calls_separately() {
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events_openai(
+            vec![
+                ScanEvent::ToolCallClose(Ok(("A".into(), json!({})))),
+                ScanEvent::ToolCallClose(Ok(("B".into(), json!({})))),
+            ],
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert_eq!(out[0]["tool_calls"][0]["index"], 0);
+        assert_eq!(out[2]["tool_calls"][0]["index"], 1);
+        assert_eq!(tool_call_index, 2);
+    }
+
+    #[test]
+    fn apply_scan_events_openai_falls_back_malformed_call_to_content() {
+        let mut tool_call_index = 0u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events_openai(
+            vec![ScanEvent::ToolCallClose(Err(
+                "<tool_call>bad</tool_call>".into(),
+            ))],
+            &mut tool_call_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert!(!saw_tool_call);
+        assert_eq!(
+            out,
+            vec![json!({ "content": "<tool_call>bad</tool_call>" })]
+        );
     }
 
     #[test]

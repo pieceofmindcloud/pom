@@ -3,22 +3,31 @@
 //! served in [`crate::openai`].
 //!
 //! Same shape as that module: a protocol adapter, nothing more. It renders
-//! `messages`/`system` into the single prompt string the pipeline already
-//! accepts, calls [`crate::gateway::generate_stream`], and dresses the result
-//! as Anthropic Messages API responses (SSE event names included). No
-//! inference behaviour is changed or duplicated here — this file and
-//! `openai.rs` both bottom out in the same generation path.
+//! `messages`/`system`/`tools` into the single prompt string the pipeline
+//! already accepts, calls [`crate::gateway::generate_stream`], and dresses
+//! the result as Anthropic Messages API responses (SSE event names
+//! included). No inference behaviour is changed or duplicated here — this
+//! file and `openai.rs` both bottom out in the same generation path.
 //!
-//! **Known gap**: Claude Code's agentic loop (file edits, bash, etc.) relies
-//! on the model emitting structured `tool_use` content blocks in response to
-//! the `tools` it declares on every request. This backend has no
-//! grammar-constrained decoding for that — it only ever produces plain text.
-//! Every response comes back as a single `text` block, `stop_reason` is never
-//! `tool_use`. A model behind this endpoint can chat, but cannot drive Claude
-//! Code's tools. Neither `tools` nor `stop_sequences` need a struct field
-//! below to be accepted: serde drops unknown JSON fields by default (neither
-//! request type opts into `deny_unknown_fields`), so a real Claude Code
-//! request parses fine — the fields are just never looked at.
+//! **Tool calling is prompt-engineered and text-parsed, not protocol-level.**
+//! This backend has no grammar-constrained decoding anywhere: the model's
+//! chat template is applied exactly once, in `infer_server.rs`, via
+//! llama.cpp's `llama_chat_apply_template`, which only takes `(role,
+//! content)` string pairs — there is no `tools` parameter the way Python's
+//! `transformers.apply_chat_template(messages, tools=...)` has one. So
+//! `tools` are rendered into the system prompt as plain text
+//! (`render_tools_block`), and the model's raw output is scanned
+//! (`TagScanner`) for `<tool_call>{"name":...,"arguments":...}</tool_call>`
+//! spans on the way back. That tag convention and its exact wording is not
+//! invented — it's copied verbatim from `tokenizer.chat_template` in the
+//! actually-deployed GGUF (Qwen's own Hermes-style function-calling
+//! template), so the model sees text as close as possible to what it was
+//! fine-tuned on. This has real, bounded failure modes a grammar-constrained
+//! backend wouldn't: a malformed or nameless `<tool_call>` degrades to plain
+//! text (see `parse_tool_call`) rather than failing the request or losing
+//! the content. `tool_choice` is parsed-and-ignored like `stop_sequences` —
+//! neither needs a struct field to be accepted, since serde silently drops
+//! unknown JSON fields on both request types here.
 //!
 //! Endpoints: `POST /v1/messages` (`stream: true` → SSE),
 //! `POST /v1/messages/count_tokens`.
@@ -60,9 +69,7 @@ pub fn routes() -> Router<GatewayState> {
 
 /// `content` is a bare string on the simple path and an array of typed blocks
 /// once tools, images, or prompt caching are involved. Claude Code always
-/// sends the array form. Blocks this adapter can't render (`tool_use`,
-/// `tool_result`, `image`, ...) are parsed — so an unsupported block never
-/// fails the request — and simply contribute no text.
+/// sends the array form.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum AnthropicContent {
@@ -76,6 +83,63 @@ pub struct ContentBlock {
     pub kind: String,
     #[serde(default)]
     pub text: Option<String>,
+    /// `tool_use` blocks.
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub input: Option<serde_json::Value>,
+    /// `tool_result` blocks. Anthropic allows `content` to be a bare string
+    /// or an array of blocks — Claude Code sends both, depending on the tool.
+    #[serde(default)]
+    pub content: Option<ToolResultContent>,
+    #[serde(default)]
+    pub is_error: Option<bool>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum ToolResultContent {
+    Text(String),
+    Blocks(Vec<ContentBlock>),
+}
+
+/// Render one content block back to the text form the model itself would
+/// produce — `tool_use` as `<tool_call>...</tool_call>` (the exact shape the
+/// model emits, so replayed history stays self-consistent with what it
+/// wrote), `tool_result` as `<tool_response>...</tool_response>` (both tags
+/// copied verbatim from the deployed GGUF's chat template — see the module
+/// doc comment). Blocks this adapter can't render at all (image, thinking,
+/// ...) contribute nothing, same as before tool support existed.
+fn render_block(b: &ContentBlock) -> String {
+    match b.kind.as_str() {
+        "text" => b.text.clone().unwrap_or_default(),
+        "tool_use" => format!(
+            "<tool_call>\n{}\n</tool_call>",
+            json!({
+                "name": b.name.clone().unwrap_or_default(),
+                "arguments": b.input.clone().unwrap_or_else(|| json!({})),
+            })
+        ),
+        "tool_result" => {
+            let inner = match &b.content {
+                Some(ToolResultContent::Text(s)) => s.clone(),
+                Some(ToolResultContent::Blocks(blocks)) => blocks
+                    .iter()
+                    .map(render_block)
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                None => String::new(),
+            };
+            let prefix = if b.is_error.unwrap_or(false) {
+                "Error: "
+            } else {
+                ""
+            };
+            format!("<tool_response>\n{prefix}{inner}\n</tool_response>")
+        }
+        _ => String::new(),
+    }
 }
 
 impl AnthropicContent {
@@ -84,8 +148,8 @@ impl AnthropicContent {
             AnthropicContent::Text(s) => s.clone(),
             AnthropicContent::Blocks(blocks) => blocks
                 .iter()
-                .filter(|b| b.kind == "text")
-                .filter_map(|b| b.text.clone())
+                .map(render_block)
+                .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n"),
         }
@@ -107,7 +171,8 @@ impl SystemPrompt {
             SystemPrompt::Text(s) => s.clone(),
             SystemPrompt::Blocks(blocks) => blocks
                 .iter()
-                .filter_map(|b| b.text.clone())
+                .map(render_block)
+                .filter(|s| !s.is_empty())
                 .collect::<Vec<_>>()
                 .join("\n\n"),
         }
@@ -118,6 +183,17 @@ impl SystemPrompt {
 pub struct AnthropicMessage {
     pub role: String,
     pub content: AnthropicContent,
+}
+
+/// One entry from the request's `tools` array — Anthropic's `name` +
+/// `description` + JSON Schema `input_schema`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ToolDef {
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub input_schema: serde_json::Value,
 }
 
 // ── Requests ─────────────────────────────────────────────────────────────────
@@ -133,6 +209,8 @@ pub struct MessagesRequest {
     pub stream: bool,
     #[serde(default = "default_max_tokens")]
     pub max_tokens: u32,
+    #[serde(default)]
+    pub tools: Vec<ToolDef>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -150,22 +228,71 @@ pub struct CountTokensRequest {
     pub messages: Vec<AnthropicMessage>,
     #[serde(default)]
     pub system: Option<SystemPrompt>,
+    #[serde(default)]
+    pub tools: Vec<ToolDef>,
 }
 
 // ── Prompt rendering ─────────────────────────────────────────────────────────
 
-/// Flatten `system` + `messages` into the single prompt string the pipeline
-/// takes — same reasoning as `openai::render_prompt`: the first peer's
-/// `inference_server.py` already applies the model's chat template, so a
-/// second one here would nest inside it. A lone user message with no system
-/// prompt passes through untouched.
-pub fn render_prompt(system: Option<&SystemPrompt>, messages: &[AnthropicMessage]) -> String {
+/// Text block instructing the model on the tools it has and the exact
+/// `<tool_call>` format to answer with — copied verbatim (down to the
+/// wording) from `tokenizer.chat_template` in the deployed GGUF, since that
+/// is what the model was actually fine-tuned to recognise. Empty when there
+/// are no tools, so a tool-less request renders identically to before this
+/// feature existed.
+fn render_tools_block(tools: &[ToolDef]) -> String {
+    if tools.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n\
+         You are provided with function signatures within <tools></tools> XML tags:\n<tools>",
+    );
+    for t in tools {
+        out.push('\n');
+        out.push_str(
+            &json!({
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description.clone().unwrap_or_default(),
+                    "parameters": t.input_schema,
+                }
+            })
+            .to_string(),
+        );
+    }
+    out.push_str(
+        "\n</tools>\n\nFor each function call, return a json object with function name and \
+         arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n\
+         {\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>",
+    );
+    out
+}
+
+/// Flatten `system` + `tools` + `messages` into the single prompt string the
+/// pipeline takes — same reasoning as `openai::render_prompt`: the first
+/// peer already applies the model's chat template once, so a second one here
+/// would nest inside it. A lone user message with no system prompt and no
+/// tools passes through untouched.
+pub fn render_prompt(
+    system: Option<&SystemPrompt>,
+    messages: &[AnthropicMessage],
+    tools: &[ToolDef],
+) -> String {
     let non_empty: Vec<&AnthropicMessage> = messages
         .iter()
         .filter(|m| !m.content.as_text().trim().is_empty())
         .collect();
 
-    let system_text = system.map(|s| s.as_text()).unwrap_or_default();
+    let tools_block = render_tools_block(tools);
+    let mut system_text = system.map(|s| s.as_text()).unwrap_or_default();
+    if !tools_block.is_empty() {
+        if !system_text.trim().is_empty() {
+            system_text.push_str("\n\n");
+        }
+        system_text.push_str(&tools_block);
+    }
     let system_text = system_text.trim();
 
     if system_text.is_empty() {
@@ -196,6 +323,216 @@ pub fn render_prompt(system: Option<&SystemPrompt>, messages: &[AnthropicMessage
     out
 }
 
+// ── Tool-call scanning ───────────────────────────────────────────────────────
+
+const TOOL_CALL_OPEN: &str = "<tool_call>";
+const TOOL_CALL_CLOSE: &str = "</tool_call>";
+
+/// One classified span of raw model output.
+#[derive(Debug, Clone, PartialEq)]
+enum ScanEvent {
+    Text(String),
+    ToolCallOpen,
+    ToolCallChunk(String),
+    /// `Ok` once `{"name":...,"arguments":...}` parses and names a function;
+    /// `Err` carries the full literal `<tool_call>...</tool_call>` span to
+    /// fall back to as plain text — malformed model output must degrade
+    /// gracefully, never crash or vanish.
+    ToolCallClose(Result<(String, serde_json::Value), String>),
+}
+
+enum ScanState {
+    Outside,
+    Inside(String),
+}
+
+/// Incrementally splits a token stream into plain text and
+/// `<tool_call>...</tool_call>` spans, tolerating the tags landing anywhere
+/// relative to token boundaries — a single decoded token's text can split a
+/// tag at any byte. The blocking path (`parse_output`) and the streaming
+/// path (`sse_stream`, via `apply_scan_events`) both run through this one
+/// scanner, so they can never disagree about how a given piece of text gets
+/// classified.
+struct TagScanner {
+    pending: String,
+    state: ScanState,
+}
+
+impl TagScanner {
+    fn new() -> Self {
+        Self {
+            pending: String::new(),
+            state: ScanState::Outside,
+        }
+    }
+
+    fn feed(&mut self, chunk: &str) -> Vec<ScanEvent> {
+        self.pending.push_str(chunk);
+        let mut events = Vec::new();
+        loop {
+            let tag = match &self.state {
+                ScanState::Outside => TOOL_CALL_OPEN,
+                ScanState::Inside(_) => TOOL_CALL_CLOSE,
+            };
+            match self.pending.find(tag) {
+                Some(i) => {
+                    let head = self.pending[..i].to_string();
+                    self.pending = self.pending[i + tag.len()..].to_string();
+                    match &mut self.state {
+                        ScanState::Outside => {
+                            if !head.is_empty() {
+                                events.push(ScanEvent::Text(head));
+                            }
+                            events.push(ScanEvent::ToolCallOpen);
+                            self.state = ScanState::Inside(String::new());
+                        }
+                        ScanState::Inside(raw) => {
+                            if !head.is_empty() {
+                                raw.push_str(&head);
+                                events.push(ScanEvent::ToolCallChunk(head));
+                            }
+                            let raw = std::mem::take(raw);
+                            events.push(ScanEvent::ToolCallClose(parse_tool_call(&raw)));
+                            self.state = ScanState::Outside;
+                        }
+                    }
+                }
+                None => {
+                    let hold = longest_prefix_overlap(&self.pending, tag);
+                    let flush_len = self.pending.len() - hold;
+                    if flush_len > 0 {
+                        let flushed = self.pending[..flush_len].to_string();
+                        self.pending = self.pending[flush_len..].to_string();
+                        match &mut self.state {
+                            ScanState::Outside => events.push(ScanEvent::Text(flushed)),
+                            ScanState::Inside(raw) => {
+                                raw.push_str(&flushed);
+                                events.push(ScanEvent::ToolCallChunk(flushed));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        events
+    }
+
+    /// Whatever never resolved into a complete tag by the time generation
+    /// ends — a dangling `<tool_c` fragment, or a whole tool call cut off by
+    /// `max_tokens` before its closing tag arrived. Nothing is dropped.
+    fn finish(self) -> Vec<ScanEvent> {
+        match self.state {
+            ScanState::Outside if self.pending.is_empty() => Vec::new(),
+            ScanState::Outside => vec![ScanEvent::Text(self.pending)],
+            ScanState::Inside(raw) => vec![ScanEvent::Text(format!(
+                "{TOOL_CALL_OPEN}{raw}{}",
+                self.pending
+            ))],
+        }
+    }
+}
+
+/// Longest suffix of `s` that is also a strict prefix of `tag` — how much of
+/// `s`'s tail could still turn into `tag` once more input arrives. Both tags
+/// are pure ASCII, so every byte index this returns is guaranteed to land on
+/// a UTF-8 char boundary in `s` regardless of non-ASCII text around it.
+fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
+    let max = s.len().min(tag.len().saturating_sub(1));
+    (1..=max).rev().find(|&len| s.ends_with(&tag[..len])).unwrap_or(0)
+}
+
+fn parse_tool_call(raw: &str) -> Result<(String, serde_json::Value), String> {
+    let fallback = || format!("{TOOL_CALL_OPEN}{raw}{TOOL_CALL_CLOSE}");
+    match serde_json::from_str::<serde_json::Value>(raw.trim()) {
+        Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
+            Some(name) if !name.is_empty() => Ok((
+                name.to_string(),
+                v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+            )),
+            _ => Err(fallback()),
+        },
+        Err(_) => Err(fallback()),
+    }
+}
+
+// ── Output parsing ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum OutputPart {
+    Text(String),
+    ToolCall {
+        name: String,
+        arguments: serde_json::Value,
+    },
+}
+
+fn events_to_parts(events: Vec<ScanEvent>) -> Vec<OutputPart> {
+    let mut parts = Vec::new();
+    for e in events {
+        match e {
+            ScanEvent::Text(s) if !s.is_empty() => parts.push(OutputPart::Text(s)),
+            ScanEvent::Text(_) => {}
+            ScanEvent::ToolCallOpen | ScanEvent::ToolCallChunk(_) => {}
+            ScanEvent::ToolCallClose(Ok((name, arguments))) => {
+                parts.push(OutputPart::ToolCall { name, arguments })
+            }
+            ScanEvent::ToolCallClose(Err(raw)) => parts.push(OutputPart::Text(raw)),
+        }
+    }
+    parts
+}
+
+/// Adjacent `Text` parts (e.g. real text immediately followed by a malformed
+/// call's literal fallback) collapse into one, so the response reconstructs
+/// exactly the original text whenever nothing actually parsed as a call.
+fn merge_adjacent_text(parts: Vec<OutputPart>) -> Vec<OutputPart> {
+    let mut out: Vec<OutputPart> = Vec::new();
+    for p in parts {
+        match (&p, out.last_mut()) {
+            (OutputPart::Text(s), Some(OutputPart::Text(prev))) => prev.push_str(s),
+            _ => out.push(p),
+        }
+    }
+    out
+}
+
+/// Split raw model output into plain text and successfully-parsed tool
+/// calls — a thin wrapper over [`TagScanner`], so this and the streaming
+/// path can never disagree about how a given span of text is classified.
+fn parse_output(text: &str) -> Vec<OutputPart> {
+    let mut scanner = TagScanner::new();
+    let mut events = scanner.feed(text);
+    events.extend(scanner.finish());
+    merge_adjacent_text(events_to_parts(events))
+}
+
+/// Anthropic `content` blocks from parsed output, plus whether any tool call
+/// was found (drives `stop_reason`). Always at least one block, matching the
+/// pre-tool-calling response shape when there is nothing to say.
+fn content_blocks(parts: &[OutputPart]) -> (Vec<serde_json::Value>, bool) {
+    let mut blocks = Vec::new();
+    let mut saw_tool_call = false;
+    for p in parts {
+        match p {
+            OutputPart::Text(s) => blocks.push(json!({ "type": "text", "text": s })),
+            OutputPart::ToolCall { name, arguments } => {
+                saw_tool_call = true;
+                blocks.push(json!({
+                    "type": "tool_use",
+                    "id": format!("toolu_{}", uuid::Uuid::new_v4().simple()),
+                    "name": name,
+                    "input": arguments,
+                }));
+            }
+        }
+    }
+    if blocks.is_empty() {
+        blocks.push(json!({ "type": "text", "text": "" }));
+    }
+    (blocks, saw_tool_call)
+}
+
 // ── Messages ─────────────────────────────────────────────────────────────────
 
 async fn messages(
@@ -215,14 +552,15 @@ async fn messages(
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
         _ => state.active_model().await,
     };
-    let prompt = render_prompt(req.system.as_ref(), &req.messages);
+    let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
     let max_tokens = req.clamped_max_tokens();
     let input_tokens = approx_tokens(&prompt);
 
     info!(
-        "🤖 /v1/messages model={model} stream={} msgs={} prompt_len={}",
+        "🤖 /v1/messages model={model} stream={} msgs={} tools={} prompt_len={}",
         req.stream,
         req.messages.len(),
+        req.tools.len(),
         prompt.len()
     );
 
@@ -253,7 +591,7 @@ async fn messages(
 }
 
 async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) -> Response {
-    let prompt = render_prompt(req.system.as_ref(), &req.messages);
+    let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
     (
         cors_headers(),
         Json(json!({ "input_tokens": approx_tokens(&prompt) })),
@@ -261,8 +599,10 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
         .into_response()
 }
 
-fn stop_reason(summary: &GenSummary, max_tokens: u32) -> &'static str {
-    if summary.tokens_generated >= max_tokens {
+fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
+    if saw_tool_call {
+        "tool_use"
+    } else if summary.tokens_generated >= max_tokens {
         "max_tokens"
     } else {
         "end_turn"
@@ -282,7 +622,8 @@ async fn blocking_response(
         .await
     {
         Ok((text, summary)) => {
-            let reason = stop_reason(&summary, max_tokens);
+            let (content, saw_tool_call) = content_blocks(&parse_output(&text));
+            let reason = stop_reason(&summary, max_tokens, saw_tool_call);
             (
                 cors_headers(),
                 Json(json!({
@@ -290,7 +631,7 @@ async fn blocking_response(
                     "type": "message",
                     "role": "assistant",
                     "model": model,
-                    "content": [{ "type": "text", "text": text }],
+                    "content": content,
                     "stop_reason": reason,
                     "stop_sequence": null,
                     "usage": {
@@ -342,12 +683,107 @@ fn stream_response(
         .into_response()
 }
 
+/// Turns scanner events into `(event_name, payload)` SSE pairs, tracking
+/// which content-block index is currently open (`text_open`) and the next
+/// free index (`next_index`). Synchronous and free of any axum/SSE type so
+/// it's directly unit-testable without a streaming harness.
+///
+/// Tool-call arguments are emitted as a single `input_json_delta` carrying
+/// the whole JSON blob, not truly incrementally: unlike real Claude
+/// generation, the tool's name is only known once the entire `<tool_call>`
+/// tag closes (name and arguments arrive in the same JSON object here), so
+/// there's nothing to stream *before* that point. The blob is small and the
+/// wait is sub-second either way — an honest, deliberate trade-off, not a
+/// missing feature.
+fn apply_scan_events(
+    events: Vec<ScanEvent>,
+    text_open: &mut Option<u32>,
+    next_index: &mut u32,
+    saw_tool_call: &mut bool,
+    out: &mut Vec<(&'static str, serde_json::Value)>,
+) {
+    for e in events {
+        match e {
+            ScanEvent::Text(s) if !s.is_empty() => {
+                let idx = match *text_open {
+                    Some(idx) => idx,
+                    None => {
+                        let idx = *next_index;
+                        *next_index += 1;
+                        out.push((
+                            "content_block_start",
+                            json!({
+                                "type": "content_block_start",
+                                "index": idx,
+                                "content_block": { "type": "text", "text": "" },
+                            }),
+                        ));
+                        *text_open = Some(idx);
+                        idx
+                    }
+                };
+                out.push((
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": { "type": "text_delta", "text": s },
+                    }),
+                ));
+            }
+            ScanEvent::Text(_) | ScanEvent::ToolCallOpen | ScanEvent::ToolCallChunk(_) => {}
+            ScanEvent::ToolCallClose(Ok((name, arguments))) => {
+                *saw_tool_call = true;
+                if let Some(idx) = text_open.take() {
+                    out.push((
+                        "content_block_stop",
+                        json!({ "type": "content_block_stop", "index": idx }),
+                    ));
+                }
+                let idx = *next_index;
+                *next_index += 1;
+                let id = format!("toolu_{}", uuid::Uuid::new_v4().simple());
+                out.push((
+                    "content_block_start",
+                    json!({
+                        "type": "content_block_start",
+                        "index": idx,
+                        "content_block": { "type": "tool_use", "id": id, "name": name, "input": {} },
+                    }),
+                ));
+                out.push((
+                    "content_block_delta",
+                    json!({
+                        "type": "content_block_delta",
+                        "index": idx,
+                        "delta": { "type": "input_json_delta", "partial_json": arguments.to_string() },
+                    }),
+                ));
+                out.push((
+                    "content_block_stop",
+                    json!({ "type": "content_block_stop", "index": idx }),
+                ));
+            }
+            ScanEvent::ToolCallClose(Err(raw)) => {
+                apply_scan_events(
+                    vec![ScanEvent::Text(raw)],
+                    text_open,
+                    next_index,
+                    saw_tool_call,
+                    out,
+                );
+            }
+        }
+    }
+}
+
 /// Turn generation events into the Anthropic streaming event sequence:
-/// `message_start` → `content_block_start` → one `content_block_delta` per
-/// token → `content_block_stop` → `message_delta` (carries `stop_reason` and
-/// the final `output_tokens`) → `message_stop`. A mid-stream failure emits a
-/// single `error` event instead of the trailer and ends there, mirroring how
-/// the real API has no graceful way to fail a stream already in progress.
+/// `message_start` → `content_block_start` → text/tool_use blocks as the
+/// model's output resolves (see `apply_scan_events`) → `message_delta`
+/// (carries `stop_reason` and the final `output_tokens`) → `message_stop`. A
+/// mid-stream failure emits a single `error` event instead of the trailer
+/// and ends there, mirroring how the real API has no graceful way to fail a
+/// stream already in progress.
 fn sse_stream(
     rx: mpsc::Receiver<GenEvent>,
     id: String,
@@ -369,8 +805,13 @@ fn sse_stream(
         max_tokens: u32,
         input_tokens: u32,
         /// Holds events a single generator event expanded into (e.g. `Done`
-        /// becomes three: content_block_stop, message_delta, message_stop).
+        /// becomes several: content_block_stop, message_delta, message_stop).
         queue: VecDeque<Event>,
+        scanner: TagScanner,
+        /// Index of the currently open text block, if any.
+        text_open: Option<u32>,
+        next_index: u32,
+        saw_tool_call: bool,
     }
 
     fn ev(name: &'static str, data: serde_json::Value) -> Event {
@@ -385,6 +826,10 @@ fn sse_stream(
         max_tokens,
         input_tokens,
         queue: VecDeque::new(),
+        scanner: TagScanner::new(),
+        text_open: None,
+        next_index: 0,
+        saw_tool_call: false,
     };
 
     futures::stream::unfold(state, |mut s| async move {
@@ -421,28 +866,47 @@ fn sse_stream(
                             "content_block": { "type": "text", "text": "" },
                         }),
                     ));
+                    s.text_open = Some(0);
+                    s.next_index = 1;
                     continue;
                 }
                 Phase::Streaming => match s.rx.recv().await {
                     Some(GenEvent::Token(text)) => {
-                        return Some((
-                            Ok(ev(
-                                "content_block_delta",
-                                json!({
-                                    "type": "content_block_delta",
-                                    "index": 0,
-                                    "delta": { "type": "text_delta", "text": text },
-                                }),
-                            )),
-                            s,
-                        ));
+                        let events = s.scanner.feed(&text);
+                        let mut pairs = Vec::new();
+                        apply_scan_events(
+                            events,
+                            &mut s.text_open,
+                            &mut s.next_index,
+                            &mut s.saw_tool_call,
+                            &mut pairs,
+                        );
+                        for (name, data) in pairs {
+                            s.queue.push_back(ev(name, data));
+                        }
+                        continue;
                     }
                     Some(GenEvent::Done(summary)) => {
-                        let reason = stop_reason(&summary, s.max_tokens);
-                        s.queue.push_back(ev(
-                            "content_block_stop",
-                            json!({ "type": "content_block_stop", "index": 0 }),
-                        ));
+                        let scanner = std::mem::replace(&mut s.scanner, TagScanner::new());
+                        let finish_events = scanner.finish();
+                        let mut pairs = Vec::new();
+                        apply_scan_events(
+                            finish_events,
+                            &mut s.text_open,
+                            &mut s.next_index,
+                            &mut s.saw_tool_call,
+                            &mut pairs,
+                        );
+                        for (name, data) in pairs {
+                            s.queue.push_back(ev(name, data));
+                        }
+                        if let Some(idx) = s.text_open.take() {
+                            s.queue.push_back(ev(
+                                "content_block_stop",
+                                json!({ "type": "content_block_stop", "index": idx }),
+                            ));
+                        }
+                        let reason = stop_reason(&summary, s.max_tokens, s.saw_tool_call);
                         s.queue.push_back(ev(
                             "message_delta",
                             json!({
@@ -504,10 +968,12 @@ mod tests {
         }
     }
 
+    // ── render_prompt ────────────────────────────────────────────────────────
+
     #[test]
     fn single_user_message_with_no_system_passes_through_unchanged() {
         assert_eq!(
-            render_prompt(None, &[msg("user", "O que e RDMA?")]),
+            render_prompt(None, &[msg("user", "O que e RDMA?")], &[]),
             "O que e RDMA?"
         );
     }
@@ -517,6 +983,7 @@ mod tests {
         let out = render_prompt(
             Some(&SystemPrompt::Text("Fale em portugues.".into())),
             &[msg("user", "Oi")],
+            &[],
         );
         assert!(out.starts_with("Fale em portugues."));
         assert!(out.ends_with("User: Oi"));
@@ -531,6 +998,7 @@ mod tests {
                 msg("assistant", "2"),
                 msg("user", "e 2+2?"),
             ],
+            &[],
         );
         assert!(out.contains("User: 1+1?"));
         assert!(out.contains("Assistant: 2"));
@@ -538,14 +1006,27 @@ mod tests {
     }
 
     #[test]
-    fn content_blocks_are_concatenated_and_non_text_blocks_are_ignored() {
+    fn no_tools_renders_identically_to_before_tool_support() {
+        let out = render_prompt(
+            Some(&SystemPrompt::Text("Fale em portugues.".into())),
+            &[msg("user", "Oi")],
+            &[],
+        );
+        assert_eq!(out, "Fale em portugues.\n\nUser: Oi");
+    }
+
+    #[test]
+    fn content_blocks_are_rendered_in_order_including_tool_result() {
         let raw = r#"{"role":"user","content":[
             {"type":"text","text":"linha 1"},
-            {"type":"tool_result","tool_use_id":"x","content":"ignored"},
+            {"type":"tool_result","tool_use_id":"x","content":"resultado"},
             {"type":"text","text":"linha 2"}
         ]}"#;
         let m: AnthropicMessage = serde_json::from_str(raw).unwrap();
-        assert_eq!(m.content.as_text(), "linha 1\nlinha 2");
+        let out = m.content.as_text();
+        assert!(out.starts_with("linha 1"));
+        assert!(out.contains("<tool_response>\nresultado\n</tool_response>"));
+        assert!(out.ends_with("linha 2"));
     }
 
     #[test]
@@ -555,16 +1036,79 @@ mod tests {
             "max_tokens": 1024,
             "system": [{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],
             "messages": [{"role":"user","content":[{"type":"text","text":"oi"}]}],
-            "tools": [{"name":"Bash","description":"...","input_schema":{}}],
+            "tools": [{"name":"Bash","description":"Run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
             "tool_choice": {"type":"auto"},
             "stream": true
         }"#;
         let req: MessagesRequest = serde_json::from_str(raw).unwrap();
         assert_eq!(req.max_tokens, 1024);
         assert!(req.stream);
-        let out = render_prompt(req.system.as_ref(), &req.messages);
+        assert_eq!(req.tools.len(), 1);
+        assert_eq!(req.tools[0].name, "Bash");
+        let out = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
         assert!(out.starts_with("You are Claude Code."));
+        assert!(out.contains("<tools>"));
+        assert!(out.contains("Bash"));
         assert!(out.ends_with("User: oi"));
+    }
+
+    #[test]
+    fn render_prompt_round_trip_with_tool_use_and_tool_result() {
+        let raw = r#"{
+            "system": "You are Claude Code.",
+            "tools": [{"name":"Bash","description":"Run a shell command","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}],
+            "messages": [
+                {"role":"user","content":"list files"},
+                {"role":"assistant","content":[
+                    {"type":"text","text":"Sure, let me check."},
+                    {"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}
+                ]},
+                {"role":"user","content":[
+                    {"type":"tool_result","tool_use_id":"toolu_1","content":"file1.txt\nfile2.txt"}
+                ]},
+                {"role":"assistant","content":"Found two files."}
+            ]
+        }"#;
+        let req: MessagesRequest = serde_json::from_str(raw).unwrap();
+        let out = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+
+        assert!(out.starts_with("You are Claude Code."));
+        assert!(out.contains("<tools>"));
+        assert!(out.contains("Bash"));
+
+        // The tools block's own instructions also mention `<tool_call>`, so
+        // the *real* rendered call (from the assistant turn) is the last
+        // occurrence, not the first.
+        let tool_call_pos = out.rfind("<tool_call>").expect("tool call rendered");
+        let tool_response_pos = out.find("<tool_response>").expect("tool response rendered");
+        let sure_pos = out.find("Sure, let me check.").unwrap();
+        let found_pos = out.find("Found two files.").unwrap();
+        assert!(sure_pos < tool_call_pos);
+        assert!(tool_call_pos < tool_response_pos);
+        assert!(tool_response_pos < found_pos);
+        assert!(out.contains("file1.txt\nfile2.txt"));
+    }
+
+    #[test]
+    fn tool_use_block_render_and_parse_are_symmetric() {
+        let block = ContentBlock {
+            kind: "tool_use".into(),
+            text: None,
+            name: Some("Read".into()),
+            input: Some(json!({"file_path": "/tmp/x.txt"})),
+            content: None,
+            is_error: None,
+        };
+        let rendered = render_block(&block);
+        let parts = parse_output(&rendered);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "Read");
+                assert_eq!(arguments["file_path"], "/tmp/x.txt");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
     }
 
     #[test]
@@ -582,7 +1126,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_reason_reflects_the_limit() {
+    fn stop_reason_reflects_the_limit_and_tool_calls() {
         let summary = |n: u32| GenSummary {
             source: "pipeline:a→b".into(),
             tokens_generated: n,
@@ -591,7 +1135,225 @@ mod tests {
             partial: false,
             trace: None,
         };
-        assert_eq!(stop_reason(&summary(5), 100), "end_turn");
-        assert_eq!(stop_reason(&summary(100), 100), "max_tokens");
+        assert_eq!(stop_reason(&summary(5), 100, false), "end_turn");
+        assert_eq!(stop_reason(&summary(100), 100, false), "max_tokens");
+        assert_eq!(stop_reason(&summary(5), 100, true), "tool_use");
+    }
+
+    // ── content_blocks ───────────────────────────────────────────────────────
+
+    #[test]
+    fn content_blocks_builds_a_tool_use_block_with_a_toolu_prefixed_id() {
+        let parts = vec![
+            OutputPart::Text("ok, checking".into()),
+            OutputPart::ToolCall {
+                name: "Bash".into(),
+                arguments: json!({"command": "ls"}),
+            },
+        ];
+        let (blocks, saw_tool_call) = content_blocks(&parts);
+        assert!(saw_tool_call);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["type"], "text");
+        assert_eq!(blocks[1]["type"], "tool_use");
+        assert!(blocks[1]["id"].as_str().unwrap().starts_with("toolu_"));
+        assert_eq!(blocks[1]["name"], "Bash");
+    }
+
+    #[test]
+    fn content_blocks_defaults_to_one_empty_text_block_when_there_is_nothing() {
+        let (blocks, saw_tool_call) = content_blocks(&[]);
+        assert!(!saw_tool_call);
+        assert_eq!(blocks, vec![json!({"type": "text", "text": ""})]);
+    }
+
+    // ── TagScanner / parse_output ────────────────────────────────────────────
+
+    #[test]
+    fn scanner_feed_on_empty_chunk_is_a_no_op() {
+        let mut sc = TagScanner::new();
+        assert_eq!(sc.feed(""), vec![]);
+    }
+
+    #[test]
+    fn parse_output_no_tool_calls_returns_one_text_part() {
+        assert_eq!(
+            parse_output("just chatting"),
+            vec![OutputPart::Text("just chatting".into())]
+        );
+    }
+
+    #[test]
+    fn parse_output_extracts_a_single_tool_call() {
+        let out = parse_output(r#"<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>"#);
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "Bash");
+                assert_eq!(arguments["command"], "ls");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_output_interleaves_text_and_tool_calls() {
+        let out = parse_output(
+            r#"Sure, let me check.<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>Done."#,
+        );
+        assert_eq!(out[0], OutputPart::Text("Sure, let me check.".into()));
+        assert!(matches!(out[1], OutputPart::ToolCall { .. }));
+        assert_eq!(out[2], OutputPart::Text("Done.".into()));
+    }
+
+    #[test]
+    fn parse_output_handles_two_parallel_tool_calls_back_to_back() {
+        let out = parse_output(
+            r#"<tool_call>{"name":"A","arguments":{}}</tool_call><tool_call>{"name":"B","arguments":{}}</tool_call>"#,
+        );
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0], OutputPart::ToolCall { name, .. } if name == "A"));
+        assert!(matches!(&out[1], OutputPart::ToolCall { name, .. } if name == "B"));
+    }
+
+    #[test]
+    fn parse_output_falls_back_to_text_on_malformed_json() {
+        let raw = "<tool_call>not json</tool_call>";
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn parse_output_falls_back_to_text_when_name_is_missing() {
+        let raw = r#"<tool_call>{"arguments":{}}</tool_call>"#;
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn parse_output_recovers_an_unclosed_tool_call() {
+        let raw = r#"<tool_call>{"name":"Bash", "argum"#; // cut off mid-generation
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn parse_output_recovers_a_dangling_tag_prefix() {
+        let raw = "plain <tool_c";
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    fn feed_in_chunks(text: &str, chunk_size: usize) -> Vec<OutputPart> {
+        let mut sc = TagScanner::new();
+        let mut events = Vec::new();
+        for chunk in text.as_bytes().chunks(chunk_size.max(1)) {
+            events.extend(sc.feed(std::str::from_utf8(chunk).unwrap()));
+        }
+        events.extend(sc.finish());
+        merge_adjacent_text(events_to_parts(events))
+    }
+
+    #[test]
+    fn tag_split_across_arbitrary_chunk_boundaries_matches_the_one_chunk_result() {
+        let full = r#"before <tool_call>{"name":"Bash","arguments":{"command":"ls -la"}}</tool_call> after"#;
+        let whole = parse_output(full);
+        assert_eq!(feed_in_chunks(full, full.len()), whole);
+        assert_eq!(feed_in_chunks(full, 1), whole); // byte-at-a-time
+        assert_eq!(feed_in_chunks(full, 3), whole); // arbitrary split
+    }
+
+    // ── apply_scan_events ────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_scan_events_streams_plain_text_at_the_current_index() {
+        let mut text_open = Some(0u32);
+        let mut next_index = 1u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events(
+            vec![ScanEvent::Text("hi".into())],
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "content_block_delta");
+        assert_eq!(out[0].1["index"], 0);
+        assert_eq!(out[0].1["delta"]["text"], "hi");
+        assert!(!saw_tool_call);
+    }
+
+    #[test]
+    fn apply_scan_events_opens_a_tool_use_block_and_closes_the_text_block_first() {
+        let mut text_open = Some(0u32);
+        let mut next_index = 1u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events(
+            vec![ScanEvent::ToolCallClose(Ok((
+                "Bash".into(),
+                json!({"command": "ls"}),
+            )))],
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert!(saw_tool_call);
+        let names: Vec<&str> = out.iter().map(|(n, _)| *n).collect();
+        assert_eq!(
+            names,
+            vec![
+                "content_block_stop",
+                "content_block_start",
+                "content_block_delta",
+                "content_block_stop",
+            ]
+        );
+        assert_eq!(out[0].1["index"], 0); // closed the open text block first
+        assert_eq!(out[1].1["index"], 1); // new tool_use block at the next index
+        assert_eq!(out[1].1["content_block"]["name"], "Bash");
+        assert_eq!(text_open, None); // no text block left open
+        assert_eq!(next_index, 2);
+    }
+
+    #[test]
+    fn apply_scan_events_reopens_a_text_block_lazily_after_a_tool_call() {
+        let mut text_open: Option<u32> = None; // as it is right after a successful tool call
+        let mut next_index = 2u32;
+        let mut saw_tool_call = true;
+        let mut out = Vec::new();
+        apply_scan_events(
+            vec![ScanEvent::Text("done".into())],
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        let names: Vec<&str> = out.iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, vec!["content_block_start", "content_block_delta"]);
+        assert_eq!(out[0].1["index"], 2);
+        assert_eq!(text_open, Some(2));
+        assert_eq!(next_index, 3);
+    }
+
+    #[test]
+    fn apply_scan_events_falls_back_malformed_tool_call_into_the_open_text_block() {
+        let mut text_open = Some(0u32);
+        let mut next_index = 1u32;
+        let mut saw_tool_call = false;
+        let mut out = Vec::new();
+        apply_scan_events(
+            vec![ScanEvent::ToolCallClose(Err(
+                "<tool_call>bad</tool_call>".into(),
+            ))],
+            &mut text_open,
+            &mut next_index,
+            &mut saw_tool_call,
+            &mut out,
+        );
+        assert!(!saw_tool_call);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].0, "content_block_delta");
+        assert_eq!(out[0].1["index"], 0); // same block, no index bump
+        assert_eq!(out[0].1["delta"]["text"], "<tool_call>bad</tool_call>");
     }
 }

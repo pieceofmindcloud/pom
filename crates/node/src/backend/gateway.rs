@@ -1528,6 +1528,7 @@ pub(crate) mod testkit {
                 shard_dir: None,
             })),
             transfers: Default::default(),
+            reply_inbox: crate::direct::ReplyInbox::new(),
         }
     }
 

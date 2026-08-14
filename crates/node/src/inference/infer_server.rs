@@ -1109,7 +1109,7 @@ fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool)
 /// came from the *tail* (always `false`/absent there, since it never owns
 /// the prompt) unless overwritten — leaving it as-is would silently
 /// truncate every multi-chunk prompt on a ring pipeline after one chunk.
-fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
+pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
     if owns_tokens(local_meta) {
         bubbled["more_chunks"] = local_meta["more_chunks"].clone();
         bubbled["n_prompt_tokens"] = local_meta["n_prompt_tokens"].clone();
@@ -1120,7 +1120,7 @@ fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
 /// sobrepostos na volta — é o que a resposta direta precisa, já que a cabeça
 /// nunca mais vê o resultado. Quem não é a cabeça repassa intacto o que
 /// recebeu.
-fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Value) -> Value {
+pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Value) -> Value {
     if owns_tokens(local_meta) {
         return json!({
             "more_chunks": local_meta["more_chunks"].clone(),
@@ -1136,7 +1136,7 @@ fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Value) -> Valu
 /// A ponta da cadeia copia para o resultado o que a cabeça apurou do prompt.
 /// Sem isto o gateway leria o `more_chunks: false` que a cauda sempre responde
 /// — ela não tokenizou nada — e pararia o prefill no primeiro pedaço.
-fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
+pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
     let Some(progress) = inbound_meta.get("prompt_progress") else {
         return;
     };
@@ -1679,14 +1679,14 @@ async fn relay_and_bubble(
 /// Para onde o resultado desta cadeia deve ir, quando quem despachou pediu
 /// resposta direta. Ausente em todo quadro do modo hub e do anel borbulhado —
 /// é este campo, e só ele, que liga o caminho novo.
-fn direct_reply_to(meta: &Value) -> Option<Value> {
+pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
     meta.get("reply_to").filter(|v| !v.is_null()).cloned()
 }
 
 /// O que este hop devolve a quem o chamou quando a cadeia responde direto: um
 /// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
 /// [`crate::direct`].
-fn direct_ack() -> Response {
+pub(crate) fn direct_ack() -> Response {
     match wire::encode(&json!({"accepted": true}), None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
@@ -1705,7 +1705,7 @@ fn direct_ack() -> Response {
 /// nó que realmente morreu. É o caminho que substitui o `RelayFailure` subindo
 /// pela pilha aninhada do anel borbulhado.
 #[allow(clippy::too_many_arguments)]
-async fn forward_direct(
+pub(crate) async fn forward_direct(
     hops: Vec<PipelineStep>,
     path: &'static str,
     mut base_meta: Value,

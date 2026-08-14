@@ -751,6 +751,49 @@ Tempo até a primeira palavra pelo SSE: **290 ms**; 33 tokens em 2.237 ms.
 
 int8 foi recusado pelo captain: degradaria a resposta em silêncio.
 
+### A cauda responde direto — por que a ordem da pipeline deixou de importar
+
+`src/inference/direct.rs`, negociado por `relay/v2-direct`.
+
+O modo anel (`relay/v1-chain`) é uma pilha de chamadas HTTP aninhadas: o
+resultado volta refazendo a ida, **2N travessias por token** numa cadeia de N
+hops. A conta caía sobre quem não tinha a camada 0 na própria máquina —
+medido em 2026-08-14 entre os dois sites do captain (RTT 30 ms): 25 tok/s com
+a cabeça local contra 14 tok/s com ela remota, exatamente um RTT a mais por
+token. O relatório que provou isso, com o contrafactual que refuta a hipótese
+do SSE, está em `data/rdma-p2p-sse-pipeline-latencia/report.md` do firstmate.
+
+Agora o quadro carrega `reply_to` (endereços do gateway + um ticket sorteado),
+cada hop repassa esse campo intacto, e quem termina faz **um** POST em
+`/v1/relay-result` direto ao originador. `N+1` travessias, para qualquer N e
+qualquer ponto de entrada. O que um hop devolve ao seu chamador é só um
+aceite, fora do caminho crítico. Vale no decode **e** no prefill.
+
+Três coisas que parecem detalhe e são a correção:
+
+- **`prompt_progress`.** Sem volta, a cabeça não pode mais sobrepor
+  `more_chunks`/`n_prompt_tokens` na resposta que passava por ela; ela manda
+  os dois adiante e a cauda copia. Errar isso trunca todo prompt de mais de um
+  pedaço no primeiro, em silêncio.
+- **O `Ticket` se remove do inbox no `Drop`.** Todo caminho de saída (erro,
+  prazo) passa por ali, e o ticket é único por quadro — uma resposta atrasada
+  leva `410` e nunca pode cair no token seguinte.
+- **A perna de rede por hop deixou de ser observável**: quem manda não espera
+  resposta. O transporte não atribuído é lançado na entrada da cabeça para a
+  soma continuar certa; ver o doc de `direct::hop_entry`.
+
+A lei está guardada em `src/inference/direct_lab.rs`, herdeira da bancada da
+investigação: hops falsos falando o protocolo real, dirigidos pelo
+`prefill::run`/`step` real, com a rede emulada por sítio. Ela mede o tempo por
+token em **pernas de rede** e exige o mínimo teórico para N=2,3,4 com o
+gateway na cabeça, no meio e na cauda.
+
+**Ainda sem cobertura de teste** (cortado por decisão do captain em
+2026-08-14, por cota): os quatro modos de falha (hop do meio morto, cauda
+morta, resposta direta perdida, prazo estourado) têm desenho e código, não
+teste de ponta a ponta. A decodificação especulativa continua no anel
+borbulhado — o desvio direto não foi estendido a `step_speculative`.
+
 ### Limite de prompt
 
 `min(--n-batch, --n-ctx / --max-sessions − --max-new-tokens)`. O `/8` fixo saiu;

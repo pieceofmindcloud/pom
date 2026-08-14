@@ -13,7 +13,9 @@
 
 use crate::auth::ApiKeyAuth;
 use crate::gateway::{GatewayState, GenEvent};
-use crate::tool_call::{parse_output, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef};
+use crate::tool_call::{
+    parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
+};
 use axum::{
     extract::{Path, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
@@ -161,10 +163,7 @@ impl ChatMessage {
                 if let Some(f) = &tc.function {
                     let arguments: serde_json::Value =
                         serde_json::from_str(&f.arguments).unwrap_or_else(|_| json!({}));
-                    parts.push(format!(
-                        "<tool_call>\n{}\n</tool_call>",
-                        json!({ "name": f.name, "arguments": arguments })
-                    ));
+                    parts.push(render_tool_call(&f.name, &arguments));
                 }
             }
         }
@@ -1022,7 +1021,8 @@ mod tests {
         let req: ChatRequest = serde_json::from_str(raw).unwrap();
         let out = render_prompt(&req.messages, &tool_defs(&req));
         assert!(out.contains("<tool_call>"));
-        assert!(out.contains("\"name\":\"Bash\""));
+        assert!(out.contains("<function=Bash>"));
+        assert!(out.contains("<parameter=command>\nls\n</parameter>"));
         assert!(out.contains("User: <tool_response>\na.txt\nb.txt\n</tool_response>"));
     }
 

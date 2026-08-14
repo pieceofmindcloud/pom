@@ -35,7 +35,9 @@
 use crate::auth::ApiKeyAuth;
 use crate::gateway::{GatewayState, GenEvent, GenSummary};
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
-use crate::tool_call::{parse_output, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef};
+use crate::tool_call::{
+    parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
+};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -114,12 +116,9 @@ pub enum ToolResultContent {
 fn render_block(b: &ContentBlock) -> String {
     match b.kind.as_str() {
         "text" => b.text.clone().unwrap_or_default(),
-        "tool_use" => format!(
-            "<tool_call>\n{}\n</tool_call>",
-            json!({
-                "name": b.name.clone().unwrap_or_default(),
-                "arguments": b.input.clone().unwrap_or_else(|| json!({})),
-            })
+        "tool_use" => render_tool_call(
+            &b.name.clone().unwrap_or_default(),
+            &b.input.clone().unwrap_or_else(|| json!({})),
         ),
         "tool_result" => {
             let inner = match &b.content {

@@ -1,15 +1,29 @@
 //! Protocol-agnostic half of tool calling, shared by [`crate::messages`]
 //! (Anthropic) and [`crate::openai`] (OpenAI-compatible).
 //!
-//! Both adapters sit in front of the same GGUF, fine-tuned on the same
-//! Hermes-style `<tool_call>{"name":...,"arguments":...}</tool_call>`
-//! convention — verified straight from `tokenizer.chat_template` in the
-//! actually-deployed model, not guessed. Only the request/response
-//! *envelope* differs between the two APIs, so the tools-block wording
-//! ([`render_tools_block`]) and the raw-output scanner ([`TagScanner`],
-//! [`parse_output`]) live here exactly once. Two independent copies of this
-//! logic could silently drift and disagree about the same model output;
-//! one shared copy can't.
+//! Both adapters sit in front of the same cluster, so the tools-block
+//! wording ([`render_tools_block`]) and the raw-output scanner
+//! ([`TagScanner`], [`parse_output`]) live here exactly once. Two
+//! independent copies of this logic could silently drift and disagree about
+//! the same model output; one shared copy can't.
+//!
+//! **The tag convention is a moving target, verified against the deployed
+//! GGUF, not guessed — and re-verified twice now.** The outer boundary is
+//! stable across every Qwen chat template seen so far: one
+//! `<tool_call>...</tool_call>` pair per call. What goes *inside* is not:
+//! `Qwen3.5-9B-DeepSeek-V4-Flash` uses a Hermes-style JSON object
+//! (`{"name":...,"arguments":...}`), but `Qwen3.6-35B-A3B` — the model
+//! actually deployed when this was caught, verified straight from its own
+//! `tokenizer.chat_template` — uses nested XML instead:
+//! `<function=NAME><parameter=P>value</parameter></function>`. A real
+//! opencode session mixing the two (instructed in JSON, fine-tuned on XML)
+//! produced exactly the garbled, unparseable output that caught this.
+//! `parse_tool_call` accepts *both* inner forms for that reason — cluster
+//! model swaps shouldn't silently break this again — while
+//! `render_tools_block`/`render_tool_call` emit whichever is verified
+//! current. If this drifts again: dump `tokenizer.chat_template` straight
+//! from the active GGUF (`strings model.gguf | grep -A30 tool_call`, or the
+//! Python KV-reader used both times before) rather than guessing.
 //!
 //! See `crate::messages`'s module doc comment for why this is
 //! prompt-engineered and text-parsed rather than protocol-level: this
@@ -32,17 +46,17 @@ pub(crate) struct ToolDef {
 
 /// Text block instructing the model on the tools it has and the exact
 /// `<tool_call>` format to answer with — copied verbatim (down to the
-/// wording) from `tokenizer.chat_template` in the deployed GGUF, since that
-/// is what the model was actually fine-tuned to recognise. Empty when there
-/// are no tools, so a tool-less request renders identically to before tool
-/// support existed.
+/// wording) from `tokenizer.chat_template` in the deployed GGUF (currently
+/// `Qwen3.6-35B-A3B`'s nested `<function=NAME><parameter=P>` form — see the
+/// module doc comment), since that is what the model was actually
+/// fine-tuned to recognise. Empty when there are no tools, so a tool-less
+/// request renders identically to before tool support existed.
 pub(crate) fn render_tools_block(tools: &[ToolDef]) -> String {
     if tools.is_empty() {
         return String::new();
     }
     let mut out = String::from(
-        "# Tools\n\nYou may call one or more functions to assist with the user query.\n\n\
-         You are provided with function signatures within <tools></tools> XML tags:\n<tools>",
+        "# Tools\n\nYou have access to the following functions:\n\n<tools>",
     );
     for t in tools {
         out.push('\n');
@@ -59,10 +73,49 @@ pub(crate) fn render_tools_block(tools: &[ToolDef]) -> String {
         );
     }
     out.push_str(
-        "\n</tools>\n\nFor each function call, return a json object with function name and \
-         arguments within <tool_call></tool_call> XML tags:\n<tool_call>\n\
-         {\"name\": <function-name>, \"arguments\": <args-json-object>}\n</tool_call>",
+        "\n</tools>\n\n\
+         If you choose to call a function ONLY reply in the following format with NO suffix:\n\n\
+         <tool_call>\n\
+         <function=example_function_name>\n\
+         <parameter=example_parameter_1>\n\
+         value_1\n\
+         </parameter>\n\
+         <parameter=example_parameter_2>\n\
+         This is the value for the second parameter\n\
+         that can span\n\
+         multiple lines\n\
+         </parameter>\n\
+         </function>\n\
+         </tool_call>\n\n\
+         <IMPORTANT>\n\
+         Reminder:\n\
+         - Function calls MUST follow the specified format: an inner <function=...></function> block must be nested within <tool_call></tool_call> XML tags\n\
+         - Required parameters MUST be specified\n\
+         - You may provide optional reasoning for your function call in natural language BEFORE the function call, but NOT after\n\
+         - If there is no function call available, answer the question like normal with your current knowledge and do not tell the user about function calls\n\
+         </IMPORTANT>",
     );
+    out
+}
+
+/// Render one tool call back to the text form the model itself would
+/// produce — `<function=NAME>` with one `<parameter=P>value</parameter>`
+/// per argument (string values written raw, everything else re-serialized
+/// to JSON text, mirroring the deployed template's own
+/// `is string`/`tojson` split). Shared by both adapters so replayed history
+/// always matches exactly what [`parse_tool_call`] expects back.
+pub(crate) fn render_tool_call(name: &str, arguments: &serde_json::Value) -> String {
+    let mut out = format!("<tool_call>\n<function={name}>\n");
+    if let serde_json::Value::Object(map) = arguments {
+        for (k, v) in map {
+            let value_text = match v {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            out.push_str(&format!("<parameter={k}>\n{value_text}\n</parameter>\n"));
+        }
+    }
+    out.push_str("</function>\n</tool_call>");
     out
 }
 
@@ -77,9 +130,10 @@ pub(crate) enum ScanEvent {
     Text(String),
     ToolCallOpen,
     ToolCallChunk(String),
-    /// `Ok` once `{"name":...,"arguments":...}` parses and names a function;
-    /// `Err` carries the full literal `<tool_call>...</tool_call>` span to
-    /// fall back to as plain text — malformed model output must degrade
+    /// `Ok` once the tagged content parses into a named call (see
+    /// `parse_tool_call` for the two accepted inner formats); `Err` carries
+    /// the full literal `<tool_call>...</tool_call>` span to fall back to as
+    /// plain text — malformed model output must degrade
     /// gracefully, never crash or vanish.
     ToolCallClose(Result<(String, serde_json::Value), String>),
 }
@@ -185,8 +239,17 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
     (1..=max).rev().find(|&len| s.ends_with(&tag[..len])).unwrap_or(0)
 }
 
+/// Two inner formats are accepted, tried in this order: the nested
+/// `<function=NAME><parameter=P>...` form (`Qwen3.6-35B-A3B`, currently
+/// deployed) and the legacy Hermes JSON-object form
+/// (`Qwen3.5-9B-DeepSeek-V4-Flash`) — see the module doc comment for why
+/// both matter on a cluster that swaps models. Either failing to parse
+/// degrades to the literal tagged text, never a crash or a dropped response.
 fn parse_tool_call(raw: &str) -> Result<(String, serde_json::Value), String> {
     let fallback = || format!("{TOOL_CALL_OPEN}{raw}{TOOL_CALL_CLOSE}");
+    if raw.trim_start().starts_with("<function=") {
+        return parse_function_call_xml(raw).ok_or_else(fallback);
+    }
     match serde_json::from_str::<serde_json::Value>(raw.trim()) {
         Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
             Some(name) if !name.is_empty() => Ok((
@@ -197,6 +260,44 @@ fn parse_tool_call(raw: &str) -> Result<(String, serde_json::Value), String> {
         },
         Err(_) => Err(fallback()),
     }
+}
+
+/// Parses `<function=NAME>(<parameter=P>value</parameter>)*</function>`.
+/// Each parameter value is speculatively JSON-parsed (recovers numbers,
+/// bools, arrays, objects the model wrote as literal JSON text) and falls
+/// back to a plain string otherwise (the common case — a raw command, a
+/// path, ...); `.trim()` strips only the tag-adjacent newlines, preserving
+/// internal ones, since the template explicitly allows multi-line values.
+/// `None` on any structural mismatch — missing `>`, unclosed `</function>`
+/// or `</parameter>` — so the caller can fall back to literal text.
+fn parse_function_call_xml(raw: &str) -> Option<(String, serde_json::Value)> {
+    let raw = raw.trim();
+    let rest = raw.strip_prefix("<function=")?;
+    let (name, rest) = rest.split_once('>')?;
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let body = rest.strip_suffix("</function>")?.trim();
+
+    let mut args = serde_json::Map::new();
+    let mut cursor = body;
+    loop {
+        let cursor_trimmed = cursor.trim_start();
+        if cursor_trimmed.is_empty() {
+            break;
+        }
+        let after_open = cursor_trimmed.strip_prefix("<parameter=")?;
+        let (pname, after_name) = after_open.split_once('>')?;
+        let pname = pname.trim();
+        let close_idx = after_name.find("</parameter>")?;
+        let value_raw = after_name[..close_idx].trim();
+        let value = serde_json::from_str::<serde_json::Value>(value_raw)
+            .unwrap_or_else(|_| serde_json::Value::String(value_raw.to_string()));
+        args.insert(pname.to_string(), value);
+        cursor = &after_name[close_idx + "</parameter>".len()..];
+    }
+    Some((name.to_string(), serde_json::Value::Object(args)))
 }
 
 // ── Output parsing ───────────────────────────────────────────────────────────
@@ -272,6 +373,98 @@ mod tests {
         assert!(out.contains("</tools>"));
         assert!(out.contains("Bash"));
         assert!(out.contains("<tool_call>"));
+        assert!(out.contains("<function="));
+        assert!(out.contains("<parameter="));
+    }
+
+    // ── render_tool_call / parse_function_call_xml ──────────────────────────
+
+    #[test]
+    fn render_tool_call_round_trips_string_and_numeric_arguments() {
+        let arguments = json!({"command": "ls -la", "limit": 5});
+        let rendered = render_tool_call("Bash", &arguments);
+        assert!(rendered.starts_with("<tool_call>\n<function=Bash>\n"));
+        assert!(rendered.ends_with("</function>\n</tool_call>"));
+        // The string arg is written raw (no quotes); the number as JSON text.
+        assert!(rendered.contains("<parameter=command>\nls -la\n</parameter>"));
+        assert!(rendered.contains("<parameter=limit>\n5\n</parameter>"));
+
+        let parts = parse_output(&rendered);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "Bash");
+                assert_eq!(arguments["command"], "ls -la");
+                assert_eq!(arguments["limit"], 5);
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn render_tool_call_with_no_arguments_still_parses() {
+        let rendered = render_tool_call("Noop", &json!({}));
+        let parts = parse_output(&rendered);
+        assert_eq!(parts.len(), 1);
+        match &parts[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "Noop");
+                assert_eq!(*arguments, json!({}));
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_function_call_xml_preserves_internal_newlines_in_a_multiline_value() {
+        let raw = "<function=Write>\n<parameter=content>\nline 1\nline 2\n</parameter>\n</function>";
+        let (name, parsed) = parse_function_call_xml(raw).expect("parses");
+        assert_eq!(name, "Write");
+        assert_eq!(parsed["content"], "line 1\nline 2");
+    }
+
+    #[test]
+    fn parse_function_call_xml_rejects_a_missing_closing_function_tag() {
+        assert!(parse_function_call_xml("<function=Bash>\n<parameter=command>\nls\n</parameter>\n").is_none());
+    }
+
+    #[test]
+    fn parse_function_call_xml_rejects_an_unclosed_parameter() {
+        assert!(parse_function_call_xml("<function=Bash>\n<parameter=command>\nls\n</function>").is_none());
+    }
+
+    #[test]
+    fn parse_output_extracts_the_new_xml_tool_call_format() {
+        let out = parse_output(
+            "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</parameter>\n</function>\n</tool_call>",
+        );
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "Bash");
+                assert_eq!(arguments["command"], "ls");
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_output_handles_two_xml_tool_calls_back_to_back() {
+        // Confirms the *outer* boundary logic (unchanged by this fix) still
+        // separates calls correctly now that the inner content is XML.
+        let out = parse_output(
+            "<tool_call>\n<function=A>\n</function>\n</tool_call>\
+             <tool_call>\n<function=B>\n</function>\n</tool_call>",
+        );
+        assert_eq!(out.len(), 2);
+        assert!(matches!(&out[0], OutputPart::ToolCall { name, .. } if name == "A"));
+        assert!(matches!(&out[1], OutputPart::ToolCall { name, .. } if name == "B"));
+    }
+
+    #[test]
+    fn parse_output_falls_back_to_text_on_malformed_xml() {
+        let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</tool_call>";
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
     }
 
     #[test]

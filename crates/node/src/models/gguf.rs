@@ -281,6 +281,12 @@ pub struct GgufLayout {
     /// (attention interleaved with Gated DeltaNet / Mamba) are not a stack of
     /// identical blocks, and that decides where a slice may start.
     pub layer_kinds: Vec<Vec<String>>,
+    /// `<arch>.nextn_predict_layers` — how many trailing layers form the
+    /// NextN/MTP (multi-token prediction) block. On Qwen3.5+ the predictor
+    /// tensors live only in the very last layer; a slice that does not end on
+    /// the model's last layer must carry this hyperparameter zeroed or
+    /// llama.cpp aborts the load looking for `blk.<last>.nextn.*`.
+    pub nextn_predict_layers: u32,
 }
 
 impl GgufLayout {
@@ -377,13 +383,18 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     }
 
     // Skip the KV section wholesale — `read_info` is the one that reads it.
-    for _ in 0..n_kv {
-        let _key = r.string()?;
-        let vtype = r.u32()?;
-        r.skip_value(vtype)?;
-    }
-
+    // The exception is the NextN hyperparameter: it has no tensor of its own,
+    // yet it decides whether a slice loads at all (see `nextn_predict_layers`).
     let mut layout = GgufLayout::default();
+    for _ in 0..n_kv {
+        let key = r.string()?;
+        let vtype = r.u32()?;
+        if key.ends_with(".nextn_predict_layers") {
+            layout.nextn_predict_layers = r.value_as_u32(vtype)?.unwrap_or(0);
+        } else {
+            r.skip_value(vtype)?;
+        }
+    }
     let mut layers: HashMap<u32, u64> = HashMap::new();
     let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
     let mut max_layer: i64 = -1;
@@ -472,6 +483,7 @@ mod tests {
             other_bytes: 0,
             total_bytes: 480,
             layer_kinds: vec![],
+            nextn_predict_layers: 0,
         };
         // Middle slice: 2 layers + embedding.
         assert_eq!(layout.slice_bytes(0, 1, false), 250);
@@ -487,6 +499,59 @@ mod tests {
         std::fs::write(&p, b"hello world, definitely not gguf").unwrap();
         assert!(read_info(&p).is_err());
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// A header-only GGUF: `n_tensors = 0` and whatever KV pairs are given.
+    fn header_only_gguf(kvs: &[(&str, u32, Vec<u8>)]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes()); // version
+        b.extend_from_slice(&0u64.to_le_bytes()); // n_tensors
+        b.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (k, vtype, v) in kvs {
+            b.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            b.extend_from_slice(k.as_bytes());
+            b.extend_from_slice(&vtype.to_le_bytes());
+            if *vtype == T_STRING {
+                b.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            }
+            b.extend_from_slice(v);
+        }
+        b
+    }
+
+    #[test]
+    fn read_layout_sees_nextn_predict_layers() {
+        let dir = std::env::temp_dir();
+        let mut p = dir.clone();
+        p.push("rdma-p2p-nextn-layout.gguf");
+        std::fs::write(
+            &p,
+            header_only_gguf(&[
+                ("general.architecture", T_STRING, "qwen35".into()),
+                (
+                    "qwen35.nextn_predict_layers",
+                    T_UINT32,
+                    1u32.to_le_bytes().to_vec(),
+                ),
+            ]),
+        )
+        .unwrap();
+        let layout = read_layout(&p).unwrap();
+        assert_eq!(layout.nextn_predict_layers, 1);
+        let _ = std::fs::remove_file(&p);
+
+        // Absent or non-scalar means "no predictor", not a broken plan.
+        let mut q = dir.clone();
+        q.push("rdma-p2p-no-nextn-layout.gguf");
+        std::fs::write(
+            &q,
+            header_only_gguf(&[("general.architecture", T_STRING, "llama".into())]),
+        )
+        .unwrap();
+        let layout = read_layout(&q).unwrap();
+        assert_eq!(layout.nextn_predict_layers, 0);
+        let _ = std::fs::remove_file(&q);
     }
 
     /// Every type this project claims to measure, with the `(type_size,

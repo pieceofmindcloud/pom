@@ -502,6 +502,28 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
     // textos dizendo a mesma falta é ruído.
     let blocked = ranges.iter().any(|r| r.empty || r.too_small);
 
+    // NextN/MTP (Qwen3.5+): the predictor block lives only in the model's very
+    // last layer. Only a slice that ends there carries it (`splitter` keeps
+    // `nextn_predict_layers` only on those); every other slice runs as a plain
+    // trunk. Slicing is the moment the operator is most likely to bump into
+    // that: a mid-model cut loads fine, but a "complete" model it is not.
+    if layout.nextn_predict_layers > 0 {
+        let nonempty = ranges.iter().filter(|r| !r.empty).count();
+        if complete {
+            if nonempty > 1 {
+                warnings.push(format!(
+                    "modelo com predictor nextn (multi-token): o bloco de predição vive só na última camada ({}) e vai embutido na fatia final - as anteriores carregam como tronco puro",
+                    total_layers - 1
+                ));
+            }
+        } else {
+            warnings.push(format!(
+                "modelo com predictor nextn (multi-token): o bloco de predição fica na camada {}, que esta divisão não cobre - a fatia final carrega como tronco puro, sem predição multi-token",
+                total_layers - 1
+            ));
+        }
+    }
+
     Ok(SizePlan {
         total_layers,
         model_bytes: layout.total_bytes,
@@ -620,6 +642,7 @@ mod tests {
             total_bytes: per * n as u64 + (200.0 * MB) as u64,
             // Homogeneous stack: period 1, so cuts are unconstrained.
             layer_kinds: vec![vec!["attn.weight".to_string()]; n as usize],
+            nextn_predict_layers: 0,
         }
     }
 
@@ -926,6 +949,42 @@ mod tests {
     fn an_empty_list_is_not_a_plan() {
         let l = layout(32, 200.0);
         assert!(plan_by_size(&l, &[]).is_err());
+    }
+
+    #[test]
+    fn nextn_complete_split_says_the_predictor_rides_the_last_slice() {
+        let mut l = layout(32, 200.0);
+        l.nextn_predict_layers = 1;
+        let plan = plan_by_size(&l, &[SizedSlice::of_mb(1100.0), SizedSlice::rest()]).unwrap();
+        assert!(plan.complete);
+        // The note only makes sense when there is an actual split.
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|w| w.contains("predictor nextn") && w.contains("última camada")));
+    }
+
+    #[test]
+    fn nextn_incomplete_split_warns_the_predictor_is_left_out() {
+        let mut l = layout(32, 200.0);
+        l.nextn_predict_layers = 1;
+        let plan = plan_by_size(&l, &[SizedSlice::of_mb(1100.0)]).unwrap();
+        assert!(!plan.complete);
+        assert!(plan.warnings.iter().any(|w| {
+            w.contains("predictor nextn") && w.contains("tronco") && w.contains("não cobre")
+        }));
+    }
+
+    #[test]
+    fn nextn_single_slice_whole_model_gets_no_note() {
+        let mut l = layout(32, 200.0);
+        l.nextn_predict_layers = 1;
+        let plan = plan_by_size(&l, &[SizedSlice::rest()]).unwrap();
+        assert!(plan.complete);
+        assert!(
+            plan.warnings.is_empty(),
+            "fatiar o modelo inteiro em uma fatia não gera observação"
+        );
     }
 
     #[test]

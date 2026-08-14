@@ -346,6 +346,19 @@ pub fn split(
         } else if key.starts_with("rdmap2p.") {
             r.skip_value(vtype)?;
             // Drop all rdmap2p.* — re-added below
+        } else if key.ends_with(".nextn_predict_layers") {
+            // NextN/MTP (Qwen3.5+): the predictor block lives only at the very
+            // end of the model. llama.cpp derives the expected `blk.<last>.
+            // nextn.*` tensors from this hyperparameter and aborts the load
+            // ("missing tensor") when they are absent — a non-last slice has
+            // them absent by construction. Zero it there; the last slice keeps
+            // the original value and carries the real block.
+            r.skip_value(vtype)?;
+            kv_out.push(if is_last {
+                KvOut::Raw(kv_start, r.pos)
+            } else {
+                KvOut::Encoded(encode_kv_u32(&key, 0))
+            });
         } else if key.ends_with(".block_count") {
             // Record original block count from the source file's header
             let source_bc = match vtype {
@@ -1056,8 +1069,144 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
     header
 }
 
+#[cfg(test)]
+/// A minimal structurally valid qwen35 GGUF with `n_blocks` layers and a
+/// `nextn` (MTP) block only on the last layer, mirroring the real model: the
+/// predictor lives at the very end, never in the middle.
+fn qwen35_test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
+    let n = 4u64;
+    let f32v = |vals: &[f32]| -> Vec<u8> { vals.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
+    tensors.push((
+        "token_embd.weight".into(),
+        vec![n, n],
+        T_F32,
+        f32v(&[0.5; 16]),
+    ));
+    for i in 0..n_blocks {
+        let base = i as f32 * 10.0;
+        let data: Vec<f32> = (0..16).map(|j| base + j as f32).collect();
+        tensors.push((
+            format!("blk.{i}.attn_q.weight"),
+            vec![n, n],
+            T_F32,
+            f32v(&data),
+        ));
+    }
+    let last = n_blocks - 1;
+    tensors.push((
+        format!("blk.{last}.nextn.eh_proj.weight"),
+        vec![n, n],
+        T_F32,
+        f32v(&[4.0; 16]),
+    ));
+    tensors.push((
+        format!("blk.{last}.nextn.enorm.weight"),
+        vec![n],
+        T_F32,
+        f32v(&[5.0; 4]),
+    ));
+    tensors.push((
+        format!("blk.{last}.nextn.hnorm.weight"),
+        vec![n],
+        T_F32,
+        f32v(&[6.0; 4]),
+    ));
+    tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
+    tensors.push(("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])));
+
+    let s = |b: &str| -> Vec<u8> {
+        let mut v = (b.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(b.as_bytes());
+        v
+    };
+    let str_kv = |key: &str, val: &str| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_STR.to_le_bytes());
+        v.extend_from_slice(&s(val));
+        v
+    };
+    let u32_kv = |key: &str, val: u32| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_U32.to_le_bytes());
+        v.extend_from_slice(&val.to_le_bytes());
+        v
+    };
+
+    let mut kv: Vec<Vec<u8>> = vec![
+        str_kv("general.architecture", "qwen35"),
+        u32_kv("qwen35.embedding_length", n as u32),
+        u32_kv("qwen35.block_count", n_blocks),
+        u32_kv("qwen35.vocab_size", n as u32),
+        u32_kv("qwen35.nextn_predict_layers", 1),
+        u32_kv("qwen35.full_attention_interval", 4),
+        u32_kv("rdmap2p.original_block_count", n_blocks),
+    ];
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+    header.extend_from_slice(&3u32.to_le_bytes());
+    header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+    for b in &kv {
+        header.extend_from_slice(b);
+    }
+
+    let mut cur = 0u64;
+    let offsets: Vec<u64> = tensors
+        .iter()
+        .map(|(_, _, _, bytes)| {
+            let off = cur;
+            cur = align_up(cur + bytes.len() as u64);
+            off
+        })
+        .collect();
+    for ((name, dims, dtype, _), off) in tensors.iter().zip(&offsets) {
+        header.extend_from_slice(&s(name));
+        header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            header.extend_from_slice(&d.to_le_bytes());
+        }
+        header.extend_from_slice(&dtype.to_le_bytes());
+        header.extend_from_slice(&off.to_le_bytes());
+    }
+    let pad = align_up(header.len() as u64) as usize - header.len();
+    header.extend_from_slice(&vec![0u8; pad]);
+
+    for (_, _, _, bytes) in &tensors {
+        header.extend_from_slice(bytes);
+        let aligned = align_up(bytes.len() as u64) as usize;
+        header.extend_from_slice(&vec![0u8; aligned - bytes.len()]);
+    }
+    header
+}
+
 mod tests {
     use super::*;
+
+    fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
+        let mut r = R { data: mm, pos: 0 };
+        let magic = r.u32().ok()?;
+        if magic != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?; // version
+        let _n_tensors = r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want {
+                return match vtype {
+                    T_U32 => Some(u32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())),
+                    T_U64 => Some(r.u64().ok()? as u32),
+                    _ => None,
+                };
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
 
     fn tensor_data<'a>(mm: &'a [u8], p: &MergedSrc, name: &str) -> &'a [u8] {
         let t = p
@@ -1175,5 +1324,33 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("não são vizinhas"), "{err}");
+    }
+
+    #[test]
+    fn nextn_predict_layers_zeroed_on_non_last_slices() {
+        let dir = std::env::temp_dir().join(format!("rdmap2p-nextn-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, qwen35_test_gguf_bytes(4)).unwrap();
+
+        let mid = dir.join("mid.gguf");
+        split(&whole, &mid, 0, 2, true, false, |_| {}).unwrap();
+        let last = dir.join("last.gguf");
+        split(&whole, &last, 3, 3, false, true, |_| {}).unwrap();
+
+        assert_eq!(
+            kv_u32(&std::fs::read(&mid).unwrap(), "qwen35.nextn_predict_layers"),
+            Some(0),
+            "fatia intermediária não tem o bloco nextn (MTP): mantê-lo em 1 faria \
+             o llama.cpp exigir 'blk.2.nextn.eh_proj.weight' e abortar o load"
+        );
+        assert_eq!(
+            kv_u32(
+                &std::fs::read(&last).unwrap(),
+                "qwen35.nextn_predict_layers"
+            ),
+            Some(1),
+            "a fatia final carrega o bloco nextn e preserva o valor original"
+        );
     }
 }

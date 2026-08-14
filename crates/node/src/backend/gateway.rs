@@ -1392,3 +1392,93 @@ mod peer_visibility_tests {
         assert_eq!(reachable[0].node_id, "healthy");
     }
 }
+
+/// Um nó de verdade, montado à mão, para os testes que exercitam rotas.
+///
+/// Existe porque três módulos precisavam do mesmo andaime — `transfer`,
+/// `deploy` e `webui` todos testam handlers que só falam a verdade com um
+/// `GatewayState` inteiro atrás deles. Nada aqui fala UDP: a tabela de peers é
+/// semeada à mão, então um teste nunca anuncia nada na LAN nem esbarra num
+/// cluster de verdade.
+#[cfg(test)]
+pub(crate) mod testkit {
+    use super::*;
+    use crate::config::{Config, Role};
+    use tokio::sync::RwLock;
+
+    /// Um peer alcançável no `gateway_port` dado, na loopback.
+    pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
+        PeerInfo {
+            node_id: node_id.into(),
+            pubkey: "pk".into(),
+            addr: format!("127.0.0.1:{gateway_port}"),
+            addr_candidates: Vec::new(),
+            model: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            memory_mb: 0.0,
+            last_seen: chrono::Utc::now(),
+            ollama_port: None,
+            inference_port: None,
+            inference_frame_capabilities: Vec::new(),
+            gateway_port: Some(gateway_port),
+            role: String::new(),
+            hostname: hostname.into(),
+            capabilities: Vec::new(),
+            connection_verified: true,
+            disk_total_mb: 0,
+            disk_free_mb: 0,
+            api_keys_active: 0,
+        }
+    }
+
+    /// Este nó, com `peers` já na tabela.
+    pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
+        let net = Arc::new(
+            Network::new(node_id.into(), "pk".into(), 0, vec![], None, None, None)
+                .await
+                .expect("socket UDP em porta efêmera"),
+        );
+        {
+            let mut table = net.peers.write().await;
+            for p in peers {
+                table.insert(p.node_id.clone(), p);
+            }
+        }
+        let assignment = Arc::new(RwLock::new(None));
+        GatewayState {
+            network: net.clone(),
+            ollama: Arc::new(OllamaClient::new("http://127.0.0.1:1")),
+            default_model: String::new(),
+            local_assignment: assignment.clone(),
+            loads: Arc::new(LoadTracker::new()),
+            http: Arc::new(reqwest::Client::new()),
+            runtime: NodeRuntime::new(net, assignment),
+            gateway_port: 8080,
+            auth: Arc::new(RwLock::new(Config {
+                role: Role::Node,
+                node_name: None,
+                connection_key: "chave".into(),
+                gateway_port: 8080,
+                p2p_port: 42777,
+                inference_port: None,
+                bootstrap_nodes: vec![],
+                advertise_addr: None,
+                api_keys: vec![],
+                blocked_nodes: vec![],
+                model_dirs: None,
+                shard_dir: None,
+            })),
+            transfers: Default::default(),
+        }
+    }
+
+    /// O corpo JSON de uma resposta, para o teste poder afirmar sobre ele.
+    pub(crate) async fn body_of(response: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("corpo legível");
+        serde_json::from_slice(&bytes).expect("corpo JSON")
+    }
+}

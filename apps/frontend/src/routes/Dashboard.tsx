@@ -15,6 +15,7 @@ import { MachineIcon, machineKind } from "../components/MachineIcon";
 import { LayerRibbon, PipelineRail, pipelinePeers, trackOf } from "../components/PipelineRail";
 import { ReleaseSlice } from "../components/ReleaseSlice";
 import { RemoveNode } from "../components/RemoveNode";
+import { UndeployPipeline } from "../components/UndeployPipeline";
 import { AddNodeDialog } from "../components/AddNodeDialog";
 import { ModelNetworkCanvas } from "../components/ModelNetworkCanvas";
 import {
@@ -497,6 +498,18 @@ export function Dashboard() {
   }, [adding, group]);
   const serving = peers.filter((p) => isServing(p.node?.status.state)).length;
   const inFlight = peers.reduce((sum, p) => sum + p.load, 0);
+  // As máquinas que a desimplantação vai alcançar, na ordem do pipeline. O nó
+  // re-varre o cluster antes de agir; esta lista é só o que a confirmação
+  // mostra, para o operador ver de quem está falando.
+  const undeployTargets = peers
+    .filter((p) => p.model === group && p.total_layers > 0)
+    .map((p) => ({
+      node_id: p.node_id,
+      hostname: p.node?.hostname || p.short_id,
+      start_layer: p.start_layer,
+      end_layer: p.end_layer,
+    }))
+    .sort((a, b) => a.start_layer - b.start_layer);
 
   if (cluster.isError) {
     return <div className="p-6"><ErrorState title={t("dashboard.nodeNoResponse")} error={cluster.error} onRetry={() => void cluster.refetch()} /></div>;
@@ -519,6 +532,12 @@ export function Dashboard() {
           <Plus className="h-3.5 w-3.5" />
           {t("deploy.addNode")}
         </Button>
+        {/* Ao lado de "Adicionar nó" porque são o mesmo nível de decisão: uma
+            soma uma máquina à pipeline, a outra desfaz a pipeline inteira. Só
+            aparece quando há uma no ar - um botão que só sabe recusar é ruído. */}
+        {undeployTargets.length > 0 && (
+          <UndeployPipeline group={group} targets={undeployTargets} />
+        )}
         <ViewSwitch view={view} onChange={setView} />
       </div>
     </div>

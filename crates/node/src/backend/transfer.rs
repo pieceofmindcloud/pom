@@ -1585,8 +1585,6 @@ mod tests {
 #[cfg(test)]
 mod offer_latency_tests {
     use super::*;
-    use crate::config::{Config, Role};
-    use crate::network::{Network, PeerInfo};
     use std::sync::atomic::{AtomicU64, Ordering};
 
     /// Um GGUF de verdade, grande o bastante para que lê-lo inteiro apareça no
@@ -1624,62 +1622,11 @@ mod offer_latency_tests {
     /// Um nó remetente completo, com um peer já na tabela apontando para
     /// `peer_port`. Nada de UDP sai daqui: a tabela é semeada à mão.
     async fn sender_state(peer_port: u16) -> GatewayState {
-        let net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(1))
-            .await
-            .unwrap();
-        let mut peer = PeerInfo {
-            node_id: "peer-b".into(),
-            pubkey: "pk-b".into(),
-            addr: format!("127.0.0.1:{peer_port}"),
-            addr_candidates: Vec::new(),
-            model: String::new(),
-            start_layer: 0,
-            end_layer: 0,
-            total_layers: 0,
-            memory_mb: 0.0,
-            last_seen: chrono::Utc::now(),
-            ollama_port: None,
-            inference_port: None,
-            inference_frame_capabilities: Vec::new(),
-            gateway_port: Some(peer_port),
-            role: String::new(),
-            hostname: "peer-b".into(),
-            capabilities: Vec::new(),
-            connection_verified: true,
-            disk_total_mb: 0,
-            disk_free_mb: 0,
-            api_keys_active: 0,
-        };
-        peer.last_seen = chrono::Utc::now();
-        let net = Arc::new(net);
-        net.peers.write().await.insert("peer-b".into(), peer);
-
-        let assignment = Arc::new(RwLock::new(None));
-        GatewayState {
-            network: net.clone(),
-            ollama: Arc::new(crate::ollama::OllamaClient::new("http://127.0.0.1:1")),
-            default_model: String::new(),
-            local_assignment: assignment.clone(),
-            loads: Arc::new(crate::pipeline::LoadTracker::new()),
-            http: Arc::new(reqwest::Client::new()),
-            runtime: crate::runtime::NodeRuntime::new(net, assignment),
-            gateway_port: 8080,
-            auth: Arc::new(RwLock::new(Config {
-                role: Role::Principal,
-                node_name: None,
-                connection_key: "chave".into(),
-                gateway_port: 8080,
-                p2p_port: 42777,
-                inference_port: None,
-                bootstrap_nodes: vec![],
-                advertise_addr: None,
-                api_keys: vec![],
-                blocked_nodes: vec![],
-                model_dirs: None,
-                shard_dir: None,
-            })),
-            transfers: Default::default(),
-        }
+        crate::gateway::testkit::state_with(
+            "eu",
+            vec![crate::gateway::testkit::peer("peer-b", "peer-b", peer_port)],
+        )
+        .await
     }
 
     /// A oferta é um convite, não a transferência: ela só precisa dizer o que é

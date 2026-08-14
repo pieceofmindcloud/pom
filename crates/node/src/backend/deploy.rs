@@ -68,6 +68,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/deploy", post(deploy_endpoint))
         .route("/api/ui/deploy/node", post(add_node_endpoint))
         .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
+        .route("/api/ui/undeploy", post(undeploy_endpoint))
 }
 
 /// Camadas que a faixa nova compartilha com as que ja estao no ar.
@@ -1754,6 +1755,212 @@ async fn remove_node_endpoint(
     .into_response()
 }
 
+// ── Tirando a pipeline inteira do ar ─────────────────────────────────────────
+//
+// O contrário de "Implantar na rede". Remover uma máquina do modelo já existia
+// (`/api/ui/deploy/node/remove`), mas desfazer a implantação inteira era
+// clicar máquina por máquina, na ordem certa, torcendo para não esquecer
+// nenhuma — e uma esquecida é RAM e VRAM presas numa fatia que não serve mais
+// para nada, porque o pipeline só planeja com a cobertura fechada.
+//
+// **O que isto NÃO faz: mexer no disco.** Nenhuma fatia é apagada. Desimplantar
+// é devolver a memória; os arquivos continuam onde estão e a mesma implantação
+// volta com um clique em vez de com 17 minutos de transferência por máquina.
+// Apagar fatias é o que a tela de Modelos faz, com o seu próprio pedido de
+// confirmação, e é uma decisão diferente desta.
+
+/// Quem pode tirar a pipeline inteira do ar.
+///
+/// **Primeira versão: qualquer nó da rede pode.** É deliberado, e é onde a
+/// restrição "somente o NÓ PRINCIPAL desimplanta" entra quando chegar a hora:
+/// aqui dentro, em nenhum outro lugar. `undeploy_endpoint` já chama esta função
+/// antes de tocar em qualquer máquina, então fechar o portão é trocar o corpo
+/// desta função por
+///
+/// ```ignore
+/// if role != Role::Principal {
+///     return Err("somente o nó principal desimplanta a pipeline".into());
+/// }
+/// ```
+///
+/// e atualizar `any_node_may_undeploy_for_now`, o teste que hoje documenta a
+/// porta aberta — de propósito, para que fechá-la seja uma edição consciente e
+/// não um efeito colateral.
+///
+/// Note que o portão é do **papel deste nó**, o que recebeu o clique, e não do
+/// papel de quem foi chamado: as chamadas para os peers usam `/api/ui/unload`,
+/// que é a mesma rota do botão de descarregar uma máquina só e continua valendo
+/// para qualquer nó.
+fn undeploy_authority(_role: &crate::config::Role) -> Result<(), String> {
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UndeployRequest {
+    /// Modelo cuja pipeline sai do ar. Vazio significa "a que estiver no ar",
+    /// que é o caso do painel: ele mostra uma pipeline de cada vez.
+    #[serde(default)]
+    pub group: String,
+}
+
+/// O que aconteceu com **uma** máquina. Uma linha por máquina, sempre — inclusive
+/// para a que não respondeu.
+#[derive(Debug, Serialize)]
+pub struct UndeployOutcome {
+    pub node_id: String,
+    pub hostname: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    /// `true` só quando a máquina confirmou. Um peer calado é `false` com o
+    /// motivo em `error`; contá-lo como sucesso seria dizer que a memória foi
+    /// liberada sem ninguém ter dito isso.
+    pub released: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Descarrega o modelo de todas as máquinas que servem `group`.
+///
+/// Responde 200 com o relatório mesmo quando alguma máquina falha: metade
+/// desimplantada é o estado real do cluster, e escondê-lo atrás de um erro
+/// deixaria o operador sem saber em quais máquinas ainda há memória presa.
+/// Só pedido inválido (nenhuma pipeline no ar, ou ambiguidade sobre qual) é 400.
+async fn undeploy_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<UndeployRequest>,
+) -> Response {
+    {
+        let role = state.auth.read().await.role.clone();
+        if let Err(e) = undeploy_authority(&role) {
+            return (axum::http::StatusCode::FORBIDDEN, Json(json!({ "error": e }))).into_response();
+        }
+    }
+
+    let peers = state.all_peers().await;
+    let group = match resolve_group(&req.group, &peers) {
+        Ok(g) => g,
+        Err(e) => return bad(json!({ "error": e })),
+    };
+
+    // Re-varre em vez de confiar na tela, como o `deploy`: uma máquina que saiu
+    // no meio tempo não pode virar uma linha de falha inventada.
+    let serving: Vec<PeerInfo> = peers
+        .into_iter()
+        .filter(|p| p.model == group && p.total_layers > 0)
+        .collect();
+    if serving.is_empty() {
+        return bad(json!({
+            "error": format!("nenhuma máquina está servindo {group}")
+        }));
+    }
+
+    info!(
+        "desimplantando {group} de {} máquina(s)",
+        serving.len()
+    );
+
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+
+    // Em paralelo: com onze peers e o prazo de um controle por peer, em série a
+    // tela ficaria quase um minuto sem resposta.
+    let mut results: Vec<UndeployOutcome> =
+        futures::future::join_all(serving.into_iter().map(|peer| {
+            let state = state.clone();
+            let key = key.clone();
+            let self_id = self_id.clone();
+            async move {
+                let error = release_one(&state, &peer, &key, &self_id).await.err();
+                UndeployOutcome {
+                    node_id: peer.node_id.clone(),
+                    hostname: if peer.hostname.is_empty() {
+                        peer.node_id[..12.min(peer.node_id.len())].to_string()
+                    } else {
+                        peer.hostname.clone()
+                    },
+                    start_layer: peer.start_layer,
+                    end_layer: peer.end_layer,
+                    released: error.is_none(),
+                    error,
+                }
+            }
+        }))
+        .await;
+    results.sort_by_key(|r| r.start_layer);
+
+    let released = results.iter().filter(|r| r.released).count();
+    let failed = results.len() - released;
+    if failed > 0 {
+        warn!("{failed} máquina(s) não confirmaram a desimplantação de {group}");
+    }
+
+    Json(json!({
+        "group": group,
+        "released": released,
+        "failed": failed,
+        "results": results,
+    }))
+    .into_response()
+}
+
+/// Qual pipeline o pedido quer derrubar.
+///
+/// Vazio e uma só no ar é a intenção óbvia. Vazio com duas é ambiguidade que
+/// esta função se recusa a resolver por conta própria: derrubar a errada custa
+/// uma reimplantação inteira.
+fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<String, String> {
+    if !requested.is_empty() {
+        return Ok(requested.to_string());
+    }
+    let mut models: Vec<String> = peers
+        .iter()
+        .filter(|p| p.total_layers > 0 && !p.model.is_empty())
+        .map(|p| p.model.clone())
+        .collect();
+    models.sort();
+    models.dedup();
+    match models.len() {
+        0 => Err("nenhuma pipeline no ar para desimplantar".to_string()),
+        1 => Ok(models.remove(0)),
+        _ => Err(format!(
+            "há mais de uma pipeline no ar ({}); diga qual desimplantar",
+            models.join(", ")
+        )),
+    }
+}
+
+/// Libera a memória de **uma** máquina, pela mesma porta do botão que já existe.
+///
+/// Quem mata o processo de inferência é sempre o dono da memória: este nó só
+/// encaminha, exatamente como `remove_node_endpoint`.
+async fn release_one(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    key: &str,
+    self_id: &str,
+) -> Result<(), String> {
+    if peer.node_id == self_id {
+        state.runtime.stop().await;
+        return Ok(());
+    }
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| "peer sem porta de gateway anunciada".to_string())?;
+    match state
+        .http
+        .post(format!("{base}/api/ui/unload"))
+        .bearer_auth(key)
+        .timeout(PEER_TIMEOUT)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => Ok(()),
+        Ok(r) => Err(format!("a máquina recusou: HTTP {}", r.status())),
+        Err(e) => Err(format!("máquina inacessível: {e}")),
+    }
+}
+
 fn bad(body: serde_json::Value) -> Response {
     (axum::http::StatusCode::BAD_REQUEST, Json(body)).into_response()
 }
@@ -1867,6 +2074,174 @@ async fn wait_for_transfers(
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+}
+
+/// Tirar a pipeline inteira do ar.
+#[cfg(test)]
+mod undeploy_tests {
+    use super::*;
+    use crate::config::Role;
+    use crate::gateway::testkit::{body_of, state_with};
+    use axum::routing::post as axum_post;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    /// Um peer servindo `qwen35` na faixa dada.
+    fn peer(node_id: &str, host: &str, gateway_port: u16, range: (u32, u32)) -> PeerInfo {
+        let mut p = crate::gateway::testkit::peer(node_id, host, gateway_port);
+        p.model = "qwen35".into();
+        p.start_layer = range.0;
+        p.end_layer = range.1;
+        p.total_layers = 32;
+        p
+    }
+
+    /// Uma máquina que responde `/api/ui/unload` com o status pedido, contando
+    /// quantas vezes foi chamada.
+    async fn fake_machine(status: axum::http::StatusCode) -> (u16, Arc<AtomicU32>) {
+        let hits = Arc::new(AtomicU32::new(0));
+        let counter = hits.clone();
+        let app = Router::new().route(
+            "/api/ui/unload",
+            axum_post(move || {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, Ordering::SeqCst);
+                    (status, Json(json!({ "unloaded": true })))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, hits)
+    }
+
+    /// O relatório tem uma linha por máquina, e uma máquina que não confirmou
+    /// **não** conta como liberada. Fingir sucesso aqui deixaria memória presa
+    /// numa caixa que o operador acha que esvaziou.
+    #[tokio::test]
+    async fn every_machine_is_reported_and_a_silent_one_is_not_a_success() {
+        let (ok_port, ok_hits) = fake_machine(axum::http::StatusCode::OK).await;
+        let (bad_port, bad_hits) = fake_machine(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
+        let state = state_with("eu", vec![
+            peer("no-a", "ksia", ok_port, (0, 15)),
+            peer("no-b", "macbook", bad_port, (16, 31)),
+        ])
+        .await;
+
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                group: "qwen35".into(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = body_of(resp).await;
+
+        assert_eq!(body["group"], "qwen35");
+        assert_eq!(body["released"], 1);
+        assert_eq!(body["failed"], 1);
+
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results.len(), 2, "uma linha por máquina, sempre");
+        // Ordenado pela camada inicial: o relatório se lê na ordem do pipeline.
+        assert_eq!(results[0]["hostname"], "ksia");
+        assert_eq!(results[0]["released"], true);
+        assert!(results[0].get("error").is_none());
+
+        assert_eq!(results[1]["hostname"], "macbook");
+        assert_eq!(results[1]["released"], false);
+        assert!(
+            results[1]["error"].as_str().unwrap().contains("500"),
+            "o motivo tem que ser o que a máquina disse: {}",
+            results[1]["error"]
+        );
+
+        // As duas foram mesmo chamadas: nenhuma foi pulada por causa da outra.
+        assert_eq!(ok_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(bad_hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// Uma máquina fora do ar é falha com motivo, não uma linha que some.
+    #[tokio::test]
+    async fn an_unreachable_machine_still_gets_a_line() {
+        let (ok_port, _) = fake_machine(axum::http::StatusCode::OK).await;
+        // Porta que ninguém atende: reservada e imediatamente devolvida.
+        let dead = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let state = state_with("eu", vec![
+            peer("no-a", "ksia", ok_port, (0, 15)),
+            peer("no-b", "sumida", dead, (16, 31)),
+        ])
+        .await;
+
+        let body = body_of(
+            undeploy_endpoint(
+                ConnectionAuth,
+                State(state),
+                Json(UndeployRequest {
+                    group: "qwen35".into(),
+                }),
+            )
+            .await,
+        )
+        .await;
+
+        assert_eq!(body["failed"], 1);
+        let results = body["results"].as_array().unwrap();
+        assert_eq!(results[1]["hostname"], "sumida");
+        assert_eq!(results[1]["released"], false);
+        assert!(results[1]["error"].is_string());
+    }
+
+    /// Sem pipeline no ar não há o que desimplantar, e dizer isso é melhor que
+    /// devolver um relatório vazio que se lê como sucesso.
+    #[tokio::test]
+    async fn undeploying_nothing_is_a_refusal_not_an_empty_report() {
+        let state = state_with("eu", vec![]).await;
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                group: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    /// Qual pipeline derrubar: óbvio com uma, recusa com duas. Derrubar a
+    /// errada custa uma reimplantação inteira, então o palpite não é nosso.
+    #[test]
+    fn the_group_is_only_guessed_when_there_is_no_doubt() {
+        let uma = vec![peer("a", "h", 1, (0, 15)), peer("b", "h", 2, (16, 31))];
+        assert_eq!(resolve_group("", &uma).unwrap(), "qwen35");
+        assert_eq!(resolve_group("outro", &uma).unwrap(), "outro");
+
+        let mut duas = uma.clone();
+        duas[1].model = "llama3".into();
+        let erro = resolve_group("", &duas).unwrap_err();
+        assert!(erro.contains("llama3") && erro.contains("qwen35"), "{erro}");
+
+        assert!(resolve_group("", &[]).is_err());
+    }
+
+    /// **Documenta a porta aberta de propósito.** Nesta primeira versão qualquer
+    /// nó desimplanta; quando a restrição "somente o nó principal" entrar em
+    /// `undeploy_authority`, é este teste que tem que mudar junto - e é isso que
+    /// torna o fechamento uma decisão, e não um efeito colateral.
+    #[test]
+    fn any_node_may_undeploy_for_now() {
+        assert!(undeploy_authority(&Role::Node).is_ok());
+        assert!(undeploy_authority(&Role::Principal).is_ok());
     }
 }
 

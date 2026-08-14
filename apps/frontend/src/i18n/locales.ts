@@ -68,6 +68,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "common.loadFailed": () => "Could not load",
    "common.retry": () => "Retry",
    "common.cancel": () => "Cancel",
+   "common.close": () => "Close",
     "common.serverDetails": () => "The node returned details in an unsupported language.",
     "nav.dashboard": () => "Dashboard",
     "nav.testChat": () => "Test chat",
@@ -407,6 +408,30 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.addNodeMachine": () => "Machine",
     "deploy.addNodeSlice": () => "Slice",
     "deploy.parallelRoute": () => "This range is already served. The machine becomes a parallel route.",
+    "undeploy.button": () => "Undeploy",
+    "undeploy.title": ({ group }) => "Take " + String(group) + " out of service everywhere?",
+    "undeploy.description": ({ count }) =>
+      "Every one of the " +
+      String(count) +
+      " machines serving this model unloads it: RAM and VRAM come back, and the pipeline stops answering until it is deployed again.",
+    "undeploy.keepsFiles": () =>
+      "No slice is deleted. The files stay where they are, so the same deployment comes back with one click.",
+    "undeploy.machines": () => "Machines that will be freed",
+    "undeploy.confirm": () => "Undeploy everywhere",
+    "undeploy.reportTitle": () => "What each machine answered",
+    "undeploy.allReleased": ({ count }) =>
+      Number(count) === 1
+        ? "1 machine released its memory."
+        : String(count) + " machines released their memory.",
+    "undeploy.partial": ({ released, failed }) =>
+      String(released) +
+      " released, " +
+      String(failed) +
+      " did not confirm — their memory is still taken.",
+    "undeploy.noneReleased": () => "No machine confirmed. Nothing was released.",
+    "undeploy.released": () => "released",
+    "undeploy.stillLoaded": () => "still loaded",
+    "undeploy.failedTitle": () => "The pipeline is still up",
     "deploy.removeNode": () => "Remove",
     "deploy.removeNodeTitle": () => "Take this machine out of the model",
     "deploy.removeLeavesGap": ({ layers }) => "Layers " + String(layers) + " are left uncovered and the pipeline stops planning until someone takes them.",
@@ -676,6 +701,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "common.loadFailed": () => "Não deu para carregar",
    "common.retry": () => "Tentar de novo",
    "common.cancel": () => "Cancelar",
+   "common.close": () => "Fechar",
     "common.serverDetails": () => "O nó retornou detalhes em um idioma não suportado.",
     "nav.dashboard": () => "Painel",
     "nav.testChat": () => "Chat de teste",
@@ -1015,6 +1041,30 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.addNodeMachine": () => "Máquina",
     "deploy.addNodeSlice": () => "Fatia",
     "deploy.parallelRoute": () => "Esta faixa já é servida. A máquina entra como rota paralela.",
+    "undeploy.button": () => "Desimplantar",
+    "undeploy.title": ({ group }) => "Tirar " + String(group) + " do ar em todas as máquinas?",
+    "undeploy.description": ({ count }) =>
+      "Cada uma das " +
+      String(count) +
+      " máquinas que servem este modelo o descarrega: a RAM e a VRAM voltam, e o pipeline para de responder até ser implantado de novo.",
+    "undeploy.keepsFiles": () =>
+      "Nenhuma fatia é apagada. Os arquivos ficam onde estão, então a mesma implantação volta com um clique.",
+    "undeploy.machines": () => "Máquinas que vão ser liberadas",
+    "undeploy.confirm": () => "Desimplantar em todas",
+    "undeploy.reportTitle": () => "O que cada máquina respondeu",
+    "undeploy.allReleased": ({ count }) =>
+      Number(count) === 1
+        ? "1 máquina liberou a memória."
+        : String(count) + " máquinas liberaram a memória.",
+    "undeploy.partial": ({ released, failed }) =>
+      String(released) +
+      " liberaram, " +
+      String(failed) +
+      " não confirmaram — a memória delas continua presa.",
+    "undeploy.noneReleased": () => "Nenhuma máquina confirmou. Nada foi liberado.",
+    "undeploy.released": () => "liberada",
+    "undeploy.stillLoaded": () => "ainda carregada",
+    "undeploy.failedTitle": () => "A pipeline continua no ar",
     "deploy.removeNode": () => "Remover",
     "deploy.removeNodeTitle": () => "Tirar esta máquina do modelo",
     "deploy.removeLeavesGap": ({ layers }) => "As camadas " + String(layers) + " ficam descobertas e o pipeline para de planejar até alguém assumir.",

@@ -148,6 +148,36 @@ export function removeNode(nodeId: string, group: string) {
   );
 }
 
+/** O que aconteceu com uma máquina numa desimplantação. */
+export interface UndeployOutcome {
+  node_id: string;
+  hostname: string;
+  start_layer: number;
+  end_layer: number;
+  /** Só `true` quando aquela máquina confirmou. */
+  released: boolean;
+  error?: string;
+}
+
+export interface UndeployReport {
+  group: string;
+  released: number;
+  failed: number;
+  results: UndeployOutcome[];
+}
+
+/**
+ * Tira a pipeline inteira do ar: libera RAM e VRAM em **todas** as máquinas que
+ * servem o modelo.
+ *
+ * Nada é apagado do disco — as fatias ficam onde estão e a mesma implantação
+ * volta com um clique. A resposta é um relatório máquina a máquina, e uma que
+ * não respondeu vem com `released: false` e o motivo.
+ */
+export function undeployPipeline(group: string) {
+  return api.post<UndeployReport>("/api/ui/undeploy", { group });
+}
+
 /** Open an SSE stream and yield each `data:` payload as it lands. */
 export async function* streamSse(
   path: string,

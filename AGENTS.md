@@ -393,6 +393,15 @@ e leitura/escrita em blocos de 1 MB.
 
 Chegada dos arquivos: `<shard_dir>/recebidos/` (`models/recebidos/` por padrão).
 
+**Nada no caminho da oferta pode ler o arquivo inteiro.** Um digest é uma
+leitura completa: medido no cartão SD do captain, `md5` de uma fatia de 4,2 GB
+custa 3 min 23 s (~20 MB/s), e era esse o atraso da notificação no outro lado —
+o cache por (caminho, mtime, tamanho) só mascarava, deixando o segundo envio
+instantâneo. Quem confere o MD5 é o receptor, em `/api/transfer/manifest`,
+depois de aceitar; a oferta leva só o `stat`. Pela mesma razão o manifesto e a
+checagem de disco correm **dentro** da tarefa de download, não antes do clique
+de aceitar (`transfer::spawn_download`, `MANIFEST_TIMEOUT`).
+
 **O que pode sair da máquina depende de quem escolheu o arquivo.** Os dois
 sentidos tinham o mesmo guarda de caminho, e por isso um GGUF do LM Studio ou
 solto numa pasta qualquer não podia sair — mesmo estando na máquina.
@@ -485,6 +494,17 @@ não `cargo build`; recarregar o navegador depois basta.
 O menu está em `apps/frontend/src/components/nav.ts` (as rotas, em `App.tsx`):
 Painel, Chat de teste, Modelos, Modelos fatiados, **Implantar na rede**,
 Transferências, Logs e Configurar.
+
+### Janelas modais: `position: fixed` sozinho não basta
+
+`Confirm`/`Modal` (`apps/frontend/src/components/Confirm.tsx`) vão por portal
+para o `body`, e isso não é preferência. `fixed` deixa de valer contra a janela
+quando algum ancestral tem `transform`, `filter` **ou** `backdrop-filter` — ele
+vira o bloco de contenção. A barra do topo e o cabeçalho do Painel têm
+`backdrop-blur`, então toda confirmação aberta de lá era centralizada dentro de
+uma faixa de ~76 px: medido no navegador, `y = -66` numa viewport de 2029 px,
+com o título fora da tela. Há teste (`Confirm.test.tsx`), que afirma a causa (a
+janela é filha do `body`) porque o jsdom não calcula layout.
 
 ### O chat de teste
 
@@ -817,6 +837,15 @@ o `Dockerfile` a recebe como `ARG` e o `scripts/build-docker.sh` lê o commit **
 host** e exporta. Construa a imagem por esse script; `docker compose build` na
 mão volta a carimbar `desconhecido`, de propósito, porque inventar um valor seria
 pior que dizer que não se sabe.
+
+## Testes de rotas do backend: o andaime é um só
+
+`gateway::testkit` (`#[cfg(test)]` em `crates/node/src/backend/gateway.rs`) monta
+um `GatewayState` inteiro com a tabela de peers semeada à mão e peers apontando
+para servidores axum na loopback. Nada de UDP sai dali, que é o único jeito de
+testar rota de controle sem anunciar na LAN e cair no cluster de verdade — o
+`--no-discovery` serve para o mesmo fim quando é preciso subir um nó a valer.
+Use-o em vez de recriar o andaime (`transfer`, `deploy` e `webui` já o usam).
 
 ## Maintaining this file
 

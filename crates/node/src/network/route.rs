@@ -117,6 +117,23 @@ impl RouteTable {
         }
     }
 
+    /// Grava uma escolha direto, sem sondar. Só para teste.
+    #[cfg(test)]
+    pub fn remember_for_test(&self, node_id: &str, addr: &str, rtt_ms: f64) {
+        if let Ok(mut t) = self.por_no.write() {
+            t.insert(
+                node_id.to_string(),
+                Entrada {
+                    escolha: RouteChoice {
+                        addr: addr.to_string(),
+                        rtt_ms,
+                    },
+                    medido_em: Instant::now(),
+                },
+            );
+        }
+    }
+
     /// Se ja passou tempo suficiente desde a ultima medicao deste peer.
     pub fn precisa_medir(&self, node_id: &str) -> bool {
         self.por_no

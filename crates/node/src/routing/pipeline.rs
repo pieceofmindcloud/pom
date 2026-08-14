@@ -293,6 +293,20 @@ pub async fn plan_pipeline(
 
 /// Endereco por onde falar com este hop, decidido por quem vai discar.
 ///
+/// Tres niveis, nesta ordem:
+///
+/// 1. a rota medida, se existir e ainda for um candidato anunciado;
+/// 2. o `inference_url`, que sai de `peer.addr` - de onde os pacotes daquele
+///    peer chegaram, e portanto o unico endereco *comprovado* antes da
+///    primeira sonda;
+/// 3. o primeiro candidato anunciado, quando nem isso ha.
+///
+/// A ordem dos dois ultimos ja foi a inversa, e custou requisicoes: como
+/// `merge_observed` acrescenta o endereco observado ao **fim** da lista, o
+/// primeiro candidato costuma ser a LAN do peer, e discar nela manda a
+/// requisicao para um `192.168.x.y` de outro site. Palpite nao passa na frente
+/// de fato conhecido; a medicao e que promove um candidato melhor, depois.
+///
 /// `fixadas` e a memoria da sessao: uma vez escolhido, o endereco daquele no
 /// nao muda ate a sessao acabar.
 pub fn resolve_step_url(
@@ -306,8 +320,13 @@ pub fn resolve_step_url(
     let escolhido = tabela
         .resolve(&step.node_id)
         .filter(|url| step.inference_candidates.iter().any(|c| c == url))
-        .or_else(|| step.inference_candidates.first().cloned())
-        .unwrap_or_else(|| step.inference_url.clone());
+        .unwrap_or_else(|| {
+            if step.inference_url.is_empty() {
+                step.inference_candidates.first().cloned().unwrap_or_default()
+            } else {
+                step.inference_url.clone()
+            }
+        });
     fixadas.insert(step.node_id.clone(), escolhido.clone());
     escolhido
 }
@@ -408,14 +427,43 @@ mod ipv6_tests {
         );
     }
 
-    /// Sem medicao para aquele no, o primeiro candidato serve - e melhor que o
-    /// `inference_url`, que foi resolvido por outra maquina.
+    /// Sem medicao, vale o endereco por onde o peer ja falou conosco.
+    ///
+    /// `merge_observed` acrescenta o endereco de origem do pacote **ao fim** da
+    /// lista, entao o primeiro candidato e o que o peer anunciou de si - em
+    /// geral a LAN dele. Discar nele antes de medir manda a requisicao para um
+    /// `192.168.x.y` de outro site, que e inalcancavel daqui: em 2026-08-14 o
+    /// log mostrou tres tentativas em `http://192.168.0.37:8181/v1/prefill`
+    /// para um peer que so responde pelo IPv6 global.
+    ///
+    /// O `inference_url` nao e um palpite: ele sai de `peer.addr`, que e de
+    /// onde os pacotes daquele peer chegaram. E o unico endereco comprovado que
+    /// temos antes da primeira sonda.
     #[test]
-    fn without_a_measurement_the_first_candidate_is_used() {
+    fn without_a_measurement_the_observed_address_wins_over_an_announced_one() {
         let tabela = crate::route::RouteTable::new();
         let mut fixadas = std::collections::HashMap::new();
-        let step = step_com(vec!["http://a:8181", "http://b:8181"], "http://legado:8181");
-        assert_eq!(resolve_step_url(&step, &tabela, &mut fixadas), "http://a:8181");
+        let step = step_com(
+            vec!["http://192.168.0.37:8181", "http://[2804:f30::1]:8181"],
+            "http://[2804:f30::1]:8181",
+        );
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://[2804:f30::1]:8181",
+        );
+    }
+
+    /// Medido vence: e o ponto da fase de rota dinamica.
+    #[test]
+    fn a_measured_route_beats_the_observed_address() {
+        let tabela = crate::route::RouteTable::new();
+        tabela.remember_for_test("n1", "http://rapido:8181", 3.0);
+        let mut fixadas = std::collections::HashMap::new();
+        let step = step_com(
+            vec!["http://rapido:8181", "http://lento:8181"],
+            "http://lento:8181",
+        );
+        assert_eq!(resolve_step_url(&step, &tabela, &mut fixadas), "http://rapido:8181");
     }
 
     fn step(caps: &[&str]) -> PipelineStep {

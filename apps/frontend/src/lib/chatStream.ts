@@ -29,6 +29,7 @@ export interface PhaseTrace {
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;
+  node_lock_wait_ms: number;
   node_setup_ms: number;
   node_decode_ms: number;
   node_backend_enqueue_ms: number;
@@ -84,6 +85,7 @@ export interface LegacyHopTrace {
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;
+  node_lock_wait_ms: number;
   node_setup_ms: number;
   node_decode_ms: number;
   node_residual_ms: number;

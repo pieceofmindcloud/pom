@@ -120,7 +120,7 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
         </tbody>
       </table>
     </div>
-    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code> (salvo com <code>RDMA_P2P_PROFILE_SYNC=0</code>), que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura.</p>
+    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code> (salvo com <code>RDMA_P2P_PROFILE_SYNC=0</code>), que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura. “Espera do motor” é o tempo parado no mutex do <code>llama_context</code>, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento.</p>
   </details>;
 }
 
@@ -138,6 +138,7 @@ function PhaseRow({
   const gatewayMs = phase.client_encode_ms + phase.client_decode_ms;
   const named =
     phase.node_frame_decode_ms + phase.node_input_prepare_ms + phase.node_queue_ms +
+    phase.node_lock_wait_ms +
     phase.node_setup_ms + phase.node_decode_ms + phase.node_residual_ms +
     phase.node_sampling_ms + phase.node_encode_ms;
   const unattributed = Math.max(0, phase.processing_ms - named);
@@ -159,7 +160,7 @@ function PhaseRow({
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={8}>
-        <span className="block">nó: frame {phase.node_frame_decode_ms} ms · preparar {phase.node_input_prepare_ms} ms · fila {phase.node_queue_ms} ms · setup {phase.node_setup_ms} ms · frame out {phase.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
+        <span className="block">nó: frame {phase.node_frame_decode_ms} ms · preparar {phase.node_input_prepare_ms} ms · fila {phase.node_queue_ms} ms · <span className={clsx(phase.node_lock_wait_ms > phase.node_decode_ms && "text-amber")}>espera do motor {phase.node_lock_wait_ms} ms</span> · setup {phase.node_setup_ms} ms · frame out {phase.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
         <span className="block">backend: enfileirar {phase.node_backend_enqueue_ms} ms · conclusão {phase.node_backend_completion_ms} ms{phase.node_backend_completion_ms === 0 ? " (sync desligado)" : ""} · D2H da captura {phase.node_residual_capture_d2h_sync_ms} ms · p50 {phase.node_p50_ms} ms · p95 {phase.node_p95_ms} ms</span>
         <span className="block">sampling: acesso {phase.node_logits_access_ms} ms · clone {phase.node_logits_clone_ms} ms · penalidade {phase.node_repetition_penalty_ms} ms · softmax {phase.node_softmax_ms} ms · top-k {phase.node_top_k_ms} ms · top-p {phase.node_top_p_ms} ms · seleção {phase.node_selection_ms} ms · texto {phase.node_token_text_ms} ms</span>
         <span className="block">gateway: codificar {phase.client_encode_ms} ms · até headers {phase.response_headers_ms} ms · corpo {phase.response_body_ms} ms · decodificar {phase.client_decode_ms} ms</span>

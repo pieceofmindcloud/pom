@@ -52,6 +52,14 @@ struct NodeTimings {
     frame_decode_us: u64,
     input_prepare_us: u64,
     queue_us: u64,
+    /// Espera pelo mutex do motor, antes de qualquer trabalho.
+    ///
+    /// O `llama_context` não é seguro para uso concorrente, então todo decode
+    /// deste nó serializa aqui. Sem este contador a espera caía no vão entre a
+    /// entrada do handler e o primeiro medidor, e aparecia na tela só como
+    /// "não atribuído" - 194 ms por token numa medição de 2026-08-14, 63% do
+    /// tempo da requisição, invisível.
+    lock_wait_us: u64,
     setup_us: u64,
     decode_us: u64,
     backend_enqueue_us: u64,
@@ -80,6 +88,7 @@ impl NodeTimings {
             "frame_decode_ms": ms(self.frame_decode_us),
             "input_prepare_ms": ms(self.input_prepare_us),
             "queue_ms": ms(self.queue_us),
+            "lock_wait_ms": ms(self.lock_wait_us),
             "setup_ms": ms(self.setup_us),
             "decode_ms": ms(self.decode_us),
             "backend_enqueue_ms": ms(self.backend_enqueue_us),
@@ -1061,7 +1070,11 @@ fn prefill_blocking(
         queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
     };
+    // O prefill espera no mesmo mutex do decode: um prompt grande de outra
+    // sessão segura este aqui, e é a mesma espera invisível.
+    let lock_started = Instant::now();
     let mut s = state.lock().unwrap();
+    timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
 
     // ── Session setup ────────────────────────────────────────────────────────
 
@@ -1755,7 +1768,9 @@ fn step_blocking(
         queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
     };
+    let lock_started = Instant::now();
     let mut s = state.lock().unwrap();
+    timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
 
     let setup_started = Instant::now();
     let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {

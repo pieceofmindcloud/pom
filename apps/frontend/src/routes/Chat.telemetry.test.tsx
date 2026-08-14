@@ -13,7 +13,7 @@ function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
   return {
     processing_ms: 0, network_ms: 0, bytes_sent: 0, bytes_received: 0, calls: 0,
     client_encode_ms: 0, response_headers_ms: 0, response_body_ms: 0, client_decode_ms: 0,
-    node_frame_decode_ms: 0, node_input_prepare_ms: 0, node_queue_ms: 0, node_setup_ms: 0,
+    node_frame_decode_ms: 0, node_input_prepare_ms: 0, node_queue_ms: 0, node_lock_wait_ms: 0, node_setup_ms: 0,
     node_decode_ms: 0, node_backend_enqueue_ms: 0, node_backend_completion_ms: 0,
     node_residual_capture_d2h_sync_ms: 0, node_residual_ms: 0,
     node_logits_access_ms: 0, node_logits_clone_ms: 0, node_repetition_penalty_ms: 0,

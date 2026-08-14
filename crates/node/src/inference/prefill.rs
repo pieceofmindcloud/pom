@@ -74,6 +74,9 @@ pub struct PhaseTrace {
     pub node_frame_decode_ms: u64,
     pub node_input_prepare_ms: u64,
     pub node_queue_ms: u64,
+    /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
+    /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
+    pub node_lock_wait_ms: u64,
     pub node_setup_ms: u64,
     pub node_decode_ms: u64,
     /// Time to hand the batch to the backend — not the time it ran.
@@ -131,6 +134,7 @@ impl PhaseTrace {
         self.node_frame_decode_ms += node_ms("frame_decode_ms");
         self.node_input_prepare_ms += node_ms("input_prepare_ms");
         self.node_queue_ms += node_ms("queue_ms");
+        self.node_lock_wait_ms += node_ms("lock_wait_ms");
         self.node_setup_ms += node_ms("setup_ms");
         self.node_decode_ms += node_decode_ms;
         self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
@@ -165,6 +169,7 @@ impl PhaseTrace {
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
+        self.node_lock_wait_ms += next.node_lock_wait_ms;
         self.node_setup_ms += next.node_setup_ms;
         self.node_decode_ms += next.node_decode_ms;
         self.node_backend_enqueue_ms += next.node_backend_enqueue_ms;
@@ -1162,6 +1167,34 @@ mod tests {
         assert_eq!(trace.hops[0].prefill.network_ms, 11);
         assert_eq!(trace.hops[0].prefill.bytes_sent, 1_024);
         assert_eq!(trace.hops[0].prefill.bytes_received, 2_048);
+    }
+
+    /// A espera pelo mutex do motor tem que chegar a telemetria com nome.
+    ///
+    /// Numa medicao de 2026-08-14 ela era 194 ms por token - 63% do tempo da
+    /// requisicao - e aparecia na tela apenas como "nao atribuido", porque
+    /// caia no vao entre a entrada do handler e o primeiro medidor. Um numero
+    /// grande sem nome e pior que um numero grande: manda procurar no lugar
+    /// errado.
+    #[test]
+    fn the_wait_for_the_engine_lock_reaches_the_trace() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Decode,
+            250,
+            240,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            &json!({"decode_ms": 34, "lock_wait_ms": 194}),
+        );
+
+        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 34);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array

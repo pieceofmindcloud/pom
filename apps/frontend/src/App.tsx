@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { Route, Routes, useLocation } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useIsSetupMode } from "./lib/queries";
 import { Setup } from "./routes/Setup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -104,7 +104,11 @@ export default function App() {
                     <Route path="/modelos" element={<Page><WholeModels /></Page>} />
                     <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
-                    <Route path="/fatias/implantar" element={<Page><DeployModel /></Page>} />
+                    <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                    {/* Where deploying used to live, back when it was a leaf of
+                        the shards section. Kept so links and bookmarks the
+                        operator already has do not land on "page not found". */}
+                    <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
                     <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
                     <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                     <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />

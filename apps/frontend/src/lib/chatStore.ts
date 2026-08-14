@@ -13,7 +13,15 @@ import type { RequestTrace } from "./chatStream";
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "assistant";
+  /**
+   * `event` is not a turn: it is something that happened *to* the conversation,
+   * written into the transcript where it happened. Switching model mid-thread
+   * is the case that forced it — the answers before and after came from
+   * different machines, and without a mark in the flow the transcript reads as
+   * one model contradicting itself. Events never travel in the request; see
+   * `turnsOnly`.
+   */
+  role: "user" | "assistant" | "event";
   content: string;
   /** Set when the answer failed; the turn stays visible with its reason. */
   error?: string;
@@ -33,10 +41,22 @@ export interface ChatMessage {
 export interface ChatSession {
   id: string;
   title: string;
+  /**
+   * True once someone typed a name for this conversation.
+   *
+   * Without it the first message would overwrite the name the operator just
+   * chose — and the name is the whole point: the captain labels a thread with
+   * the model under test so he can find it again when reading the telemetry.
+   */
+  titled?: boolean;
   model: string | null;
   messages: ChatMessage[];
   updatedAt: string;
 }
+
+/** What the model is allowed to see: the turns, without the marks around them. */
+export const turnsOnly = (messages: ChatMessage[]) =>
+  messages.filter((m) => m.role === "user" || m.role === "assistant");
 
 const STORAGE = "codai.chat.sessions";
 /** Sessions kept before the oldest is dropped, so storage cannot grow forever. */

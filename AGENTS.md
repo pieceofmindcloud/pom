@@ -425,6 +425,18 @@ Peers da mesma máquina compartilham o hostname, então destino e etiqueta de
 disponibilidade levam o começo do `node_id` quando o nome se repete
 (`uniqueName`, `web/app.js`).
 
+**Aceite automático — só para desenvolvimento, desligado por padrão.**
+`RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS=1` faz o nó **receptor** aceitar toda oferta
+que chega, sem clique. É variável de ambiente do processo que recebe, lida uma
+vez no arranque (`transfer::dev_auto_accept`), e o remetente não tem como pedi-la:
+quem abre o portão é a máquina cujo disco vai ser escrito. Ausente, vazia, `0` e
+`false` continuam exigindo confirmação — o padrão de produção — e há teste disso.
+Existe porque provar o sentido "oferecer" à mão exige dois navegadores para mover
+um arquivo. **Não ligue numa máquina cujo disco importa**: com ela ligada,
+qualquer peer do cluster escreve gigabytes ali sem perguntar. Um aceite
+automático que não consegue começar o download volta a ficar na prateleira, para
+o operador pegar à mão, em vez de sumir com um erro só no log.
+
 ### Identidade do nó
 
 `node_id` é como o cluster nomeia uma máquina, e é a chave de `blocked_nodes`.
@@ -470,10 +482,30 @@ não `cargo build`; recarregar o navegador depois basta.
 `run-p1.sh` e `run-p2.sh` aceitam `N_CTX`, `N_BATCH`, `MAX_NEW_TOKENS`, `MODEL`,
 `BOOTSTRAP` e `GATEWAY_PORT` por variável de ambiente.
 
-A tela tem quatro abas: **Painel** (fita de camadas + RAM/VRAM de cada peer),
-**Modelos** (pastas configuráveis, catálogo local, fatiar, mandar fatia),
-**Configurar** (escolher modelo, orçamento por peer, papel, ajustes avançados,
-subir a rede) e **Testar** (streaming pelo mesmo caminho dos harnesses).
+O menu está em `apps/frontend/src/components/nav.ts` (as rotas, em `App.tsx`):
+Painel, Chat de teste, Modelos, Modelos fatiados, **Implantar na rede**,
+Transferências, Logs e Configurar.
+
+### O chat de teste
+
+`apps/frontend/src/routes/Chat.tsx`. Fala com o cluster por
+`POST /v1/chat/completions` com `stream: true`, igual a qualquer harness — o que
+aparece ali é o que um harness receberia. O histórico é do navegador
+(`lib/chatStore.ts`), não do nó.
+
+Três coisas que a conversa guarda além das falas, e por quê:
+
+- **A telemetria da execução chega fechada.** São quatro linhas de números por
+  salto, embaixo de toda resposta; abrir é um clique, rolar por cima em todo
+  turno não era. Há teste (`Chat.telemetry.test.tsx`).
+- **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
+  `turnsOnly` filtra antes de a conversa viajar na requisição). As respostas
+  antes e depois vieram de máquinas diferentes; sem a marca o transcript se lê
+  como um modelo se contradizendo. O seletor fica **embaixo do campo de texto**,
+  porque é parte de escrever a mensagem, não do cabeçalho.
+- **O título se edita clicando nele** e fica gravado (`titled`, que impede a
+  primeira mensagem de sobrescrever o nome escolhido). O captain nomeia a
+  conversa com o modelo em teste para reencontrá-la quando for ler a telemetria.
 
 ### Onde os modelos são procurados — é configuração, não código
 
@@ -505,6 +537,18 @@ configuração; gravar recusa caminho que não exista ou não seja diretório.
 varredura (ler o cabeçalho de GGUFs de 14 GB). O catálogo por isso serve o
 resultado anterior e revalida por trás (`webui::local_catalog`); só a primeira
 varredura, e a troca de pastas, esperam.
+
+**A primeira varredura acontece no arranque, não no primeiro clique**
+(`webui::warm_catalog`, chamada de `gateway::start_gateway`, que é por onde os
+dois caminhos de subida passam). Medido em 2026-08-14 com as fatias num volume
+externo: `/api/ui/models` frio custava **11,9 s** e o `/api/ui/cluster/models`
+que a tela de implantar faz custava **13,2 s** frio contra **0,15 s** com o
+catálogo quente. **O fan-out para os onze peers nunca foi o custo** - era a
+caminhada local, e cada peer pagava a sua na primeira vez que alguém perguntava.
+Com o aquecimento no arranque a mesma primeira carga fica em **0,18 s**. Nada
+mais mudou: mesmo cache, mesmo TTL, mesmo stale-while-revalidate; mudou *quando*
+a caminhada acontece. Ela é deliberadamente não esperada - um volume lento não
+pode segurar a porta do gateway fechada.
 
 ### Fatiar pela tela — por tamanho, não em partes iguais
 
@@ -584,12 +628,39 @@ modelo escolhido existe e avisa quando falta em algum.
 
 ### Implantar na rede - o plano, a fusão e a ordem
 
-A aba "Implantar na rede" (`web-ui/src/routes/DeployModel.tsx`, rotas
-`/api/ui/deploy/plan` e `/api/ui/deploy` em `src/deploy.rs`) põe em serviço um
-conjunto de fatias que já existe. O nó sugere a distribuição; a escolha do
-operador (`selection`) viaja na requisição e o `deploy` **re-varre o cluster em
-vez de confiar na prévia** - o `plan` é barato o bastante para ser chamado a
-cada edição, o `deploy` não.
+"Implantar na rede" (`apps/frontend/src/routes/DeployModel.tsx`, rotas
+`/api/ui/deploy/plan` e `/api/ui/deploy` em `crates/node/src/backend/deploy.rs`)
+põe em serviço um conjunto de fatias que já existe. É **entrada de primeiro
+nível do menu**, em `/implantar` (`/fatias/implantar` redireciona, para não
+quebrar link antigo): pôr em serviço é o ato para o qual a tela existe, e estava
+dois cliques fundo atrás de uma seção que se lê como listagem de arquivos.
+O nó sugere a distribuição; a escolha do operador (`selection`) viaja na
+requisição e o `deploy` **re-varre o cluster em vez de confiar na prévia** - o
+`plan` é barato o bastante para ser chamado a cada edição, o `deploy` não.
+
+**O que é por máquina e o que é do cluster.** `RuntimeParams` é do pipeline
+inteiro - contexto, batch e pedaço decidem o orçamento de prompt que o gateway
+cobra, e a amostragem só roda no último peer -, então mudar um deles só num nó
+quebraria a cadeia. Duas coisas são propriedade do hardware e viajam por máquina,
+em `SelectedSlice`/`Step`/`LaunchTarget` e aplicadas em `webui::params_for`:
+`n_gpu_layers` e `offload_kqv` (onde mora o KV cache). O cache é dimensionado
+pela janela de contexto, e uma caixa com 16 GB de VRAM e uma sem GPU no mesmo
+pipeline não podem estar as duas certas sobre onde ele cabe - um interruptor só
+para o cluster fazia a menor máquina decidir pela maior. Os dois se editam na
+tabela de máquinas, ao lado da máquina; em branco / não marcado herdam o número
+do cluster.
+
+**Os ajustes ficam abertos, à direita.** Não há mais "expandir": são os onze
+números que governam a implantação que o operador está montando à esquerda, e
+escolher máquinas com eles escondidos é escolher às cegas.
+
+**A última implantação de cada modelo fica no `localStorage`**
+(`apps/frontend/src/lib/deployMemory.ts`): máquinas, ordem, ajustes e as decisões
+por máquina. Ao voltar e escolher o mesmo modelo, tudo volta preenchido. A
+restauração acontece **depois do primeiro plano, não antes** - a memória é de
+outro dia, e uma faixa que ninguém mais tem ou uma máquina que saiu do cluster
+abririam a tela num plano bloqueado que o operador não escolheu; `usableSelection`
+poda contra o plano e o que não sobrevive simplesmente não volta.
 
 Três regras saem da arquitetura, não do gosto:
 
@@ -731,11 +802,21 @@ esse endereço não reescrito aponta para o próprio nó. A fatia servida é ano
 em `<config>.last-slice.json` (derivado da config, senão dois nós da mesma
 máquina se sobrescrevem) e reaplicada no arranque.
 
-`/api/ui/node` devolve `build_commit`, carimbado pelo `build.rs`, com sufixo
-`-sujo` quando a árvore tinha alterações. É como se descobre um peer
+`/api/ui/node` devolve `build_commit`, carimbado pelo `crates/node/build.rs`, com
+sufixo `-sujo` quando a árvore tinha alterações. É como se descobre um peer
 desatualizado sem shell na máquina: em 2026-08-10 um peer respondia
 `residual capture did not fire`, erro já corrigido, e achar que era binário
 velho custou uma tarde.
+
+**Em container o `git` não existe e o `.git` não chega**: o `.dockerignore` corta
+`.git/` do contexto e a imagem builder não instala `git`, então as duas leituras
+do `build.rs` falhavam e todo contêiner carimbava `desconhecido` — justo onde
+"que binário é esse?" é mais difícil de responder de outro jeito. Por isso o
+`build.rs` prefere a variável `RDMA_P2P_BUILD_COMMIT` quando ela vem preenchida,
+o `Dockerfile` a recebe como `ARG` e o `scripts/build-docker.sh` lê o commit **no
+host** e exporta. Construa a imagem por esse script; `docker compose build` na
+mão volta a carimbar `desconhecido`, de propósito, porque inventar um valor seria
+pior que dizer que não se sabe.
 
 ## Maintaining this file
 

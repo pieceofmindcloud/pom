@@ -27,6 +27,22 @@ fn main() {
 /// Diagnosing one such peer cost an afternoon, so the answer now travels with
 /// the node, in `/api/ui/node`.
 fn emit_build_id(root: &Path) {
+    // A build that cannot run `git` has to be *told* the commit, and the image
+    // build is exactly that: `.dockerignore` keeps `.git/` out of the context
+    // and the builder image has no `git` binary, so both halves below fail and
+    // every container reported "desconhecido" — the one build whose version you
+    // most need, since a container is the hardest place to get a shell into.
+    // `scripts/build-docker.sh` reads the commit on the host and passes it in
+    // through this variable.
+    println!("cargo:rerun-if-env-changed=RDMA_P2P_BUILD_COMMIT");
+    if let Ok(stamped) = std::env::var("RDMA_P2P_BUILD_COMMIT") {
+        let stamped = stamped.trim();
+        if !stamped.is_empty() {
+            println!("cargo:rustc-env=RDMA_P2P_BUILD_COMMIT={stamped}");
+            return;
+        }
+    }
+
     let commit = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
         .current_dir(root)
@@ -51,7 +67,10 @@ fn emit_build_id(root: &Path) {
         commit,
         if dirty { "-sujo" } else { "" }
     );
-    // Without this the stamp freezes at whatever the first build saw.
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/index");
+    // Without this the stamp freezes at whatever the first build saw. The paths
+    // are resolved against the package directory, not the workspace, so they
+    // have to be spelled out from the root or they name files that never exist.
+    let git = root.join(".git");
+    println!("cargo:rerun-if-changed={}", git.join("HEAD").display());
+    println!("cargo:rerun-if-changed={}", git.join("index").display());
 }

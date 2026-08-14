@@ -40,6 +40,13 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY . .
 RUN cd apps/frontend && npm run build
 
+# The commit the binary reports in the interface (`/api/ui/node`). It cannot be
+# read here: `.dockerignore` excludes `.git/` and this image has no `git`, so
+# `crates/node/build.rs` would stamp "desconhecido" on every container. The host
+# reads it and passes it in — see `scripts/build-docker.sh`.
+ARG RDMA_P2P_BUILD_COMMIT=""
+ENV RDMA_P2P_BUILD_COMMIT=$RDMA_P2P_BUILD_COMMIT
+
 # Cache mounts persist the registry, git checkouts, and incremental build
 # artifacts across builds, so unchanged dependencies aren't recompiled.
 RUN --mount=type=cache,target=/root/.cargo/registry \

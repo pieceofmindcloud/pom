@@ -27,7 +27,7 @@
  * minutes on the real link, so "3 fatias, 12 GB" is the difference between a
  * deploy that finishes now and one that finishes after lunch.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { AnimatePresence, motion } from "framer-motion";
 import {
@@ -35,8 +35,6 @@ import {
   ArrowRight,
   ArrowUp,
   Check,
-  ChevronDown,
-  ChevronUp,
   CircleAlert,
   Download,
   Layers,
@@ -49,6 +47,7 @@ import {
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
+import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes, num } from "../lib/format";
 import { Confirm } from "../components/Confirm";
@@ -93,12 +92,17 @@ function rowsOf(plan: DeployPlan | undefined): DeploySelection[] {
           start_layer: pt.start_layer,
           end_layer: pt.end_layer,
           target_node_id: s.target_node_id,
+          // Per-machine, so every part of a merged step carries the same pair.
+          n_gpu_layers: s.n_gpu_layers,
+          offload_kqv: s.offload_kqv,
         }))
       : [
           {
             start_layer: s.start_layer,
             end_layer: s.end_layer,
             target_node_id: s.target_node_id,
+            n_gpu_layers: s.n_gpu_layers,
+            offload_kqv: s.offload_kqv,
           },
         ],
   );
@@ -230,9 +234,9 @@ function Coverage({
  *
  * They are cluster-wide because the pipeline needs them to be: the context
  * window, the batch and the chunk decide the prompt budget the gateway enforces
- * on every request, and the sampling only ever runs on the last peer. The one
- * that is genuinely per-machine, GPU offload, is edited in the machines table
- * instead, next to the machine it belongs to.
+ * on every request, and the sampling only ever runs on the last peer. The two
+ * that are genuinely per-machine — GPU offload and where the KV cache lives —
+ * are edited in the machines table instead, next to the machine they belong to.
  */
 const KNOBS: Array<{
   key: keyof RuntimeParams;
@@ -389,7 +393,6 @@ export function DeployModel() {
   const [merge, setMerge] = useState<boolean | null>(null);
   /** Half-typed numbers, so clearing a field does not snap back to a digit. */
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const [advanced, setAdvanced] = useState(false);
   const [asked, setAsked] = useState(false);
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
@@ -442,6 +445,39 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+
+  /**
+   * Bring back the last deploy of this model, once we know what still exists.
+   *
+   * Deliberately after the first plan and not before it: the memory is from
+   * another day, and restoring a range nobody holds or a machine that left
+   * would open the screen on a blocked plan the operator never chose. The plan
+   * is what says which of both are still real, so the pruning happens against
+   * it (`usableSelection`) and what does not survive is simply not restored.
+   *
+   * Once per model per visit — after that the screen belongs to whatever the
+   * operator is editing, and re-restoring would undo their work on every
+   * refetch.
+   */
+  const restored = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!p || p.group !== chosen || restored.current.has(chosen)) return;
+    restored.current.add(chosen);
+
+    const memory = recallDeploy(chosen);
+    if (!memory) return;
+
+    const usable = usableSelection(
+      memory.selection,
+      p.available,
+      p.machines.map((m) => m.node_id),
+    );
+    if (!usable) return;
+
+    setSelection(usable.slice().sort(byLayer));
+    if (memory.params) setParams(memory.params);
+    setMerge(memory.merge);
+  }, [p, chosen]);
 
   /** What is on screen right now: the operator's edit, or the suggestion. */
   const rows = useMemo(
@@ -538,6 +574,19 @@ export function DeployModel() {
     );
   }
 
+  /**
+   * Where this machine's KV cache lives. Same shape as the offload above and
+   * for the same reason: the cache is sized by the context window, and the
+   * machines in one pipeline have wildly different amounts of VRAM and RAM, so
+   * one switch for the whole cluster made the smallest machine decide for the
+   * biggest.
+   */
+  function setPeerKqv(nodeId: string, value: boolean) {
+    edit((base) =>
+      base.map((r) => (r.target_node_id === nodeId ? { ...r, offload_kqv: value } : r)),
+    );
+  }
+
   /** Move a machine one place along the pipeline, which is a swap of ranges. */
   function move(index: number, delta: number) {
     const to = index + delta;
@@ -561,6 +610,10 @@ export function DeployModel() {
         ...(merge != null ? { merge } : {}),
       });
       setJobId(started.job_id);
+      // Written from `rows` and `eff`, not from the possibly-null edit state:
+      // what comes back next time has to be what was actually deployed,
+      // including the parts the operator left on the node's suggestion.
+      rememberDeploy(chosen, { selection: rows, params: eff, merge: effMerge });
       toast.success(
         t("deploy.started"),
         t("deploy.startedDetail"),
@@ -741,6 +794,12 @@ export function DeployModel() {
                       </div>
                     ))}
 
+                {/* The plan on the left, the settings it will launch with on
+                    the right and always in view: the operator decides both at
+                    once, and one of them used to be behind a button. Stacks on
+                    anything narrower than a desktop, settings last. */}
+                <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:items-start">
+                  <div className="min-w-0 space-y-5">
                 <Panel>
                   <PanelHeader
                     eyebrow={p.auto && !selection ? t("deploy.orderSuggestion") : t("deploy.yourChoice")}
@@ -1020,120 +1079,12 @@ export function DeployModel() {
 
                 <Panel>
                   <PanelHeader
-                    eyebrow={t("deploy.execution")}
-                    title={t("deploy.advanced")}
-                    subtitle={t("deploy.advancedDetail", {
-                      prompt: num(p.prompt_tokens),
-                      chunk: num(p.chunk_tokens),
-                    })}
-                    actions={
-                      <Button
-                        size="sm"
-                        icon={
-                          advanced ? (
-                            <ChevronUp className="h-3.5 w-3.5" />
-                          ) : (
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          )
-                        }
-                        onClick={() => setAdvanced((v) => !v)}
-                      >
-                        {advanced ? t("deploy.hide") : t("deploy.show")}
-                      </Button>
-                    }
-                  />
-                  {advanced && (
-                    <div className="space-y-5 px-5 py-4">
-                      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-                        {KNOBS.map((k) => (
-                          <Field key={k.key} label={t("deploy.knob." + k.key)}>
-                            <Input
-                              type="number"
-                              name={k.key}
-                              min={k.min}
-                              max={k.max}
-                              step={k.step}
-                              value={drafts[k.key] ?? String(eff[k.key] ?? "")}
-                              onChange={(e) => setKnob(k.key, e.target.value)}
-                              onBlur={() =>
-                                setDrafts((d) => {
-                                  const { [k.key]: _drop, ...rest } = d;
-                                  return rest;
-                                })
-                              }
-                            />
-                          </Field>
-                        ))}
-                      </div>
-
-                      <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2">
-                        <Switch
-                          checked={eff.offload_kqv ?? true}
-                          onChange={(v) => setParams({ ...eff, offload_kqv: v })}
-                          label={t("deploy.offloadKqv")}
-                          hint={t("deploy.offloadKqvHint")}
-                        />
-                        <Switch
-                          checked={eff.no_thinking ?? true}
-                          onChange={(v) => setParams({ ...eff, no_thinking: v })}
-                          label={t("deploy.noThinking")}
-                          hint={t("deploy.noThinkingHint")}
-                        />
-                        <Switch
-                          checked={eff.no_embeddings ?? false}
-                          onChange={(v) => setParams({ ...eff, no_embeddings: v })}
-                          label={t("deploy.noEmbeddings")}
-                          hint={t("deploy.noEmbeddingsHint")}
-                        />
-                        <Switch
-                          checked={eff.speculative_decoding_enabled ?? false}
-                          onChange={(v) =>
-                            setParams({ ...eff, speculative_decoding_enabled: v })
-                          }
-                          label={t("deploy.speculative")}
-                          hint={t("deploy.speculativeHint")}
-                        />
-                      </div>
-
-                      {(eff.speculative_decoding_enabled ?? false) && (
-                        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 lg:grid-cols-3">
-                          {SPECULATIVE_KNOBS.map((k) => (
-                            <Field
-                              key={k.key}
-                              label={t("deploy.knob." + k.key)}
-                              hint={t("deploy.knob." + k.key + "Hint")}
-                            >
-                              <Input
-                                type="number"
-                                name={k.key}
-                                min={k.min}
-                                max={k.max}
-                                step={k.step}
-                                value={drafts[k.key] ?? String(eff[k.key] ?? "")}
-                                onChange={(e) => setKnob(k.key, e.target.value)}
-                                onBlur={() =>
-                                  setDrafts((d) => {
-                                    const { [k.key]: _drop, ...rest } = d;
-                                    return rest;
-                                  })
-                                }
-                              />
-                            </Field>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </Panel>
-
-                <Panel>
-                  <PanelHeader
                     eyebrow={t("deploy.machines")}
                     title={t("deploy.machineTitle")}
                     subtitle={t("deploy.machineDetail")}
                   />
                   <ScrollX>
-                    <table className="w-full min-w-[40rem] text-sm">
+                    <table className="w-full min-w-[52rem] text-sm">
                       <thead>
                         <tr className="border-b border-line text-left">
                           {[
@@ -1143,6 +1094,7 @@ export function DeployModel() {
                             t("deploy.heldShards"),
                             t("deploy.thisDeployment"),
                             t("deploy.gpuHere"),
+                            t("deploy.kvHere"),
                           ].map(
                             (h) => (
                               <th key={h} className="px-5 py-2.5 text-xs font-medium text-faint">
@@ -1176,7 +1128,11 @@ export function DeployModel() {
                               <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
                                 {m.disk_free_mb > 0 ? megabytes(m.disk_free_mb) : "—"}
                               </td>
-                              <td className="px-5 py-3 font-mono text-[0.8rem] text-muted">
+                              {/* `whitespace-nowrap` because a range is one
+                                  token to read: wrapped, "L20-39" breaks after
+                                  the dash and the second line reads as a layer
+                                  number of its own. The table scrolls instead. */}
+                              <td className="whitespace-nowrap px-5 py-3 font-mono text-[0.8rem] text-muted">
                                 {m.holds.length === 0
                                   ? t("deploy.none")
                                   : m.holds.map(([a, b]) => layerRange(a, b)).join(" · ")}
@@ -1195,9 +1151,12 @@ export function DeployModel() {
                                   <span className="text-[0.8rem] text-faint">{t("deploy.excluded")}</span>
                                 )}
                               </td>
-                              {/* Offload is the one setting a machine gets to
-                                  disagree about, so it is edited next to the
-                                  machine and not in the cluster-wide block. */}
+                              {/* Offload and KV placement are what a machine
+                                  gets to disagree about, so they are edited
+                                  next to the machine and not in the
+                                  cluster-wide block. Everything else in
+                                  `RuntimeParams` has to agree across the
+                                  pipeline. */}
                               <td className="whitespace-nowrap px-5 py-3">
                                 {taking.length > 0 ? (
                                   <Input
@@ -1221,6 +1180,29 @@ export function DeployModel() {
                                   <span className="text-[0.8rem] text-faint">—</span>
                                 )}
                               </td>
+                              <td className="whitespace-nowrap px-5 py-3">
+                                {taking.length > 0 ? (
+                                  <span className="flex items-center gap-2">
+                                    <Tick
+                                      on={taking[0].offload_kqv ?? eff.offload_kqv ?? true}
+                                      label={t("deploy.kvAria", { machine: m.label })}
+                                      onToggle={() =>
+                                        setPeerKqv(
+                                          m.node_id,
+                                          !(taking[0].offload_kqv ?? eff.offload_kqv ?? true),
+                                        )
+                                      }
+                                    />
+                                    <span className="text-[0.8rem] text-muted">
+                                      {(taking[0].offload_kqv ?? eff.offload_kqv ?? true)
+                                        ? t("deploy.kvOnGpu")
+                                        : t("deploy.kvInRam")}
+                                    </span>
+                                  </span>
+                                ) : (
+                                  <span className="text-[0.8rem] text-faint">—</span>
+                                )}
+                              </td>
                             </tr>
                           );
                         })}
@@ -1228,6 +1210,106 @@ export function DeployModel() {
                     </table>
                   </ScrollX>
                 </Panel>
+
+                  </div>
+
+                  {/* Sticky so it stays readable while the shard table
+                      scrolls; `top` clears the toolbar. */}
+                  <aside className="min-w-0 space-y-5 xl:sticky xl:top-4">
+                  <Panel>
+                    <PanelHeader
+                      eyebrow={t("deploy.execution")}
+                      title={t("deploy.properties")}
+                      subtitle={t("deploy.advancedDetail", {
+                        prompt: num(p.prompt_tokens),
+                        chunk: num(p.chunk_tokens),
+                      })}
+                    />
+                    {/* Never folded away. These eleven numbers decide the prompt
+                        budget every request is measured against, and a deploy
+                        made without reading them is a deploy made blind — the
+                        operator was choosing machines on the left with the
+                        settings that governed them hidden behind a button. */}
+                    <div className="space-y-5 px-5 py-4">
+                        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
+                          {KNOBS.map((k) => (
+                            <Field key={k.key} label={t("deploy.knob." + k.key)}>
+                              <Input
+                                type="number"
+                                name={k.key}
+                                min={k.min}
+                                max={k.max}
+                                step={k.step}
+                                value={drafts[k.key] ?? String(eff[k.key] ?? "")}
+                                onChange={(e) => setKnob(k.key, e.target.value)}
+                                onBlur={() =>
+                                  setDrafts((d) => {
+                                    const { [k.key]: _drop, ...rest } = d;
+                                    return rest;
+                                  })
+                                }
+                              />
+                            </Field>
+                          ))}
+                        </div>
+
+                        {/* `offload_kqv` used to sit here. It is a property of a
+                            machine's memory, not of the pipeline, so it moved to
+                            the machines table where the machine is. */}
+                        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+                          <Switch
+                            checked={eff.no_thinking ?? true}
+                            onChange={(v) => setParams({ ...eff, no_thinking: v })}
+                            label={t("deploy.noThinking")}
+                            hint={t("deploy.noThinkingHint")}
+                          />
+                          <Switch
+                            checked={eff.no_embeddings ?? false}
+                            onChange={(v) => setParams({ ...eff, no_embeddings: v })}
+                            label={t("deploy.noEmbeddings")}
+                            hint={t("deploy.noEmbeddingsHint")}
+                          />
+                          <Switch
+                            checked={eff.speculative_decoding_enabled ?? false}
+                            onChange={(v) =>
+                              setParams({ ...eff, speculative_decoding_enabled: v })
+                            }
+                            label={t("deploy.speculative")}
+                            hint={t("deploy.speculativeHint")}
+                          />
+                        </div>
+
+                        {(eff.speculative_decoding_enabled ?? false) && (
+                          <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+                            {SPECULATIVE_KNOBS.map((k) => (
+                              <Field
+                                key={k.key}
+                                label={t("deploy.knob." + k.key)}
+                                hint={t("deploy.knob." + k.key + "Hint")}
+                              >
+                                <Input
+                                  type="number"
+                                  name={k.key}
+                                  min={k.min}
+                                  max={k.max}
+                                  step={k.step}
+                                  value={drafts[k.key] ?? String(eff[k.key] ?? "")}
+                                  onChange={(e) => setKnob(k.key, e.target.value)}
+                                  onBlur={() =>
+                                    setDrafts((d) => {
+                                      const { [k.key]: _drop, ...rest } = d;
+                                      return rest;
+                                    })
+                                  }
+                                />
+                              </Field>
+                            ))}
+                          </div>
+                        )}
+                    </div>
+                  </Panel>
+                  </aside>
+                </div>
 
                 <Footnote icon={<ArrowRight className="h-3.5 w-3.5" />}>
                   {t("deploy.transferNote")}

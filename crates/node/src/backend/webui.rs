@@ -243,6 +243,32 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
     catalog
 }
 
+/// Walk the directories once at boot, so the first screen does not pay for it.
+///
+/// Measured on the captain's machine with the slices on an external volume: the
+/// very first `/api/ui/models` took **11,9 s**, and the deploy screen's own
+/// `/api/ui/cluster/models` took 13,2 s cold against 0,15 s once that scan had
+/// happened — the fan-out to eleven peers was never the cost, the local walk
+/// was. Nothing else changes: the same cache, the same TTL, the same
+/// stale-while-revalidate. What moves is *when* the walk happens, from "the
+/// first person to open a screen" to "while the node is still starting up".
+///
+/// Deliberately not awaited. A slow volume must not hold the gateway's port
+/// closed, and a request that lands mid-walk simply waits on the same scan it
+/// would have started itself.
+pub fn warm_catalog(state: GatewayState) {
+    tokio::spawn(async move {
+        let started = Instant::now();
+        let catalog = local_catalog(&state).await;
+        info!(
+            "catálogo pronto em {:.1}s — {} modelos, {} conjuntos de fatias",
+            started.elapsed().as_secs_f32(),
+            catalog.models.len(),
+            catalog.shard_sets.len()
+        );
+    });
+}
+
 // ── Model directories ────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -2068,6 +2094,14 @@ pub struct LaunchTarget {
     /// before this the whole launch had to settle on one.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// Onde o cache KV deste peer mora, sobrepondo `params.offload_kqv` só para
+    /// ele.
+    ///
+    /// Pela mesma razão que o offload: o cache é dimensionado pela janela de
+    /// contexto, e uma máquina com 16 GB de VRAM e uma sem GPU no mesmo
+    /// pipeline não podem estar as duas certas sobre onde ele cabe.
+    #[serde(default)]
+    pub offload_kqv: Option<bool>,
     /// Posição deste peer no pipeline, quando ela não é a posição dele nesta
     /// requisição.
     ///
@@ -2109,6 +2143,9 @@ fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
     let mut params = base.clone();
     if let Some(gpu) = target.n_gpu_layers {
         params.n_gpu_layers = gpu;
+    }
+    if let Some(kqv) = target.offload_kqv {
+        params.offload_kqv = kqv;
     }
     params
 }
@@ -2553,16 +2590,19 @@ mod tests {
         assert!(vista.is_none(), "peer nao medido nao inventa rota");
     }
 
-    /// The GPU number is the one setting a machine gets to disagree about, and
-    /// disagreeing must not disturb anything else the pipeline relies on.
+    /// Offload e cache KV sao as duas coisas que uma maquina pode discordar do
+    /// cluster, e discordar nao pode mexer em mais nada de que o pipeline
+    /// depende - contexto, batch e amostragem tem que continuar iguais nos dois
+    /// lados do salto.
     #[test]
-    fn only_the_gpu_offload_is_per_machine() {
+    fn only_the_hardware_settings_are_per_machine() {
         let base = RuntimeParams {
             n_gpu_layers: 99,
             n_ctx: 32768,
+            offload_kqv: true,
             ..RuntimeParams::default()
         };
-        let target = |gpu| LaunchTarget {
+        let target = |gpu, kqv| LaunchTarget {
             node_id: "a".into(),
             source_model_path: "/m.gguf".into(),
             start_layer: 0,
@@ -2570,15 +2610,26 @@ mod tests {
             skip_split: true,
             merge: None,
             n_gpu_layers: gpu,
+            offload_kqv: kqv,
             peer_index: None,
             peer_count: None,
         };
 
-        let cpu_only = params_for(&base, &target(Some(0)));
+        let cpu_only = params_for(&base, &target(Some(0), Some(false)));
         assert_eq!(cpu_only.n_gpu_layers, 0);
+        assert!(!cpu_only.offload_kqv);
         assert_eq!(cpu_only.n_ctx, 32768, "o resto continua sendo do cluster");
 
-        assert_eq!(params_for(&base, &target(None)).n_gpu_layers, 99);
+        // Sem sobreposicao, o numero do cluster vale — e sobrepor um nao mexe
+        // no outro.
+        let herdado = params_for(&base, &target(None, None));
+        assert_eq!(herdado.n_gpu_layers, 99);
+        assert!(herdado.offload_kqv);
+        assert!(params_for(&base, &target(Some(0), None)).offload_kqv);
+        assert_eq!(
+            params_for(&base, &target(None, Some(false))).n_gpu_layers,
+            99
+        );
     }
 
     fn req(start: u32, end: u32, total: u32, peers: u32) -> ApplyRequest {

@@ -53,10 +53,13 @@ export const NAV: NavSection[] = [
     icon: Layers,
     children: [
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
-      { labelKey: "nav.deploy", to: "/fatias/implantar", icon: Rocket },
       { labelKey: "nav.slicing", to: "/fatias/andamento", icon: ListTree },
     ],
   },
+  // Its own entry, not a leaf of the shards section: putting a set of slices
+  // into service is the act the whole screen exists for, and it was two clicks
+  // deep behind a section that reads as a file listing.
+  { labelKey: "nav.deploy", icon: Rocket, to: "/implantar" },
   {
     labelKey: "nav.transfers",
     icon: Send,

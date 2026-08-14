@@ -16,7 +16,15 @@
 # points at /app, and the web interface would otherwise be looked for under
 # the (bind-mounted, UI-less) data directory instead.
 x-node: &node
-  build: .
+  build:
+    context: .
+    args:
+      # Empty here on purpose: `crates/node/build.rs` falls back to reading git
+      # when this is blank, and inside the builder that read always fails
+      # (`.dockerignore` drops `.git/`, the image has no `git`). Build through
+      # `scripts/build-docker.sh`, which exports the host's commit, or the
+      # interface shows "desconhecido" for every container.
+      RDMA_P2P_BUILD_COMMIT: ${RDMA_P2P_BUILD_COMMIT:-}
   image: pom:latest
   network_mode: host
   environment:

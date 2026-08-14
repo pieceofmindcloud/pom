@@ -1032,6 +1032,7 @@ pub async fn generate_blocking(
 // ── Server startup ────────────────────────────────────────────────────────────
 
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
+    let warm = state.clone();
     let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
@@ -1059,6 +1060,10 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // through this router (see inference/infer_server.rs), so there is
         // no risk of compressing already-zstd-compressed payloads here.
         .layer(tower_http::compression::CompressionLayer::new());
+
+    // Both startup paths (with a model and gateway-only) come through here, so
+    // this is the one place that warms every node's catalog exactly once.
+    crate::webui::warm_catalog(warm);
 
     let listener = tokio::net::TcpListener::bind(format!("[::]:{}", port)).await?;
     info!(

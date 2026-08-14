@@ -449,6 +449,8 @@ export interface DeployStep {
   primary: boolean;
   /** Per-machine GPU offload, when set. `null` means "the cluster's number". */
   n_gpu_layers: number | null;
+  /** Per-machine KV cache placement. `null` means "the cluster's answer". */
+  offload_kqv: boolean | null;
   options: DeployAlternative[];
   /** Set when this assignment cannot be carried out, and why. */
   problem: string | null;
@@ -523,6 +525,14 @@ export interface DeploySelection {
   target_node_id: string;
   /** Overrides `params.n_gpu_layers` for this machine alone. */
   n_gpu_layers?: number | null;
+  /**
+   * Where this machine's KV cache lives, overriding `params.offload_kqv`.
+   *
+   * Per machine because the cache is sized by the context window and the
+   * machines are not alike: 16 GB of VRAM and a CPU-only box in one pipeline
+   * cannot both be right about where it fits.
+   */
+  offload_kqv?: boolean | null;
 }
 
 export interface DeployPlan {

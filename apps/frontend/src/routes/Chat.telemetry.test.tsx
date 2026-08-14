@@ -54,6 +54,17 @@ const trace: RequestTrace = {
 describe("ExecutionTelemetry", () => {
   afterEach(cleanup);
 
+  /**
+   * Four rows of numbers per hop, under every answer, is not what the operator
+   * came to the chat for. Open on demand, closed on arrival.
+   */
+  it("arrives closed", () => {
+    const { container } = render(<ExecutionTelemetry trace={trace} />);
+    const details = container.querySelector("details");
+    expect(details).toBeTruthy();
+    expect(details!.open).toBe(false);
+  });
+
   it("gives each hop one prefill row and one decode row", () => {
     render(<ExecutionTelemetry trace={trace} source="pipeline:abc→def" />);
 

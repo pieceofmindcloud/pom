@@ -5,7 +5,10 @@
 //! * **pull** — this node asks a peer for a slice it does not have;
 //! * **push** — a node *offers* a slice to a peer, the peer's owner accepts,
 //!   and the peer then pulls it. The sender never writes to the receiver's
-//!   disk on its own; acceptance is what starts the transfer.
+//!   disk on its own; acceptance is what starts the transfer. A development
+//!   machine can waive that click with `RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS`,
+//!   which only the *receiver* can set and which is off everywhere else —
+//!   see [`DEV_AUTO_ACCEPT_ENV`].
 //!
 //! The bytes travel over the peers' existing HTTP gateway rather than the
 //! libp2p bitswap behaviour: that is the path already proven to carry traffic
@@ -46,6 +49,36 @@ use tracing::{info, warn};
 
 /// Read/written in chunks — a slice is gigabytes, it never sits in memory.
 const CHUNK: usize = 1024 * 1024;
+
+/// Development-only: take every incoming offer without asking a human.
+///
+/// The whole point of an offer is that nobody writes gigabytes to somebody
+/// else's disk without their consent, so this is **off unless the receiving
+/// machine sets it**, and it is the receiver's own variable — a sender cannot
+/// turn it on remotely. It exists because testing the push direction by hand
+/// means driving two browsers to move one file. Never set it on a machine whose
+/// disk you care about.
+const DEV_AUTO_ACCEPT_ENV: &str = "RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS";
+
+/// Whether this process was started with the auto-accept gate open.
+///
+/// Read once: a variable flipped after start would make two offers in the same
+/// session behave differently, and "why did that one need a click?" is not a
+/// question worth having.
+fn dev_auto_accept() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| auto_accept_set(std::env::var(DEV_AUTO_ACCEPT_ENV).ok().as_deref()))
+}
+
+/// A gate this dangerous does not open by accident: unset, empty, `0` and
+/// `false` all mean off, so `export …=` in a stale shell profile cannot leave a
+/// machine silently taking whatever the network offers it.
+fn auto_accept_set(raw: Option<&str>) -> bool {
+    match raw.map(str::trim) {
+        None | Some("") | Some("0") => false,
+        Some(v) => !v.eq_ignore_ascii_case("false"),
+    }
+}
 
 /// Headroom demanded on top of the file size before a download starts.
 const DISK_HEADROOM_MB: u64 = 512;
@@ -593,6 +626,47 @@ async fn receive_offer(
         offer.name, offer.size_bytes
     );
     let id = offer.id.clone();
+
+    // Development gate, off by default and read from *this* machine's
+    // environment: the sender has no way to ask for it. See `DEV_AUTO_ACCEPT_ENV`.
+    if dev_auto_accept() {
+        warn!(
+            "⚙️  {DEV_AUTO_ACCEPT_ENV} ligado — aceitando {} sem confirmação",
+            offer.name
+        );
+        return match spawn_download(
+            state.clone(),
+            offer.from_gateway.clone(),
+            offer.remote_path.clone(),
+            offer.grant.clone(),
+            offer.name.clone(),
+            offer.from_host.clone(),
+        )
+        .await
+        {
+            Ok(job_id) => Json(json!({
+                "accepted_for_review": false,
+                "auto_accepted": true,
+                "offer_id": id,
+                "job_id": job_id,
+            }))
+            .into_response(),
+            // The offer still goes on the shelf: an auto-accept that could not
+            // start is a transfer the operator can still take by hand, and
+            // swallowing it would lose the file with only a log line to say so.
+            Err(e) => {
+                warn!("aceite automático de {} falhou: {e}", offer.name);
+                state.transfers.offers.write().await.push(offer);
+                Json(json!({
+                    "accepted_for_review": true,
+                    "auto_accept_failed": e,
+                    "offer_id": id,
+                }))
+                .into_response()
+            }
+        };
+    }
+
     state.transfers.offers.write().await.push(offer);
     Json(json!({ "accepted_for_review": true, "offer_id": id })).into_response()
 }
@@ -1236,6 +1310,27 @@ async fn run_download(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O aceite automático escreve gigabytes no disco de quem recebe sem
+    /// perguntar. Ele só liga quando alguém escreveu um valor de verdade na
+    /// variável desta máquina - variável ausente, vazia ou desligada continuam
+    /// exigindo o clique, que é o padrão em produção.
+    #[test]
+    fn auto_accept_stays_shut_unless_explicitly_opened() {
+        assert!(
+            !auto_accept_set(None),
+            "sem a variável, ninguém aceita nada"
+        );
+        assert!(!auto_accept_set(Some("")));
+        assert!(!auto_accept_set(Some("  ")));
+        assert!(!auto_accept_set(Some("0")));
+        assert!(!auto_accept_set(Some("false")));
+        assert!(!auto_accept_set(Some("FALSE")));
+
+        assert!(auto_accept_set(Some("1")));
+        assert!(auto_accept_set(Some("true")));
+        assert!(auto_accept_set(Some(" 1 ")));
+    }
 
     /// O remetente precisa aparecer na própria lista, com direção e o mesmo id
     /// que o receptor cunhou - é o id compartilhado que torna o cancelamento

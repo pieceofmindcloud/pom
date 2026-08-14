@@ -121,10 +121,32 @@ pub struct SelectedSlice {
     #[serde(default)]
     pub target_node_id: String,
     /// Layers this machine puts on its GPU, when it should not use the
-    /// cluster-wide number. See `LaunchTarget::n_gpu_layers` for why this is the
-    /// one setting that varies per machine.
+    /// cluster-wide number. See `LaunchTarget::n_gpu_layers` for why offload is
+    /// decided per machine.
     #[serde(default)]
     pub n_gpu_layers: Option<u32>,
+    /// Whether this machine's KV cache lives on its GPU. `None` takes the
+    /// cluster's answer.
+    ///
+    /// Per machine for the same reason offload is: the cache is sized by the
+    /// context window, and a box with 16 GB of VRAM and a CPU-only box in one
+    /// pipeline cannot both be right about where it fits. One cluster-wide
+    /// switch meant the machine with less memory decided for the machine with
+    /// more, or the other way round.
+    #[serde(default)]
+    pub offload_kqv: Option<bool>,
+}
+
+/// What one machine of a deploy disagrees with the cluster about.
+///
+/// Everything else in `RuntimeParams` has to agree across the pipeline — the
+/// context window and batch set the prompt budget the gateway enforces, the
+/// sampling only runs on the last peer — so only what is genuinely a property
+/// of the hardware belongs here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PeerOverrides {
+    pub n_gpu_layers: Option<u32>,
+    pub offload_kqv: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -418,6 +440,8 @@ pub struct Step {
     /// Per-machine GPU offload, when the operator set one. `None` means this
     /// peer takes `params.n_gpu_layers`.
     n_gpu_layers: Option<u32>,
+    /// Per-machine KV cache placement. `None` takes `params.offload_kqv`.
+    offload_kqv: Option<bool>,
     /// Every machine the operator could move this range to.
     options: Vec<Alternative>,
     /// Set when this assignment cannot be carried out, and why.
@@ -683,8 +707,8 @@ fn plan(
 
     // What we are planning: (index into `available`, target node id).
     let auto = selection.is_none();
-    // (index into `available`, target node id, per-machine GPU offload)
-    let mut chosen: Vec<(usize, String, Option<u32>)> = Vec::new();
+    // (index into `available`, target node id, that machine's overrides)
+    let mut chosen: Vec<(usize, String, PeerOverrides)> = Vec::new();
     let mut blocked: Option<String> = None;
     let mut warnings: Vec<String> = Vec::new();
 
@@ -695,7 +719,7 @@ fn plan(
             chosen = chain
                 .into_iter()
                 .zip(targets)
-                .map(|(i, t)| (i, t, None))
+                .map(|(i, t)| (i, t, PeerOverrides::default()))
                 .collect();
         }
         Some(picked) => {
@@ -717,7 +741,14 @@ fn plan(
                     ));
                     continue;
                 }
-                chosen.push((i, s.target_node_id.clone(), s.n_gpu_layers));
+                chosen.push((
+                    i,
+                    s.target_node_id.clone(),
+                    PeerOverrides {
+                        n_gpu_layers: s.n_gpu_layers,
+                        offload_kqv: s.offload_kqv,
+                    },
+                ));
             }
             chosen.sort_by_key(|(i, ..)| (available[*i].start_layer, available[*i].end_layer));
         }
@@ -808,7 +839,7 @@ fn plan(
     // operator wants: each machine's adjacent slices become a single step that
     // merges them into one file on that machine. Without it, two ranges on one
     // machine stay the refusal they always were.
-    let mut groups: Vec<Vec<(usize, String, Option<u32>)>> = Vec::new();
+    let mut groups: Vec<Vec<(usize, String, PeerOverrides)>> = Vec::new();
     for entry in &chosen {
         match groups.iter_mut().find(|g| g[0].1 == entry.1) {
             Some(g) => g.push(entry.clone()),
@@ -976,7 +1007,8 @@ fn plan(
                 source_path: None,
                 target_path: None,
                 primary: start_layer == 0,
-                n_gpu_layers: grp[0].2,
+                n_gpu_layers: grp[0].2.n_gpu_layers,
+                offload_kqv: grp[0].2.offload_kqv,
                 options: merged_alternatives(&parts, machines),
                 problem,
                 note,
@@ -987,7 +1019,7 @@ fn plan(
             // Plain steps: one range, one file. A group of more than one
             // already set `blocked`; the steps are still listed so the screen
             // can show which ranges are where.
-            for (i, target_id, gpu) in &grp {
+            for (i, target_id, over) in &grp {
                 let c = &available[*i];
                 let target = machines.iter().find(|m| &m.node_id == target_id);
                 let ready = target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
@@ -1070,7 +1102,8 @@ fn plan(
                         .and_then(|t| t.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
                     primary: c.start_layer == 0,
-                    n_gpu_layers: *gpu,
+                    n_gpu_layers: over.n_gpu_layers,
+                    offload_kqv: over.offload_kqv,
                     options: alternatives(c, machines),
                     problem,
                     note,
@@ -1461,6 +1494,7 @@ async fn run(
                 skip_split: true,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
+                offload_kqv: step.offload_kqv,
                 // A implantação completa descreve o pipeline inteiro, então a
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
@@ -1488,6 +1522,7 @@ async fn run(
             skip_split: true,
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
+            offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
         });
@@ -1634,6 +1669,7 @@ async fn add_node_endpoint(
                 skip_split: true,
                 merge: None,
                 n_gpu_layers: None,
+                offload_kqv: None,
                 // Um alvo por requisição, mas a posição é a do pipeline: sem
                 // isto o nó somado se diz o último da divisão.
                 peer_index: Some(peer_index),
@@ -1978,6 +2014,7 @@ mod tests {
             end_layer: end,
             target_node_id: target.to_string(),
             n_gpu_layers: None,
+            offload_kqv: None,
         }
     }
 
@@ -2419,6 +2456,30 @@ mod tests {
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         assert_eq!(p.steps[0].n_gpu_layers, None, "herda o valor do cluster");
         assert_eq!(p.steps[1].n_gpu_layers, Some(0));
+    }
+
+    /// Onde o cache KV mora é decidido pela VRAM da máquina, e as máquinas do
+    /// cluster não se parecem: a escolha feita para uma não pode aparecer na
+    /// outra, nem apagar a que não foi escolhida.
+    #[test]
+    fn per_machine_kv_cache_rides_along_with_the_slice() {
+        let ms = build(vec![
+            m("com-placa", 100_000, &[(0, 15)]),
+            m("so-cpu", 100_000, &[(16, 31)]),
+        ]);
+        let sel = [
+            pick(0, 15, "com-placa"),
+            SelectedSlice {
+                offload_kqv: Some(false),
+                ..pick(16, 31, "so-cpu")
+            },
+        ];
+        let p = plan("m", &ms, Some(&sel));
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert_eq!(p.steps[0].offload_kqv, None, "herda a escolha do cluster");
+        assert_eq!(p.steps[1].offload_kqv, Some(false));
+        // Um eixo não mexe no outro: nenhuma das duas pediu offload.
+        assert_eq!(p.steps[1].n_gpu_layers, None);
     }
 
     // ── Reading a machine's free memory ─────────────────────────────────────

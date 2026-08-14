@@ -10,7 +10,10 @@ import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
 import {
   ArrowUp,
+  Boxes,
+  ChevronDown,
   MessagesSquare,
+  Pencil,
   Plus,
   Square,
   Trash2,
@@ -18,7 +21,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../components/Markdown";
-import { Badge, Button, Empty, Select } from "../components/ui";
+import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
@@ -26,6 +29,7 @@ import {
   emptySession,
   newId,
   titleFrom,
+  turnsOnly,
   useChatSessions,
   type ChatMessage,
   type ChatSession,
@@ -38,8 +42,35 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
 
+/**
+ * Something that happened to the conversation, on the line where it happened.
+ *
+ * Drawn as a rule with a label sitting on it rather than a bubble: it is not a
+ * turn, and giving it the shape of one would make the transcript claim somebody
+ * said it.
+ */
+function EventMark({ message }: { message: ChatMessage }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+      className="flex items-center gap-3"
+      role="note"
+    >
+      <span className="h-px flex-1 bg-line" />
+      <span className="flex shrink-0 items-center gap-1.5 rounded-full border border-line bg-raised px-2.5 py-1 text-[0.7rem] text-muted">
+        <Boxes className="h-3 w-3 text-faint" />
+        {message.content}
+      </span>
+      <span className="h-px flex-1 bg-line" />
+    </motion.div>
+  );
+}
+
 function Bubble({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
   const { locale } = useI18n();
+  if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
   const labels = locale === "pt-BR"
     ? { thinking: "Pensamento", speed: "tok/s", tokens: "tokens", time: "s" }
@@ -89,8 +120,13 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
   );
 }
 
+/**
+ * Closed by default: it is four rows of numbers per hop, and the answer above
+ * it is what the operator came for. Opening it is one click; scrolling past it
+ * on every single turn was not.
+ */
 export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
-  return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted" open>
+  return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">Telemetria da execução {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{trace.input_tokens} in</span><span>{trace.output_tokens} out</span><span>{trace.prefill_ms} ms prefill</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     <div className="mt-2 overflow-x-auto">
@@ -205,6 +241,126 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
       </td>
     </tr>
   </>;
+}
+
+/**
+ * The conversation's name, edited where it is read.
+ *
+ * The captain names a thread after the model he is testing so he can come back
+ * to it when reading the telemetry, and a name he cannot change is a name he
+ * will not use. Clicking the title turns it into the field — no pencil to hunt
+ * for, no dialog. Escape abandons the edit, Enter and blur keep it, and an
+ * empty name is a no-op rather than a nameless conversation.
+ */
+function TitleField({
+  title,
+  onRename,
+}: {
+  title: string;
+  onRename: (next: string) => void;
+}) {
+  const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(title);
+  const field = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) field.current?.select();
+  }, [editing]);
+
+  function commit() {
+    const next = draft.trim();
+    if (next && next !== title) onRename(next);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={field}
+        value={draft}
+        aria-label={t("chat.renameAria")}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setDraft(title);
+            setEditing(false);
+          }
+        }}
+        // Sized and weighted exactly like the heading it replaces, so the row
+        // does not jump when it swaps in.
+        className="h-7 w-full min-w-0 max-w-[22rem] rounded-md border border-iris/60 bg-ink px-2 font-display text-[0.95rem] font-semibold text-fg outline-none ring-2 ring-iris/20"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      title={t("chat.renameHint")}
+      onClick={() => {
+        setDraft(title);
+        setEditing(true);
+      }}
+      className="group flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 -mx-2 text-left transition-colors duration-150 hover:bg-line/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-iris/40"
+    >
+      <h1 className="truncate font-display text-[0.95rem] font-semibold text-fg">{title}</h1>
+      <Pencil className="h-3 w-3 shrink-0 text-transparent transition-colors duration-150 group-hover:text-faint group-focus-visible:text-faint" />
+    </button>
+  );
+}
+
+/**
+ * Which machines answer the next message.
+ *
+ * Under the composer, not up in the title bar: it is part of writing the
+ * message, and every change to it is written into the transcript so a thread
+ * that switched model halfway still reads correctly later.
+ */
+function ModelPicker({
+  value,
+  options,
+  onChange,
+}: {
+  value: string;
+  options: string[];
+  onChange: (next: string) => void;
+}) {
+  const { t } = useI18n();
+  if (options.length === 0) {
+    return value ? (
+      <span className="inline-flex h-8 items-center gap-2 rounded-lg border border-line bg-raised px-2.5 font-mono text-[0.75rem] text-muted">
+        <Boxes className="h-3.5 w-3.5 text-faint" />
+        {value}
+      </span>
+    ) : null;
+  }
+  return (
+    <div className="group relative inline-flex h-8 min-w-0 items-center rounded-lg border border-line bg-raised transition-colors duration-150 hover:border-line-strong focus-within:border-iris focus-within:ring-2 focus-within:ring-iris/25">
+      <Boxes className="pointer-events-none absolute left-2.5 h-3.5 w-3.5 text-faint transition-colors duration-150 group-hover:text-muted" />
+      <select
+        value={value}
+        aria-label={t("chat.model")}
+        onChange={(e) => onChange(e.target.value)}
+        // `appearance-none` so the pill is ours; the arrow below replaces the
+        // platform one, which sat outside this border on every OS.
+        className="h-8 w-full min-w-0 max-w-[18rem] cursor-pointer appearance-none truncate bg-transparent pl-8 pr-7 text-[0.78rem] text-fg focus:outline-none"
+      >
+        {options.map((m) => (
+          <option key={m} value={m}>
+            {m}
+          </option>
+        ))}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-2 h-3.5 w-3.5 text-faint transition-colors duration-150 group-hover:text-muted" />
+    </div>
+  );
 }
 
 function SessionList({
@@ -332,7 +488,12 @@ export function Chat() {
     let live: ChatSession = {
       ...session,
       model,
-      title: session.messages.length === 0 ? titleFrom(text) : session.title,
+      // A name the operator typed outranks the one we would guess from the
+      // first thing they said.
+      title:
+        session.titled || turnsOnly(session.messages).length > 0
+          ? session.title
+          : titleFrom(text),
       messages: [...history, reply],
     };
     setSession(live);
@@ -359,7 +520,7 @@ export function Chat() {
         {
           model,
           stream: true,
-          messages: history.map((m) => ({ role: m.role, content: m.content })),
+          messages: turnsOnly(history).map((m) => ({ role: m.role, content: m.content })),
         },
         controller.signal,
       )) {
@@ -416,6 +577,45 @@ export function Chat() {
     }
   }
 
+  /**
+   * Switch the model, and say so in the transcript.
+   *
+   * The mark is only written once the thread has turns in it: on an empty
+   * conversation there is nothing for the change to be *between*, and a
+   * transcript that opens with "model changed to X" before anybody spoke reads
+   * like a bug.
+   */
+  function chooseModel(next: string) {
+    if (!next || next === model) return;
+    const changed = turnsOnly(session.messages).length > 0;
+    const updated: ChatSession = {
+      ...session,
+      model: next,
+      messages: changed
+        ? [
+            ...session.messages,
+            {
+              id: newId(),
+              role: "event",
+              content: t("chat.modelChanged", { model: next }),
+              at: new Date().toISOString(),
+            },
+          ]
+        : session.messages,
+    };
+    setSession(updated);
+    autoFollow.current = true;
+    // Straight to storage: the operator may switch model and walk away, and a
+    // thread that only saves on send would lose both the choice and its mark.
+    if (updated.messages.length > 0) upsert(updated);
+  }
+
+  function rename(next: string) {
+    const updated: ChatSession = { ...session, title: next, titled: true };
+    setSession(updated);
+    if (updated.messages.length > 0) upsert(updated);
+  }
+
   function startNew() {
     abort.current?.abort();
     setSession(emptySession(model || null));
@@ -444,31 +644,18 @@ export function Chat() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-line px-4 sm:px-6">
-          <div className="flex min-w-0 items-center gap-2">
-            <h1 className="truncate font-display text-[0.95rem] font-semibold text-fg">
-              {session.messages.length ? session.title : t("chat.test")}
-            </h1>
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <TitleField
+              // A conversation nobody has spoken in has no name to keep, so it
+              // shows what the screen is instead of an empty title to rename.
+              title={session.messages.length ? session.title : t("chat.test")}
+              onRename={rename}
+            />
             {cluster.data && !cluster.data.complete && (
               <Badge tone="amber">{t("chat.incomplete")}</Badge>
             )}
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            {available.length > 0 ? (
-              <Select
-                value={model}
-                onChange={(e) => setSession({ ...session, model: e.target.value })}
-                className="w-44"
-                aria-label={t("chat.model")}
-              >
-                {available.map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </Select>
-            ) : (
-              model && <Badge mono>{model}</Badge>
-            )}
             <Button
               size="sm"
               variant="ghost"
@@ -568,9 +755,12 @@ export function Chat() {
                 </Button>
               )}
             </div>
-            <p className="mt-2 text-center text-[0.7rem] text-faint">
-              {t("chat.composerHint")}
-            </p>
+            {/* Under the box, on the same baseline: what answers on the left,
+                how to send on the right. */}
+            <div className="mt-2 flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+              <ModelPicker value={model} options={available} onChange={chooseModel} />
+              <p className="text-[0.7rem] text-faint">{t("chat.composerHint")}</p>
+            </div>
           </div>
         </div>
       </div>

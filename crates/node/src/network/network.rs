@@ -543,6 +543,7 @@ impl Network {
                 "frame/v1-f16".into(),
                 "frame/v2-zstd-f16".into(),
                 "relay/v1-chain".into(),
+                "relay/v2-direct".into(),
                 "speculate/v1-lookup".into(),
             ],
             gateway_port: self.gateway_port,

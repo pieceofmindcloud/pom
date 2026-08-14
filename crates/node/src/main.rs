@@ -15,6 +15,8 @@ mod config;
 mod deploy;
 #[path = "backend/devupdate.rs"]
 mod devupdate;
+#[path = "inference/direct.rs"]
+mod direct;
 #[path = "network/discovery.rs"]
 mod discovery;
 #[path = "utils/display.rs"]
@@ -738,6 +740,7 @@ async fn main() -> Result<()> {
             gateway_port,
             auth: auth_config,
             transfers: Default::default(),
+            reply_inbox: crate::direct::ReplyInbox::new(),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1094,6 +1097,7 @@ async fn start_gateway_only(
         gateway_port,
         auth: auth_state,
         transfers: Default::default(),
+        reply_inbox: crate::direct::ReplyInbox::new(),
     };
 
     info!(

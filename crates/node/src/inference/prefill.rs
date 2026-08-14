@@ -395,6 +395,7 @@ pub fn chunk_count(tokens: u32, chunk_size: u32) -> u32 {
 }
 
 /// Push the whole prompt through the pipeline, chunk by chunk.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     plan: &PipelinePlan,
     model: &str,
@@ -404,11 +405,18 @@ pub async fn run(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    direct: Option<&crate::direct::DirectReply>,
 ) -> Result<PrefillOutcome> {
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
     if n_peers == 0 {
         return Err(anyhow!("pipeline sem peers"));
+    }
+    if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
+        return run_direct(
+            plan, model, session_id, prompt, chunk_size, dtype, http, routes, direct,
+        )
+        .await;
     }
     if plan.supports_relay_chain() {
         return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http, routes).await;
@@ -638,6 +646,167 @@ async fn run_ring(
     }
 }
 
+/// Same chunk-by-chunk loop as `run_ring`, but the chain does not come back:
+/// each chunk is dispatched once, to the head, carrying a `reply_to`, and the
+/// tail delivers the answer straight to this process (see [`crate::direct`]).
+/// One less crossing of the link per chunk than the ring, and — the point of
+/// the whole thing — a cost that no longer depends on whether the head happens
+/// to live on the machine that took the request. A prefill chunk is ~5 MB of
+/// hidden state, so this is also most of the time to the first word.
+#[allow(clippy::too_many_arguments)]
+async fn run_direct(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    prompt: &str,
+    chunk_size: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
+    direct: &crate::direct::DirectReply,
+) -> Result<PrefillOutcome> {
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+
+    let mut chunk_index: u32 = 0;
+    let mut prompt_tokens: u32 = 0;
+    let started = Instant::now();
+    let mut trace = RequestTrace::from_plan(model, plan);
+
+    loop {
+        let mut ticket = direct.ticket();
+        let head_meta = json!({
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "is_last": next_hops.is_empty(),
+            // Same reasoning as `run`'s identical comment.
+            "is_final_chunk": false,
+            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
+            "next_hops": next_hops,
+            "reply_to": direct.reply_to(ticket.id()),
+        });
+
+        let dispatched = Instant::now();
+        let ack = crate::relay::send_frame(
+            http,
+            &head.inference_url,
+            "/v1/prefill",
+            &head_meta,
+            None,
+            dtype,
+            head.frame_encoding(),
+            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+            &head.node_id,
+            |_issue| {},
+        );
+        let meta = crate::direct::await_result(ack, &mut ticket, &head.node_id)
+            .await
+            .map_err(|e| {
+                routes.mark_failure(&head.node_id, &head.inference_url);
+                ring_relay_error(&head.node_id, e)
+            })?;
+        if let Some(error) = direct_failure(plan, routes, &meta) {
+            return Err(error);
+        }
+
+        record_direct_hops(
+            &mut trace,
+            Phase::Prefill,
+            &meta,
+            dispatched.elapsed().as_millis() as u64,
+        );
+
+        if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
+            prompt_tokens = n as u32;
+        }
+        let more = meta
+            .get("more_chunks")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !more {
+            let token_id = meta
+                .get("token_id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| anyhow!("último peer não devolveu token ao fim do prompt"))?
+                as u32;
+            let chunks = chunk_index + 1;
+            info!(
+                "prompt ingerido em {chunks} pedaço(s) de {chunk_size} tokens \
+                 ({prompt_tokens} tokens) [resposta direta]"
+            );
+            return Ok(PrefillOutcome {
+                token_id,
+                text: meta
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+                prompt_tokens,
+                chunks,
+                trace: {
+                    trace.input_tokens = prompt_tokens;
+                    trace.prefill_ms = started.elapsed().as_millis() as u64;
+                    trace
+                },
+            });
+        }
+
+        chunk_index += 1;
+    }
+}
+
+/// A cadeia respondeu, mas com a falha de um hop no lugar do resultado.
+///
+/// Vale mais que o prazo estourado: nomeia o nó que morreu — que quase nunca é
+/// aquele para quem despachamos — e marca **esse** para nova medição de rota.
+fn direct_failure(
+    plan: &PipelinePlan,
+    routes: &crate::route::RouteTable,
+    meta: &serde_json::Value,
+) -> Option<anyhow::Error> {
+    let failure = crate::direct::result_failure(meta)?;
+    if let Some(step) = plan
+        .steps
+        .iter()
+        .find(|s| s.node_id == failure.failed_node_id)
+    {
+        routes.mark_failure(&step.node_id, &step.inference_url);
+    }
+    Some(anyhow!(
+        "pipeline falhou em {}: {} — {}",
+        failure.failed_node_id,
+        failure.kind,
+        failure.message
+    ))
+}
+
+/// Dobra a telemetria acumulada na ida para dentro do `RequestTrace`, na mesma
+/// forma que o anel produzia na volta — ver `crate::direct::credit_transport`
+/// para o que só o gateway sabe e por que ele lança onde lança.
+fn record_direct_hops(
+    trace: &mut RequestTrace,
+    phase: Phase,
+    meta: &serde_json::Value,
+    total_ms: u64,
+) {
+    let mut hops: Vec<serde_json::Value> = meta
+        .get("hop_timings")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let result_bytes = meta
+        .get("result_bytes")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    crate::direct::credit_transport(&mut hops, total_ms, result_bytes);
+    for (i, entry) in hops.iter().enumerate() {
+        trace.record_hop_from_json(i, phase, entry);
+    }
+}
+
 /// One chunk to one peer, retried on transport failure.
 ///
 /// Retrying is safe because the peer rewinds its KV cache to this chunk's
@@ -721,6 +890,7 @@ async fn send_chunk(
 }
 
 /// One generated token through the whole pipeline, framed like the prefill.
+#[allow(clippy::too_many_arguments)]
 pub async fn step(
     plan: &PipelinePlan,
     model: &str,
@@ -729,7 +899,11 @@ pub async fn step(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    direct: Option<&crate::direct::DirectReply>,
 ) -> Result<(u32, String, bool, RequestTrace)> {
+    if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
+        return step_direct(plan, model, session_id, token_id, dtype, http, routes, direct).await;
+    }
     if plan.supports_relay_chain() {
         return step_ring(plan, model, session_id, token_id, dtype, http, routes).await;
     }
@@ -880,6 +1054,83 @@ async fn step_ring(
             .unwrap_or_default()
             .to_string(),
         sent.meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+        trace,
+    ))
+}
+
+/// One generated token, dispatched once and answered once — the decode twin of
+/// [`run_direct`].
+///
+/// This process makes exactly one outbound call, to the head, and then waits on
+/// the ticket. The head relays hop to hop and the tail hands the token straight
+/// back here, so the token crosses each link once instead of once out and once
+/// back. That is the whole difference between `2N` traversals and `N + 1`, and
+/// the reason the tokens-per-second stops depending on which machine happens to
+/// hold layer 0.
+#[allow(clippy::too_many_arguments)]
+async fn step_direct(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    token_id: u32,
+    dtype: WireDtype,
+    http: &reqwest::Client,
+    routes: &crate::route::RouteTable,
+    direct: &crate::direct::DirectReply,
+) -> Result<(u32, String, bool, RequestTrace)> {
+    let mut trace = RequestTrace::from_plan(model, plan);
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+    let mut ticket = direct.ticket();
+    let body_meta = json!({
+        "session_id": session_id,
+        "is_last": next_hops.is_empty(),
+        "token_id": token_id,
+        "next_hops": next_hops,
+        "reply_to": direct.reply_to(ticket.id()),
+    });
+
+    let dispatched = Instant::now();
+    let ack = crate::relay::send_frame(
+        http,
+        &head.inference_url,
+        "/v1/step",
+        &body_meta,
+        None,
+        dtype,
+        head.frame_encoding(),
+        1, // decode has never retried — see relay::send_frame's doc comment
+        &head.node_id,
+        |_issue| {},
+    );
+    let meta = crate::direct::await_result(ack, &mut ticket, &head.node_id)
+        .await
+        .map_err(|e| {
+            routes.mark_failure(&head.node_id, &head.inference_url);
+            ring_relay_error(&head.node_id, e)
+        })?;
+    if let Some(error) = direct_failure(plan, routes, &meta) {
+        return Err(error);
+    }
+
+    record_direct_hops(
+        &mut trace,
+        Phase::Decode,
+        &meta,
+        dispatched.elapsed().as_millis() as u64,
+    );
+
+    let token = meta
+        .get("token_id")
+        .and_then(|v| v.as_u64())
+        .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
+    Ok((
+        token,
+        meta.get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
         trace,
     ))
 }

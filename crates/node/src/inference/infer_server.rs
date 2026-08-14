@@ -660,7 +660,11 @@ pub async fn run(
 
     info!("inference server pronto em [::]:{port}");
 
+    // Ver a nota gêmea em `gateway::start_gateway`: sem isto, toda resposta de
+    // hop sai com Nagle ligado, e um ack de resposta direta é exatamente a
+    // escrita pequena que ele segura.
     axum::serve(listener, router)
+        .tcp_nodelay(true)
         .with_graceful_shutdown(async move {
             loop {
                 if stop_rx.changed().await.is_err() {
@@ -770,7 +774,7 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "offload_kqv": s.engine.offload_kqv(),
         // Keep in sync with network.rs's `self_announce`, gateway.rs's local
         // peer entry, and the capability constants in routing/pipeline.rs.
-        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16", "relay/v1-chain", "speculate/v1-lookup"],
+        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16", "relay/v1-chain", "relay/v2-direct", "speculate/v1-lookup"],
         // Falso em modelo híbrido/recorrente. É a única forma de saber, sem
         // shell na máquina, por que a especulação não está acelerando nada.
         "kv_can_shift": s.engine.kv_can_shift(),
@@ -854,6 +858,7 @@ async fn handle_rollback(
 
 async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
     let processing_started = Instant::now();
+    let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
@@ -962,6 +967,65 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
 
+    // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
+    // `prompt_progress`: no anel borbulhado a cabeça sobrescrevia
+    // `more_chunks`/`n_prompt_tokens` na resposta que passava de volta por ela
+    // (`overlay_head_authoritative_fields`). Sem volta, ela manda os dois
+    // **adiante**, e quem entrega copia — só a cabeça tokenizou o prompt, e sem
+    // isso todo prompt de mais de um pedaço seria truncado no primeiro.
+    if let Some(reply_to) = direct_reply_to(&meta) {
+        let hop_timings = crate::direct::accumulate(
+            &meta,
+            crate::direct::hop_entry(
+                &local_meta["processing_ms"],
+                &local_meta["node_timings"],
+                inbound_bytes,
+            ),
+        );
+        let hops = next_hops.unwrap_or_default();
+
+        if hops.is_empty() {
+            let mut result = local_meta;
+            apply_prompt_progress(&meta, &mut result);
+            result["hop_timings"] = json!(hop_timings);
+            tokio::spawn(async move {
+                crate::direct::deliver_result(http_client(), &reply_to, result).await;
+            });
+            return direct_ack();
+        }
+
+        let Some((residual, shape)) = local_tensor else {
+            let failure = crate::relay::RelayFailure {
+                failed_node_id: hops[0].node_id.clone(),
+                kind: "protocol".into(),
+                message: "hop intermediário não produziu estado oculto".into(),
+            };
+            tokio::spawn(async move {
+                crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+            });
+            return direct_ack();
+        };
+
+        let forward = json!({
+            "session_id": sid_for_forward,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "is_final_chunk": is_final_chunk_for_forward(&local_meta, is_final_chunk),
+            "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
+            "hop_timings": hop_timings,
+        });
+        tokio::spawn(forward_direct(
+            hops,
+            "/v1/prefill",
+            forward,
+            residual,
+            shape,
+            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+            reply_to,
+        ));
+        return direct_ack();
+    }
+
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
         return match wire::encode(
@@ -1049,6 +1113,39 @@ fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
     if owns_tokens(local_meta) {
         bubbled["more_chunks"] = local_meta["more_chunks"].clone();
         bubbled["n_prompt_tokens"] = local_meta["n_prompt_tokens"].clone();
+    }
+}
+
+/// Os mesmos dois campos autoritativos, empurrados **adiante** em vez de
+/// sobrepostos na volta — é o que a resposta direta precisa, já que a cabeça
+/// nunca mais vê o resultado. Quem não é a cabeça repassa intacto o que
+/// recebeu.
+fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Value) -> Value {
+    if owns_tokens(local_meta) {
+        return json!({
+            "more_chunks": local_meta["more_chunks"].clone(),
+            "n_prompt_tokens": local_meta["n_prompt_tokens"].clone(),
+        });
+    }
+    inbound_meta
+        .get("prompt_progress")
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// A ponta da cadeia copia para o resultado o que a cabeça apurou do prompt.
+/// Sem isto o gateway leria o `more_chunks: false` que a cauda sempre responde
+/// — ela não tokenizou nada — e pararia o prefill no primeiro pedaço.
+fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
+    let Some(progress) = inbound_meta.get("prompt_progress") else {
+        return;
+    };
+    for field in ["more_chunks", "n_prompt_tokens"] {
+        if let Some(value) = progress.get(field) {
+            if !value.is_null() {
+                result[field] = value.clone();
+            }
+        }
     }
 }
 
@@ -1273,6 +1370,7 @@ fn prefill_blocking(
 
 async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
     let processing_started = Instant::now();
+    let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
         Ok(v) => v,
@@ -1378,6 +1476,62 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
     };
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
+
+    // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
+    // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
+    if let Some(reply_to) = direct_reply_to(&meta) {
+        let hop_timings = crate::direct::accumulate(
+            &meta,
+            crate::direct::hop_entry(
+                &local_meta["processing_ms"],
+                &local_meta["node_timings"],
+                inbound_bytes,
+            ),
+        );
+        let hops = next_hops.unwrap_or_default();
+
+        if hops.is_empty() {
+            // Cauda: o resultado sai daqui direto para quem pediu.
+            let mut result = local_meta;
+            result["hop_timings"] = json!(hop_timings);
+            tokio::spawn(async move {
+                crate::direct::deliver_result(http_client(), &reply_to, result).await;
+            });
+            return direct_ack();
+        }
+
+        let Some((residual, shape)) = local_tensor else {
+            // Não somos a cauda e não temos residual: a cadeia não anda. Dizer
+            // isso ao gateway agora vale mais que deixá-lo esperar o prazo.
+            let failure = crate::relay::RelayFailure {
+                failed_node_id: hops[0].node_id.clone(),
+                kind: "protocol".into(),
+                message: "hop intermediário não produziu estado oculto".into(),
+            };
+            tokio::spawn(async move {
+                crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+            });
+            return direct_ack();
+        };
+
+        let mut forward = json!({
+            "session_id": sid_for_forward,
+            "hop_timings": hop_timings,
+        });
+        if let Some(draft) = local_meta.get("draft") {
+            forward["draft"] = draft.clone();
+        }
+        tokio::spawn(forward_direct(
+            hops,
+            "/v1/step",
+            forward,
+            residual,
+            shape,
+            1, // a decode step has never retried — see relay_and_bubble's doc comment
+            reply_to,
+        ));
+        return direct_ack();
+    }
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
@@ -1517,6 +1671,83 @@ async fn relay_and_bubble(
             });
             Err((StatusCode::BAD_GATEWAY, Json(failure)).into_response())
         }
+    }
+}
+
+// ── Resposta direta (`relay/v2-direct`) ──────────────────────────────────────
+
+/// Para onde o resultado desta cadeia deve ir, quando quem despachou pediu
+/// resposta direta. Ausente em todo quadro do modo hub e do anel borbulhado —
+/// é este campo, e só ele, que liga o caminho novo.
+fn direct_reply_to(meta: &Value) -> Option<Value> {
+    meta.get("reply_to").filter(|v| !v.is_null()).cloned()
+}
+
+/// O que este hop devolve a quem o chamou quando a cadeia responde direto: um
+/// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
+/// [`crate::direct`].
+fn direct_ack() -> Response {
+    match wire::encode(&json!({"accepted": true}), None, WireDtype::F16) {
+        Ok(bytes) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => err500(e),
+    }
+}
+
+/// Repassa o residual ao próximo hop e some. Roda numa task própria: quem nos
+/// chamou já foi aceito e não espera mais nada daqui.
+///
+/// Falhou o repasse, quem denuncia somos nós — direto ao gateway, nomeando o
+/// nó que realmente morreu. É o caminho que substitui o `RelayFailure` subindo
+/// pela pilha aninhada do anel borbulhado.
+#[allow(clippy::too_many_arguments)]
+async fn forward_direct(
+    hops: Vec<PipelineStep>,
+    path: &'static str,
+    mut base_meta: Value,
+    residual: Vec<f32>,
+    shape: [usize; 2],
+    attempts: u32,
+    reply_to: Value,
+) {
+    let next = hops[0].clone();
+    let remaining = &hops[1..];
+    base_meta["is_last"] = json!(remaining.is_empty());
+    base_meta["scale"] = json!(1.0);
+    base_meta["next_hops"] = json!(remaining);
+    base_meta["reply_to"] = reply_to.clone();
+
+    let mut last_issue_kind = None;
+    let sent = crate::relay::send_frame(
+        http_client(),
+        &next.inference_url,
+        path,
+        &base_meta,
+        Some((&residual, shape)),
+        WireDtype::F16,
+        next.frame_encoding(),
+        attempts,
+        &next.node_id,
+        |issue| last_issue_kind = Some(issue.kind),
+    )
+    .await;
+
+    if let Err(e) = sent {
+        let failure =
+            crate::relay::extract_relay_failure(&e).unwrap_or_else(|| crate::relay::RelayFailure {
+                failed_node_id: next.node_id.clone(),
+                kind: issue_kind_label(last_issue_kind).to_string(),
+                message: e.to_string(),
+            });
+        warn!(
+            "repasse direto para {} falhou: {} — avisando o gateway",
+            failure.failed_node_id, failure.message
+        );
+        crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
     }
 }
 

@@ -55,6 +55,12 @@ pub struct GatewayState {
     pub auth: AuthState,
     /// In-flight slice transfers and the offers waiting for an answer.
     pub transfers: crate::transfer::Transfers,
+    /// Frames this node dispatched into a pipeline and is still waiting on.
+    ///
+    /// Only used by the direct-reply relay (`relay/v2-direct`), where the tail
+    /// answers this process instead of the answer bubbling back through every
+    /// hop — see [`crate::direct`].
+    pub reply_inbox: crate::direct::ReplyInbox,
 }
 
 impl axum::extract::FromRef<GatewayState> for AuthState {
@@ -130,6 +136,21 @@ impl GatewayState {
         Some(prompt_budget(&self.runtime.config().await?))
     }
 
+    /// Endereços por onde um peer alcança **este** nó, na ordem de preferência.
+    ///
+    /// Mesmo insumo que o nó já anuncia de si (`self_dial_host` primeiro, os
+    /// candidatos enumerados depois): é o que a cauda de um pipeline usa para
+    /// devolver o resultado direto, e errar aqui é a diferença entre uma
+    /// resposta e um prazo estourado.
+    pub fn self_reply_hosts(&self) -> Vec<String> {
+        let mut hosts = vec![self_dial_host(
+            self.network.advertised_host(),
+            crate::pkarr_node::detect_local_ip(),
+        )];
+        hosts.extend(self.network.self_addr_candidates());
+        hosts
+    }
+
     /// Alive peers plus this node, so the local assignment participates in
     /// planning exactly like a remote one.
     pub async fn all_peers(&self) -> Vec<PeerInfo> {
@@ -178,6 +199,7 @@ impl GatewayState {
                     "frame/v1-f16".into(),
                     "frame/v2-zstd-f16".into(),
                     "relay/v1-chain".into(),
+                    "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
                 ],
                 gateway_port: Some(self.gateway_port),
@@ -537,12 +559,27 @@ pub async fn generate_stream(
         }
     }
 
+    // Para onde a cauda entrega a resposta. `None` quando esta máquina não
+    // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
+    // lento mas nunca fica sem resposta.
+    let direct = crate::direct::DirectReply::new(
+        state.reply_inbox.clone(),
+        crate::direct::self_reply_urls(state.self_reply_hosts(), state.gateway_port),
+    );
+
     info!(
-        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={}",
+        "🔀 Pipeline planejado: {} hops [{}] session={} max_tokens={} resposta={}",
         plan.steps.len(),
         plan.hop_chain(),
         &session_id[..8],
         max_tokens,
+        if direct.is_some() && plan.supports_direct_reply() {
+            "direta"
+        } else if plan.supports_relay_chain() {
+            "anel"
+        } else {
+            "hub"
+        },
     );
 
     let gen_start = Instant::now();
@@ -585,6 +622,7 @@ pub async fn generate_stream(
             dtype,
             &state.http,
             &state.network.routes,
+            direct.as_ref(),
         )
         .await
         {
@@ -750,6 +788,7 @@ pub async fn generate_stream(
                     dtype,
                     &state.http,
                     &state.network.routes,
+                    direct.as_ref(),
                 )
                     .await;
 
@@ -1040,6 +1079,15 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
         .route("/handshake", post(session::handle_handshake))
+        // Onde a cauda de um pipeline entrega o resultado. Sem autenticação de
+        // chave por desenho: o hop que responde é um par de inferência, que
+        // nunca teve a chave do operador. Quem autoriza é o ticket — um UUID v4
+        // sorteado por quadro, que só a própria cadeia recebeu, e que deixa de
+        // existir assim que o quadro fecha.
+        .route(
+            crate::direct::RELAY_RESULT_PATH,
+            post(handle_relay_result).layer(axum::extract::DefaultBodyLimit::max(1024 * 1024)),
+        )
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
@@ -1071,11 +1119,20 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
          — UI /  ·  OpenAI /v1/chat/completions  ·  Anthropic /v1/messages  ·  \
          POST /api/generate  ·  GET /peers /health"
     );
-    axum::serve(listener, app).await?;
+    // Nagle atrasa uma escrita pequena até o ACK da anterior. No SSE cada token
+    // é uma escrita pequena, e a interação com o delayed-ACK do outro lado soma
+    // dezenas de ms ao que o cliente sente. O `reqwest` já desliga isso no lado
+    // cliente por padrão; o `axum::serve` deixa `tcp_nodelay` em `None`, então
+    // o lado servidor ficava com Nagle ligado em todas as respostas.
+    axum::serve(listener, app).tcp_nodelay(true).await?;
     Ok(())
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
+
+async fn handle_relay_result(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
+    crate::direct::handle_relay_result(&state.reply_inbox, body)
+}
 
 /// Accept raw bytes so callers don't need `Content-Type: application/json`.
 async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {

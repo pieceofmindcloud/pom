@@ -94,6 +94,14 @@ pub struct PipelineStep {
 /// step lacks it, the whole request falls back to the hub relay unchanged.
 pub const CAP_RELAY_CHAIN: &str = "relay/v1-chain";
 
+/// Advertised when a node, relaying a chain, answers the *originator* directly
+/// (the `reply_to` in the frame meta) instead of holding its own HTTP response
+/// open until the result bubbles back up the call stack — see
+/// [`crate::direct`]. Strictly stronger than [`CAP_RELAY_CHAIN`]: a node that
+/// advertises this one also advertises that. Same all-or-nothing rule; a plan
+/// with one older peer falls back to the bubbling ring unchanged.
+pub const CAP_RELAY_DIRECT: &str = "relay/v2-direct";
+
 /// Advertised when a node can draft and verify a batch of candidate tokens
 /// in one decode (prompt-lookup speculative decoding) instead of exactly
 /// one token per call. Same all-or-nothing-per-plan fallback rule.
@@ -184,6 +192,16 @@ impl PipelinePlan {
     /// entirely rather than mixing relay and hub calls mid-chain.
     pub fn supports_relay_chain(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|s| s.supports(CAP_RELAY_CHAIN))
+    }
+
+    /// True when every step can answer the originator directly and the chain
+    /// is long enough for that to save anything.
+    ///
+    /// A single-hop plan is excluded deliberately: gateway→hop→gateway is
+    /// already the minimum, and routing its answer out of band would only add
+    /// a callback to the same two legs.
+    pub fn supports_direct_reply(&self) -> bool {
+        self.steps.len() >= 2 && self.steps.iter().all(|s| s.supports(CAP_RELAY_DIRECT))
     }
 
     /// Same all-or-nothing rule as `supports_relay_chain`, for speculative
@@ -491,6 +509,18 @@ mod ipv6_tests {
             .supports_relay_chain());
         assert!(!plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[])]).supports_relay_chain());
         assert!(!plan_of(vec![]).supports_relay_chain());
+    }
+
+    #[test]
+    fn direct_reply_requires_every_step_and_more_than_one_hop() {
+        assert!(plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_DIRECT])])
+            .supports_direct_reply());
+        // Um passo antigo no meio derruba a cadeia inteira para o anel.
+        assert!(!plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_CHAIN])])
+            .supports_direct_reply());
+        // Um hop só já é o mínimo; desviar a resposta não economiza perna.
+        assert!(!plan_of(vec![step(&[CAP_RELAY_DIRECT])]).supports_direct_reply());
+        assert!(!plan_of(vec![]).supports_direct_reply());
     }
 
     #[test]

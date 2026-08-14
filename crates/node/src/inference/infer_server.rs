@@ -544,7 +544,8 @@ impl InferState {
                     &sid[..8.min(sid.len())],
                     s.seq_id
                 );
-                self.engine.kv_remove(s.seq_id, 0, -1);
+                // Limpeza total da sequência, que todo modelo aceita.
+                let _ = self.engine.kv_remove(s.seq_id, 0, -1);
                 self.free_seq(s.seq_id);
             }
         }
@@ -554,7 +555,7 @@ impl InferState {
     fn get_or_create(&mut self, sid: &str, reset: bool) -> Result<&mut Session> {
         if reset {
             if let Some(old) = self.sessions.remove(sid) {
-                self.engine.kv_remove(old.seq_id, 0, -1);
+                let _ = self.engine.kv_remove(old.seq_id, 0, -1);
                 self.free_seq(old.seq_id);
             }
             let seq = self.alloc_seq().ok_or_else(|| {
@@ -572,7 +573,7 @@ impl InferState {
 
     fn finish(&mut self, sid: &str) {
         if let Some(s) = self.sessions.remove(sid) {
-            self.engine.kv_remove(s.seq_id, 0, -1);
+            let _ = self.engine.kv_remove(s.seq_id, 0, -1);
             self.free_seq(s.seq_id);
         }
     }
@@ -761,6 +762,9 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         // Keep in sync with network.rs's `self_announce`, gateway.rs's local
         // peer entry, and the capability constants in routing/pipeline.rs.
         "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16", "relay/v1-chain", "speculate/v1-lookup"],
+        // Falso em modelo híbrido/recorrente. É a única forma de saber, sem
+        // shell na máquina, por que a especulação não está acelerando nada.
+        "kv_can_shift": s.engine.kv_can_shift(),
     }))
 }
 
@@ -820,8 +824,16 @@ async fn handle_rollback(
         return Json(json!({"rolled_back": false}));
     };
     let new_n_past = rollback_from(n_past_after_batch, req.batch_width, req.accept_count);
-    if new_n_past < n_past_after_batch {
-        s.engine.kv_remove(seq_id, new_n_past as i32, -1);
+    if new_n_past < n_past_after_batch && !s.engine.kv_remove(seq_id, new_n_past as i32, -1) {
+        // O cache não recuou. Ajustar `n_past` mesmo assim é o que produz o
+        // "inconsistent sequence positions" da rodada seguinte: a contabilidade
+        // andaria para trás com o cache parado. Melhor manter os dois de acordo
+        // e dizer que não deu.
+        return Json(json!({
+            "rolled_back": false,
+            "n_past": n_past_after_batch,
+            "reason": "este modelo não aceita descartar posições do meio do cache",
+        }));
     }
     if let Some(session) = s.sessions.get_mut(&req.session_id) {
         session.n_past = new_n_past;
@@ -1086,8 +1098,13 @@ fn prefill_blocking(
                 &sid_key[..8.min(sid_key.len())]
             );
             let seq_id = session.seq_id;
-            session.n_past = expected_pos;
-            s.engine.kv_remove(seq_id, expected_pos as i32, -1);
+            if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
+                bail!(
+                    "este modelo não aceita descartar posições do meio do cache, \
+                     então refazer o pedaço {chunk_index} corromperia a sessão"
+                );
+            }
+            s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
         } else if session.n_past < expected_pos {
             bail!(
                 "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
@@ -1517,6 +1534,21 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// context authorise at most `m + 1` guesses), because a one-token match
 /// pointing anywhere in the history is nearly a coin flip and every extra
 /// drafted token widens the batch on every hop of the ring.
+/// Vale rascunhar nesta rodada?
+///
+/// Especular é apostar: o rascunho recusado tem de ser desfeito do cache. Num
+/// modelo híbrido de atenção linear o llama.cpp não sabe desfazer (o estado
+/// recorrente é acumulado, não indexado por posição), e insistir não dá erro na
+/// hora - dá divergência entre o `n_past` do nó e o cache, que só explode na
+/// rodada seguinte com "inconsistent sequence positions".
+///
+/// Então a decisão é tomada antes de apostar: sem rollback parcial, o nó
+/// simplesmente não rascunha e a geração segue um token por rodada, correta e
+/// mais lenta - em vez de morrer no quarto token.
+fn should_draft(speculate: Option<(u32, u32)>, kv_can_shift: bool) -> bool {
+    speculate.is_some() && kv_can_shift
+}
+
 fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
     let extra = k.saturating_sub(1) as usize;
     if extra == 0 {
@@ -1576,6 +1608,25 @@ fn rollback_from(n_past_after_batch: u32, batch_width: u32, accept_count: u32) -
 #[cfg(test)]
 mod speculative_tests {
     use super::*;
+
+    /// Modelo hibrido nao rascunha. O rascunho recusado precisaria ser
+    /// desfeito, e num modelo recorrente o llama.cpp nao sabe desfazer.
+    #[test]
+    fn a_model_that_cannot_shift_its_cache_never_drafts() {
+        assert!(!should_draft(Some((4, 3)), false));
+    }
+
+    #[test]
+    fn a_model_that_can_shift_drafts_when_asked() {
+        assert!(should_draft(Some((4, 3)), true));
+    }
+
+    /// Sem especulacao pedida, o resto nao importa.
+    #[test]
+    fn without_speculation_asked_there_is_no_draft() {
+        assert!(!should_draft(None, true));
+        assert!(!should_draft(None, false));
+    }
 
     #[test]
     fn find_draft_returns_nothing_without_a_match() {
@@ -1738,7 +1789,8 @@ fn step_blocking(
         // prompt-lookup drafting below needs the head's history to search.
         s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(tid);
 
-        let batch: Vec<i32> = if let Some((k, m)) = speculate {
+        let pode_rascunhar = should_draft(speculate, s.engine.kv_can_shift());
+        let batch: Vec<i32> = if let Some((k, m)) = speculate.filter(|_| pode_rascunhar) {
             let draft = {
                 let session = &s.sessions[&sid_key];
                 let history: Vec<i32> = session

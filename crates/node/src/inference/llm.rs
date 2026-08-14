@@ -609,13 +609,36 @@ impl LlmEngine {
 
     // ── KV cache management ───────────────────────────────────────────────────
 
-    pub fn kv_remove(&self, seq_id: u32, from: i32, to: i32) {
+    /// Descarta posições do cache, e diz se conseguiu.
+    ///
+    /// O booleano não é decoração: num modelo híbrido de atenção linear (o
+    /// `gated_delta_net` do Qwen3-Next, o Ornith) o estado recorrente é uma
+    /// soma acumulada, não uma tabela de onde se apaga uma linha, e o
+    /// llama.cpp responde `false` sem remover nada. Descartar esse retorno era
+    /// o que fazia o `n_past` do nó recuar enquanto o cache ficava parado -
+    /// e a rodada seguinte morria com "inconsistent sequence positions",
+    /// quatro tokens depois de a especulação começar.
+    #[must_use]
+    pub fn kv_remove(&self, seq_id: u32, from: i32, to: i32) -> bool {
         // Use the newer llama_get_memory + llama_memory_seq_rm API.
         unsafe {
             let mem = sys::llama_get_memory(self.ctx);
-            if !mem.is_null() {
-                sys::llama_memory_seq_rm(mem, seq_id as i32, from, to);
+            if mem.is_null() {
+                return false;
             }
+            sys::llama_memory_seq_rm(mem, seq_id as i32, from, to)
+        }
+    }
+
+    /// Este modelo aceita remover posições do meio do cache?
+    ///
+    /// `false` em modelo recorrente/híbrido. É a pergunta que decide se dá
+    /// para especular: sem rollback parcial, um rascunho recusado não tem como
+    /// ser desfeito.
+    pub fn kv_can_shift(&self) -> bool {
+        unsafe {
+            let mem = sys::llama_get_memory(self.ctx);
+            !mem.is_null() && sys::llama_memory_can_shift(mem)
         }
     }
 }

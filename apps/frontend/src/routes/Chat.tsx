@@ -37,7 +37,7 @@ import {
 import { bytes, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
 import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
-import { useCluster, useServableModels } from "../lib/queries";
+import { useCluster, useNode, useServableModels } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -433,6 +433,7 @@ export function Chat() {
   const { sessions, upsert, remove } = useChatSessions();
   const models = useServableModels();
   const cluster = useCluster();
+  const node = useNode();
   const toast = useToast();
 
   const available = useMemo(
@@ -520,6 +521,15 @@ export function Chat() {
         {
           model,
           stream: true,
+          // Otherwise the server falls back to its own conservative default
+          // (openai.rs's DEFAULT_MAX_TOKENS = 512), independent of whatever
+          // the operator actually configured for this node — a response
+          // could never run longer than that no matter the deployment.
+          // `config` is null before a model is deployed; omitting the field
+          // then just leaves that same server-side default in place.
+          ...(node.data?.config?.max_new_tokens
+            ? { max_tokens: node.data.config.max_new_tokens }
+            : {}),
           messages: turnsOnly(history).map((m) => ({ role: m.role, content: m.content })),
         },
         controller.signal,

@@ -18,12 +18,24 @@
 //! `<function=NAME><parameter=P>value</parameter></function>`. A real
 //! opencode session mixing the two (instructed in JSON, fine-tuned on XML)
 //! produced exactly the garbled, unparseable output that caught this.
-//! `parse_tool_call` accepts *both* inner forms for that reason — cluster
+//! `parse_call_body` accepts *both* inner forms for that reason — cluster
 //! model swaps shouldn't silently break this again — while
 //! `render_tools_block`/`render_tool_call` emit whichever is verified
 //! current. If this drifts again: dump `tokenizer.chat_template` straight
 //! from the active GGUF (`strings model.gguf | grep -A30 tool_call`, or the
 //! Python KV-reader used both times before) rather than guessing.
+//!
+//! **A third case, verified a third time, doesn't fit the "wrong convention"
+//! story at all.** `Ornith-1.0-35B` (a 3-bit `IQ3_XXS` quant) has the exact
+//! same verified `<function=NAME><parameter=P>` template as `Qwen3.6-35B-A3B`
+//! — but a real session produced bare `<function>read</function>`, with no
+//! `<tool_call>` wrapper and no `=`/parameters at all, matching *nothing*
+//! ever verified against a template. That looks like the model itself not
+//! reliably following its own documented format (plausibly the aggressive
+//! quantization), not a convention mismatch — no amount of format-guessing
+//! fixes that. [`TagScanner`] tolerates this exact shape anyway (see
+//! `CallKind::BareFunction`), recovering a name with **no arguments**, since
+//! none are ever present in it — a real, accepted limit, not an oversight.
 //!
 //! See `crate::messages`'s module doc comment for why this is
 //! prompt-engineered and text-parsed rather than protocol-level: this
@@ -103,7 +115,7 @@ pub(crate) fn render_tools_block(tools: &[ToolDef]) -> String {
 /// per argument (string values written raw, everything else re-serialized
 /// to JSON text, mirroring the deployed template's own
 /// `is string`/`tojson` split). Shared by both adapters so replayed history
-/// always matches exactly what [`parse_tool_call`] expects back.
+/// always matches exactly what [`parse_call_body`] expects back.
 pub(crate) fn render_tool_call(name: &str, arguments: &serde_json::Value) -> String {
     let mut out = format!("<tool_call>\n<function={name}>\n");
     if let serde_json::Value::Object(map) = arguments {
@@ -123,6 +135,39 @@ pub(crate) fn render_tool_call(name: &str, arguments: &serde_json::Value) -> Str
 
 const TOOL_CALL_OPEN: &str = "<tool_call>";
 const TOOL_CALL_CLOSE: &str = "</tool_call>";
+/// No `=`, deliberately — `<function=NAME>` stays exclusively the *inner*
+/// content of an already-`<tool_call>`-wrapped span (see `parse_call_body`'s
+/// `Wrapped` arm). This is the unwrapped fallback shape, and only that shape.
+const BARE_FUNCTION_OPEN: &str = "<function>";
+const BARE_FUNCTION_CLOSE: &str = "</function>";
+
+/// Which opening marker started the block currently being scanned — decides
+/// both which closing tag to look for and how to interpret what's captured.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CallKind {
+    /// `<tool_call>...</tool_call>` — the normal case.
+    Wrapped,
+    /// `<function>NAME</function>` with no wrapper at all — a tolerated
+    /// fallback for output that doesn't even attempt the real convention;
+    /// see the module doc comment.
+    BareFunction,
+}
+
+impl CallKind {
+    fn open(self) -> &'static str {
+        match self {
+            CallKind::Wrapped => TOOL_CALL_OPEN,
+            CallKind::BareFunction => BARE_FUNCTION_OPEN,
+        }
+    }
+
+    fn close(self) -> &'static str {
+        match self {
+            CallKind::Wrapped => TOOL_CALL_CLOSE,
+            CallKind::BareFunction => BARE_FUNCTION_CLOSE,
+        }
+    }
+}
 
 /// One classified span of raw model output.
 #[derive(Debug, Clone, PartialEq)]
@@ -131,25 +176,26 @@ pub(crate) enum ScanEvent {
     ToolCallOpen,
     ToolCallChunk(String),
     /// `Ok` once the tagged content parses into a named call (see
-    /// `parse_tool_call` for the two accepted inner formats); `Err` carries
-    /// the full literal `<tool_call>...</tool_call>` span to fall back to as
-    /// plain text — malformed model output must degrade
-    /// gracefully, never crash or vanish.
+    /// `parse_call_body` for the accepted inner formats); `Err` carries the
+    /// full literal tagged span (`<tool_call>...</tool_call>` or
+    /// `<function>...</function>`, whichever opened it) to fall back to as
+    /// plain text — malformed model output must degrade gracefully, never
+    /// crash or vanish.
     ToolCallClose(Result<(String, serde_json::Value), String>),
 }
 
 enum ScanState {
     Outside,
-    Inside(String),
+    Inside(String, CallKind),
 }
 
-/// Incrementally splits a token stream into plain text and
-/// `<tool_call>...</tool_call>` spans, tolerating the tags landing anywhere
-/// relative to token boundaries — a single decoded token's text can split a
-/// tag at any byte. Both adapters' blocking path (via [`parse_output`]) and
-/// streaming path run every piece of model output through this one scanner,
-/// so they can never disagree about how a given piece of text gets
-/// classified.
+/// Incrementally splits a token stream into plain text and tool-call spans
+/// (`<tool_call>...</tool_call>`, or the bare `<function>...</function>`
+/// fallback), tolerating the tags landing anywhere relative to token
+/// boundaries — a single decoded token's text can split a tag at any byte.
+/// Both adapters' blocking path (via [`parse_output`]) and streaming path
+/// run every piece of model output through this one scanner, so they can
+/// never disagree about how a given piece of text gets classified.
 pub(crate) struct TagScanner {
     pending: String,
     state: ScanState,
@@ -167,48 +213,73 @@ impl TagScanner {
         self.pending.push_str(chunk);
         let mut events = Vec::new();
         loop {
-            let tag = match &self.state {
-                ScanState::Outside => TOOL_CALL_OPEN,
-                ScanState::Inside(_) => TOOL_CALL_CLOSE,
-            };
-            match self.pending.find(tag) {
-                Some(i) => {
-                    let head = self.pending[..i].to_string();
-                    self.pending = self.pending[i + tag.len()..].to_string();
-                    match &mut self.state {
-                        ScanState::Outside => {
+            match &self.state {
+                ScanState::Outside => {
+                    // Two candidate openers; earliest wins, ties favor the
+                    // real wrapper (higher-confidence sighting).
+                    let tool_call_pos = self.pending.find(TOOL_CALL_OPEN);
+                    let function_pos = self.pending.find(BARE_FUNCTION_OPEN);
+                    let chosen = match (tool_call_pos, function_pos) {
+                        (Some(a), Some(b)) if b < a => Some((b, CallKind::BareFunction)),
+                        (Some(a), _) => Some((a, CallKind::Wrapped)),
+                        (None, Some(b)) => Some((b, CallKind::BareFunction)),
+                        (None, None) => None,
+                    };
+                    match chosen {
+                        Some((i, kind)) => {
+                            let head = self.pending[..i].to_string();
+                            self.pending = self.pending[i + kind.open().len()..].to_string();
                             if !head.is_empty() {
                                 events.push(ScanEvent::Text(head));
                             }
                             events.push(ScanEvent::ToolCallOpen);
-                            self.state = ScanState::Inside(String::new());
+                            self.state = ScanState::Inside(String::new(), kind);
                         }
-                        ScanState::Inside(raw) => {
+                        None => {
+                            // Hold back whatever could still complete *either*
+                            // candidate tag once more input arrives.
+                            let hold = longest_prefix_overlap(&self.pending, TOOL_CALL_OPEN)
+                                .max(longest_prefix_overlap(&self.pending, BARE_FUNCTION_OPEN));
+                            let flush_len = self.pending.len() - hold;
+                            if flush_len > 0 {
+                                events.push(ScanEvent::Text(self.pending[..flush_len].to_string()));
+                                self.pending = self.pending[flush_len..].to_string();
+                            }
+                            break;
+                        }
+                    }
+                }
+                ScanState::Inside(_, kind) => {
+                    let close_tag = kind.close();
+                    match self.pending.find(close_tag) {
+                        Some(i) => {
+                            let head = self.pending[..i].to_string();
+                            self.pending = self.pending[i + close_tag.len()..].to_string();
+                            let ScanState::Inside(mut raw, kind) =
+                                std::mem::replace(&mut self.state, ScanState::Outside)
+                            else {
+                                unreachable!("matched Inside above")
+                            };
                             if !head.is_empty() {
                                 raw.push_str(&head);
                                 events.push(ScanEvent::ToolCallChunk(head));
                             }
-                            let raw = std::mem::take(raw);
-                            events.push(ScanEvent::ToolCallClose(parse_tool_call(&raw)));
-                            self.state = ScanState::Outside;
+                            events.push(ScanEvent::ToolCallClose(parse_call_body(&raw, kind)));
                         }
-                    }
-                }
-                None => {
-                    let hold = longest_prefix_overlap(&self.pending, tag);
-                    let flush_len = self.pending.len() - hold;
-                    if flush_len > 0 {
-                        let flushed = self.pending[..flush_len].to_string();
-                        self.pending = self.pending[flush_len..].to_string();
-                        match &mut self.state {
-                            ScanState::Outside => events.push(ScanEvent::Text(flushed)),
-                            ScanState::Inside(raw) => {
-                                raw.push_str(&flushed);
+                        None => {
+                            let hold = longest_prefix_overlap(&self.pending, close_tag);
+                            let flush_len = self.pending.len() - hold;
+                            if flush_len > 0 {
+                                let flushed = self.pending[..flush_len].to_string();
+                                self.pending = self.pending[flush_len..].to_string();
+                                if let ScanState::Inside(raw, _) = &mut self.state {
+                                    raw.push_str(&flushed);
+                                }
                                 events.push(ScanEvent::ToolCallChunk(flushed));
                             }
+                            break;
                         }
                     }
-                    break;
                 }
             }
         }
@@ -222,8 +293,9 @@ impl TagScanner {
         match self.state {
             ScanState::Outside if self.pending.is_empty() => Vec::new(),
             ScanState::Outside => vec![ScanEvent::Text(self.pending)],
-            ScanState::Inside(raw) => vec![ScanEvent::Text(format!(
-                "{TOOL_CALL_OPEN}{raw}{}",
+            ScanState::Inside(raw, kind) => vec![ScanEvent::Text(format!(
+                "{}{raw}{}",
+                kind.open(),
                 self.pending
             ))],
         }
@@ -239,27 +311,52 @@ fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
     (1..=max).rev().find(|&len| s.ends_with(&tag[..len])).unwrap_or(0)
 }
 
-/// Two inner formats are accepted, tried in this order: the nested
-/// `<function=NAME><parameter=P>...` form (`Qwen3.6-35B-A3B`, currently
-/// deployed) and the legacy Hermes JSON-object form
+/// `Wrapped`: two inner formats are accepted, tried in this order — the
+/// nested `<function=NAME><parameter=P>...` form (`Qwen3.6-35B-A3B`,
+/// `Ornith-1.0-35B`) and the legacy Hermes JSON-object form
 /// (`Qwen3.5-9B-DeepSeek-V4-Flash`) — see the module doc comment for why
-/// both matter on a cluster that swaps models. Either failing to parse
-/// degrades to the literal tagged text, never a crash or a dropped response.
-fn parse_tool_call(raw: &str) -> Result<(String, serde_json::Value), String> {
-    let fallback = || format!("{TOOL_CALL_OPEN}{raw}{TOOL_CALL_CLOSE}");
-    if raw.trim_start().starts_with("<function=") {
-        return parse_function_call_xml(raw).ok_or_else(fallback);
+/// both matter on a cluster that swaps models. `BareFunction`: just a name,
+/// see `parse_bare_function_call`. Either failing to parse degrades to the
+/// literal tagged text, never a crash or a dropped response.
+fn parse_call_body(raw: &str, kind: CallKind) -> Result<(String, serde_json::Value), String> {
+    let fallback = || format!("{}{raw}{}", kind.open(), kind.close());
+    match kind {
+        CallKind::BareFunction => parse_bare_function_call(raw).ok_or_else(fallback),
+        CallKind::Wrapped => {
+            if raw.trim_start().starts_with("<function=") {
+                return parse_function_call_xml(raw).ok_or_else(fallback);
+            }
+            match serde_json::from_str::<serde_json::Value>(raw.trim()) {
+                Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
+                    Some(name) if !name.is_empty() => Ok((
+                        name.to_string(),
+                        v.get("arguments").cloned().unwrap_or_else(|| json!({})),
+                    )),
+                    _ => Err(fallback()),
+                },
+                Err(_) => Err(fallback()),
+            }
+        }
     }
-    match serde_json::from_str::<serde_json::Value>(raw.trim()) {
-        Ok(v) => match v.get("name").and_then(|n| n.as_str()) {
-            Some(name) if !name.is_empty() => Ok((
-                name.to_string(),
-                v.get("arguments").cloned().unwrap_or_else(|| json!({})),
-            )),
-            _ => Err(fallback()),
-        },
-        Err(_) => Err(fallback()),
+}
+
+/// Recovers a name from a wrapper-less `<function>NAME</function>` — see the
+/// module doc comment for why this exists. There is never argument data to
+/// recover here (`arguments` is always an empty object), so a call parsed
+/// this way is very unlikely to be functional; it's kept honest that this is
+/// a name-only recovery, not a full parse.
+///
+/// The one guard applied — reject a `name` containing whitespace — is a
+/// cheap, deliberately weak defense against ordinary prose incidentally
+/// matching this shape (e.g. a sentence mentioning `<function>` literally):
+/// a real tool name is one token, so this filters most accidental matches
+/// without needing to know which tools were actually declared.
+fn parse_bare_function_call(raw: &str) -> Option<(String, serde_json::Value)> {
+    let name = raw.trim();
+    if name.is_empty() || name.contains(char::is_whitespace) {
+        return None;
     }
+    Some((name.to_string(), serde_json::Value::Object(serde_json::Map::new())))
 }
 
 /// Parses `<function=NAME>(<parameter=P>value</parameter>)*</function>`.
@@ -465,6 +562,75 @@ mod tests {
     fn parse_output_falls_back_to_text_on_malformed_xml() {
         let raw = "<tool_call>\n<function=Bash>\n<parameter=command>\nls\n</tool_call>";
         assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    // ── bare `<function>NAME</function>`, no wrapper ─────────────────────────
+
+    #[test]
+    fn parse_output_recovers_a_bare_function_call_with_no_wrapper() {
+        let out = parse_output("<function>read</function>");
+        assert_eq!(out.len(), 1);
+        match &out[0] {
+            OutputPart::ToolCall { name, arguments } => {
+                assert_eq!(name, "read");
+                assert_eq!(*arguments, json!({}));
+            }
+            other => panic!("expected a tool call, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_output_handles_two_bare_function_calls_back_to_back() {
+        let out = parse_output("<function>read</function>\n<function>glob</function>");
+        assert_eq!(out.len(), 3); // read, the newline between them, glob
+        assert!(matches!(&out[0], OutputPart::ToolCall { name, .. } if name == "read"));
+        assert_eq!(out[1], OutputPart::Text("\n".into()));
+        assert!(matches!(&out[2], OutputPart::ToolCall { name, .. } if name == "glob"));
+    }
+
+    #[test]
+    fn parse_output_rejects_a_bare_function_name_containing_whitespace() {
+        // The false-positive guard: ordinary prose incidentally shaped like
+        // `<function>...</function>` should not be read as a call.
+        let raw = "<function>this has spaces</function>";
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn parse_output_recovers_an_unclosed_bare_function_call() {
+        let raw = "<function>rea"; // cut off mid-generation
+        assert_eq!(parse_output(raw), vec![OutputPart::Text(raw.into())]);
+    }
+
+    #[test]
+    fn a_stream_can_mix_a_wrapped_call_and_a_bare_call() {
+        let out = parse_output(
+            r#"<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call> then <function>read</function>"#,
+        );
+        assert_eq!(out.len(), 3);
+        assert!(matches!(&out[0], OutputPart::ToolCall { name, .. } if name == "Bash"));
+        assert_eq!(out[1], OutputPart::Text(" then ".into()));
+        assert!(matches!(&out[2], OutputPart::ToolCall { name, .. } if name == "read"));
+    }
+
+    #[test]
+    fn bare_function_call_split_across_arbitrary_chunk_boundaries_matches_the_one_chunk_result() {
+        let full = "before <function>read</function> after";
+        let whole = parse_output(full);
+        assert_eq!(feed_in_chunks(full, full.len()), whole);
+        assert_eq!(feed_in_chunks(full, 1), whole); // byte-at-a-time
+        assert_eq!(feed_in_chunks(full, 3), whole); // arbitrary split
+    }
+
+    #[test]
+    fn a_dangling_prefix_of_the_shorter_bare_tag_is_held_back_correctly() {
+        // "<funct" is a prefix of "<function>" but not of "<tool_call>" — the
+        // hold-back must still recognise it needs holding.
+        let mut sc = TagScanner::new();
+        let events = sc.feed("plain <funct");
+        assert_eq!(events, vec![ScanEvent::Text("plain ".into())]);
+        // Never completes — finish() must recover the held-back fragment.
+        assert_eq!(sc.finish(), vec![ScanEvent::Text("<funct".into())]);
     }
 
     #[test]

@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     nodejs \
     npm \
     git \
+    wget \
     openssh-server \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc \
@@ -25,6 +26,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get update \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
+
+# BuildKit / buildx, do gist do jniltinho:
+# https://gist.github.com/jniltinho/bcb28a99aef33dcb5f35c297bf71e4ae
+#
+# O script baixa o binário `linux-amd64` do release do buildx, então esta
+# imagem só constrói em x86_64. Num host arm64 (Apple Silicon) troque o script
+# por `docker-buildx-plugin`, que vem do mesmo repositório apt já configurado
+# acima e é resolvido por arquitetura.
+COPY install-buildkit.sh /tmp/install-buildkit.sh
+RUN chmod +x /tmp/install-buildkit.sh && /tmp/install-buildkit.sh && rm /tmp/install-buildkit.sh
+
+# O script exporta estas duas no `.profile`, que só um shell de login lê. Aqui
+# elas valem para todo processo do container, que é o que faz o `docker build`
+# e o `docker compose` do dia a dia usarem BuildKit de verdade.
+ENV DOCKER_BUILDKIT=1 \
+    COMPOSE_DOCKER_CLI_BUILD=1
 
 # Root login over SSH with a fixed password — this container is a local dev
 # sandbox, not internet-exposed, so a plain password is an acceptable

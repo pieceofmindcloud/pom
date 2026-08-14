@@ -22,7 +22,7 @@
 use anyhow::{bail, Context, Result};
 use std::ffi::{c_void, CStr, CString};
 use std::ptr;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tracing::warn;
 
@@ -130,10 +130,40 @@ pub struct EngineConfig {
 
 // ── Engine ────────────────────────────────────────────────────────────────────
 
-pub struct LlmEngine {
+/// Os pesos, carregados uma vez e compartilhados por todos os contextos.
+///
+/// Separar isto do contexto é o que torna o paralelismo viável sem duplicar
+/// memória: o que pesa são os pesos (gigabytes), e o llama.cpp os trata como
+/// somente-leitura depois da carga - vários `llama_context` podem apontar para
+/// o mesmo `llama_model`. O contexto carrega o cache KV, que já era dividido
+/// entre as sessões, então N contextos de `n_ctx/N` custam o mesmo que um
+/// contexto de `n_ctx` com N sequências.
+pub struct LoadedModel {
     model: *mut sys::llama_model,
-    ctx: *mut sys::llama_context,
     vocab: *const sys::llama_vocab,
+    pub n_embd: usize,
+    pub n_vocab: usize,
+}
+
+// SAFETY: depois da carga o `llama_model` é somente-leitura; é o próprio
+// llama.cpp que permite vários contextos sobre um modelo.
+unsafe impl Send for LoadedModel {}
+unsafe impl Sync for LoadedModel {}
+
+impl Drop for LoadedModel {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.model.is_null() {
+                sys::llama_model_free(self.model);
+            }
+        }
+    }
+}
+
+pub struct LlmEngine {
+    /// Os pesos. `Arc` porque o último contexto a morrer é quem os libera.
+    loaded: Arc<LoadedModel>,
+    ctx: *mut sys::llama_context,
     pub n_embd: usize,
     pub n_vocab: usize,
     /// Whether the residual capture callback was successfully installed.
@@ -186,29 +216,28 @@ unsafe impl Sync for LlmEngine {}
 
 impl Drop for LlmEngine {
     fn drop(&mut self) {
+        // Só o contexto: os pesos são de `LoadedModel`, liberados quando o
+        // último contexto que os usa sai de cena. Liberar o modelo aqui, com um
+        // irmão ainda vivo, seria use-after-free.
         unsafe {
             if !self.ctx.is_null() {
                 sys::llama_free(self.ctx);
-            }
-            if !self.model.is_null() {
-                sys::llama_model_free(self.model);
             }
         }
     }
 }
 
-impl LlmEngine {
-    /// Load a GGUF model slice and create a llama context.
-    pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
+impl LoadedModel {
+    /// Lê os pesos do disco. Uma vez por arquivo, não por contexto.
+    pub fn load(model_path: &str, n_gpu_layers: i32) -> Result<Arc<Self>> {
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };
 
         let path = CString::new(model_path)
             .with_context(|| format!("invalid model path: {model_path}"))?;
 
-        // ── Model ────────────────────────────────────────────────────────────
         let mut mparams = unsafe { sys::llama_model_default_params() };
-        mparams.n_gpu_layers = cfg.n_gpu_layers;
+        mparams.n_gpu_layers = n_gpu_layers;
 
         let model = unsafe { sys::llama_model_load_from_file(path.as_ptr(), mparams) };
         if model.is_null() {
@@ -218,6 +247,49 @@ impl LlmEngine {
         let vocab = unsafe { sys::llama_model_get_vocab(model) };
         let n_embd = unsafe { sys::llama_n_embd(model) } as usize;
         let n_vocab = unsafe { sys::llama_n_vocab(vocab) } as usize;
+
+        Ok(Arc::new(LoadedModel {
+            model,
+            vocab,
+            n_embd,
+            n_vocab,
+        }))
+    }
+}
+
+impl LlmEngine {
+    /// Load a GGUF model slice and create a llama context.
+    pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
+        let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
+        Self::with_model(loaded, cfg)
+    }
+
+    /// N contextos sobre um modelo só, um por sessão simultânea.
+    ///
+    /// Custo de memória igual ao de hoje: cada contexto fica com `n_ctx / n`, o
+    /// mesmo tamanho de cache que uma sessão já tinha quando as N dividiam um
+    /// contexto de `n_ctx`. O que muda é que cada um tem o seu `llama_context`,
+    /// e dois decodes podem correr ao mesmo tempo em vez de se enfileirarem no
+    /// mutex - que era 194 ms por token na medição de 2026-08-14.
+    ///
+    /// Os pesos são lidos do disco uma vez.
+    pub fn pool(model_path: &str, cfg: &EngineConfig, n: usize) -> Result<Vec<Self>> {
+        let n = n.max(1);
+        let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
+        let por_contexto = per_context_config(cfg, n);
+        (0..n)
+            .map(|_| Self::with_model(loaded.clone(), &por_contexto))
+            .collect()
+    }
+
+    /// Um contexto novo sobre pesos já carregados.
+    ///
+    /// É por aqui que se monta mais de um contexto sobre o mesmo modelo, que é
+    /// o que permite dois decodes ao mesmo tempo neste nó.
+    pub fn with_model(loaded: Arc<LoadedModel>, cfg: &EngineConfig) -> Result<Self> {
+        let model = loaded.model;
+        let n_embd = loaded.n_embd;
+        let n_vocab = loaded.n_vocab;
 
         // ── Context params ───────────────────────────────────────────────────
         let mut cparams = unsafe { sys::llama_context_default_params() };
@@ -281,9 +353,8 @@ impl LlmEngine {
         );
 
         Ok(LlmEngine {
-            model,
+            loaded,
             ctx,
-            vocab,
             n_embd,
             n_vocab,
             capture_ok,
@@ -304,11 +375,11 @@ impl LlmEngine {
     }
 
     pub fn eos_token(&self) -> i32 {
-        unsafe { sys::llama_vocab_eos(self.vocab) }
+        unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }
 
     pub fn bos_token(&self) -> i32 {
-        unsafe { sys::llama_vocab_bos(self.vocab) }
+        unsafe { sys::llama_vocab_bos(self.loaded.vocab) }
     }
 
     // ── Tokenization ─────────────────────────────────────────────────────────
@@ -327,7 +398,7 @@ impl LlmEngine {
         // reached the second peer.
         let n = unsafe {
             sys::llama_tokenize(
-                self.vocab,
+                self.loaded.vocab,
                 c_text.as_ptr(),
                 text.len() as i32,
                 ptr::null_mut(),
@@ -345,7 +416,7 @@ impl LlmEngine {
         let mut tokens = vec![0i32; cap];
         let written = unsafe {
             sys::llama_tokenize(
-                self.vocab,
+                self.loaded.vocab,
                 c_text.as_ptr(),
                 text.len() as i32,
                 tokens.as_mut_ptr(),
@@ -365,7 +436,7 @@ impl LlmEngine {
         let mut buf = vec![0u8; 256];
         let n = unsafe {
             sys::llama_token_to_piece(
-                self.vocab,
+                self.loaded.vocab,
                 token,
                 buf.as_mut_ptr() as *mut i8,
                 buf.len() as i32,
@@ -395,7 +466,7 @@ impl LlmEngine {
         let mut buf = vec![0u8; 32768];
         let n = unsafe {
             sys::llama_model_meta_val_str(
-                self.model,
+                self.loaded.model,
                 key.as_ptr(),
                 buf.as_mut_ptr() as *mut i8,
                 buf.len(),
@@ -670,6 +741,70 @@ impl LlmEngine {
             let mem = sys::llama_get_memory(self.ctx);
             !mem.is_null() && sys::llama_memory_can_shift(mem)
         }
+    }
+}
+
+/// A configuração de um contexto do pool.
+///
+/// Separada para poder ser conferida sem GPU: é ela que sustenta a promessa de
+/// que o pool não custa memória a mais. Cada contexto recebe `n_ctx / n`, que é
+/// exatamente o que uma sessão já tinha quando as N dividiam um contexto só, e
+/// `max_sessions = 1` porque agora cada contexto atende uma sessão.
+fn per_context_config(cfg: &EngineConfig, n: usize) -> EngineConfig {
+    EngineConfig {
+        n_ctx: cfg.n_ctx / n.max(1) as u32,
+        max_sessions: 1,
+        ..cfg.clone()
+    }
+}
+
+#[cfg(test)]
+mod pool_tests {
+    use super::*;
+
+    fn cfg() -> EngineConfig {
+        EngineConfig {
+            n_ctx: 120_320,
+            offload_kqv: true,
+            n_batch: 512,
+            n_gpu_layers: 99,
+            n_threads: 0,
+            max_sessions: 2,
+            need_embeddings: true,
+        }
+    }
+
+    /// O pool nao pode custar memoria a mais: o cache de cada contexto e o
+    /// mesmo pedaco que a sessao ja tinha. Numeros da ksia em 2026-08-14, onde
+    /// um contexto de 120.320 atendia 2 sessoes de 60.160.
+    #[test]
+    fn each_context_gets_the_slice_a_session_already_had() {
+        let por_contexto = per_context_config(&cfg(), 2);
+        assert_eq!(por_contexto.n_ctx, 60_160);
+        assert_eq!(por_contexto.n_ctx * 2, cfg().n_ctx, "o total nao cresce");
+    }
+
+    /// Cada contexto atende uma sessao; quem divide agora e o pool.
+    #[test]
+    fn a_pooled_context_serves_one_session() {
+        assert_eq!(per_context_config(&cfg(), 4).max_sessions, 1);
+    }
+
+    /// O resto da configuracao e do no, nao do contexto, e nao pode divergir
+    /// entre irmaos.
+    #[test]
+    fn everything_else_is_carried_over_unchanged() {
+        let p = per_context_config(&cfg(), 3);
+        assert_eq!(p.n_batch, 512);
+        assert_eq!(p.n_gpu_layers, 99);
+        assert!(p.offload_kqv);
+        assert!(p.need_embeddings);
+    }
+
+    /// Zero contextos nao existe, e dividir por zero menos ainda.
+    #[test]
+    fn a_pool_of_zero_is_treated_as_one() {
+        assert_eq!(per_context_config(&cfg(), 0).n_ctx, cfg().n_ctx);
     }
 }
 

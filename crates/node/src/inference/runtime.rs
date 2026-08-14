@@ -284,6 +284,10 @@ impl NodeRuntime {
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
 
+        // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
+        // nó de voltar servindo no próximo arranque e desfazer essa decisão.
+        crate::lastslice::clear();
+
         let _ = self.net.announce(None).await;
     }
 
@@ -323,6 +327,16 @@ impl NodeRuntime {
         // Let peers know immediately instead of waiting for the next gossip tick.
         if let Err(e) = self.net.announce(Some(&assignment)).await {
             warn!("announce após reconfiguração falhou: {e}");
+        }
+
+        // Anotada aqui, quando passa a ser servida, e não só antes de um
+        // reinício pedido pela interface: um processo que morre de segfault não
+        // executa código nenhum, e sem esta linha toda queda tirava o nó do
+        // cluster para sempre - o Docker religava o container e ele voltava sem
+        // fatia, abrindo um buraco de camadas que só aparecia na requisição
+        // seguinte, como "Gap at layer N".
+        if let Err(e) = crate::lastslice::save(&cfg) {
+            warn!("não deu para anotar a fatia servida: {e}");
         }
 
         self.spawn_supervisor(cfg, generation);

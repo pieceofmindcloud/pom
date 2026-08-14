@@ -31,6 +31,20 @@ pub fn save(cfg: &NodeConfig) -> Result<()> {
         .with_context(|| format!("não deu para gravar {}", p.display()))
 }
 
+/// Esquece a fatia anotada.
+///
+/// Chamada quando o operador tira o modelo de propósito (liberar a fatia, sair
+/// da rede, parar para reconfigurar). Sem isto, um nó esvaziado a pedido
+/// voltaria servindo no próximo arranque, desfazendo a decisão de quem o
+/// esvaziou.
+pub fn clear() {
+    clear_at(&path());
+}
+
+fn clear_at(p: &Path) {
+    let _ = std::fs::remove_file(p);
+}
+
 /// Lê a fatia anotada e apaga o arquivo. Devolve `None` quando não há nada.
 pub fn take() -> Option<NodeConfig> {
     take_from(&path())
@@ -80,6 +94,30 @@ mod tests {
         assert!(first.is_some(), "a primeira leitura devolve a fatia");
         assert!(!f.exists(), "e apaga o arquivo");
         assert!(take_from(&f).is_none(), "a segunda não devolve nada");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// A fatia tem que ser anotada quando passa a ser servida, nao so antes de
+    /// um reinicio pedido pela interface.
+    ///
+    /// Um segfault nao executa codigo nenhum: em 2026-08-13 a ksia-gpu3 caiu
+    /// com SIGSEGV dentro do kernel CUDA do gated_delta_net, o Docker religou
+    /// o container pela politica `unless-stopped`, e o no voltou sem fatia -
+    /// sumindo do pipeline em silencio ate alguem notar um "Gap at layer 32"
+    /// numa requisicao, minutos depois.
+    #[test]
+    fn anotada_no_apply_e_esquecida_no_stop() {
+        let dir = std::env::temp_dir().join(format!("rdma-lastslice-ciclo-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("cfg.json.last-slice.json");
+
+        std::fs::write(&f, sample_config_json()).unwrap();
+        assert!(f.exists(), "o apply anota");
+
+        clear_at(&f);
+        assert!(!f.exists(), "parar de propósito esquece");
+        assert!(take_from(&f).is_none(), "e o arranque seguinte nao ressuscita");
 
         std::fs::remove_dir_all(&dir).ok();
     }

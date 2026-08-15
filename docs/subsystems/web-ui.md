@@ -214,10 +214,12 @@ entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
   a tabela inteira de telemetria do Chat (`ExecutionTelemetry`) e os botões/
   estados vazios do `ModelNetworkCanvas`. Cosmético, mas inconsistente com o
   resto do app.
-- DEFEITO ANOTADO: `AddNodeDialog` nunca reinicializa as escolhas a partir das
-  props (`nodeId`/`sliceIndex` semeados uma vez no primeiro `peers[0]`/primeira
-  fatia, dialog sempre montado com `open` controlado). Reabrir depois que um
-  peer saiu pode submeter um `node_id` que não está mais no dropdown.
+- `AddNodeDialog` re-semeia as escolhas **na transição para aberto**, não a cada
+  props nova: o Painel remonta `peers`/`slices` a cada polling do cluster, e um
+  efeito dependente desses arrays descartava a escolha do operador no meio da
+  edição (a combo "voltava" para outra máquina sozinha). Um segundo efeito só
+  troca a escolha que sumiu da lista; a fatia é identificada pela faixa
+  (`keyOf`), não pelo índice. Testes em `AddNodeDialog.test.tsx`.
 - DEFEITO ANOTADO: `networkLayout.ts` escreve `localStorage` sem `try/catch`
   (`writePositions`/`clearPositions`), diferente de todo helper de storage da
   pasta - exceção de quota/segurança lançaria do handler de drag do canvas.

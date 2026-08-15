@@ -90,6 +90,12 @@ Per-file list:
   cluster). Overlap is the point — it creates a parallel route — so it is
   flagged, not blocked. Exports `rangeOverlap` (shared layers between a chosen
   range and existing ones). Slices come from `Dashboard`'s `deploy/plan`.
+  Re-seeding the two selects happens on the *open* transition only (`wasOpen`
+  ref): `Dashboard` rebuilds `peers`/`slices` on every cluster poll, so an
+  effect keyed on those props threw the operator's choice away mid-edit. A
+  second effect only replaces a choice that disappeared from the list. The
+  slice select is keyed by `start-end` (`keyOf`), not by array index, so a
+  reordered list cannot silently point at another range.
 - `Confirm.tsx` - Two exports. `Modal` is the shell (veil + panel + header +
   footer) rendered via `createPortal` straight into `document.body`. The portal
   is not preference: `position: fixed` stops being relative to the viewport when

@@ -8,7 +8,7 @@
  * Faixa sobreposta aqui não é erro, é o objetivo: é assim que se cria uma rota
  * paralela. Por isso o aviso é afirmativo, e não bloqueia o botão.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Route } from "lucide-react";
 import { api } from "../lib/api";
 import { Confirm } from "./Confirm";
@@ -47,19 +47,38 @@ export function AddNodeDialog({
 }) {
   const { t } = useI18n();
   const [nodeId, setNodeId] = useState(peers[0]?.node_id ?? "");
-  const [sliceIndex, setSliceIndex] = useState(0);
+  const [sliceKey, setSliceKey] = useState(() => keyOf(slices[0]));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Re-semear é ato de *abrir* o diálogo, não de receber props novas: o painel
+  // repolla o cluster, `peers`/`slices` chegam como arrays novos a cada
+  // resposta, e um efeito que dependa deles joga fora a escolha do operador no
+  // meio da edição - era isso que "voltava sozinho para outra máquina".
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open) {
+    if (open && !wasOpen.current) {
       setNodeId(peers[0]?.node_id ?? "");
-      setSliceIndex(0);
+      setSliceKey(keyOf(slices[0]));
       setError(null);
     }
-  }, [open, peers]);
+    wasOpen.current = open;
+  }, [open, peers, slices]);
 
-  const slice = slices[sliceIndex];
+  // A escolha só é trocada quando ela some da lista (peer que saiu da rede,
+  // fatia que deixou de existir) - aí ficar com um valor fantasma submeteria
+  // algo que não está mais no dropdown.
+  useEffect(() => {
+    if (!open) return;
+    if (peers.length > 0 && !peers.some((p) => p.node_id === nodeId)) {
+      setNodeId(peers[0].node_id);
+    }
+    if (slices.length > 0 && !slices.some((s) => keyOf(s) === sliceKey)) {
+      setSliceKey(keyOf(slices[0]));
+    }
+  }, [open, peers, slices, nodeId, sliceKey]);
+
+  const slice = slices.find((s) => keyOf(s) === sliceKey);
   const overlapping = slice
     ? rangeOverlap(existingRanges, [slice.start_layer, slice.end_layer])
     : [];
@@ -116,11 +135,11 @@ export function AddNodeDialog({
             <span className="text-xs text-muted">{t("deploy.addNodeSlice")}</span>
             <select
               className="rounded-md border border-line bg-raised px-2 py-1.5 font-mono text-sm"
-              value={sliceIndex}
-              onChange={(e) => setSliceIndex(Number(e.target.value))}
+              value={sliceKey}
+              onChange={(e) => setSliceKey(e.target.value)}
             >
-              {slices.map((s, i) => (
-                <option key={`${s.start_layer}-${s.end_layer}`} value={i}>
+              {slices.map((s) => (
+                <option key={keyOf(s)} value={keyOf(s)}>
                   {s.label}
                 </option>
               ))}
@@ -138,6 +157,14 @@ export function AddNodeDialog({
       }
     />
   );
+}
+
+/**
+ * A fatia é identificada pela faixa, que é o que a requisição carrega - por
+ * índice, uma lista reordenada entre dois pollings apontaria para outra fatia.
+ */
+function keyOf(slice?: AddNodeSlice): string {
+  return slice ? `${slice.start_layer}-${slice.end_layer}` : "";
 }
 
 /** As camadas que a faixa escolhida compartilha com as que já estão no ar. */

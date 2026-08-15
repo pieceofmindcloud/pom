@@ -144,12 +144,14 @@ struct Args {
     #[arg(long)]
     list_models: bool,
 
-    /// Ollama base URL (only used when --gateway is set or for model resolution)
+    /// Ollama base URL (model resolution, /health, e a porta anunciada aos peers)
     #[arg(long, default_value = "http://localhost:11434")]
     ollama_url: String,
 
-    /// Deprecated — every node now serves the HTTP API. Accepted for backwards compatibility;
-    /// only effect remaining is advertising the Ollama port to peers.
+    /// Deprecated — every node now serves the HTTP API, e a porta do Ollama é
+    /// anunciada com ou sem a flag. Aceita só para não quebrar linha de comando
+    /// antiga; o único efeito que resta é marcar este nó como `primary` na
+    /// configuração de inferência montada pela linha de comando.
     #[arg(long)]
     gateway: bool,
 
@@ -566,12 +568,7 @@ async fn main() -> Result<()> {
     };
 
     // ── Determine Ollama port to advertise ───────────────────────────────────
-    // Only advertise when --gateway is set so other nodes can route requests here.
-    let ollama_port: Option<u16> = if args.gateway {
-        parse_ollama_port(&args.ollama_url)
-    } else {
-        None
-    };
+    let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
 
     // ── Start P2P network ────────────────────────────────────────────────────
     let node_display_name = match app_config.node_name.clone() {
@@ -945,6 +942,16 @@ async fn main() -> Result<()> {
 }
 
 /// Extract the port from an Ollama URL like "http://localhost:11434".
+/// A porta de Ollama que este nó anuncia aos peers.
+///
+/// Não depende de flag nenhuma: dependia de `--gateway`, que está marcada como
+/// deprecated justamente porque todo nó já serve a API. Sem a flag, o nó
+/// servia o Ollama local e nenhum peer sabia disso, então ninguém podia rotear
+/// para cá.
+fn advertised_ollama_port(ollama_url: &str) -> Option<u16> {
+    parse_ollama_port(ollama_url)
+}
+
 fn parse_ollama_port(url: &str) -> Option<u16> {
     url.trim_start_matches("http://")
         .trim_start_matches("https://")
@@ -1096,4 +1103,27 @@ fn gethostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "unknown".into())
+}
+
+#[cfg(test)]
+mod main_tests {
+    use super::*;
+
+    /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está
+    /// marcada como deprecated porque todo nó já serve a API, e enquanto o
+    /// anúncio dependia dela um nó sem a flag servia o Ollama local sem que
+    /// nenhum peer soubesse - ninguém conseguia rotear para cá.
+    #[test]
+    fn the_advertised_ollama_port_does_not_depend_on_the_deprecated_flag() {
+        let args = Args::parse_from(["rdma-p2p"]);
+        assert!(!args.gateway, "sem a flag, que é o caso que quebrava");
+        assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
+
+        let com_flag = Args::parse_from(["rdma-p2p", "--gateway"]);
+        assert_eq!(
+            advertised_ollama_port(&com_flag.ollama_url),
+            advertised_ollama_port(&args.ollama_url),
+            "a flag não pode mudar o que se anuncia"
+        );
+    }
 }

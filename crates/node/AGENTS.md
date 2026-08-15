@@ -40,8 +40,9 @@ das tasks de fundo, loop da TUI.
 
 **Flags (clap derive, `Args`):** `-m/--model`, `-M/--memory`, `-p/--port`
 (42777), `-b/--bootstrap`, `--advertise-addr`, `--refresh` (3), `--list-models`,
-`--ollama-url`, `--gateway` (deprecated: só decide se o `ollama_port` é
-anunciado), `--gateway-port` (8080), `--start-layer`/`--end-layer`,
+`--ollama-url`, `--gateway` (deprecated: o único efeito que resta é marcar o nó
+como `primary` na config de inferência montada pela linha de comando),
+`--gateway-port` (8080), `--start-layer`/`--end-layer`,
 `--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192), `--n-batch` (512),
 `--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
@@ -85,8 +86,8 @@ anunciado), `--gateway-port` (8080), `--start-layer`/`--end-layer`,
     camadas, peers, health, aviso de buraco anterior.
 
 `start_setup_mode` e `start_gateway_only` estão em `main.rs` (não num módulo
-separado). `parse_ollama_port` extrai a porta do `--ollama-url` só quando
-`--gateway` está ligado.
+separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta do
+`--ollama-url` e a anuncia **sempre**, com ou sem `--gateway`.
 
 ## src/ subpastas
 
@@ -120,6 +121,5 @@ separado). `parse_ollama_port` extrai a porta do `--ollama-url` só quando
 
 ## Defeitos anotados
 
-- **`--gateway` deprecated ainda muda comportamento** (`main.rs:564-568`): sem
-  a flag, `ollama_port` não é anunciado, então peers não conseguem rotear para
-  o Ollama local deste nó mesmo servindo a API.
+Nenhum em aberto nesta pasta.
+

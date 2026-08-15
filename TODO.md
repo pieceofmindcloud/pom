@@ -65,7 +65,7 @@ substituída por essa explicação.
   **Pronto quando:** o caminho passa por `identity::key_path()` e um teste cobre a execução a
   partir de um cwd diferente.
 
-- [ ] **`--gateway` deprecated ainda muda comportamento**
+- [x] **`--gateway` deprecated ainda muda comportamento**
   `crates/node/src/main.rs:564-568` · anotado em `crates/node/AGENTS.md`
   Sem a flag, `ollama_port` não é anunciado, então peers não conseguem rotear para o Ollama
   local deste nó mesmo com ele servindo a API.

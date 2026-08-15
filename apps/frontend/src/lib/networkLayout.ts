@@ -43,9 +43,17 @@ export function readPositions(key: string): Record<string, CanvasPosition> {
 }
 
 export function writePositions(key: string, positions: Record<string, CanvasPosition>) {
-  localStorage.setItem(key, JSON.stringify(positions));
+  try {
+    localStorage.setItem(key, JSON.stringify(positions));
+  } catch {
+    /* quota or security: the drag still works for this session */
+  }
 }
 
 export function clearPositions(key: string) {
-  localStorage.removeItem(key);
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    /* storage blocked; the canvas resets visually regardless */
+  }
 }

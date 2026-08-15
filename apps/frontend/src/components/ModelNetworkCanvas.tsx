@@ -47,9 +47,10 @@ function rangeForEdge(ranges: GraphRange[], edge: RoutingEdge, side: "from" | "t
 }
 
 function Meter({ label, used, total, unknown = false }: { label: string; used: number | null; total: number | null; unknown?: boolean }) {
+  const { t } = useI18n();
   const percent = used != null && total != null && total > 0 ? Math.min(100, (used / total) * 100) : null;
   const tone = percent != null && percent >= 90 ? "bg-rose" : percent != null && percent >= 70 ? "bg-amber" : "bg-aqua";
-  const value = unknown || percent == null ? "desconhecido" : `${used!.toFixed(1)} / ${total!.toFixed(1)} GiB`;
+  const value = unknown || percent == null ? t("canvas.meterUnknown") : `${used!.toFixed(1)} / ${total!.toFixed(1)} GiB`;
   return <div className="mt-2">
     <div className="mb-1 flex justify-between gap-2 text-[9px] uppercase tracking-[0.12em] text-faint"><span>{label}</span><span className="normal-case tracking-normal text-muted">{value}</span></div>
     <div className={clsx("h-1.5 overflow-hidden rounded-full bg-line", (unknown || percent == null) && "bg-[repeating-linear-gradient(135deg,transparent_0,transparent_4px,rgba(124,135,165,.3)_4px,rgba(124,135,165,.3)_6px)]")} aria-label={`${label}: ${value}`}>
@@ -100,10 +101,10 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       </div>
       <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={serving && !unreachable} />{unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
     </div>
-    <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{range.load} em voo</span>}</div>
+    <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
-    <Meter label="Memória" used={ramUsed} total={ramTotal} unknown={!system} />
-    <Meter label="Carga" used={range.load} total={8} />
+    <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
+    <Meter label={t("canvas.load")} used={range.load} total={8} />
   </article>;
 }
 
@@ -120,13 +121,13 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const modelIds = useMemo(() => Array.from(new Set([
-    ...cluster.model_inventory.map((inventory) => inventory.model_id),
+    ...(cluster.model_inventory ?? []).map((inventory) => inventory.model_id),
     ...graph.models,
     ...(cluster.active_model ? [cluster.active_model] : []),
   ])).sort(), [cluster.active_model, cluster.model_inventory, graph.models]);
   const selected = model && modelIds.includes(model) ? model : cluster.active_model || modelIds[0];
-  const ranges = selected ? graph.byModel[selected] : [];
-  const inventory = cluster.model_inventory.find((entry) => entry.model_id === selected);
+  const ranges = selected ? (graph.byModel[selected] ?? []) : [];
+  const inventory = (cluster.model_inventory ?? []).find((entry) => entry.model_id === selected);
   const layoutKey = useMemo(() => deploymentLayoutKey(selected ?? "", ranges.map((range) => ({ node_id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer, changed_at: range.node?.status.changed_at }))), [ranges, selected]);
   const selectedEdges = selected ? cluster.routing_edges.filter((edge) => edge.model_id === selected) : [];
   const candidates = selected ? cluster.candidate_edges.filter((edge) => edge.model_id === selected) : [];
@@ -174,15 +175,15 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
 
   return <section ref={canvas} className="relative h-full min-h-0 w-full overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]" style={{ backgroundSize: "18px 18px" }}>
     <div className="absolute left-4 top-3 z-20 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 rounded-xl border border-line bg-ink/90 p-1.5 shadow-panel backdrop-blur-md">
-      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label="Modelo">{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">Nenhum modelo implantado</span>}</div>
+      <div className="flex max-w-[min(46rem,60vw)] overflow-x-auto" role="group" aria-label="Modelo">{modelIds.length ? modelIds.map((name) => <button key={name} onClick={() => setModel(name)} aria-pressed={selected === name} className={clsx("h-8 shrink-0 rounded-md px-3 font-mono text-xs", selected === name ? "bg-iris text-white" : "text-muted hover:bg-raised hover:text-fg")}>{name}</button>) : <span className="px-2 text-xs text-muted">{t("canvas.noModel")}</span>}</div>
       {inventory && <span className={clsx("shrink-0 rounded-md px-2 py-1 font-mono text-[10px]", inventory.complete ? "bg-aqua/15 text-aqua" : "bg-amber/15 text-amber")}>L{inventory.covered_layers}/{inventory.total_layers}</span>}
       <span className="h-5 w-px bg-line" />
-      <Button size="sm" aria-label="Diminuir zoom" onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
-      <Button size="sm" aria-label="Aumentar zoom" onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
-      <Button size="sm" aria-label="Ajustar à rede" onClick={fit}>Fit</Button>
-      <Button size="sm" aria-label="Reorganizar nós automaticamente" onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
+      <Button size="sm" aria-label={t("canvas.autoLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
     </div>
-    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">Nenhuma capacidade de inferência anunciada ainda.</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
+    {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">
         <defs><marker id="route-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" className="fill-aqua" /></marker></defs>
         {edges.map((edge) => {
@@ -206,7 +207,7 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
     <PeerDetailDialog
       peer={detailPeer}
       group={cluster.active_model}
-      otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
+      otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId && peer.total_layers > 0).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
       onClose={() => setDetailNodeId(null)}
     />
     {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-aqua" />{t("canvas.legendPrimary")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />{t("canvas.legendParallel")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />{t("canvas.legendInactive")}</span></div>}

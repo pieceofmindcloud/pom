@@ -108,11 +108,11 @@ export function WholeModels() {
     try {
       const out = await deleteModel(path, name, (m) => window.confirm(m));
       if (out.status === "deleted") {
-        toast.success(`${name} apagado · ${bytes(out.freedBytes)} liberados`);
+        toast.success(t("models.deleted", { name, bytes: bytes(out.freedBytes) }));
         void catalog.refetch();
       }
     } catch (e) {
-      toast.fromError("Não deu para apagar", e);
+      toast.fromError(t("models.deleteFailed"), e);
     }
   }
   // Fatias têm `shard_range` preenchido e ficam fora da lista de modelos
@@ -198,10 +198,10 @@ export function WholeModels() {
                         size="sm"
                         variant="ghost"
                         icon={<Trash2 className="h-3.5 w-3.5" />}
-                        aria-label={`Excluir ${m.name} do disco`}
+                        aria-label={t("models.deleteAria", { name: m.name })}
                         onClick={() => void remove(m.path, m.name)}
                       >
-                        Excluir
+                        {t("models.deleteButton")}
                       </Button>
                     </>
                   }

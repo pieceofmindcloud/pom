@@ -64,7 +64,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route (Chat, Dashboard, DeployModel, Shards, SliceModels, WholeModels, Transfers, SendFile, SlicingJobs, LogsByToken, LogsLive, NetworkSettings, Keys, ModelPaths, Documentation, Setup, NotFound).
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ModelNetworkDemo).
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 
 ## Links

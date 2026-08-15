@@ -154,24 +154,3 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
 `/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`.
-
-## Defeitos anotados
-
-- **DEFEITO ANOTADO: dois estados vazios se sobrepõem na aba Detalhes.** Com
-  `c.peers.length === 0` na visão "estendida", o painel `dashboard.noMachines`
-  rende dentro da área de rolagem (Dashboard.tsx:222) e o overlay
-  `dashboard.emptyNetwork` rende por cima dele, ancorado ao fundo
-  (Dashboard.tsx:272) - a mesma condição desenha duas mensagens, uma em cima
-  da outra. Preexistente ao 5423852, mas a condição da primeira mudou de
-  `peers.length` para `c.peers.length` nesse commit sem resolver a duplicação.
-- **Hardcoded Portuguese bypasses i18n.** `Shards.tsx`, `WholeModels.tsx` and
-  `Transfers.tsx` use literal strings ("Excluir", "apagado", "Não deu para
-  apagar", "Cancelar", "Transferência cancelada", "enviando para", "recebendo
-  de") instead of `t()`; `Chat.tsx`'s `ExecutionTelemetry` hardcodes the whole
-  telemetry table and its footnote in Portuguese. With the EN locale active
-  these stay in Portuguese. Cosmetic, but inconsistent with the rest of the app.
-- **`AddNodeDialog` keeps stale selections across opens.** `Dashboard.tsx`
-  always mounts `AddNodeDialog` (open is controlled), so `nodeId` and
-  `sliceIndex` are seeded once from the first `peers[0]`/first slice and never
-  re-initialized when the peer list changes between opens — reopening after a
-  peer left can submit a node_id that is no longer in the dropdown.

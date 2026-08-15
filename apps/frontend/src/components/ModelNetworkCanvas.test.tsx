@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { edgeStyle, isControlTarget, ModelNetworkCanvas } from "./ModelNetworkCanvas";
 import { LocaleProvider } from "../i18n/provider";
 import type { ClusterView } from "../lib/types";
-import { fakeCluster, fakeNode, fakeSlicePeer } from "../test/fixtures";
+import { fakeCluster, fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
 
 describe("edgeStyle", () => {
   it("pinta a rota principal de verde, sólida e com seta", () => {
@@ -49,7 +49,26 @@ function mount(view: ClusterView = cluster) {
 describe("ModelNetworkCanvas: detalhes por duplo clique", () => {
   afterEach(cleanup);
 
-  it("não abre nada antes do duplo clique", () => {
+  it("nao inclui peer sem fatia no otherRanges da janela de detalhes", () => {
+    const b = fakeSlicePeer("b", 0, 0);
+    b.total_layers = 0;
+    const view = fakeCluster([fakeSlicePeer("a", 5, 10), b], "qwen35");
+    mount(view);
+
+    const cards = document.querySelectorAll("article");
+    expect(cards.length).toBeGreaterThanOrEqual(1);
+
+    act(() => {
+      fireEvent.doubleClick(cards[1]);
+    });
+
+    // The dialog shows the serving peer's real range, not the [0,0] that
+    // a non-serving peer would contribute to otherRanges without the filter.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toMatch(/L5.+10/);
+  });
+
+  it("nao abre nada antes do duplo clique", () => {
     mount();
     expect(screen.queryByRole("dialog")).toBeNull();
   });

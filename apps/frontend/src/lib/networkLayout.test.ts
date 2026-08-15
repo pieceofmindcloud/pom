@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
-import { deploymentLayoutKey, fallbackPosition } from "./networkLayout";
+// @vitest-environment jsdom
+import { describe, expect, it, vi } from "vitest";
+import { clearPositions, deploymentLayoutKey, fallbackPosition, writePositions } from "./networkLayout";
 
 describe("network layout", () => {
   it("invalidates stored positions when a deployment model changes", () => {
@@ -21,5 +22,21 @@ describe("network layout", () => {
   it("places the automatic layout inside the canvas bounds", () => {
     expect(fallbackPosition(0)).toEqual({ left: 48, top: 96 });
     expect(fallbackPosition(5)).toEqual({ left: 668, top: 336 });
+  });
+});
+
+describe("writePositions and clearPositions", () => {
+  it("writePositions does not throw when localStorage is blocked", () => {
+    vi.spyOn(localStorage, "setItem").mockImplementation(() => {
+      throw new Error("quota exceeded");
+    });
+    expect(() => writePositions("any-key", { a: { left: 10, top: 20 } })).not.toThrow();
+  });
+
+  it("clearPositions does not throw when localStorage is blocked", () => {
+    vi.spyOn(localStorage, "removeItem").mockImplementation(() => {
+      throw new Error("access denied");
+    });
+    expect(() => clearPositions("any-key")).not.toThrow();
   });
 });

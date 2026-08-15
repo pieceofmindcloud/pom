@@ -85,9 +85,6 @@ Per-file list:
   slice it has not announced yet. `UpdateNode` (update+restart, dev-only via
   `RDMA_P2P_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
   render from here now.
-- `ModelNetworkDemo.tsx` — A static "SIMULAÇÃO" mock of the canvas with
-  hardcoded nodes/edges. Not imported anywhere in the app — a leftover from
-  building the canvas.
 - `AddNodeDialog.tsx` — "Add a machine to a live model" dialog:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
   cluster). Overlap is the point — it creates a parallel route — so it is
@@ -209,30 +206,3 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
 
-## Defeitos anotados
-
-- **`ModelNetworkDemo.tsx` is dead code.** Nothing in the app imports it; it is
-  a hardcoded simulation left over from building `ModelNetworkCanvas`. It keeps
-  its own copy of the layout/meter logic, which will drift from the real canvas.
-- **`ModelNetworkCanvas.tsx` hardcodes Portuguese.** Buttons ("Diminuir zoom",
-  "Ajustar à rede", "Reorganizar nós automaticamente", "Fit") and empty states
-  ("Nenhum modelo implantado", "Nenhuma capacidade de inferência anunciada")
-  are literal strings, while the legend uses `t("canvas.*")` — with the EN
-  locale active the legend switches but the rest does not.
-- **`AddNodeDialog` never re-initializes its picks from props.** `nodeId` and
-  `sliceIndex` are seeded once (`useState(peers[0]?.node_id ?? "")`) and the
-  dialog is always mounted (open is controlled by Dashboard), so reopening after
-  the peer list changed can submit a stale node_id that is not in the dropdown.
-- **DEFEITO ANOTADO: `ModelNetworkCanvas` feeds `PeerDetailDialog` bogus ranges
-  in the fallback case.** `otherRanges` is built from `pipelinePeers(cluster)`,
-  which falls back to *all* peers when none matches the active model; a peer
-  without a slice then contributes its default `[0, 0]` to the ranges
-  `RemoveNode` compares against, so "these layers go uncovered" can be wrong
-  in that degenerate state. Only the double-click path of the canvas is
-  affected - the Dashboard tab builds `otherRanges` from the pipeline group
-  only.
-- **`LeaveNode` reuses the trigger label for the confirm button.** The card
-  button and the window's confirm both read "Sair da rede" - the window shows
-  two same-named buttons, and the test clicks `buttons[buttons.length - 1]`,
-  relying on the portal putting the window's button last in the DOM. Cosmetic,
-  but a user can confuse the trigger with the confirmation.

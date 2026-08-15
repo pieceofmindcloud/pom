@@ -33,10 +33,10 @@ export function Transfers() {
   async function cancel(id: string) {
     try {
       await api.post(`/api/transfer/jobs/${id}/cancel`);
-      toast.success("Transferência cancelada");
+      toast.success(t("transfers.cancelled"));
       void transfers.refetch();
     } catch (e) {
-      toast.fromError("Não deu para cancelar", e);
+      toast.fromError(t("transfers.cancelFailed"), e);
     }
   }
 
@@ -180,7 +180,7 @@ export function Transfers() {
                   />
                   <p className="mt-2 flex flex-wrap gap-x-4 font-mono text-[0.7rem] text-faint">
                     <span>
-                      {job.direction === "sending" ? "enviando para" : "recebendo de"} {job.peer_host}
+                      {job.direction === "sending" ? t("transfers.sendingTo", { host: job.peer_host }) : t("transfers.receivingFrom", { host: job.peer_host })} {job.peer_host}
                     </span>
                     <span>{rate(job.bytes_per_sec)}</span>
                     {job.eta_secs != null && <span>{t("transfers.remaining")} {duration(job.eta_secs)}</span>}

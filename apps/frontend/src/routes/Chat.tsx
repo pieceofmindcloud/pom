@@ -69,12 +69,9 @@ function EventMark({ message }: { message: ChatMessage }) {
 }
 
 function Bubble({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
-  const { locale } = useI18n();
+  const { t, locale } = useI18n();
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
-  const labels = locale === "pt-BR"
-    ? { thinking: "Pensamento", speed: "tok/s", tokens: "tokens", time: "s" }
-    : { thinking: "Thinking", speed: "tok/s", tokens: "tokens", time: "s" };
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
@@ -92,7 +89,7 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
         <div className="min-w-0 flex-1">
           {message.reasoning && (
             <details open={streaming} className="mb-3 rounded-xl border border-iris/25 bg-iris/[0.05] px-3 py-2.5">
-              <summary className="cursor-pointer select-none text-xs font-medium text-iris">{labels.thinking}</summary>
+              <summary className="cursor-pointer select-none text-xs font-medium text-iris">{t("chat.thinking")}</summary>
               <div className="mt-2 text-sm text-muted"><Markdown>{message.reasoning}</Markdown></div>
             </details>
           )}
@@ -110,7 +107,7 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
           )}
           {message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
-              <span>{message.tokensPerSecond.toFixed(1)} {labels.speed}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${labels.tokens}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${labels.time}`}</span>
+              <span>{message.tokensPerSecond.toFixed(1)} {t("chat.speedUnit")}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${t("chat.timeUnit")}`}</span>
               {message.trace && <ExecutionTelemetry trace={message.trace} source={message.source} />}
             </div>
           )}
@@ -126,22 +123,23 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
  * on every single turn was not.
  */
 export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
+  const { t } = useI18n();
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
-    <summary className="cursor-pointer font-medium text-fg">Telemetria da execução {source ? `· ${source}` : ""}</summary>
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{trace.input_tokens} in</span><span>{trace.output_tokens} out</span><span>{trace.prefill_ms} ms prefill</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span><span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     <div className="mt-2 overflow-x-auto">
       <table className="w-full min-w-[46rem] border-collapse font-mono text-[0.66rem] leading-relaxed">
         <thead className="text-faint">
           <tr className="border-b border-line/70 text-left">
-            <th className="py-1 pr-3 font-normal">hop</th>
-            <th className="py-1 pr-3 font-normal">fase</th>
-            <th className="py-1 pr-3 text-right font-normal">chamadas</th>
-            <th className="py-1 pr-3 text-right font-normal">gateway</th>
-            <th className="py-1 pr-3 text-right font-normal">backend</th>
-            <th className="py-1 pr-3 text-right font-normal">residual</th>
-            <th className="py-1 pr-3 text-right font-normal">sampling</th>
-            <th className="py-1 pr-3 text-right font-normal">transporte</th>
-            <th className="py-1 text-right font-normal">bytes</th>
+            <th className="py-1 pr-3 font-normal">{t("chat.telemetry.hop")}</th>
+            <th className="py-1 pr-3 font-normal">{t("chat.telemetry.phase")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.calls")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.gatewayHeader")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.backendHeader")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.residualHeader")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.samplingHeader")}</th>
+            <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.transportHeader")}</th>
+            <th className="py-1 text-right font-normal">{t("chat.telemetry.bytesHeader")}</th>
           </tr>
         </thead>
         <tbody>
@@ -149,14 +147,14 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
             const id = `${hop.node_id}:${hop.start_layer}`;
             if (!isPhasedHop(hop)) return [<LegacyHopRows key={id} hop={hop} />];
             return [
-              <PhaseRow key={`${id}:prefill`} hop={hop} label="prefill" phase={hop.prefill} first />,
-              <PhaseRow key={`${id}:decode`} hop={hop} label="decode" phase={hop.decode} />,
+              <PhaseRow key={`${id}:prefill`} hop={hop} label={t("chat.telemetry.prefill")} phase={hop.prefill} first />,
+              <PhaseRow key={`${id}:decode`} hop={hop} label={t("chat.telemetry.decode")} phase={hop.decode} />,
             ];
           })}
         </tbody>
       </table>
     </div>
-    <p className="mt-2 text-faint">“Gateway” é só o trabalho do gateway (codificar + decodificar o frame). “Backend” é o <code>llama_decode</code> do nó; a linha detalhada mostra também a conclusão medida por <code>llama_synchronize</code> (salvo com <code>RDMA_P2P_PROFILE_SYNC=0</code>), que inclui transferências de saída já enfileiradas - não é tempo puro de kernel. “Residual” é a leitura do estado oculto que força GPU → CPU. “Transporte” é a ida e volta fora do handler do nó, não latência de pacote pura. “Espera do motor” é o tempo parado no mutex do <code>llama_context</code>, que não é seguro para uso concorrente: duas requisições no mesmo nó decodificam uma de cada vez, e esta é a fila. Espera maior que o backend significa nó ocupado, não nó lento.</p>
+    <p className="mt-2 text-faint">{t("chat.telemetry.footnote")}</p>
   </details>;
 }
 
@@ -171,6 +169,7 @@ function PhaseRow({
   phase: PhaseTrace;
   first?: boolean;
 }) {
+  const { t } = useI18n();
   const gatewayMs = phase.client_encode_ms + phase.client_decode_ms;
   const named =
     phase.node_frame_decode_ms + phase.node_input_prepare_ms + phase.node_queue_ms +
@@ -196,10 +195,10 @@ function PhaseRow({
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={8}>
-        <span className="block">nó: frame {phase.node_frame_decode_ms} ms · preparar {phase.node_input_prepare_ms} ms · fila {phase.node_queue_ms} ms · <span className={clsx(phase.node_lock_wait_ms > phase.node_decode_ms && "text-amber")}>espera do motor {phase.node_lock_wait_ms} ms</span> · setup {phase.node_setup_ms} ms · frame out {phase.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
-        <span className="block">backend: enfileirar {phase.node_backend_enqueue_ms} ms · conclusão {phase.node_backend_completion_ms} ms{phase.node_backend_completion_ms === 0 ? " (sync desligado)" : ""} · D2H da captura {phase.node_residual_capture_d2h_sync_ms} ms · p50 {phase.node_p50_ms} ms · p95 {phase.node_p95_ms} ms</span>
-        <span className="block">sampling: acesso {phase.node_logits_access_ms} ms · clone {phase.node_logits_clone_ms} ms · penalidade {phase.node_repetition_penalty_ms} ms · softmax {phase.node_softmax_ms} ms · top-k {phase.node_top_k_ms} ms · top-p {phase.node_top_p_ms} ms · seleção {phase.node_selection_ms} ms · texto {phase.node_token_text_ms} ms</span>
-        <span className="block">gateway: codificar {phase.client_encode_ms} ms · até headers {phase.response_headers_ms} ms · corpo {phase.response_body_ms} ms · decodificar {phase.client_decode_ms} ms</span>
+        <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, frameOut: phase.node_encode_ms })}{unattributed > 0 ? ` · ${t("chat.telemetry.unattributed", { ms: unattributed })}` : ""}</span>
+        <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}{phase.node_backend_completion_ms === 0 ? ` ${t("chat.telemetry.syncOff")}` : ""}</span>
+        <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
+        <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
       </td>
     </tr>
   </>;
@@ -214,6 +213,7 @@ function PhaseRow({
  * do not belong to - the row says the split is missing instead.
  */
 function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
+  const { t } = useI18n();
   const gatewayMs = hop.client_encode_ms + hop.client_decode_ms;
   const named =
     hop.node_frame_decode_ms + hop.node_input_prepare_ms + hop.node_queue_ms +
@@ -224,7 +224,7 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
   return <>
     <tr className="border-t border-line/70">
       <td className="py-1 pr-3 align-top text-fg" rowSpan={2}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
-      <td className="py-1 pr-3">as duas</td>
+      <td className="py-1 pr-3">{t("chat.telemetry.legacyBoth")}</td>
       <td className="py-1 pr-3 text-right">{hop.calls}</td>
       <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
       <td className="py-1 pr-3 text-right">{hop.node_decode_ms} ms</td>
@@ -235,9 +235,9 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={8}>
-        <span className="block">telemetria antiga: esta execução foi gravada antes da separação por fase, então os números acima somam prefill e decode ({hop.prefill_calls} prefill + {hop.decode_calls} tokens) e não dá para separá-los agora.</span>
-        <span className="block">nó: frame {hop.node_frame_decode_ms} ms · preparar {hop.node_input_prepare_ms} ms · fila {hop.node_queue_ms} ms · setup {hop.node_setup_ms} ms · frame out {hop.node_encode_ms} ms{unattributed > 0 ? ` · não atribuído ${unattributed} ms` : ""}</span>
-        <span className="block">decode/token p50 {hop.node_decode_p50_ms} ms · p95 {hop.node_decode_p95_ms} ms · gateway: codificar {hop.client_encode_ms} ms · até headers {hop.response_headers_ms} ms · corpo {hop.response_body_ms} ms · decodificar {hop.client_decode_ms} ms</span>
+        <span className="block">{t("chat.telemetry.legacyNote", { prefillCalls: hop.prefill_calls, decodeCalls: hop.decode_calls })}</span>
+        <span className="block">{t("chat.telemetry.legacyNodeRow", { frame: hop.node_frame_decode_ms, prepare: hop.node_input_prepare_ms, queue: hop.node_queue_ms, setup: hop.node_setup_ms, frameOut: hop.node_encode_ms, unattributed })}</span>
+        <span className="block">{t("chat.telemetry.legacyDecodeRow", { decodeP50: hop.node_decode_p50_ms, decodeP95: hop.node_decode_p95_ms, encode: hop.client_encode_ms, headers: hop.response_headers_ms, body: hop.response_body_ms, decode: hop.client_decode_ms })}</span>
       </td>
     </tr>
   </>;

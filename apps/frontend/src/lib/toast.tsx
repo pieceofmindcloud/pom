@@ -8,6 +8,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, CheckCircle2, Info, X, XCircle } from "lucide-react";
 import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { useI18n } from "../i18n/provider";
 
 /**
  * `warning` is the level this panel kept needing and did not have: the action
@@ -30,6 +31,7 @@ const ToastContext = createContext<{
 let nextId = 1;
 
 export function ToastProvider({ children }: { children: React.ReactNode }) {
+  const { t } = useI18n();
   const [toasts, setToasts] = useState<Toast[]>([]);
 
   const dismiss = useCallback(
@@ -56,9 +58,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
       {children}
       <div className="pointer-events-none fixed bottom-5 right-5 z-[60] flex w-[min(24rem,calc(100vw-2.5rem))] flex-col gap-2">
         <AnimatePresence initial={false}>
-          {toasts.map((t) => (
+          {toasts.map((toast) => (
             <motion.div
-              key={t.id}
+              key={toast.id}
               layout
               initial={{ opacity: 0, y: 14, scale: 0.97 }}
               animate={{ opacity: 1, y: 0, scale: 1 }}
@@ -66,28 +68,28 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
               className="pointer-events-auto flex items-start gap-3 rounded-xl border border-line bg-surface px-3.5 py-3 shadow-lift"
             >
-              {t.kind === "success" && (
+              {toast.kind === "success" && (
                 <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-aqua" />
               )}
-              {t.kind === "error" && (
+              {toast.kind === "error" && (
                 <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
               )}
-              {t.kind === "warning" && (
+              {toast.kind === "warning" && (
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
               )}
-              {t.kind === "info" && <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky" />}
+              {toast.kind === "info" && <Info className="mt-0.5 h-4 w-4 shrink-0 text-sky" />}
               <div className="min-w-0 flex-1">
-                <p className="text-sm font-medium text-fg">{t.title}</p>
-                {t.detail && (
+                <p className="text-sm font-medium text-fg">{toast.title}</p>
+                {toast.detail && (
                   <p className="break-path mt-0.5 text-xs leading-relaxed text-muted">
-                    {t.detail}
+                    {toast.detail}
                   </p>
                 )}
               </div>
               <button
-                onClick={() => dismiss(t.id)}
+                onClick={() => dismiss(toast.id)}
                 className="-m-1 rounded p-1 text-faint transition-colors hover:text-fg"
-                aria-label="Fechar aviso"
+                aria-label={t("common.dismiss")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>

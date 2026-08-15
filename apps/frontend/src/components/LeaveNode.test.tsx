@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
 /**
- * O card manda a máquina certa embora, e só depois de perguntar.
+ * O card manda a maquina certa embora, e so depois de perguntar.
  *
- * O `node_id` no corpo é o que separa "esta máquina sai" de "aquela sai": sem
- * ele o nó local se desliga, e o operador que clicou no card do peer ficaria
+ * O `node_id` no corpo e o que separa "esta maquina sai" de "aquela sai": sem
+ * ele o no local se desliga, e o operador que clicou no card do peer ficaria
  * sem painel e com o peer ainda no ar.
+ *
+ * A confirmacao e botao proprio "Confirmar saída", separado do gatilho "Sair
+ * da rede" - os dois nao compartilham mais o mesmo rotulo.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -46,7 +49,7 @@ describe("LeaveNode", () => {
     vi.restoreAllMocks();
   });
 
-  it("pergunta nomeando a máquina, e não desliga ninguém antes da resposta", () => {
+  it("pergunta nomeando a maquina, e nao desliga ninguem antes da resposta", () => {
     const fetchMock = okFetch();
     mount(false);
 
@@ -56,15 +59,12 @@ describe("LeaveNode", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("no card de um peer, manda o node_id daquela máquina", async () => {
+  it("no card de um peer, manda o node_id daquela maquina", async () => {
     const fetchMock = okFetch();
     mount(false);
 
     click(screen.getByRole("button", { name: "Sair da rede" }));
-    // Dois botões com este nome enquanto a confirmação está aberta: o do card e
-    // o de confirmar. O último no DOM é o da janela.
-    const buttons = screen.getAllByRole("button", { name: "Sair da rede" });
-    click(buttons[buttons.length - 1]);
+    click(screen.getByRole("button", { name: "Confirmar saída" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -72,13 +72,12 @@ describe("LeaveNode", () => {
     expect(JSON.parse(init.body as string)).toEqual({ node_id: "no-b" });
   });
 
-  it("no próprio card, o pedido é local — sem node_id, sem repasse", async () => {
+  it("no proprio card, o pedido e local -- sem node_id, sem repasse", async () => {
     const fetchMock = okFetch();
     mount(true);
 
     click(screen.getByRole("button", { name: "Sair da rede" }));
-    const buttons = screen.getAllByRole("button", { name: "Sair da rede" });
-    click(buttons[buttons.length - 1]);
+    click(screen.getByRole("button", { name: "Confirmar saída" }));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];

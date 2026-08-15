@@ -1,12 +1,5 @@
 import type { TransferJob } from "./types";
 
-export type TransferState =
-  | "running"
-  | "verifying"
-  | "done"
-  | "failed"
-  | "cancelled";
-
 export function isFinishedTransfer(state: TransferJob["state"]) {
   return state === "done" || state === "failed" || state === "cancelled";
 }

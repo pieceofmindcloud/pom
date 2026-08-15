@@ -68,7 +68,7 @@ export function LeaveNode({
         busy={busy}
         tone="danger"
         title={t("dashboard.leaveNodeTitle", { hostname })}
-        confirmLabel={t("dashboard.leaveNode")}
+        confirmLabel={t("dashboard.leaveNodeConfirm")}
         onCancel={() => setAsking(false)}
         onConfirm={() => void leave()}
         description={t("dashboard.leaveNodeDescription", { hostname })}

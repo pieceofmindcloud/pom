@@ -120,10 +120,10 @@ function ShardCard({
                 size="sm"
                 variant="ghost"
                 icon={<Trash2 className="h-3.5 w-3.5" />}
-                aria-label={`Excluir ${s.name} do disco`}
+                aria-label={t("models.deleteAria", { name: s.name })}
                 onClick={() => onDelete(s)}
               >
-                Excluir
+                {t("models.deleteButton")}
               </Button>
               <div className="flex shrink-0 items-center gap-2">
                 {missing.length === 0 ? (
@@ -177,11 +177,11 @@ export function Shards() {
     try {
       const out = await deleteModel(shard.path, shard.name, (m) => window.confirm(m));
       if (out.status === "deleted") {
-        toast.success(`${shard.name} apagado · ${bytes(out.freedBytes)} liberados`);
+        toast.success(t("models.deleted", { name: shard.name, bytes: bytes(out.freedBytes) }));
         void catalog.refetch();
       }
     } catch (e) {
-      toast.fromError("Não deu para apagar", e);
+      toast.fromError(t("models.deleteFailed"), e);
     }
   }
 

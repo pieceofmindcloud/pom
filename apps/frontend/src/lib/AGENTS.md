@@ -137,8 +137,3 @@ would go.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
 
-## Defeitos anotados
-
-- `deleteModel.ts` hardcodes pt-BR confirm strings ("Apagar ... do disco desta máquina?", "Atenção:", "Apagar mesmo assim?") instead of going through `i18n/locales`; with the UI in English the delete prompt still reads Portuguese. Same pattern in `toast.tsx` (`aria-label="Fechar aviso"`).
-- `networkLayout.ts` `writePositions` and `clearPositions` write `localStorage` without a try/catch, unlike every other storage helper in this folder (quota/security exceptions would throw from the canvas drag handler).
-- `transferStatus.ts` exports a `TransferState` union type that nothing outside the module uses (the predicates all type on `TransferJob["state"]` directly); the export is dead.

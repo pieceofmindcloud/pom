@@ -7,6 +7,7 @@
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { ExecutionTelemetry } from "./Chat";
+import { LocaleProvider } from "../i18n/provider";
 import type { PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
@@ -22,6 +23,11 @@ function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
     node_p50_ms: 0, node_p95_ms: 0,
     ...overrides,
   };
+}
+
+/** Shaped like a real two-peer run: a heavy prefill, then many cheap tokens. */
+function mount(ui: React.ReactNode) {
+  return render(<LocaleProvider initialLocale="pt-BR">{ui}</LocaleProvider>);
 }
 
 /** Shaped like a real two-peer run: a heavy prefill, then many cheap tokens. */
@@ -59,14 +65,14 @@ describe("ExecutionTelemetry", () => {
    * came to the chat for. Open on demand, closed on arrival.
    */
   it("arrives closed", () => {
-    const { container } = render(<ExecutionTelemetry trace={trace} />);
+    const { container } = mount(<ExecutionTelemetry trace={trace} />);
     const details = container.querySelector("details");
     expect(details).toBeTruthy();
     expect(details!.open).toBe(false);
   });
 
   it("gives each hop one prefill row and one decode row", () => {
-    render(<ExecutionTelemetry trace={trace} source="pipeline:abc→def" />);
+    mount(<ExecutionTelemetry trace={trace} source="pipeline:abc→def" />);
 
     const rows = screen.getAllByRole("row");
     const prefill = rows.find((row) => within(row).queryByText("prefill"));
@@ -86,7 +92,7 @@ describe("ExecutionTelemetry", () => {
   });
 
   it("says the backend sync is off rather than reporting a bare zero", () => {
-    render(<ExecutionTelemetry trace={trace} />);
+    mount(<ExecutionTelemetry trace={trace} />);
     expect(screen.getAllByText(/sync desligado/).length).toBe(2);
   });
 
@@ -133,7 +139,7 @@ describe("ExecutionTelemetry", () => {
       ],
     } as unknown as RequestTrace;
 
-    render(<ExecutionTelemetry trace={legacy} />);
+    mount(<ExecutionTelemetry trace={legacy} />);
 
     // The numbers it does have still show up...
     expect(screen.getByText("95 ms")).toBeTruthy();

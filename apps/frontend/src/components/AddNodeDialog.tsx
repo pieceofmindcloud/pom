@@ -8,7 +8,7 @@
  * Faixa sobreposta aqui não é erro, é o objetivo: é assim que se cria uma rota
  * paralela. Por isso o aviso é afirmativo, e não bloqueia o botão.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Route } from "lucide-react";
 import { api } from "../lib/api";
 import { Confirm } from "./Confirm";
@@ -50,6 +50,14 @@ export function AddNodeDialog({
   const [sliceIndex, setSliceIndex] = useState(0);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      setNodeId(peers[0]?.node_id ?? "");
+      setSliceIndex(0);
+      setError(null);
+    }
+  }, [open, peers]);
 
   const slice = slices[sliceIndex];
   const overlapping = slice

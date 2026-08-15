@@ -8,6 +8,7 @@
  * duas cópias divergiriam no texto do aviso — que é a parte que importa.
  */
 import { api } from "./api";
+import { formatMessage, getActiveLocale } from "../i18n/locales";
 
 export interface DeleteWarning {
   kind: "serving" | "transfer" | "ollama_store";
@@ -32,7 +33,7 @@ export async function deleteModel(
   name: string,
   confirm: (message: string) => boolean,
 ): Promise<DeleteOutcome> {
-  if (!confirm(`Apagar ${name} do disco desta máquina?\n\n${path}`)) {
+  if (!confirm(formatMessage(getActiveLocale(), "models.deleteConfirm", { name }) + "\n\n" + path)) {
     return { status: "cancelled" };
   }
 
@@ -44,7 +45,7 @@ export async function deleteModel(
     if (warnings.length === 0) throw error;
 
     const lista = warnings.map((w) => `• ${w.message}`).join("\n");
-    if (!confirm(`Atenção:\n\n${lista}\n\nApagar mesmo assim?`)) {
+    if (!confirm(formatMessage(getActiveLocale(), "models.deleteWarning") + "\n\n" + lista + "\n\n" + formatMessage(getActiveLocale(), "models.deleteForce"))) {
       return { status: "cancelled" };
     }
     const r = await api.post<{ freed_bytes: number }>("/api/ui/models/delete", {

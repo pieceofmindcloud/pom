@@ -1,7 +1,6 @@
 import clsx from "clsx";
 import { motion } from "framer-motion";
 import {
-  HardDrive,
   LayoutGrid,
   MemoryStick,
   Plus,
@@ -268,7 +267,5 @@ export function Dashboard() {
       onClose={() => setAdding(false)}
       onDone={() => invalidateAll()}
     />
-
-    {c.peers.length === 0 && <div className="absolute inset-x-0 bottom-0 z-20 p-4"><Panel><Empty icon={<HardDrive className="h-5 w-5" />} title={t("dashboard.emptyNetwork")}>{t("dashboard.emptyNetworkDetail")}</Empty></Panel></div>}
   </div>;
 }

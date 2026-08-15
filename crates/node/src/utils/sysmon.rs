@@ -123,6 +123,12 @@ pub enum GpuKind {
     /// Discrete NVIDIA card with its own VRAM.
     Nvidia,
     /// Apple Silicon: GPU and CPU share one memory pool.
+    ///
+    /// Só `read_gpu` no macOS constrói esta variante, então fora do macOS ela é
+    /// dead code de verdade - e some do binário. Ela não pode ser cfg'ada para
+    /// fora: `GpuKind` é o que o `/api/ui/*` serializa, e um nó Linux mostra no
+    /// painel o estado de peers que rodam no MacBook.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     Unified,
     /// Nothing detected.
     None,

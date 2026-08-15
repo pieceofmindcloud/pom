@@ -58,7 +58,11 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `GlobalMemoryStatusEx` declarado à mão para não arrastar `windows-sys`.
 - `read_gpu`/`nvidia_smi` - VRAM total/em uso e processos por placa NVIDIA;
   Apple Silicon reporta `GpuKind::Unified` com a nota honesta (sem VRAM
-  dedicada para medir) em vez de inventar número.
+  dedicada para medir) em vez de inventar número. Essa variante só é construída
+  no macOS, e fora dele o `dead_code` acusava - daí o `cfg_attr(not(macos),
+  allow)` nela. Tirá-la por `cfg` seria pior: `gpu_kind` é campo serializado, e
+  `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
+  cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
   `GetDiskFreeSpaceExW`. É o que a tela usa para saber se outra fatia cabe.
 

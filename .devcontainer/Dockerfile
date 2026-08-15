@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     gnupg \
     pkg-config \
     libssl-dev \
+    mold \
     nodejs \
     npm \
     git \

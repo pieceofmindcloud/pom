@@ -36,6 +36,8 @@ cargo test               # testes do nó
 
 - O perfil release em `.cargo/config.toml` usa `opt-level = 3`, `lto = "fat"`
   e `codegen-units = 1` (medido ~30x no laço quente do sampler), `debug = 0`.
+  No Linux o linker é clang com `-fuse-ld=mold` para acelerar o link fat LTO;
+  **o pacote `mold` é dependência de build no Linux** (`apt-get install mold`).
   `BINDGEN_EXTRA_CLANG_ARGS` aponta o bindgen do llama-cpp-sys para os headers
   do GCC no Ubuntu (o clang do apt não os traz); no macOS é inofensivo.
 - **Features**: `cuda`/`metal` (default vazio) repassadas a `llama-cpp-sys-2`,
@@ -152,20 +154,6 @@ Windows empacota com 7z.
 
 ## Defeitos anotados
 
-- DEFEITO ANOTADO: `.cargo/config.toml:27` - `[target.'cfg(target_os =
-  "linux1")']` é typo: `target_os` nunca será `"linux1"`, então o linker mold
-  (`-fuse-ld=mold`) nunca é aplicado em lugar nenhum. Se a intenção era mold
-  no Linux, o cfg deveria ser `target_os = "linux"` (ou a seção deveria sair).
-- DEFEITO ANOTADO: `.cargo/config.toml:25` - o comentário diz "`incremental`
-  fica desligado porque ... impede inline", mas o valor real é
-  `incremental = true`. Comentário e config se contradizem; um deles está
-  errado.
-- DEFEITO ANOTADO: `docker-compose.yml` monta `./tests/fixtures/node-gpu`,
-  `node-gpu-2`, `node-cpu-1`, `node-cpu-2`, mas `gen-node-configs.py` escreve
-  em `tests/fixtures/node-<N>` (node-1..node-5): os dois esquemas de nome
-  nunca se encontram, e `tests/` nem existe hoje. O compose sobe com
-  diretórios vazios e nós em modo setup, sem as portas que a config gerada
-  definiria.
 - O `README.md` (raiz) ficou defasado em relação ao código e foi corrigido na
   reconciliação de 2026-08-15: o build Docker agora tem dois estágios
   compilando `--features cuda`, e o roadmap não lista mais "Interface de

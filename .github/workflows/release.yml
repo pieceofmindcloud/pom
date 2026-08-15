@@ -94,7 +94,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake libclang-dev clang
+          sudo apt-get install -y cmake libclang-dev clang mold
 
       # O toolkit do apt do Ubuntu é velho demais para GPUs recentes; este é o
       # repositório oficial da NVIDIA, mesma decisão tomada à mão na ksia.

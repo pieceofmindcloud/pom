@@ -59,7 +59,8 @@ haver chave.
 - **`GET /health`** - `status`, `ollama_available`, `peer_count`,
   `pipeline_peers` (com `inference_port`), `default_model`.
 - **`POST /handshake`** - corpo `{ node_id, pubkey, connection_key }`; 403
-  `invalid_key` ou `blocked`, 200 com `approved` + `peer_id` (ver Defeitos).
+  `invalid_key`, `identity_mismatch` (o `node_id` não é o `SHA256` da `pubkey`,
+  ou a chave é malformada) ou `blocked`; 200 com `approved` + `peer_id`.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Sem auth de chave por desenho (ver
   abaixo); ticket vivo = entrega no `ReplyInbox`, ticket morto = `410 Gone`.
@@ -162,10 +163,12 @@ nó de verdade sem sair anunciando, o equivalente em produção é `--no-discove
   ofertas reais vivem em `GET /api/transfer/offers` (`transfer.rs::list_offers`);
   a rota `/admin` existe mas é morta, então qualquer consumidor dela nunca vê
   uma oferta.
-- **DEFEITO ANOTADO: `session.rs` parseia `pubkey` no handshake mas nunca o
-  verifica** (`handle_handshake`, `HandshakeRequest.pubkey`). A aprovação
-  depende só de `connection_key` e `blocked_nodes`; o campo é aceito e
-  ignorado, então não autentica nada.
+- **Em aberto (decisão de protocolo): o handshake amarra `node_id` à `pubkey`,
+  mas não prova posse da chave privada.** `session::node_id_matches_pubkey`
+  exige `node_id == SHA256(pubkey)` e uma chave ed25519 bem formada, o que já
+  impede quem tem a chave de conexão de se passar por outra máquina (o
+  `node_id` é a chave de `blocked_nodes`). Provar posse exige desafio assinado,
+  ou seja, mudança de protocolo.
 - **DEFEITO ANOTADO (exposição): os GETs de leitura do `/api/ui` são abertos** -
   `node`, `models`, `cluster`, `cluster/models`, `paths` (GET), `jobs` e
   `jobs/:id` não têm `ConnectionAuth` (só os mutáveis exigem). `GET

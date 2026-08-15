@@ -243,10 +243,12 @@ behind an auth extractor.
   offers live at `GET /api/transfer/offers` (`transfer.rs::list_offers`); the
   admin route exists but is dead, so any consumer of the `/admin` one never
   sees an offer.
-- **`session.rs` parses `pubkey` in the handshake but never verifies it**
-  (`handle_handshake`, `HandshakeRequest.pubkey`). Approval depends only on
-  `connection_key` and `blocked_nodes`; the pubkey field is accepted and
-  ignored, so it provides no authentication at all.
+- **The handshake binds `node_id` to `pubkey`, but does not prove possession of
+  the private key** (`session::node_id_matches_pubkey`). `node_id` must be
+  `SHA256(pubkey)` and the key must be a well-formed ed25519 point, so a caller
+  holding the connection key can no longer claim another machine's `node_id`
+  (which is the `blocked_nodes` key). A possession proof would need a signed
+  challenge, i.e. a protocol change; open for decision.
 - **`webui.rs` module doc claims the UI assets are compiled in via
   `include_str!`** (`webui.rs:1-9`) - there is no `include_str!`/`include_bytes!`
   anywhere in the backend. The bundle is read from disk by `webapp.rs` at

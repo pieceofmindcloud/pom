@@ -111,7 +111,7 @@ substituída por essa explicação.
 
 ## Segurança e validação de entrada
 
-- [ ] **O handshake lê `pubkey` e nunca o verifica**
+- [x] **O handshake lê `pubkey` e nunca o verifica**
   `crates/node/src/backend/session.rs` (`handle_handshake`, `HandshakeRequest.pubkey`)
   anotado em `crates/node/src/backend/AGENTS.md`
   A aprovação depende só de `connection_key` e `blocked_nodes`; o campo é aceito e ignorado,

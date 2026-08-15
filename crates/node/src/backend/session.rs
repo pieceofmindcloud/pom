@@ -19,6 +19,34 @@ pub struct HandshakeResponse {
     pub reason: Option<String>,
 }
 
+/// O `node_id` declarado é mesmo o que sai desta `pubkey`?
+///
+/// `node_id` é o nome do peer no cluster e a chave de `blocked_nodes`, e é
+/// definido como `SHA256(pubkey)` (`identity::NodeId::from_pubkey`). Antes o
+/// campo `pubkey` era lido e jogado fora, e qualquer requisição com a chave de
+/// conexão podia declarar o `node_id` que quisesse - inclusive o de outra
+/// máquina, para se passar por ela. Amarrar os dois campos custa uma hash e
+/// fecha essa porta.
+///
+/// O que isto **não** prova é posse da chave privada: para isso o handshake
+/// precisaria de um desafio assinado, que é mudança de protocolo.
+fn node_id_matches_pubkey(node_id: &str, pubkey_hex: &str) -> bool {
+    use ed25519_dalek::VerifyingKey;
+    use sha2::{Digest, Sha256};
+
+    let Ok(bytes) = hex::decode(pubkey_hex) else {
+        return false;
+    };
+    let Ok(bytes): Result<[u8; 32], _> = bytes.try_into() else {
+        return false;
+    };
+    // Uma chave ed25519 malformada não deriva identidade nenhuma.
+    if VerifyingKey::from_bytes(&bytes).is_err() {
+        return false;
+    }
+    hex::encode(Sha256::digest(bytes)).eq_ignore_ascii_case(node_id)
+}
+
 pub async fn handle_handshake(
     State(config): State<AuthState>,
     Json(req): Json<HandshakeRequest>,
@@ -31,6 +59,18 @@ pub async fn handle_handshake(
             Json(json!({
                 "approved": false,
                 "reason": "invalid_key"
+            })),
+        );
+    }
+
+    // Antes de olhar a lista de bloqueio: um `node_id` que não sai desta
+    // `pubkey` faria o bloqueio recair sobre um nome que ninguém pode provar.
+    if !node_id_matches_pubkey(&req.node_id, &req.pubkey) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({
+                "approved": false,
+                "reason": "identity_mismatch"
             })),
         );
     }
@@ -79,11 +119,81 @@ mod tests {
     }
 
     fn make_request(key: &str) -> HandshakeRequest {
+        let (node_id, pubkey) = identidade_de_verdade();
         HandshakeRequest {
-            node_id: "node1".into(),
-            pubkey: "pubkey1".into(),
+            node_id,
+            pubkey,
             connection_key: key.into(),
         }
+    }
+
+    /// Um par (`node_id`, `pubkey`) gerado como um nó real gera o seu.
+    fn identidade_de_verdade() -> (String, String) {
+        let id = crate::identity::Identity::generate();
+        (id.node_id.0.clone(), id.public_key_hex())
+    }
+
+    async fn responder(state: AuthState, req: HandshakeRequest) -> (StatusCode, serde_json::Value) {
+        use axum::body::to_bytes;
+        let resp = handle_handshake(State(state), Json(req)).await.into_response();
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    /// O handshake lia `pubkey` e nunca a conferia: com a chave de conexão em
+    /// mãos, qualquer requisição podia declarar o `node_id` de outra máquina -
+    /// e `node_id` é o nome do peer no cluster e a chave de `blocked_nodes`.
+    /// Agora o `node_id` tem que ser o `SHA256` desta `pubkey`.
+    #[tokio::test]
+    async fn a_pubkey_que_nao_deriva_o_node_id_e_recusada() {
+        let state = make_state("secret", vec![]);
+        let (_, pubkey) = identidade_de_verdade();
+        let (outro_id, _) = identidade_de_verdade();
+
+        let (status, body) = responder(
+            state,
+            HandshakeRequest {
+                node_id: outro_id,
+                pubkey,
+                connection_key: "secret".into(),
+            },
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["reason"], "identity_mismatch");
+    }
+
+    #[tokio::test]
+    async fn uma_pubkey_malformada_e_recusada() {
+        let state = make_state("secret", vec![]);
+        let (node_id, _) = identidade_de_verdade();
+
+        let (status, _) = responder(
+            state,
+            HandshakeRequest {
+                node_id,
+                pubkey: "pubkey1".into(),
+                connection_key: "secret".into(),
+            },
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn a_identidade_coerente_passa() {
+        let state = make_state("secret", vec![]);
+        let req = make_request("secret");
+        let esperado = req.node_id.clone();
+
+        let (status, body) = responder(state, req).await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["approved"], true);
+        assert_eq!(body["peer_id"], esperado);
     }
 
     #[tokio::test]

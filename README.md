@@ -38,13 +38,15 @@ O binário estará em `./target/release/rdma-p2p`.
 docker build -t rdma-p2p .
 ```
 
-O build usa três estágios (`cargo-chef` → builder → runtime). O binário é
-compilado sem suporte a GPU (`--no-default-features`) para funcionar em
-qualquer máquina. Para rodar com CUDA, compile o binário localmente e empacote
-na imagem com `COPY`.
+O build usa dois estágios. O builder parte de
+`nvidia/cuda:13.0.3-devel-ubuntu24.04`, compila o binário com suporte a CUDA
+(`cargo build --release --features cuda`) e constrói o frontend (`npm run build`
+em `apps/frontend/`). A imagem final é `nvidia/cuda:13.0.3-base-ubuntu24.04` e
+fica com `libstdc++6` e `libgomp1` apenas.
 
-O `ubuntu:24.04` do builder instala `build-essential`, `cmake`, `libclang-dev`
-e `libssl-dev`; a imagem final fica com `libstdc++6` e `libgomp1` apenas.
+Use `scripts/build-docker.sh` para construir: ele lê o commit do host e o passa
+como `ARG RDMA_P2P_BUILD_COMMIT` (o `.dockerignore` corta `.git/` do contexto, então
+sem isso o binário carimba `desconhecido` em `/api/ui/node`).
 
 ### Executar
 
@@ -54,7 +56,7 @@ docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
     -v ./models:/models \
     rdma-p2p --model /models/meu-modelo.gguf \
-             --gateway --gateway-port 8080
+             --gateway --gateway-port 8080 --inference-port 8181
 
 # Nó conectando a bootstrap
 docker run --rm \
@@ -148,20 +150,20 @@ crates públicos e o nó, use `cargo test --workspace`.
 ### Protocolo de mensagens (UDP JSON)
 
 ```json
-// Announce — nó anuncia suas camadas
+// Announce - nó anuncia suas camadas
 { "type": "Announce", "node_id": "abc...", "model": "gemma3",
   "start_layer": 11, "end_layer": 21, "memory_mb": 3840 }
 
-// PeerRequest — pede lista de peers
+// PeerRequest - pede lista de peers
 { "type": "PeerRequest", "from": "abc..." }
 
-// PeerList — responde com peers conhecidos
+// PeerList - responde com peers conhecidos
 { "type": "PeerList", "peers": [...] }
 
-// Heartbeat — sinal de vida
+// Heartbeat - sinal de vida
 { "type": "Heartbeat", "node_id": "abc...", "timestamp": "..." }
 
-// LocalDiscover — broadcast LAN
+// LocalDiscover - broadcast LAN
 { "type": "LocalDiscover", "from": "abc...", "port": 42777 }
 ```
 
@@ -198,7 +200,7 @@ Máquina C (2GB)  → gemma3 layers 0-9    (já coberto, fica como redundância)
 - [ ] WireGuard mesh automático entre peers
 - [ ] Capability tokens para controle de acesso à memória
 - [ ] QUIC como transporte (substituir UDP raw)
-- [ ] Interface de inferência — encaminha tensores entre nós
+- [ ] Interface de inferência - encaminha tensores entre nós
 - [ ] Suporte a mais modelos (auto-detect via manifest Ollama)
 - [ ] DHT Kademlia completo via libp2p
 - [ ] Dashboard web (HTTP API no nó)
@@ -210,9 +212,9 @@ Máquina C (2GB)  → gemma3 layers 0-9    (já coberto, fica como redundância)
 Atualmente os nós se comunicam sem criptografia (adequado para LAN confiável).
 
 Para redes públicas, o plano é:
-1. **WireGuard mesh** — cada node_id mapeia para uma chave WireGuard
-2. **Capability tokens** — Ed25519 assinados para acesso a regiões de memória
-3. **Canal separado** — controle (TLS) vs dados (QUIC + ChaCha20)
+1. **WireGuard mesh** - cada node_id mapeia para uma chave WireGuard
+2. **Capability tokens** - Ed25519 assinados para acesso a regiões de memória
+3. **Canal separado** - controle (TLS) vs dados (QUIC + ChaCha20)
 
 ---
 

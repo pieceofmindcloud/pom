@@ -85,8 +85,9 @@ invocados pelo binario (ver o `README.md` de la).
   do diretorio do executavel. Windows empacota com 7z.
 - `.cargo/config.toml` - `BINDGEN_EXTRA_CLANG_ARGS` aponta o bindgen do
   llama-cpp-sys para os headers do GCC no Ubuntu (o clang do apt nao os traz);
-  perfil release com `opt-level = 3`, `lto = "fat"`, `codegen-units = 1` (laco
-  quente do sampler: ~30x medido). Ver defeito no target `linux1`.
+  perfil release com `opt-level = 3`, `lto = "fat"`, `codegen-units = 1`,
+  `incremental = true` (laco quente do sampler: ~30x medido); o linker mold
+  entra no Linux via `[target.'cfg(target_os = "linux")']`.
 - `.devcontainer/` - container de dev Ubuntu 24.04 com Rust, node, docker CLI +
   buildx e sshd (`root:123`, sandbox local, nao internet). `devcontainer.json`
   monta o docker.sock e a chave ssh do host; `install-buildkit.sh` baixa o
@@ -95,20 +96,13 @@ invocados pelo binario (ver o `README.md` de la).
   `*.key`, `rdma-p2p.json`, `docs/` do contexto de build; e por isso que o
   commit precisa chegar por variavel e a config nao entra na imagem.
 
-## Defeitos anotados
+## Sobre os nomes das fixtures do docker-compose
 
-- `.cargo/config.toml:27` - `[target.'cfg(target_os = "linux1")']` e typo:
-  `target_os` nunca sera `"linux1"`, entao o linker mold (`-fuse-ld=mold`) nunca
-  e aplicado em lugar nenhum. Se a intencao era mold no Linux, o cfg deveria ser
-  `target_os = "linux"` (ou a secao deveria sair).
-- `.cargo/config.toml:25` - o comentario diz "`incremental` fica desligado
-  porque ... impede inline", mas o valor real e `incremental = true`. Comentario
-  e config se contradizem; um deles esta errado.
-- `docker-compose.yml` monta `./tests/fixtures/node-gpu`, `node-gpu-2`,
-  `node-cpu-1`, `node-cpu-2`, mas `gen-node-configs.py` escreve em
-  `tests/fixtures/node-<N>` (node-1..node-5): os dois esquemas de nome nunca se
-  encontram, e `tests/` nem existe hoje. O compose sobe com diretorios vazios e
-  nos em modo setup, sem as portas que a config gerada definiria.
-- `.dockerignore` ignora `rdma-p2p.json`, mas `docker-compose.yml` so funciona
-  com os fixtures do defeito acima; o caminho versionado de config para o cluster
-  (os `node-<N>/`) e gerado, nao versionado.
+Os dois itens abaixo ja foram considerados defeito, mas o captain recusou
+trata-los. A razao: sao dois ambientes de gente diferente -
+`gen-node-configs.py` gera a configuracao da maquina do captain, e o
+`docker-compose.yml` serve a maquina do salem. Os dois esquemas de nome
+(`tests/fixtures/node-<N>` e `tests/fixtures/node-gpu`/`node-gpu-2`/etc.)
+**nao precisam se encontrar** - cada um atende a um operador distinto.
+
+Nao e defeito. Nao voltar a propor essa "correcao".

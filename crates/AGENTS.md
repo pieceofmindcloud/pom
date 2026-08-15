@@ -4,9 +4,8 @@
 
 Workspace root of the Rust crates. Defined in `/Cargo.toml` (workspace members,
 shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
-`anyhow`, `serde`, `serde_json`). Five members, one binary:
+`anyhow`, `serde`, `serde_json`). Four members, one binary:
 
-- `config` - configuration schemas/persistence (currently empty scaffolding)
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
@@ -21,19 +20,22 @@ builds and tests the node crate. `resolver = "2"`.
   `routing_contract` types in `src/network/network.rs:4` and
   `src/routing/pipeline.rs:8`.
 - `routing-base` -> `routing-contract` (`crates/routing-base/Cargo.toml:7`).
-- `config`, `types` -> no dependencies, consumed by nothing.
+- `types` -> no dependencies, consumed by nothing.
 
-Note: **node does NOT depend on config, types, or routing-base.** The `crate::config`
+Note: **node does NOT depend on types or routing-base.** The `crate::config`
 references inside node (`main.rs`, `backend/*`, `network/identity.rs`, etc.) are its
-own module `crates/node/src/utils/config.rs`, not the `config` crate. The
-`config`/`types` crates are declared in the workspace but nothing links them yet.
+own module `crates/node/src/utils/config.rs`, not a separate crate.
+The `types` crate is declared in the workspace but nothing links it yet.
+The `config` crate was removed as empty scaffolding; the real config lives in
+`crates/node/src/utils/config.rs` and awaits the modular-architecture decision
+before extraction.
 
 ## Intent vs reality
 
 `docs/superpowers/plans/2026-08-11-open-core-workspace-foundation.md` describes an
 incremental extraction: keep node's current modules working while public crates are
 carved out. Only `routing-contract` (and the standalone `routing-base`) have real
-content so far; `config` and `types` are placeholders awaiting migration.
+content so far; `types` is a placeholder awaiting migration.
 
 ## Links
 
@@ -50,5 +52,6 @@ content so far; `config` and `types` are placeholders awaiting migration.
   planning with load scoring. `routing-base` is currently dead code kept alive
   only by its own unit tests.
 - The doc in this file and the plan doc describe `node` depending on `config` and
-  `types`; the code does not. Not a bug, but the workspace graph diverges from the
-  stated architecture until the extraction lands.
+  `types`; the code does not. The `config` crate is no longer in the workspace.
+  Not a bug, but the workspace graph diverges from the stated architecture until
+  the extraction lands.

@@ -13,10 +13,11 @@ BINDGEN_EXTRA_CLANG_ARGS = { value = "-I/usr/lib/gcc/x86_64-linux-gnu/13/include
 #   opt-level = 0   7,77 ms/token
 #   opt-level = 3   0,26 ms/token      (30x)
 #
-# `incremental` fica desligado porque ele quebra o crate em mais unidades de
-# codegen e impede inline entre elas, que e justamente o que faz o laco quente
-# do sampler render. Se o tempo de build incomodar, religar e uma linha - e
-# custa aquele 30x.
+# `incremental = true` para tempos de build baixos no dia a dia: `lto = "fat"`
+# ja faz link otimizado, e recompilacoes incrementais economizam mais do que o
+# eventual inline cross-crate que o incremental desabilitado trazia. Medido 30x
+# de opt-level 0 para 3 no sampler; voltar a false e uma linha se o custo de
+# build no CI incomodar.
 [profile.release]
 opt-level = 3          # Maximize CPU execution speed and loop vectorization
 lto = "fat"            # Enable heavy Link-Time Optimization across crates
@@ -24,6 +25,6 @@ codegen-units = 1
 debug = 0              # Reduce debug info levels (e.g., line numbers only) to speed up builds
 incremental = true
 
-[target.'cfg(target_os = "linux1")']
+[target.'cfg(target_os = "linux")']
 linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]

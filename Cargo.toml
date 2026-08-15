@@ -1,6 +1,5 @@
 [workspace]
 members = [
-    "crates/config",
     "crates/node",
     "crates/routing-base",
     "crates/routing-contract",

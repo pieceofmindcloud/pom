@@ -385,6 +385,8 @@ impl NodeRuntime {
         let cfg_for_health = cfg.clone();
 
         tokio::spawn(async move {
+            status.set_log(&log_file_path(port).to_string_lossy()).await;
+            append_log(port, "supervisor iniciado");
             let mut restarts = 0u32;
             loop {
                 if *gen_rx.borrow() != generation {
@@ -394,7 +396,7 @@ impl NodeRuntime {
                 // pode ter aparecido depois, ou não ter morrido na primeira
                 // investida. Limpar uma vez só fazia as outras nove tentativas
                 // baterem na mesma porta ocupada.
-                free_port(port).await;
+                let porta_presa = free_port(port).await.err();
                 if restarts > 0 {
                     warn!(
                         "reiniciando servidor de inferência (tentativa {}/{})",
@@ -406,21 +408,51 @@ impl NodeRuntime {
                     }
                 }
 
-                status
-                    .set(
-                        ServerState::Starting,
-                        format!("carregando {}", short_path(&cfg.model_path)),
-                        restarts,
-                    )
-                    .await;
+                // Porta presa não pode passar em silêncio: o servidor vai
+                // morrer com "Address already in use" e, enquanto o orçamento
+                // de tentativas não esgota, o operador via só "carregando" e a
+                // TUI seguia anunciando saúde. O estado visível diz o motivo
+                // desde a primeira tentativa (mesmo padrão de
+                // `note_unloadable_slice`).
+                match &porta_presa {
+                    Some(motivo) => {
+                        append_log(port, motivo);
+                        status
+                            .set(
+                                ServerState::Failed,
+                                format!("{motivo}; tentativa {}/{MAX_RESTARTS}", restarts + 1),
+                                restarts,
+                            )
+                            .await;
+                    }
+                    None => {
+                        append_log(
+                            port,
+                            &format!(
+                                "carregando {} (tentativa {}/{MAX_RESTARTS})",
+                                short_path(&cfg.model_path),
+                                restarts + 1
+                            ),
+                        );
+                        status
+                            .set(
+                                ServerState::Starting,
+                                format!("carregando {}", short_path(&cfg.model_path)),
+                                restarts,
+                            )
+                            .await;
+                    }
+                }
 
                 match crate::infer_server::run(cfg.clone(), gen_rx.clone(), generation).await {
                     Ok(()) => {
                         info!("servidor de inferência encerrado graciosamente");
+                        append_log(port, "encerrado graciosamente");
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
+                        append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
                             // Uma fatia que chegou a servir (e por isso está
@@ -429,13 +461,14 @@ impl NodeRuntime {
                             // próximo arranque: o orçamento de tentativas é de
                             // memória e não atravessa um reinício.
                             crate::lastslice::clear();
-                            status
-                                .set(
-                                    ServerState::Failed,
-                                    format!("encerrou {MAX_RESTARTS}x: {e}"),
-                                    restarts,
-                                )
-                                .await;
+                            let detail = match &porta_presa {
+                                Some(motivo) => {
+                                    format!("desistiu depois de {MAX_RESTARTS} tentativas: {motivo}")
+                                }
+                                None => format!("encerrou {MAX_RESTARTS}x: {e}"),
+                            };
+                            append_log(port, &detail);
+                            status.set(ServerState::Failed, detail, restarts).await;
                             return;
                         }
                     }
@@ -513,6 +546,7 @@ impl NodeRuntime {
                     warn!("não deu para anotar a fatia servida: {e}");
                 }
 
+                append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported).await;
                 return;
             }
@@ -521,6 +555,38 @@ impl NodeRuntime {
 
     fn status_handle(&self) -> Arc<RwLock<RuntimeStatus>> {
         self.status.clone()
+    }
+}
+
+/// Onde ficam os logs do servidor de inferência desta porta.
+///
+/// Um arquivo por porta, sob o project root, porque duas instâncias na mesma
+/// máquina (`RDMA_P2P_HOME` diferente) não podem escrever no mesmo arquivo.
+pub fn log_file_path(port: u16) -> PathBuf {
+    crate::config::project_root().join(format!("infer_server_{port}.log"))
+}
+
+/// Anexa uma linha ao log do servidor de inferência.
+///
+/// A TUI limpa a tela a cada `--refresh`, então o stdout do processo é o pior
+/// lugar possível para o histórico de arranque e queda do servidor: quando o
+/// operador vai olhar, a linha já rolou. O arquivo é o que sobra, e é ele que
+/// `RuntimeStatus::log_path` aponta.
+fn append_log(port: u16, line: &str) {
+    use std::io::Write;
+    let path = log_file_path(port);
+    let stamped = format!("{} {line}\n", chrono::Utc::now().to_rfc3339());
+    let opened = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path);
+    match opened {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(stamped.as_bytes()) {
+                warn!("não deu para escrever em {}: {e}", path.display());
+            }
+        }
+        Err(e) => warn!("não deu para abrir {}: {e}", path.display()),
     }
 }
 
@@ -641,18 +707,20 @@ async fn matar_pid(pid: u32) {
 /// Unix: `lsof -ti :PORT` acha o PID e leva SIGKILL. Windows: `netstat -ano` e
 /// `taskkill /F /PID`, que são os equivalentes que vêm com o sistema. Depois,
 /// nos dois, a porta é sondada por até 5 segundos até ficar livre.
-async fn free_port(port: u16) {
+async fn free_port(port: u16) -> Result<(), String> {
     // Fast path: if we can bind, the port is already free.
     if port_is_free(port) {
-        return;
+        return Ok(());
     }
 
     info!("porta {port} em uso — procurando processo para matar");
 
     let pids = pids_segurando_porta(port).await;
     if pids.is_empty() {
-        warn!("porta {port} ocupada mas nao foi possivel descobrir o processo");
-        return;
+        let motivo =
+            format!("porta {port} ocupada e o processo que a segura não pôde ser identificado");
+        warn!("{motivo}");
+        return Err(motivo);
     }
 
     for pid in pids {
@@ -669,11 +737,12 @@ async fn free_port(port: u16) {
     loop {
         if port_is_free(port) {
             info!("porta {port} liberada");
-            return;
+            return Ok(());
         }
         if tokio::time::Instant::now() > deadline {
-            warn!("porta {port} continua ocupada apos 5s — seguindo mesmo assim");
-            return;
+            let motivo = format!("porta {port} continua ocupada 5s depois de matar o ocupante");
+            warn!("{motivo}");
+            return Err(motivo);
         }
         sleep(Duration::from_millis(200)).await;
     }
@@ -717,6 +786,87 @@ impl StatusWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Porta presa é falha visível, não espera silenciosa.
+    ///
+    /// Com o ocupante não identificável (ou não matável, como aqui: quem segura
+    /// a porta é o próprio processo de teste, e o supervisor nunca se mata), o
+    /// servidor morre com "Address already in use" a cada tentativa. Antes, o
+    /// operador via só "carregando" até `MAX_RESTARTS` esgotar, com a TUI
+    /// anunciando saúde o tempo todo; o peer só quebrava na hora da inferência.
+    /// O motivo tem que estar no status desde a primeira tentativa - e o
+    /// arquivo de log tem que existir, porque a TUI limpa a tela a cada
+    /// `--refresh` e o stdout não sobrevive.
+    #[tokio::test]
+    async fn a_porta_presa_aparece_no_status_e_no_log() {
+        let dir = std::env::temp_dir().join(format!("rdma-porta-presa-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::env::set_var("RDMA_P2P_HOME", &dir);
+
+        // Alguém já está com a porta, e é este processo: `free_port` nunca se
+        // mata, então a porta segue presa como no defeito real.
+        // No curinga dual-stack, que é o que `port_is_free` sonda e o que o
+        // servidor de inferência liga.
+        let ocupante = match tokio::net::TcpListener::bind("[::]:0").await {
+            Ok(l) => l,
+            Err(_) => tokio::net::TcpListener::bind("0.0.0.0:0").await.unwrap(),
+        };
+        let port = ocupante.local_addr().unwrap().port();
+
+        let net = Arc::new(
+            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+                .await
+                .expect("socket UDP em porta efêmera"),
+        );
+        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+        let mut c = cfg();
+        c.inference_port = port;
+        rt.spawn_supervisor(c, 0);
+
+        let mut status = rt.status().await;
+        for _ in 0..80 {
+            sleep(Duration::from_millis(250)).await;
+            status = rt.status().await;
+            if status.state == ServerState::Failed {
+                break;
+            }
+        }
+
+        let log = log_file_path(port);
+        let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
+        std::env::remove_var("RDMA_P2P_HOME");
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert_eq!(
+            status.state,
+            ServerState::Failed,
+            "porta presa não pode ficar em Starting: {}",
+            status.detail
+        );
+        assert!(
+            status.detail.contains(&port.to_string()),
+            "o status tem que nomear a porta, e diz: {}",
+            status.detail
+        );
+        assert_eq!(
+            status.log_path.as_deref(),
+            Some(log.to_string_lossy().as_ref()),
+            "o status tem que apontar o arquivo de log"
+        );
+        assert!(
+            conteudo.contains("supervisor iniciado"),
+            "o arquivo de log tem que existir e ter as linhas do supervisor: {conteudo:?}"
+        );
+    }
+
+    /// A TUI mostra o estado do servidor, não um rótulo fixo.
+    #[test]
+    fn o_rotulo_da_tui_muda_com_o_estado() {
+        let mut s = RuntimeStatus::new(ServerState::Failed, "porta 8181 continua ocupada");
+        assert!(crate::runtime_mem_source(&s).contains("porta 8181"));
+        s.state = ServerState::Ready;
+        assert_eq!(crate::runtime_mem_source(&s), "inference_server");
+    }
 
     fn cfg() -> NodeConfig {
         NodeConfig {

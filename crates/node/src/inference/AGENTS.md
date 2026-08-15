@@ -230,8 +230,16 @@ executa a cadeia que o planejador montou.
   recebeu fatia.
 - `free_port` - desocupa a porta antes de subir o servidor: acha quem segura a
   porta (`lsof -ti :PORT` no Unix, `netstat -ano`+`taskkill` no Windows) e mata
-  (SIGKILL). É a resposta ao "porta ocupada" que antes fazia o supervisor
-  desistir em silêncio.
+  (SIGKILL). Devolve `Err(motivo)` quando o ocupante não é identificável ou a
+  porta segue presa depois de 5 s, e o supervisor põe esse motivo no
+  `status.detail` como `Failed` **desde a primeira tentativa** - antes o
+  operador via só "carregando" até `MAX_RESTARTS` esgotar, e a TUI anunciava
+  saúde enquanto o servidor morria em laço.
+- `log_file_path` / `append_log` - `<project_root>/infer_server_<porta>.log`,
+  um por porta, apontado por `RuntimeStatus.log_path` (`set_log`, chamado no
+  arranque do supervisor). Carrega o ciclo de vida do servidor (arranque,
+  tentativa, motivo da queda, modelo carregado); o stdout não serve porque a
+  TUI limpa a tela a cada `--refresh`.
 - `needs_residual_export` - **única** condição para instalar o callback de
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
@@ -272,16 +280,4 @@ executa a cadeia que o planejador montou.
 
 ## Defeitos anotados
 
-- **DEFEITO ANOTADO: `set_log` nunca é chamado** (`runtime.rs:704`):
-  a função existe para redirecionar os logs do servidor embutido para um
-  arquivo (`infer_server_<porta>.log`), mas nenhum caminho a invoca, então
-  `log_path` fica sempre `None` e todo log vai para o stdout do processo - a
-  TUI limpa a tela a cada `--refresh`, então o único jeito de ver é redirecionar
-  o stdout do binário. O arquivo `inference_server_<porta>.log` (Python, antigo)
-  não existe mais.
-- **DEFEITO ANOTADO: desistência residual da porta ocupada** (`runtime.rs`):
-  `free_port` mata o ocupante antes de subir, mas quando o ocupante não é
-  identificável (`lsof`/`netstat` falham) ou a porta segue presa, o supervisor
-  esgota `MAX_RESTARTS` em silêncio e a TUI continua mostrando "Mem loaded:
-  inference_server" como se tudo estivesse bem - o peer só quebra na
-  inferência, com `encerrou com erro: Address already in use` no log do nó.
+Nenhum em aberto nesta pasta.

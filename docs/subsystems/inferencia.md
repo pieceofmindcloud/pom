@@ -282,30 +282,14 @@ prompt e recusa com uma mensagem citando as flags.
 
 ## 10. Defeitos anotados
 
-- **DEFEITO ANOTADO: `self_reply_urls` não filtra o loopback**
-  (`inference/direct.rs:171-184`): o doc promete "o loopback não entra", mas o
-  código só descarta vazio, `0.0.0.0` e `[::]`. Quando `gateway::self_dial_host`
-  cai no fallback `127.0.0.1` (sem `advertised_host` e com `detect_local_ip`
-  falhando), a lista começa (ou só tem)
-  `http://127.0.0.1:<gateway_port>`, `DirectReply::new` a vê não-vazia e liga o
-  modo direto, e a cauda numa outra máquina entrega ao *próprio* loopback dela -
-  resposta perdida, prazo de 600 s. O filtro prometido é justamente o que
-  deixaria a lista vazia e faria o plano cair no anel, que funciona. (Anotado
-  em `inference/AGENTS.md`; citado aqui.)
-- **DEFEITO ANOTADO: `runtime::set_log` nunca é chamado**
-  (`inference/runtime.rs:704`): a função existiria para redirecionar os logs do
-  servidor embutido para `infer_server_<porta>.log`, mas nenhum caminho a
-  invoca e `log_path` fica sempre `None` - todo log vai para o stdout do
-  binário, que a TUI limpa a cada `--refresh` (redirecione o stdout para ver).
-  O log Python `inference_server_<porta>.log` não existe mais. (Anotado em
-  `inference/AGENTS.md`; citado aqui.)
-- A "porta ocupada" que antes fazia o supervisor desistir em silêncio mudou:
-  `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT` no Unix,
-  `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir o
-  servidor. O defeito residual é a desistência silenciosa quando o ocupante não
-  é identificável ou a porta segue presa - a TUI continua mostrando "Mem
-  loaded: inference_server" e o peer só quebra na inferência; a confirmação
-  real é o `/health` do `--inference-port` responder.
+- (não é defeito, é o comportamento de hoje) Porta ocupada: `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT`
+  no Unix, `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir
+  o servidor. Não conseguindo (ocupante não identificável, ou porta ainda presa
+  depois de 5 s), o motivo vai para o `status.detail` como `Failed` já na
+  primeira tentativa, e a linha "Mem loaded" da TUI passa a mostrar esse estado
+  em vez do rótulo fixo `inference_server`. O histórico fica em
+  `<project_root>/infer_server_<porta>.log` (`runtime::log_file_path`, apontado
+  por `status.log_path`), porque a TUI limpa a tela a cada `--refresh`.
 - O fallback "pipeline → Ollama local → peer Ollama" documentado antigamente
   não existe no código: `generate_stream` só tem o pipeline e falha sem ele
   (ver seção 7). A AGENTS.md raiz e `backend/AGENTS.md` foram corrigidas para

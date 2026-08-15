@@ -915,6 +915,14 @@ async fn main() -> Result<()> {
             );
             println!();
 
+            // Vivo, não congelado: enquanto isto era a string fixa
+            // "inference_server", a TUI anunciava saúde mesmo com o servidor
+            // caído em laço (porta presa, por exemplo) e o peer só quebrava na
+            // hora da inferência.
+            let mem_source = match inference_port {
+                Some(_) => runtime_mem_source(&node_runtime.status().await),
+                None => mem_source.clone(),
+            };
             display::print_assignment(a, &mem_source);
             display::print_layer_map(a.total_layers, a.start_layer, a.end_layer, &peers);
             display::print_peers(&peers);
@@ -942,6 +950,20 @@ async fn main() -> Result<()> {
 }
 
 /// Extract the port from an Ollama URL like "http://localhost:11434".
+/// O que a linha "Mem loaded" da TUI mostra sobre o servidor de inferência.
+///
+/// Estado e motivo, não um rótulo fixo: um servidor que não sobe tem que
+/// aparecer aqui, senão o operador só descobre a falha na primeira requisição.
+fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
+    use runtime::ServerState;
+    match status.state {
+        ServerState::Ready => "inference_server".to_string(),
+        ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
+        ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
+        ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
+    }
+}
+
 /// A porta de Ollama que este nó anuncia aos peers.
 ///
 /// Não depende de flag nenhuma: dependia de `--gateway`, que está marcada como

@@ -72,7 +72,7 @@ substituída por essa explicação.
   **Pronto quando:** o anúncio do `ollama_port` não depende mais de uma flag marcada como
   deprecated, ou a flag deixa de ser deprecated e a documentação diz o que ela faz.
 
-- [ ] **Desistência silenciosa quando a porta de inferência fica presa**
+- [x] **Desistência silenciosa quando a porta de inferência fica presa**
   `crates/node/src/inference/runtime.rs` · anotado em `crates/node/src/inference/AGENTS.md`
   `free_port` mata o ocupante antes de subir, mas quando o ocupante não é identificável
   (`lsof`/`netstat` falham) ou a porta segue presa, o supervisor esgota `MAX_RESTARTS` em
@@ -220,7 +220,7 @@ substituída por essa explicação.
   Sem `try/catch`, diferente de todos os outros helpers de armazenamento da pasta - exceções de
   cota ou segurança estourariam de dentro do handler de arrastar do canvas.
 
-- [ ] **`set_log` nunca é chamado**
+- [x] **`set_log` nunca é chamado**
   `crates/node/src/inference/runtime.rs:704` · anotado em `crates/node/src/inference/AGENTS.md`
   A função existe para mandar os logs do servidor embutido para `infer_server_<porta>.log`, mas
   nenhum caminho a invoca, então `log_path` fica sempre `None` e todo log vai para o stdout. A

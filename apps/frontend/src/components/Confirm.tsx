@@ -11,10 +11,20 @@
  * numa função só levaria a um botão "cancelar" que não cancela nada.
  */
 import { AnimatePresence, motion } from "framer-motion";
-import { useEffect } from "react";
+import { useEffect, useId } from "react";
 import { createPortal } from "react-dom";
 import { Button } from "./ui";
 import { formatMessage, getActiveLocale } from "../i18n/locales";
+
+/**
+ * Quem está por cima.
+ *
+ * Uma janela pode abrir outra - a confirmação de "Sair da rede" nasce de dentro
+ * do card que a janela de detalhes mostra -, e todas escutam o Esc no
+ * `document`. Sem esta pilha um Esc fecharia as duas de uma vez, e o operador
+ * perderia a tela que estava lendo por ter desistido do que abriu de lá.
+ */
+const openModals: string[] = [];
 
 export function Modal({
   open,
@@ -22,19 +32,31 @@ export function Modal({
   children,
   footer,
   onClose,
+  size = "md",
 }: {
   open: boolean;
   title: string;
   children: React.ReactNode;
   footer: React.ReactNode;
   onClose: () => void;
+  /** `lg` para conteúdo que é um painel inteiro, e não um parágrafo. */
+  size?: "md" | "lg";
 }) {
+  const id = useId();
+
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    openModals.push(id);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && openModals[openModals.length - 1] === id) onClose();
+    };
     document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      const at = openModals.lastIndexOf(id);
+      if (at >= 0) openModals.splice(at, 1);
+    };
+  }, [open, onClose, id]);
 
   // Vai para o `body`, não para onde o botão está.
   //
@@ -68,9 +90,12 @@ export function Modal({
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 6, scale: 0.98 }}
             transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
-            className="relative w-full max-w-md overflow-hidden rounded-xl border border-line bg-surface shadow-lift"
+            className={
+              "relative flex w-full max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-lift " +
+              (size === "lg" ? "max-w-2xl" : "max-w-md")
+            }
           >
-            <div className="max-h-[70vh] overflow-y-auto px-5 py-4">
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
               <h2 className="font-display text-base font-semibold text-fg">{title}</h2>
               <div className="mt-2 text-sm leading-relaxed text-muted">{children}</div>
             </div>

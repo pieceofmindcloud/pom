@@ -12,9 +12,10 @@
  * jsdom não calcula layout, então o que se afirma aqui é a causa e não o
  * sintoma: a janela é filha do `body`, longe de qualquer ancestral borrado.
  */
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import { Confirm } from "./Confirm";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
+import { Confirm, Modal } from "./Confirm";
 
 describe("Confirm", () => {
   afterEach(cleanup);
@@ -51,5 +52,44 @@ describe("Confirm", () => {
       />,
     );
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  /**
+   * Uma janela abre outra: a confirmação de "Sair da rede" nasce de dentro do
+   * card que a janela de detalhes mostra. Como as duas escutam o Esc no
+   * `document`, sem a pilha um Esc só fecharia as duas, e quem desistiu da
+   * confirmação perderia também a tela que estava lendo.
+   */
+  it("o Esc fecha só a janela de cima", () => {
+    const fecharDeBaixo = vi.fn();
+    const fecharDeCima = vi.fn();
+    function Tela() {
+      const [confirmando, setConfirmando] = useState(false);
+      return (
+        <>
+          <Modal
+            open
+            title="Detalhes de ksia"
+            onClose={fecharDeBaixo}
+            footer={<button onClick={() => setConfirmando(true)}>Sair da rede</button>}
+          >
+            card
+          </Modal>
+          <Modal open={confirmando} title="Tirar ksia da rede?" onClose={fecharDeCima} footer={null}>
+            conteúdo
+          </Modal>
+        </>
+      );
+    }
+    render(<Tela />);
+    act(() => {
+      fireEvent.click(screen.getByText("Sair da rede"));
+    });
+
+    act(() => {
+      fireEvent.keyDown(document, { key: "Escape" });
+    });
+    expect(fecharDeCima).toHaveBeenCalledTimes(1);
+    expect(fecharDeBaixo).not.toHaveBeenCalled();
   });
 });

@@ -22,6 +22,7 @@ import {
 } from "../lib/format";
 import { MachineIcon, machineKind } from "./MachineIcon";
 import { Badge, Dot, Footnote } from "./ui";
+import { pipelinePeers } from "../lib/networkPeers";
 import { useI18n } from "../i18n/provider";
 
 /** Track colours, in the order peers appear along the pipeline. */
@@ -35,14 +36,6 @@ const TRACKS = [
 ];
 
 export const trackOf = (index: number) => TRACKS[index % TRACKS.length];
-
-/** Peers serving the model this node is on, in execution order. */
-export function pipelinePeers(cluster: ClusterView): PeerView[] {
-  const onModel = cluster.peers.filter((p) => p.model === cluster.active_model);
-  return (onModel.length ? onModel : cluster.peers)
-    .slice()
-    .sort((a, b) => a.start_layer - b.start_layer || a.short_id.localeCompare(b.short_id));
-}
 
 function Terminus({
   icon,

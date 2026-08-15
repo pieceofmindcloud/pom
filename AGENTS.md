@@ -506,6 +506,28 @@ uma faixa de ~76 px: medido no navegador, `y = -66` numa viewport de 2029 px,
 com o título fora da tela. Há teste (`Confirm.test.tsx`), que afirma a causa (a
 janela é filha do `body`) porque o jsdom não calcula layout.
 
+Uma janela pode abrir outra - a confirmação de "Sair da rede" nasce de dentro do
+card que a janela de detalhes mostra -, e todas escutam o Esc no `document`. Por
+isso `Modal` mantém uma pilha dos abertos e só o de cima responde ao Esc; sem
+ela um Esc só fechava as duas.
+
+### O Painel: Fluxo e Detalhes mostram a mesma máquina
+
+`PeerDetailCard` (`apps/frontend/src/components/PeerDetailCard.tsx`) é o card de
+uma máquina, e é **um só**: a aba Detalhes empilha um por máquina e o duplo
+clique num card do Fluxo abre o mesmo componente em `PeerDetailDialog`. Duplicar
+a apresentação nos dois lugares é o que se está evitando.
+
+Detalhes lista a **rede inteira**, não a pipeline: `networkPeers`
+(`apps/frontend/src/lib/networkPeers.ts`) separa quem serve o modelo ativo, na
+ordem das camadas, de quem está conectado sem fatia. Máquina sem fatia é
+`model` vazio com `total_layers` zerado (`hasSlice`) - **não** é a faixa "0-0", e
+o card não escreve faixa nenhuma nesse caso.
+
+Peer de mentira em teste tem que ter a forma **inteira** que o nó serve
+(`apps/frontend/src/test/fixtures.ts`): um `node` sem `status` passa pelo `?.` de
+um componente e derruba o seguinte.
+
 ### O chat de teste
 
 `apps/frontend/src/routes/Chat.tsx`. Fala com o cluster por

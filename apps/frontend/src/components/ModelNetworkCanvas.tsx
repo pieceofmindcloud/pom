@@ -2,8 +2,10 @@ import clsx from "clsx";
 import { Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { machineKind, MachineIcon } from "./MachineIcon";
+import { PeerDetailDialog } from "./PeerDetailCard";
 import { Button, Dot } from "./ui";
 import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
+import { pipelinePeers } from "../lib/networkPeers";
 import { useI18n } from "../i18n/provider";
 import {
   clearPositions,
@@ -56,7 +58,19 @@ function Meter({ label, used, total, unknown = false }: { label: string; used: n
   </div>;
 }
 
-function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void }) {
+/**
+ * Um clique que veio de um controle não é um clique no card.
+ *
+ * O card do Fluxo não tem botões hoje, mas o duplo clique é o gesto de "abrir
+ * esta máquina" e não pode virar armadilha para o primeiro botão que alguém
+ * colocar aqui — nem para os que já existem dentro do card da janela, se o
+ * duplo clique cair perto dela.
+ */
+export function isControlTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest("button, a, input, select, textarea, [role='button']") != null;
+}
+
+function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen: () => void }) {
   const system = range.node?.system;
   const gpu = system?.gpus[0];
   const vramUsed = gpu?.vram_used_mb != null ? gpu.vram_used_mb / 1024 : null;
@@ -67,11 +81,14 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   const serving = isServing(range.node?.status.state);
   const unreachable = Boolean(range.unreachable);
   const kind = machineKind(system);
+  const { t } = useI18n();
   return <article
     onPointerDown={onPointerDown}
     onPointerMove={onPointerMove}
     onPointerUp={onPointerUp}
     onPointerCancel={onPointerUp}
+    onDoubleClick={(event) => { if (!isControlTarget(event.target)) onOpen(); }}
+    title={t("canvas.openDetails")}
     className={clsx("absolute select-none rounded-xl border bg-ink/95 p-3.5 shadow-panel backdrop-blur transition-[box-shadow,border-color]", dragging ? "cursor-grabbing border-iris shadow-lift" : "cursor-grab border-line-strong hover:border-iris/55 hover:shadow-lift", unreachable && "opacity-75")}
     style={{ left: position.left, top: position.top, width: CARD_WIDTH, minHeight: CARD_HEIGHT, touchAction: "none" }}
   >
@@ -97,6 +114,9 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
   const [zoom, setZoom] = useState(1);
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
+  // Guarda o `node_id`, e não o peer: a lista se renova a cada refresh do
+  // cluster, e uma cópia guardada aqui congelaria os números da janela aberta.
+  const [detailNodeId, setDetailNodeId] = useState<string | null>(null);
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
   const modelIds = useMemo(() => Array.from(new Set([
@@ -122,6 +142,9 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
     writePositions(layoutKey, updated);
     return updated;
   });
+
+  const detailPeer = detailNodeId ? cluster.peers.find((peer) => peer.node_id === detailNodeId) ?? null : null;
+  const pipeline = pipelinePeers(cluster);
 
   const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
   const fit = () => setZoom(1);
@@ -177,8 +200,15 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
           return <path key={id} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd} />;
         })}
       </svg>
-      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />)}
+      {ranges.map((range, index) => <NetworkNode key={keyFor(range)} range={range} position={positionOf(range, index)} dragging={dragging === keyFor(range)} onPointerDown={(event) => beginDrag(range, index, event)} onPointerMove={(event) => drag(range, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} onOpen={() => setDetailNodeId(range.node_id)} />)}
     </div>}
+    {/* A mesma visão que a aba Detalhes mostra, no mesmo componente. */}
+    <PeerDetailDialog
+      peer={detailPeer}
+      group={cluster.active_model}
+      otherRanges={pipeline.filter((peer) => peer.node_id !== detailNodeId).map((peer) => [peer.start_layer, peer.end_layer] as [number, number])}
+      onClose={() => setDetailNodeId(null)}
+    />
     {ranges.length > 0 && <div className="absolute bottom-3 left-4 z-20 flex items-center gap-3 rounded-lg border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur"><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-aqua" />{t("canvas.legendPrimary")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 bg-iris" />{t("canvas.legendParallel")}</span><span className="flex items-center gap-1.5"><i className="h-0.5 w-5 border-t-2 border-dashed border-faint" />{t("canvas.legendInactive")}</span></div>}
   </section>;
 }

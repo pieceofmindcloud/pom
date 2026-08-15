@@ -83,6 +83,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   duplicava o peer na lista até o timeout e voidava `blocked_nodes` (chaveado
   por node_id). Corrompida, gera nova em vez de parar.
 - `NodeId::from_pubkey` - SHA256 da pubkey; `Display` imprime os primeiros 12.
+- `key_path` / `pkarr_key_path` - `.rdma-p2p-node.key` (identidade no cluster) e
+  `.rdma-p2p.key` (identidade na DHT pkarr), ambas resolvidas contra
+  `config::project_root()`, com override por `$RDMA_P2P_NODE_KEY` e
+  `$RDMA_P2P_PKARR_KEY`. Nenhuma das duas sai do cwd: lançar o binário de outro
+  diretório criaria uma segunda identidade.
 
 `route.rs`:
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho

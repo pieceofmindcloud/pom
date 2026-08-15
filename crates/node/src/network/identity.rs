@@ -40,6 +40,24 @@ pub fn key_path() -> std::path::PathBuf {
     crate::config::project_root().join(KEY_FILENAME)
 }
 
+/// Where the pkarr keypair lives. Not the same key as [`KEY_FILENAME`]: this
+/// one names the node on the pkarr DHT, the other names it in the cluster.
+pub const PKARR_KEY_FILENAME: &str = ".rdma-p2p.key";
+
+/// Resolves the pkarr key file path, under the project root.
+///
+/// Era `Path::new(".rdma-p2p.key")`, relativo ao cwd: lançar o binário de outro
+/// diretório (um `ssh host /caminho/rdma-p2p` roda em `$HOME`) criava uma
+/// segunda identidade pkarr e o endereço publicado na DHT mudava. O project
+/// root é a regra do resto do projeto (`models/`, `rdma-p2p.json`, a chave do
+/// nó) e vale aqui também.
+pub fn pkarr_key_path() -> std::path::PathBuf {
+    if let Ok(p) = std::env::var("RDMA_P2P_PKARR_KEY") {
+        return std::path::PathBuf::from(p);
+    }
+    crate::config::project_root().join(PKARR_KEY_FILENAME)
+}
+
 impl Identity {
     pub fn generate() -> Self {
         let signing_key = SigningKey::generate(&mut OsRng);
@@ -101,6 +119,39 @@ impl Identity {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A chave pkarr é a identidade do nó na DHT: ela não pode depender do
+    /// diretório de onde alguém lançou o binário. Rodando de outro cwd, o
+    /// caminho continua saindo do project root.
+    #[test]
+    fn the_pkarr_key_lives_under_the_project_root_not_the_cwd() {
+        let cwd_antes = std::env::current_dir().unwrap();
+        let home_antes = std::env::var("RDMA_P2P_PKARR_KEY").ok();
+        std::env::remove_var("RDMA_P2P_PKARR_KEY");
+
+        let raiz = std::env::temp_dir().join(format!("rdma-root-{}", std::process::id()));
+        let outro = std::env::temp_dir().join(format!("rdma-cwd-{}", std::process::id()));
+        std::fs::create_dir_all(raiz.join("models")).unwrap();
+        std::fs::create_dir_all(&outro).unwrap();
+        std::env::set_var("RDMA_P2P_HOME", &raiz);
+        std::env::set_current_dir(&outro).unwrap();
+
+        let caminho = pkarr_key_path();
+
+        std::env::set_current_dir(&cwd_antes).unwrap();
+        std::env::remove_var("RDMA_P2P_HOME");
+        if let Some(v) = home_antes {
+            std::env::set_var("RDMA_P2P_PKARR_KEY", v);
+        }
+        std::fs::remove_dir_all(&raiz).ok();
+        std::fs::remove_dir_all(&outro).ok();
+
+        assert_eq!(caminho, raiz.join(PKARR_KEY_FILENAME));
+        assert!(
+            !caminho.starts_with(&outro),
+            "a chave pkarr não pode sair do cwd: {caminho:?}"
+        );
+    }
 
     #[test]
     fn identity_survives_a_restart() {

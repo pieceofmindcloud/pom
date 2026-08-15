@@ -120,10 +120,6 @@ separado). `parse_ollama_port` extrai a porta do `--ollama-url` só quando
 
 ## Defeitos anotados
 
-- **Chave pkarr relativa ao cwd** (`main.rs:462`, `std::path::Path::new(".rdma-p2p.key")`):
-  diferente de `identity::key_path()`, que resolve contra `project_root()`. Rodar
-  o binário de outro diretório gera/ignora outra identidade pkarr - inconsistente
-  com a regra documentada do project root.
 - **`--gateway` deprecated ainda muda comportamento** (`main.rs:564-568`): sem
   a flag, `ollama_port` não é anunciado, então peers não conseguem rotear para
   o Ollama local deste nó mesmo servindo a API.

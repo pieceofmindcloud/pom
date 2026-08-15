@@ -465,8 +465,8 @@ async fn main() -> Result<()> {
     display::print_node_info(&node_id, &pubkey, p2p_port);
 
     // ── Pkarr identity (stable across restarts) ──────────────────────────────
-    let key_path = std::path::Path::new(".rdma-p2p.key");
-    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(key_path) {
+    let key_path = identity::pkarr_key_path();
+    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&key_path) {
         Ok(n) => {
             info!("🔑 Pkarr address: {}", n.public_key_uri());
             Some(n)

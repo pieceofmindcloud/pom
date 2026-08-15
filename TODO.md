@@ -58,7 +58,7 @@ substituída por essa explicação.
   **Pronto quando:** existe um único construtor do anúncio usado pelos três caminhos, e um
   teste prova que gossipsub e UDP publicam o mesmo conjunto, inclusive sem assignment.
 
-- [ ] **Chave pkarr resolvida contra o cwd, não contra o project root**
+- [x] **Chave pkarr resolvida contra o cwd, não contra o project root**
   `crates/node/src/main.rs:462` (`Path::new(".rdma-p2p.key")`) · anotado em `crates/node/AGENTS.md`
   Diferente de `identity::key_path()`, que resolve contra `project_root()`. Rodar o binário de
   outro diretório gera ou ignora outra identidade pkarr, contra a regra documentada do project root.

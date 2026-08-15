@@ -11,6 +11,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     cmake \
     libclang-dev \
+    clang \
     ca-certificates \
     curl \
     pkg-config \

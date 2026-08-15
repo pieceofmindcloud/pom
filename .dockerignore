@@ -8,6 +8,6 @@ models/
 *.log
 *.key
 rdma-p2p.json
-docs/
+docs/superpowers/
 apps/frontend/node_modules
 apps/frontend/dist*

@@ -16,7 +16,8 @@ can swap in a different provider without touching the contract.
 
 - `plan(&RoutingRequest) -> Result<RoutingPlan, RoutingError>` (`lib.rs:12`) -
   greedy forward sweep from layer 0 to `total_layers`:
-  - validates the request (api version) and the resulting plan
+  - validates the request (api version **and** the peer ranges in the snapshot,
+    via `routing_contract::RoutingRequest::validate`) and the resulting plan
     (`routing_contract::RoutingPlan::validate`),
   - at each expected start, picks the peer whose range begins exactly there,
     preferring the **longest** range; ties broken by lexicographically smaller
@@ -40,6 +41,3 @@ can swap in a different provider without touching the contract.
   open planner and the shipped planner can drift apart with no test comparing
   them. The stated open-core intent (a provider the closed plugin could
   implement against) is not yet wired to any call site.
-- `plan` trusts the snapshot input (ranges not validated against `start/end`
-  ordering or `total_layers` until the final plan validation); see the same note
-  in `crates/routing-contract/AGENTS.md`.

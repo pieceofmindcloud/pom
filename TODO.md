@@ -119,7 +119,7 @@ substituída por essa explicação.
   **Pronto quando:** ou o campo passa a ser verificado de fato, ou sai do protocolo e do doc -
   um campo de autenticação que não autentica é pior que a ausência dele.
 
-- [ ] **`RoutingRequest::validate` não valida o que importa**
+- [x] **`RoutingRequest::validate` não valida o que importa**
   `crates/routing-contract` · anotado em `crates/routing-contract/AGENTS.md` e `crates/routing-base/AGENTS.md`
   `validate` confere só a versão da API, então um snapshot malformado (peer com
   `end_layer < start_layer`, ou faixa além de `total_layers`) chega ao provider.

@@ -34,8 +34,14 @@ touching node internals.
 
 ## Key logic
 
-- `RoutingRequest::validate` (`lib.rs:59`) - rejects a mismatched
-  `api_version`; the entry gate every provider is expected to call first.
+- `RoutingRequest::validate` - rejects a mismatched `api_version` **and** a
+  malformed snapshot: every `PeerCapacity` must have `end_layer >= start_layer`
+  and stay inside `total_layers`. This is the entry gate every provider is
+  expected to call first, so a lying peer is named on the way in instead of
+  surfacing later as a bad plan. `total_layers == 0` means the cluster does not
+  know the total yet (see `catalog.rs`), so only the ordering is checked then.
+- `PeerCapacity::validate` / `ModelCapability::validate` - the same range check
+  for one entry; the capability one uses the total it declares itself.
 - `RoutingPlan::validate` (`lib.rs:85`) - checks a plan is a **contiguous,
   gap-free, exactly-covering** walk of `0..total_layers`: contiguous start, in
   range, no holes (`Gap`), complete coverage (`Incomplete`). This is the shared
@@ -53,10 +59,5 @@ touching node internals.
 
 ## Defeitos anotados
 
-- `ModelCapability.total_layers` and `PeerCapacity` carry no validation of their
-  own: `RoutingRequest::validate` checks only the api version, so a malformed
-  snapshot (peer `end_layer < start_layer`, or range beyond `total_layers`)
-  reaches the provider. `RoutingPlan::validate` catches the same problems in
-  *output*, but only after the provider already trusted the input.
 - Contract says `end_layer` is inclusive; an "exclusive end" future wire version
   is flagged in a comment but not implemented.

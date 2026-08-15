@@ -86,6 +86,10 @@ pub struct PipelineStep {
     /// Advertised receiver capabilities. An absent v2 signal must remain on
     /// the v1 f16 contract so rolling upgrades keep working.
     pub inference_frame_capabilities: Vec<String>,
+    /// This hop's libp2p `PeerId` (base58), when known — lets a caller reach
+    /// it over the swarm as a NAT-traversal fallback when direct HTTP fails.
+    #[serde(default)]
+    pub libp2p_peer_id: Option<String>,
 }
 
 /// Advertised when a node can continue a relay itself — see the `next_hops`
@@ -106,6 +110,13 @@ pub const CAP_RELAY_DIRECT: &str = "relay/v2-direct";
 /// in one decode (prompt-lookup speculative decoding) instead of exactly
 /// one token per call. Same all-or-nothing-per-plan fallback rule.
 pub const CAP_SPECULATE_LOOKUP: &str = "speculate/v1-lookup";
+
+/// Advertised when a node's libp2p swarm has actually come up
+/// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
+/// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
+/// directly-reachable and NAT'd hops in the same pipeline is normal, and only
+/// the failing hop needs the fallback. See `relay::should_attempt_tunnel_fallback`.
+pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
@@ -279,6 +290,7 @@ pub async fn plan_pipeline(
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
+            libp2p_peer_id: chosen.libp2p_peer_id.clone(),
         });
 
         pos = chosen.end_layer + 1;
@@ -365,6 +377,7 @@ mod ipv6_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
+            libp2p_peer_id: None,
         }
     }
 
@@ -377,6 +390,7 @@ mod ipv6_tests {
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: Vec::new(),
+            libp2p_peer_id: None,
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
     }
@@ -390,6 +404,7 @@ mod ipv6_tests {
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: vec!["frame/v2-zstd-f16".into()],
+            libp2p_peer_id: None,
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::ZstdF16);
     }
@@ -402,6 +417,7 @@ mod ipv6_tests {
             start_layer: 0,
             end_layer: 9,
             inference_frame_capabilities: Vec::new(),
+            libp2p_peer_id: None,
         }
     }
 
@@ -480,6 +496,7 @@ mod ipv6_tests {
             start_layer: 0,
             end_layer: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
+            libp2p_peer_id: None,
         }
     }
 

@@ -1,0 +1,431 @@
+//! libp2p request-response protocol carrying inference HTTP calls, as a
+//! NAT-traversal fallback for peers a hop can't reach with plain `reqwest`.
+//!
+//! Mirrors `bitswap.rs`'s shape ([4-byte BE length][JSON payload] framing
+//! over an `AsyncRead`/`AsyncWrite` stream), but carries one generic
+//! `{path, body}` pair instead of a fixed message enum — exactly mirroring
+//! how `relay::send_frame` already takes `path: &str` generically across
+//! `/v1/prefill`, `/v1/step`, `/v1/session/release`, `/v1/session/rollback`.
+//! `body` is the same wire-encoded byte blob `send_frame` already builds;
+//! this is purely an alternate transport for it, not a new format.
+
+use async_trait::async_trait;
+use futures::prelude::*;
+use libp2p::{
+    request_response::{self, Codec},
+    PeerId, StreamProtocol,
+};
+use serde::{Deserialize, Serialize};
+use std::io;
+use std::time::Duration;
+use tokio::sync::{mpsc, oneshot};
+
+pub const INFER_TUNNEL_PROTOCOL: &str = "/rdma-p2p/infer-tunnel/1.0.0";
+
+/// A single generic HTTP call, forwarded to the receiving peer's own
+/// loopback inference server (`http://127.0.0.1:<inference_port><path>`)
+/// once it arrives — see `discovery.rs`'s handling of
+/// `DiscBehaviourEvent::InferTunnel`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelRequest {
+    pub path: String,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TunnelResponse {
+    pub status: u16,
+    pub body: Vec<u8>,
+}
+
+/// One outbound call dispatched to the swarm's own task (`Discovery::run`)
+/// from outside its loop — the gateway in hub mode, or a relaying hop inside
+/// `infer_server.rs` in ring mode. `Discovery::run` resolves `reply` by
+/// matching the `OutboundRequestId` the swarm assigns when `send_request` is
+/// called against the `Message::Response` / `Event::OutboundFailure` that
+/// eventually arrives for it — see `relay::send_frame_via_tunnel`, the only
+/// intended caller.
+pub struct TunnelOutbound {
+    pub peer_id: PeerId,
+    pub request: TunnelRequest,
+    pub reply: oneshot::Sender<Result<TunnelResponse, String>>,
+}
+
+pub type TunnelOutboundSender = mpsc::Sender<TunnelOutbound>;
+
+#[derive(Debug, Clone, Default)]
+pub struct InferTunnelCodec;
+
+/// A tunnel request/response carries exactly one wire-encoded frame
+/// (`crate::wire`), so it must not be allowed to grow past what that frame
+/// format itself already permits — same bound `send_frame` enforces.
+const MAX_TUNNEL_PAYLOAD_BYTES: usize = crate::wire::MAX_FRAME_PAYLOAD_BYTES;
+
+async fn read_msg<T, R>(io: &mut R) -> io::Result<T>
+where
+    T: serde::de::DeserializeOwned,
+    R: AsyncRead + Unpin + Send,
+{
+    use futures::AsyncReadExt;
+    let mut len_buf = [0u8; 4];
+    io.read_exact(&mut len_buf).await?;
+    let len = u32::from_be_bytes(len_buf) as usize;
+    if len > MAX_TUNNEL_PAYLOAD_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("tunnel frame of {len} bytes exceeds the {MAX_TUNNEL_PAYLOAD_BYTES}-byte bound"),
+        ));
+    }
+    let mut data = vec![0u8; len];
+    io.read_exact(&mut data).await?;
+    serde_json::from_slice(&data)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+}
+
+async fn write_msg<T, W>(io: &mut W, msg: &T) -> io::Result<()>
+where
+    T: Serialize,
+    W: AsyncWrite + Unpin + Send,
+{
+    use futures::AsyncWriteExt;
+    let data = serde_json::to_vec(msg)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    io.write_all(&(data.len() as u32).to_be_bytes()).await?;
+    io.write_all(&data).await?;
+    Ok(())
+}
+
+#[async_trait]
+impl Codec for InferTunnelCodec {
+    type Protocol = StreamProtocol;
+    type Request = TunnelRequest;
+    type Response = TunnelResponse;
+
+    async fn read_request<T>(&mut self, _: &Self::Protocol, io: &mut T) -> io::Result<Self::Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_msg(io).await
+    }
+
+    async fn read_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+    ) -> io::Result<Self::Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        read_msg(io).await
+    }
+
+    async fn write_request<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        req: Self::Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_msg(io, &req).await
+    }
+
+    async fn write_response<T>(
+        &mut self,
+        _: &Self::Protocol,
+        io: &mut T,
+        res: Self::Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        write_msg(io, &res).await
+    }
+}
+
+/// Create a `request_response::Behaviour` for the infer-tunnel protocol.
+/// Same request-timeout policy as bitswap's — this rides the same swarm and
+/// its connections are just as long-lived.
+pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec> {
+    request_response::Behaviour::new(
+        [(
+            StreamProtocol::new(INFER_TUNNEL_PROTOCOL),
+            request_response::ProtocolSupport::Full,
+        )],
+        request_response::Config::default().with_request_timeout(Duration::from_secs(60)),
+    )
+}
+
+static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
+
+/// Set once, from `main.rs`, right after the channel is created (before
+/// `Discovery::new` is even called — see that call site's comment). The only
+/// way `infer_server.rs`'s ring-relay code, which holds no `GatewayState`
+/// handle at all, can reach the tunnel — mirrors that module's existing
+/// `http_client()` lazy-static for the exact same reason. A second call is a
+/// bug (only one such channel is ever created per process) and is
+/// intentionally dropped rather than panicking, matching this crate's
+/// existing "config wins once, don't crash on a redundant set" style.
+pub fn set_tunnel_sender(tx: TunnelOutboundSender) {
+    let _ = TUNNEL_SENDER.set(tx);
+}
+
+/// `None` only if `set_tunnel_sender` was never called at all — in practice
+/// that never happens on the path that constructs `infer_server.rs`'s state,
+/// since `main.rs` sets it unconditionally before libp2p discovery is even
+/// attempted. A tunnel call made through this sender still degrades
+/// correctly (fast, documented "channel closed" error) when libp2p itself
+/// never came up — see the doc comment on the channel's construction site.
+pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
+    TUNNEL_SENDER.get()
+}
+
+/// The entire inbound side of the NAT-tunnel: forward a request that arrived
+/// over the swarm to this node's own inference server on loopback, and carry
+/// back whatever it answers.
+///
+/// Deliberately not a live `SharedState` handle — `InferState` has no stable
+/// external handle to hold (it's destroyed and recreated on every model
+/// reconfiguration by `NodeRuntime`'s supervisor), so keeping this task in
+/// sync with that would be its own ongoing-maintenance burden. The always-
+/// current, always-correct entry point stays the real Axum server; this is
+/// just a same-machine hop in front of it, at a sub-millisecond cost.
+///
+/// Every real caller (`relay::send_frame_via_tunnel`, mirroring
+/// `relay::send_frame`) only ever POSTs a wire-encoded frame, so this always
+/// POSTs too — it is not a general HTTP-over-libp2p proxy.
+pub async fn serve_loopback(
+    http: &reqwest::Client,
+    inference_port: u16,
+    request: TunnelRequest,
+) -> TunnelResponse {
+    let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
+    let sent = http
+        .post(&url)
+        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        .body(request.body)
+        .send()
+        .await;
+
+    match sent {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let body = resp.bytes().await.map(|b| b.to_vec()).unwrap_or_default();
+            TunnelResponse { status, body }
+        }
+        // The peer's own inference server isn't reachable even on its own
+        // loopback (not yet started, mid-reconfiguration, crashed) — a
+        // synthetic 502 lets the caller's fallback logic tell this apart
+        // from a successful-but-erroring response, without inventing a new
+        // status code space just for the tunnel.
+        Err(e) => TunnelResponse {
+            status: 502,
+            body: e.to_string().into_bytes(),
+        },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use futures::io::Cursor;
+
+    /// A request/response has to survive the exact framing a real
+    /// `AsyncRead`/`AsyncWrite` stream would carry it over — this drives the
+    /// codec through an in-memory buffer instead of a real libp2p stream,
+    /// the same spirit as `wire.rs`'s own round-trip tests.
+    #[tokio::test]
+    async fn a_tunnel_request_round_trips_through_the_codec() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+        let req = TunnelRequest {
+            path: "/v1/prefill".to_string(),
+            body: vec![1, 2, 3, 4, 5],
+        };
+
+        let mut buf = Vec::new();
+        codec
+            .write_request(&protocol, &mut buf, req.clone())
+            .await
+            .expect("write_request");
+
+        let mut cursor = Cursor::new(buf);
+        let decoded = codec
+            .read_request(&protocol, &mut cursor)
+            .await
+            .expect("read_request");
+
+        assert_eq!(decoded.path, req.path);
+        assert_eq!(decoded.body, req.body);
+    }
+
+    #[tokio::test]
+    async fn a_tunnel_response_round_trips_through_the_codec() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+        let res = TunnelResponse {
+            status: 200,
+            body: b"hello from the other side".to_vec(),
+        };
+
+        let mut buf = Vec::new();
+        codec
+            .write_response(&protocol, &mut buf, res.clone())
+            .await
+            .expect("write_response");
+
+        let mut cursor = Cursor::new(buf);
+        let decoded = codec
+            .read_response(&protocol, &mut cursor)
+            .await
+            .expect("read_response");
+
+        assert_eq!(decoded.status, res.status);
+        assert_eq!(decoded.body, res.body);
+    }
+
+    /// An empty body (a `GET` with nothing to send) is a real case — `/health`
+    /// checks look exactly like this — and must not be confused with "no
+    /// frame at all".
+    #[tokio::test]
+    async fn an_empty_body_round_trips_cleanly() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+        let req = TunnelRequest {
+            path: "/health".to_string(),
+            body: vec![],
+        };
+
+        let mut buf = Vec::new();
+        codec
+            .write_request(&protocol, &mut buf, req.clone())
+            .await
+            .expect("write_request");
+
+        let mut cursor = Cursor::new(buf);
+        let decoded = codec
+            .read_request(&protocol, &mut cursor)
+            .await
+            .expect("read_request");
+
+        assert_eq!(decoded.path, "/health");
+        assert!(decoded.body.is_empty());
+    }
+
+    /// A declared length past the wire's own frame bound must be refused
+    /// before the codec allocates a buffer for it — the same defence
+    /// `wire.rs::read_frame` has for a hostile or corrupted declared size.
+    #[tokio::test]
+    async fn a_frame_declaring_more_than_the_bound_is_refused() {
+        let mut codec = InferTunnelCodec;
+        let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
+
+        let oversized_len = (MAX_TUNNEL_PAYLOAD_BYTES as u32) + 1;
+        let mut buf = oversized_len.to_be_bytes().to_vec();
+        buf.extend_from_slice(b"doesn't matter, never read");
+
+        let mut cursor = Cursor::new(buf);
+        let result = codec.read_request(&protocol, &mut cursor).await;
+
+        assert!(result.is_err(), "oversized frame must be refused");
+    }
+
+    /// `serve_loopback` against a real (in-process, real TCP on loopback)
+    /// fake inference server — a genuine HTTP round trip, not a mock, since
+    /// that's exactly the "new glue code" (URL construction, status/body
+    /// carry-through) a bug here would hide in.
+    async fn spawn_fake_inference_server(
+        handler: impl Fn(Vec<u8>) -> (u16, Vec<u8>) + Clone + Send + Sync + 'static,
+    ) -> u16 {
+        use axum::{body::Bytes, routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route(
+            "/v1/step",
+            post(move |body: Bytes| {
+                let handler = handler.clone();
+                async move {
+                    let (status, body) = handler(body.to_vec());
+                    (
+                        axum::http::StatusCode::from_u16(status).unwrap(),
+                        body,
+                    )
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn serve_loopback_forwards_the_body_and_carries_back_the_response() {
+        let port = spawn_fake_inference_server(|body| {
+            assert_eq!(body, b"the request body");
+            (200, b"the response body".to_vec())
+        })
+        .await;
+
+        let http = reqwest::Client::new();
+        let response = serve_loopback(
+            &http,
+            port,
+            TunnelRequest {
+                path: "/v1/step".to_string(),
+                body: b"the request body".to_vec(),
+            },
+        )
+        .await;
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"the response body");
+    }
+
+    #[tokio::test]
+    async fn serve_loopback_carries_back_a_non_success_status_unchanged() {
+        let port = spawn_fake_inference_server(|_body| (503, b"kv cache busy".to_vec())).await;
+
+        let http = reqwest::Client::new();
+        let response = serve_loopback(
+            &http,
+            port,
+            TunnelRequest {
+                path: "/v1/step".to_string(),
+                body: vec![],
+            },
+        )
+        .await;
+
+        assert_eq!(response.status, 503);
+        assert_eq!(response.body, b"kv cache busy");
+    }
+
+    /// No inference server listening at all on that port — the loopback hop
+    /// itself failed, not the model. The caller needs a way to tell this
+    /// apart from a real (successfully reached) error response.
+    #[tokio::test]
+    async fn serve_loopback_reports_a_synthetic_502_when_nothing_is_listening() {
+        let http = reqwest::Client::new();
+        // Port 0 alone never accepts a connection; using the OS-assigned
+        // port from a listener we immediately drop guarantees nothing is
+        // bound there without racing a real port number.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let response = serve_loopback(
+            &http,
+            port,
+            TunnelRequest {
+                path: "/v1/step".to_string(),
+                body: vec![],
+            },
+        )
+        .await;
+
+        assert_eq!(response.status, 502);
+    }
+}

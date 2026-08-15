@@ -47,6 +47,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
+        .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
@@ -103,13 +104,22 @@ pub struct NodeInfo {
     pub active_model: String,
     /// True while the operator has taken this node off the network.
     pub detached: bool,
+    /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
+    /// the edit form — `None` means "nothing pinned," not "unknown."
+    pub advertise_addr: Option<String>,
+    /// What this node actually puts in `Announce.addr` right now
+    /// (`Network::announce_addr()`, full `host:port`): the pin if set, else
+    /// a peer-observed public address, else the `0.0.0.0:<port>` "ask the
+    /// receiver" sentinel. Always present — lets the UI show the fix taking
+    /// effect without a second round trip.
+    pub effective_address: String,
 }
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     let system = sysmon::sample().await;
-    let (role, conn_key) = {
+    let (role, conn_key, advertise_addr) = {
         let cfg = state.auth.read().await;
-        (cfg.role.to_string(), cfg.connection_key.clone())
+        (cfg.role.to_string(), cfg.connection_key.clone(), cfg.advertise_addr.clone())
     };
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
@@ -132,6 +142,8 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         load: state.loads.load(&state.network.node_id).await,
         active_model: state.active_model().await,
         detached: state.network.is_detached(),
+        advertise_addr,
+        effective_address: state.network.announce_addr(),
         system,
     })
 }
@@ -373,6 +385,53 @@ async fn save_paths(
     invalidate_catalog().await;
     info!("pastas de modelos atualizadas pela interface");
     get_paths(State(state)).await.into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveAdvertiseAddrRequest {
+    /// Empty means "clear the pin" — same convention as `SavePathsRequest.shard_dir`.
+    #[serde(default)]
+    pub advertise_addr: String,
+}
+
+/// Pin (or clear) the address this node advertises to peers, live — no
+/// restart. See `Network::set_advertise_addr`'s doc comment for why this is
+/// a live update rather than the `save_setup`-style respawn other config
+/// changes use: a respawn re-execs with the *original* CLI argv, and
+/// `--advertise-addr`/`--public-addr` always beat the config file value, so
+/// it would be silently ineffective for a node ever launched with either
+/// flag on its command line.
+async fn save_advertise_addr(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveAdvertiseAddrRequest>,
+) -> Response {
+    let raw = req.advertise_addr.trim();
+    let normalized = if raw.is_empty() {
+        None
+    } else {
+        match crate::network::advertised_addr(raw, state.network.bind_addr.port()) {
+            Some(a) => Some(a),
+            None => return bad_request(format!("“{raw}” não é um endereço válido.")),
+        }
+    };
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.advertise_addr = normalized.clone();
+        if let Err(e) = cfg.save() {
+            return bad_request(format!("não deu para gravar rdma-p2p.json: {e}"));
+        }
+    }
+
+    state.network.set_advertise_addr(normalized.as_deref());
+    info!("endereço anunciado atualizado pela interface: {normalized:?}");
+
+    Json(json!({
+        "advertise_addr": normalized,
+        "effective_address": state.network.announce_addr(),
+    }))
+    .into_response()
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -2736,6 +2795,77 @@ mod leave_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod advertise_addr_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+
+    /// A resposta já traz o efetivo, para a tela confirmar o efeito sem uma
+    /// segunda volta — é o próprio motivo de existir deste campo na resposta.
+    #[tokio::test]
+    async fn pinning_an_address_takes_effect_immediately_and_live() {
+        let state = state_with("eu", vec![]).await;
+
+        let resp = save_advertise_addr(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveAdvertiseAddrRequest {
+                advertise_addr: "203.0.113.9:42777".into(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let body = body_of(resp).await;
+        assert_eq!(body["advertise_addr"], "203.0.113.9:42777");
+        assert_eq!(body["effective_address"], "203.0.113.9:42777");
+
+        // Live: o mesmo `Network` já anuncia o valor novo, sem reinício.
+        assert_eq!(state.network.announce_addr(), "203.0.113.9:42777");
+        // E persistido: uma releitura do config em disco vê o mesmo valor.
+        assert_eq!(
+            state.auth.read().await.advertise_addr.as_deref(),
+            Some("203.0.113.9:42777")
+        );
+    }
+
+    /// String vazia limpa o pino, mesma convenção de `SavePathsRequest.shard_dir`.
+    #[tokio::test]
+    async fn an_empty_value_clears_the_pin() {
+        let state = state_with("eu", vec![]).await;
+        state.network.set_advertise_addr(Some("203.0.113.9:42777"));
+
+        let resp = save_advertise_addr(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveAdvertiseAddrRequest {
+                advertise_addr: "".into(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(state.auth.read().await.advertise_addr, None);
+    }
+
+    /// Um valor sem forma reconhecível é recusado, não gravado quebrado —
+    /// mesmo espírito de `check_dir` para pastas de modelo.
+    #[tokio::test]
+    async fn a_malformed_value_is_rejected_not_saved() {
+        let state = state_with("eu", vec![]).await;
+
+        let resp = save_advertise_addr(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveAdvertiseAddrRequest {
+                advertise_addr: "[not-a-valid-ipv6]".into(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(state.auth.read().await.advertise_addr, None);
     }
 }
 

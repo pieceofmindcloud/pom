@@ -18,6 +18,7 @@
 //! What travels is defined in [`crate::wire`], where precision and encoding are
 //! a parameter rather than an assumption.
 
+use crate::infer_tunnel::TunnelOutboundSender;
 use crate::pipeline::PipelinePlan;
 use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
@@ -400,6 +401,7 @@ pub async fn run(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<PrefillOutcome> {
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
@@ -408,12 +410,13 @@ pub async fn run(
     }
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return run_direct(
-            plan, model, session_id, prompt, chunk_size, dtype, http, routes, direct,
+            plan, model, session_id, prompt, chunk_size, dtype, http, routes, direct, tunnel,
         )
         .await;
     }
     if plan.supports_relay_chain() {
-        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http, routes).await;
+        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http, routes, tunnel)
+            .await;
     }
 
     let mut chunk_index: u32 = 0;
@@ -442,8 +445,8 @@ pub async fn run(
         let (mut meta, mut tensor) = send_chunk(
             http,
             routes,
-            &plan.steps[0].inference_url,
-            &plan.steps[0].node_id,
+            &plan.steps[0],
+            tunnel,
             &head_meta,
             None,
             dtype,
@@ -484,8 +487,8 @@ pub async fn run(
             let (m, t) = send_chunk(
                 http,
                 routes,
-                &step.inference_url,
-                &step.node_id,
+                step,
+                tunnel,
                 &body_meta,
                 Some((&values, shape)),
                 dtype,
@@ -538,6 +541,7 @@ pub async fn run(
 /// eventual answer (and, for the head, its authoritative `more_chunks`/
 /// `n_prompt_tokens` — see the overlay fix in `infer_server.rs`'s
 /// `handle_prefill`) bubbles back through that same chain of calls.
+#[allow(clippy::too_many_arguments)]
 async fn run_ring(
     plan: &PipelinePlan,
     model: &str,
@@ -547,6 +551,7 @@ async fn run_ring(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -570,9 +575,10 @@ async fn run_ring(
             "next_hops": next_hops,
         });
 
-        let sent = crate::relay::send_frame(
+        let sent = crate::relay::send_frame_or_tunnel(
             http,
-            &head.inference_url,
+            head,
+            tunnel,
             "/v1/prefill",
             &head_meta,
             None,
@@ -658,6 +664,7 @@ async fn run_direct(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -682,9 +689,10 @@ async fn run_direct(
         });
 
         let dispatched = Instant::now();
-        let ack = crate::relay::send_frame(
+        let ack = crate::relay::send_frame_or_tunnel(
             http,
-            &head.inference_url,
+            head,
+            tunnel,
             "/v1/prefill",
             &head_meta,
             None,
@@ -813,8 +821,8 @@ fn record_direct_hops(
 async fn send_chunk(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
-    inference_url: &str,
-    node_id: &str,
+    step: &crate::pipeline::PipelineStep,
+    tunnel: Option<&TunnelOutboundSender>,
     meta: &serde_json::Value,
     tensor: Option<(&[f32], [usize; 2])>,
     dtype: WireDtype,
@@ -824,11 +832,13 @@ async fn send_chunk(
     hop: usize,
     phase: Phase,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
+    let node_id = &step.node_id;
     let peer_label = format!("{node_id} (pedaço {chunk_index})");
     let mut issues = Vec::new();
-    let result = crate::relay::send_frame(
+    let result = crate::relay::send_frame_or_tunnel(
         http,
-        inference_url,
+        step,
+        tunnel,
         "/v1/prefill",
         meta,
         tensor,
@@ -858,8 +868,10 @@ async fn send_chunk(
 
     let sent = result.map_err(|e| {
         // Esperar o ciclo de 5 minutos significaria falhar tudo que chegasse
-        // nesse meio tempo. A proxima medicao reescolhe.
-        routes.mark_failure(node_id, inference_url);
+        // nesse meio tempo. A proxima medicao reescolhe. Uma recuperação bem
+        // sucedida via túnel nunca chega aqui — só o insucesso final marca a
+        // rota como ruim.
+        routes.mark_failure(node_id, &step.inference_url);
         e
     })?;
     let processing_ms = sent
@@ -894,14 +906,22 @@ pub async fn step(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<(u32, String, bool, RequestTrace)> {
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
-        return step_direct(plan, model, session_id, token_id, dtype, http, routes, direct).await;
+        return step_direct(plan, model, session_id, token_id, dtype, http, routes, direct, tunnel)
+            .await;
     }
     if plan.supports_relay_chain() {
-        return step_ring(plan, model, session_id, token_id, dtype, http, routes).await;
+        return step_ring(plan, model, session_id, token_id, dtype, http, routes, tunnel).await;
     }
 
+    // Nota: o laço hub abaixo (um POST por hop, sem retry) não passa pelo
+    // túnel — replica manualmente o encode/POST/decode de `relay::send_frame`
+    // em vez de reutilizá-lo, e essa duplicação está fora do escopo desta
+    // passagem. Decodificação em modo hub já é o caminho mais curto e mais
+    // sensível a latência por token; um fallback mais lento por hop deveria
+    // ser medido antes de entrar aqui, não assumido.
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
     let mut meta = serde_json::Value::Null;
@@ -994,6 +1014,7 @@ pub async fn step(
 /// outbound call (to the head); every other hop is reached by the head (and,
 /// transitively, each hop after it) relaying directly, and the tail's answer
 /// bubbles all the way back through that same chain of calls.
+#[allow(clippy::too_many_arguments)]
 async fn step_ring(
     plan: &PipelinePlan,
     model: &str,
@@ -1002,6 +1023,7 @@ async fn step_ring(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<(u32, String, bool, RequestTrace)> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
@@ -1013,9 +1035,10 @@ async fn step_ring(
         "next_hops": next_hops,
     });
 
-    let sent = crate::relay::send_frame(
+    let sent = crate::relay::send_frame_or_tunnel(
         http,
-        &head.inference_url,
+        head,
+        tunnel,
         "/v1/step",
         &body_meta,
         None,
@@ -1071,6 +1094,7 @@ async fn step_direct(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<(u32, String, bool, RequestTrace)> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
@@ -1085,9 +1109,10 @@ async fn step_direct(
     });
 
     let dispatched = Instant::now();
-    let ack = crate::relay::send_frame(
+    let ack = crate::relay::send_frame_or_tunnel(
         http,
-        &head.inference_url,
+        head,
+        tunnel,
         "/v1/step",
         &body_meta,
         None,
@@ -1198,6 +1223,7 @@ impl SpeculativeStep {
 /// there and the answer back, exactly like `step` does for a single token.
 /// Composes with either relay mode transparently: ring when negotiated,
 /// hub otherwise — same rule `step`/`run` already follow.
+#[allow(clippy::too_many_arguments)]
 pub async fn step_speculative(
     plan: &PipelinePlan,
     model: &str,
@@ -1208,14 +1234,18 @@ pub async fn step_speculative(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
     if plan.supports_relay_chain() {
-        return step_speculative_ring(plan, model, session_id, token_id, k, m, dtype, http, routes)
-            .await;
+        return step_speculative_ring(
+            plan, model, session_id, token_id, k, m, dtype, http, routes, tunnel,
+        )
+        .await;
     }
-    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http, routes).await
+    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http, routes, tunnel).await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn step_speculative_hub(
     plan: &PipelinePlan,
     model: &str,
@@ -1226,6 +1256,7 @@ async fn step_speculative_hub(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
@@ -1255,9 +1286,10 @@ async fn step_speculative_hub(
         let payload = tensor.take();
         let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
         let peer_label = format!("{} (especulativo)", peer.node_id);
-        let sent = crate::relay::send_frame(
+        let sent = crate::relay::send_frame_or_tunnel(
             http,
-            &peer.inference_url,
+            peer,
+            tunnel,
             "/v1/step",
             &body_meta,
             as_ref,
@@ -1298,6 +1330,7 @@ async fn step_speculative_hub(
     speculative_step_from_meta(&meta, trace)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn step_speculative_ring(
     plan: &PipelinePlan,
     model: &str,
@@ -1308,6 +1341,7 @@ async fn step_speculative_ring(
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
@@ -1320,9 +1354,10 @@ async fn step_speculative_ring(
         "next_hops": next_hops,
     });
 
-    let sent = crate::relay::send_frame(
+    let sent = crate::relay::send_frame_or_tunnel(
         http,
-        &head.inference_url,
+        head,
+        tunnel,
         "/v1/step",
         &head_meta,
         None,

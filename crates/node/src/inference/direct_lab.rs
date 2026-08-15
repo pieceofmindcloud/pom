@@ -387,6 +387,7 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
         start_layer: start,
         end_layer: end,
         inference_frame_capabilities: caps,
+        libp2p_peer_id: None,
     }
 }
 
@@ -442,6 +443,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
         &http,
         &routes,
         reply.as_ref(),
+        None,
     )
     .await
     .expect("prefill");
@@ -468,6 +470,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
             &http,
             &routes,
             reply.as_ref(),
+            None,
         )
         .await
         .expect("step");

@@ -290,6 +290,7 @@ mod relay_tests {
             start_layer: 16,
             end_layer: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
+            libp2p_peer_id: None,
         }
     }
 
@@ -1621,9 +1622,10 @@ async fn relay_and_bubble(
     base_meta["next_hops"] = json!(remaining);
 
     let mut last_issue_kind = None;
-    let sent = crate::relay::send_frame(
+    let sent = crate::relay::send_frame_or_tunnel(
         http,
-        &next.inference_url,
+        next,
+        crate::infer_tunnel::tunnel_sender(),
         path,
         &base_meta,
         Some(tensor),
@@ -1718,9 +1720,10 @@ pub(crate) async fn forward_direct(
     base_meta["reply_to"] = reply_to.clone();
 
     let mut last_issue_kind = None;
-    let sent = crate::relay::send_frame(
+    let sent = crate::relay::send_frame_or_tunnel(
         http_client(),
-        &next.inference_url,
+        &next,
+        crate::infer_tunnel::tunnel_sender(),
         path,
         &base_meta,
         Some((&residual, shape)),

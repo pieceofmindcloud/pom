@@ -29,6 +29,31 @@ fn descartavel(ip: &str) -> bool {
         || ip.starts_with("0.0.0.0")
 }
 
+/// Whether `ip` could never be dialed from outside this machine's own
+/// network — everything `descartavel` already excludes (loopback,
+/// link-local, the `0.0.0.0` sentinel), plus RFC 1918 (`10/8`, `172.16/12`,
+/// `192.168/16`) and IPv6 unique-local (`fc00::/7`).
+///
+/// Used to decide whether a peer-observed address (`Network::set_observed_addr`,
+/// from libp2p `identify`) is real new information about this node's public
+/// IP, or just the peer telling us about a private range we already know
+/// isn't reachable from the internet — e.g. a peer on the same LAN, or a NAT
+/// that rewrote to another private range instead of a routable one.
+pub fn is_private_or_local(ip: &str) -> bool {
+    if descartavel(ip) {
+        return true;
+    }
+    if let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() {
+        return v4.is_private();
+    }
+    let bare = ip.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(v6) = bare.parse::<std::net::Ipv6Addr>() {
+        // fc00::/7: top 7 bits are 1111 110.
+        return (v6.segments()[0] & 0xfe00) == 0xfc00;
+    }
+    false
+}
+
 /// Aplica as regras da spec: descarta o que nao serve, prefere o estavel, e
 /// limita quantos candidatos cada familia contribui.
 pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<String> {
@@ -191,6 +216,36 @@ mod tests {
     fn duplicates_are_collapsed() {
         let brutos = vec![a("192.168.1.1"), a("192.168.1.1")];
         assert_eq!(filter_candidates(brutos, None).len(), 1);
+    }
+
+    #[test]
+    fn rfc1918_and_ula_ranges_are_private() {
+        for ip in [
+            "10.0.0.1",
+            "10.255.255.255",
+            "172.16.0.1",
+            "172.31.255.255",
+            "192.168.1.1",
+            "fc00::1",
+            "fd12:3456::1",
+            "[fd12:3456::1]",
+        ] {
+            assert!(is_private_or_local(ip), "{ip} should be private");
+        }
+    }
+
+    #[test]
+    fn a_routable_address_is_not_private() {
+        for ip in ["1.2.3.4", "172.32.0.1", "8.8.8.8", "2804:d55::1"] {
+            assert!(!is_private_or_local(ip), "{ip} should be routable");
+        }
+    }
+
+    #[test]
+    fn already_discarded_ranges_stay_private() {
+        for ip in ["127.0.0.1", "::1", "fe80::1", "169.254.1.1", "0.0.0.0"] {
+            assert!(is_private_or_local(ip));
+        }
     }
 
     /// A maquina de desenvolvimento tem enderecos de verdade, e a filtragem

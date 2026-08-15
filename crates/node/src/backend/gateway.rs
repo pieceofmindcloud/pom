@@ -61,6 +61,12 @@ pub struct GatewayState {
     /// answers this process instead of the answer bubbling back through every
     /// hop — see [`crate::direct`].
     pub reply_inbox: crate::direct::ReplyInbox,
+    /// Dispatches a hop-to-hop call over the libp2p swarm instead of plain
+    /// HTTP, as a NAT-tunnel fallback — see `relay::send_frame_or_tunnel`.
+    /// `None` whenever this node's own libp2p discovery never came up
+    /// (disabled or failed to start); every prefill/decode call site treats
+    /// that exactly like "the fallback wasn't available this time."
+    pub tunnel_tx: Option<crate::infer_tunnel::TunnelOutboundSender>,
 }
 
 impl axum::extract::FromRef<GatewayState> for AuthState {
@@ -144,7 +150,7 @@ impl GatewayState {
     /// resposta e um prazo estourado.
     pub fn self_reply_hosts(&self) -> Vec<String> {
         let mut hosts = vec![self_dial_host(
-            self.network.advertised_host(),
+            self.network.effective_host(),
             crate::pkarr_node::detect_local_ip(),
         )];
         hosts.extend(self.network.self_addr_candidates());
@@ -174,9 +180,14 @@ impl GatewayState {
             // cabeça o pipeline ia, porque o gateway falava consigo mesmo pela
             // LAN; com ele de sucessor, o hop remoto recebia um endereço
             // privado e a requisição morria sem chegar a lugar nenhum.
-            // `advertised_host` já vem com colchetes quando é IPv6.
+            // `effective_host` já vem com colchetes quando é IPv6. Pinado
+            // pelo operador vence; na falta dele, o endereço público que
+            // algum peer já observou por `identify` (ver
+            // `Network::effective_host`) — sem isto, o próprio cartão deste
+            // nó no painel mostrava o IP da LAN mesmo depois de
+            // `self_addr_candidates`/`Announce` já saberem o certo.
             let self_host = self_dial_host(
-                self.network.advertised_host(),
+                self.network.effective_host(),
                 crate::pkarr_node::detect_local_ip(),
             );
             peers.push(PeerInfo {
@@ -195,13 +206,19 @@ impl GatewayState {
                 // Keep in sync with network.rs's `self_announce` and
                 // infer_server.rs's health/announce builder, and with the
                 // capability constants in routing/pipeline.rs.
-                inference_frame_capabilities: vec![
-                    "frame/v1-f16".into(),
-                    "frame/v2-zstd-f16".into(),
-                    "relay/v1-chain".into(),
-                    "relay/v2-direct".into(),
-                    "speculate/v1-lookup".into(),
-                ],
+                inference_frame_capabilities: {
+                    let mut caps = vec![
+                        "frame/v1-f16".into(),
+                        "frame/v2-zstd-f16".into(),
+                        "relay/v1-chain".into(),
+                        "relay/v2-direct".into(),
+                        "speculate/v1-lookup".into(),
+                    ];
+                    if self.network.libp2p_tunnel_ready() {
+                        caps.push("transport/libp2p-tunnel-v1".into());
+                    }
+                    caps
+                },
                 gateway_port: Some(self.gateway_port),
                 role: self.network.role.clone(),
                 hostname: self.network.hostname.clone(),
@@ -221,6 +238,7 @@ impl GatewayState {
                 disk_total_mb: 0,
                 disk_free_mb: 0,
                 api_keys_active: 0,
+                libp2p_peer_id: self.network.libp2p_peer_id.clone(),
             });
         }
         peers
@@ -506,6 +524,7 @@ pub async fn generate_stream(
             &state.http,
             &state.network.routes,
             direct.as_ref(),
+            state.tunnel_tx.as_ref(),
         )
         .await
         {
@@ -570,6 +589,7 @@ pub async fn generate_stream(
                         dtype,
                         &state.http,
                         &state.network.routes,
+                        state.tunnel_tx.as_ref(),
                     )
                     .await
                 } else {
@@ -582,6 +602,7 @@ pub async fn generate_stream(
                         &state.http,
                         &state.network.routes,
                         direct.as_ref(),
+                        state.tunnel_tx.as_ref(),
                     )
                     .await
                     .map(crate::prefill::SpeculativeStep::of_one_token)
@@ -713,6 +734,7 @@ pub async fn generate_stream(
                     &state.http,
                     &state.network.routes,
                     direct.as_ref(),
+                    state.tunnel_tx.as_ref(),
                 )
                     .await;
 
@@ -1193,6 +1215,25 @@ mod tests {
         assert_eq!(self_dial_host(None, None), "127.0.0.1");
     }
 
+    /// The self-entry `.addr` used to consult only the operator's own pin
+    /// (`advertised_host`), never a peer-observed public address — so a NAT'd
+    /// node's own card in the dashboard kept showing its private LAN IP even
+    /// after `Announce`/`self_addr_candidates` already knew the right one.
+    #[tokio::test]
+    async fn the_self_entry_address_picks_up_an_observed_public_address() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.network.set_observed_addr("203.0.113.5:9999");
+
+        let peers = state.all_peers().await;
+        let me = peers.iter().find(|p| p.node_id == "eu").expect("self entry");
+
+        assert!(
+            me.addr.starts_with("203.0.113.5:"),
+            "self entry addr should use the observed public address, got {}",
+            me.addr
+        );
+    }
+
     #[test]
     fn token_estimate_is_pessimistic() {
         // 3 chars per token errs high, which is what a crash guard needs.
@@ -1324,6 +1365,7 @@ mod peer_visibility_tests {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         }
     }
 
@@ -1406,6 +1448,7 @@ pub(crate) mod testkit {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         }
     }
 
@@ -1448,6 +1491,7 @@ pub(crate) mod testkit {
             })),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
+            tunnel_tx: None,
         }
     }
 
@@ -1507,12 +1551,12 @@ pub(crate) mod testkit {
         });
 
         state.gateway_port = port;
-        let mut net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(port))
+        let net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(port))
             .await
             .expect("socket UDP em porta efêmera");
         // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na
         // primeira tentativa em vez de esperar o timeout de um IP de LAN.
-        net.advertise_addr = Some("127.0.0.1:42777".into());
+        net.set_advertise_addr(Some("127.0.0.1:42777"));
         {
             let antigos = state.network.peers.read().await.clone();
             *net.peers.write().await = antigos;

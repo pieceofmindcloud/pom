@@ -82,6 +82,12 @@ pub enum P2PMessage {
         disk_total_mb: u64,
         #[serde(default)]
         disk_free_mb: u64,
+        /// This node's libp2p `PeerId` (base58), when a stable one could be
+        /// derived (see `Discovery::new`). `serde(default)` keeps an older
+        /// peer parseable; absent means this node can't be reached over the
+        /// libp2p NAT-tunnel fallback (`transport/libp2p-tunnel-v1`).
+        #[serde(default)]
+        libp2p_peer_id: Option<String>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -140,6 +146,9 @@ pub struct PeerInfo {
     pub disk_free_mb: u64,
     #[serde(default)]
     pub api_keys_active: u16,
+    /// See `P2PMessage::Announce::libp2p_peer_id`.
+    #[serde(default)]
+    pub libp2p_peer_id: Option<String>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -206,9 +215,18 @@ impl PeerInfo {
     }
 
     /// Full inference server URL for pipeline calls (None if not running).
+    ///
+    /// Delegates to `inference_candidates()` and takes the first entry —
+    /// same address preference (a pinned or peer-observed public address
+    /// before the single legacy `addr`), just collapsed to the one URL a
+    /// caller with no candidate list of its own (the UI, `PipelineStep`'s
+    /// fallback field) actually wants. Building this straight from `addr`
+    /// alone, as it used to, meant a NAT'd node's dashboard entry and
+    /// `PipelineStep.inference_url` fallback could show a private LAN
+    /// address even when a better one was already sitting in
+    /// `addr_candidates`.
     pub fn inference_url(&self) -> Option<String> {
-        self.inference_port
-            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
+        self.inference_candidates().into_iter().next()
     }
 
     /// Base URL of this peer's HTTP API / web UI.
@@ -242,7 +260,13 @@ pub struct Network {
     /// is a *temporary* IPv6 that rotates every few hours, so every peer ends up
     /// holding an address that stops answering. Setting this pins the stable
     /// GUA. See `advertised_addr`.
-    pub advertise_addr: Option<String>,
+    ///
+    /// `std::sync::RwLock` (not `tokio::sync::RwLock`) because `set_advertise_addr`
+    /// never needs to hold it across an `.await` — same reasoning as
+    /// `observed_addr` below, which this field now mirrors: the web UI can
+    /// change this live, via `POST /api/ui/network/advertise-addr`, without a
+    /// process restart.
+    advertise_addr: std::sync::RwLock<Option<String>>,
     socket: Arc<UdpSocket>,
     /// Set while the operator has taken this node off the network.
     ///
@@ -254,6 +278,33 @@ pub struct Network {
     detached: AtomicBool,
     /// Por onde este no fala com cada peer, medido por este processo.
     pub routes: Arc<crate::route::RouteTable>,
+    /// This node's libp2p `PeerId` (base58), when the swarm derived a stable
+    /// one from the pkarr identity — see `Discovery::new`. Set once, after
+    /// construction, by whoever builds the libp2p keypair (`main.rs`), since
+    /// `Network` itself has no opinion on libp2p and is built first. Set
+    /// whenever *a* keypair exists (always, in practice — `main.rs` falls
+    /// back to an ephemeral one), independent of whether the swarm actually
+    /// came up — see `libp2p_tunnel_ready` for that.
+    pub libp2p_peer_id: Option<String>,
+    /// Whether the libp2p swarm actually started and can serve inbound
+    /// NAT-tunnel requests right now. Separate from `libp2p_peer_id` on
+    /// purpose: a keypair can be derived even when `Discovery::new` itself
+    /// then fails (e.g. the libp2p TCP port is already taken) — advertising
+    /// a capability with no swarm behind it would send peers to dial a
+    /// PeerId that can never answer, worse than just not claiming it.
+    /// Mutable through `&self` (mirrors `detached`) because it's known only
+    /// after `Network` is already behind an `Arc` and shared.
+    libp2p_tunnel_ready: AtomicBool,
+    /// This node's own address, as reported by a peer's libp2p `identify`
+    /// response (`info.observed_addr` — the address *that peer* saw us
+    /// connecting from). `host:port`, same shape as `advertise_addr`. Set
+    /// from `discovery.rs`'s event loop, so `std::sync::RwLock` rather than
+    /// `tokio::sync::RwLock` — the setter never needs to hold it across an
+    /// `.await`. Never overrides an operator-pinned `advertise_addr`; only
+    /// fills the gap when nothing was pinned, which otherwise leaves a NAT'd
+    /// node with nothing to offer remote peers but a private LAN IP from
+    /// local-interface enumeration. See `set_observed_addr`.
+    observed_addr: std::sync::RwLock<Option<String>>,
 }
 
 /// Payload budget for one UDP datagram, in bytes.
@@ -406,10 +457,13 @@ impl Network {
             gateway_port,
             role: String::new(),
             hostname: String::new(),
-            advertise_addr: None,
+            advertise_addr: std::sync::RwLock::new(None),
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
+            libp2p_peer_id: None,
+            libp2p_tunnel_ready: AtomicBool::new(false),
+            observed_addr: std::sync::RwLock::new(None),
         })
     }
 
@@ -420,55 +474,121 @@ impl Network {
         self
     }
 
-    /// Pin the address peers should reach this node at.
-    pub fn with_advertise_addr(mut self, raw: Option<String>) -> Self {
-        self.advertise_addr = raw
-            .as_deref()
-            .and_then(|r| advertised_addr(r, self.bind_addr.port()));
-        if let Some(ref a) = self.advertise_addr {
+    /// Record the libp2p `PeerId` this node's swarm ended up with, so
+    /// `self_announce` and `GatewayState::all_peers`'s self-entry can
+    /// advertise it. A no-op call (`None`) is valid — it just means this run
+    /// has no stable libp2p identity to offer peers for the NAT-tunnel path.
+    pub fn with_libp2p_peer_id(mut self, id: Option<String>) -> Self {
+        self.libp2p_peer_id = id;
+        self
+    }
+
+    /// Pin the address peers should reach this node at, at construction time.
+    pub fn with_advertise_addr(self, raw: Option<String>) -> Self {
+        self.set_advertise_addr(raw.as_deref());
+        self
+    }
+
+    /// Pin (or clear, with `None`) the address peers should reach this node
+    /// at, live — no restart required. Normalizes the same way construction
+    /// does (`advertised_addr`), so a malformed value is silently dropped
+    /// rather than stored broken; callers that need to reject bad input
+    /// outright (the web UI's save endpoint) should validate with
+    /// `advertised_addr` themselves first and only call this on success.
+    pub fn set_advertise_addr(&self, raw: Option<&str>) {
+        let normalized = raw.and_then(|r| advertised_addr(r, self.bind_addr.port()));
+        if let Some(ref a) = normalized {
             info!("Anunciando o endereço fixo {a} (em vez do endereço de origem)");
         }
-        self
+        *self.advertise_addr.write().expect("advertise_addr lock") = normalized;
     }
 
     /// Host part of the advertised address, ready to interpolate into a URL
     /// (bracketed when it is IPv6). `None` when no address was pinned.
     pub fn advertised_host(&self) -> Option<String> {
         self.advertise_addr
+            .read()
+            .expect("advertise_addr lock")
             .as_deref()
             .map(|a| ip_host(a).to_string())
     }
 
+    /// Record a peer's libp2p `identify` response as evidence of this node's
+    /// own public address (`info.observed_addr` — see `discovery.rs`'s
+    /// `identify::Event::Received` handler, the only caller). A no-op when
+    /// `host_port`'s host is still private/loopback/link-local
+    /// (`addrs::is_private_or_local`) — that's not new information, just a
+    /// peer on the same LAN or a NAT rewriting within another private range.
+    pub fn set_observed_addr(&self, host_port: &str) {
+        let host = ip_host(host_port).trim_start_matches('[').trim_end_matches(']');
+        if crate::addrs::is_private_or_local(host) {
+            return;
+        }
+        let mut guard = self.observed_addr.write().expect("observed_addr lock");
+        if guard.as_deref() != Some(host_port) {
+            info!("📡 Endereço público observado por um peer: {host_port}");
+        }
+        *guard = Some(host_port.to_string());
+    }
+
+    fn observed_addr(&self) -> Option<String> {
+        self.observed_addr.read().expect("observed_addr lock").clone()
+    }
+
+    /// Host to fall back on when nothing was explicitly pinned: the
+    /// operator's own choice (`advertise_addr`) always wins over anything
+    /// this node merely inferred about itself.
+    ///
+    /// `pub` (not just used by `self_addr_candidates`/`announce_addr`
+    /// internally) because `GatewayState::all_peers`'s self-entry
+    /// (`gateway.rs`) needs the exact same pinned-then-observed preference
+    /// when it builds this node's own `.addr` — without it, that entry fell
+    /// straight to `advertised_host()` alone and skipped the peer-observed
+    /// public address entirely, so a NAT'd node's own dashboard card kept
+    /// showing its private LAN IP even after `Announce`/`self_addr_candidates`
+    /// were already fixed.
+    pub fn effective_host(&self) -> Option<String> {
+        self.advertised_host()
+            .or_else(|| self.observed_addr().map(|a| ip_host(&a).to_string()))
+    }
+
     /// Enderecos que este no anuncia de si.
     ///
-    /// O endereco fixado pelo operador vem primeiro; o resto sai das interfaces
-    /// desta maquina, ja filtrado. Um no sem nenhum endereco enumeravel devolve
-    /// lista vazia, e o peer do outro lado cai no endereco observado - que e o
-    /// comportamento de sempre.
+    /// O endereco fixado pelo operador vem primeiro; na falta dele, o
+    /// endereco publico observado por algum peer via libp2p `identify` (ver
+    /// `set_observed_addr`) - so entao vem o resto, das interfaces desta
+    /// maquina, ja filtrado. Um no sem nenhum endereco enumeravel devolve
+    /// lista vazia, e o peer do outro lado cai no endereco observado do
+    /// pacote - que e o comportamento de sempre.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let porta = self.bind_addr.port();
-        crate::addrs::filter_candidates(
-            crate::addrs::local_addrs(),
-            self.advertised_host().as_deref(),
-        )
-        .into_iter()
-        .map(|ip| {
-            if ip.contains(':') && !ip.starts_with('[') {
-                format!("[{ip}]:{porta}")
-            } else {
-                format!("{ip}:{porta}")
-            }
-        })
-        .collect()
+        crate::addrs::filter_candidates(crate::addrs::local_addrs(), self.effective_host().as_deref())
+            .into_iter()
+            .map(|ip| {
+                if ip.contains(':') && !ip.starts_with('[') {
+                    format!("[{ip}]:{porta}")
+                } else {
+                    format!("{ip}:{porta}")
+                }
+            })
+            .collect()
     }
 
     /// What this node puts in `Announce.addr`.
     ///
     /// `0.0.0.0:<port>` is the "ask the receiver" sentinel: `handle_message`
-    /// replaces it with the source address of the packet.
+    /// replaces it with the source address of the packet. Falls back to a
+    /// peer-observed public address (`set_observed_addr`) before that
+    /// sentinel — a NAT'd node with no `--advertise-addr`/`--public-addr` set
+    /// otherwise has nothing better to offer a remote peer reached over
+    /// gossipsub, where there is no packet source to rewrite `addr` with the
+    /// way the UDP path does.
     pub fn announce_addr(&self) -> String {
         self.advertise_addr
+            .read()
+            .expect("advertise_addr lock")
             .clone()
+            .or_else(|| self.observed_addr())
             .unwrap_or_else(|| format!("0.0.0.0:{}", self.bind_addr.port()))
     }
 
@@ -545,14 +665,23 @@ impl Network {
             inference_port: self.inference_port,
             // Keep this list in sync with the other two `Announce` builders
             // (gateway.rs, infer_server.rs) and with the capability constants
-            // in routing/pipeline.rs (`CAP_RELAY_CHAIN`, `CAP_SPECULATE_LOOKUP`).
-            inference_frame_capabilities: vec![
-                "frame/v1-f16".into(),
-                "frame/v2-zstd-f16".into(),
-                "relay/v1-chain".into(),
-                "relay/v2-direct".into(),
-                "speculate/v1-lookup".into(),
-            ],
+            // in routing/pipeline.rs (`CAP_RELAY_CHAIN`, `CAP_SPECULATE_LOOKUP`,
+            // `CAP_LIBP2P_TUNNEL`). The last one only goes out once the swarm
+            // has actually come up (`libp2p_tunnel_ready`) — claiming it any
+            // earlier would send peers to dial a PeerId that can't answer.
+            inference_frame_capabilities: {
+                let mut caps = vec![
+                    "frame/v1-f16".into(),
+                    "frame/v2-zstd-f16".into(),
+                    "relay/v1-chain".into(),
+                    "relay/v2-direct".into(),
+                    "speculate/v1-lookup".into(),
+                ];
+                if self.libp2p_tunnel_ready() {
+                    caps.push("transport/libp2p-tunnel-v1".into());
+                }
+                caps
+            },
             gateway_port: self.gateway_port,
             role: self.role.clone(),
             hostname: self.hostname.clone(),
@@ -569,6 +698,7 @@ impl Network {
                 .unwrap_or_default(),
             disk_total_mb: 0,
             disk_free_mb: 0,
+            libp2p_peer_id: self.libp2p_peer_id.clone(),
         }
     }
 
@@ -584,6 +714,17 @@ impl Network {
     /// True while the operator has taken this node off the network.
     pub fn is_detached(&self) -> bool {
         self.detached.load(Ordering::Relaxed)
+    }
+
+    /// Called once `Discovery::new` has actually succeeded (or failed) —
+    /// see the field's own doc comment for why this is tracked separately
+    /// from `libp2p_peer_id`.
+    pub fn set_libp2p_tunnel_ready(&self, ready: bool) {
+        self.libp2p_tunnel_ready.store(ready, Ordering::Relaxed);
+    }
+
+    pub fn libp2p_tunnel_ready(&self) -> bool {
+        self.libp2p_tunnel_ready.load(Ordering::Relaxed)
     }
 
     /// Leave the network: stop speaking, stop listening, forget the peers.
@@ -828,6 +969,7 @@ impl Network {
                 capabilities,
                 disk_total_mb,
                 disk_free_mb,
+                libp2p_peer_id,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -865,6 +1007,7 @@ impl Network {
                     disk_total_mb,
                     disk_free_mb,
                     api_keys_active: 0,
+                    libp2p_peer_id,
                 };
 
                 let is_new = {
@@ -1085,6 +1228,116 @@ mod tests {
         }
     }
 
+    /// A NAT'd node with nothing pinned has, until now, only its own private
+    /// LAN interfaces to offer — useless to a remote peer over gossipsub,
+    /// where there is no packet source to rewrite `addr` with the way the
+    /// UDP path does. A peer-observed public address has to fill that gap.
+    #[tokio::test]
+    async fn an_observed_public_address_becomes_the_announced_one() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let port = net.bind_addr.port();
+
+        assert_eq!(
+            net.announce_addr(),
+            format!("0.0.0.0:{port}"),
+            "no pin, nothing observed yet"
+        );
+
+        net.set_observed_addr("203.0.113.5:9999");
+
+        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
+        assert!(
+            net.self_addr_candidates().contains(&format!("203.0.113.5:{port}")),
+            "the observed address's host must appear as a candidate too, at this node's own port"
+        );
+    }
+
+    /// The operator's own explicit pin is a stronger signal than anything
+    /// this node inferred about itself — an observed address arriving later
+    /// (e.g. a new peer connects) must never override it.
+    #[tokio::test]
+    async fn a_pinned_address_always_outranks_an_observed_one() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_advertise_addr(Some("198.51.100.9:42777".into()));
+
+        net.set_observed_addr("203.0.113.5:9999");
+
+        assert_eq!(net.announce_addr(), "198.51.100.9:42777");
+    }
+
+    /// A peer on the same LAN, or a NAT that rewrote to another private
+    /// range, is not evidence of a real public IP — must not overwrite the
+    /// sentinel with something equally useless.
+    #[tokio::test]
+    async fn a_private_observed_address_is_ignored() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let port = net.bind_addr.port();
+
+        net.set_observed_addr("192.168.1.50:9999");
+
+        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+    }
+
+    /// `set_advertise_addr` is the live-update path the web UI's
+    /// `POST /api/ui/network/advertise-addr` drives — no restart, unlike
+    /// every other way this field could be set before. A later call has to
+    /// actually override an earlier pin, since that's the entire point.
+    #[tokio::test]
+    async fn set_advertise_addr_overrides_a_previous_pin_live() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_advertise_addr(Some("198.51.100.9:42777".into()));
+
+        assert_eq!(net.announce_addr(), "198.51.100.9:42777");
+
+        net.set_advertise_addr(Some("203.0.113.77:42777"));
+
+        assert_eq!(net.announce_addr(), "203.0.113.77:42777");
+    }
+
+    /// Clearing the pin (`None`, from the UI's "empty means auto" convention)
+    /// has to fall back through the same precedence `announce_addr` already
+    /// applies — back to an observed address if one exists, not straight to
+    /// the `0.0.0.0` sentinel while a perfectly good observed address sits
+    /// unused.
+    #[tokio::test]
+    async fn clearing_the_pin_falls_back_to_an_observed_address() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap()
+            .with_advertise_addr(Some("198.51.100.9:42777".into()));
+        net.set_observed_addr("203.0.113.5:9999");
+
+        net.set_advertise_addr(None);
+
+        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
+    }
+
+    /// A malformed value passed to the live setter must not silently corrupt
+    /// the previously-pinned address — `set_advertise_addr` normalizes the
+    /// same way construction does, and an unparseable input normalizes to
+    /// `None`, which (per the test above) means "cleared," not "ignored."
+    /// The web UI's save endpoint is responsible for rejecting garbage
+    /// *before* calling this — this test documents what happens if it didn't.
+    #[tokio::test]
+    async fn an_unparseable_value_clears_rather_than_corrupts() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+        let port = net.bind_addr.port();
+
+        net.set_advertise_addr(Some(""));
+
+        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+    }
+
     /// The captain types the address by hand and hands it to a friend, so every
     /// shape he might reasonably type has to land on the same `host:port`.
     #[test]
@@ -1138,6 +1391,7 @@ mod tests {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -1175,6 +1429,7 @@ mod tests {
             disk_total_mb: 500000,
             disk_free_mb: 200000,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -1219,6 +1474,7 @@ mod tests {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         }
     }
 
@@ -1252,6 +1508,19 @@ mod tests {
         assert_eq!(peer.inference_candidates(), vec!["http://192.168.1.9:8181".to_string()]);
     }
 
+    /// `inference_url()` costumava ler só `addr` — um valor que podia estar
+    /// atrás do melhor endereço já disponível em `addr_candidates` (o pinado
+    /// pelo operador, ou o público observado por `identify`). Painel e o
+    /// campo de fallback de `PipelineStep` usam exatamente este método, então
+    /// um `addr` desatualizado bastava para exibir/discar um IP privado
+    /// mesmo com o endereço certo já conhecido.
+    #[test]
+    fn inference_url_prefers_the_first_candidate_over_the_legacy_addr() {
+        let peer = peer_com_candidatos(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
+        assert_eq!(peer.addr, "192.168.1.9:42777", "addr fica desatualizado de propósito neste teste");
+        assert_eq!(peer.inference_url().as_deref(), Some("http://203.0.113.5:8181"));
+    }
+
     /// Cada candidato vira uma URL de inferencia, com o IPv6 entre colchetes.
     #[test]
     fn every_candidate_becomes_an_inference_url() {
@@ -1277,6 +1546,63 @@ mod tests {
             P2PMessage::Announce { addr_candidates, .. } => assert!(addr_candidates.is_empty()),
             _ => panic!("esperava Announce"),
         }
+    }
+
+    /// Same shape of regression as `an_announce_without_candidates_still_parses`,
+    /// specifically for `libp2p_peer_id`: a peer on a binary that predates the
+    /// NAT-tunnel work sends `Announce` with no such field at all.
+    #[test]
+    fn an_announce_without_a_libp2p_peer_id_still_parses() {
+        let antigo = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+            "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
+            "timestamp":"2026-08-13T00:00:00Z"}"#;
+        let msg: P2PMessage =
+            serde_json::from_str(antigo).expect("Announce sem libp2p_peer_id tem que parsear");
+        match msg {
+            P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(libp2p_peer_id, None),
+            _ => panic!("esperava Announce"),
+        }
+    }
+
+    /// A `libp2p_peer_id` present on the wire has to survive the round trip
+    /// unchanged — this is the one field a peer actually needs to dial the
+    /// NAT-tunnel fallback, so a lossy encode/decode would silently break it.
+    #[test]
+    fn an_announce_with_a_libp2p_peer_id_round_trips() {
+        let com_id = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
+            "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
+            "timestamp":"2026-08-13T00:00:00Z",
+            "libp2p_peer_id":"12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh"}"#;
+        let msg: P2PMessage = serde_json::from_str(com_id).expect("Announce tem que parsear");
+        match &msg {
+            P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(
+                libp2p_peer_id.as_deref(),
+                Some("12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh")
+            ),
+            _ => panic!("esperava Announce"),
+        }
+        let re_encoded = serde_json::to_string(&msg).unwrap();
+        let re_decoded: P2PMessage = serde_json::from_str(&re_encoded).unwrap();
+        match re_decoded {
+            P2PMessage::Announce { libp2p_peer_id, .. } => assert_eq!(
+                libp2p_peer_id.as_deref(),
+                Some("12D3KooWAbCdEfGhIjKlMnOpQrStUvWxYz1234567890AbCdEfGh")
+            ),
+            _ => panic!("esperava Announce"),
+        }
+    }
+
+    /// `PeerInfo` (the type stored after an `Announce` is accepted, and the
+    /// one `PipelineStep` reads `libp2p_peer_id` from) needs the same
+    /// backward-compatible default.
+    #[test]
+    fn a_peer_info_without_a_libp2p_peer_id_still_parses() {
+        let antigo = r#"{"node_id":"n","pubkey":"p","addr":"1.2.3.4:42777","model":"m",
+            "start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
+            "last_seen":"2026-08-13T00:00:00Z"}"#;
+        let peer: PeerInfo =
+            serde_json::from_str(antigo).expect("PeerInfo sem libp2p_peer_id tem que parsear");
+        assert_eq!(peer.libp2p_peer_id, None);
     }
 
     /// The LAN broadcast goes to `255.255.255.255:42777` no matter which port
@@ -1347,6 +1673,7 @@ mod tests {
             disk_total_mb: 0,
             disk_free_mb: 0,
             api_keys_active: 0,
+            libp2p_peer_id: None,
         }
     }
 

@@ -2,8 +2,8 @@
  * The network as an administrator sees it: who is connected, who is blocked,
  * and whether this machine is even taking part.
  */
-import { Ban, LogIn, LogOut, Network, ShieldOff, Undo2 } from "lucide-react";
-import { useState } from "react";
+import { Ban, LogIn, LogOut, Network, Radio, Save, ShieldOff, Undo2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
 import { MachineIcon } from "../components/MachineIcon";
 import {
@@ -12,7 +12,9 @@ import {
   Dot,
   Empty,
   ErrorState,
+  Field,
   Footnote,
+  Input,
   KeyValue,
   Mono,
   PageHeader,
@@ -24,6 +26,7 @@ import { api } from "../lib/api";
 import { layerRange } from "../lib/format";
 import { useAdminNodes, useCluster, useInvalidate, useNode } from "../lib/queries";
 import { useToast } from "../lib/toast";
+import type { NodeInfo } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 export function NetworkSettings() {
@@ -36,6 +39,34 @@ export function NetworkSettings() {
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [advertiseAddr, setAdvertiseAddr] = useState("");
+  const [addrSaving, setAddrSaving] = useState(false);
+  const [addrLoaded, setAddrLoaded] = useState(false);
+
+  // Load once: re-syncing on every poll would fight the operator's typing.
+  useEffect(() => {
+    if (addrLoaded || !node.data) return;
+    setAdvertiseAddr(node.data.advertise_addr ?? "");
+    setAddrLoaded(true);
+  }, [node.data, addrLoaded]);
+
+  async function saveAdvertiseAddr() {
+    setAddrSaving(true);
+    try {
+      const saved = await api.post<Pick<NodeInfo, "advertise_addr" | "effective_address">>(
+        "/api/ui/network/advertise-addr",
+        { advertise_addr: advertiseAddr.trim() },
+      );
+      setAdvertiseAddr(saved.advertise_addr ?? "");
+      toast.success(t("network.addrSaved"), t("network.addrSavedDetail"));
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("network.addrSaveFailed"), e);
+    } finally {
+      setAddrSaving(false);
+    }
+  }
 
   const detached = node.data?.detached ?? false;
 
@@ -117,6 +148,40 @@ export function NetworkSettings() {
               <KeyValue label={t("network.role")}>{node.data.role}</KeyValue>
             </dl>
           )}
+        </Panel>
+
+        <Panel>
+          <PanelHeader
+            title={t("network.advertiseTitle")}
+            subtitle={t("network.advertiseSubtitle")}
+            actions={
+              <Button
+                variant="primary"
+                icon={<Save className="h-3.5 w-3.5" />}
+                loading={addrSaving}
+                onClick={() => void saveAdvertiseAddr()}
+                disabled={!addrLoaded}
+              >
+                {t("network.addrSave")}
+              </Button>
+            }
+          />
+          <div className="space-y-3 px-5 py-4">
+            <Field label={t("network.addrLabel")} hint={t("network.addrHint")}>
+              <Input
+                value={advertiseAddr}
+                spellCheck={false}
+                placeholder={t("network.addrPlaceholder")}
+                onChange={(e) => setAdvertiseAddr(e.target.value)}
+              />
+            </Field>
+            <KeyValue label={t("network.addrEffective")}>
+              <Mono>{node.data?.effective_address ?? "—"}</Mono>
+            </KeyValue>
+            <Footnote icon={<Radio className="h-3.5 w-3.5" />}>
+              {t("network.addrPrecedence")}
+            </Footnote>
+          </div>
         </Panel>
 
         {nodes.isError && (

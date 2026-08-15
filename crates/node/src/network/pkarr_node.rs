@@ -92,6 +92,17 @@ impl PkarrNode {
         self.keypair.to_uri_string()
     }
 
+    /// Raw 32-byte Ed25519 seed backing this identity.
+    ///
+    /// Lets the libp2p swarm derive a *stable* `PeerId` from the same
+    /// already-persisted identity instead of a fresh keypair every restart —
+    /// see `Discovery::new`. `pkarr::Keypair` and `libp2p::identity::Keypair`
+    /// both wrap plain `ed25519_dalek::SigningKey` seeds, so this is a
+    /// direct, lossless handoff, not a conversion.
+    pub fn secret_key_bytes(&self) -> [u8; 32] {
+        self.keypair.secret_key()
+    }
+
     /// Publish this node's layer assignment and address to the DHT.
     pub async fn publish(
         &self,
@@ -254,6 +265,44 @@ mod tests {
         let decoded: TxtPayload = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(decoded.i, None);
         assert_eq!(decoded.m, "gemma3");
+    }
+
+    /// `Discovery::new` derives the libp2p keypair straight from this seed
+    /// (`libp2p::identity::Keypair::ed25519_from_bytes`) so the swarm's
+    /// `PeerId` is stable across restarts instead of a fresh one every time.
+    /// That only holds if the same seed always yields the same `PeerId`.
+    #[test]
+    fn the_same_pkarr_seed_always_derives_the_same_libp2p_peer_id() {
+        let dir = std::env::temp_dir().join(format!("rdma-pkarr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let key_path = dir.join(".rdma-p2p.key");
+
+        let node = PkarrNode::load_or_create(&key_path).expect("create pkarr node");
+        let seed = node.secret_key_bytes();
+
+        let mut seed_a = seed;
+        let peer_a = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed_a[..])
+            .expect("derive keypair")
+            .public()
+            .to_peer_id();
+
+        let mut seed_b = seed;
+        let peer_b = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed_b[..])
+            .expect("derive keypair")
+            .public()
+            .to_peer_id();
+
+        assert_eq!(peer_a, peer_b, "same seed must yield the same PeerId");
+
+        // Reload from disk (simulates a process restart) — must still match.
+        let reloaded = PkarrNode::load_or_create(&key_path).expect("reload pkarr node");
+        let mut seed_c = reloaded.secret_key_bytes();
+        let peer_c = libp2p::identity::Keypair::ed25519_from_bytes(&mut seed_c[..])
+            .expect("derive keypair")
+            .public()
+            .to_peer_id();
+        assert_eq!(peer_a, peer_c, "PeerId must survive a reload of the persisted key");
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

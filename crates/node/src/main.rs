@@ -33,6 +33,8 @@ mod gguf;
 mod identity;
 #[path = "inference/infer_server.rs"]
 mod infer_server;
+#[path = "network/infer_tunnel.rs"]
+mod infer_tunnel;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/llm.rs"]
@@ -96,7 +98,7 @@ use network::Network;
 use ollama::OllamaClient;
 use pipeline::LoadTracker;
 use std::sync::Arc;
-use tokio::sync::RwLock;
+use tokio::sync::{mpsc, RwLock};
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 use tracing_subscriber::EnvFilter;
@@ -238,8 +240,13 @@ struct Args {
     #[arg(long, default_value = "")]
     pkarr_peers: String,
 
-    /// External address to publish to pkarr DHT (HOST:PORT). Auto-detected if not set.
-    /// PORT here is the UDP port; libp2p TCP port will be UDP+10000.
+    /// External address to publish to the pkarr DHT and to advertise to
+    /// peers as this node's own address (HOST:PORT) — same effect as
+    /// `--advertise-addr`, which wins if both are set. PORT here is the UDP
+    /// port; libp2p TCP port will be UDP+10000. Without either, peers reached
+    /// over the internet fall back to a public address observed via libp2p
+    /// `identify`, if any peer has reported one; failing that, this node's
+    /// own local network interfaces (usually wrong for a NAT'd node).
     #[arg(long, default_value = "")]
     public_addr: String,
 
@@ -375,6 +382,8 @@ async fn main() -> Result<()> {
             app_config.clone(),
             args.ollama_url,
             args.no_discovery,
+            args.advertise_addr.clone(),
+            args.public_addr.clone(),
         )
         .await;
     }
@@ -466,20 +475,9 @@ async fn main() -> Result<()> {
 
     display::print_node_info(&node_id, &pubkey, p2p_port);
 
-    // ── Pkarr identity (stable across restarts) ──────────────────────────────
-    let key_path = identity::pkarr_key_path();
-    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&key_path) {
-        Ok(n) => {
-            info!("🔑 Pkarr address: {}", n.public_key_uri());
-            Some(n)
-        }
-        Err(e) => {
-            warn!("pkarr init failed (discovery disabled): {}", e);
-            None
-        }
-    };
-
     // ── Compute pkarr multiaddr to publish ───────────────────────────────────
+    // (Doesn't need a loaded `PkarrNode` — `start_p2p_stack` loads its own,
+    // for the keypair and for relay-peer resolution, later.)
     let pkarr_multiaddr = {
         let default_tcp_port = p2p_port.saturating_add(10000);
         if !args.public_addr.is_empty() {
@@ -529,12 +527,18 @@ async fn main() -> Result<()> {
         }
     }
 
-    // CLI wins over the config file, same as --bootstrap.
-    let advertise_addr: Option<String> = if !args.advertise_addr.trim().is_empty() {
-        Some(args.advertise_addr.clone())
-    } else {
-        app_config.advertise_addr.clone()
-    };
+    // CLI wins over the config file, same as --bootstrap. `--public-addr`
+    // used to only reach the pkarr DHT record (below) — an operator who set
+    // it to get past NAT for pkarr resolution silently got no benefit for
+    // the Announce'd HTTP address, which is the one that actually matters
+    // for a peer trying to dial this node directly. Folded in here so one
+    // flag does the whole job; `--advertise-addr` stays the more specific
+    // override when both happen to be set.
+    let advertise_addr = resolve_advertise_addr(
+        &args.advertise_addr,
+        &args.public_addr,
+        app_config.advertise_addr.as_deref(),
+    );
 
     if bootstrap_nodes.is_empty() {
         info!(
@@ -546,59 +550,36 @@ async fn main() -> Result<()> {
         info!("Bootstrap nodes: {:?}", bootstrap_nodes);
     }
 
-    // ── Resolve relay peers via pkarr ────────────────────────────────────────
-    let resolved_relay_addrs: Vec<String> = if let Some(ref pn) = pkarr_node {
-        if !relay_peer_keys.is_empty() {
-            let peers = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                pn.resolve_peers(&relay_peer_keys),
-            )
-            .await
-            .unwrap_or_default();
-            peers
-                .into_iter()
-                .filter(|p| p.is_relay)
-                .map(|p| p.multiaddr)
-                .collect()
-        } else {
-            vec![]
-        }
-    } else {
-        vec![]
-    };
-
     // ── Determine Ollama port to advertise ───────────────────────────────────
     let ollama_port: Option<u16> = advertised_ollama_port(&args.ollama_url);
 
-    // ── Start P2P network ────────────────────────────────────────────────────
+    // ── Start P2P network + (best-effort) libp2p discovery ───────────────────
     let node_display_name = match app_config.node_name.clone() {
         Some(name) => name,
         None => sysmon::sample().await.hostname,
     };
-    let net = Arc::new(
-        Network::new(
-            node_id.clone(),
-            pubkey.clone(),
-            p2p_port,
-            bootstrap_nodes.clone(),
-            ollama_port,
-            inference_port,
-            Some(gateway_port),
-        )
-        .await?
-        .with_identity(app_config.role.to_string(), node_display_name)
-        .with_advertise_addr(advertise_addr.clone()),
-    );
-
-    if args.no_discovery {
-        net.detach().await;
-        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
-    }
-
-    let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
-        Arc::new(RwLock::new(None));
-
-    net.clone().start(assignment_shared.clone()).await?;
+    let stack = start_p2p_stack(P2pStackArgs {
+        node_id: node_id.clone(),
+        pubkey: pubkey.clone(),
+        p2p_port,
+        bootstrap_nodes: bootstrap_nodes.clone(),
+        ollama_port,
+        inference_port,
+        gateway_port,
+        role: app_config.role.to_string(),
+        node_display_name,
+        advertise_addr,
+        relay_peer_keys: relay_peer_keys.clone(),
+        serve_relay: args.serve_relay,
+        use_default_relays: !args.no_default_relays,
+        no_discovery: args.no_discovery,
+    })
+    .await?;
+    let net = stack.net;
+    let assignment_shared = stack.assignment_shared;
+    let tunnel_tx = stack.tunnel_tx;
+    let pkarr_node = stack.pkarr_node;
+    let disc_dial_tx = stack.disc_dial_tx;
 
     info!("⏳ Scanning network for existing layer coverage...");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -742,6 +723,7 @@ async fn main() -> Result<()> {
             auth: auth_config,
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
+            tunnel_tx: Some(tunnel_tx.clone()),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -751,55 +733,9 @@ async fn main() -> Result<()> {
         });
     }
 
-    // ── libp2p discovery (LAN mDNS + global Kademlia + gossipsub) ────────────
-    // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777).
-    // Announce messages are published to gossipsub every 5 s so internet peers
-    // learn our layer assignment without needing a shared signalling server.
-    let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
-        p2p_port,
-        &bootstrap_nodes,
-        &resolved_relay_addrs,
-        args.serve_relay,
-        !args.no_default_relays,
-        net.clone(),
-    ) {
-        Ok(disc) => {
-            let ann_tx = disc.announce_tx.clone();
-            let dial_tx = disc.dial_tx.clone();
-            tokio::spawn(async move { disc.run().await });
-            (Some(ann_tx), Some(dial_tx))
-        }
-        Err(e) => {
-            warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
-            (None, None)
-        }
-    };
-
-    // Publish our own Announce to gossipsub every 5 s so newly-connected
-    // libp2p peers learn our model/layer assignment.
-    if let Some(tx) = disc_announce_tx {
-        let net_disc = net.clone();
-        let asgn_disc = assignment_shared.clone();
-        tokio::spawn(async move {
-            let mut ticker = interval(Duration::from_secs(5));
-            loop {
-                ticker.tick().await;
-                // Mesmo construtor do caminho UDP (`Network::self_announce`):
-                // capabilities, papel e hostname iguais, e publica **sempre**,
-                // com ou sem assignment. Um nó ainda sem modelo precisa ser
-                // visto pela internet do mesmo jeito que já era visto na LAN.
-                let data = {
-                    let asgn = asgn_disc.read().await;
-                    net_disc.gossip_announce_bytes(asgn.as_ref())
-                };
-                if let Some(data) = data {
-                    let _ = tx.send(data).await;
-                }
-            }
-        });
-    }
-
     // ── Resolve pkarr peers and dial on startup ──────────────────────────────
+    // (libp2p discovery + gossipsub re-announce already started inside
+    // `start_p2p_stack`; `disc_dial_tx` came back from it.)
     if let (Some(ref pn), Some(dtx)) = (&pkarr_node, disc_dial_tx.as_ref()) {
         if !pkarr_peer_keys.is_empty() {
             let peers = tokio::time::timeout(
@@ -1024,6 +960,218 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     Ok(())
 }
 
+/// `--advertise-addr` wins, else `--public-addr`, else the persisted config
+/// value. Factored out so `main()`'s CLI path and `start_gateway_only` can't
+/// drift on this precedence — `--public-addr` used to only reach the pkarr
+/// DHT record; folding it in here is what makes it also reach the `Announce`
+/// peers actually dial.
+fn resolve_advertise_addr(
+    cli_advertise: &str,
+    cli_public: &str,
+    config_val: Option<&str>,
+) -> Option<String> {
+    if !cli_advertise.trim().is_empty() {
+        Some(cli_advertise.to_string())
+    } else if !cli_public.trim().is_empty() {
+        Some(cli_public.to_string())
+    } else {
+        config_val.map(|s| s.to_string())
+    }
+}
+
+/// Everything `P2pStack` needs to bring up pkarr, a stable libp2p identity,
+/// `Network`, and (best-effort) `Discovery` — shared by `main()`'s CLI path
+/// and `start_gateway_only`, so the ordering constraint below can't be
+/// violated from outside this function: the libp2p keypair must be derived
+/// *before* `Network::new()`'s builder chain (`.with_libp2p_peer_id(...)`
+/// needs the derived `PeerId` string), and `Network` becomes immutable the
+/// moment it's wrapped in `Arc`, right after that chain.
+struct P2pStackArgs {
+    node_id: String,
+    pubkey: String,
+    p2p_port: u16,
+    bootstrap_nodes: Vec<String>,
+    ollama_port: Option<u16>,
+    inference_port: Option<u16>,
+    gateway_port: u16,
+    role: String,
+    node_display_name: String,
+    advertise_addr: Option<String>,
+    /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
+    /// *inside* this function, after it loads its own `pkarr_node` — not
+    /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
+    /// identity, and that identity is loaded here, not by the caller; asking
+    /// the caller to resolve first would mean loading pkarr twice (once to
+    /// resolve, once inside this function) or restructuring who loads it.
+    /// Empty for `start_gateway_only` today — no CLI to source keys from
+    /// (see the plan's addendum on deferred parity).
+    relay_peer_keys: Vec<String>,
+    serve_relay: bool,
+    use_default_relays: bool,
+    no_discovery: bool,
+}
+
+/// What a caller needs after `start_p2p_stack` returns, to keep going with
+/// whatever is specific to its own path (layer assignment, `GatewayState`,
+/// pkarr dial/publish — none of which belong inside this shared helper).
+struct P2pStack {
+    net: Arc<Network>,
+    tunnel_tx: mpsc::Sender<infer_tunnel::TunnelOutbound>,
+    pkarr_node: Option<pkarr_node::PkarrNode>,
+    assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>>,
+    /// `Some` only if `Discovery::new` succeeded — lets a caller dial
+    /// pkarr-resolved peers by `PeerId` on startup. `None` means libp2p
+    /// never came up this run; callers must treat that as "skip it," not
+    /// an error (this function itself already logged why).
+    disc_dial_tx: Option<mpsc::Sender<libp2p::Multiaddr>>,
+}
+
+/// pkarr load → libp2p keypair derivation → tunnel channel → `Network`
+/// (with a stable libp2p `PeerId`) → `net.start()` (UDP) → best-effort
+/// `Discovery::new` (libp2p swarm) → the 5s periodic gossipsub re-announce.
+/// Never fails on anything libp2p-related — only `Network::new()`'s own `?`
+/// (UDP bind failure) propagates, exactly like today's CLI path. This is
+/// deliberate: every caller of this function needs to always come up and
+/// serve its gateway, with or without libp2p.
+async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
+    let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
+        Ok(n) => {
+            info!("🔑 Pkarr address: {}", n.public_key_uri());
+            Some(n)
+        }
+        Err(e) => {
+            warn!("pkarr init failed (discovery disabled): {}", e);
+            None
+        }
+    };
+
+    // `Network` needs to advertise the resulting PeerId in its own
+    // `Announce`, and it's built (then wrapped in `Arc`, no longer mutable
+    // in place) a few lines below — so the keypair has to exist before that.
+    let libp2p_keypair = pkarr_node
+        .as_ref()
+        .and_then(|pn| {
+            let mut seed = pn.secret_key_bytes();
+            libp2p::identity::Keypair::ed25519_from_bytes(&mut seed[..]).ok()
+        })
+        .unwrap_or_else(libp2p::identity::Keypair::generate_ed25519);
+    let libp2p_peer_id = libp2p_keypair.public().to_peer_id().to_string();
+
+    // Resolved *here*, not by the caller — needs the `pkarr_node` this
+    // function just loaded (see `P2pStackArgs::relay_peer_keys`'s doc comment).
+    let resolved_relay_addrs: Vec<String> = if let Some(ref pn) = pkarr_node {
+        if !args.relay_peer_keys.is_empty() {
+            let peers = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                pn.resolve_peers(&args.relay_peer_keys),
+            )
+            .await
+            .unwrap_or_default();
+            peers
+                .into_iter()
+                .filter(|p| p.is_relay)
+                .map(|p| p.multiaddr)
+                .collect()
+        } else {
+            vec![]
+        }
+    } else {
+        vec![]
+    };
+
+    // The gateway's HTTP server needs a cloneable sender before `Discovery::new`
+    // — which owns the matching receiver — is ever called. Registered
+    // globally too (`infer_tunnel::set_tunnel_sender`) so `infer_server.rs`'s
+    // ring-relay code, which has no `GatewayState` handle, can reach it the
+    // same way it already reaches `http_client()`. Sending on this channel
+    // before `Discovery::new` succeeds (or if it never does) fails fast with
+    // a closed-channel error — the same already-handled outcome
+    // `send_frame_via_tunnel` treats as "no tunnel available," not a hang.
+    let (tunnel_tx, tunnel_rx) = mpsc::channel::<infer_tunnel::TunnelOutbound>(64);
+    infer_tunnel::set_tunnel_sender(tunnel_tx.clone());
+
+    let net = Arc::new(
+        Network::new(
+            args.node_id,
+            args.pubkey,
+            args.p2p_port,
+            args.bootstrap_nodes.clone(),
+            args.ollama_port,
+            args.inference_port,
+            Some(args.gateway_port),
+        )
+        .await?
+        .with_identity(args.role, args.node_display_name)
+        .with_advertise_addr(args.advertise_addr)
+        .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
+    );
+
+    if args.no_discovery {
+        net.detach().await;
+        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
+    }
+
+    let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
+        Arc::new(RwLock::new(None));
+    net.clone().start(assignment_shared.clone()).await?;
+
+    // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
+    // messages are published to gossipsub every 5 s so internet peers learn
+    // our layer assignment without needing a shared signalling server.
+    let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
+        args.p2p_port,
+        &args.bootstrap_nodes,
+        &resolved_relay_addrs,
+        args.serve_relay,
+        args.use_default_relays,
+        net.clone(),
+        libp2p_keypair,
+        tunnel_rx,
+    ) {
+        Ok(disc) => {
+            let ann_tx = disc.announce_tx.clone();
+            let dial_tx = disc.dial_tx.clone();
+            net.set_libp2p_tunnel_ready(true);
+            tokio::spawn(async move { disc.run().await });
+            (Some(ann_tx), Some(dial_tx))
+        }
+        Err(e) => {
+            warn!("libp2p discovery disabled ({}). UDP-only mode.", e);
+            (None, None)
+        }
+    };
+
+    if let Some(tx) = disc_announce_tx {
+        let net_disc = net.clone();
+        let asgn_disc = assignment_shared.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(Duration::from_secs(5));
+            loop {
+                ticker.tick().await;
+                // Mesmo construtor do caminho UDP (`Network::self_announce`):
+                // capabilities, papel e hostname iguais, e publica **sempre**,
+                // com ou sem assignment. Um nó ainda sem modelo precisa ser
+                // visto pela internet do mesmo jeito que já era visto na LAN.
+                let data = {
+                    let asgn = asgn_disc.read().await;
+                    net_disc.gossip_announce_bytes(asgn.as_ref())
+                };
+                if let Some(data) = data {
+                    let _ = tx.send(data).await;
+                }
+            }
+        });
+    }
+
+    Ok(P2pStack {
+        net,
+        tunnel_tx,
+        pkarr_node,
+        assignment_shared,
+        disc_dial_tx,
+    })
+}
+
 /// Start the gateway with real routes but without model/network binding.
 /// The dashboard, admin, and handshake routes all work so the user can
 /// configure the model through the web UI.
@@ -1032,6 +1180,8 @@ async fn start_gateway_only(
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
+    advertise_addr_cli: String,
+    public_addr_cli: String,
 ) -> Result<()> {
     use crate::gateway::{start_gateway, GatewayState};
     use crate::pipeline::LoadTracker;
@@ -1044,30 +1194,34 @@ async fn start_gateway_only(
         Some(name) => name,
         None => sysmon::sample().await.hostname,
     };
-    let net = Arc::new(
-        Network::new(
-            node_id.clone(),
-            pubkey.clone(),
-            app_config.p2p_port,
-            app_config.bootstrap_nodes.clone(),
-            None,
-            Some(app_config.inference_port_or_default()),
-            Some(gateway_port),
-        )
-        .await?
-        .with_identity(app_config.role.to_string(), node_display_name)
-        .with_advertise_addr(app_config.advertise_addr.clone()),
+    let advertise_addr = resolve_advertise_addr(
+        &advertise_addr_cli,
+        &public_addr_cli,
+        app_config.advertise_addr.as_deref(),
     );
-
-    if no_discovery {
-        net.detach().await;
-        info!("🚫 --no-discovery: nó começa fora da rede, sem anunciar nem procurar peers");
-    }
-
-    let assignment_shared: Arc<RwLock<Option<model::LayerAssignment>>> =
-        Arc::new(RwLock::new(None));
-
-    net.clone().start(assignment_shared.clone()).await?;
+    let ollama_port = advertised_ollama_port(&ollama_url);
+    let stack = start_p2p_stack(P2pStackArgs {
+        node_id: node_id.clone(),
+        pubkey: pubkey.clone(),
+        p2p_port: app_config.p2p_port,
+        bootstrap_nodes: app_config.bootstrap_nodes.clone(),
+        ollama_port,
+        inference_port: Some(app_config.inference_port_or_default()),
+        gateway_port,
+        role: app_config.role.to_string(),
+        node_display_name,
+        advertise_addr,
+        // No CLI here to source pkarr/relay peer keys from — see the plan's
+        // addendum on deferred parity for `start_gateway_only`.
+        relay_peer_keys: vec![],
+        serve_relay: false,
+        use_default_relays: true,
+        no_discovery,
+    })
+    .await?;
+    let net = stack.net;
+    let assignment_shared = stack.assignment_shared;
+    let tunnel_tx = stack.tunnel_tx;
 
     let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
 
@@ -1111,6 +1265,11 @@ async fn start_gateway_only(
         auth: auth_state,
         transfers: Default::default(),
         reply_inbox: crate::direct::ReplyInbox::new(),
+        // `start_p2p_stack` always hands back a working sender, even when
+        // `Discovery::new` itself failed — sending on it then just fails
+        // fast with a closed-channel error, the same already-handled
+        // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
+        tunnel_tx: Some(tunnel_tx),
     };
 
     info!(
@@ -1141,5 +1300,26 @@ mod main_tests {
             advertised_ollama_port(&args.ollama_url),
             "a flag não pode mudar o que se anuncia"
         );
+    }
+
+    /// `--advertise-addr` é mais específico que `--public-addr`, e os dois
+    /// vencem o que já estava salvo em `rdma-p2p.json` — a mesma ordem que
+    /// `main()`'s CLI path e `start_gateway_only` têm que aplicar igual, ou
+    /// os dois divergem silenciosamente com o tempo.
+    #[test]
+    fn advertise_addr_wins_over_public_addr_wins_over_config() {
+        assert_eq!(
+            resolve_advertise_addr("1.1.1.1:1", "2.2.2.2:2", Some("3.3.3.3:3")),
+            Some("1.1.1.1:1".to_string())
+        );
+        assert_eq!(
+            resolve_advertise_addr("", "2.2.2.2:2", Some("3.3.3.3:3")),
+            Some("2.2.2.2:2".to_string())
+        );
+        assert_eq!(
+            resolve_advertise_addr("", "", Some("3.3.3.3:3")),
+            Some("3.3.3.3:3".to_string())
+        );
+        assert_eq!(resolve_advertise_addr("", "", None), None);
     }
 }

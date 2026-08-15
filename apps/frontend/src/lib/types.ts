@@ -124,6 +124,10 @@ export interface NodeInfo {
   build_commit: string;
   /** Este nó aceita atualizar-se pela interface (RDMA_P2P_DEV_UPDATE=1). */
   dev_update: boolean;
+  /** Endereço fixado pelo operador. `null` quando nada foi fixado. */
+  advertise_addr: string | null;
+  /** O que este nó anuncia agora de fato (fixado, observado, ou o sentinela). */
+  effective_address: string;
 }
 
 export interface PeerView {

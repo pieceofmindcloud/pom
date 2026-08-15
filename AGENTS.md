@@ -303,26 +303,39 @@ que deu certo com `/api/ui/cluster`: dois `node_id` **distintos**.
 
 ### Estado do cenário "peers em redes diferentes, pela internet"
 
-Já existe em `crates/node/src/network/discovery.rs` e `crates/node/src/network/pkarr_node.rs`: Circuit Relay v2 (cliente
-e `--serve-relay`), DCuTR para hole punching, AutoNAT, Kademlia, gossipsub e
-publicação/resolução de endereço via DHT pkarr (`--pkarr-peers`, `--public-addr`,
-`--relay-peers`, `--no-default-relays`). Ver os specs em `docs/superpowers/specs/`.
+Já existe em `crates/node/src/network/discovery.rs` e `crates/node/src/network/pkarr_node.rs`: Circuit
+Relay v2 (cliente e `--serve-relay`), DCuTR para hole punching, AutoNAT,
+Kademlia, gossipsub e publicação/resolução de endereço via DHT pkarr
+(`--pkarr-peers`, `--public-addr`, `--relay-peers`, `--no-default-relays`). Ver
+os specs em `docs/superpowers/specs/`.
+
+**Endereço anunciado — resolvido.** `Network::announce_addr()`/`self_addr_candidates()`
+(`network.rs`) seguem esta ordem: endereço fixado pelo operador
+(`--advertise-addr`, ou `--public-addr` — os dois alimentam o mesmo
+`advertise_addr` agora, `--advertise-addr` vence se ambos vierem setados) →
+endereço público observado por algum peer via libp2p `identify`
+(`Network::set_observed_addr`, chamado de `discovery.rs` no evento
+`identify::Event::Received` — é o mesmo princípio de um STUN, só que usando as
+conexões que o swarm já faz) → interfaces locais desta máquina (o `0.0.0.0:<porta>`
+sentinela só sobra sem nenhum dos três). Os dois caminhos, UDP e gossipsub,
+leem do mesmo `Network`, então um valor fixado chega igual aos dois — não há
+mais o gap descrito aqui antes. `addrs::is_private_or_local` é o que decide se
+um endereço observado é "novidade": intervalos RFC 1918 e IPv6 unique-local
+não contam, porque só provam que o peer que respondeu está na mesma LAN.
 
 Falta para funcionar de fato pela internet:
 
-1. **O endereço anunciado no gossipsub é literal `0.0.0.0:<porta>`**
-   (`crates/node/src/main.rs`, task de announce periódico). Na LAN não incomoda porque o
-   caminho UDP reescreve `addr` com o IP de origem (`network.rs`,
-   `handle_message`), mas `insert_peer()` (caminho libp2p) não reescreve nada -
-   um peer que só chegue por gossipsub fica com `inference_url` = `http://0.0.0.0:8181`,
-   que resolve para o *próprio* nó. Pela internet esse é o caminho principal.
-2. **O tráfego de inferência não passa pelo libp2p.** O gateway fala HTTP direto
-   com `http://<ip-do-peer>:<inference-port>` (`pipeline.rs`/`gateway.rs`). Relay
-   e DCuTR só carregam a descoberta; sem IP roteável ou porta liberada, o hop
-   HTTP falha mesmo com os peers "conectados".
-3. **`--public-addr` só alimenta o pkarr**, não o `addr` do `Announce`.
-4. Sem autenticação nem TLS na porta de inferência (`/v1/prefill`, `/v1/step`)
-   nem no gateway - aceitável em LAN confiável, não na internet.
+1. **O tráfego de inferência tem um caminho alternativo por libp2p, mas ainda
+   não verificado em NAT/CGNAT real.** `relay::send_frame_or_tunnel`
+   (`inference/relay.rs`) tenta HTTP direto primeiro e só cai para o túnel
+   libp2p (`infer_tunnel.rs`, protocolo `request_response` próprio) numa falha
+   de `Timeout`/`Transport` contra um hop que anuncia
+   `transport/libp2p-tunnel-v1` e tem `libp2p_peer_id` conhecido — nunca numa
+   recusa HTTP considerada. Testado em loopback e com swarms falsos; **não**
+   com duas máquinas atrás de NAT/CGNAT de verdade — isso segue como próximo
+   passo.
+2. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
+   confiável, não na internet.
 
 ## Arquitetura Principal/Nó e as armadilhas que ela trouxe
 

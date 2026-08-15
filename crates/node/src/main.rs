@@ -19,6 +19,8 @@ mod devupdate;
 mod direct;
 #[path = "inference/direct_lab.rs"]
 mod direct_lab;
+#[path = "inference/spec_lab.rs"]
+mod spec_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
 #[path = "utils/display.rs"]

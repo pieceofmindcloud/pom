@@ -668,24 +668,51 @@ pub async fn generate_stream(
         }
 
         if plan.supports_speculation() && speculative_enabled {
+            // Vira `false` na primeira rodada em que a cabeça recusar o
+            // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
+            // caro por um motivo que não se vê: `step_speculative` nunca
+            // aprendeu a resposta direta, então insistir mantém a cadeia no
+            // anel borbulhado (2N travessias por token) quando o caminho
+            // direto (N+1) está disponível — ver `crate::direct`.
+            let mut especulando = true;
             while tokens_generated < max_tokens {
-                let res = crate::prefill::step_speculative(
-                    &plan,
-                    &model,
-                    &session_id,
-                    next_token,
-                    speculative_k,
-                    speculative_m,
-                    dtype,
-                    &state.http,
-                    &state.network.routes,
-                )
-                .await;
+                let res = if especulando {
+                    crate::prefill::step_speculative(
+                        &plan,
+                        &model,
+                        &session_id,
+                        next_token,
+                        speculative_k,
+                        speculative_m,
+                        dtype,
+                        &state.http,
+                        &state.network.routes,
+                    )
+                    .await
+                } else {
+                    crate::prefill::step(
+                        &plan,
+                        &model,
+                        &session_id,
+                        next_token,
+                        dtype,
+                        &state.http,
+                        &state.network.routes,
+                        direct.as_ref(),
+                    )
+                    .await
+                    .map(crate::prefill::SpeculativeStep::of_one_token)
+                };
 
                 let step = match res {
                     Ok(step) => step,
                     Err(e) => {
-                        warn!("Erro na rodada especulativa (token {tokens_generated}): {e}");
+                        let rodada = if especulando {
+                            "rodada especulativa"
+                        } else {
+                            "rodada de decodificação"
+                        };
+                        warn!("Erro na {rodada} (token {tokens_generated}): {e}");
                         let elapsed = gen_start.elapsed();
                         if tokens_generated > 0 {
                             info!("devolvendo {tokens_generated} tokens parciais");
@@ -705,13 +732,22 @@ pub async fn generate_stream(
                         } else {
                             let _ = tx
                                 .send(GenEvent::Failed(format!(
-                                    "Pipeline falhou na rodada especulativa: {e}"
+                                    "Pipeline falhou na {rodada}: {e}"
                                 )))
                                 .await;
                         }
                         return;
                     }
                 };
+                if especulando && !step.speculated {
+                    // A cabeça recusou rascunhar — resposta legítima, e a única
+                    // pista que o gateway tem de que este modelo não especula.
+                    info!(
+                        "nenhum hop rascunhou: seguindo sem especulação \
+                         (o cache KV do modelo não desloca — ver kv_can_shift em /health)"
+                    );
+                    especulando = false;
+                }
                 trace.merge(&step.trace);
 
                 // A round can confirm more tokens than remain in the budget —
@@ -740,7 +776,12 @@ pub async fn generate_stream(
                     trace.output_tokens = tokens_generated;
                     trace.complete = true;
                     info!(
-                        "✅ Pipeline completo (especulativo): {} tokens em {:.1}s ({:.1} tok/s)",
+                        "✅ Pipeline completo ({}): {} tokens em {:.1}s ({:.1} tok/s)",
+                        if especulando {
+                            "especulativo"
+                        } else {
+                            "sem especulação"
+                        },
                         tokens_generated,
                         elapsed.as_secs_f64(),
                         rate(tokens_generated, elapsed.as_secs_f64())
@@ -1530,6 +1571,76 @@ pub(crate) mod testkit {
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
         }
+    }
+
+    /// Uma configuração de nó com a decodificação especulativa ligada — o
+    /// interruptor do operador que o gateway lê antes de cada geração.
+    pub(crate) fn spec_config() -> crate::runtime::NodeConfig {
+        crate::runtime::NodeConfig {
+            model_path: String::new(),
+            model_label: "lab".into(),
+            start_layer: 0,
+            end_layer: 1,
+            total_layers: 2,
+            peer_count: 2,
+            peer_index: 0,
+            primary: true,
+            inference_port: 8181,
+            n_gpu_layers: 0,
+            n_ctx: 8192,
+            offload_kqv: true,
+            n_batch: 512,
+            max_sessions: 1,
+            prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            max_new_tokens: 256,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 40,
+            repeat_penalty: 1.15,
+            repeat_last_n: 64,
+            no_thinking: true,
+            single_peer: false,
+            no_embeddings: false,
+            speculative_decoding_enabled: true,
+            speculative_k: 4,
+            speculative_lookup_window: 3,
+        }
+    }
+
+    /// Faz o estado saber um endereço de si mesmo que responde de verdade.
+    ///
+    /// A resposta direta só existe quando a cauda tem para onde entregar
+    /// (`DirectReply::new`), e o endereço sai de `self_reply_hosts` + o
+    /// `gateway_port`. Sem um servidor ali o modo direto de um teste esperaria
+    /// `DIRECT_REPLY_DEADLINE` inteiro.
+    pub(crate) async fn with_self_reachable_gateway(mut state: GatewayState) -> GatewayState {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let inbox = state.reply_inbox.clone();
+        let router = axum::Router::new().route(
+            crate::direct::RELAY_RESULT_PATH,
+            axum::routing::post(move |body: Bytes| {
+                let inbox = inbox.clone();
+                async move { crate::direct::handle_relay_result(&inbox, body) }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).tcp_nodelay(true).await;
+        });
+
+        state.gateway_port = port;
+        let mut net = Network::new("eu".into(), "pk".into(), 0, vec![], None, None, Some(port))
+            .await
+            .expect("socket UDP em porta efêmera");
+        // Primeiro da lista de `self_reply_hosts`, então a cauda acerta na
+        // primeira tentativa em vez de esperar o timeout de um IP de LAN.
+        net.advertise_addr = Some("127.0.0.1:42777".into());
+        {
+            let antigos = state.network.peers.read().await.clone();
+            *net.peers.write().await = antigos;
+        }
+        state.network = Arc::new(net);
+        state
     }
 
     /// O corpo JSON de uma resposta, para o teste poder afirmar sobre ele.

@@ -1789,11 +1789,11 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// Então a decisão é tomada antes de apostar: sem rollback parcial, o nó
 /// simplesmente não rascunha e a geração segue um token por rodada, correta e
 /// mais lenta - em vez de morrer no quarto token.
-fn should_draft(speculate: Option<(u32, u32)>, kv_can_shift: bool) -> bool {
+pub(crate) fn should_draft(speculate: Option<(u32, u32)>, kv_can_shift: bool) -> bool {
     speculate.is_some() && kv_can_shift
 }
 
-fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
+pub(crate) fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
     let extra = k.saturating_sub(1) as usize;
     if extra == 0 {
         return Vec::new();
@@ -1830,7 +1830,7 @@ fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
 /// matched prefix plus one more real sample, which is the genuine next token
 /// whether it means "the draft's next unverified guess" (full match) or
 /// "the correction at the first place the draft was wrong" (partial match).
-fn longest_match(sampled: &[i32], drafted: &[i32]) -> usize {
+pub(crate) fn longest_match(sampled: &[i32], drafted: &[i32]) -> usize {
     sampled
         .iter()
         .zip(drafted)

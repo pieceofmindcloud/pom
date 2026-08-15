@@ -813,8 +813,34 @@ gateway na cabeça, no meio e na cauda.
 **Ainda sem cobertura de teste** (cortado por decisão do captain em
 2026-08-14, por cota): os quatro modos de falha (hop do meio morto, cauda
 morta, resposta direta perdida, prazo estourado) têm desenho e código, não
-teste de ponta a ponta. A decodificação especulativa continua no anel
-borbulhado — o desvio direto não foi estendido a `step_speculative`.
+teste de ponta a ponta.
+
+`step_speculative` continua só no anel borbulhado — o desvio direto não foi
+estendido a ele. Ver a seção seguinte para o que o gateway faz por causa disso.
+
+### Uma rodada especulativa tem duas respostas legítimas
+
+A cabeça **pode recusar** rascunhar: `should_draft` (`infer_server.rs`) diz não
+sempre que o cache KV do modelo não desloca, que é todo modelo híbrido ou
+recorrente. Ela avisa **omitindo `draft`**, e sem `draft` a cauda responde no
+formato antigo de um token (`{done, token_id, text}`) em vez de
+`{accepted, accept_count, batch_width}`. Está escrito no doc de
+`step_blocking::incoming_draft`; o que faltava era a outra metade —
+`prefill::speculative_step_from_meta` só sabia ler a forma nova e tratava a
+antiga como erro fatal. O efeito era a geração morrer com **um** token e
+`partial: true`, em toda requisição, no anel e no modo direto igualmente
+(2026-08-15, Qwen3.8-27B). `kv_can_shift` em `/health` é como se confere isso
+sem shell na máquina.
+
+Recusada a especulação, o gateway **para de pedir** pelo resto da requisição
+(`especulando`, em `generate_stream`) e passa a chamar `prefill::step`. Não é
+só economia do campo `speculate`: insistir prende a cadeia no anel borbulhado
+(2N travessias por token) quando `step` já usa a resposta direta (N+1).
+
+A bancada é `inference/spec_lab.rs`: `generate_stream` de verdade contra hops
+falsos que decidem com `should_draft`/`find_draft`/`longest_match` de produção,
+com `kv_can_shift` como botão. O motor é fingido — sem GGUF nesta máquina ela
+prova o contrato entre os processos, não o que o llama.cpp faz com o lote.
 
 ### Limite de prompt
 

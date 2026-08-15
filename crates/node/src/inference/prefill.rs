@@ -1164,7 +1164,36 @@ pub struct SpeculativeStep {
     pub accept_count: u32,
     /// How many positions the head actually decoded (`1 + draft.len()`).
     pub batch_width: u32,
+    /// Whether this round actually was speculative.
+    ///
+    /// The head is free to decline — `should_draft` says no whenever the
+    /// engine's KV cache cannot shift, which is every hybrid or recurrent
+    /// model — and it says so by omitting `draft`, which puts the whole round
+    /// back on the plain one-token wire format (see `step_blocking`'s
+    /// `incoming_draft` doc). `false` means exactly that happened, and asking
+    /// the same chain to speculate again would just repeat the refusal.
+    pub speculated: bool,
     pub trace: RequestTrace,
+}
+
+impl SpeculativeStep {
+    /// O resultado de um [`step`] comum, na forma que o laço de decodificação
+    /// já sabe consumir.
+    ///
+    /// Um token, largura um: nada foi decodificado além dele, então
+    /// `accept_count == batch_width` e não há posição a rebobinar.
+    pub fn of_one_token(
+        (token_id, text, done, trace): (u32, String, bool, RequestTrace),
+    ) -> Self {
+        Self {
+            accepted: vec![(token_id, text)],
+            done,
+            accept_count: 1,
+            batch_width: 1,
+            speculated: false,
+            trace,
+        }
+    }
 }
 
 /// One speculative round: the head drafts up to `k` tokens from its own
@@ -1322,10 +1351,29 @@ async fn step_speculative_ring(
     speculative_step_from_meta(&sent.meta, trace)
 }
 
-/// Parse the tail's verification reply (`{done, accepted, accept_count,
-/// batch_width}`) — shared by the hub and ring paths, which only differ in
-/// how they get to that reply.
-fn speculative_step_from_meta(meta: &serde_json::Value, trace: RequestTrace) -> Result<SpeculativeStep> {
+/// Parse the tail's reply to a speculative round — shared by the hub and ring
+/// paths, which only differ in how they get to that reply.
+///
+/// Two shapes are legitimate, and reading only the first one is what killed
+/// every generation on a model whose KV cache cannot shift:
+///
+/// * `{done, accepted, accept_count, batch_width}` — the tail verified a
+///   batch, which is what happens when the head drafted;
+/// * `{done, token_id, text}` — the plain one-token reply, which is what the
+///   protocol *requires* when `draft` never reached the tail because the head
+///   declined to draft (`should_draft`).
+///
+/// `batch_width: 1` on the second shape is not a guess. The tail answers in
+/// that shape only when no `draft` arrived, every relay branch threads `draft`
+/// through untouched (`handle_step`, `forward_direct`, `step_speculative_hub`),
+/// and the head omits it only when it also batched a single token. So nothing
+/// beyond the seed token was ever decoded, and there is no KV position to roll
+/// back.
+fn speculative_step_from_meta(
+    meta: &serde_json::Value,
+    trace: RequestTrace,
+) -> Result<SpeculativeStep> {
+    let done = meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
     let accepted: Vec<(u32, String)> = meta
         .get("accepted")
         .and_then(|v| v.as_array())
@@ -1340,11 +1388,29 @@ fn speculative_step_from_meta(meta: &serde_json::Value, trace: RequestTrace) -> 
                 .collect()
         })
         .unwrap_or_default();
+
     if accepted.is_empty() {
-        return Err(anyhow!(
-            "último peer não devolveu nenhum token aceito na rodada especulativa"
-        ));
+        let Some(token_id) = meta.get("token_id").and_then(|v| v.as_u64()) else {
+            return Err(anyhow!(
+                "último peer não devolveu token nenhum na rodada especulativa"
+            ));
+        };
+        return Ok(SpeculativeStep {
+            accepted: vec![(
+                token_id as u32,
+                meta.get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+            )],
+            done,
+            accept_count: 1,
+            batch_width: 1,
+            speculated: false,
+            trace,
+        });
     }
+
     let accept_count = meta
         .get("accept_count")
         .and_then(|v| v.as_u64())
@@ -1355,9 +1421,10 @@ fn speculative_step_from_meta(meta: &serde_json::Value, trace: RequestTrace) -> 
         .unwrap_or(accept_count.max(1) as u64) as u32;
     Ok(SpeculativeStep {
         accepted,
-        done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
+        done,
         accept_count,
         batch_width,
+        speculated: true,
         trace,
     })
 }
@@ -1537,6 +1604,69 @@ mod tests {
 
         assert_eq!(trace.hops[0].prefill.network_ms, 4);
         assert_eq!(trace.hops[0].decode.network_ms, 11);
+    }
+
+    // ── As duas formas legítimas de resposta a uma rodada especulativa ──────
+    //
+    // Ler só a primeira era o defeito de 2026-08-15: a cabeça que recusa
+    // rascunhar responde na segunda, e o gateway matava a geração no primeiro
+    // token. A prova ponta a ponta está em `spec_lab.rs`.
+
+    fn trace_vazio() -> RequestTrace {
+        RequestTrace::new("qwen", &[("no1", 0, 15)])
+    }
+
+    #[test]
+    fn uma_resposta_de_um_token_e_uma_rodada_de_um_token() {
+        let passo = speculative_step_from_meta(
+            &json!({"done": false, "token_id": 42, "text": "x"}),
+            trace_vazio(),
+        )
+        .expect("a resposta de um token é legítima, não erro");
+
+        assert_eq!(passo.accepted, vec![(42u32, "x".to_string())]);
+        assert_eq!(passo.accept_count, 1);
+        assert_eq!(
+            passo.batch_width, 1,
+            "sem rascunho nada foi decodificado além do token semeado"
+        );
+        assert!(!passo.done);
+        assert!(!passo.speculated, "esta rodada não especulou");
+    }
+
+    /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
+    #[test]
+    fn o_fim_da_resposta_de_um_token_e_respeitado() {
+        let passo =
+            speculative_step_from_meta(&json!({"done": true, "token_id": 7, "text": ""}), trace_vazio())
+                .expect("legítima");
+        assert!(passo.done);
+    }
+
+    #[test]
+    fn uma_rodada_verificada_continua_sendo_lida_como_especulativa() {
+        let passo = speculative_step_from_meta(
+            &json!({
+                "done": false,
+                "accepted": [{"token_id": 1, "text": "a"}, {"token_id": 2, "text": "b"}],
+                "accept_count": 2,
+                "batch_width": 4,
+            }),
+            trace_vazio(),
+        )
+        .expect("legítima");
+
+        assert_eq!(passo.accepted.len(), 2);
+        assert_eq!(passo.accept_count, 2);
+        assert_eq!(passo.batch_width, 4);
+        assert!(passo.speculated);
+    }
+
+    /// Uma resposta que não é nem uma coisa nem outra continua sendo erro:
+    /// seguir em silêncio com token nenhum seria pior que a falha.
+    #[test]
+    fn uma_resposta_sem_token_nenhum_continua_sendo_erro() {
+        assert!(speculative_step_from_meta(&json!({"done": false}), trace_vazio()).is_err());
     }
 
     #[test]

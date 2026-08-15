@@ -256,6 +256,16 @@ impl NodeRuntime {
         self.config.read().await.clone()
     }
 
+    /// Põe uma configuração sem subir servidor de inferência nenhum.
+    ///
+    /// `apply` é o caminho de verdade e carrega um modelo; um teste que só
+    /// precisa que o gateway leia `speculative_decoding_enabled` não tem GGUF
+    /// para dar a ele.
+    #[cfg(test)]
+    pub(crate) async fn seed_config_for_test(&self, cfg: NodeConfig) {
+        *self.config.write().await = Some(cfg);
+    }
+
     pub async fn status(&self) -> RuntimeStatus {
         self.status.read().await.clone()
     }

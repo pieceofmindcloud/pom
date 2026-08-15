@@ -18,19 +18,29 @@ Per-file list:
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`.
 - `Dashboard.tsx` — Cluster overview: coverage/machines/model/in-flight stats,
-  a graph view ("minima", `ModelNetworkCanvas`) or a details grid ("estendida",
-  per-peer cards with RAM/VRAM/disk/load meters, config, GPU processes). Fetches
-  `POST /api/ui/deploy/plan` to feed the "add a machine" dialog. Uses
-  `../components/{Confirm,MachineIcon,PipelineRail,ReleaseSlice,RemoveNode,AddNodeDialog,ModelNetworkCanvas,ui}`,
-  `../lib/api` (`devUpdate`), `../lib/queries`, `../lib/types` (`PeerView`,
-  `DeployPlan`). Update-and-restart button only renders when the peer advertises
-  `dev_update` (dev-only, `RDMA_P2P_DEV_UPDATE`). Each peer card now has two
-  exits side by side: `RemoveNode` (out of the model, only when serving) and
-  `LeaveNode` (out of the whole network, always). Next to "Adicionar nó" there
-  is a `UndeployPipeline` button when a model is live - `undeployTargets` is the
-  list the confirmation shows (peers on `group` with `total_layers > 0`, sorted
-  by start layer); the node re-scans the cluster before acting, so the list is
-  just the preview.
+  a graph view ("minima", `ModelNetworkCanvas`) or a details grid ("estendida").
+  The details grid lists the **whole network**, not just the pipeline:
+  `networkPeers` (`../lib/networkPeers`) splits `c.peers` into the active
+  deployment first (in layer order, `dashboard.groupDeployed*`) and the rest of
+  the network after (sorted by hostname, `dashboard.groupOutside*`) - a machine
+  connected without a slice is exactly the one that disappears when only the
+  pipeline is looked at. The cards come from `PeerDetailCard`
+  (`../components/PeerDetailCard`), the same component the Flow canvas opens on
+  double-click; `GroupHeading` renders the two group labels and `otherRangesFor`
+  feeds `RemoveNode` the ranges of the *other* pipeline peers. Empty state is
+  `c.peers.length === 0` (was `peers.length`) with `dashboard.noMachines`
+  ("Nenhuma máquina na rede"). Fetches `POST /api/ui/deploy/plan` to feed the
+  "add a machine" dialog. Uses
+  `../components/{LayerRibbon,PipelineRail,PeerDetailCard,UndeployPipeline,AddNodeDialog,ModelNetworkCanvas,ui}`,
+  `../lib/api`, `../lib/networkPeers`, `../lib/queries`, `../lib/types`
+  (`PeerView`, `DeployPlan`). The per-machine actions that used to live here
+  moved to `PeerDetailCard`: update-and-restart (`UpdateNode`, dev-only when the
+  peer advertises `dev_update`), `RemoveNode` (out of the model, only when
+  serving a slice) and `LeaveNode` (out of the whole network, always). Next to
+  "Adicionar nó" there is a `UndeployPipeline` button when a model is live -
+  `undeployTargets` is the list the confirmation shows (peers on `group` with
+  `total_layers > 0`, sorted by start layer); the node re-scans the cluster
+  before acting, so the list is just the preview.
 - `DeployModel.tsx` — "Implantar na rede": picks a slice set (`group`), edits
   which ranges go to which machine (swaps on collision, merge toggle for
   adjacent ranges on one machine), reorders by swapping machines, tunes the
@@ -130,6 +140,13 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 
 ## Defeitos anotados
 
+- **DEFEITO ANOTADO: dois estados vazios se sobrepõem na aba Detalhes.** Com
+  `c.peers.length === 0` na visão "estendida", o painel `dashboard.noMachines`
+  rende dentro da área de rolagem (Dashboard.tsx:222) e o overlay
+  `dashboard.emptyNetwork` rende por cima dele, ancorado ao fundo
+  (Dashboard.tsx:272) - a mesma condição desenha duas mensagens, uma em cima
+  da outra. Preexistente ao 5423852, mas a condição da primeira mudou de
+  `peers.length` para `c.peers.length` nesse commit sem resolver a duplicação.
 - **Hardcoded Portuguese bypasses i18n.** `Shards.tsx`, `WholeModels.tsx` and
   `Transfers.tsx` use literal strings ("Excluir", "apagado", "Não deu para
   apagar", "Cancelar", "Transferência cancelada", "enviando para", "recebendo

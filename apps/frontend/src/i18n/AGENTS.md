@@ -11,14 +11,14 @@ Two files carry all of it: a static message table and a small provider. Tests:
 
 ## Per-file
 
-- `locales.ts` - the `messages` dictionary (en block lines ~20-663, pt-BR block lines ~664-1307, 628 keys each) plus locale resolution and formatting functions.
+- `locales.ts` - the `messages` dictionary (en block lines ~20-671, pt-BR block lines ~672-1363, 628 keys each) plus locale resolution and formatting functions.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured
 
 - `SUPPORTED_LOCALES = ["en", "pt-BR"]`, `Locale` is that literal union.
 - A `Message` is `(values, locale) => string`, not a template string: pluralization is computed with `Intl.PluralRules` (e.g. `cluster.peerCount` -> "1 node" / "2 nodes" / "1 nó" / "2 nós"). Values come in via `t("key", { count })`.
-- `messages` is `Record<Locale, Record<string, Message>>` with both locales side by side; keys are namespaced by screen (`topbar.*`, `nav.*`, `chat.*`, `deploy.knob.*`, ...). The destructive-action group `undeploy.*` (button, confirmation, per-machine report) and the per-machine exit `dashboard.leaveNode*` arrived together with the `LeaveNode`/`UndeployPipeline` components, plus the shared `common.close` used by the `Modal` footer.
+- `messages` is `Record<Locale, Record<string, Message>>` with both locales side by side; keys are namespaced by screen (`topbar.*`, `nav.*`, `chat.*`, `deploy.knob.*`, ...). The destructive-action group `undeploy.*` (button, confirmation, per-machine report) and the per-machine exit `dashboard.leaveNode*` arrived together with the `LeaveNode`/`UndeployPipeline` components, plus the shared `common.close` used by the `Modal` footer. The panel rework in 5423852 added `dashboard.groupDeployed*` / `dashboard.groupOutside*` (the two details groups), `dashboard.noSlice*` and `dashboard.machineDetails` (the card and its window), `canvas.openDetails` (the double-click hint on the canvas card), and changed `dashboard.noMachines` from "Nenhuma máquina para detalhar" to "Nenhuma máquina na rede" because the tab now lists the whole network.
 
 ## Key functions
 

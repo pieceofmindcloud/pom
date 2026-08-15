@@ -7,9 +7,14 @@ app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
 visualizations (`PipelineRail`, `ModelNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
-`UndeployPipeline`). Test files present: `AddNodeDialog.test.tsx`,
-`Confirm.test.tsx`, `LeaveNode.test.tsx`, `UndeployPipeline.test.tsx`,
-`ModelNetworkCanvas.test.tsx` (ignored for content here).
+`UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
+the Dashboard details tab and in the window the Flow canvas opens. Test files
+present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `LeaveNode.test.tsx`,
+`UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
+`PeerDetailCard.test.tsx`. Fake peers for these tests come from
+`../test/fixtures.ts` and must have the *full* shape the node serves - a
+partial `node` (e.g. one without `status`) slips past one component's `?.` and
+crashes the next.
 
 Per-file list:
 
@@ -47,10 +52,11 @@ Per-file list:
 - `PipelineRail.tsx` — The cluster as the path a request takes: `PipelineRail`
   draws peer cards in execution order connected by `Conduit` wires labelled
   with the layer boundary the hidden state crosses; `LayerRibbon` is one tick
-  per layer colored by owning peer, exposing coverage holes. Exports
-  `pipelinePeers` (peers on the active model sorted by start layer) and
-  `trackOf` (the repeating color palette, `TRACKS`) — both reused by
-  `Dashboard` and `DeployModel`. Currently rendered hidden on Dashboard.
+  per layer colored by owning peer, exposing coverage holes. `pipelinePeers`
+  lived here until 5423852 and now comes from `../lib/networkPeers` (the rail
+  imports it); only `trackOf` (the repeating color palette, `TRACKS`) is still
+  exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
+  Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
   of nodes (range cards with VRAM/RAM/load meters) and curved edges, driven by
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
@@ -58,7 +64,27 @@ Per-file list:
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
   persisted per model-deployment key through `../lib/networkLayout`
   (`readPositions`/`writePositions`/`clearPositions`/`fallbackPosition`/
-  `deploymentLayoutKey`), drag-restrained to the canvas.
+  `deploymentLayoutKey`), drag-restrained to the canvas. Double-clicking a card
+  opens the machine's details in a window: `NetworkNode` guards the gesture
+  with `isControlTarget` (a click that lands on a `button`/`a`/`input`/etc is
+  not a click on the card), and `detailNodeId` stores the `node_id`, not a peer
+  copy, so the window shows fresh numbers when the cluster list refreshes
+  under it. Exports `edgeStyle` and `isControlTarget`.
+- `PeerDetailCard.tsx` — The card of one machine, in the same drawing for every
+  machine. It lives outside `Dashboard` because it shows in two places: the
+  details tab stacks one card per machine (`networkPeers` splits the whole
+  network into the active deployment first, in layer order, then the rest), and
+  the double-click on a Flow canvas card opens the same card in a
+  `PeerDetailDialog` window over the `Modal` shell (`size="lg"`). One component
+  is what keeps the two surfaces from diverging. `cardRange` returns `null`
+  when the machine serves nothing - `hasSlice` reads `model` empty with zero
+  `total_layers` as absence, never the range "0-0" - and the card then shows a
+  "sem fatia" badge plus `dashboard.noSliceDetail` instead of a range, and does
+  not offer "Remover" (`RemoveNode` renders only for `serving && group &&
+  range`). `cardRange` falls back to `node.config` when the peer has loaded a
+  slice it has not announced yet. `UpdateNode` (update+restart, dev-only via
+  `RDMA_P2P_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
+  render from here now.
 - `ModelNetworkDemo.tsx` — A static "SIMULAÇÃO" mock of the canvas with
   hardcoded nodes/edges. Not imported anywhere in the app — a leftover from
   building the canvas.
@@ -77,8 +103,14 @@ Per-file list:
   `Confirm` is the question wrapper on top of `Modal` (Escape cancels, `busy`
   disables both buttons, `tone` selects primary/danger); the split exists
   because not everything in a modal is a question - the undeploy report window
-  reuses the shell and has no "cancelar". Body area scrolls when long
-  (`max-h-[70vh] overflow-y-auto`).
+  reuses the shell and has no "cancelar". A window can open another window (the
+  "Sair da rede" confirmation is born inside the details window), and all of
+  them listen for Escape on the `document`, so `Modal` keeps a module-level
+  stack of the open ones (`openModals`, keyed by `useId`) and only the top one
+  answers Escape; without it one Escape closed both. `size` picks `md` (a
+  paragraph) or `lg` (a whole panel, for `PeerDetailDialog`); the panel is a
+  flex column capped at `max-h-[calc(100vh-2rem)]` whose body scrolls
+  (`min-h-0 flex-1 overflow-y-auto`) instead of the old `max-h-[70vh]`.
 - `LeaveNode.tsx` - Take **one** machine off the network, from its card on the
   Dashboard. Same act as the top bar's "Este nó › Sair da rede", but that one
   only ever detached the machine the panel is open on; reaching each machine's
@@ -133,26 +165,34 @@ Key logic carriers:
 - `nav.ts:NAV` (nav.ts:40) — the source of truth for the menu, its order and
   its routes; the section that is "its own entry" (`/implantar`, deploy) is a
   deliberate first-class navigation item, not a leaf under the shards section.
-- `PipelineRail.pipelinePeers` (PipelineRail.tsx:40) — execution order: peers
-  on the active model sorted by start layer (falls back to all peers); both
-  Dashboard and DeployModel derive "the pipeline" from it.
-- `PipelineRail.trackOf` (PipelineRail.tsx:37) — the per-index color cycle used
+- `networkPeers.pipelinePeers` (networkPeers.ts:13) — execution order: peers
+  on the active model sorted by start layer (falls back to all peers);
+  `Dashboard`, `PipelineRail` and `ModelNetworkCanvas` derive "the pipeline"
+  from it. Moved here from `PipelineRail` in 5423852.
+- `PipelineRail.trackOf` (PipelineRail.tsx:38) — the per-index color cycle used
   to keep a peer's color consistent across rail, ribbon, and deploy rows.
-- `ModelNetworkCanvas.edgeStyle` (ModelNetworkCanvas.tsx:23) — encodes the
+- `ModelNetworkCanvas.edgeStyle` (ModelNetworkCanvas.tsx:25) — encodes the
   three edge states (principal = aqua arrow, paralela = solid iris, inativa =
   dashed faint) that make replicas legible.
-- `ModelNetworkCanvas.beginDrag`/`drag` (ModelNetworkCanvas.tsx:129) — pointer
+- `ModelNetworkCanvas.isControlTarget` (ModelNetworkCanvas.tsx:69) — the
+  double-click guard: a gesture that landed on a control is not a gesture on
+  the card, so opening details never becomes a trap for a future button.
+- `ModelNetworkCanvas.beginDrag`/`drag` (ModelNetworkCanvas.tsx:152) — pointer
   capture drag with zoom-aware offsets and clamping to the canvas; positions are
   persisted on every move (`writePositions`).
+- `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
+  show, or `null` when the machine serves nothing; never invents a "0-0".
 - `Sidebar.sectionHoldsPath` (Sidebar.tsx:49) — decides whether a section is
   "where you are" (`end` exact match vs prefix) so the active section opens
   itself and the current page is never hidden.
 - `RemoveNode.layersLeftUncovered` (RemoveNode.tsx:95) / `AddNodeDialog.rangeOverlap`
   (AddNodeDialog.tsx:136) — the two shared range-arithmetic helpers; the
   confirmation wording in both dialogs depends on them.
-- `Confirm.tsx:Modal` (Confirm.tsx:49) - the `createPortal(document.body)` call
+- `Confirm.tsx:Modal` (Confirm.tsx:71) - the `createPortal(document.body)` call
   that keeps `position: fixed` honest for every dialog and confirm in the app,
-  not just the ones opened from `backdrop-blur` ancestors.
+  not just the ones opened from `backdrop-blur` ancestors. The `openModals`
+  stack (Confirm.tsx:27) is the companion rule: only the top window answers
+  Escape.
 
 Links to other folders: everything imports `../lib/*` — `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,
@@ -183,6 +223,14 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
   `sliceIndex` are seeded once (`useState(peers[0]?.node_id ?? "")`) and the
   dialog is always mounted (open is controlled by Dashboard), so reopening after
   the peer list changed can submit a stale node_id that is not in the dropdown.
+- **DEFEITO ANOTADO: `ModelNetworkCanvas` feeds `PeerDetailDialog` bogus ranges
+  in the fallback case.** `otherRanges` is built from `pipelinePeers(cluster)`,
+  which falls back to *all* peers when none matches the active model; a peer
+  without a slice then contributes its default `[0, 0]` to the ranges
+  `RemoveNode` compares against, so "these layers go uncovered" can be wrong
+  in that degenerate state. Only the double-click path of the canvas is
+  affected - the Dashboard tab builds `otherRanges` from the pipeline group
+  only.
 - **`LeaveNode` reuses the trigger label for the confirm button.** The card
   button and the window's confirm both read "Sair da rede" - the window shows
   two same-named buttons, and the test clicks `buttons[buttons.length - 1]`,

@@ -20,12 +20,13 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
+- `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob["state"]` for the transfers UI.
 - `types.ts` - all API shapes served by the node, one authoritative source.
-- `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, networkGraph, networkLayout, transferStatus (run with `npm test`).
+- `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
 
@@ -90,6 +91,27 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### networkGraph.ts
 - `graphFromCluster(cluster)` - groups each peer's `capabilities` by `model_id` into `GraphRange[]` sorted by `start_layer`, for the model network canvas.
 
+### networkPeers.ts
+The panel asks two questions, and the screen needs both: "who serves the
+active model, in execution order" and "who is on the network" - the second
+includes a machine connected without a slice, which is exactly the one that
+shows nowhere when only the pipeline is looked at, and is where the next slice
+would go.
+
+- `pipelinePeers(cluster)` - peers on the active model sorted by start layer,
+  falling back to all peers when none matches. Moved here from
+  `components/PipelineRail` in 5423852; `Dashboard`, `PipelineRail` and
+  `ModelNetworkCanvas` all consume it.
+- `hasSlice(peer)` - whether the machine announces a slice: `model` empty with
+  `total_layers` zero is what the node sends for a connected machine with
+  nothing deployed (`webui::cluster`), and it is *not* the range "0-0" - it is
+  the absence of a range. Used by `PeerDetailCard` (`cardRange`).
+- `networkPeers(cluster)` - the whole network in two lists: `pipeline` keeps
+  execution order, `others` (machines not in the pipeline) sorted by hostname.
+  The guard against double-listing is the `pipelinePeers` fallback - when no
+  peer matches the active model, `pipeline` already holds everyone and
+  `others` must stay empty.
+
 ### networkLayout.ts
 - `deploymentLayoutKey(model, peers)` - per-deployment fingerprint key (node id + range + `changed_at`), so hand-arranged layouts do not leak into a new deploy.
 - `fallbackPosition(index)` / `readPositions` / `writePositions` / `clearPositions` - canvas persistence in `localStorage`.
@@ -106,6 +128,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `routes/Chat.tsx` is the only consumer of `chatStream`, `chatStore` and `chatScroll`, plus `streamSse` against `/v1/chat/completions`.
 - `routes/DeployModel.tsx` is the only consumer of `deployMemory`.
 - `components/ModelNetworkCanvas.tsx` is the only consumer of `networkGraph` + `networkLayout`.
+- `networkPeers` is used by `components/ModelNetworkCanvas.tsx`,
+  `components/PipelineRail.tsx` and `routes/Dashboard.tsx` (`pipelinePeers`),
+  and by `components/PeerDetailCard.tsx` (`hasSlice`).
 - `routes/WholeModels.tsx` and `routes/Shards.tsx` both use `deleteModel`.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus`.
 - `components/Sidebar.tsx` uses `theme`.

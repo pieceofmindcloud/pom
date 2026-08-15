@@ -167,12 +167,25 @@ impl DirectReply {
 /// Mesma regra de preferência de `gateway::self_dial_host`: o endereço fixado
 /// pelo operador vale mais que o da LAN, porque entre sites um `192.168.x.y` é
 /// tão inútil quanto o loopback. Os candidatos enumerados das interfaces vêm
-/// depois, e o loopback não entra — a cauda quase nunca é esta máquina.
-pub fn self_reply_urls(hosts: impl IntoIterator<Item = String>, gateway_port: u16) -> Vec<String> {
+/// depois, e daí o loopback não entra: a cauda quase nunca é esta máquina.
+///
+/// `pinned` é o endereço que o operador fixou (`advertise_addr`), e só ele pode
+/// ser loopback: numa máquina só, apontar para si mesmo é a configuração certa
+/// e foi escolha de quem configurou. O que não pode entrar é o loopback que
+/// aparece sozinho, do fallback `127.0.0.1` de `gateway::self_dial_host` ou da
+/// enumeração de interfaces: aí a cauda em outra máquina entrega ao loopback
+/// *dela* e a resposta se perde, com prazo de 600 s. Sem nenhuma URL utilizável
+/// a lista fica vazia e o plano cai no anel, que funciona.
+pub fn self_reply_urls(
+    pinned: Option<String>,
+    hosts: impl IntoIterator<Item = String>,
+    gateway_port: u16,
+) -> Vec<String> {
     let mut urls: Vec<String> = Vec::new();
-    for host in hosts {
+    let fixado = pinned.into_iter().map(|h| (h, true));
+    for (host, fixado_pelo_operador) in fixado.chain(hosts.into_iter().map(|h| (h, false))) {
         let host = crate::network::ip_host(&host).to_string();
-        if host.is_empty() || is_unroutable_host(&host) {
+        if host.is_empty() || (!fixado_pelo_operador && is_unroutable_host(&host)) {
             continue;
         }
         let url = format!("http://{host}:{gateway_port}");
@@ -459,6 +472,7 @@ mod tests {
     #[test]
     fn a_reply_url_never_points_at_the_wildcard_address() {
         let urls = self_reply_urls(
+            None,
             vec![
                 "0.0.0.0:42777".into(),
                 "192.168.1.9:42777".into(),
@@ -483,6 +497,7 @@ mod tests {
     #[test]
     fn a_loopback_only_host_list_falls_back_to_the_ring() {
         let urls = self_reply_urls(
+            None,
             vec![
                 "127.0.0.1:42777".into(),
                 "127.0.0.53:42777".into(),
@@ -495,6 +510,13 @@ mod tests {
         assert!(
             DirectReply::new(ReplyInbox::new(), urls).is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
+        );
+
+        // O loopback que o operador fixou é outra história: numa máquina só,
+        // apontar para si mesmo é a configuração certa e foi escolha dele.
+        assert_eq!(
+            self_reply_urls(Some("127.0.0.1:42777".into()), vec!["127.0.0.1:42777".into()], 8080),
+            vec!["http://127.0.0.1:8080".to_string()]
         );
     }
 

@@ -564,7 +564,11 @@ pub async fn generate_stream(
     // lento mas nunca fica sem resposta.
     let direct = crate::direct::DirectReply::new(
         state.reply_inbox.clone(),
-        crate::direct::self_reply_urls(state.self_reply_hosts(), state.gateway_port),
+        crate::direct::self_reply_urls(
+            state.network.advertised_host(),
+            state.self_reply_hosts(),
+            state.gateway_port,
+        ),
     );
 
     info!(

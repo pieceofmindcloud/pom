@@ -160,6 +160,10 @@ executa a cadeia que o planejador montou.
   `gateway::self_dial_host` (operador > LAN > candidatos das interfaces);
   curinga de bind e loopback (v4, v6 e `localhost`) são descartados por
   `is_unroutable_host` - só-loopback devolve lista vazia, e aí o anel assume.
+  A exceção é o endereço que o operador fixou (`advertise_addr`), que passa
+  mesmo sendo loopback: numa máquina só é a configuração certa. O que se recusa
+  é o loopback que aparece sozinho, do fallback de `self_dial_host` ou da
+  enumeração de interfaces.
 - `handle_relay_result` - handler de `RELAY_RESULT_PATH` (`/v1/relay-result`);
   a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
   conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**

@@ -158,7 +158,8 @@ executa a cadeia que o planejador montou.
   volta.
 - `self_reply_urls` - URLs de gateway na ordem de preferência de
   `gateway::self_dial_host` (operador > LAN > candidatos das interfaces);
-  loopback não deveria entrar (ver Defeitos).
+  curinga de bind e loopback (v4, v6 e `localhost`) são descartados por
+  `is_unroutable_host` - só-loopback devolve lista vazia, e aí o anel assume.
 - `handle_relay_result` - handler de `RELAY_RESULT_PATH` (`/v1/relay-result`);
   a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
   conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**
@@ -284,12 +285,3 @@ executa a cadeia que o planejador montou.
   esgota `MAX_RESTARTS` em silêncio e a TUI continua mostrando "Mem loaded:
   inference_server" como se tudo estivesse bem - o peer só quebra na
   inferência, com `encerrou com erro: Address already in use` no log do nó.
-- **DEFEITO ANOTADO: `self_reply_urls` não filtra o loopback** (`direct.rs:171-184`):
-  o doc promete "o loopback não entra", mas o código só descarta vazio,
-  `0.0.0.0` e `[::]`. Quando `gateway::self_dial_host` cai no fallback
-  `127.0.0.1` (sem `advertised_host` e com `detect_local_ip` falhando), a lista
-  começa (ou só tem) `http://127.0.0.1:<gateway_port>`, `DirectReply::new` a vê
-  não-vazia e liga o modo direto, e a cauda numa outra máquina entrega ao
-  *próprio* loopback dela - resposta perdida, prazo de 600 s. O filtro prometido
-  é justamente o que deixaria a lista vazia e faria o plano cair no anel, que
-  funciona.

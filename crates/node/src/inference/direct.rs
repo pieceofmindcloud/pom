@@ -172,7 +172,7 @@ pub fn self_reply_urls(hosts: impl IntoIterator<Item = String>, gateway_port: u1
     let mut urls: Vec<String> = Vec::new();
     for host in hosts {
         let host = crate::network::ip_host(&host).to_string();
-        if host.is_empty() || host == "0.0.0.0" || host == "[::]" {
+        if host.is_empty() || is_unroutable_host(&host) {
             continue;
         }
         let url = format!("http://{host}:{gateway_port}");
@@ -181,6 +181,24 @@ pub fn self_reply_urls(hosts: impl IntoIterator<Item = String>, gateway_port: u1
         }
     }
     urls
+}
+
+/// Endereço que não serve para outra máquina nos alcançar: o curinga de bind e
+/// o loopback, em v4 e v6. O loopback é o que mais engana, porque
+/// `gateway::self_dial_host` cai em `127.0.0.1` quando não acha endereço
+/// melhor: a lista fica não-vazia, o modo direto liga, e a cauda em outra
+/// máquina entrega o resultado ao loopback *dela*, onde ninguém espera.
+fn is_unroutable_host(host: &str) -> bool {
+    let bare = host
+        .strip_prefix('[')
+        .and_then(|h| h.strip_suffix(']'))
+        .unwrap_or(host);
+    match bare.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback() || ip.is_unspecified(),
+        // Nome que não é IP (um `--public-addr` com domínio, por exemplo)
+        // passa: resolvê-lo aqui seria adivinhar.
+        Err(_) => bare.eq_ignore_ascii_case("localhost"),
+    }
 }
 
 // ── Lado de quem recebe o resultado (gateway) ─────────────────────────────────
@@ -455,6 +473,28 @@ mod tests {
                 "http://192.168.1.9:8080".to_string(),
                 "http://[2804:f30::1]:8080".to_string(),
             ]
+        );
+    }
+
+    /// Loopback é endereço da máquina de quem responde, não desta. Uma lista
+    /// que só tem loopback tem que ficar vazia para `DirectReply::new` recusar
+    /// o modo direto e o plano cair no anel, que funciona: ligado, o quadro
+    /// sairia para nunca voltar e a requisição só terminaria no prazo de 600 s.
+    #[test]
+    fn a_loopback_only_host_list_falls_back_to_the_ring() {
+        let urls = self_reply_urls(
+            vec![
+                "127.0.0.1:42777".into(),
+                "127.0.0.53:42777".into(),
+                "[::1]:42777".into(),
+                "localhost:42777".into(),
+            ],
+            8080,
+        );
+        assert!(urls.is_empty(), "loopback não alcança outra máquina: {urls:?}");
+        assert!(
+            DirectReply::new(ReplyInbox::new(), urls).is_none(),
+            "sem endereço utilizável o plano tem que cair no anel"
         );
     }
 

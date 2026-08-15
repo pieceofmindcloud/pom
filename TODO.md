@@ -37,7 +37,7 @@ substituída por essa explicação.
 
 ## Correção (o comportamento está errado)
 
-- [ ] **`self_reply_urls` não filtra o loopback e perde a resposta**
+- [x] **`self_reply_urls` não filtra o loopback e perde a resposta**
   `crates/node/src/inference/direct.rs:171-184` · anotado em `crates/node/src/inference/AGENTS.md`
   O doc promete que o loopback não entra, mas o código só descarta vazio, `0.0.0.0` e `[::]`.
   Quando `gateway::self_dial_host` cai no fallback `127.0.0.1`, a lista fica com

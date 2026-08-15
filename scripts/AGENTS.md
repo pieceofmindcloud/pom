@@ -74,8 +74,8 @@ invocados pelo binario (ver o `README.md` de la).
   `tests/fixtures/<nome>` e modelos montados de `./models`. GPU so via
   `deploy.resources` (exige NVIDIA Container Toolkit no host). UI reencontrada
   por `RDMA_P2P_UI_DIST=/app/apps/frontend/dist` porque `RDMA_P2P_HOME=/data` nao
-  e o /app da imagem. Ver defeito em "Defeitos anotados" sobre os nomes das
-  fixtures.
+  e o /app da imagem. Sobre os nomes das fixtures, veja "Sobre os nomes das
+  fixtures do docker-compose" abaixo: nao e defeito, sao dois ambientes distintos.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
   `version` e `prerelease`). Job `ui` builda a interface uma vez; matriz de 4
   alvos (macOS arm64 Metal, Linux x86_64 CPU, Linux x86_64 CUDA 12.6, Windows

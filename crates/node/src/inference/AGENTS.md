@@ -1,0 +1,244 @@
+# inference/ - servidor de inferência, wire format e supervisão
+
+A porta de inferência (8181) e tudo que roda nela: o axum server
+(`infer_server.rs`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
+prefill/step nos três modos - hub, anel borbulhado (`relay/v1-chain`) e
+resposta direta (`relay/v2-direct`, `direct.rs`) - a "lei" que mede o modo
+direto em pernas de rede (`direct_lab.rs`), o formato binário do tensor na
+rede (`wire.rs`) e a configuração/supervisão do processo Python
+`inference_server.py` (`runtime.rs`). Nada aqui fala com peers: `next_hops`
+chega pronto do `routing/pipeline.rs` e este diretório executa a cadeia que o
+planejador montou.
+
+## Arquivos
+
+- `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
+  por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; inbox de
+  tickets, `reply_to`, telemetria acumulada na ida.
+- `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
+  protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
+  token para N=2,3,4 com o gateway na cabeça/meio/cauda.
+- `infer_server.rs` (2204) - axum server: `/v1/prefill`, `/v1/step`,
+  `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
+  e o branch de relay.
+- `llm.rs` (1374) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
+  residual capture, sampling.
+- `prefill.rs` (1558) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
+  `step_speculative`, traço de fases por requisição.
+- `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
+- `runtime.rs` (831) - `NodeConfig`/`NodeRuntime`: sobe e supervisa o child
+  Python.
+- `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
+  em trânsito.
+
+## Funções-chave
+
+`infer_server.rs`:
+- `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
+  estado de sessões (sessions, seq_pool, max_sessions, sampling).
+- `handle_prefill`/`handle_step` - dispatch para `prefill::run`/`run_ring`/
+  `run_direct` e `step_speculative`; `spawn_blocking` para os decodes não
+  travarem o runtime.
+- bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
+  existe) - acumula `hop_timings` na ida (`direct::accumulate` +
+  `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`
+  ao `reply_to` e devolve `direct_ack()`; meio: spawna `forward_direct` para o
+  próximo hop; meio sem residual local: `deliver_failure` com "hop intermediário
+  não produziu estado oculto".
+- `forward_direct` - repasse assíncrono em task própria (quem chamou já foi
+  aceito e não espera mais nada); repassa `reply_to` intacto; remonta `scale=1.0`,
+  `is_last` e `next_hops` remanescente. Falhou o repasse, entrega
+  `direct::deliver_failure` nomeando o nó que realmente morreu.
+- `direct_ack` - `{"accepted": true}` wire-codificado; é tudo que volta pelo
+  caminho de quem chamou.
+- `direct_reply_to` - o campo `reply_to` do meta; ausente no hub e no anel, é
+  só ele que liga o caminho novo.
+- `prompt_progress_for_forward`/`apply_prompt_progress` - a contraparte direta
+  de `overlay_head_authoritative_fields` (agora `pub(crate)`): sem volta, a
+  cabeça manda `more_chunks`/`n_prompt_tokens` **adiante** e quem entrega copia
+  para o resultado - senão todo prompt de mais de um pedaço trunca no primeiro.
+- branch de relay (`should_relay`) - no anel, quando `next_hops` não é vazio e
+  há hidden state local, reencaminha para a cauda em vez de devolver ao
+  chamador; patcha `processing_ms`/`node_timings` próprios antes de codificar a
+  volta.
+- `owns_tokens`/`is_final_chunk_for_forward` - só a cabeça tem
+  `more_chunks`/`n_prompt_tokens` autoritativos; a resposta bubbled do ring
+  sempre traz falso/ausente, senão prompt de múltiplos chunks trunca em
+  silêncio.
+- `handle_rollback` - `RollbackRequest{accept_count, batch_width}`: descarta o
+  KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
+  o gateway fan-out para todos os hops.
+- `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
+  `INFERENCE_FRAME_BODY_LIMIT=16 MiB` corta frame impossível no body.
+- `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
+  `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
+  fica preso no Nagle.
+- `/health` anuncia `relay/v2-direct` junto das outras capabilities.
+
+`llm.rs`:
+- `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
+  offload_kqv, max_sessions); uma `LlmContext` por sessão (`pool_tests` cobre a
+  divisão de n_ctx por sessão).
+- captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
+  `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
+  Mutex global e disputava com decodes paralelos).
+- `profile_backend_sync` - perfil do backend síncrono, `RDMA_P2P_PROFILE_SYNC`
+  (default ligado; "0"/"false" desliga).
+- `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
+  `Drop` libera só o ctx - os pesos são do `LoadedModel`.
+- `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
+
+`prefill.rs`:
+- `run`/`step` - dispatch em três níveis: `run_direct`/`step_direct` quando
+  `plan.supports_direct_reply()`, senão `run_ring`/`step_ring` quando
+  `supports_relay_chain()`, senão hub.
+- `run_direct` - mesmo loop chunk a chunk do ring, mas cada chunk é despachado
+  **uma vez** para a cabeça com `reply_to`; a cauda entrega o resultado direto
+  ao gateway (`await_result` no ticket). `is_last` é sempre `false` na cabeça
+  (o modo direto exige >= 2 hops).
+- `step_direct` - o gêmeo de decode: uma chamada de saída (para a cabeça), uma
+  espera no ticket. É a diferença entre `2N` travessias (anel) e `N+1` (direto),
+  e é por isso que o custo por token deixa de depender de onde mora a camada 0.
+- `direct_failure` - resultado que chega com `error` no lugar do token nomeia o
+  hop que morreu e marca **esse** (não a cabeça) com `routes.mark_failure`.
+- `record_direct_hops` + `direct::credit_transport` - telemetria da ida dobrada
+  no `RequestTrace`; o transporte não atribuído vai para a entrada da cabeça
+  (ver o doc de `direct::hop_entry`).
+- `step_speculative` - **NÃO** estendida ao desvio direto: continua no anel/hub
+  (não recebe o parâmetro `direct`).
+- `chunk_count`/`DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
+  (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
+- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
+  `node_lock_wait_ms` separa "nó lento" de "nó ocupado".
+
+`relay.rs`:
+- `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
+  `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`.
+- `bubble_hop_timings`/`as_hop_timing_entry` - insere a entrada do próprio hop
+  na frente (ordem head→tail) e dobra `processing_ms`+`node_timings` do callee
+  com o round-trip do caller.
+- `extract_relay_failure` - usado por `forward_direct` para nomear o hop que
+  falhou na entrega do erro direto.
+- `RelayFailure{failed_node_id, kind, message}`/`HttpRefusal`/`SendIssue` - o
+  gateway responde 502 atribuindo o hop que falhou; `CHUNK_ATTEMPTS=3`.
+
+`direct.rs`:
+- `ReplyInbox`/`Ticket` - mapa ticket→canal oneshot que vive no `GatewayState`
+  (é o gateway que abre a requisição); `register` sorteia UUID v4 por quadro;
+  `Drop` remove o ticket do inbox em qualquer caminho de saída (erro, prazo) -
+  é o que impede um ticket órfão de segurar memória e um resultado atrasado de
+  cair no token seguinte. `deliver` devolve `false` para ticket já desistido.
+- `DirectReply::new(inbox, urls)` - `None` quando o nó não conhece nenhum
+  endereço de si mesmo; aí o anel assume em vez de despachar quadro que nunca
+  volta.
+- `self_reply_urls` - URLs de gateway na ordem de preferência de
+  `gateway::self_dial_host` (operador > LAN > candidatos das interfaces);
+  loopback não deveria entrar (ver Defeitos).
+- `handle_relay_result` - handler de `RELAY_RESULT_PATH` (`/v1/relay-result`);
+  a autenticação é o próprio ticket (UUID v4 por quadro, só a própria cadeia
+  conhece); resultado sem ticket vivo é `410 Gone`. A rota é registrada **sem**
+  auth de chave por desenho: o hop que responde nunca teve a chave do operador.
+- `await_result` - `select!` biased entre três coisas: o resultado do inbox
+  (caso normal), o ack da cabeça (só interessa quando falha, ou quando um peer
+  antigo borbulhou a resposta inteira - `token_id` presente vale como
+  resultado), e o prazo `DIRECT_REPLY_DEADLINE=600 s` (hop morreu depois de
+  aceitar).
+- `deliver_result` - a cauda (ou o hop que falhou) tenta cada URL de `reply_to`
+  em ordem, `DELIVERY_TIMEOUT=30 s` por tentativa; `410` para de tentar (o
+  inbox já não existe); falhou em todas, o gateway fecha no prazo - não há
+  terceira via.
+- `deliver_failure` - entrega um `RelayFailure` no lugar do resultado para o
+  gateway nomear o nó morto em vez de esperar o prazo inteiro.
+- `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: `bytes_sent`
+  é o quadro que entrou, `round_trip_ms` = `processing_ms` porque a perna de
+  rede não é observável por ninguém no modo direto; a lista viaja cabeça→cauda
+  e a cauda a entrega junto do resultado.
+- `credit_transport` - fecha a telemetria com o que só o gateway sabe: o
+  transporte não atribuído (total menos a soma dos `processing_ms` declarados)
+  vai para o `round_trip_ms` da **cabeça**, e os `bytes_received` do resultado
+  para a cauda. O número somado continua certo; dividido por hop, ele não
+  existe.
+
+`direct_lab.rs`:
+- A "lei": **o custo por token não depende de onde está a cabeça da pipeline.**
+  Hops falsos falam o protocolo real (`wire`, `relay::send_frame`,
+  `infer_server::forward_direct`, `direct::deliver_result`, e o gateway falso
+  serve o handler de produção de `/v1/relay-result`), dirigidos pelo
+  `prefill::run`/`step` reais; o único fingimento é o motor (dorme em vez de
+  decodificar).
+- Rede emulada por sítio: cada hop e o gateway moram num sítio e toda mensagem
+  entre sítios diferentes custa `LINK_MS=50` de mão única, cobrada na chegada e
+  de novo na volta - é o que faz a bancada medir travessias em vez da máquina
+  onde ela roda.
+- `the_cost_per_token_does_not_depend_on_where_the_entry_point_is` - para
+  N=2,3,4 com o gateway na cabeça, no meio e na cauda, pernas por token
+  ≈ `minimum_legs` (tolerância 0,45 perna); as duas pontas empatam; a pior
+  entrada (meio) custa no máximo uma perna a mais que a cabeça; e o anel
+  borbulhado com a cabeça remota paga 4 pernas (o caso que doía, a queda de 25
+  para 14 tok/s do captain), provando que é correção e não o comportamento de
+  sempre. Assere ainda que cada quadro é entregue direto exatamente uma vez
+  (prefill e decode) e que o prompt de mais de um pedaço atravessa inteiro (um
+  `prompt_progress` perdido trunca no primeiro).
+- Herda da investigação de 2026-08-14 (`labsse.rs`), que provou a assimetria e
+  refutou a hipótese do SSE por contrafactual.
+- **Sem cobertura de teste**: os quatro modos de falha (hop do meio morto,
+  cauda morta, resposta direta perdida, prazo estourado) têm desenho e código
+  em `direct.rs`, não teste de ponta a ponta.
+
+`runtime.rs`:
+- `NodeConfig` - tudo que define a fatia servida: model_path/label,
+  start/end/total_layers, peer_count/index, primary, inference_port, n_gpu_layers,
+  n_ctx, offload_kqv, n_batch, max_sessions, prefill_chunk_tokens, max_new_tokens,
+  sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
+  speculative_k/lookup_window.
+- `NodeRuntime::apply` - spawna o `inference_server.py` (procurando
+  `./venv/bin/python3` no cwd, senão `python3` do sistema) e o supervisa;
+  muda a config → reinicia o child.
+- `needs_residual_export` - **única** condição para instalar o callback de
+  captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
+  2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
+  did not fire".
+- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`.
+
+`wire.rs`:
+- `encode`/`encode_with_encoding`/`decode` - `[4B BE len][JSON header][tensor cru]`;
+  dtype/shape no JSON, corpo binário f16 (nunca base64, nunca f32 na rede).
+- `FrameEncoding{F16, ZstdF16}` - zstd é opt-in (`frame_version=2`,
+  `ZSTD_LEVEL=6`); `WireDtype{F32, F16}` com `as_str`/`parse`/`bytes_per_value`.
+- `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
+
+## Ligações
+
+- **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
+  `self_reply_urls`, registra `/v1/relay-result` sem auth de chave, passa
+  `direct.as_ref()` a `prefill::run`/`step`; `step_speculative` vai sem
+  direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
+  (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),
+  `routing/pipeline.rs` (as capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
+  `CAP_SPECULATE_LOOKUP` decidem anel vs direto vs hub e o wire format por hop).
+- **Chama**: `llm.rs` (decode/hidden_state), `wire.rs` (encode/decode do
+  frame), `relay.rs` (send_frame). `runtime.rs` consome `models/model.rs`
+  (`LayerAssignment`, `ModelProfile`) e `network.rs`.
+- **Consumido por**: `models/lastslice.rs` serializa `runtime::NodeConfig`
+  (a fatia anotada reaplicada no reinício); `routing/AGENTS.md` lista as
+  capabilities que `infer_server.rs`/`relay.rs` executam.
+- **Externo**: `inference_server.py` (FastAPI + llama-cpp-python) é quem de
+  fato carrega o modelo; o Rust deste diretório é cliente HTTP e supervisor.
+
+## Defeitos anotados
+
+- **Supervisor desiste em silêncio quando a porta de inferência está ocupada**
+  (`runtime.rs`): tenta `MAX_RESTARTS` vezes, para e a TUI segue mostrando
+  "Mem loaded: inference_server" como se tudo estivesse bem - o peer aparece
+  no cluster com cobertura 100% e só quebra na inferência. A prova está em
+  `inference_server_<porta>.log` (`[Errno 98] address already in use`), não na
+  TUI. Verificado 2026-08-07.
+- **DEFEITO ANOTADO: `self_reply_urls` não filtra o loopback** (`direct.rs:171-184`):
+  o doc promete "o loopback não entra", mas o código só descarta vazio,
+  `0.0.0.0` e `[::]`. Quando `gateway::self_dial_host` cai no fallback
+  `127.0.0.1` (sem `advertised_host` e com `detect_local_ip` falhando), a lista
+  começa (ou só tem) `http://127.0.0.1:<gateway_port>`, `DirectReply::new` a vê
+  não-vazia e liga o modo direto, e a cauda numa outra máquina entrega ao
+  *próprio* loopback dela - resposta perdida, prazo de 600 s. O filtro prometido
+  é justamente o que deixaria a lista vazia e faria o plano cair no anel, que
+  funciona.

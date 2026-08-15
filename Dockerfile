@@ -16,6 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config \
     libssl-dev \
     gnupg \
+    mold \
     nodejs \
     npm \
     && rm -rf /var/lib/apt/lists/*

@@ -1,0 +1,256 @@
+# Subsistema: implantação na rede
+
+O subsistema põe em serviço um conjunto de fatias que já existe, distribuindo-as
+pelas máquinas do cluster. Vive em `crates/node/src/backend/deploy.rs`
+(planejamento e sequenciamento) e usa `crates/node/src/backend/webui.rs`
+(aplicação da fatia num nó, `apply`/`launch`/`release`), `crates/node/src/models/`
+(catálogo, `plan_by_size`/`extract_shard`, `splitter::merge`) e
+`crates/node/src/backend/transfer.rs` (movimentação dos bytes). Toda a lógica é
+"a escolha do operador é parte do pedido": o nó sugere, o operador decide, e o
+deploy re-varre o cluster em vez de confiar na prévia.
+
+## 1. Visão geral: o plano, a fusão e a ordem
+
+Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
+chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
+cluster). O pedido carrega `group` (o conjunto de fatias, pelo `shard_group` do
+catálogo), `params` (o `RuntimeParams` do pipeline inteiro), `selection` (a
+escolha explícita do operador - `None` = o nó decide) e `merge` (junção das
+fatias adjacentes de uma máquina). O `selection` viaja na requisição porque o
+`deploy` re-surveys: a escolha é validada contra a varredura nova e recusada se
+não continuar valendo - a cópia da tela pode estar um minuto velha e uma máquina
+que saiu do cluster não pode receber uma fatia.
+
+Três regras saem da arquitetura, não do gosto:
+
+- **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
+  prompt inteiro de cada requisição. Escolher a ordem é o mesmo ato que escolher
+  quem fica com qual faixa - não há segundo botão.
+- **Um nó serve uma faixa**, exceto com `merge` ligado: faixas adjacentes viram
+  uma unidade fundida (`splitter::merge`, `split_model.py --merge` para o wrapper
+  legado), a máquina junta as fatias num arquivo só e serve a união. O passo
+  fundido carrega `parts`, um por fatia.
+- **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
+  rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
+  legítima que só impede o pipeline de planejar.
+
+## 2. A varredura (`survey`)
+
+`survey` junta, para cada máquina do cluster, `GET /api/ui/models` (catálogo,
+timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
+`PEER_TIMEOUT`). Monta `Vec<Machine>`:
+
+- `Machine { node_id, hostname, mem_free_mb, disk_free_mb, held: Vec<HeldShard> }`.
+- `HeldShard` é uma fatia do conjunto naquela máquina, com `total_layers` como
+  `Option` - `None` é o estado normal de fatia antiga (sem metadata `rdmap2p.*`),
+  e fica `Option` até `model_size` porque "não sei" e "zero" são fatos
+  diferentes.
+- `mem_free_mb` é VRAM livre numa máquina com GPU discreta, RAM disponível em
+  qualquer outra; `0` = a máquina não respondeu, e nada é inferido disso.
+- `disk_free_mb` é o espaço para o arquivo, que é o que uma cópia precisa e o que
+  `transfer.rs` checa antes de escrever um byte.
+- `label()` - hostname, ou os primeiros 12 caracteres do `node_id` quando o
+  hostname é vazio ou repetido.
+
+`holds(start, end)` acha a fatia exata na máquina; `overlapping_layers` acha
+sobreposição entre uma faixa e a coleção de outra.
+
+## 3. O plano (`plan`)
+
+`plan(group, machines, selection, params, merge)` monta o `Plan`. Sem `selection`
+(caminho padrão), `auto_chain` + `auto_assign` decidem a distribuição; com
+`selection`, cada `SelectedSlice { start_layer, end_layer, target_node_id,
+n_gpu_layers, offload_kqv }` é validado por posição:
+
+- **`target_node_id` vazio é recusa, não convite** para o nó escolher.
+- **Máquina com `n_gpu_layers`/`offload_kqv`**: só o que é propriedade do hardware
+  viaja por máquina. O cache KV é dimensionado pela janela de contexto, e uma
+  caixa com 16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
+  certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
+  - contexto, batch e pedaço decidem o orçamento de prompt que o gateway cobra, e
+  a amostragem só roda no último peer.
+- **Uma fatia que não existe em máquina nenhuma** -> `blocked` ("a fatia L{}-{}
+  não existe em máquina nenhuma do cluster"). `plan.blocked` e `steps` vazio são
+  os dois recusos de 400 do `deploy`.
+- **Máquina ocupada não é erro de `plan`**: `alternatives`/`merged_alternatives`
+  listam toda máquina como alvo de cada faixa com o motivo (`ok`/`note` - "já tem
+  a fatia", "só N GB livres em disco", "receberia N GB"). Ocupação é deliberadamente
+  fora do `ok`: uma máquina que já serve outra faixa é exatamente a que o operador
+  quer trocar, e escondê-la tornaria a troca impossível. Pegar máquina ocupada é
+  pego pela regra de um-nó-por-faixa, que é o lugar honesto para ela.
+
+O `Plan` carrega `total_layers` com `total_layers_inferred` (deduzido da cobertura
+quando a fatia não declara), `transfer_bytes`, `steps` (cada um com `ready`
+quando a máquina já tem a fatia, e `merged` quando é unidade fundida com `parts`),
+`blocked`, `merge`, `available`, `machines`, `missing`, `overlap`, `warnings`, e
+os dois números de engenharia que derivam de `params` (`prompt_tokens` e
+`chunk_tokens`, das mesmas fórmulas do gateway - `prompt_budget_of` e
+`prompt_chunk_of`).
+
+### O modelo e seu tamanho
+
+`model_size` resolve o total de camadas do modelo com precedência
+**Declared > Inferred > Unknown**: uma fatia que declara `rdmap2p.original_block_count`
+manda; sem declaração, o total é deduzido do alcance da cobertura no cluster
+inteiro (nunca chute de uma fatia só); sem nada disso, `Unknown`. Isso é o que
+impede o bug de 2026-08-10, quando o plano se dizia completo e todo `apply` morria
+em `NodeConfig::validate` depois de o `launch` já ter parado a inferência das
+máquinas alvo. Fatias sem total são nomeadas "L{}-{} em {}" (`nameless`) e só
+aparecem assim.
+
+## 4. Execução (`deploy_endpoint` -> `run`)
+
+1. `deploy_endpoint` re-varre (`survey`), re-planeja, recusa `blocked`/vazio,
+   cria o job ("Implantar {group} em {n} nós") e spawna a execução.
+2. `run` monta a lista de `Pull`s - uma unidade de movimento por fatia que tem
+   que chegar a um alvo. Para passo fundido, um `Pull` por part faltante; a
+   máquina "tem" a unidade fundida quando já tem todas as partes, e aí o merge
+   roda localmente com nada cruzando a rede. Fatia que não tem de onde vir é erro
+   ("a fatia L{}-{} não tem de onde vir").
+3. Os bytes viajam pelo transporte de transferências (ver `transferencia.md`):
+   HTTP `Range` com retomada por `.part`, MD5 conferido antes do arquivo tomar o
+   nome final, progresso no sino vindo dos nós (fechar a aba não interrompe
+   nada). A checagem de disco da implantação conta a **união** das fatias mais o
+   que falta - a máquina precisa de espaço para o modelo junto *e* para as partes.
+4. Cada alvo recebe o `ApplyRequest` via `apply`/`launch` (detalhe na seção 6).
+5. `done` = "o modelo está atendendo na rede"; erro vira job `failed`.
+
+## 5. Rotas do deploy
+
+| Rota | Papel |
+|---|---|
+| `POST /api/ui/deploy/plan` | prévia (leitura, chamada a cada edição) |
+| `POST /api/ui/deploy` | executa (re-varre, recusa `blocked`/vazio, job) |
+| `POST /api/ui/deploy/node` | adiciona uma máquina a um pipeline já no ar |
+| `POST /api/ui/deploy/node/remove` | tira uma máquina do modelo (libera a memória) |
+| `POST /api/ui/undeploy` | tira a pipeline inteira do ar |
+
+## 6. Adicionar e remover máquina
+
+`add_node_endpoint` recebe uma faixa + máquina alvo e chama `webui::launch` com
+um único `LaunchTarget` (`skip_split: true` - a fatia já existe e o passo é só
+carregar). Dois detalhes escondidos na chamada:
+
+- **`peer_index`/`peer_count`** - a posição é a do pipeline, não "este nó sozinho":
+  sem isso o nó somado se diz o último da divisão.
+- **`primary_node_id`** - quem é a entrada do pipeline não muda por somar um nó:
+  só quem fica com a camada 0 recebe o prompt. `primary` só é marcado quando
+  `start_layer == 0`.
+- Resposta `{applied, overlapping_layers, peer_index, peer_count}` - sobreposição
+  é reportada, não recusada (a máquina entra e a tela mostra o que colide).
+
+`remove_node_endpoint` ("essa máquina não está servindo este modelo" se o alvo não
+serve) calcula `uncovered_after_removal` contra as máquinas restantes. **Quem
+libera a memória é o dono dela**: alvo == self usa `runtime.stop()`; senão
+encaminha `POST /api/ui/unload` ao gateway do alvo (a mesma rota do botão de
+descarregar uma máquina). Resposta `{removed, uncovered_layers}`; vazio significa
+que outra máquina cobre a mesma faixa - a rede perde uma rota paralela e segue
+servindo; não-vazio é buraco, e a confirmação é explícita.
+
+## 7. Desimplantar (undeploy)
+
+`POST /api/ui/undeploy` é o contrário de implantar, em um ato só. Remover máquina
+por máquina era clicar na ordem certa torcendo para não esquecer nenhuma - e uma
+esquecida é RAM e VRAM presas numa fatia que não serve mais para nada, porque o
+pipeline só planeja com a cobertura fechada.
+
+**O que isto NÃO faz: mexer no disco.** Nenhuma fatia é apagada. Desimplantar é
+devolver a memória; os arquivos continuam onde estão e a mesma implantação volta
+com um clique em vez de com 17 minutos de transferência por máquina. Apagar
+fatias é o que a tela de Modelos faz, com o seu próprio pedido de confirmação, e
+é uma decisão diferente desta.
+
+- `UndeployRequest.group` vazio = "a pipeline que estiver no ar"; duas pipelines
+  no ar é 400 - nunca adivinhar qual.
+- O `undeploy_endpoint` re-varre o cluster (nunca confia na tela) e responde 200
+  com um `UndeployOutcome { node_id, hostname, start_layer, end_layer, released,
+  error }` por máquina, sempre - inclusive para a que não respondeu: um peer
+  calado é `released: false` com o motivo em `error`, nunca contado como sucesso.
+  Metade desimplantada é o estado real do cluster, e escondê-lo atrás de um erro
+  deixaria o operador sem saber em quais máquinas ainda há memória presa.
+- A liberação vai pelo `/api/ui/unload` do próprio peer (a mesma rota do botão de
+  uma máquina só), que continua valendo para qualquer nó.
+
+## 8. Aplicar e servir uma fatia (`webui.rs`)
+
+`POST /api/ui/apply` (aplicado pelo `deploy` a cada alvo) leva um `ApplyRequest`:
+`{ start_layer, end_layer, total_layers, peer_index, peer_count, primary,
+skip_split, merge: Option<Vec<MergeSource>>, params }`. Os derivados que a máquina
+precisa saber:
+
+- `is_first`/`is_last` - papel na pipeline (a cauda tem a cabeça de saída).
+- `is_last_peer`/`single_peer` - `single_peer` = `peer_count <= 1 && is_first &&
+  is_last`.
+- `no_embeddings` - auto-detect: só o último peer de uma pipeline multi-peer pula
+  o embedding; um checkbox na tela força em todos.
+
+`run_apply` decide o caminho:
+
+- `merge` -> `merge_parts` (temp com sufixo único + rename no fim; reaproveita
+  arquivo já completo e invalida o catálogo).
+- `skip_split` ou `(is_first && is_last && peer_count <= 1)` -> serve o arquivo
+  como está (a fatia já existe em disco).
+- senão -> `extract_shard` (fatiamento local, job "fatiando", progresso por
+  `set_job_progress`, `invalidate_catalog`, outcome `reused`/`gerado`).
+
+`/api/ui/plan` (`plan_split_endpoint`) planeja por orçamento do cluster e **delega**
+ao peer dono do GGUF quando `layout_node_id` aponta para outra máquina: limpa o
+marcador de hop e faz `POST {base}/api/ui/plan` - o peer que tem o arquivo é quem
+calcula quantas camadas cabem na memória de cada um.
+
+### Liberar uma fatia
+
+`POST /api/ui/release` nunca é recusado (uma máquina pode sempre sair do modelo).
+Com `reassign` (padrão), `find_release_candidate` acha outra máquina com a mesma
+fatia para assumir; resposta `{ reassigned_to }` ou `{ uncovered: true }` quando
+ninguém cobre - e o planejador recusa pipeline com buraco, então a tela avisa.
+
+## 9. O que a tela mostra
+
+- **Ajustes sempre abertos, à direita** - os onze números que governam a
+  implantação ficam visíveis junto da escolha de máquinas; escolher máquinas com
+  eles escondidos é escolher às cegas.
+- **Alternativas** - cada faixa mostra toda máquina possível como alvo com o
+  motivo (`alternatives`), o que torna a troca de dono de uma fatia um clique.
+- **A última implantação de cada modelo fica no `localStorage`** e volta
+  preenchida, **depois** do primeiro plano novo - a memória é de outro dia, e o
+  que não sobrevive ao plano atual (`usableSelection`) simplesmente não volta.
+- **`merge` fundido aparece como uma linha** que nomeia a união (ex. `m_0_15.gguf`)
+  e ocupa só o `select` das máquinas que não têm todas as partes.
+
+## 10. Testes
+
+Usam o testkit de `gateway` (`crates/node/src/backend/gateway.rs`, ver
+`api-http.md`): `state_with` com a tabela de peers semeada à mão e um `fake_peer`
+axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
+
+- **Plano**: `merge_joins_adjacent_slices_on_one_machine` (a linha da máquina
+  fundida nomeia a união e não transfere bytes); um buraco no conjunto é
+  reportado; slicings sobrepostos não são empilhados pelo planejador; um conjunto
+  que ninguém tem é recusado.
+- **Adicionar/remover**: `split_position` (máquina no meio não é a cauda; no fim
+  é; trocar a mesma faixa mantém a contagem); sobreposição reportada mas não
+  recusada; faixa que preenche um buraco não sobrepõe nada; sobreposição parcial
+  reporta só as camadas compartilhadas.
+- **Por máquina**: `per_machine_kv_cache_rides_along_with_the_slice` -
+  `n_gpu_layers`/`offload_kqv` viajam com a fatia e não viram cluster-wide;
+  `nvidia_memory_comes_from_vram_and_everything_else_from_ram`.
+- **Undeploy**: `any_node_may_undeploy_for_now` documenta a porta aberta de
+  propósito (ver defeitos).
+
+## 11. Defeitos anotados
+
+- **DEFEITO ANOTADO: undeploy não mexe no disco** (`deploy.rs:1766-1770`) - é
+  deliberado e documentado no próprio código ("O que isto NÃO faz: mexer no
+  disco"): desimplantar devolve memória, os arquivos continuam e a mesma
+  implantação volta com um clique. Apagar fatias é a tela de Modelos, com pedido
+  de confirmação próprio.
+- **DEFEITO ANOTADO: `undeploy_authority` deixa qualquer papel desimplantar**
+  (`deploy.rs:1794` retorna `Ok(())` para todo papel) - deliberado por ora; o doc
+  da função já traz o corpo da restrição "somente o NÓ PRINCIPAL desimplanta" para
+  quando chegar a hora, e o teste `any_node_may_undeploy_for_now`
+  (`deploy.rs:2242`) documenta a porta aberta de propósito, para que fechá-la seja
+  uma edição consciente e não um efeito colateral. O portão é o papel do nó que
+  recebeu o clique, não de quem foi chamado - as chamadas aos peers usam
+  `/api/ui/unload`, que continua valendo para qualquer nó. Registrado também em
+  `crates/node/src/backend/AGENTS.md` (Defeitos anotados).

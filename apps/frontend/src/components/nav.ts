@@ -1,4 +1,5 @@
 import {
+  BookOpen,
   Boxes,
   FolderTree,
   Gauge,
@@ -76,6 +77,9 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.live", to: "/logs/ao-vivo", icon: Radio },
     ],
   },
+  // The repo's own documentation, not a screen that reads the cluster: the
+  // folder AGENTS.md files and subsystem READMEs embedded at build time.
+  { labelKey: "nav.documentation", icon: BookOpen, to: "/documentacao" },
   {
     labelKey: "nav.settings",
     icon: Settings,

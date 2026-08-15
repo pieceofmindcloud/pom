@@ -20,6 +20,7 @@ import { ConnectionKeys, TokenKeys } from "./routes/Keys";
 import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
 import { WholeModels } from "./routes/WholeModels";
+import { Documentation } from "./routes/Documentation";
 import { useI18n } from "./i18n/provider";
 
 /**
@@ -114,6 +115,7 @@ export default function App() {
                     <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                     <Route path="/logs" element={<Page><LogsByToken /></Page>} />
                     <Route path="/logs/ao-vivo" element={<Page><LogsLive /></Page>} />
+                    <Route path="/documentacao" element={<Page><Documentation /></Page>} />
                     <Route path="/config/rede" element={<Page><NetworkSettings /></Page>} />
                     <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                     <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />

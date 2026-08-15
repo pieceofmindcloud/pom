@@ -17,6 +17,23 @@ Per-file list:
   (`useCluster`, `useNode`, `useServableModels`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`.
+- `Documentation.tsx` - The repository's living documentation, self-contained
+  and build-time embedded: `scripts/build-docs.mjs` copies the folder
+  `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into
+  `../docs/` (gitignored) plus `manifest.json`, and this screen reads them via
+  `import.meta.glob` + the manifest - no node route, so it renders on any
+  machine serving `dist/`, even one that never had the repo. Layout: tree on
+  the left (root/docs/subsystems/crates grouped by crate/apps/frontend/scripts,
+  each section collapsible), markdown viewer on the right. The selection is a
+  `?doc=<id>` search param, so a document is a shareable address; the search
+  box filters title *and* body across the whole embedded set and replaces the
+  tree with a flat result list while active. The active item carries
+  `aria-pressed`, each leaf an `Open <title>` label, and the sticky tree is
+  capped at the viewport so it never slides under the top bar. Test file
+  `Documentation.test.tsx` covers the contract: default first document, section
+  tree, `?doc=` deep link, search + clear, and the no-results empty state.
+  Loading the embedded set requires `src/docs/` to exist, which `npm test`'s
+  `pretest` hook guarantees.
 - `Dashboard.tsx` — Cluster overview: coverage/machines/model/in-flight stats,
   a graph view ("minima", `ModelNetworkCanvas`) or a details grid ("estendida").
   The details grid lists the **whole network**, not just the pipeline:

@@ -668,6 +668,28 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.speculative_lookup_window": () => "Lookup window",
     "deploy.knob.speculative_lookup_windowHint": () =>
       "Longest n-gram searched for a prior repeat. Shorter n-grams are tried after it, so this is the ceiling, not the only length.",
+    "nav.documentation": () => "Documentation",
+    "docs.title": () => "Documentation",
+    "docs.subtitle": () =>
+      "The repository's living documentation, embedded into this build: the folder AGENTS.md files, the subsystem READMEs and the root README.",
+    "docs.search": () => "Search documentation…",
+    "docs.searchAria": () => "Search documentation",
+    "docs.clearSearch": () => "Clear search",
+    "docs.resultCount": ({ count }) => String(count) + (Number(count) === 1 ? " result" : " results"),
+    "docs.noResults": () => "No documentation matches",
+    "docs.noResultsDetail": () => "Try another term, or clear the search to browse the tree.",
+    "docs.empty": () => "Documentation is not available",
+    "docs.emptyDetail": () =>
+      "The docs folder is generated at build time by scripts/build-docs.mjs. Run npm run build (or npm run dev) in apps/frontend and reload.",
+    "docs.noDoc": () => "This document is not in the embedded set",
+    "docs.noDocDetail": () => "Pick one from the tree on the left.",
+    "docs.selectAria": ({ title }) => "Open " + String(title),
+    "docs.section.root": () => "Project root",
+    "docs.section.docs": () => "docs/",
+    "docs.section.subsystems": () => "Subsystem docs",
+    "docs.section.crates": () => "crates/",
+    "docs.section.frontend": () => "apps/frontend/",
+    "docs.section.scripts": () => "scripts/",
   },
   "pt-BR": {
     "cluster.peerCount": ({ count }) =>
@@ -1319,6 +1341,28 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.speculative_lookup_window": () => "Janela de busca",
     "deploy.knob.speculative_lookup_windowHint": () =>
       "Maior n-grama procurado numa repetição anterior. N-gramas menores são tentados depois dele, então isto é o teto, não o único tamanho.",
+    "nav.documentation": () => "Documentação",
+    "docs.title": () => "Documentação",
+    "docs.subtitle": () =>
+      "A documentação viva do repositório, embutida neste build: os AGENTS.md por pasta, os READMEs de subsistema e o README da raiz.",
+    "docs.search": () => "Buscar na documentação…",
+    "docs.searchAria": () => "Buscar na documentação",
+    "docs.clearSearch": () => "Limpar busca",
+    "docs.resultCount": ({ count }) => String(count) + (Number(count) === 1 ? " resultado" : " resultados"),
+    "docs.noResults": () => "Nenhuma documentação encontrada",
+    "docs.noResultsDetail": () => "Tente outro termo, ou limpe a busca para navegar pela árvore.",
+    "docs.empty": () => "Documentação indisponível",
+    "docs.emptyDetail": () =>
+      "A pasta de docs é gerada no build por scripts/build-docs.mjs. Rode npm run build (ou npm run dev) em apps/frontend e recarregue.",
+    "docs.noDoc": () => "Este documento não está no conjunto embutido",
+    "docs.noDocDetail": () => "Escolha um na árvore à esquerda.",
+    "docs.selectAria": ({ title }) => "Abrir " + String(title),
+    "docs.section.root": () => "Raiz do projeto",
+    "docs.section.docs": () => "docs/",
+    "docs.section.subsystems": () => "Docs de subsistema",
+    "docs.section.crates": () => "crates/",
+    "docs.section.frontend": () => "apps/frontend/",
+    "docs.section.scripts": () => "scripts/",
   },
 };
 

@@ -18,6 +18,7 @@ dev proxy setup, routing on the axum side).
 - Tailwind colors are named after CSS variables declared in `src/index.css` (`tailwind.config.js` maps `ink/surface/raised/line/fg/muted/faint/iris/aqua/amber/rose/sky/lime`); fonts Space Grotesk (display), IBM Plex Sans (sans), JetBrains Mono (mono).
 - Vitest 3 - `npm test` = `vitest run`. There is no vitest config file; test files that need a DOM opt in per file with the `// @vitest-environment jsdom` pragma (e.g. `routes/Chat.telemetry.test.tsx`, `i18n/provider.test.tsx`).
 - tsconfig: `tsconfig.app.json` (strict, `noUnusedLocals/Parameters`, `@/* -> ./src/*` alias, excludes `*.test.*`) and `tsconfig.node.json` for the build config itself.
+- `scripts/build-docs.mjs` - embeds the repository's living documentation into the bundle. Runs before dev/build/test via the npm `predev`/`prebuild`/`pretest` hooks: copies the folder `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into `src/docs/` (gitignored, never committed) plus a generated `manifest.json` (`{id, path, title, section, order}`). The Documentation screen reads them through two build-time imports (`manifest.json` + `import.meta.glob`), so the docs travel inside the built JS and work on any machine that serves `dist/` - no node route, no disk reads at runtime. `src/vite-env.d.ts` references `vite/client`, which is what types `import.meta.glob` under `tsconfig.app.json`.
 
 ## package.json scripts
 
@@ -25,6 +26,7 @@ dev proxy setup, routing on the axum side).
 - `build` - `tsc -b && vite build` (type-check via project references, then bundle to `dist/`).
 - `preview` - `vite preview --port 5199 --strictPort`.
 - `test` - `vitest run`.
+- `predev`/`prebuild`/`pretest` - `node scripts/build-docs.mjs` (regenerate `src/docs/` so the embedded documentation is fresh for the dev server, the build and the tests).
 - Dependencies: `@tanstack/react-query`, `react-router-dom` (v6 with v7 future flags), `framer-motion`, `react-markdown` + `remark-gfm` + `rehype-highlight`, `highlight.js`, `lucide-react`, `recharts`, `clsx`, fontsource font packages.
 
 ## src root
@@ -45,6 +47,7 @@ dev proxy setup, routing on the axum side).
 - `/implantar` -> DeployModel (first-level entry for putting slices in service)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
+- `/documentacao` -> Documentation (the repository's living documentation, embedded in the bundle by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
 - `*` -> NotFound
 
@@ -60,7 +63,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider. See `src/i18n/AGENTS.md`.
-- `src/routes/` - one screen per route (Chat, Dashboard, DeployModel, Shards, SliceModels, WholeModels, Transfers, SendFile, SlicingJobs, LogsByToken, LogsLive, NetworkSettings, Keys, ModelPaths, Setup, NotFound).
+- `src/routes/` - one screen per route (Chat, Dashboard, DeployModel, Shards, SliceModels, WholeModels, Transfers, SendFile, SlicingJobs, LogsByToken, LogsLive, NetworkSettings, Keys, ModelPaths, Documentation, Setup, NotFound).
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog, ModelNetworkDemo).
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 

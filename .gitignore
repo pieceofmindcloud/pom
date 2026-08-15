@@ -25,6 +25,11 @@ web-ui/dist/
 !web-ui/dist-release/
 *.tsbuildinfo
 
+# conteudo da rota Documentacao: gerado pelo apps/frontend/scripts/build-docs.mjs
+# no npm build/dev a partir dos AGENTS.md/READMEs do repo. Nunca commitar - a
+# fonte e o repo; src/docs e so o snapshot embutido.
+apps/frontend/src/docs/
+
 # Compose da sua maquina: nomes de container e caminhos de modelo que nao
 # valem para mais ninguem. O docker-compose.yml versionado nao e tocado.
 docker-compose-ksia.yml

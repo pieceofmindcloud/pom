@@ -113,7 +113,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 ## Ligações
 
 - **Chamado por**: `main.rs` (constrói `Network` + `Discovery`, resolve
-  relays/pkarr, publica Announce no gossipsub a cada 5 s, diala `--pkarr-peers`),
+  relays/pkarr, publica no gossipsub a cada 5 s o mesmo anúncio do UDP, via
+  `Network::gossip_announce_bytes` -> `self_announce`, com ou sem assignment;
+  diala `--pkarr-peers`),
   `routing/pipeline.rs` (`resolve_step_url` usa `RouteTable`), `gateway.rs`
   (consome `PeerInfo`/`alive_peers`).
 - **Chama**: `network.rs` ← `identity.rs` (via main), `addrs.rs`
@@ -127,10 +129,3 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   é atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
   (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
   servidor.
-- **Anúncio do gossipsub (main.rs) diverge do `self_announce` (network.rs)**:
-  a task de publish do main.rs anuncia só `frame/v1-f16` e `frame/v2-zstd-f16`,
-  sem `relay/v1-chain` nem `speculate/v1-lookup`, com `role` e `hostname`
-  vazios, e só publica **quando existe assignment**. Peer que chegue só por
-  gossipsub perde capacidades, papel e nome, e um nó sem modelo é invisível
-  pela internet (o caminho UDP anuncia sempre). O comentário de `self_announce`
-  fala em sincronizar "os outros dois builders" e não conta com este terceiro.

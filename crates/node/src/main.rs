@@ -92,7 +92,7 @@ use discovery::Discovery;
 use gateway::{start_gateway, GatewayState};
 use memory::load_layer_memory;
 use model::{calculate_assignment, parse_memory, ModelProfile};
-use network::{Network, P2PMessage};
+use network::Network;
 use ollama::OllamaClient;
 use pipeline::LoadTracker;
 use std::sync::Arc;
@@ -787,45 +787,16 @@ async fn main() -> Result<()> {
             let mut ticker = interval(Duration::from_secs(5));
             loop {
                 ticker.tick().await;
-                let asgn = asgn_disc.read().await;
-                if let Some(ref a) = *asgn {
-                    let msg = P2PMessage::Announce {
-                        node_id: net_disc.node_id.clone(),
-                        pubkey: net_disc.pubkey.clone(),
-                        addr: net_disc.announce_addr(),
-                        // Sem isto o anuncio por gossipsub viaja com o literal
-                        // `0.0.0.0`: o caminho libp2p nao tem endereco de
-                        // origem para reescrever, e quem so chegasse por ele
-                        // ficava com uma URL apontando para o proprio no.
-                        addr_candidates: net_disc.self_addr_candidates(),
-                        model: a.model.clone(),
-                        start_layer: a.start_layer,
-                        end_layer: a.end_layer,
-                        total_layers: a.total_layers,
-                        memory_mb: a.memory_used_mb,
-                        timestamp: chrono::Utc::now(),
-                        ollama_port: net_disc.ollama_port,
-                        inference_port: net_disc.inference_port,
-                        inference_frame_capabilities: vec![
-                            "frame/v1-f16".into(),
-                            "frame/v2-zstd-f16".into(),
-                        ],
-                        gateway_port: net_disc.gateway_port,
-                        role: String::new(),
-                        hostname: String::new(),
-                        capabilities: vec![routing_contract::ModelCapability {
-                            model_id: a.model.clone(),
-                            start_layer: a.start_layer,
-                            end_layer: a.end_layer,
-                            total_layers: Some(a.total_layers),
-                            supports_inference: net_disc.inference_port.is_some(),
-                        }],
-                        disk_total_mb: 0,
-                        disk_free_mb: 0,
-                    };
-                    if let Ok(data) = serde_json::to_vec(&msg) {
-                        let _ = tx.send(data).await;
-                    }
+                // Mesmo construtor do caminho UDP (`Network::self_announce`):
+                // capabilities, papel e hostname iguais, e publica **sempre**,
+                // com ou sem assignment. Um nó ainda sem modelo precisa ser
+                // visto pela internet do mesmo jeito que já era visto na LAN.
+                let data = {
+                    let asgn = asgn_disc.read().await;
+                    net_disc.gossip_announce_bytes(asgn.as_ref())
+                };
+                if let Some(data) = data {
+                    let _ = tx.send(data).await;
                 }
             }
         });

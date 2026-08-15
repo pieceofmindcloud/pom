@@ -78,7 +78,8 @@ anunciado), `--gateway-port` (8080), `--start-layer`/`--end-layer`,
     (sobe o servidor de inferência Rust **em-processo** e o supervisa).
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI).
 13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
-    a cada 5 s + diala `--pkarr-peers` + pkarr initial publish e republish a
+    a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do
+    UDP, com ou sem assignment) + diala `--pkarr-peers` + pkarr initial publish e republish a
     cada 30 min.
 14. Loop da TUI: limpa a tela a cada `--refresh`, imprime assignment, mapa de
     camadas, peers, health, aviso de buraco anterior.
@@ -123,11 +124,6 @@ separado). `parse_ollama_port` extrai a porta do `--ollama-url` só quando
   diferente de `identity::key_path()`, que resolve contra `project_root()`. Rodar
   o binário de outro diretório gera/ignora outra identidade pkarr - inconsistente
   com a regra documentada do project root.
-- **Task do gossipsub anuncia um conjunto diferente do `self_announce`**
-  (`main.rs:776-825`): só as capabilities `frame/v1-f16` e `frame/v2-zstd-f16`
-  (faltam `relay/v1-chain` e `speculate/v1-lookup`), `role`/`hostname` vazios,
-  e só publica **com** assignment - um nó sem modelo é invisível pela internet.
-  Detalhe em `network/AGENTS.md`.
 - **`--gateway` deprecated ainda muda comportamento** (`main.rs:564-568`): sem
   a flag, `ollama_port` não é anunciado, então peers não conseguem rotear para
   o Ollama local deste nó mesmo servindo a API.

@@ -48,7 +48,7 @@ substituída por essa explicação.
   **Pronto quando:** o filtro descarta loopback IPv4 e IPv6, existe teste de que uma lista
   só-loopback resulta em plano em anel, e o caso é exercitado sem esperar os 600 s.
 
-- [ ] **Anúncio do gossipsub diverge do `self_announce`**
+- [x] **Anúncio do gossipsub diverge do `self_announce`**
   `crates/node/src/main.rs:776-825` · anotado em `crates/node/AGENTS.md` e `crates/node/src/network/AGENTS.md`
   A task de publish anuncia só `frame/v1-f16` e `frame/v2-zstd-f16` (faltam `relay/v1-chain`
   e `speculate/v1-lookup`), com `role` e `hostname` vazios, e **só publica quando existe

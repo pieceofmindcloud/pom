@@ -522,6 +522,13 @@ impl Network {
     /// A node configured through the web UI has no `LayerAssignment` until a
     /// model is bound to it. It must still announce itself, otherwise it is
     /// invisible to the rest of the cluster — it just announces zero layers.
+    ///
+    /// Este é o **único** construtor de `Announce` do nó: o UDP (bootstrap,
+    /// peers, broadcast e a resposta a `PeerRequest`) e o publish periódico no
+    /// gossipsub passam todos por aqui. Um segundo construtor em `main.rs`
+    /// anunciava menos capabilities, com `role`/`hostname` vazios e só quando
+    /// havia assignment, então um peer que chegasse pela internet via um nó
+    /// diferente do que a LAN via.
     fn self_announce(&self, assignment: Option<&LayerAssignment>) -> P2PMessage {
         P2PMessage::Announce {
             node_id: self.node_id.clone(),
@@ -563,6 +570,15 @@ impl Network {
             disk_total_mb: 0,
             disk_free_mb: 0,
         }
+    }
+
+    /// O anúncio serializado que o publish periódico do gossipsub manda.
+    ///
+    /// Existe para que o caminho libp2p não tenha construtor próprio: é o mesmo
+    /// `self_announce` do UDP, com as mesmas capabilities, o mesmo `role` e o
+    /// mesmo `hostname`, e sai também quando não há assignment.
+    pub fn gossip_announce_bytes(&self, assignment: Option<&LayerAssignment>) -> Option<Vec<u8>> {
+        serde_json::to_vec(&self.self_announce(assignment)).ok()
     }
 
     /// True while the operator has taken this node off the network.
@@ -997,6 +1013,58 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O gossipsub e o UDP têm que publicar o mesmo anúncio, inclusive quando o
+    /// nó ainda não tem modelo. O publish do libp2p já teve construtor próprio,
+    /// que omitia `relay/v1-chain` e `speculate/v1-lookup`, mandava `role` e
+    /// `hostname` vazios e **só** publicava com assignment: um nó sem modelo
+    /// ficava invisível pela internet enquanto a LAN o via normalmente.
+    #[tokio::test]
+    async fn gossipsub_and_udp_publish_the_same_announce() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, Some(8181), Some(8080))
+            .await
+            .unwrap()
+            .with_identity("Principal".into(), "macbook".into());
+
+        let asgn = LayerAssignment {
+            model: "qwen35".into(),
+            total_layers: 32,
+            start_layer: 0,
+            end_layer: 15,
+            layers_count: 16,
+            memory_used_mb: 4096.0,
+            memory_allocated_mb: 4096.0,
+        };
+
+        for assignment in [None, Some(&asgn)] {
+            let gossip: serde_json::Value = serde_json::from_slice(
+                &net.gossip_announce_bytes(assignment)
+                    .expect("o gossipsub publica sempre, com ou sem assignment"),
+            )
+            .unwrap();
+            let udp: serde_json::Value =
+                serde_json::to_value(net.self_announce(assignment)).unwrap();
+            // `timestamp` é o único campo que muda entre as duas construções.
+            let mut gossip = gossip;
+            let mut udp = udp;
+            gossip["timestamp"] = serde_json::Value::Null;
+            udp["timestamp"] = serde_json::Value::Null;
+            assert_eq!(gossip, udp);
+
+            let caps = gossip["inference_frame_capabilities"].as_array().unwrap();
+            for cap in [
+                "frame/v1-f16",
+                "frame/v2-zstd-f16",
+                "relay/v1-chain",
+                "relay/v2-direct",
+                "speculate/v1-lookup",
+            ] {
+                assert!(caps.iter().any(|c| c == cap), "faltou {cap} em {caps:?}");
+            }
+            assert_eq!(gossip["role"], "Principal");
+            assert_eq!(gossip["hostname"], "macbook");
+        }
+    }
 
     /// Sending an IPv4 destination on the dual-stack socket fails with EINVAL on
     /// macOS, so IPv4 destinations must be mapped. Regressing this kills peer

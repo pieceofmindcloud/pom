@@ -200,10 +200,8 @@ Máquina C (2GB)  → gemma3 layers 0-9    (já coberto, fica como redundância)
 - [ ] WireGuard mesh automático entre peers
 - [ ] Capability tokens para controle de acesso à memória
 - [ ] QUIC como transporte (substituir UDP raw)
-- [ ] Interface de inferência - encaminha tensores entre nós
 - [ ] Suporte a mais modelos (auto-detect via manifest Ollama)
 - [ ] DHT Kademlia completo via libp2p
-- [ ] Dashboard web (HTTP API no nó)
 
 ---
 

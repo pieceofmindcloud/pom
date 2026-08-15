@@ -4,11 +4,14 @@ A porta de inferência (8181) e tudo que roda nela: o axum server
 (`infer_server.rs`), o wrapper FFI do llama.cpp (`llm.rs`), a execução do
 prefill/step nos três modos - hub, anel borbulhado (`relay/v1-chain`) e
 resposta direta (`relay/v2-direct`, `direct.rs`) - a "lei" que mede o modo
-direto em pernas de rede (`direct_lab.rs`), o formato binário do tensor na
-rede (`wire.rs`) e a configuração/supervisão do processo Python
-`inference_server.py` (`runtime.rs`). Nada aqui fala com peers: `next_hops`
-chega pronto do `routing/pipeline.rs` e este diretório executa a cadeia que o
-planejador montou.
+direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
+(`spec_lab.rs`), o formato binário do tensor na rede (`wire.rs`) e a
+supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
+anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
+O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
+(`inference_server.py` de `old/python-inference/` é legado). Nada aqui fala
+com peers: `next_hops` chega pronto do `routing/pipeline.rs` e este diretório
+executa a cadeia que o planejador montou.
 
 ## Arquivos
 
@@ -23,11 +26,17 @@ planejador montou.
   e o branch de relay.
 - `llm.rs` (1374) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   residual capture, sampling.
-- `prefill.rs` (1558) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
-  `step_speculative`, traço de fases por requisição.
+- `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
+  `step_speculative`, as duas formas de resposta da especulação, traço de fases
+  por requisição.
 - `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
-- `runtime.rs` (831) - `NodeConfig`/`NodeRuntime`: sobe e supervisa o child
-  Python.
+- `runtime.rs` (977) - `NodeConfig`/`NodeRuntime`: aplica a fatia, sobe e
+  supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
+  anotação da fatia servida (Pending → Serving via `/health`).
+- `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
+  `generate_stream` de verdade contra hops falsos que decidem com
+  `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
+  como botão.
 - `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
   em trânsito.
 
@@ -73,7 +82,14 @@ planejador montou.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct` junto das outras capabilities.
+- `/health` anuncia `relay/v2-direct` junto das outras capabilities e expõe
+  `kv_can_shift` (se o modelo permite deslocar o KV, condição de a cabeça
+  rascunhar).
+- `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
+  rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
+  legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no
+  formato antigo de um token (ver `step_blocking::incoming_draft` e a seção de
+  duas formas de resposta em `prefill.rs`).
 
 `llm.rs`:
 - `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
@@ -106,6 +122,15 @@ planejador montou.
   (ver o doc de `direct::hop_entry`).
 - `step_speculative` - **NÃO** estendida ao desvio direto: continua no anel/hub
   (não recebe o parâmetro `direct`).
+- `speculative_step_from_meta` - interpreta a resposta da cauda, e aqui está o
+  ponto que matava a geração em silêncio: a recusa de rascunhar é uma resposta
+  **válida**. Uma rodada especulativa tem duas formas legítimas -
+  `{done, accepted, accept_count, batch_width}` (a cabeça rascunhou) e o
+  formato antigo de um token `{done, token_id, text}` (a cabeça recusou:
+  `should_draft` falso). Quem lê a resposta tem que aceitar as duas; tratar a
+  antiga como erro fatal derrubava a geração com um token e `partial: true` em
+  toda requisição (2026-08-15, Qwen3.8-27B). Sem `draft`, `speculated` é
+  `false` e `batch_width` é 1.
 - `chunk_count`/`DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
 - `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
@@ -191,14 +216,30 @@ planejador montou.
   n_ctx, offload_kqv, n_batch, max_sessions, prefill_chunk_tokens, max_new_tokens,
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
   speculative_k/lookup_window.
-- `NodeRuntime::apply` - spawna o `inference_server.py` (procurando
-  `./venv/bin/python3` no cwd, senão `python3` do sistema) e o supervisa;
-  muda a config → reinicia o child.
+- `NodeRuntime::apply` - aplica a fatia e sobe o servidor Rust embutido
+  (`infer_server::run`); muda a config → reinicia o servidor. Anota a fatia em
+  `models/lastslice.rs` como **Pending** - mas a anotação só diz o que o `apply`
+  decidiu, não o que o servidor conseguiu carregar.
+- `spawn_health_watch` - o **único** ponto que prova a carga: quando `/health`
+  do servidor responde `model_loaded`, promove a anotação de Pending para
+  **Serving**. Só a anotação `Serving` autoriza retomar a fatia num reinício.
+- `note_unloadable_slice` - marca a fatia como não retomável e põe a razão no
+  `status.detail` (o que o painel mostra); é o que um nó vazio diz em vez de
+  calar - um nó vazio e calado é indistinguível de uma máquina que nunca
+  recebeu fatia.
+- `free_port` - desocupa a porta antes de subir o servidor: acha quem segura a
+  porta (`lsof -ti :PORT` no Unix, `netstat -ano`+`taskkill` no Windows) e mata
+  (SIGKILL). É a resposta ao "porta ocupada" que antes fazia o supervisor
+  desistir em silêncio.
 - `needs_residual_export` - **única** condição para instalar o callback de
   captura: custa 7,8-8,2 ms/token contra 0,14-0,67 ms sem ele (medido
   2026-08-12); sem o callback, `hidden_state` recusa com "residual capture
   did not fire".
-- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`.
+- `MAX_RESTARTS=10`, `MAX_CONTEXT_TOKENS=250_000`. O contador é por processo:
+  se a fatia não cabe na memória, o processo morre antes de carregar e o
+  `MAX_RESTARTS` morre junto - quem segura esse caso é a anotação (um processo
+  que desiste em `MAX_RESTARTS` apaga a anotação, e a `NeverLoaded` não
+  retoma).
 
 `wire.rs`:
 - `encode`/`encode_with_encoding`/`decode` - `[4B BE len][JSON header][tensor cru]`;
@@ -220,19 +261,29 @@ planejador montou.
   frame), `relay.rs` (send_frame). `runtime.rs` consome `models/model.rs`
   (`LayerAssignment`, `ModelProfile`) e `network.rs`.
 - **Consumido por**: `models/lastslice.rs` serializa `runtime::NodeConfig`
-  (a fatia anotada reaplicada no reinício); `routing/AGENTS.md` lista as
-  capabilities que `infer_server.rs`/`relay.rs` executam.
-- **Externo**: `inference_server.py` (FastAPI + llama-cpp-python) é quem de
-  fato carrega o modelo; o Rust deste diretório é cliente HTTP e supervisor.
+  (a fatia anotada reaplicada no reinício) e é quem guarda o estado da
+  anotação: Pending (escrito por `apply`), promovido a Serving só por
+  `spawn_health_watch`; `routing/AGENTS.md` lista as capabilities que
+  `infer_server.rs`/`relay.rs` executam.
+- **Externo**: nenhum processo externo. O modelo carrega em-processo via
+  `llm.rs` (llama-cpp-sys-2). `old/python-inference/inference_server.py` e
+  `split_model.py` são legado, não são mais invocados.
 
 ## Defeitos anotados
 
-- **Supervisor desiste em silêncio quando a porta de inferência está ocupada**
-  (`runtime.rs`): tenta `MAX_RESTARTS` vezes, para e a TUI segue mostrando
-  "Mem loaded: inference_server" como se tudo estivesse bem - o peer aparece
-  no cluster com cobertura 100% e só quebra na inferência. A prova está em
-  `inference_server_<porta>.log` (`[Errno 98] address already in use`), não na
-  TUI. Verificado 2026-08-07.
+- **DEFEITO ANOTADO: `set_log` nunca é chamado** (`runtime.rs:704`):
+  a função existe para redirecionar os logs do servidor embutido para um
+  arquivo (`infer_server_<porta>.log`), mas nenhum caminho a invoca, então
+  `log_path` fica sempre `None` e todo log vai para o stdout do processo - a
+  TUI limpa a tela a cada `--refresh`, então o único jeito de ver é redirecionar
+  o stdout do binário. O arquivo `inference_server_<porta>.log` (Python, antigo)
+  não existe mais.
+- **DEFEITO ANOTADO: desistência residual da porta ocupada** (`runtime.rs`):
+  `free_port` mata o ocupante antes de subir, mas quando o ocupante não é
+  identificável (`lsof`/`netstat` falham) ou a porta segue presa, o supervisor
+  esgota `MAX_RESTARTS` em silêncio e a TUI continua mostrando "Mem loaded:
+  inference_server" como se tudo estivesse bem - o peer só quebra na
+  inferência, com `encerrou com erro: Address already in use` no log do nó.
 - **DEFEITO ANOTADO: `self_reply_urls` não filtra o loopback** (`direct.rs:171-184`):
   o doc promete "o loopback não entra", mas o código só descarta vazio,
   `0.0.0.0` e `[::]`. Quando `gateway::self_dial_host` cai no fallback

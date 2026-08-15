@@ -99,12 +99,11 @@ máquina. Precedência:
 O runtime suportado é **Rust** (`crates/node/src/inference/infer_server.rs` é
 o servidor de inferência; `crates/node/src/models/splitter.rs` o fatiador).
 Os scripts `inference_server.py` e `split_model.py` vivem em
-`old/python-inference/` e **não são invocados pelo binário** (o AGENTS.md da
-raiz os descreve como se estivessem na raiz - defasado). Um venv em
-`./venv` (python 3.9+ do macOS ou o do Ubuntu) ainda é útil para o operador
-que quiser rodar o legado via `old/scripts/run-inf.sh`, e a tabela de tipos
-ggml de `gguf.rs` foi conferida contra o llama.cpp do `./venv`
-(`ggml_type_size`/`ggml_blck_size`). O único script que o build Rust consulta
+`old/python-inference/` e **não são invocados pelo binário**. Um venv em
+`./venv` (python 3.9+ do macOS ou o do Ubuntu) é útil só para o operador que
+quiser rodar o legado via `old/scripts/run-inf.sh`; a tabela de tipos ggml de
+`gguf.rs` é conferida contra a `GGML_TRUTH` no próprio arquivo (teste de
+build), não contra o venv. O único script que o build Rust consulta
 externamente é o `gen-node-configs.py` (não é do build, é de operação).
 
 ## Scripts de cluster
@@ -167,17 +166,16 @@ Windows empacota com 7z.
   nunca se encontram, e `tests/` nem existe hoje. O compose sobe com
   diretórios vazios e nós em modo setup, sem as portas que a config gerada
   definiria.
-- DEFEITO ANOTADO: `README.md` (raiz) está defasado em relação ao código: diz
-  que o build Docker tem três estágios com `cargo-chef` e sem GPU, mas o
-  `Dockerfile` real tem dois estágios compilando `--features cuda`; e ainda
-  lista "Interface de inferência - encaminha tensores entre nós" e "Dashboard
-  web" no roadmap, coisas que já existem em Rust. Não use o README como fonte
-  de verdade para arquitetura.
-- DEFEITO ANOTADO: o AGENTS.md da raiz descreve `inference_server.py` e
-  `split_model.py` como se vivessem na raiz do repo e serem subidos pelo
-  binário. Não vivem: estão em `old/python-inference/` e o runtime suportado é
-  Rust. Igualmente, os lançadores `run-p1.sh`/`run-p2.sh`/`request.sh` são
-  citados como se fossem da raiz, mas vivem em `old/scripts/` (legado).
+- O `README.md` (raiz) ficou defasado em relação ao código e foi corrigido na
+  reconciliação de 2026-08-15: o build Docker agora tem dois estágios
+  compilando `--features cuda`, e o roadmap não lista mais "Interface de
+  inferência" nem "Dashboard web". Não use o README como fonte de verdade para
+  arquitetura.
+- O AGENTS.md da raiz já não descreve `inference_server.py` e `split_model.py`
+  como se vivessem na raiz nem como se o binário os subisse (corrigido em
+  2026-08-15): estão em `old/python-inference/`, legado, e o runtime suportado
+  é Rust. Igualmente, os lançadores `run-p1.sh`/`run-p2.sh`/`request.sh` são
+  citados como referência de operador, mas vivem em `old/scripts/` (legado).
 - DEFEITO ANOTADO: `routing-base::plan` (sua única lógica real) não é chamado
   por ninguém - o planejador do nó
   (`crates/node/src/routing/pipeline.rs::plan_pipeline`) faz o próprio plano

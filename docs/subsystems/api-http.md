@@ -11,8 +11,11 @@ stream não é comprimido).
 
 Portas, para situar: UDP P2P `--port` (42777), libp2p TCP = UDP + 10000 (52777),
 gateway HTTP `--gateway-port` (8080), e o servidor de inferência
-`--inference-port` (8181, `backend/infer_server.rs`, um router separado que
-serve `/v1/prefill`, `/v1/step`, `/health` - não passa por este gateway).
+`--inference-port` (8181, `inference/infer_server.rs`, um router separado que
+serve `/v1/prefill`, `/v1/step`, `/health` - não passa por este gateway). O
+`/health` do servidor de inferência responde `model_loaded` (o que promove a
+anotação da fatia para `serving`, ver `fatiamento.md`) e expõe `kv_can_shift`,
+a condição de a cabeça rascunhar na decodificação especulativa.
 
 ## 1. O router e os grupos de rotas
 

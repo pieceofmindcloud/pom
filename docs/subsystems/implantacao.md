@@ -27,9 +27,8 @@ Três regras saem da arquitetura, não do gosto:
   prompt inteiro de cada requisição. Escolher a ordem é o mesmo ato que escolher
   quem fica com qual faixa - não há segundo botão.
 - **Um nó serve uma faixa**, exceto com `merge` ligado: faixas adjacentes viram
-  uma unidade fundida (`splitter::merge`, `split_model.py --merge` para o wrapper
-  legado), a máquina junta as fatias num arquivo só e serve a união. O passo
-  fundido carrega `parts`, um por fatia.
+  uma unidade fundida (`splitter::merge`, Rust), a máquina junta as fatias num
+  arquivo só e serve a união. O passo fundido carrega `parts`, um por fatia.
 - **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
   rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
   legítima que só impede o pipeline de planejar.
@@ -192,6 +191,12 @@ precisa saber:
   como está (a fatia já existe em disco).
 - senão -> `extract_shard` (fatiamento local, job "fatiando", progresso por
   `set_job_progress`, `invalidate_catalog`, outcome `reused`/`gerado`).
+
+Aplicada, a fatia é anotada em `<config>.last-slice.json` como `pending` pelo
+`runtime::apply` - e só vira `serving` quando o `/health` do servidor de
+inferência responde `model_loaded` (`spawn_health_watch`). É esse estado que
+decide o que um reinício retoma (só `serving`), não o `apply`. Ver
+`fatiamento.md` seção 6 e o `AGENTS.md` de `inference/`.
 
 `/api/ui/plan` (`plan_split_endpoint`) planeja por orçamento do cluster e **delega**
 ao peer dono do GGUF quando `layout_node_id` aponta para outra máquina: limpa o

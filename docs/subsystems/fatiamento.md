@@ -57,11 +57,12 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
   llama.cpp aborta o load procurando `blk.<last>.nextn.*`.
 - `slice_bytes(start, end, is_last)` - bytes de uma fatia: camadas + `token_embd`
   (toda fatia) + output head (só a última). É o que o plano soma.
-- `ggml_type_info` + `split_model_type_table_matches` - a tabela de tipos é lida
-  do llama.cpp do `./venv` (via ctypes no `libggml-base`); a versão Rust e a
-  Python têm que bater, e o teste de build lê a Python e quebra se divergirem.
+- `ggml_type_info` + `ggml_type_table_matches_ggml` - a tabela de tipos é
+  conferida contra a `GGML_TRUTH` no mesmo arquivo (teste de build quebra se
+  divergirem; números escritos lendo o llama.cpp - `ggml.h` para os códigos,
+  `ggml_type_size`/`ggml_blck_size` para os tamanhos -, nunca de memória).
   Errar um tamanho de tipo **não dá erro**: a fatia sai e só a resposta fica
-  errada.
+  errada. Por isso um tipo desconhecido é recusa, não estimativa.
 
 ## 3. Planejamento
 
@@ -140,10 +141,27 @@ final.
 
 `lastslice.rs` anota em `<config>.last-slice.json` a fatia que este nó serve
 (caminho derivado da config, senão dois nós da mesma máquina se sobrescrevem).
-No arranque o arquivo é **consumido-e-apagado** (`take`), nunca ressuscitado por
-órfão; no stop voluntário a anotação é esquecida. Sem isto um segfault do kernel
-CUDA (2026-08-13) derrubava o nó, o container religava e o nó voltava sem fatia -
-sumindo do pipeline em silêncio.
+A anotação carrega um **estado**, e ele é a lei:
+
+- `pending` - escrito por `runtime::apply`. Só registra o que o `apply`
+  decidiu, não o que o servidor conseguiu carregar - não retoma nada.
+- `serving` - escrito **só** por `spawn_health_watch`, quando o `/health` do
+  servidor de inferência responde `model_loaded`. É o único ponto do código que
+  prova que a fatia está no ar, e o único que autoriza retomá-la num reinício.
+- apagada - por `stop` (decisão do operador) e pelo ramo que desiste em
+  `MAX_RESTARTS`. Arquivo órfão (sem nó vivo) não ressuscita nada.
+
+No arranque o arquivo é **consumido-e-apagado** (`take`): `Serving` reaplica a
+fatia; `NeverLoaded`/recusa chama `note_unloadable_slice` (a razão vai para o
+`status.detail`, que é o que o painel mostra - um nó vazio e calado é
+indistinguível de uma máquina que nunca recebeu fatia). Sem este mecanismo um
+segfault do kernel CUDA (2026-08-13) derrubava o nó, o container religava e o
+nó voltava sem fatia - sumindo do pipeline em silêncio. O outro lado da moeda
+é o laço infinito de 2026-08-15: anotar no `apply` o que só o `/health` sabe
+fazia a fatia que não cabe na memória matar o processo antes de carregar, o
+container religar, e a mesma fatia ressuscitar para sempre (`MAX_RESTARTS` é
+contador de memória e morre com o processo). Reprodução E2E em
+`data/rdma-p2p-reinicio-infinito-carga/`.
 
 ## 7. Estimativa de memória e perfis
 
@@ -173,8 +191,9 @@ caminho de merge com arquivos reais. Em `plan.rs`, os testes provam: alvo menor
 que uma camada é recusado com o número na mensagem; fatias que não cobrem o
 modelo reportam quanto falta (`missing_range`) sem bloquear; pedir mais fatias
 que o modelo tem deixa as extras vazias; o corte em `nextn_predict_layers` só
-vale na última camada. `split_model_type_table_matches` quebra o build se a
-tabela de tipos Rust divergir da Python do `./venv`.
+vale na última camada. `ggml_type_table_matches_ggml` quebra o build se a
+tabela de tipos Rust divergir da `GGML_TRUTH` no mesmo arquivo (`gguf.rs`) -
+números escritos lendo o llama.cpp, não de memória.
 
 ## 10. Defeitos anotados
 

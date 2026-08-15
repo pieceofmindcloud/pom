@@ -61,15 +61,16 @@ commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 - O manual do operador (portas, cluster, pegadinhas) e o `AGENTS.md` da raiz.
 - Os lancadores `run-p1.sh`/`run-p2.sh`/`request.sh`, citados como se fossem da
   raiz, vivem em `old/scripts/` (legado).
-- Os scripts Python (`inference_server.py`, `split_model.py`) que o AGENTS.md da
-  raiz descreve na raiz vivem em `old/python-inference/` e sao legado; o runtime
-  suportado e Rust (`src/inference/infer_server.rs`, `src/models/splitter.rs`).
-  Caracterizados em `scripts/AGENTS.md`.
+- Os scripts Python (`inference_server.py`, `split_model.py`), citados como se
+  fossem da raiz, vivem em `old/python-inference/` e sao legado; o runtime
+  suportado e Rust (`crates/node/src/inference/infer_server.rs`,
+  `crates/node/src/models/splitter.rs`). Caracterizados em `scripts/AGENTS.md`.
 
 ## Defeitos anotados
 
-- `README.md` (raiz) esta defasado em relacao ao codigo: diz que o build Docker
-  tem tres estagios com cargo-chef e sem GPU, mas o `Dockerfile` real tem dois
-  estagios compilando `--features cuda`; e ainda lista "Interface de inferencia -
-  encaminha tensores entre nos" e "Dashboard web" no roadmap, coisas que ja
-  existem em Rust. Nao use o README como fonte de verdade para arquitetura.
+- O `README.md` (raiz) ficou defasado em relacao ao codigo e foi corrigido na
+  reconciliacao de 2026-08-15: o build Docker agora tem dois estagios
+  compilando `--features cuda`, e o roadmap nao lista mais "Interface de
+  inferencia" nem "Dashboard web" (ja existem em Rust). Nao use o README como
+  fonte de verdade para arquitetura - o `AGENTS.md` da raiz e os `docs/subsystems/*`
+  prevalecem.

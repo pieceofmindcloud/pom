@@ -4,8 +4,9 @@
 
 The HTTP backend of the `rdma-p2p` node: every axum router and handler the
 binary serves. It owns the single generation path (`gateway::generate_stream`,
-which routes to the distributed pipeline, local Ollama, or a peer's Ollama),
-the gateway state all handlers share, the two protocol adapters (OpenAI and
+which routes to the **distributed pipeline** - there is no fallback to a local
+or peer Ollama, a missing plan fails the request), the gateway state all
+handlers share, the two protocol adapters (OpenAI and
 Anthropic), the operator control plane (`/admin/*`, `/api/ui/*`, `/api/ui/deploy/*`,
 `/api/ui/undeploy`),
 slice transfer over HTTP `Range`, and the in-memory request log. No P2P, no
@@ -61,6 +62,10 @@ behind an auth extractor.
   prefill and decode executors, so the tail can answer this node directly
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
+  `especulando` - once a speculative round comes back refused (`!step.speculated`,
+  the head did not draft), the gateway stops asking for the rest of the request
+  and calls `prefill::step` (the direct reply) instead; insisting would pin the
+  chain to the bubbled ring (2N hops per token);
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
@@ -172,7 +177,10 @@ behind an auth extractor.
   --release`; no destructive commands) and `POST /api/ui/dev/restart`
   (`RESTART_DELAY=300ms` so the HTTP body clears before the process dies).
   Each node restarts itself; the panel forwards to a peer, the gate is checked
-  at the destination.
+  at the destination. **It no longer writes the last-slice annotation** before
+  restarting - `runtime.rs` owns that lifecycle (apply writes `Pending`, the
+  `/health` watcher promotes to `Serving`); a `devupdate` write could only
+  lie.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
   optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, and the connection key counts as operator
@@ -209,7 +217,8 @@ behind an auth extractor.
 - This folder calls: `crate::network` (`Network`, `PeerInfo` - discovery,
   `alive_peers`, `advertised_host`, `self_addr_candidates`), `crate::pipeline`
   (`plan_pipeline`, `LoadTracker`, `PipelinePlan` - the distributed path),
-  `crate::ollama` (`OllamaClient` - local/peer fallback), `crate::runtime`
+  `crate::ollama` (`OllamaClient` - model resolution and `/health` only, no
+  generation fallback), `crate::runtime`
   (`NodeRuntime`, `NodeConfig` - model/slice lifecycle), `crate::config`
   (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`, `model_dir_paths()`),
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`

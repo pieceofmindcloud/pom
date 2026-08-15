@@ -167,6 +167,19 @@ extra), `accept_count` e `batch_width`.
   seguinte com "inconsistent sequence positions". A decisão é tomada antes de
   apostar. `/health` expõe `kv_can_shift` justamente para diagnosticar por que
   a especulação não acelera.
+- **Uma rodada especulativa tem duas respostas legítimas.** A cabeça avisa que
+  recusou rascunhar **omitindo `draft`** do quadro; sem `draft`, a cauda
+  responde no formato antigo de um token (`{done, token_id, text}`) em vez de
+  `{done, accepted, accept_count, batch_width}` - `speculated` fica `false` e
+  `batch_width` é 1. `prefill::speculative_step_from_meta` aceita as duas
+  formas; tratar a antiga como erro fatal derrubava a geração com um token e
+  `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B). Sem shell na
+  máquina, `kv_can_shift` no `/health` é como se confere isso.
+- **Recusada a especulação, o gateway para de insistir** pelo resto da
+  requisição (`especulando`, em `generate_stream`): passa a chamar
+  `prefill::step`, que já usa a resposta direta (N+1 travessias). Não é só
+  economia do campo `speculate` - insistir prende a cadeia no anel borbulhado
+  (2N travessias por token).
 - O gateway clampa `speculative_k` a `n_batch` (`speculative_k_of`), porque o
   lote especulativo também é um batch único na cabeça.
 - **DEFEITO/limitação anotado**: `step_speculative` **não** foi estendida ao
@@ -236,6 +249,11 @@ inteiro.
   `direct.rs`, mas **não** teste de ponta a ponta - decisão do captain em
   2026-08-14 (cota). A decodificação especulativa também segue sem cobertura no
   desvio direto (ver seção 5).
+- A especulação tem a sua bancada própria, `spec_lab.rs` (cfg(test)):
+  `generate_stream` de verdade contra hops falsos que decidem com
+  `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
+  como botão. O motor é fingido (sem GGUF nesta máquina ela prova o contrato
+  entre os processos, não o que o llama.cpp faz com o lote).
 
 ## 9. Limite de prompt
 
@@ -255,10 +273,6 @@ prompt e recusa com uma mensagem citando as flags.
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
   de o prefill ser fatiado, `n_batch` na fórmula capava todo prompt em 512
   tokens por maior que fosse `--n-ctx`.
-- **DEFEITO ANOTADO**: a AGENTS.md raiz ainda documenta a fórmula antiga
-  `min(--n-batch, --n-ctx / --max-sessions - max-new-tokens)`. O código é
-  `n_ctx / max_sessions - max_new_tokens` (o `min` com `n_batch` saiu junto do
-  prefill em pedaços).
 - Por que o limite existe: passá-lo faz o llama.cpp abortar o **processo
   inteiro** com `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` - um prompt
   grande derruba o peer e todas as requisições em voo. Recusar cedo mantém o nó
@@ -278,17 +292,24 @@ prompt e recusa com uma mensagem citando as flags.
   resposta perdida, prazo de 600 s. O filtro prometido é justamente o que
   deixaria a lista vazia e faria o plano cair no anel, que funciona. (Anotado
   em `inference/AGENTS.md`; citado aqui.)
-- **DEFEITO ANOTADO: o supervisor desiste em silêncio quando a porta de
-  inferência está ocupada** (`inference/runtime.rs`): tenta `MAX_RESTARTS`
-  vezes, para e a TUI segue mostrando "Mem loaded: inference_server" como se
-  tudo estivesse bem - o peer aparece no cluster com cobertura 100% e só quebra
-  na inferência. A prova está em `inference_server_<porta>.log`
-  (`[Errno 98] address already in use`), não na TUI. (Anotado em
+- **DEFEITO ANOTADO: `runtime::set_log` nunca é chamado**
+  (`inference/runtime.rs:704`): a função existiria para redirecionar os logs do
+  servidor embutido para `infer_server_<porta>.log`, mas nenhum caminho a
+  invoca e `log_path` fica sempre `None` - todo log vai para o stdout do
+  binário, que a TUI limpa a cada `--refresh` (redirecione o stdout para ver).
+  O log Python `inference_server_<porta>.log` não existe mais. (Anotado em
   `inference/AGENTS.md`; citado aqui.)
-- **DEFEITO ANOTADO: fallback de três níveis documentado não existe no código**
-  (ver seção 7): a AGENTS.md raiz e `backend/AGENTS.md` descrevem
-  "pipeline → Ollama local → peer Ollama"; `generate_stream` só tem o pipeline
-  e falha sem ele.
+- A "porta ocupada" que antes fazia o supervisor desistir em silêncio mudou:
+  `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT` no Unix,
+  `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir o
+  servidor. O defeito residual é a desistência silenciosa quando o ocupante não
+  é identificável ou a porta segue presa - a TUI continua mostrando "Mem
+  loaded: inference_server" e o peer só quebra na inferência; a confirmação
+  real é o `/health` do `--inference-port` responder.
+- O fallback "pipeline → Ollama local → peer Ollama" documentado antigamente
+  não existe no código: `generate_stream` só tem o pipeline e falha sem ele
+  (ver seção 7). A AGENTS.md raiz e `backend/AGENTS.md` foram corrigidas para
+  dizer isso (2026-08-15).
 - **Limitação conhecida**: `step_speculative` não foi estendida ao desvio
   direto (ver seção 5) - a especulação continua no anel/hub.
 - **Sem cobertura de teste**: os quatro modos de falha do modo direto e a
@@ -298,8 +319,8 @@ prompt e recusa com uma mensagem citando as flags.
 
 Documentado a partir dos fontes na branch `fm/rdma-p2p-linha-2` (2026-08-15):
 `inference/infer_server.rs`, `inference/prefill.rs`, `inference/direct.rs`,
-`inference/direct_lab.rs`, `inference/relay.rs`, `inference/wire.rs`,
-`inference/runtime.rs`, `routing/pipeline.rs`, `backend/gateway.rs`,
-`backend/openai.rs`, `backend/messages.rs`, e os AGENTS.md de
-`inference/`, `routing/`, `backend/` e raiz. Onde o código e a documentação
+`inference/direct_lab.rs`, `inference/spec_lab.rs`, `inference/relay.rs`,
+`inference/wire.rs`, `inference/runtime.rs`, `routing/pipeline.rs`,
+`backend/gateway.rs`, `backend/openai.rs`, `backend/messages.rs`, e os AGENTS.md
+de `inference/`, `routing/`, `backend/` e raiz. Onde o código e a documentação
 divergem, o código vence e a divergência foi anotada como defeito.

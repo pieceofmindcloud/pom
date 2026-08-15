@@ -261,14 +261,18 @@ planejador não fechou a cobertura 0..total_layers.
   o padrão casa com a linha de comando do `bash -c` remoto, e o ssh volta com
   exit 255 sem ter matado o peer. Use um padrão que não se auto-inclua, ou
   `pgrep -fa` primeiro para conferir o que vai morrer.
-- **Se a porta de inferência ainda estiver ocupada quando o peer sobe**, o
-  supervisor tenta `MAX_RESTARTS` vezes, desiste em silêncio e a TUI continua
-  mostrando "Mem loaded: inference_server" como se estivesse tudo bem. O peer
-  aparece no cluster, com cobertura 100%, e só quebra na hora da inferência. O
-  sintoma está no log do nó (`encerrou com erro: Address already in use`), não
-  na TUI. Confira as rotas de verdade: `curl -s localhost:8181/health` tem que
-  responder, e o servidor expõe `/v1/prefill` e `/v1/step` (não há
-  `/openapi.json` - o servidor é Rust, não FastAPI).
+- **Se a porta de inferência estiver ocupada quando o peer sobe**, o supervisor
+  primeiro tenta **libertá-la**: `runtime::free_port` acha quem a segura
+  (`lsof -ti :PORT` no Unix, `netstat -ano`+`taskkill` no Windows) e mata
+  (SIGKILL), sondando até 5 s até ela ficar livre - é o que resolve o reinício
+  do Docker que deixava a porta presa. O defeito residual é a desistência em
+  silêncio quando o ocupante não é identificável ou a porta segue presa:
+  `MAX_RESTARTS` esgota, a TUI continua mostrando "Mem loaded:
+  inference_server" como se tudo estivesse bem, e o peer só quebra na hora da
+  inferência. O sintoma está no log do nó (`encerrou com erro: Address already
+  in use`), não na TUI. Confira as rotas de verdade: `curl -s
+  localhost:8181/health` tem que responder, e o servidor expõe `/v1/prefill` e
+  `/v1/step` (não há `/openapi.json` - o servidor é Rust, não FastAPI).
 
 ### Dois peers na mesma máquina - a armadilha é a identidade
 
@@ -446,21 +450,21 @@ o operador pegar à mão, em vez de sumir com um erro só no log.
 que cai não pode sumir do cluster em silêncio, então a fatia é anotada em
 `<config>.last-slice.json`. A anotação carrega um **estado**, e ele é a lei:
 
-- `pending` — escrito por `runtime::apply`. Não retoma nada.
-- `serving` — escrito **só** por `spawn_health_watch`, quando o `/health` do
+- `pending` - escrito por `runtime::apply`. Não retoma nada.
+- `serving` - escrito **só** por `spawn_health_watch`, quando o `/health` do
   servidor de inferência responde `model_loaded`. É o único ponto do código que
   prova que a fatia está no ar, e o único que autoriza retomá-la.
-- apagada — por `stop` (decisão do operador) e pelo ramo que desiste em
+- apagada - por `stop` (decisão do operador) e pelo ramo que desiste em
   `MAX_RESTARTS`.
 
 Anotar no `apply` o que só o `/health` sabe **é** o laço infinito de 2026-08-15:
 uma fatia que não cabe na memória mata o processo antes de carregar, o Docker
-religa o container, e a mesma fatia ressuscita para sempre — `MAX_RESTARTS` não
+religa o container, e a mesma fatia ressuscita para sempre - `MAX_RESTARTS` não
 segura isso, é contador de memória e morre com o processo. Quem recusa retomar
 tem que dizer por quê (`note_unloadable_slice` põe a razão no `status.detail`,
 que é o que o painel mostra): um nó vazio e calado é indistinguível de uma
 máquina que nunca recebeu fatia. Nenhum outro caminho deve escrever essa
-anotação — `devupdate` deixou de escrevê-la de propósito, porque só poderia
+anotação - `devupdate` deixou de escrevê-la de propósito, porque só poderia
 mentir. Ver `data/rdma-p2p-reinicio-infinito-carga/` para a reprodução E2E.
 
 ### Identidade do nó
@@ -484,8 +488,8 @@ antes de suspeitar do catálogo. Use `run-p1.sh`/`run-p2.sh`, que fazem `cd`.
 
 Nó configurado pela interface não passa `--inference-port`, e sem porta o
 `apply` recusava todo modelo. O padrão é `config::DEFAULT_INFERENCE_PORT` (8181),
-anunciado desde o arranque; o servidor Python só sobe quando uma fatia é
-atribuída.
+anunciado desde o arranque; o servidor de inferência Rust só sobe quando uma
+fatia é atribuída.
 
 ## Interface web, API OpenAI e monitor
 
@@ -726,9 +730,8 @@ Três regras saem da arquitetura, não do gosto:
   escolher quem fica com qual faixa - não há segundo botão.
 - **Um nó serve uma faixa.** Duas faixas na mesma máquina são recusa, **exceto**
   com `merge` ligado: faixas adjacentes viram uma *unidade fundida*, a máquina
-  junta as fatias num arquivo só (`splitter::merge`, `split_model.py --merge`)
-  e serve a união. O passo fundido carrega `parts`, uma por fatia, cada uma com
-  sua fonte.
+  junta as fatias num arquivo só (`splitter::merge`) e serve a união. O passo
+  fundido carrega `parts`, uma por fatia, cada uma com sua fonte.
 - **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
   rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
   legítima e só impede o pipeline de planejar.
@@ -755,19 +758,21 @@ tocada. A **chave de conexão do cluster vale como chave de API**: sem
 nos dois peers). `x_rdma_p2p.source` vai junto na resposta
 não-streaming com a cadeia de hops, que é a prova de execução distribuída.
 
-Como `inference_server.py` já embrulha o que recebe no template do Qwen
-(`_apply_chat_template`), `render_prompt` **achata** a conversa em um único texto
-em vez de aplicar um segundo template. Uma única mensagem `user` passa intacta,
-igual ao que `/api/generate` receberia.
+Como o primeiro peer já aplica o template do modelo uma vez
+(`llm::LlmEngine::apply_chat_template`, via `llama_chat_apply_template`),
+`render_prompt` **achata** a conversa em um único texto em vez de aplicar um
+segundo template. Uma única mensagem `user` passa intacta, igual ao que
+`/api/generate` receberia.
 
 ### Estado oculto em trânsito - formato e custo real
 
 `crates/node/src/inference/wire.rs` é o **único** lugar que conhece o dtype e a codificação do tensor:
 `[4 bytes de tamanho][JSON][tensor cru]`, f16, corpo binário. Nada de base64 e
-nada de f32 na rede. `inference_server.py` fala o mesmo formato em
+nada de f32 na rede. `infer_server.rs` fala o mesmo formato em
 `POST /v1/prefill` e `POST /v1/step`; o prompt vai em pedaços
-(`--prefill-chunk-tokens`, padrão 512), e `_rollback_seq_kv` rebobina o cache KV
-antes de refazer um pedaço reenviado, o que torna a retentativa idempotente.
+(`--prefill-chunk-tokens`, padrão 512), e `rollback_from`/`handle_rollback`
+rebobinam o cache KV antes de refazer um pedaço reenviado, o que torna a
+retentativa idempotente.
 
 Medido com `tcpdump` no peer 2, uma requisição de 35 tokens de prompt + 34
 gerados, prompt curto:

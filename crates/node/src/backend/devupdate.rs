@@ -366,11 +366,12 @@ async fn update_endpoint(
         }
 
         // Este nó por último, para o job chegar a ser marcado como pronto.
-        if let Some(cfg) = state.runtime.config().await {
-            if let Err(e) = crate::lastslice::save(&cfg) {
-                tracing::warn!("não deu para anotar a fatia antes do reinício: {e}");
-            }
-        }
+        //
+        // Nada a anotar aqui: quem mantém a anotação é o runtime, e ela já
+        // reflete a verdade deste nó (`Pending` desde o apply, `Serving` desde
+        // que o `/health` respondeu). Reescrevê-la neste ponto só poderia
+        // mentir - carimbar de servindo uma fatia que nunca carregou é o laço
+        // infinito de 2026-08-15 entrando por outra porta.
         tokio::time::sleep(RESTART_DELAY).await;
         let e = crate::respawn::respawn_self();
         tracing::error!("respawn falhou, o nó segue no ar: {e}");
@@ -388,18 +389,15 @@ async fn step(job_id: &str, s: &str) {
 
 async fn restart_endpoint(
     _auth: crate::auth::ConnectionAuth,
-    State(state): State<GatewayState>,
+    State(_state): State<GatewayState>,
 ) -> Response {
     if let Some(r) = gate_rejection() {
         return refuse(r);
     }
 
-    // Anota a fatia antes de sair, para voltar servindo o mesmo.
-    if let Some(cfg) = state.runtime.config().await {
-        if let Err(e) = crate::lastslice::save(&cfg) {
-            tracing::warn!("não deu para anotar a fatia antes do reinício: {e}");
-        }
-    }
+    // A fatia não é anotada aqui: o runtime já a mantém anotada, com o estado
+    // que ela de fato alcançou. Um nó servindo volta servindo; um nó cuja
+    // fatia nunca carregou volta vazio, dizendo por quê.
 
     tokio::spawn(async {
         tokio::time::sleep(RESTART_DELAY).await;

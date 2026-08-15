@@ -1075,13 +1075,22 @@ async fn start_gateway_only(
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o
     // caminho sem `--model`: quando a linha de comando pede um modelo, essa é
     // a intenção explícita e não deve ser sobreposta por uma fatia velha.
-    if let Some(cfg) = lastslice::take() {
-        let label = cfg.model_label.clone();
-        let (a, b) = (cfg.start_layer, cfg.end_layer);
-        match node_runtime.apply(cfg).await {
-            Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
-            Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+    match lastslice::take() {
+        lastslice::LastSlice::Serving(cfg) => {
+            let label = cfg.model_label.clone();
+            let (a, b) = (cfg.start_layer, cfg.end_layer);
+            match node_runtime.apply(cfg).await {
+                Ok(()) => info!("↩️  fatia restaurada após reinício: {label} {a}-{b}"),
+                Err(e) => warn!("não deu para restaurar a fatia anotada: {e}"),
+            }
         }
+        // A fatia foi aplicada e o processo morreu antes de ela carregar uma
+        // única vez. Retomá-la é o laço infinito: a mesma fatia derruba o
+        // processo, o Docker religa o container, e assim para sempre. O nó
+        // sobe vazio — mas dizendo por quê, senão o operador não tem como
+        // saber que a máquina não aguentou a fatia que recebeu.
+        lastslice::LastSlice::NeverLoaded(cfg) => node_runtime.note_unloadable_slice(&cfg).await,
+        lastslice::LastSlice::Nothing => {}
     }
 
     let http_client = reqwest::Client::builder()

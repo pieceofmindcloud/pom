@@ -339,18 +339,40 @@ impl NodeRuntime {
             warn!("announce após reconfiguração falhou: {e}");
         }
 
-        // Anotada aqui, quando passa a ser servida, e não só antes de um
-        // reinício pedido pela interface: um processo que morre de segfault não
-        // executa código nenhum, e sem esta linha toda queda tirava o nó do
-        // cluster para sempre - o Docker religava o container e ele voltava sem
-        // fatia, abrindo um buraco de camadas que só aparecia na requisição
-        // seguinte, como "Gap at layer N".
-        if let Err(e) = crate::lastslice::save(&cfg) {
-            warn!("não deu para anotar a fatia servida: {e}");
+        // Anotada já aqui porque um processo que morre de segfault não executa
+        // código nenhum, e sem anotação toda queda tirava o nó do cluster para
+        // sempre - o Docker religava o container e ele voltava sem fatia,
+        // abrindo um buraco de camadas que só aparecia na requisição seguinte,
+        // como "Gap at layer N".
+        //
+        // Mas anotada como `Pending`, e não como servindo: neste ponto o modelo
+        // não carregou uma única vez. Anotar aqui o que só o `/health` sabe era
+        // o laço infinito de 2026-08-15 - uma fatia grande demais matava o
+        // processo antes de carregar, o Docker religava, e o arranque
+        // ressuscitava a mesma fatia para sempre. Quem promove a `Serving` é
+        // `spawn_health_watch`.
+        if let Err(e) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Pending) {
+            warn!("não deu para anotar a fatia aplicada: {e}");
         }
 
         self.spawn_supervisor(cfg, generation);
         Ok(())
+    }
+
+    /// Registra que a fatia anotada não voltou porque nunca chegou a carregar.
+    ///
+    /// O arranque que recusa retomá-la tem que dizer isso: o painel de um nó
+    /// vazio e calado é indistinguível do de uma máquina que nunca recebeu
+    /// fatia nenhuma, e esta é a máquina cuja última tentativa derrubou o
+    /// processo. É o que o operador precisa ler para saber que tem de dar
+    /// menos camadas a ela.
+    pub async fn note_unloadable_slice(&self, cfg: &NodeConfig) {
+        let detail = format!(
+            "a fatia {} {}-{} não chegou a carregar na tentativa anterior e não foi restaurada",
+            cfg.model_label, cfg.start_layer, cfg.end_layer
+        );
+        warn!("⚠️  {detail}");
+        *self.status.write().await = RuntimeStatus::new(ServerState::Disabled, detail);
     }
 
     /// Start (or restart) the Rust inference server for `generation`.
@@ -360,6 +382,7 @@ impl NodeRuntime {
             status: self.status_handle(),
         };
         let port = cfg.inference_port;
+        let cfg_for_health = cfg.clone();
 
         tokio::spawn(async move {
             let mut restarts = 0u32;
@@ -400,6 +423,12 @@ impl NodeRuntime {
                         warn!("servidor de inferência encerrou com erro: {e}");
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
+                            // Uma fatia que chegou a servir (e por isso está
+                            // anotada como `Serving`) e depois quebrou
+                            // MAX_RESTARTS vezes seguidas não pode voltar no
+                            // próximo arranque: o orçamento de tentativas é de
+                            // memória e não atravessa um reinício.
+                            crate::lastslice::clear();
                             status
                                 .set(
                                     ServerState::Failed,
@@ -414,12 +443,13 @@ impl NodeRuntime {
             }
         });
 
-        self.spawn_health_watch(port, generation);
+        self.spawn_health_watch(cfg_for_health, generation);
     }
 
     /// Poll the inference server until it answers, then mark the node ready and
     /// correct `total_layers` from the shard's GGUF metadata.
-    fn spawn_health_watch(&self, port: u16, generation: u64) {
+    fn spawn_health_watch(&self, cfg: NodeConfig, generation: u64) {
+        let port = cfg.inference_port;
         let status = StatusWriter {
             status: self.status_handle(),
         };
@@ -473,6 +503,14 @@ impl NodeRuntime {
                             a.total_layers = total;
                         }
                     }
+                }
+
+                // O único ponto do código que prova que a fatia está no ar:
+                // `/health` respondeu `model_loaded`. Só daqui em diante ela
+                // pode ser retomada num arranque seguinte.
+                if let Err(e) = crate::lastslice::save(&cfg, crate::lastslice::SliceState::Serving)
+                {
+                    warn!("não deu para anotar a fatia servida: {e}");
                 }
 
                 status.set_ready(reported).await;
@@ -710,6 +748,104 @@ mod tests {
             speculative_k: 4,
             speculative_lookup_window: 3,
         }
+    }
+
+    /// A outra metade da lei: quem promove a anotação a `Serving` é o
+    /// `/health` respondendo `model_loaded`, e mais ninguém.
+    ///
+    /// Sem esta promoção o `apply` anotaria `Pending` para sempre e a garantia
+    /// de `c7b70d8` morreria calada - um nó que estava servindo saudável e caiu
+    /// voltaria vazio, abrindo um buraco de camadas no cluster. O teste sobe um
+    /// `/health` de mentira porque não há GGUF que carregue nesta máquina; o
+    /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
+    #[tokio::test]
+    async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
+        let dir = std::env::temp_dir().join(format!("rdma-health-watch-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg_path = dir.join("rdma-p2p.json");
+        std::env::set_var("RDMA_P2P_CONFIG", &cfg_path);
+        let anotacao = crate::lastslice::path();
+        std::fs::remove_file(&anotacao).ok();
+
+        let app = axum::Router::new().route(
+            "/health",
+            axum::routing::get(|| async {
+                axum::Json(serde_json::json!({ "model_loaded": true }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let net = Arc::new(
+            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+                .await
+                .expect("socket UDP em porta efêmera"),
+        );
+        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+
+        let mut c = cfg();
+        c.inference_port = port;
+        // Como o `apply` deixa: aplicada, ainda sem ter carregado.
+        crate::lastslice::save(&c, crate::lastslice::SliceState::Pending).unwrap();
+        rt.spawn_health_watch(c, 0);
+
+        // O watch dorme 3 s antes da primeira sondagem.
+        for _ in 0..40 {
+            sleep(Duration::from_millis(250)).await;
+            if rt.status().await.state == ServerState::Ready {
+                break;
+            }
+        }
+
+        assert_eq!(
+            rt.status().await.state,
+            ServerState::Ready,
+            "o /health subiu"
+        );
+        assert!(
+            matches!(
+                crate::lastslice::take(),
+                crate::lastslice::LastSlice::Serving(_)
+            ),
+            "uma fatia vista carregada tem que voltar no próximo arranque"
+        );
+
+        std::env::remove_var("RDMA_P2P_CONFIG");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// O arranque que recusa retomar uma fatia tem que dizer isso ao operador.
+    ///
+    /// Sem esta linha o nó sobe vazio e calado: o painel diria só "nenhum
+    /// modelo carregado", indistinguível de uma máquina que nunca recebeu
+    /// fatia nenhuma — e a máquina que acabou de derrubar o processo tentando
+    /// carregar é justamente a que precisa ser explicada.
+    #[tokio::test]
+    async fn a_fatia_que_nao_carregou_aparece_no_status_com_a_razao() {
+        let net = Arc::new(
+            Network::new("no".into(), "pk".into(), 0, vec![], None, None, None)
+                .await
+                .expect("socket UDP em porta efêmera"),
+        );
+        let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
+
+        rt.note_unloadable_slice(&cfg()).await;
+
+        let s = rt.status().await;
+        assert_eq!(s.state, ServerState::Disabled, "o nó não serve nada");
+        assert!(
+            s.detail.contains("qwen35") && s.detail.contains("0-15"),
+            "o status tem que nomear a fatia recusada, e diz: {}",
+            s.detail
+        );
+        assert!(
+            s.detail.contains("carregar"),
+            "e dizer por que ela não voltou, e diz: {}",
+            s.detail
+        );
     }
 
     /// O callback de captura do residual custa ~8 ms por token (medido em

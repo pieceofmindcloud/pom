@@ -446,6 +446,29 @@ qualquer peer do cluster escreve gigabytes ali sem perguntar. Um aceite
 automático que não consegue começar o download volta a ficar na prateleira, para
 o operador pegar à mão, em vez de sumir com um erro só no log.
 
+### A fatia que sobrevive a um reinício - e a que não pode sobreviver
+
+`crates/node/src/models/lastslice.rs`. A implantação vive em memória, mas um nó
+que cai não pode sumir do cluster em silêncio, então a fatia é anotada em
+`<config>.last-slice.json`. A anotação carrega um **estado**, e ele é a lei:
+
+- `pending` — escrito por `runtime::apply`. Não retoma nada.
+- `serving` — escrito **só** por `spawn_health_watch`, quando o `/health` do
+  servidor de inferência responde `model_loaded`. É o único ponto do código que
+  prova que a fatia está no ar, e o único que autoriza retomá-la.
+- apagada — por `stop` (decisão do operador) e pelo ramo que desiste em
+  `MAX_RESTARTS`.
+
+Anotar no `apply` o que só o `/health` sabe **é** o laço infinito de 2026-08-15:
+uma fatia que não cabe na memória mata o processo antes de carregar, o Docker
+religa o container, e a mesma fatia ressuscita para sempre — `MAX_RESTARTS` não
+segura isso, é contador de memória e morre com o processo. Quem recusa retomar
+tem que dizer por quê (`note_unloadable_slice` põe a razão no `status.detail`,
+que é o que o painel mostra): um nó vazio e calado é indistinguível de uma
+máquina que nunca recebeu fatia. Nenhum outro caminho deve escrever essa
+anotação — `devupdate` deixou de escrevê-la de propósito, porque só poderia
+mentir. Ver `data/rdma-p2p-reinicio-infinito-carga/` para a reprodução E2E.
+
 ### Identidade do nó
 
 `node_id` é como o cluster nomeia uma máquina, e é a chave de `blocked_nodes`.

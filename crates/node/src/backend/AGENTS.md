@@ -168,7 +168,8 @@ behind an auth extractor.
 - `admin.rs` - `admin_routes()`: `GET /admin/nodes`, `POST
   /admin/nodes/{id}/block`, `POST /admin/nodes/{id}/unblock`, `DELETE
   /admin/nodes/{id}`, `POST /admin/regenerate-key`, `GET+POST /admin/api-keys`,
-  `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers`.
+  `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers` (same offers as
+  `transfer.rs::list_offers`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
 - `devupdate.rs` - `ENV_GATE=RDMA_P2P_DEV_UPDATE`, `ENV_FEATURES=
   RDMA_P2P_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
@@ -238,11 +239,6 @@ behind an auth extractor.
 
 ## Defeitos anotados
 
-- **`/admin/transfer-offers` is a stub that always returns empty**
-  (`admin.rs:27-28`, `transfer_offers` hardcodes `{ "offers": [] }`). The real
-  offers live at `GET /api/transfer/offers` (`transfer.rs::list_offers`); the
-  admin route exists but is dead, so any consumer of the `/admin` one never
-  sees an offer.
 - **The handshake binds `node_id` to `pubkey`, but does not prove possession of
   the private key** (`session::node_id_matches_pubkey`). `node_id` must be
   `SHA256(pubkey)` and the key must be a well-formed ed25519 point, so a caller

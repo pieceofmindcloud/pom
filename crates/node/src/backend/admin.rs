@@ -24,8 +24,12 @@ pub fn admin_routes() -> Router<crate::gateway::GatewayState> {
         .route("/admin/transfer-offers", get(transfer_offers))
 }
 
-async fn transfer_offers(State(_config): State<AuthState>) -> impl IntoResponse {
-    Json(json!({ "offers": [] }))
+async fn transfer_offers(
+    _auth: ConnectionAuth,
+    State(state): State<crate::gateway::GatewayState>,
+) -> impl IntoResponse {
+    let offers = state.transfers.offers.read().await.clone();
+    Json(json!({ "offers": offers }))
 }
 
 /// Every node this machine knows about: the peers actually on the network plus
@@ -182,4 +186,47 @@ async fn revoke_api_key(
     cfg.api_keys.retain(|k| k.key != key);
     let _ = cfg.save();
     Json(json!({ "revoked": existed }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transfer::TransferOffer;
+
+    /// A rota `/admin` devolve as mesmas ofertas de `GET /api/transfer/offers`,
+    /// não uma lista vazia fixa: um consumidor da rota de administração tem que
+    /// enxergar o que está esperando resposta.
+    #[tokio::test]
+    async fn transfer_offers_returns_the_real_offers() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+
+        state
+            .transfers
+            .offers
+            .write()
+            .await
+            .push(TransferOffer {
+                id: "oferta-1".into(),
+                from_node_id: "peer-b".into(),
+                from_host: "ksia".into(),
+                from_gateway: "http://127.0.0.1:8080".into(),
+                remote_path: "/models/fatia_0_15.gguf".into(),
+                grant: None,
+                name: "fatia_0_15.gguf".into(),
+                size_bytes: 4_096,
+                md5: String::new(),
+                start_layer: Some(0),
+                end_layer: Some(15),
+            });
+
+        let response = transfer_offers(ConnectionAuth, State(state))
+            .await
+            .into_response();
+        let body = crate::gateway::testkit::body_of(response).await;
+
+        let offers = body["offers"].as_array().expect("campo offers");
+        assert_eq!(offers.len(), 1, "a rota /admin não pode devolver vazio");
+        assert_eq!(offers[0]["name"], "fatia_0_15.gguf");
+        assert_eq!(offers[0]["from_host"], "ksia");
+    }
 }

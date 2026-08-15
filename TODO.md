@@ -81,7 +81,7 @@ substituída por essa explicação.
   **Pronto quando:** o estado visível ao operador reflete a falha (mesmo padrão do ciclo de
   vida da fatia introduzido em `73426e7`) em vez de continuar anunciando saúde.
 
-- [ ] **Dois estados vazios se sobrepõem na aba Detalhes**
+- [x] **Dois estados vazios se sobrepõem na aba Detalhes**
   `apps/frontend/src/routes/Dashboard.tsx:222` e `:272` · anotado em `apps/frontend/src/routes/AGENTS.md`
   Com `c.peers.length === 0` na visão estendida, `dashboard.noMachines` rende dentro da área de
   rolagem e o overlay `dashboard.emptyNetwork` rende por cima - a mesma condição desenha duas
@@ -90,7 +90,7 @@ substituída por essa explicação.
   **Pronto quando:** uma única mensagem aparece na rede vazia, com teste que falha se as duas
   voltarem a coexistir.
 
-- [ ] **`AddNodeDialog` mantém seleções velhas entre aberturas**
+- [x] **`AddNodeDialog` mantém seleções velhas entre aberturas**
   `apps/frontend/src/components/AddNodeDialog.tsx` e `apps/frontend/src/routes/Dashboard.tsx`
   anotado em `apps/frontend/src/components/AGENTS.md` e `apps/frontend/src/routes/AGENTS.md`
   `nodeId` e `sliceIndex` são semeados uma vez (`useState(peers[0]?.node_id ?? "")`) e a dialog
@@ -99,7 +99,7 @@ substituída por essa explicação.
   **Pronto quando:** as escolhas são re-semeadas a cada abertura, com teste de reabertura após
   um peer sair.
 
-- [ ] **`ModelNetworkCanvas` entrega faixas inválidas ao `PeerDetailDialog`**
+- [x] **`ModelNetworkCanvas` entrega faixas inválidas ao `PeerDetailDialog`**
   `apps/frontend/src/components/ModelNetworkCanvas.tsx` · anotado em `apps/frontend/src/components/AGENTS.md`
   `otherRanges` vem de `pipelinePeers(cluster)`, que cai para *todos* os peers quando nenhum
   casa com o modelo ativo; um peer sem fatia então contribui seu `[0, 0]` padrão às faixas que
@@ -139,12 +139,12 @@ substituída por essa explicação.
 
 ## Configuração e build (silenciosamente sem efeito)
 
-- [ ] **`target_os = "linux1"` - o linker mold nunca é aplicado**
+- [x] **`target_os = "linux1"` - o linker mold nunca é aplicado**
   `.cargo/config.toml:27` · anotado em `scripts/AGENTS.md`
   `target_os` nunca será `"linux1"`, então `-fuse-ld=mold` não vale em lugar nenhum.
   **Pronto quando:** o cfg vira `target_os = "linux"` e o mold entra de fato, ou a seção sai.
 
-- [ ] **Comentário e valor de `incremental` se contradizem**
+- [x] **Comentário e valor de `incremental` se contradizem**
   `.cargo/config.toml:25` · anotado em `scripts/AGENTS.md`
   O comentário diz que `incremental` fica desligado porque impede inline, mas o valor real é
   `incremental = true`. Um dos dois está errado.
@@ -183,7 +183,7 @@ substituída por essa explicação.
   (`PeerInfo`, `NodeConfig`) não foram movidos.
   **Depende de:** a mesma decisão de arquitetura modular.
 
-- [ ] **`crates/config` é andaime vazio**
+- [x] **`crates/config` é andaime vazio**
   anotado em `crates/config/AGENTS.md`
   Declarado no workspace, morto até a extração de `crates/node/src/utils/config.rs`. Quem mexe
   em config hoje edita o módulo do node, não este crate.
@@ -196,26 +196,26 @@ substituída por essa explicação.
   (`backend/transfer.rs`). O protocolo existe sem lado servidor.
   **Pronto quando:** ou o lado servidor existe, ou o behaviour sai do swarm.
 
-- [ ] **`/admin/transfer-offers` é um stub que sempre devolve vazio**
+- [x] **`/admin/transfer-offers` é um stub que sempre devolve vazio**
   `crates/node/src/backend/admin.rs:27-28` · anotado em `crates/node/src/backend/AGENTS.md`
   Retorna `{ "offers": [] }` fixo. As ofertas de verdade estão em `GET /api/transfer/offers`
   (`transfer.rs::list_offers`), então quem consumir a rota `/admin` nunca vê uma oferta.
   **Decisão do captain:** implementar a rota corretamente, não remover.
   **Pronto quando:** a rota devolve as ofertas reais, com teste.
 
-- [ ] **`ModelNetworkDemo.tsx` é código morto**
+- [x] **`ModelNetworkDemo.tsx` é código morto**
   anotado em `apps/frontend/src/components/AGENTS.md`
   Nada na aplicação o importa; é uma simulação com valores fixos, resto da construção do
   `ModelNetworkCanvas`. Mantém a própria cópia da lógica de layout e medidores, que vai
   divergir do canvas real.
 
-- [ ] **`transferStatus.ts` exporta `TransferState` sem uso**
+- [x] **`transferStatus.ts` exporta `TransferState` sem uso**
   anotado em `apps/frontend/src/lib/AGENTS.md`
   Nada fora do módulo usa a união; os predicados tipam direto em `TransferJob["state"]`.
 
 ## Robustez
 
-- [ ] **`networkLayout.ts` escreve em `localStorage` sem proteção**
+- [x] **`networkLayout.ts` escreve em `localStorage` sem proteção**
   `writePositions` e `clearPositions` · anotado em `apps/frontend/src/lib/AGENTS.md`
   Sem `try/catch`, diferente de todos os outros helpers de armazenamento da pasta - exceções de
   cota ou segurança estourariam de dentro do handler de arrastar do canvas.
@@ -233,22 +233,22 @@ substituída por essa explicação.
 Todos estes contam como um trabalho só, e conversam com a investigação de i18n já em curso.
 Com o locale EN ativo, estas partes continuam em português.
 
-- [ ] **`ModelNetworkCanvas.tsx`** - botões ("Diminuir zoom", "Ajustar à rede", "Reorganizar nós
+- [x] **`ModelNetworkCanvas.tsx`** - botões ("Diminuir zoom", "Ajustar à rede", "Reorganizar nós
   automaticamente", "Fit") e estados vazios ("Nenhum modelo implantado", "Nenhuma capacidade de
   inferência anunciada") são literais, enquanto a legenda já usa `t("canvas.*")` - a legenda
   troca de idioma e o resto não. Anotado em `apps/frontend/src/components/AGENTS.md`.
-- [ ] **`deleteModel.ts` e `toast.tsx`** - confirmações ("Apagar ... do disco desta máquina?",
+- [x] **`deleteModel.ts` e `toast.tsx`** - confirmações ("Apagar ... do disco desta máquina?",
   "Atenção:", "Apagar mesmo assim?") e `aria-label="Fechar aviso"` fixos. Anotado em
   `apps/frontend/src/lib/AGENTS.md`.
-- [ ] **`Shards.tsx`, `WholeModels.tsx`, `Transfers.tsx`** - "Excluir", "apagado", "Não deu para
+- [x] **`Shards.tsx`, `WholeModels.tsx`, `Transfers.tsx`** - "Excluir", "apagado", "Não deu para
   apagar", "Cancelar", "Transferência cancelada", "enviando para", "recebendo de". Anotado em
   `apps/frontend/src/routes/AGENTS.md`.
-- [ ] **`Chat.tsx`** - o `ExecutionTelemetry` traz a tabela inteira de telemetria e a nota de
+- [x] **`Chat.tsx`** - o `ExecutionTelemetry` traz a tabela inteira de telemetria e a nota de
   rodapé fixas em português. Anotado em `apps/frontend/src/routes/AGENTS.md`.
 
 ## Cosmético
 
-- [ ] **`LeaveNode` reusa o rótulo do gatilho no botão de confirmação**
+- [x] **`LeaveNode` reusa o rótulo do gatilho no botão de confirmação**
   anotado em `apps/frontend/src/components/AGENTS.md`
   O botão do card e a confirmação da janela leem os dois "Sair da rede" - a janela mostra dois
   botões de mesmo nome, e o teste clica em `buttons[buttons.length - 1]`, contando com o portal

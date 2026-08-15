@@ -11,6 +11,28 @@ unificados, com todas as fontes listadas.
 `AGENTS.md` correspondente no mesmo commit e marque a caixa aqui. Um defeito
 corrigido que continua anotado é pior que um defeito não anotado.
 
+## Triagem do captain - 2026-08-15
+
+29 itens triados. Cada item abaixo carrega o veredito na própria linha.
+
+| Veredito | Itens | O que significa |
+|---|---|---|
+| **Corrigir** | 23 | Entram em trabalho agora. |
+| **Depois** | 4 | Reconhecidos, fora da rodada atual. |
+| **Não fazer** | 2 | Decisão tomada; não voltar a propor. |
+
+Os quatro adiados: fechar o `undeploy` para o principal, ligar ou remover o
+`routing-base`, preencher ou remover `crates/types`, e resolver o `bitswap`
+órfão. Os três últimos dependem das decisões de arquitetura modular e de
+open-core, ainda em aberto.
+
+Os dois recusados são o par do `docker-compose`, e a razão importa mais que o
+veredito: **não é defeito**. São dois ambientes de gente diferente -
+`gen-node-configs.py` gera a configuração da máquina do captain, e o
+`docker-compose.yml` serve a máquina do salem. Os dois esquemas de nome não
+precisam se encontrar. A anotação em `scripts/AGENTS.md` está errada e deve ser
+substituída por essa explicação.
+
 ---
 
 ## Correção (o comportamento está errado)
@@ -106,7 +128,7 @@ corrigido que continua anotado é pior que um defeito não anotado.
   **Pronto quando:** a validação de entrada cobre ordenação das faixas e limite de
   `total_layers`, com testes dos dois casos malformados.
 
-- [ ] **`undeploy_authority` permite qualquer papel derrubar a pipeline inteira**
+- [ ] `DEPOIS` **`undeploy_authority` permite qualquer papel derrubar a pipeline inteira**
   `crates/node/src/backend/deploy.rs:1794` · anotado em `crates/node/src/backend/AGENTS.md`
   Retorna `Ok(())` para todo papel. Está aberto de propósito e o teste
   `any_node_may_undeploy_for_now` (`deploy.rs:2242`) documenta a porta aberta, então fechá-la é
@@ -126,9 +148,10 @@ corrigido que continua anotado é pior que um defeito não anotado.
   `.cargo/config.toml:25` · anotado em `scripts/AGENTS.md`
   O comentário diz que `incremental` fica desligado porque impede inline, mas o valor real é
   `incremental = true`. Um dos dois está errado.
-  **Pronto quando:** comentário e valor concordam, com a razão da escolha registrada.
+  **Decisão do captain:** manter `incremental = true`. É o comentário que está errado.
+  **Pronto quando:** o comentário descreve a escolha real e a razão dela.
 
-- [ ] **`docker-compose.yml` monta fixtures que o gerador nunca escreve**
+- [x] `NÃO FAZER` **`docker-compose.yml` monta fixtures que o gerador nunca escreve**
   `docker-compose.yml` e `scripts/gen-node-configs.py` · anotado em `scripts/AGENTS.md`
   O compose monta `./tests/fixtures/node-gpu`, `node-gpu-2`, `node-cpu-1`, `node-cpu-2`, mas o
   gerador escreve em `tests/fixtures/node-<N>` (node-1..node-5) - os dois esquemas de nome
@@ -137,14 +160,14 @@ corrigido que continua anotado é pior que um defeito não anotado.
   **Pronto quando:** um único esquema de nomes, e subir o compose a partir do repositório limpo
   produz um cluster funcional.
 
-- [ ] **`.dockerignore` ignora `rdma-p2p.json` sem caminho versionado alternativo**
+- [x] `NÃO FAZER` **`.dockerignore` ignora `rdma-p2p.json` sem caminho versionado alternativo**
   `.dockerignore` · anotado em `scripts/AGENTS.md`
   O compose só funciona com os fixtures do item acima, e os `node-<N>/` são gerados, não
   versionados. Depende do item anterior.
 
 ## Código morto e andaimes
 
-- [ ] **`routing-base::plan` não é chamado em lugar nenhum**
+- [ ] `DEPOIS` **`routing-base::plan` não é chamado em lugar nenhum**
   anotado em `crates/AGENTS.md` e `crates/routing-base/AGENTS.md`
   O planejador do `node` (`crates/node/src/routing/pipeline.rs::plan_pipeline`) monta um
   `RoutingRequest` a partir dos tipos do contrato para validar, mas faz seu próprio
@@ -154,7 +177,7 @@ corrigido que continua anotado é pior que um defeito não anotado.
   não está ligada a nenhum ponto de chamada.
   **Depende de:** a decisão de open-core aberta com o captain (licença e fronteira de entrega do Pro).
 
-- [ ] **`crates/types` é um marcador vazio**
+- [ ] `DEPOIS` **`crates/types` é um marcador vazio**
   anotado em `crates/types/AGENTS.md`
   O único "tipo" é `WorkspaceMarker`. Tipos de domínio de verdade que o `node` ainda detém
   (`PeerInfo`, `NodeConfig`) não foram movidos.
@@ -166,7 +189,7 @@ corrigido que continua anotado é pior que um defeito não anotado.
   em config hoje edita o módulo do node, não este crate.
   **Depende de:** a mesma decisão de arquitetura modular.
 
-- [ ] **`bitswap` é protocolo órfão**
+- [ ] `DEPOIS` **`bitswap` é protocolo órfão**
   `crates/node/src/network/discovery.rs::handle_event` · anotado em `crates/node/src/network/AGENTS.md`
   `bitswap_behaviour` está no swarm e os eventos só viram `debug!` - nenhuma requisição é
   atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
@@ -177,7 +200,8 @@ corrigido que continua anotado é pior que um defeito não anotado.
   `crates/node/src/backend/admin.rs:27-28` · anotado em `crates/node/src/backend/AGENTS.md`
   Retorna `{ "offers": [] }` fixo. As ofertas de verdade estão em `GET /api/transfer/offers`
   (`transfer.rs::list_offers`), então quem consumir a rota `/admin` nunca vê uma oferta.
-  **Pronto quando:** a rota devolve os dados reais ou é removida.
+  **Decisão do captain:** implementar a rota corretamente, não remover.
+  **Pronto quando:** a rota devolve as ofertas reais, com teste.
 
 - [ ] **`ModelNetworkDemo.tsx` é código morto**
   anotado em `apps/frontend/src/components/AGENTS.md`
@@ -201,7 +225,8 @@ corrigido que continua anotado é pior que um defeito não anotado.
   A função existe para mandar os logs do servidor embutido para `infer_server_<porta>.log`, mas
   nenhum caminho a invoca, então `log_path` fica sempre `None` e todo log vai para o stdout. A
   TUI limpa a tela a cada `--refresh`, então o único jeito de ver é redirecionar o stdout do binário.
-  **Pronto quando:** ou o arquivo de log passa a ser escrito, ou a função sai e o doc conta a verdade.
+  **Decisão do captain:** passar a escrever o arquivo de log, não remover a função.
+  **Pronto quando:** `set_log` é chamado no arranque do servidor embutido e o arquivo aparece.
 
 ## Internacionalização (strings pt-BR fixas fora do i18n)
 

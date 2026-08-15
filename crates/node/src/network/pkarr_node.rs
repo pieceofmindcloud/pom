@@ -20,6 +20,13 @@ pub struct PkarrNode {
 }
 
 /// A peer that has been resolved from the DHT.
+///
+/// Hoje só `multiaddr` e `is_relay` são lidos: o pkarr serve para *discar*, e
+/// quem preenche a tabela de peers (modelo, faixa de camadas, porta de
+/// inferência) continua sendo o `Announce` UDP. O resto do payload é decodado
+/// e guardado porque é o que o registro TXT carrega - descartar no parse seria
+/// perder a informação que falta para o peer que só chega por DHT.
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct ResolvedPeer {
     pub multiaddr: String,

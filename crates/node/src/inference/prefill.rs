@@ -388,12 +388,6 @@ fn percentile(samples: &[u64], percentile: u64) -> u64 {
     sorted[index]
 }
 
-/// How many chunks a prompt of `tokens` needs.
-pub fn chunk_count(tokens: u32, chunk_size: u32) -> u32 {
-    let size = chunk_size.max(1);
-    tokens.div_ceil(size).max(1)
-}
-
 /// Push the whole prompt through the pipeline, chunk by chunk.
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -1433,36 +1427,10 @@ fn speculative_step_from_meta(
 mod tests {
     use super::*;
 
-    #[test]
-    fn a_prompt_shorter_than_one_chunk_is_a_single_chunk() {
-        assert_eq!(chunk_count(1, 512), 1);
-        assert_eq!(chunk_count(511, 512), 1);
-        assert_eq!(chunk_count(512, 512), 1);
-    }
-
-    #[test]
-    fn a_partial_last_chunk_still_counts() {
-        assert_eq!(chunk_count(513, 512), 2);
-        assert_eq!(chunk_count(1024, 512), 2);
-        assert_eq!(chunk_count(1025, 512), 3);
-    }
-
-    /// The captain's target: a 250k-token prompt has to become a bounded number
-    /// of bounded pieces, which is the whole point of the change.
-    #[test]
-    fn a_very_long_prompt_becomes_many_bounded_chunks() {
-        assert_eq!(chunk_count(250_000, 512), 489);
-    }
-
-    #[test]
-    fn an_empty_prompt_never_produces_zero_chunks() {
-        assert_eq!(chunk_count(0, 512), 1);
-    }
-
-    #[test]
-    fn a_zero_chunk_size_does_not_divide_by_zero() {
-        assert_eq!(chunk_count(10, 0), 10);
-    }
+    // O número de pedaços não é calculado em lugar nenhum: `run` avança até o
+    // peer da cabeça dizer que não há mais (`more_chunks`), que é o único que
+    // sabe quantos tokens o prompt virou. A aritmética que existia aqui, e os
+    // testes dela, não tinham chamador na produção.
 
     #[test]
     fn hop_trace_separates_peer_compute_from_transport_time() {

@@ -241,7 +241,7 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
             if declared != expected_bytes {
                 return Err(anyhow!("tamanho declarado não bate com o shape"));
             }
-            let mut decoder = zstd::stream::read::Decoder::new(payload)?;
+            let decoder = zstd::stream::read::Decoder::new(payload)?;
             let mut output = Vec::with_capacity(expected_bytes);
             decoder
                 .take((MAX_FRAME_PAYLOAD_BYTES + 1) as u64)

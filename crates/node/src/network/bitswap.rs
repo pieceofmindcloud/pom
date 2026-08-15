@@ -10,9 +10,6 @@ use std::time::Duration;
 
 pub const BSWP_PROTOCOL: &str = "/rdma-p2p/bitswap/1.0.0";
 
-/// Chunk identifier: SHA256 hex of chunk data.
-pub type ChunkId = String;
-
 /// Manifest describing a file available for transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileManifest {
@@ -149,34 +146,13 @@ pub fn bitswap_behaviour() -> request_response::Behaviour<BitswapCodec> {
     )
 }
 
-/// Compute SHA256 hash of a byte slice.
-pub fn hash_chunk(data: &[u8]) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
-}
-
-/// Compute MD5 of a byte slice.
-pub fn md5_hash(data: &[u8]) -> String {
-    use md5::{Digest, Md5};
-    let mut hasher = Md5::new();
-    hasher.update(data);
-    hex::encode(hasher.finalize())
-}
+// Os digests do transporte de arquivo vivem em `backend/transfer.rs`, que é
+// quem move bytes de verdade (HTTP com Range). As cópias que existiam aqui não
+// tinham chamador nenhum fora dos próprios testes.
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_hash_chunk_consistent() {
-        let data = b"hello world";
-        let h1 = hash_chunk(data);
-        let h2 = hash_chunk(data);
-        assert_eq!(h1, h2);
-        assert_eq!(h1.len(), 64);
-    }
 
     #[test]
     fn test_manifest_serialization() {
@@ -197,12 +173,5 @@ mod tests {
         let parsed: FileManifest = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed.file_name, "test.gguf");
         assert_eq!(parsed.num_chunks, 4);
-    }
-
-    #[test]
-    fn test_md5_hash() {
-        let data = b"hello world";
-        let h = md5_hash(data);
-        assert_eq!(h.len(), 32);
     }
 }

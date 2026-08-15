@@ -1,7 +1,6 @@
 use crate::auth::AuthState;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 #[derive(Debug, Deserialize)]
 pub struct HandshakeRequest {
@@ -10,6 +9,9 @@ pub struct HandshakeRequest {
     pub connection_key: String,
 }
 
+/// O corpo que o handshake devolve. Foi um `json!` solto por engano, e um
+/// tipo que ninguém constrói vira documentação que mente: o `skip` do `None`
+/// é o que faz a recusa sair sem `peer_id` e o aceite sem `reason`.
 #[derive(Debug, Serialize)]
 pub struct HandshakeResponse {
     pub approved: bool,
@@ -56,10 +58,11 @@ pub async fn handle_handshake(
     if req.connection_key != cfg.connection_key {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "approved": false,
-                "reason": "invalid_key"
-            })),
+            Json(HandshakeResponse {
+                approved: false,
+                peer_id: None,
+                reason: Some("invalid_key".into()),
+            }),
         );
     }
 
@@ -68,29 +71,32 @@ pub async fn handle_handshake(
     if !node_id_matches_pubkey(&req.node_id, &req.pubkey) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "approved": false,
-                "reason": "identity_mismatch"
-            })),
+            Json(HandshakeResponse {
+                approved: false,
+                peer_id: None,
+                reason: Some("identity_mismatch".into()),
+            }),
         );
     }
 
     if cfg.blocked_nodes.contains(&req.node_id) {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({
-                "approved": false,
-                "reason": "blocked"
-            })),
+            Json(HandshakeResponse {
+                approved: false,
+                peer_id: None,
+                reason: Some("blocked".into()),
+            }),
         );
     }
 
     (
         StatusCode::OK,
-        Json(json!({
-            "approved": true,
-            "peer_id": req.node_id
-        })),
+        Json(HandshakeResponse {
+            approved: true,
+            peer_id: Some(req.node_id),
+            reason: None,
+        }),
     )
 }
 

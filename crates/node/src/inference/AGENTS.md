@@ -93,8 +93,10 @@ executa a cadeia que o planejador montou.
 
 `llm.rs`:
 - `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, max_sessions); uma `LlmContext` por sessão (`pool_tests` cobre a
-  divisão de n_ctx por sessão).
+  offload_kqv, max_sessions). `LlmEngine::pool` (N contextos sobre um modelo
+  só, `pool_tests` cobre a divisão de n_ctx) ainda **não tem chamador**: o
+  servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no `pool`
+  é a marca disso.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).
@@ -131,7 +133,7 @@ executa a cadeia que o planejador montou.
   antiga como erro fatal derrubava a geração com um token e `partial: true` em
   toda requisição (2026-08-15, Qwen3.8-27B). Sem `draft`, `speculated` é
   `false` e `batch_width` é 1.
-- `chunk_count`/`DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
+- `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
 - `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
   `node_lock_wait_ms` separa "nó lento" de "nó ocupado".

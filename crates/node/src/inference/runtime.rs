@@ -766,10 +766,6 @@ impl StatusWriter {
         s.changed_at = chrono::Utc::now().to_rfc3339();
     }
 
-    async fn set_pid(&self, pid: Option<u32>) {
-        self.status.write().await.pid = pid;
-    }
-
     async fn set_log(&self, path: &str) {
         self.status.write().await.log_path = Some(path.to_string());
     }

@@ -321,8 +321,8 @@ Falta para funcionar de fato pela internet:
    e DCuTR só carregam a descoberta; sem IP roteável ou porta liberada, o hop
    HTTP falha mesmo com os peers "conectados".
 3. **`--public-addr` só alimenta o pkarr**, não o `addr` do `Announce`.
-4. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
-   confiável, não na internet.
+4. Sem autenticação nem TLS na porta de inferência (`/v1/prefill`, `/v1/step`)
+   nem no gateway - aceitável em LAN confiável, não na internet.
 
 ## Arquitetura Principal/Nó e as armadilhas que ela trouxe
 

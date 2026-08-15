@@ -42,8 +42,9 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 `gguf.rs` lê o GGUF sem carregar pesos:
 
 - `read_info` - só o KV header: arquitetura, `block_count`, `rdmap2p.*`
-  (original/total), `shard_range`, `embedding_length`. `GgufInfo::is_shard()` =
-  tem metadata rdmap2p.
+  (original/total), `shard_range`, `embedding_length`. Quem decide se um
+  arquivo é fatia é `catalog::InstalledModel::is_shard`; a cópia que existia em
+  `GgufInfo` não tinha chamador e saiu.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml

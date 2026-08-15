@@ -144,12 +144,13 @@ pub struct PipelinePlan {
     pub steps: Vec<PipelineStep>,
     /// Handoffs selected by the same planner invocation as `steps`.
     pub edges: Vec<PipelineEdge>,
-    pub total_layers: u32,
 }
 
 /// Translates transport-owned peer records into the stable routing-provider
 /// input. Production routing remains on the existing planner until equivalence
-/// coverage permits switching implementations.
+/// coverage permits switching implementations - por isso ainda não tem chamador
+/// fora dos testes, e o `allow` é a marca disso, não descuido.
+#[allow(dead_code)]
 pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) -> RoutingRequest {
     RoutingRequest {
         api_version: ROUTING_API_VERSION,
@@ -169,15 +170,6 @@ pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) 
 }
 
 impl PipelinePlan {
-    /// Comma-separated "ip:port" string for llama.cpp `--rpc` flag.
-    pub fn rpc_workers_string(&self) -> String {
-        self.steps
-            .iter()
-            .map(|s| s.inference_url.trim_start_matches("http://").to_string())
-            .collect::<Vec<_>>()
-            .join(",")
-    }
-
     /// Human-readable hop chain: "abc123→def456→…"
     pub fn hop_chain(&self) -> String {
         self.steps
@@ -302,11 +294,7 @@ pub async fn plan_pipeline(
         })
         .collect();
 
-    Some(PipelinePlan {
-        steps,
-        edges,
-        total_layers,
-    })
+    Some(PipelinePlan { steps, edges })
 }
 
 /// Endereco por onde falar com este hop, decidido por quem vai discar.
@@ -499,7 +487,6 @@ mod ipv6_tests {
         PipelinePlan {
             steps,
             edges: Vec::new(),
-            total_layers: 32,
         }
     }
 

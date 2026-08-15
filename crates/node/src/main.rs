@@ -1121,12 +1121,6 @@ async fn start_gateway_only(
     Ok(())
 }
 
-fn gethostname() -> String {
-    std::env::var("HOSTNAME")
-        .or_else(|_| std::env::var("COMPUTERNAME"))
-        .unwrap_or_else(|_| "unknown".into())
-}
-
 #[cfg(test)]
 mod main_tests {
     use super::*;

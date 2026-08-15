@@ -178,8 +178,8 @@ O que está no AGENTS.md raiz, com o comportamento atual do código:
    com `http://<ip-do-peer>:<inference-port>` (`routing/pipeline.rs`, `direct.rs`).
    Relay e DCuTR só carregam a descoberta; sem IP roteável ou porta liberada, o
    hop HTTP falha mesmo com os peers "conectados".
-4. **Sem autenticação nem TLS no `/v1/infer` e no gateway.** Aceitável em LAN
-   confiável, não na internet.
+4. **Sem autenticação nem TLS na porta de inferência (`/v1/prefill`,
+   `/v1/step`) nem no gateway.** Aceitável em LAN confiável, não na internet.
 
 ## 6. Defeitos anotados
 

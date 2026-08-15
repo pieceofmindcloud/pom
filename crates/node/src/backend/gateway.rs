@@ -286,47 +286,10 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
     speculative_k.max(1).min(n_batch.max(1))
 }
 
-// ── Peer-to-peer pipeline protocol ───────────────────────────────────────────
-
-/// Sent to each peer's /v1/infer endpoint.
-#[derive(Debug, Serialize)]
-struct PeerInferRequest<'a> {
-    model: &'a str,
-    /// Unique per generation; inference server uses it to track KV cache per session.
-    session_id: &'a str,
-    /// Raw prompt text — only set for the FIRST peer in the pipeline (first step).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    prompt: Option<&'a str>,
-    /// Token IDs — set for subsequent steps in the generation loop.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tokens: Option<&'a [u32]>,
-    /// Base64-encoded float32 hidden-state tensor.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hidden_state: Option<&'a str>,
-    /// Shape [n_tokens, hidden_dim] of hidden_state.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    hidden_shape: Option<[usize; 2]>,
-    start_layer: u32,
-    end_layer: u32,
-    /// True only for the last peer in the pipeline.
-    is_last: bool,
-    /// Whether to clear KV cache.
-    reset: bool,
-    /// Activation scale factor.
-    scale: f32,
-}
-
-/// Response from each peer's /v1/infer endpoint.
-#[derive(Debug, Deserialize)]
-struct PeerInferResponse {
-    /// Populated by non-last peers.
-    hidden_state: Option<String>,
-    hidden_shape: Option<[usize; 2]>,
-    /// Populated by the last peer.
-    text: Option<String>,
-    token_id: Option<u32>,
-    done: bool,
-}
+// O protocolo antigo `/v1/infer` (tensor em base64, uma chamada por peer)
+// saiu daqui: hoje o pipeline fala `/v1/prefill` e `/v1/step` com o
+// enquadramento binario de `inference/wire.rs`, e o encadeamento dos hops
+// mora em `inference/prefill.rs`.
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
@@ -397,90 +360,6 @@ pub struct GenSummary {
     pub partial: bool,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
-}
-
-/// Execute a single forward pass through the pipeline.
-async fn execute_pipeline_step(
-    plan: &crate::pipeline::PipelinePlan,
-    model: &str,
-    session_id: &str,
-    prompt: Option<&str>,
-    tokens: Option<&[u32]>,
-    reset: bool,
-    scale: f32,
-    http: &reqwest::Client,
-    loads: &LoadTracker,
-) -> Result<StepResult> {
-    let n = plan.steps.len();
-    let mut hidden_state: Option<String> = None;
-    let mut hidden_shape: Option<[usize; 2]> = None;
-
-    for (i, step) in plan.steps.iter().enumerate() {
-        let is_first = i == 0;
-        let is_last = i == n - 1;
-
-        let _guard = loads.acquire(&step.node_id).await;
-
-        let req = PeerInferRequest {
-            model,
-            session_id,
-            prompt: if is_first { prompt } else { None },
-            tokens: if is_first { tokens } else { None },
-            hidden_state: hidden_state.as_deref(),
-            hidden_shape,
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            is_last,
-            reset,
-            scale: if is_first { 1.0 } else { scale },
-        };
-
-        let url = format!("{}/v1/infer", step.inference_url);
-        let resp = http
-            .post(&url)
-            .json(&req)
-            .send()
-            .await
-            .map_err(|e| anyhow::anyhow!("peer {} unreachable: {}", &step.node_id[..8], e))?;
-
-        if !resp.status().is_success() {
-            let code = resp.status();
-            let body = resp.text().await.unwrap_or_default();
-            return Err(anyhow::anyhow!(
-                "peer {} returned {}: {}",
-                &step.node_id[..8],
-                code,
-                body
-            ));
-        }
-
-        let peer_resp: PeerInferResponse = resp
-            .json()
-            .await
-            .map_err(|e| anyhow::anyhow!("peer {} bad JSON: {}", &step.node_id[..8], e))?;
-
-        if is_last {
-            return Ok(StepResult {
-                text: peer_resp.text.unwrap_or_default(),
-                token_id: peer_resp.token_id.unwrap_or(0),
-                done: peer_resp.done,
-            });
-        }
-
-        hidden_state = peer_resp.hidden_state;
-        hidden_shape = peer_resp.hidden_shape;
-    }
-
-    Err(anyhow::anyhow!(
-        "pipeline completed without a final response"
-    ))
-}
-
-#[derive(Debug)]
-struct StepResult {
-    text: String,
-    token_id: u32,
-    done: bool,
 }
 
 /// Run one generation, emitting each token as it is decoded.
@@ -841,19 +720,14 @@ pub async fn generate_stream(
                 Ok((token_id, text, done, step_trace)) => {
                     trace.merge(&step_trace);
                     next_token = token_id;
-                    let step = StepResult {
-                        text,
-                        token_id,
-                        done,
-                    };
                     tokens_generated += 1;
-                    if !step.text.is_empty() && tx.send(GenEvent::Token(step.text)).await.is_err() {
+                    if !text.is_empty() && tx.send(GenEvent::Token(text)).await.is_err() {
                         // Client hung up; stop burning GPU time on a dead request.
                         info!("cliente desconectou após {tokens_generated} tokens");
                         return;
                     }
 
-                    if step.done || i == max_tokens - 1 {
+                    if done || i == max_tokens - 1 {
                         let elapsed = gen_start.elapsed();
                         trace.output_tokens = tokens_generated;
                         trace.complete = true;

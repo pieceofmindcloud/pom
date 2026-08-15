@@ -426,7 +426,6 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
     let plan = PipelinePlan {
         steps,
         edges: vec![],
-        total_layers: n_hops as u32,
     };
     let reply = crate::direct::DirectReply::new(inbox, vec![gateway_url]);
     let http = reqwest::Client::new();

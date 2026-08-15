@@ -480,8 +480,6 @@ struct InferState {
     sessions: HashMap<String, Session>,
     seq_pool: Vec<u32>,
     max_sessions: u32,
-    max_new_tokens: u32,
-    n_batch: u32,
     sampling: SamplingConfig,
     no_thinking: bool,
     /// Whether to apply the model's chat template before tokenising.
@@ -502,8 +500,6 @@ impl InferState {
             sessions: HashMap::new(),
             seq_pool,
             max_sessions,
-            max_new_tokens: cfg.max_new_tokens,
-            n_batch: cfg.n_batch,
             sampling: SamplingConfig {
                 temperature: cfg.temperature,
                 top_p: cfg.top_p,

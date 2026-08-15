@@ -66,11 +66,6 @@ impl GgufInfo {
     pub fn total_layers(&self) -> Option<u32> {
         self.original_block_count.or(self.block_count)
     }
-
-    /// True when this file is a slice produced by `split_model.py`.
-    pub fn is_shard(&self) -> bool {
-        self.original_block_count.is_some() || self.shard_range.is_some()
-    }
 }
 
 struct Reader<R: Read + Seek> {
@@ -351,15 +346,6 @@ impl GgufLayout {
             .unwrap_or(0);
         layers + self.embedding_bytes + if is_last { self.head_bytes } else { 0 }
     }
-
-    /// Mean bytes per transformer block — used for a first guess in the UI.
-    pub fn avg_layer_bytes(&self) -> u64 {
-        if self.layer_bytes.is_empty() {
-            0
-        } else {
-            self.layer_bytes.iter().sum::<u64>() / self.layer_bytes.len() as u64
-        }
-    }
 }
 
 /// Read the tensor table and total up the bytes each transformer block costs.
@@ -489,7 +475,6 @@ mod tests {
         assert_eq!(layout.slice_bytes(0, 1, false), 250);
         // Last slice also carries the output head.
         assert_eq!(layout.slice_bytes(2, 3, true), 280);
-        assert_eq!(layout.avg_layer_bytes(), 100);
     }
 
     #[test]

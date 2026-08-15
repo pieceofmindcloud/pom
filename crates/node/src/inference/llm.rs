@@ -273,6 +273,11 @@ impl LlmEngine {
     /// mutex - que era 194 ms por token na medição de 2026-08-14.
     ///
     /// Os pesos são lidos do disco uma vez.
+    ///
+    /// Ainda sem chamador: o servidor de inferência carrega **um** contexto
+    /// (`load`). O pool fica aqui, com os testes que sustentam a promessa de
+    /// memória, para quando o decode concorrente for ligado.
+    #[allow(dead_code)]
     pub fn pool(model_path: &str, cfg: &EngineConfig, n: usize) -> Result<Vec<Self>> {
         let n = n.max(1);
         let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
@@ -378,10 +383,6 @@ impl LlmEngine {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }
 
-    pub fn bos_token(&self) -> i32 {
-        unsafe { sys::llama_vocab_bos(self.loaded.vocab) }
-    }
-
     // ── Tokenization ─────────────────────────────────────────────────────────
 
     pub fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Vec<i32> {
@@ -449,13 +450,6 @@ impl LlmEngine {
         }
         buf.truncate(n as usize);
         String::from_utf8_lossy(&buf).into_owned()
-    }
-
-    pub fn tokens_to_string(&self, tokens: &[i32]) -> String {
-        tokens
-            .iter()
-            .map(|&t| self.token_to_piece(t, false))
-            .collect()
     }
 
     // ── Chat template ─────────────────────────────────────────────────────────
@@ -825,16 +819,18 @@ pub struct SamplingConfig {
 /// Measured in **microseconds**. Milliseconds truncated every stage that cost
 /// less than 1 ms to zero, which after this rewrite is every stage — the whole
 /// sampler now costs less than one of the old millisecond ticks.
+/// O acesso aos logits e a conversão do token em texto ficam de fora: quem os
+/// mede é o chamador (`infer_server::NodeTimings`), porque acontecem antes e
+/// depois desta função. Campo que ninguém preenche vira zero na tela e some da
+/// soma sem avisar.
 #[derive(Debug, Clone, Default)]
 pub struct SamplingTimings {
-    pub logits_access_us: u64,
     pub logits_clone_us: u64,
     pub repetition_penalty_us: u64,
     pub softmax_us: u64,
     pub top_k_us: u64,
     pub top_p_us: u64,
     pub selection_us: u64,
-    pub token_text_us: u64,
 }
 
 /// Temperature + top-k + top-p + repetition-penalty sampling.
@@ -998,7 +994,10 @@ fn argmax(values: &[f32]) -> i32 {
         .unwrap_or(0)
 }
 
-/// Compatibility wrapper for callers that do not need a diagnostic breakdown.
+/// Atalho sem a decomposição de tempos. A produção chama
+/// `sample_token_profiled` direto, porque alimenta a telemetria por hop; este
+/// embrulho existe para os testes que só querem o token.
+#[cfg(test)]
 pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32 {
     sample_token_profiled(logits, recent, cfg).0
 }
@@ -1147,22 +1146,6 @@ mod tests {
     /// Reading the logits out of llama.cpp and turning a token id into text are
     /// measured by `infer_server`, on either side of this call. If the sampler
     /// ever started reporting them, a cost would be counted twice.
-    #[test]
-    fn profiled_sampler_leaves_the_callers_boundaries_alone() {
-        let cfg = SamplingConfig {
-            temperature: 0.7,
-            top_p: 0.9,
-            top_k: 2,
-            repeat_penalty: 1.0,
-            repeat_last_n: 0,
-        };
-
-        let (_token, timings) = sample_token_profiled(&[0.1, 0.3, 0.8], &[], &cfg);
-
-        assert_eq!(timings.logits_access_us, 0);
-        assert_eq!(timings.token_text_us, 0);
-    }
-
     /// The capture target and buffer are process-global — the module doc
     /// explains why that is sound in production, where one engine exists per
     /// process. Tests run in parallel threads, so two engines would exist at
@@ -1309,7 +1292,9 @@ mod tests {
 
         for sync in [false, true, false, true] {
             std::env::set_var("RDMA_P2P_PROFILE_SYNC", if sync { "1" } else { "0" });
-            engine.kv_remove(0, 0, -1);
+            // Cache limpo entre as rodadas; o `false` aqui seria o cache que
+            // não desloca, e este teste não depende disso.
+            let _ = engine.kv_remove(0, 0, -1);
             let mut pos = 0u32;
             engine
                 .decode_tokens(&tokens, pos, 0, false)

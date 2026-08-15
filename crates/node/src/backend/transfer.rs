@@ -1078,15 +1078,6 @@ pub(crate) fn local_ip_towards(dest: std::net::IpAddr) -> String {
 
 // ── The download itself ──────────────────────────────────────────────────────
 
-async fn set_job(state: &GatewayState, job: TransferJob) {
-    state
-        .transfers
-        .jobs
-        .write()
-        .await
-        .insert(job.id.clone(), job);
-}
-
 /// Prazo do manifesto.
 ///
 /// O manifesto é onde o MD5 do arquivo é finalmente calculado, e um digest é

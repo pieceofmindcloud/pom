@@ -636,9 +636,6 @@ pub struct MergePart {
 struct MergedSrc {
     version: u32,
     arch: String,
-    /// `{arch}.block_count` as this file declares it — the slice's own layer
-    /// count, which the merge replaces with the union's.
-    block_count: Option<u32>,
     original_block_count: Option<u32>,
     /// Every KV entry of this file, tagged with its key so the merge can drop
     /// `rdmap2p.*` and swap `*.block_count` before re-emitting.
@@ -665,7 +662,6 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
     }
 
     let mut arch = "llama".to_string();
-    let mut block_count: Option<u32> = None;
     let mut original_block_count: Option<u32> = None;
     let mut kv: Vec<(String, KvOut)> = Vec::with_capacity(n_kv);
     for _ in 0..n_kv {
@@ -675,15 +671,6 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
 
         if key == "general.architecture" && vtype == T_STR {
             arch = r.string()?;
-        } else if key.ends_with(".block_count") {
-            block_count = match vtype {
-                T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
-                T_U64 => Some(r.u64()? as u32),
-                _ => {
-                    r.skip_value(vtype)?;
-                    None
-                }
-            };
         } else if key == "rdmap2p.original_block_count" {
             original_block_count = match vtype {
                 T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
@@ -742,7 +729,6 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
     Ok(MergedSrc {
         version,
         arch,
-        block_count,
         original_block_count,
         kv,
         tensors,
@@ -1023,7 +1009,7 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         v
     };
 
-    let mut kv: Vec<Vec<u8>> = vec![
+    let kv: Vec<Vec<u8>> = vec![
         str_kv("general.architecture", "llama"),
         u32_kv("llama.embedding_length", n as u32),
         u32_kv("llama.block_count", n_blocks),
@@ -1133,7 +1119,7 @@ fn qwen35_test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         v
     };
 
-    let mut kv: Vec<Vec<u8>> = vec![
+    let kv: Vec<Vec<u8>> = vec![
         str_kv("general.architecture", "qwen35"),
         u32_kv("qwen35.embedding_length", n as u32),
         u32_kv("qwen35.block_count", n_blocks),
@@ -1181,6 +1167,7 @@ fn qwen35_test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
     header
 }
 
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1258,7 +1245,11 @@ mod tests {
         let p = parse_merged_src(&mm).unwrap();
 
         assert_eq!(p.arch, "llama");
-        assert_eq!(p.block_count, Some(4), "o total é a união das duas faixas");
+        assert_eq!(
+            kv_u32(&mm, "llama.block_count"),
+            Some(4),
+            "o total é a união das duas faixas"
+        );
         assert_eq!(p.original_block_count, Some(4));
 
         let names: Vec<&str> = p.tensors.iter().map(|t| t.name.as_str()).collect();

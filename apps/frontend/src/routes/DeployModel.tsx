@@ -1,5 +1,21 @@
 /**
- * Putting a set of slices that already exists into service.
+ * Putting a model that already exists somewhere in the cluster into service.
+ *
+ * Two shapes of the same act, chosen at the top of the screen:
+ *
+ * * **A set of slices** — the original case, described in detail below: many
+ *   machines, one range each, and every question about coverage and order is
+ *   real.
+ * * **A whole model** — one un-sliced GGUF on one machine. The node reads it as
+ *   a single range covering every layer, so the plan that comes back has the
+ *   same shape and the same route validates it; nothing here recomputes it.
+ *   What the screen drops is the questions that have only one answer. There is
+ *   no order to choose in a pipeline of one, and no subset of layers to tick:
+ *   the coverage ribbon would be a solid bar and the "included" column a single
+ *   permanently-ticked box, which is noise dressed as a choice.
+ *
+ * The rest of this comment is about the slice case, which is the one with
+ * decisions in it.
  *
  * The screen opens on a decision the node made — who would serve which range,
  * and what has to be copied first — and every part of that decision is then
@@ -34,6 +50,7 @@ import {
   ArrowDown,
   ArrowRight,
   ArrowUp,
+  Boxes,
   Check,
   CircleAlert,
   Download,
@@ -52,6 +69,7 @@ import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes, num } from "../lib/format";
 import { Confirm } from "../components/Confirm";
 import { trackOf } from "../components/PipelineRail";
+import { wholeModelsOf } from "../lib/wholeModels";
 import {
   Badge,
   Button,
@@ -70,6 +88,7 @@ import {
 } from "../components/ui";
 import type {
   DeployCandidate,
+  DeployKind,
   DeployPlan,
   DeploySelection,
   DeployStep,
@@ -119,6 +138,10 @@ const sameRows = (a: DeploySelection[], b: DeploySelection[]) =>
 
 const byLayer = (a: DeploySelection, b: DeploySelection) =>
   a.start_layer - b.start_layer || a.end_layer - b.end_layer;
+
+/** Which question the node answered. An older peer does not say, and an older
+ *  peer only ever answers about shards. */
+const kindOf = (plan: DeployPlan | undefined): DeployKind => plan?.kind ?? "shards";
 
 /**
  * The include box.
@@ -381,10 +404,58 @@ function OrderRail({
   );
 }
 
+/**
+ * Slices or a whole model, and nothing in between.
+ *
+ * Two buttons rather than a dropdown: it is the first decision on the screen
+ * and it changes everything under it, so both answers are readable without
+ * opening anything.
+ */
+function KindPicker({
+  value,
+  onChange,
+  labels,
+}: {
+  value: DeployKind;
+  onChange: (k: DeployKind) => void;
+  labels: Record<DeployKind, { label: string; hint: string }>;
+}) {
+  return (
+    <div className="grid gap-2 sm:grid-cols-2">
+      {(["shards", "whole"] as DeployKind[]).map((k) => {
+        const on = value === k;
+        return (
+          <button
+            key={k}
+            type="button"
+            role="radio"
+            aria-checked={on}
+            onClick={() => onChange(k)}
+            className={`rounded-xl border px-4 py-3 text-left transition-colors duration-150 ${
+              on
+                ? "border-iris bg-iris/[0.08]"
+                : "border-line bg-surface hover:border-line-strong"
+            }`}
+          >
+            <span className={`block text-[0.86rem] font-medium ${on ? "text-fg" : "text-muted"}`}>
+              {labels[k].label}
+            </span>
+            <span className="mt-1 block text-xs text-faint">{labels[k].hint}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function DeployModel() {
   const { t, locale } = useI18n();
   const cluster = useClusterCatalog();
   const [group, setGroup] = useState("");
+  /** The whole model to deploy, when that is the question being asked. */
+  const [wholeName, setWholeName] = useState("");
+  /** `null` until the operator says — see `kind` below for what that means. */
+  const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
@@ -409,7 +480,33 @@ export function DeployModel() {
     return [...seen].sort();
   }, [cluster.data]);
 
-  const chosen = group || groups[0] || "";
+  /** Every un-sliced model anyone in the cluster holds, named once. */
+  const wholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
+
+  /**
+   * Slices unless the operator says otherwise — except on a cluster that has
+   * whole models and no slice sets at all, where "slices" opens on an empty
+   * screen that looks like a broken deploy page rather than an unanswered
+   * question. The operator's own choice always wins once made.
+   */
+  const kind: DeployKind =
+    pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
+  const isWhole = kind === "whole";
+
+  const chosen = isWhole
+    ? wholeName || wholes[0]?.name || ""
+    : group || groups[0] || "";
+  /** The whole model on screen, for the facts the plan does not carry. */
+  const wholeModel = isWhole ? wholes.find((w) => w.name === chosen) : undefined;
+  /**
+   * Where the last deploy of this is remembered.
+   *
+   * Namespaced by kind because the two menus are different namespaces: a shard
+   * set and a whole model can perfectly well share a name (they usually do —
+   * the set is named after the model it was cut from), and one restoring the
+   * other's machines would open the screen on a plan nobody chose.
+   */
+  const memoryKey = isWhole ? `whole:${chosen}` : chosen;
 
   // Edits go to the node for validation, but not on every keystroke: the survey
   // behind this route talks to every peer, and the settings are typed digit by
@@ -427,6 +524,7 @@ export function DeployModel() {
   const plan = useQuery({
     queryKey: [
       "deploy-plan",
+      kind,
       chosen,
       settled ? JSON.stringify(settled) : "auto",
       settledParams ? JSON.stringify(settledParams) : "padrão",
@@ -435,9 +533,13 @@ export function DeployModel() {
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
         group: chosen,
+        kind,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
-        ...(merge != null ? { merge } : {}),
+        // A whole model is one machine, so there is nothing to join and the
+        // toggle is not on screen. Sending it anyway would be sending a value
+        // the operator was never shown.
+        ...(merge != null && !isWhole ? { merge } : {}),
       }),
     enabled: chosen.length > 0,
     staleTime: 10_000,
@@ -461,10 +563,10 @@ export function DeployModel() {
    */
   const restored = useRef<Set<string>>(new Set());
   useEffect(() => {
-    if (!p || p.group !== chosen || restored.current.has(chosen)) return;
-    restored.current.add(chosen);
+    if (!p || p.group !== chosen || kindOf(p) !== kind || restored.current.has(memoryKey)) return;
+    restored.current.add(memoryKey);
 
-    const memory = recallDeploy(chosen);
+    const memory = recallDeploy(memoryKey);
     if (!memory) return;
 
     const usable = usableSelection(
@@ -476,8 +578,8 @@ export function DeployModel() {
 
     setSelection(usable.slice().sort(byLayer));
     if (memory.params) setParams(memory.params);
-    setMerge(memory.merge);
-  }, [p, chosen]);
+    if (!isWhole) setMerge(memory.merge);
+  }, [p, chosen, kind, memoryKey, isWhole]);
 
   /** What is on screen right now: the operator's edit, or the suggestion. */
   const rows = useMemo(
@@ -516,7 +618,7 @@ export function DeployModel() {
    * the reason. Gating the reason on the match meant the screen went silent
    * precisely when it had something to say.
    */
-  const answered = !!p && p.group === chosen && !syncing;
+  const answered = !!p && p.group === chosen && kindOf(p) === kind && !syncing;
 
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
@@ -617,6 +719,29 @@ export function DeployModel() {
     );
   }
 
+  /**
+   * Give the whole model to a machine.
+   *
+   * The same `selection` the slice path sends, with the one range the node
+   * offered — a whole model is a candidate like any other, and writing its
+   * range here from the plan rather than from `total_layers` keeps the screen
+   * from having a second opinion about how big the model is.
+   */
+  function assignWhole(nodeId: string) {
+    const c = p?.available[0];
+    if (!c) return;
+    const base = rows[0];
+    setSelection([
+      {
+        start_layer: c.start_layer,
+        end_layer: c.end_layer,
+        target_node_id: nodeId,
+        n_gpu_layers: base?.n_gpu_layers ?? null,
+        offload_kqv: base?.offload_kqv ?? null,
+      },
+    ]);
+  }
+
   /** Move a machine one place along the pipeline, which is a swap of ranges. */
   function move(index: number, delta: number) {
     const to = index + delta;
@@ -635,15 +760,16 @@ export function DeployModel() {
     try {
       const started = await api.post<{ job_id: string }>("/api/ui/deploy", {
         group: chosen,
+        kind,
         ...(selection ? { selection: rows } : {}),
         ...(params ? { params } : {}),
-        ...(merge != null ? { merge } : {}),
+        ...(merge != null && !isWhole ? { merge } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
       // what comes back next time has to be what was actually deployed,
       // including the parts the operator left on the node's suggestion.
-      rememberDeploy(chosen, { selection: rows, params: eff, merge: effMerge });
+      rememberDeploy(memoryKey, { selection: rows, params: eff, merge: effMerge });
       toast.success(
         t("deploy.started"),
         t("deploy.startedDetail"),
@@ -697,7 +823,7 @@ export function DeployModel() {
    */
   const whyNot: string | null = canDeploy
     ? null
-    : rows.length === 0
+    : rows.length === 0 && !isWhole
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
@@ -705,7 +831,13 @@ export function DeployModel() {
           ? t("deploy.whyNotBlocked")
           : !validated
             ? t("deploy.whyNotMismatch")
-            : null;
+            : rows.length === 0
+              ? t("deploy.whyNotNoModel")
+              : null;
+
+  /** The one step of a whole-model plan, when the node has answered about it. */
+  const wholeStep = isWhole ? p?.steps[0] : undefined;
+  const nothingToDeploy = groups.length === 0 && wholes.length === 0;
 
   return (
     <>
@@ -719,7 +851,7 @@ export function DeployModel() {
         <ErrorState error={cluster.error} onRetry={() => void cluster.refetch()} />
       )}
 
-      {cluster.data && groups.length === 0 && (
+      {cluster.data && nothingToDeploy && (
         <Panel>
           <Empty icon={<Layers className="h-5 w-5" />} title={t("deploy.empty")}>
             {t("deploy.emptyDetail")}
@@ -727,12 +859,12 @@ export function DeployModel() {
         </Panel>
       )}
 
-      {groups.length > 0 && (
+      {!nothingToDeploy && (
         <div className="space-y-5">
           <Panel>
             <PanelHeader
               title={t("deploy.model")}
-              subtitle={t("deploy.modelDetail")}
+              subtitle={isWhole ? t("deploy.wholeDetail") : t("deploy.modelDetail")}
               actions={
                 (selection || params) && (
                   <Button
@@ -749,24 +881,112 @@ export function DeployModel() {
                 )
               }
             />
-            <div className="px-5 py-4">
-              <Select
-                aria-label={t("deploy.groupAria")}
-                name="conjunto-de-fatias"
-                value={chosen}
-                onChange={(e) => {
-                  setGroup(e.target.value);
-                  setSelection(null);
-                  setJobId(null);
-                }}
-                className="max-w-md"
-              >
-                {groups.map((g) => (
-                  <option key={g} value={g}>
-                    {g}
-                  </option>
-                ))}
-              </Select>
+            <div className="space-y-4 px-5 py-4">
+              {/* The first decision, and the one that changes everything
+                  below it: a set of slices across machines, or one whole
+                  file on one machine. */}
+              <div role="radiogroup" aria-label={t("deploy.kindAria")}>
+                <KindPicker
+                  value={kind}
+                  onChange={(k) => {
+                    setPickedKind(k);
+                    setSelection(null);
+                    setJobId(null);
+                  }}
+                  labels={{
+                    shards: { label: t("deploy.kindShards"), hint: t("deploy.kindShardsHint") },
+                    whole: { label: t("deploy.kindWhole"), hint: t("deploy.kindWholeHint") },
+                  }}
+                />
+              </div>
+
+              {isWhole ? (
+                wholes.length === 0 ? (
+                  <Empty icon={<Boxes className="h-5 w-5" />} title={t("deploy.wholeEmpty")}>
+                    {t("deploy.wholeEmptyDetail")}
+                  </Empty>
+                ) : (
+                  <div className="space-y-3">
+                    <Select
+                      aria-label={t("deploy.wholeAria")}
+                      name="modelo-inteiro"
+                      value={chosen}
+                      onChange={(e) => {
+                        setWholeName(e.target.value);
+                        setSelection(null);
+                        setJobId(null);
+                      }}
+                      className="max-w-md"
+                    >
+                      {wholes.map((w) => (
+                        <option key={w.name} value={w.name}>
+                          {w.name}
+                        </option>
+                      ))}
+                    </Select>
+                    {wholeModel && (
+                      <dl className="flex flex-wrap gap-x-8 gap-y-2">
+                        <div>
+                          <dt className="eyebrow">{t("models.size")}</dt>
+                          <dd className="font-mono text-[0.82rem] text-fg">
+                            {bytes(wholeModel.size_bytes)}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="eyebrow">{t("models.layers")}</dt>
+                          <dd className="font-mono text-[0.82rem] text-fg">
+                            {wholeModel.total_layers != null ? (
+                              num(wholeModel.total_layers)
+                            ) : (
+                              <span className="text-rose">{t("deploy.wholeNoLayers")}</span>
+                            )}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="eyebrow">{t("models.quant")}</dt>
+                          <dd className="font-mono text-[0.82rem] text-fg">
+                            {wholeModel.quant ?? "—"}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="eyebrow">{t("models.architecture")}</dt>
+                          <dd className="text-[0.82rem] text-fg">
+                            {wholeModel.architecture ?? "—"}
+                          </dd>
+                        </div>
+                        <div className="min-w-0">
+                          <dt className="eyebrow">{t("deploy.wholePresentOn")}</dt>
+                          <dd className="truncate text-[0.82rem] text-fg">
+                            {wholeModel.holders.map(labelOf).join(", ")}
+                          </dd>
+                        </div>
+                      </dl>
+                    )}
+                  </div>
+                )
+              ) : groups.length === 0 ? (
+                <Empty icon={<Layers className="h-5 w-5" />} title={t("deploy.shardsEmpty")}>
+                  {t("deploy.shardsEmptyDetail")}
+                </Empty>
+              ) : (
+                <Select
+                  aria-label={t("deploy.groupAria")}
+                  name="conjunto-de-fatias"
+                  value={chosen}
+                  onChange={(e) => {
+                    setGroup(e.target.value);
+                    setSelection(null);
+                    setJobId(null);
+                  }}
+                  className="max-w-md"
+                >
+                  {groups.map((g) => (
+                    <option key={g} value={g}>
+                      {g}
+                    </option>
+                  ))}
+                </Select>
+              )}
             </div>
           </Panel>
 
@@ -775,10 +995,16 @@ export function DeployModel() {
             <ErrorState error={plan.error} onRetry={() => void plan.refetch()} />
           )}
 
+          {/* `chosen` empty means the menu the operator is looking at has
+              nothing in it. The plan below would then be the *previous*
+              answer — react-query keeps it deliberately, so switching models
+              does not blank the screen — and showing it next to "there is
+              nothing here" describes a deploy of something the operator can no
+              longer see. */}
           <AnimatePresence mode="wait">
-            {p && (
+            {p && chosen.length > 0 && (
               <motion.div
-                key={p.group}
+                key={`${kindOf(p)}:${p.group}`}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
@@ -851,6 +1077,89 @@ export function DeployModel() {
                     anything narrower than a desktop, settings last. */}
                 <div className="grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_21rem] xl:items-start">
                   <div className="min-w-0 space-y-5">
+                {/* A whole model has one machine and every layer, so neither
+                    question the two panels below ask has a second answer: the
+                    order rail would be one card, the coverage ribbon a solid
+                    bar, and the "included" column a box that can never be
+                    unticked. What replaces them is the one decision that is
+                    real — which machine. */}
+                {isWhole ? (
+                  <Panel>
+                    <PanelHeader
+                      eyebrow={p.auto && !selection ? t("deploy.orderSuggestion") : t("deploy.yourChoice")}
+                      title={t("deploy.wholeTargetTitle")}
+                      subtitle={t("deploy.wholeTargetDetail")}
+                      actions={
+                        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                          {whyNot && (
+                            <span className="text-[0.78rem] text-muted">{whyNot}</span>
+                          )}
+                          <Button
+                            variant="primary"
+                            icon={<Rocket className="h-4 w-4" />}
+                            loading={running}
+                            disabled={!canDeploy}
+                            onClick={() => void deploy()}
+                          >
+                            {t("deploy.deploy")}
+                          </Button>
+                        </div>
+                      }
+                    />
+                    <div className="space-y-4 px-5 py-4">
+                      <Field label={t("deploy.wholeMachine")} hint={t("deploy.wholeMachineHint")}>
+                        <Select
+                          aria-label={t("deploy.wholeMachineAria")}
+                          name="maquina-do-modelo"
+                          className="max-w-md"
+                          value={rows[0]?.target_node_id ?? ""}
+                          onChange={(e) => assignWhole(e.target.value)}
+                        >
+                          <option value="">{t("deploy.chooseMachine")}</option>
+                          {p.machines.map((m) => (
+                            <option key={m.node_id} value={m.node_id}>
+                              {m.label}
+                              {p.available[0]?.holders.includes(m.node_id)
+                                ? t("deploy.alreadyHas")
+                                : t("deploy.copy")}
+                            </option>
+                          ))}
+                        </Select>
+                      </Field>
+
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-line pt-4">
+                        <Badge tone="iris" mono>
+                          {p.total_layers != null
+                            ? layerRange(0, p.total_layers - 1)
+                            : t("deploy.unknownModelSize")}
+                        </Badge>
+                        <span className="text-[0.82rem] text-muted">
+                          {t("deploy.wholeOneMachine")}
+                        </span>
+                      </div>
+
+                      <div className="text-[0.82rem]">
+                        {!wholeStep ? (
+                          <span className="text-faint">{t("deploy.checking")}</span>
+                        ) : wholeStep.problem ? (
+                          <span className="flex items-start gap-1.5 text-rose">
+                            <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            {wholeStep.problem}
+                          </span>
+                        ) : wholeStep.ready ? (
+                          <span className="text-muted">{t("deploy.alreadyThere")}</span>
+                        ) : (
+                          <span className="flex items-start gap-1.5 text-amber">
+                            <Download className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                            {t("deploy.copyFrom", { host: wholeStep.source_host ?? "—" })}
+                            {wholeStep.note ? ` · ${wholeStep.note}` : ""}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </Panel>
+                ) : (
+                  <>
                 <Panel>
                   <PanelHeader
                     eyebrow={p.auto && !selection ? t("deploy.orderSuggestion") : t("deploy.yourChoice")}
@@ -1104,6 +1413,8 @@ export function DeployModel() {
                     )}
                   </div>
                 </Panel>
+                  </>
+                )}
 
                 {job && (
                   <Panel>

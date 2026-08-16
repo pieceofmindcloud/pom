@@ -544,8 +544,27 @@ export interface DeploySelection {
   offload_kqv?: boolean | null;
 }
 
+/**
+ * What is being put into service. `src/backend/deploy.rs` — `DeployKind`.
+ *
+ * Not two flows: a whole model is read by the node as a single range covering
+ * every layer, so the plan, the copies and the launch are the same ones the
+ * slice path uses. What the screen does differently is stop asking questions
+ * that only have one answer — the order of a pipeline of one, and which layers
+ * of all of them to include.
+ */
+export type DeployKind = "shards" | "whole";
+
 export interface DeployPlan {
   group: string;
+  /**
+   * Echoed by the node, so the screen never guesses which question it asked.
+   *
+   * Optional because a peer running an older binary does not send it, and that
+   * peer only ever answers about shards — read it as `"shards"` when absent,
+   * the same default the node applies to a request without a `kind`.
+   */
+  kind?: DeployKind;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

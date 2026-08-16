@@ -16,7 +16,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
-- `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen.
+- `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
+- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
@@ -26,7 +27,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob["state"]` for the transfers UI.
 - `types.ts` - all API shapes served by the node, one authoritative source.
-- `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
+- `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
 

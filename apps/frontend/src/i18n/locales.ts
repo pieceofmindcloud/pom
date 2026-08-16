@@ -120,6 +120,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "models.size": () => "Size",
     "models.layers": () => "Layers",
     "models.architecture": () => "Architecture",
+    "models.quant": () => "Quantisation",
     "models.scannedFolders": () => "Scanned folders",
     "models.fullTitle": () => "Full models",
     "models.fullSubtitle": () => "Complete GGUF files found on this machine. Full models can be sliced; shards are shown on the next screen.",
@@ -566,14 +567,34 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.started": () => "Deployment started",
     "deploy.startedDetail": () => "Follow it below or from the bell. Progress comes from the nodes, so reloading does not lose anything.",
     "deploy.startFailed": () => "Deployment did not start",
-    "deploy.title": () => "Deploy a sharded model",
-    "deploy.subtitle": () => "Take an existing shard set and put it into service on the network. The node suggests the distribution; from here it is yours.",
-    "deploy.empty": () => "No shard set on the network",
-    "deploy.emptyDetail": () => "No cluster machine has shards. Slice a model under Models › Slice models, or receive shards from another machine.",
+    "deploy.title": () => "Deploy a model",
+    "deploy.subtitle": () => "Take a model a cluster machine already has and put it into service on the network — a set of shards across machines, or one whole file on one machine.",
+    "deploy.empty": () => "Nothing to deploy on the network",
+    "deploy.emptyDetail": () => "No cluster machine has a whole model or shards. Add a folder under Settings › Folders, slice a model under Models › Slice models, or receive files from another machine.",
     "deploy.model": () => "Model to deploy",
     "deploy.modelDetail": () => "Shard sets that a cluster machine already has.",
     "deploy.restore": () => "Return to node plan",
     "deploy.groupAria": () => "Shard set",
+    "deploy.shardsEmpty": () => "No shard set on the network",
+    "deploy.shardsEmptyDetail": () => "No cluster machine has shards. Slice a model under Models › Slice models, or receive shards from another machine.",
+    "deploy.kindAria": () => "What to deploy",
+    "deploy.kindShards": () => "A set of shards",
+    "deploy.kindShardsHint": () => "Several machines, one layer range each. The pipeline runs in layer order.",
+    "deploy.kindWhole": () => "A whole model",
+    "deploy.kindWholeHint": () => "One machine serves every layer. No slicing, no pipeline.",
+    "deploy.wholeDetail": () => "Un-sliced models that a cluster machine already has.",
+    "deploy.wholeAria": () => "Whole model",
+    "deploy.wholeEmpty": () => "No whole model on the network",
+    "deploy.wholeEmptyDetail": () => "No cluster machine has an un-sliced .gguf. Add the folder holding them under Settings › Folders.",
+    "deploy.wholeNoLayers": () => "unreadable header",
+    "deploy.wholePresentOn": () => "Present on",
+    "deploy.wholeTargetTitle": () => "Which machine serves the model",
+    "deploy.wholeTargetDetail": () => "One machine holds every layer, so it receives the full prompt and generates the answer on its own. Free memory has to fit the whole file.",
+    "deploy.wholeMachine": () => "Machine",
+    "deploy.wholeMachineHint": () => "A machine that does not have the file yet receives it before starting.",
+    "deploy.wholeMachineAria": () => "Machine that serves the whole model",
+    "deploy.wholeOneMachine": () => "one machine, every layer — nothing crosses the network during inference",
+    "deploy.whyNotNoModel": () => "choose a machine for the model",
     "deploy.blocked": () => "This selection cannot be deployed",
     "deploy.incomplete": () => "The selected shards do not cover the full model",
     "deploy.orderSuggestion": () => "Node suggestion",
@@ -867,6 +888,7 @@ const messages: Record<Locale, Record<string, Message>> = {
     "models.size": () => "Tamanho",
     "models.layers": () => "Camadas",
     "models.architecture": () => "Arquitetura",
+    "models.quant": () => "Quantização",
     "models.scannedFolders": () => "Pastas varridas",
     "models.fullTitle": () => "Modelos inteiros",
     "models.fullSubtitle": () => "Os GGUF completos encontrados nesta máquina. Um modelo inteiro é o que se fatia; as fatias ficam na tela ao lado.",
@@ -1312,14 +1334,34 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.started": () => "Implantação começou",
     "deploy.startedDetail": () => "Acompanhe abaixo ou no sino. O progresso vem dos nós, então recarregar não perde nada.",
     "deploy.startFailed": () => "A implantação não começou",
-    "deploy.title": () => "Implantar um modelo fatiado",
-    "deploy.subtitle": () => "Pegue um conjunto de fatias que já existe e coloque-o para atender na rede. O nó sugere a distribuição; daqui em diante ela é sua.",
-    "deploy.empty": () => "Nenhum conjunto de fatias na rede",
-    "deploy.emptyDetail": () => "Nenhuma máquina do cluster tem fatias. Fatie um modelo em Modelos › Fatiar, ou receba as fatias de outra máquina.",
+    "deploy.title": () => "Implantar um modelo",
+    "deploy.subtitle": () => "Pegue um modelo que alguma máquina do cluster já tem e coloque-o para atender na rede - um conjunto de fatias espalhado pelas máquinas, ou um arquivo inteiro numa máquina só.",
+    "deploy.empty": () => "Não há o que implantar na rede",
+    "deploy.emptyDetail": () => "Nenhuma máquina do cluster tem modelo inteiro nem fatias. Aponte a pasta deles em Configurar › Pastas, fatie um modelo em Modelos › Fatiar, ou receba os arquivos de outra máquina.",
     "deploy.model": () => "Modelo a implantar",
     "deploy.modelDetail": () => "Conjuntos de fatias que alguma máquina do cluster já tem.",
     "deploy.restore": () => "Voltar ao plano do nó",
     "deploy.groupAria": () => "Conjunto de fatias",
+    "deploy.shardsEmpty": () => "Nenhum conjunto de fatias na rede",
+    "deploy.shardsEmptyDetail": () => "Nenhuma máquina do cluster tem fatias. Fatie um modelo em Modelos › Fatiar, ou receba as fatias de outra máquina.",
+    "deploy.kindAria": () => "O que implantar",
+    "deploy.kindShards": () => "Um conjunto de fatias",
+    "deploy.kindShardsHint": () => "Várias máquinas, uma faixa de camadas em cada. O pipeline roda na ordem das camadas.",
+    "deploy.kindWhole": () => "Um modelo inteiro",
+    "deploy.kindWholeHint": () => "Uma máquina serve todas as camadas. Sem fatiar, sem pipeline.",
+    "deploy.wholeDetail": () => "Modelos não fatiados que alguma máquina do cluster já tem.",
+    "deploy.wholeAria": () => "Modelo inteiro",
+    "deploy.wholeEmpty": () => "Nenhum modelo inteiro na rede",
+    "deploy.wholeEmptyDetail": () => "Nenhuma máquina do cluster tem um .gguf não fatiado. Aponte a pasta onde eles estão em Configurar › Pastas.",
+    "deploy.wholeNoLayers": () => "cabeçalho ilegível",
+    "deploy.wholePresentOn": () => "Está em",
+    "deploy.wholeTargetTitle": () => "Qual máquina serve o modelo",
+    "deploy.wholeTargetDetail": () => "Uma máquina fica com todas as camadas, então ela recebe o prompt inteiro e gera a resposta sozinha. A memória livre precisa comportar o arquivo todo.",
+    "deploy.wholeMachine": () => "Máquina",
+    "deploy.wholeMachineHint": () => "Uma máquina que ainda não tem o arquivo recebe-o antes de subir.",
+    "deploy.wholeMachineAria": () => "Máquina que serve o modelo inteiro",
+    "deploy.wholeOneMachine": () => "uma máquina, todas as camadas - nada trafega pela rede durante a inferência",
+    "deploy.whyNotNoModel": () => "escolha uma máquina para o modelo",
     "deploy.blocked": () => "Não dá para implantar deste jeito",
     "deploy.incomplete": () => "As fatias escolhidas não cobrem o modelo inteiro",
     "deploy.orderSuggestion": () => "Sugestão do nó",
@@ -1531,6 +1573,18 @@ export function resolveLocale(
   }
 
   return "en";
+}
+
+/**
+ * Every key a locale defines.
+ *
+ * Exists for the parity test, because a missing translation does not fail: a
+ * key absent from `pt-BR` falls back to English below, so the screen keeps
+ * working and quietly speaks the wrong language. The test is the only thing
+ * that notices.
+ */
+export function messageKeys(locale: Locale): string[] {
+  return Object.keys(messages[locale]);
 }
 
 export function formatMessage(locale: Locale, key: string, values: MessageValues = {}): string {

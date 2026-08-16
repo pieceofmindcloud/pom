@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMessage, resolveLocale } from "./locales";
+import { formatMessage, messageKeys, resolveLocale, SUPPORTED_LOCALES } from "./locales";
 
 describe("resolveLocale", () => {
   it("uses a supported explicit preference before browser hints", () => {
@@ -12,6 +12,24 @@ describe("resolveLocale", () => {
 
   it("falls back to English for unavailable or unsupported browser locales", () => {
     expect(resolveLocale("fr-FR", [])).toBe("en");
+  });
+});
+
+/**
+ * Um texto novo escrito só em inglês não quebra nada: `formatMessage` cai no
+ * inglês quando a chave falta, e a tela em pt-BR passa a ter uma frase em
+ * inglês no meio, sem erro nenhum no console. Este teste é o único lugar que
+ * repara nisso.
+ */
+describe("cobertura das traduções", () => {
+  it("define exatamente as mesmas chaves nos dois idiomas", () => {
+    const [first, ...rest] = SUPPORTED_LOCALES;
+    const reference = new Set(messageKeys(first));
+    for (const locale of rest) {
+      const keys = new Set(messageKeys(locale));
+      expect([...reference].filter((k) => !keys.has(k)).sort()).toEqual([]);
+      expect([...keys].filter((k) => !reference.has(k)).sort()).toEqual([]);
+    }
   });
 });
 

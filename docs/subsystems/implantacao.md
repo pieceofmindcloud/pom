@@ -14,9 +14,11 @@ deploy re-varre o cluster em vez de confiar na prévia.
 Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
 chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
 cluster). O pedido carrega `group` (o conjunto de fatias, pelo `shard_group` do
-catálogo), `params` (o `RuntimeParams` do pipeline inteiro), `selection` (a
-escolha explícita do operador - `None` = o nó decide) e `merge` (junção das
-fatias adjacentes de uma máquina). O `selection` viaja na requisição porque o
+catálogo - ou o **nome** do modelo no catálogo, com `kind: "whole"`), `kind`
+(`"shards"`, o padrão, ou `"whole"` - ver a seção 1.1), `params` (o
+`RuntimeParams` do pipeline inteiro), `selection` (a escolha explícita do
+operador - `None` = o nó decide) e `merge` (junção das fatias adjacentes de uma
+máquina). O `selection` viaja na requisição porque o
 `deploy` re-surveys: a escolha é validada contra a varredura nova e recusada se
 não continuar valendo - a cópia da tela pode estar um minuto velha e uma máquina
 que saiu do cluster não pode receber uma fatia.
@@ -32,6 +34,41 @@ Três regras saem da arquitetura, não do gosto:
 - **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
   rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
   legítima que só impede o pipeline de planejar.
+
+## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
+
+`kind: "whole"` (`DeployKind`, `deploy.rs`) implanta **um GGUF não fatiado numa
+máquina só**. Não existe segundo fluxo: `survey` lê o modelo do `models` do
+`/api/ui/models` de cada peer (em vez do `shard_sets`) e o converte, em
+`parse_whole`, num `HeldShard` de faixa `0..total_layers-1`. Daí para frente é
+tudo o mesmo código - `candidates`, `model_size`, a aritmética de cobertura, o
+guarda de disco/memória, a fase de cópia e `launch_targets`. A cobertura fecha
+por construção, "um nó serve uma faixa" é trivialmente satisfeita, e o alvo sai
+como `LaunchTarget` comum com `skip_split: true`, o que faz o `apply` no destino
+se reconhecer como `single_peer` (sem extração de estado oculto).
+
+O que muda de fato:
+
+- **De onde o inventário é lido.** `parse_whole` recusa uma fatia
+  (`shard_range` preenchido) e recusa um modelo sem contagem de camadas no
+  cabeçalho GGUF - `total_layers` é o número com que todo peer é configurado, e
+  `NodeConfig::validate` recusaria o zero no destino, depois de `launch` já ter
+  parado a inferência de lá.
+- **O substantivo das recusas.** `DeployKind::unit` troca "a fatia L0-31" por
+  "o modelo <nome>": quem escolheu um modelo inteiro não vê fatia nenhuma na
+  tela.
+- **A identidade do modelo.** `group` é o `name` do catálogo, e ele viaja como
+  `model_label` para o peer - dois nomes diferentes para o mesmo arquivo são
+  dois modelos, aqui e no planejador de pipeline.
+
+Limite conhecido: se a máquina de destino ainda não tem o arquivo, a cópia usa o
+sentido **puxar**, que `transfer::safe_model_path` prende à pasta de fatias de
+quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
+Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
+arquivo pela tela de Transferências antes.
+
+`AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
+inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.
 
 ## 2. A varredura (`survey`)
 

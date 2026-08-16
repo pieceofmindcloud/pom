@@ -39,6 +39,16 @@
 //!   layer would run those layers twice and corrupt the answer, so a set that
 //!   overlaps is refused. A *gap* is different: it is a legitimate half-deploy
 //!   and only stops the pipeline from planning, so it warns.
+//!
+//! ## A whole model is the degenerate case, not a second path
+//!
+//! `kind: "whole"` deploys one un-sliced GGUF onto one machine. Everything
+//! above still applies, because the survey reads that file as a single held
+//! range covering layer 0 to the last one: the coverage arithmetic finds it
+//! complete by construction, the one-range-per-machine rule is trivially
+//! satisfied, and the transfer and launch phases are the ones the slice path
+//! already uses. What changes is the wording of the refusals — "a fatia L0-31"
+//! is not what an operator who picked a whole model is looking at.
 
 use axum::{
     extract::State,
@@ -150,10 +160,59 @@ pub struct PeerOverrides {
     pub offload_kqv: Option<bool>,
 }
 
+/// What is being put into service: a set of slices, or one whole model.
+///
+/// Not two flows. The whole-model case is read into the same `HeldShard` /
+/// `Candidate` / `Step` shapes as a slice covering every layer, so the planner,
+/// the disk and memory checks, the transfer phase and `launch` are one code
+/// path. This only says which files the survey looks at, and which noun the
+/// refusals use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployKind {
+    /// A set of slices that together cover the model. The default, and what
+    /// every caller written before whole-model deploys existed sends.
+    #[default]
+    Shards,
+    /// One un-sliced GGUF, served whole by a single machine.
+    Whole,
+}
+
+impl DeployKind {
+    fn whole(self) -> bool {
+        matches!(self, DeployKind::Whole)
+    }
+
+    /// How a refusal names the one thing being placed on a machine.
+    ///
+    /// A whole model has a layer range too — it is 0 to the last one — but
+    /// saying "a fatia L0-31" to an operator who picked a whole model names
+    /// something that is not on their screen.
+    fn unit(self, group: &str, start: u32, end: u32) -> String {
+        match self {
+            DeployKind::Shards => format!("a fatia L{start}-{end}"),
+            DeployKind::Whole => format!("o modelo {group}"),
+        }
+    }
+
+    /// The same thing, indefinite, for a sentence about its weight.
+    fn indefinite(self) -> &'static str {
+        match self {
+            DeployKind::Shards => "uma fatia",
+            DeployKind::Whole => "um modelo",
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct DeployRequest {
-    /// The shard set, named the way the catalog groups it.
+    /// The shard set, named the way the catalog groups it — or, with
+    /// `kind: "whole"`, the model's own name in the catalog.
     pub group: String,
+    /// Slices or a whole model. Absent means slices, which is what every
+    /// caller written before whole-model deploys existed means.
+    #[serde(default)]
+    pub kind: DeployKind,
     #[serde(default)]
     pub params: RuntimeParams,
     /// The operator's explicit choice. `None` is the default path: the node
@@ -223,7 +282,7 @@ impl Machine {
 /// cluster catalog screen shows — a machine is the only honest source for where
 /// its own files are, and for a path we would otherwise have to guess — and its
 /// `/api/ui/node`, which is the only honest source for how much room it has.
-async fn survey(state: &GatewayState, group: &str) -> Vec<Machine> {
+async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Machine> {
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
 
@@ -250,23 +309,38 @@ async fn survey(state: &GatewayState, group: &str) -> Vec<Machine> {
                 Err(_) => json!({}),
             };
 
-            let mut held: Vec<HeldShard> = body
-                .get("shard_sets")
-                .and_then(|v| v.as_array())
-                .into_iter()
-                .flatten()
-                .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
-                .flat_map(|set| {
-                    set.get("shards")
-                        .and_then(|v| v.as_array())
-                        .into_iter()
-                        .flatten()
-                })
-                .filter_map(parse_shard)
-                .collect();
+            let mut held: Vec<HeldShard> = match kind {
+                DeployKind::Shards => body
+                    .get("shard_sets")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
+                    .flat_map(|set| {
+                        set.get("shards")
+                            .and_then(|v| v.as_array())
+                            .into_iter()
+                            .flatten()
+                    })
+                    .filter_map(parse_shard)
+                    .collect(),
+                DeployKind::Whole => body
+                    .get("models")
+                    .and_then(|v| v.as_array())
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|m| parse_whole(m, &group))
+                    .collect(),
+            };
             // Directory order is whatever the filesystem felt like; the screen
             // lists these as "L0–4 · L5–31" and reads as noise unsorted.
             held.sort_by_key(|s| (s.start_layer, s.end_layer));
+            // Two copies of the same file on one machine are one range, not
+            // two: `candidates` would otherwise list the machine twice as a
+            // holder of it. The whole-model path meets this the moment the same
+            // GGUF is reachable through two scanned folders — the captain's
+            // `~/.ollama/models` is a symlink into the LM Studio library.
+            held.dedup_by_key(|s| (s.start_layer, s.end_layer));
 
             Some(Machine {
                 node_id: peer.node_id.clone(),
@@ -342,6 +416,44 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .map(|t| t as u32)
             .filter(|t| *t > 0),
         name: v.get("name")?.as_str()?.to_string(),
+        path: v.get("path")?.as_str()?.to_string(),
+        size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
+    })
+}
+
+/// One whole model of the catalog, read as the range it covers: all of them.
+///
+/// This is the whole of the whole-model special case. Everything downstream —
+/// the coverage arithmetic, the one-range-per-machine rule, the copy planning,
+/// `launch` — then works on a `HeldShard` like any other, and a deploy of one
+/// un-sliced GGUF is simply a plan with a single step whose range happens to be
+/// the entire model.
+///
+/// Two files are skipped rather than half-described:
+///
+/// * a slice (`shard_range` set) — those belong to the other `kind`, and the
+///   catalog serves both lists from the same scan;
+/// * a model whose GGUF header did not yield a layer count. `total_layers` is
+///   the number every peer is configured with, and `runtime::NodeConfig::validate`
+///   refuses a zero at the far end — after `launch` has already stopped
+///   inference on the target machine.
+fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
+    if !v.get("shard_range").map(|r| r.is_null()).unwrap_or(true) {
+        return None;
+    }
+    let name = v.get("name")?.as_str()?;
+    if name != group {
+        return None;
+    }
+    let total = v
+        .get("total_layers")
+        .and_then(|t| t.as_u64())
+        .filter(|t| *t > 0)? as u32;
+    Some(HeldShard {
+        start_layer: 0,
+        end_layer: total - 1,
+        total_layers: Some(total),
+        name: name.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
     })
@@ -460,6 +572,9 @@ pub struct Step {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     group: String,
+    /// Echoed so the screen never has to guess which question it asked. A whole
+    /// model plan has exactly one step covering every layer.
+    kind: DeployKind,
     /// How many layers the original model has. `None` means nobody could say —
     /// which is a refusal (`blocked`), never a zero passed down the line.
     total_layers: Option<u32>,
@@ -701,6 +816,7 @@ fn plan(
     selection: Option<&[SelectedSlice]>,
     params: &RuntimeParams,
     merge: bool,
+    kind: DeployKind,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -730,15 +846,16 @@ fn plan(
                     .position(|c| c.start_layer == s.start_layer && c.end_layer == s.end_layer)
                 else {
                     blocked.get_or_insert(format!(
-                        "a fatia L{}-{} não existe em máquina nenhuma do cluster",
-                        s.start_layer, s.end_layer
+                        "{} não existe em máquina nenhuma do cluster",
+                        kind.unit(group, s.start_layer, s.end_layer)
                     ));
                     continue;
                 };
                 if chosen.iter().any(|(j, ..)| *j == i) {
                     blocked.get_or_insert(format!(
-                        "a fatia L{}-{} foi escolhida duas vezes",
-                        s.start_layer, s.end_layer
+                        "{} foi escolhid{} duas vezes",
+                        kind.unit(group, s.start_layer, s.end_layer),
+                        if kind.whole() { "o" } else { "a" }
                     ));
                     continue;
                 }
@@ -760,7 +877,17 @@ fn plan(
     }
 
     if available.is_empty() {
-        blocked.get_or_insert(format!("nenhuma máquina do cluster tem fatias de {group}"));
+        blocked.get_or_insert(if kind.whole() {
+            // Both readings of an empty answer, because from here they are the
+            // same fact: the catalog skips a whole model whose header did not
+            // yield a layer count, and a model nobody has never appears either.
+            format!(
+                "nenhuma máquina do cluster tem o modelo inteiro {group} com o número de \
+                 camadas legível no GGUF"
+            )
+        } else {
+            format!("nenhuma máquina do cluster tem fatias de {group}")
+        });
     }
 
     // ── How big is the model ────────────────────────────────────────────────
@@ -793,7 +920,14 @@ fn plan(
     }
 
     if !available.is_empty() && chosen.is_empty() {
-        blocked.get_or_insert("nenhuma fatia selecionada".to_string());
+        blocked.get_or_insert(
+            if kind.whole() {
+                "nenhum modelo selecionado"
+            } else {
+                "nenhuma fatia selecionada"
+            }
+            .to_string(),
+        );
     }
 
     // ── Coverage: gaps warn, overlap refuses ────────────────────────────────
@@ -1051,38 +1185,50 @@ fn plan(
                 let mut problem = None;
                 let mut note = None;
 
+                let unit = kind.unit(group, c.start_layer, c.end_layer);
                 if target_id.is_empty() {
-                    problem = Some(format!(
-                        "a fatia L{}-{} está sem máquina",
-                        c.start_layer, c.end_layer
-                    ));
+                    problem = Some(format!("{unit} está sem máquina"));
                 } else if target.is_none() {
                     problem = Some(format!("a máquina {target_id} não está no cluster"));
                 } else if !ready && source.is_none() {
-                    problem = Some(format!(
-                        "a fatia L{}-{} não existe em máquina nenhuma do cluster",
-                        c.start_layer, c.end_layer
-                    ));
+                    problem = Some(format!("{unit} não existe em máquina nenhuma do cluster"));
                 }
 
                 if let (None, Some(t)) = (&problem, target) {
                     let need = needed_mb(c.size_bytes);
                     if !ready && t.disk_free_mb > 0 && need > t.disk_free_mb {
                         problem = Some(format!(
-                            "{} tem {} GB livres em disco e a fatia pesa {} GB",
+                            "{} tem {} GB livres em disco e {unit} pesa {} GB",
                             t.label(),
                             gb(t.disk_free_mb),
                             gb(need)
                         ));
                     } else if t.mem_free_mb > 0 && need > usable_mb(t.mem_free_mb) {
                         note = Some(format!(
-                            "{} tem {} GB de memória livre para uma fatia de {} GB",
+                            "{} tem {} GB de memória livre para {} de {} GB",
                             t.label(),
                             gb(t.mem_free_mb),
+                            kind.indefinite(),
                             gb(need)
                         ));
                     } else if !ready {
-                        note = Some(format!("{} GB pela rede antes de subir", gb(need)));
+                        // The pull direction is the one the sender did not
+                        // choose, so `transfer::safe_model_path` keeps it inside
+                        // the sender's slice folder. A whole model is routinely
+                        // outside it — an LM Studio library, an Ollama store —
+                        // and that copy is refused at the far end, which is a
+                        // thing to read before pressing the button rather than
+                        // after the job fails.
+                        note = Some(if kind.whole() {
+                            format!(
+                                "{} GB pela rede antes de subir - a máquina de origem só envia \
+                                 sozinha o que estiver na pasta de fatias dela; de fora dela, \
+                                 mande o arquivo pela tela de Transferências primeiro",
+                                gb(need)
+                            )
+                        } else {
+                            format!("{} GB pela rede antes de subir", gb(need))
+                        });
                     }
                 }
 
@@ -1116,7 +1262,7 @@ fn plan(
                     primary: c.start_layer == 0,
                     n_gpu_layers: over.n_gpu_layers,
                     offload_kqv: over.offload_kqv,
-                    options: alternatives(c, machines),
+                    options: alternatives(c, machines, kind),
                     problem,
                     note,
                     merged: false,
@@ -1180,6 +1326,7 @@ fn plan(
 
     Plan {
         group: group.to_string(),
+        kind,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -1213,7 +1360,7 @@ fn gb(mb: u64) -> String {
 /// another range is exactly the one an operator wants to swap with, and hiding
 /// it would make the swap impossible. Picking a busy machine is caught by the
 /// one-range-per-node rule instead, which is the honest place for it.
-fn alternatives(c: &Candidate, machines: &[Machine]) -> Vec<Alternative> {
+fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Alternative> {
     let need = needed_mb(c.size_bytes);
     machines
         .iter()
@@ -1231,7 +1378,14 @@ fn alternatives(c: &Candidate, machines: &[Machine]) -> Vec<Alternative> {
                 } else if tight {
                     Some(format!("{} GB de memória livre", gb(m.mem_free_mb)))
                 } else if has {
-                    Some("já tem a fatia".to_string())
+                    Some(
+                        if kind.whole() {
+                            "já tem o modelo"
+                        } else {
+                            "já tem a fatia"
+                        }
+                        .to_string(),
+                    )
                 } else {
                     Some(format!("receberia {} GB", gb(need)))
                 },
@@ -1279,13 +1433,14 @@ async fn plan_endpoint(
     State(state): State<GatewayState>,
     Json(req): Json<DeployRequest>,
 ) -> Response {
-    let machines = survey(&state, &req.group).await;
+    let machines = survey(&state, &req.group, req.kind).await;
     Json(plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
         &req.params,
         req.merge,
+        req.kind,
     ))
     .into_response()
 }
@@ -1302,13 +1457,14 @@ async fn deploy_endpoint(
     // meantime would otherwise be handed a slice. What is *not* recomputed is
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
-    let machines = survey(&state, &req.group).await;
+    let machines = survey(&state, &req.group, req.kind).await;
     let plan = plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
         &req.params,
         req.merge,
+        req.kind,
     );
 
     if let Some(reason) = plan.blocked {
@@ -1327,7 +1483,14 @@ async fn deploy_endpoint(
     }
 
     let job_id = uuid::Uuid::new_v4().to_string();
-    let title = format!("Implantar {} em {} nós", req.group, plan.steps.len());
+    // A whole model is one machine, and "em 1 nós" is the kind of seam that
+    // makes an operator wonder what else was written for the other case.
+    let title = format!(
+        "Implantar {} em {} {}",
+        req.group,
+        plan.steps.len(),
+        if plan.steps.len() == 1 { "nó" } else { "nós" }
+    );
     jobs().write().await.insert(
         job_id.clone(),
         new_job(&job_id, "deploy", title, "preparando"),
@@ -1345,6 +1508,102 @@ async fn deploy_endpoint(
     });
 
     Json(json!({ "started": true, "job_id": job_id })).into_response()
+}
+
+/// The plan's steps as `launch` wants them, resolved against a fresh survey.
+///
+/// Split out of `run` because this is the whole of phase 2's decision-making
+/// and the only part of the deploy that can be checked without a cluster: what
+/// each machine is told to load, and from which of *its own* paths. The survey
+/// it reads is deliberately the one taken after the copies, so a file that
+/// landed somewhere unexpected is still found where it actually is.
+///
+/// A whole model needs nothing special here and gets nothing: it is a step
+/// whose range happens to be the entire model, so it comes out as a plain
+/// target with `skip_split` — which is also what makes the receiving peer a
+/// `single_peer`, running without hidden-state extraction.
+fn launch_targets(
+    steps: &[Step],
+    machines: &[Machine],
+    kind: DeployKind,
+) -> Result<Vec<LaunchTarget>, String> {
+    let mut targets = Vec::new();
+    for step in steps {
+        let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
+
+        if step.merged {
+            // Each part's path on the target is resolved the same way; the
+            // apply merges them into one file there before serving.
+            let mut merge: Vec<MergeSource> = Vec::new();
+            for part in &step.parts {
+                let path = target_machine
+                    .and_then(|m| m.holds(part.start_layer, part.end_layer))
+                    .map(|s| s.path.clone())
+                    .ok_or_else(|| {
+                        format!(
+                            "{} não achou a fatia L{}-{} depois da cópia",
+                            step.target_host, part.start_layer, part.end_layer
+                        )
+                    })?;
+                merge.push(MergeSource {
+                    source_model_path: path,
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                });
+            }
+            let anchor = merge
+                .first()
+                .map(|m| m.source_model_path.clone())
+                .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+
+            targets.push(LaunchTarget {
+                node_id: step.target_node_id.clone(),
+                // Unused when `merge` is set: the apply validates the parts and
+                // never reads this. Present only because `LaunchTarget` requires
+                // the field; the first part names a real file for the record.
+                source_model_path: anchor,
+                start_layer: step.start_layer,
+                end_layer: step.end_layer,
+                // Nothing to cut: the merge produces the exact range.
+                skip_split: true,
+                merge: Some(merge),
+                n_gpu_layers: step.n_gpu_layers,
+                offload_kqv: step.offload_kqv,
+                // A implantação completa descreve o pipeline inteiro, então a
+                // posição na lista de alvos é a posição real.
+                peer_index: None,
+                peer_count: None,
+            });
+            continue;
+        }
+
+        let path = target_machine
+            .and_then(|m| m.holds(step.start_layer, step.end_layer))
+            .map(|s| s.path.clone())
+            .ok_or_else(|| {
+                format!(
+                    "{} não achou {} depois da cópia",
+                    step.target_host,
+                    kind.unit(&step.name, step.start_layer, step.end_layer)
+                )
+            })?;
+
+        targets.push(LaunchTarget {
+            node_id: step.target_node_id.clone(),
+            source_model_path: path,
+            start_layer: step.start_layer,
+            end_layer: step.end_layer,
+            // Already a file of exactly this range: nothing to cut. A whole
+            // model is the same statement about the whole range.
+            skip_split: true,
+            merge: None,
+            n_gpu_layers: step.n_gpu_layers,
+            offload_kqv: step.offload_kqv,
+            peer_index: None,
+            peer_count: None,
+        });
+    }
+    Ok(targets)
 }
 
 /// Copy what has to be copied, then bind every peer to its range.
@@ -1480,81 +1739,8 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group).await;
-    let mut targets = Vec::new();
-    for step in &plan.steps {
-        let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
-
-        if step.merged {
-            // Each part's path on the target is resolved the same way; the
-            // apply merges them into one file there before serving.
-            let mut merge: Vec<MergeSource> = Vec::new();
-            for part in &step.parts {
-                let path = target_machine
-                    .and_then(|m| m.holds(part.start_layer, part.end_layer))
-                    .map(|s| s.path.clone())
-                    .ok_or_else(|| {
-                        format!(
-                            "{} não achou a fatia L{}-{} depois da cópia",
-                            step.target_host, part.start_layer, part.end_layer
-                        )
-                    })?;
-                merge.push(MergeSource {
-                    source_model_path: path,
-                    start_layer: part.start_layer,
-                    end_layer: part.end_layer,
-                });
-            }
-            let anchor = merge
-                .first()
-                .map(|m| m.source_model_path.clone())
-                .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
-
-            targets.push(LaunchTarget {
-                node_id: step.target_node_id.clone(),
-                // Unused when `merge` is set: the apply validates the parts and
-                // never reads this. Present only because `LaunchTarget` requires
-                // the field; the first part names a real file for the record.
-                source_model_path: anchor,
-                start_layer: step.start_layer,
-                end_layer: step.end_layer,
-                // Nothing to cut: the merge produces the exact range.
-                skip_split: true,
-                merge: Some(merge),
-                n_gpu_layers: step.n_gpu_layers,
-                offload_kqv: step.offload_kqv,
-                // A implantação completa descreve o pipeline inteiro, então a
-                // posição na lista de alvos é a posição real.
-                peer_index: None,
-                peer_count: None,
-            });
-            continue;
-        }
-
-        let path = target_machine
-            .and_then(|m| m.holds(step.start_layer, step.end_layer))
-            .map(|s| s.path.clone())
-            .ok_or_else(|| {
-                format!(
-                    "{} não achou a fatia L{}-{} depois da cópia",
-                    step.target_host, step.start_layer, step.end_layer
-                )
-            })?;
-
-        targets.push(LaunchTarget {
-            node_id: step.target_node_id.clone(),
-            source_model_path: path,
-            start_layer: step.start_layer,
-            end_layer: step.end_layer,
-            // Already a slice of exactly this range: nothing to cut.
-            skip_split: true,
-            merge: None,
-            n_gpu_layers: step.n_gpu_layers,
-            offload_kqv: step.offload_kqv,
-            peer_index: None,
-            peer_count: None,
-        });
-    }
+    let machines = survey(&state, &plan.group, plan.kind).await;
+    let targets = launch_targets(&plan.steps, &machines, plan.kind)?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -1601,6 +1787,11 @@ async fn run(
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
+    /// Which catalog the range is looked up in. A whole model already in
+    /// service takes a second machine the same way a slice does — the added
+    /// node becomes a parallel route over the same layers.
+    #[serde(default)]
+    pub kind: DeployKind,
     pub target_node_id: String,
     pub start_layer: u32,
     pub end_layer: u32,
@@ -1636,15 +1827,16 @@ async fn add_node_endpoint(
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
-    let machines = survey(&state, &req.group).await;
+    let machines = survey(&state, &req.group, req.kind).await;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
         return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
     };
     let Some(shard) = target.holds(req.start_layer, req.end_layer) else {
         return bad(json!({
             "error": format!(
-                "{} nao tem a fatia L{}-{}; mande-a para la antes",
-                target.label(), req.start_layer, req.end_layer
+                "{} nao tem {}; mande para la antes",
+                target.label(),
+                req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));
     };
@@ -1667,8 +1859,8 @@ async fn add_node_endpoint(
     if req.end_layer >= total_layers {
         return bad(json!({
             "error": format!(
-                "a fatia L{}-{} passa do fim de um modelo de {total_layers} camadas",
-                req.start_layer, req.end_layer
+                "{} passa do fim de um modelo de {total_layers} camadas",
+                req.kind.unit(&req.group, req.start_layer, req.end_layer)
             )
         }));
     }
@@ -2104,6 +2296,190 @@ async fn wait_for_transfers(
     }
 }
 
+/// A rota de plano lendo o inventário de verdade de peers de verdade.
+///
+/// Os testes de `plan` montam `Machine` à mão, o que prova a decisão mas não
+/// prova de onde ela lê. Aqui a resposta vem por HTTP, do mesmo
+/// `/api/ui/models` que cada máquina serve, e é por isto que "o modelo inteiro
+/// aparece" e "a fatia de mesmo nome não entra no lugar dele" são fatos e não
+/// suposições.
+#[cfg(test)]
+mod whole_route_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+    use axum::routing::get as axum_get;
+
+    /// Uma máquina servindo o catálogo dado, com memória e disco de sobra.
+    async fn catalog_machine(catalog: serde_json::Value) -> u16 {
+        let app = Router::new()
+            .route("/api/ui/models", axum_get(move || {
+                let catalog = catalog.clone();
+                async move { Json(catalog) }
+            }))
+            .route(
+                "/api/ui/node",
+                axum_get(|| async {
+                    Json(json!({
+                        "system": {
+                            "ram": { "available_mb": 64_000.0 },
+                            "disk": { "free_mb": 900_000.0 },
+                        }
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        port
+    }
+
+    /// O catálogo de uma máquina que tem o GGUF inteiro **e** fatias de outro
+    /// modelo, que é o estado normal de uma máquina do cluster.
+    fn catalog() -> serde_json::Value {
+        json!({
+            "hostname": "ksia",
+            "models": [
+                {
+                    "id": "1",
+                    "name": "qwen3.5-9b",
+                    "source": "lmstudio",
+                    "source_label": "LM Studio",
+                    "path": "/lm/qwen3.5-9b.gguf",
+                    "size_bytes": 5_368_709_120u64,
+                    "architecture": "qwen3",
+                    "total_layers": 32,
+                    "quant": "Q4_K_M",
+                    "shard_range": serde_json::Value::Null,
+                    "shard_group": serde_json::Value::Null,
+                },
+                {
+                    "id": "2",
+                    "name": "qwen_0_15.gguf",
+                    "source": "folder",
+                    "source_label": "Pasta",
+                    "path": "/models/qwen/qwen_0_15.gguf",
+                    "size_bytes": 2_000_000_000u64,
+                    "architecture": "qwen3",
+                    "total_layers": 32,
+                    "quant": serde_json::Value::Null,
+                    "shard_range": [0, 15],
+                    "shard_group": "qwen",
+                }
+            ],
+            "shard_sets": [{
+                "group": "qwen",
+                "total_layers": 32,
+                "total_layers_inferred": false,
+                "complete": false,
+                "shards": [{
+                    "name": "qwen_0_15.gguf",
+                    "path": "/models/qwen/qwen_0_15.gguf",
+                    "size_bytes": 2_000_000_000u64,
+                    "total_layers": 32,
+                    "shard_range": [0, 15],
+                }],
+            }],
+            "scanned": [],
+        })
+    }
+
+    /// Um estado cujo único inventário é a máquina de mentira.
+    ///
+    /// `all_peers` sempre inclui esta máquina, e o `gateway_port` do testkit é
+    /// 8080 - o mesmo em que um nó de verdade escuta na máquina do captain. Sem
+    /// apontá-lo para uma porta morta, a varredura sai da suíte e lê o catálogo
+    /// do cluster real: o teste passa ou falha conforme o que estiver no disco
+    /// de quem o roda.
+    async fn state_seeing_only(port: u16) -> GatewayState {
+        let dead = {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            l.local_addr().unwrap().port()
+        };
+        let mut state = state_with(
+            "eu",
+            vec![crate::gateway::testkit::peer("ksia", "ksia", port)],
+        )
+        .await;
+        state.gateway_port = dead;
+        state
+    }
+
+    async fn plan_body(state: GatewayState, req: serde_json::Value) -> serde_json::Value {
+        body_of(
+            plan_endpoint(
+                ConnectionAuth,
+                State(state),
+                Json(serde_json::from_value(req).expect("DeployRequest")),
+            )
+            .await,
+        )
+        .await
+    }
+
+    async fn plan_for(kind: &str, group: &str) -> serde_json::Value {
+        let port = catalog_machine(catalog()).await;
+        let state = state_seeing_only(port).await;
+        plan_body(state, json!({ "group": group, "kind": kind })).await
+    }
+
+    /// O caminho inteiro: a rota pergunta à máquina, acha o GGUF inteiro e
+    /// devolve um plano de um passo cobrindo o modelo todo.
+    #[tokio::test]
+    async fn the_route_plans_a_whole_model_from_the_machines_own_catalog() {
+        let body = plan_for("whole", "qwen3.5-9b").await;
+
+        assert_eq!(body["kind"], "whole", "o plano diz que pergunta respondeu");
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+        assert_eq!(body["complete"], true);
+        assert_eq!(body["total_layers"], 32);
+
+        let steps = body["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0]["start_layer"], 0);
+        assert_eq!(steps[0]["end_layer"], 31);
+        assert_eq!(steps[0]["target_node_id"], "ksia");
+        assert_eq!(steps[0]["ready"], true);
+        assert_eq!(steps[0]["primary"], true);
+
+        // A fatia da mesma máquina não entrou no inventário desta pergunta.
+        let available = body["available"].as_array().unwrap();
+        assert_eq!(available.len(), 1, "só o modelo inteiro: {available:?}");
+        assert_eq!(available[0]["name"], "qwen3.5-9b");
+    }
+
+    /// A pergunta padrão continua sendo a das fatias, e ela não enxerga o
+    /// modelo inteiro - as duas listas saem da mesma varredura, e trocá-las
+    /// faria um `plan` antigo mudar de resposta.
+    #[tokio::test]
+    async fn the_slice_question_is_untouched_and_still_the_default() {
+        let body = plan_for("shards", "qwen").await;
+        let available = body["available"].as_array().unwrap();
+        assert_eq!(available.len(), 1, "{available:?}");
+        assert_eq!(available[0]["name"], "qwen_0_15.gguf");
+        assert_eq!(available[0]["end_layer"], 15);
+        assert_eq!(body["kind"], "shards");
+
+        // Sem `kind` nenhum, o mesmo resultado: `shards` é o padrão.
+        let port = catalog_machine(catalog()).await;
+        let sem_kind =
+            plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
+        assert_eq!(sem_kind["kind"], "shards");
+        assert_eq!(sem_kind["available"].as_array().unwrap().len(), 1);
+    }
+
+    /// Um modelo que nenhuma máquina tem é recusa nomeando o modelo, não uma
+    /// lista vazia que se lê como "está tudo certo, mas não dá".
+    #[tokio::test]
+    async fn a_model_nobody_has_is_refused_by_name() {
+        let body = plan_for("whole", "llama3-70b").await;
+        let motivo = body["blocked"].as_str().expect("recusa");
+        assert!(motivo.contains("llama3-70b"), "{motivo}");
+        assert!(!motivo.contains("fatias de"), "{motivo}");
+    }
+}
+
 /// Tirar a pipeline inteira do ar.
 #[cfg(test)]
 mod undeploy_tests {
@@ -2423,7 +2799,14 @@ mod tests {
     /// The knobs are their own axis; every test below is about the placement,
     /// so they all run on the defaults unless they say otherwise.
     fn plan(group: &str, machines: &[Machine], selection: Option<&[SelectedSlice]>) -> Plan {
-        super::plan(group, machines, selection, &RuntimeParams::default(), false)
+        super::plan(
+            group,
+            machines,
+            selection,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+        )
     }
 
     /// The merge axis, flipped on; everything else still defaults.
@@ -2434,6 +2817,19 @@ mod tests {
             Some(selection),
             &RuntimeParams::default(),
             true,
+            DeployKind::Shards,
+        )
+    }
+
+    /// The whole-model axis: the same planner, told to read one un-sliced GGUF.
+    fn whole(group: &str, machines: &[Machine], selection: Option<&[SelectedSlice]>) -> Plan {
+        super::plan(
+            group,
+            machines,
+            selection,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Whole,
         )
     }
 
@@ -2924,7 +3320,7 @@ mod tests {
             prefill_chunk_tokens: 4096,
             ..RuntimeParams::default()
         };
-        let p = super::plan("m", &ms, None, &params, false);
+        let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards);
 
         assert_eq!(p.params.n_ctx, 32768);
         // 32768 / 2 sessões − 256 gerados.
@@ -3141,5 +3537,290 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(declared.total_layers, Some(40));
+    }
+
+    // ── Um modelo inteiro ───────────────────────────────────────────────────
+    //
+    // O caso degenerado: uma máquina, todas as camadas. O que estes testes
+    // guardam não é uma segunda implementação - é que **não** existe uma. Um
+    // modelo inteiro entra no mesmo `HeldShard`, sai no mesmo `Step` e é
+    // lançado pelo mesmo `launch`; o que muda é de onde o inventário é lido e
+    // qual substantivo a recusa usa.
+
+    /// Uma máquina com (ou sem) o GGUF inteiro de 32 camadas.
+    fn whole_machine(id: &'static str, mem_free_mb: u64, has: bool) -> Machine {
+        Machine {
+            node_id: id.to_string(),
+            hostname: id.to_string(),
+            mem_free_mb,
+            disk_free_mb: 500_000,
+            held: if has {
+                vec![HeldShard {
+                    start_layer: 0,
+                    end_layer: 31,
+                    total_layers: Some(32),
+                    name: "qwen3.5-9b".into(),
+                    path: format!("/{id}/qwen3.5-9b.gguf"),
+                    size_bytes: 5 * GIB,
+                }]
+            } else {
+                Vec::new()
+            },
+        }
+    }
+
+    /// O plano de um modelo inteiro é uma máquina cobrindo tudo - e é
+    /// `complete`, sem buraco e sem sobreposição, porque a única faixa que
+    /// existe é o modelo todo.
+    #[test]
+    fn a_whole_model_is_one_machine_covering_every_layer() {
+        let ms = vec![whole_machine("a", 900_000, true)];
+        let p = whole("qwen3.5-9b", &ms, None);
+
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete, "uma faixa 0-31 cobre um modelo de 32 camadas");
+        assert!(p.missing.is_empty() && p.overlap.is_empty());
+        assert_eq!(p.total_layers, Some(32));
+        assert!(
+            !p.total_layers_inferred,
+            "o GGUF inteiro declara o total; nada foi deduzido"
+        );
+        assert_eq!(p.kind, DeployKind::Whole);
+
+        assert_eq!(p.steps.len(), 1);
+        let s = &p.steps[0];
+        assert_eq!((s.start_layer, s.end_layer), (0, 31));
+        assert_eq!(s.position, 1);
+        assert!(s.primary, "quem tem a camada 0 recebe o prompt");
+        assert!(s.ready, "o modelo já está na máquina");
+        assert!(!s.merged && s.parts.is_empty());
+        assert_eq!(s.target_node_id, "a");
+        assert_eq!(p.transfer_bytes, 0);
+    }
+
+    /// O operador escolhe a máquina, e a escolha é validada como qualquer
+    /// outra: a faixa é a do modelo inteiro.
+    #[test]
+    fn the_operator_picks_the_machine_for_a_whole_model() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "b")]));
+
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(!p.auto, "é a escolha do operador, não a sugestão do nó");
+        assert_eq!(p.steps.len(), 1);
+        assert_eq!(p.steps[0].target_node_id, "b");
+        assert!(p.steps[0].ready);
+    }
+
+    /// Uma máquina que não tem o arquivo recebe uma cópia, exatamente como uma
+    /// fatia - e o plano nomeia quem envia.
+    #[test]
+    fn a_machine_without_the_model_is_planned_as_a_copy() {
+        let ms = vec![
+            whole_machine("tem", 900_000, true),
+            whole_machine("nao-tem", 900_000, false),
+        ];
+        let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        let s = &p.steps[0];
+        assert!(!s.ready);
+        assert_eq!(s.source_node_id.as_deref(), Some("tem"));
+        assert_eq!(s.source_path.as_deref(), Some("/tem/qwen3.5-9b.gguf"));
+        assert_eq!(p.transfer_bytes, 5 * GIB);
+        // O aviso existe porque `transfer::safe_model_path` prende o sentido
+        // "puxar" à pasta de fatias de quem envia, e um modelo inteiro mora
+        // quase sempre fora dela.
+        assert!(
+            s.note.as_deref().unwrap_or_default().contains("Transferências"),
+            "a cópia de um modelo inteiro tem que avisar de onde ela pode sair: {:?}",
+            s.note
+        );
+    }
+
+    /// A recusa fala do que está na tela. "a fatia L0-31" nomeia uma coisa que
+    /// o operador que escolheu um modelo inteiro não vê em lugar nenhum.
+    #[test]
+    fn a_whole_model_refusal_names_the_model_and_not_a_slice() {
+        let ms = vec![whole_machine("a", 900_000, true)];
+        let sem_maquina = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "")]));
+        let motivo = sem_maquina.blocked.expect("sem máquina é recusa");
+        assert!(
+            motivo.contains("o modelo qwen3.5-9b") && !motivo.contains("fatia"),
+            "{motivo}"
+        );
+
+        let nada = whole("qwen3.5-9b", &ms, Some(&[]));
+        let motivo = nada.blocked.expect("nada escolhido é recusa");
+        assert_eq!(motivo, "nenhum modelo selecionado");
+
+        let ninguem = whole("nao-existe", &[whole_machine("a", 900_000, false)], None);
+        let motivo = ninguem.blocked.expect("ninguém tem o modelo");
+        assert!(motivo.contains("modelo inteiro nao-existe") || motivo.contains("nao-existe"));
+        assert!(!motivo.contains("fatias de"), "{motivo}");
+    }
+
+    /// O menu de destinos diz "já tem o modelo", não "já tem a fatia".
+    #[test]
+    fn the_target_menu_speaks_of_a_model() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, false),
+        ];
+        let p = whole("qwen3.5-9b", &ms, None);
+        let opcoes = &p.steps[0].options;
+        let a = opcoes.iter().find(|o| o.node_id == "a").unwrap();
+        assert!(a.has);
+        assert_eq!(a.note.as_deref(), Some("já tem o modelo"));
+        let b = opcoes.iter().find(|o| o.node_id == "b").unwrap();
+        assert!(!b.has);
+        assert!(b.note.as_deref().unwrap().contains("receberia"));
+    }
+
+    /// A camada 0 é a que processa o prompt inteiro, e com um modelo inteiro
+    /// ela é a máquina escolhida - que a sugestão manda para a mais folgada.
+    #[test]
+    fn the_suggestion_puts_a_whole_model_on_the_roomiest_machine() {
+        let ms = vec![
+            whole_machine("pequena", 10_000, true),
+            whole_machine("grande", 900_000, true),
+        ];
+        let p = whole("qwen3.5-9b", &ms, None);
+        assert_eq!(p.steps.len(), 1, "um modelo inteiro é um passo, sempre");
+        assert_eq!(p.steps[0].target_node_id, "grande");
+    }
+
+    /// Um modelo cujo cabeçalho GGUF não deu o número de camadas não vira uma
+    /// implantação com `total_layers` zero: ele simplesmente não entra no
+    /// inventário. `NodeConfig::validate` recusaria o zero no destino, depois
+    /// de `launch` já ter parado a inferência de lá.
+    #[test]
+    fn a_model_with_no_layer_count_never_becomes_a_candidate() {
+        let sem_camadas = json!({
+            "name": "quebrado",
+            "path": "/m/quebrado.gguf",
+            "size_bytes": 1u64,
+            "total_layers": serde_json::Value::Null,
+            "shard_range": serde_json::Value::Null,
+        });
+        assert!(parse_whole(&sem_camadas, "quebrado").is_none());
+
+        let zero = json!({
+            "name": "quebrado",
+            "path": "/m/quebrado.gguf",
+            "size_bytes": 1u64,
+            "total_layers": 0,
+            "shard_range": serde_json::Value::Null,
+        });
+        assert!(parse_whole(&zero, "quebrado").is_none());
+    }
+
+    /// Uma fatia não é um modelo inteiro, mesmo com o nome pedido - as duas
+    /// listas saem da mesma varredura e `shard_range` é o que as separa.
+    #[test]
+    fn a_slice_is_never_read_as_a_whole_model() {
+        let fatia = json!({
+            "name": "qwen",
+            "path": "/m/qwen_0_15.gguf",
+            "size_bytes": 1u64,
+            "total_layers": 32,
+            "shard_range": [0, 15],
+        });
+        assert!(parse_whole(&fatia, "qwen").is_none());
+    }
+
+    /// A segunda metade da implantação: o que a máquina é mandada carregar.
+    ///
+    /// É aqui que "modelo inteiro" tem que sair como um alvo comum - faixa
+    /// cheia, `skip_split`, sem `merge` e sem posição forçada -, porque é
+    /// exatamente essa forma que faz o `apply` no destino se reconhecer como
+    /// `single_peer` e subir sem extração de estado oculto. Um `skip_split`
+    /// falso aqui mandaria a máquina fatiar um arquivo que já é o modelo todo.
+    #[test]
+    fn a_whole_model_is_launched_as_one_plain_target() {
+        let ms = vec![whole_machine("a", 900_000, true)];
+        let p = whole("qwen3.5-9b", &ms, None);
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole).expect("um alvo");
+
+        assert_eq!(alvos.len(), 1);
+        let alvo = &alvos[0];
+        assert_eq!(alvo.node_id, "a");
+        // O caminho é o da máquina de destino, lido da varredura - nunca um
+        // palpite sobre o sistema de arquivos alheio.
+        assert_eq!(alvo.source_model_path, "/a/qwen3.5-9b.gguf");
+        assert_eq!((alvo.start_layer, alvo.end_layer), (0, 31));
+        assert!(alvo.skip_split, "o arquivo já é o modelo todo");
+        assert!(alvo.merge.is_none());
+        assert!(
+            alvo.peer_index.is_none() && alvo.peer_count.is_none(),
+            "a implantação inteira descreve o pipeline, então a posição sai da lista"
+        );
+    }
+
+    /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
+    /// modelo, não uma implantação que sobe apontando para lugar nenhum.
+    #[test]
+    fn a_missing_file_after_the_copy_is_an_error_that_names_the_model() {
+        let ms = vec![
+            whole_machine("tem", 900_000, true),
+            whole_machine("nao-tem", 900_000, false),
+        ];
+        let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
+        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole)
+            .expect_err("o destino não tem o arquivo");
+        assert!(erro.contains("nao-tem") && erro.contains("o modelo"), "{erro}");
+    }
+
+    /// O caminho das fatias sai igualzinho pela mesma função - a extração não
+    /// mudou o que o `launch` recebe.
+    #[test]
+    fn the_slice_path_still_launches_the_way_it_did() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 15)]),
+            m("b", 200_000, &[(16, 31)]),
+        ]);
+        let p = plan("m", &ms, None);
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards).expect("dois alvos");
+        assert_eq!(alvos.len(), 2);
+        assert_eq!(alvos[0].source_model_path, "/models/m_0_15.gguf");
+        assert_eq!((alvos[0].start_layer, alvos[0].end_layer), (0, 15));
+        assert_eq!((alvos[1].start_layer, alvos[1].end_layer), (16, 31));
+        assert!(alvos.iter().all(|a| a.skip_split && a.merge.is_none()));
+    }
+
+    /// O modelo inteiro vira a faixa 0..total-1, que é o que faz todo o resto
+    /// do módulo funcionar sem saber que ele é inteiro.
+    #[test]
+    fn a_whole_model_reads_as_the_range_it_covers() {
+        let inteiro = parse_whole(
+            &json!({
+                "name": "qwen3.5-9b",
+                "path": "/m/qwen3.5-9b.gguf",
+                "size_bytes": 5_368_709_120u64,
+                "total_layers": 32,
+                "shard_range": serde_json::Value::Null,
+            }),
+            "qwen3.5-9b",
+        )
+        .expect("um GGUF inteiro com 32 camadas");
+        assert_eq!((inteiro.start_layer, inteiro.end_layer), (0, 31));
+        assert_eq!(inteiro.total_layers, Some(32));
+        assert_eq!(inteiro.name, "qwen3.5-9b");
+
+        // Outro modelo com outro nome não entra no lugar deste.
+        assert!(parse_whole(
+            &json!({
+                "name": "llama3",
+                "path": "/m/llama3.gguf",
+                "size_bytes": 1u64,
+                "total_layers": 32,
+                "shard_range": serde_json::Value::Null,
+            }),
+            "qwen3.5-9b"
+        )
+        .is_none());
     }
 }

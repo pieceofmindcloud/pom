@@ -308,24 +308,43 @@ const SPECULATIVE_KNOBS: Array<{
   { key: "speculative_lookup_window", min: 1, max: 8 },
 ];
 
+/// Só aparecem com o MTP ligado. `mtp_draft_tokens` tem o mesmo teto sensato
+/// da largura do rascunho por lookup; `mtp_min_probability` é um piso de
+/// confiança, então vive em [0,1] com passo de centésimo.
+const MTP_KNOBS: Array<{
+  key: keyof RuntimeParams;
+  min: number;
+  max?: number;
+  step?: number;
+}> = [
+  { key: "mtp_draft_tokens", min: 1, max: 8 },
+  { key: "mtp_min_probability", min: 0, max: 1, step: 0.01 },
+];
+
 function Switch({
   checked,
   onChange,
   label,
   hint,
+  disabled,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   hint?: string;
+  disabled?: boolean;
 }) {
   return (
-    <div className="flex items-start gap-2.5">
+    <div className={`flex items-start gap-2.5 ${disabled ? "opacity-55" : ""}`}>
       <span className="mt-0.5">
-        <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
+        {disabled ? (
+          <Tick on={false} label={label} onToggle={() => {}} />
+        ) : (
+          <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
+        )}
       </span>
       <span className="min-w-0">
-        <span className="block text-[0.82rem] text-fg">{label}</span>
+        <span className={`block text-[0.82rem] ${disabled ? "text-muted" : "text-fg"}`}>{label}</span>
         {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
       </span>
     </div>
@@ -1644,11 +1663,52 @@ export function DeployModel() {
                             label={t("deploy.speculative")}
                             hint={t("deploy.speculativeHint")}
                           />
+                          <Switch
+                            checked={eff.mtp_enabled ?? false}
+                            onChange={(v) =>
+                              setParams({ ...eff, mtp_enabled: v })
+                            }
+                            label={t("deploy.mtp")}
+                            hint={
+                              isWhole
+                                ? t("deploy.mtpHint")
+                                : t("deploy.mtpWholeOnly")
+                            }
+                            disabled={!isWhole}
+                          />
                         </div>
 
                         {(eff.speculative_decoding_enabled ?? false) && (
                           <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
                             {SPECULATIVE_KNOBS.map((k) => (
+                              <Field
+                                key={k.key}
+                                label={t("deploy.knob." + k.key)}
+                                hint={t("deploy.knob." + k.key + "Hint")}
+                              >
+                                <Input
+                                  type="number"
+                                  name={k.key}
+                                  min={k.min}
+                                  max={k.max}
+                                  step={k.step}
+                                  value={drafts[k.key] ?? String(eff[k.key] ?? "")}
+                                  onChange={(e) => setKnob(k.key, e.target.value)}
+                                  onBlur={() =>
+                                    setDrafts((d) => {
+                                      const { [k.key]: _drop, ...rest } = d;
+                                      return rest;
+                                    })
+                                  }
+                                />
+                              </Field>
+                            ))}
+                          </div>
+                        )}
+
+                        {(eff.mtp_enabled ?? false) && isWhole && (
+                          <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+                            {MTP_KNOBS.map((k) => (
                               <Field
                                 key={k.key}
                                 label={t("deploy.knob." + k.key)}

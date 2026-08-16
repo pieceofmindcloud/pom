@@ -648,6 +648,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.mtpDraftTokens": () => "MTP draft tokens",
     "deploy.mtpDraftTokensHint": () =>
       "How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.",
+    "deploy.mtpWholeOnly": () =>
+      "Not available for sliced pipelines — the block lives in the last layer while the batch is assembled at the head, so it only activates when a single machine serves the whole model.",
     "deploy.machines": () => "Machines",
     "deploy.machineTitle": () => "What each machine has and what remains",
     "deploy.machineDetail": () => "Free memory is where a shard must fit: VRAM where there is a dedicated GPU, available RAM elsewhere. The last two columns are decided per machine, because the machines are not alike: how many layers this one puts on its GPU (blank uses the cluster default) and whether its KV cache lives on the GPU or in RAM.",
@@ -714,6 +716,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.speculative_lookup_window": () => "Lookup window",
     "deploy.knob.speculative_lookup_windowHint": () =>
       "Longest n-gram searched for a prior repeat. Shorter n-grams are tried after it, so this is the ceiling, not the only length.",
+    "deploy.knob.mtp_draft_tokens": () => "MTP draft tokens",
+    "deploy.knob.mtp_draft_tokensHint": () =>
+      "How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.",
+    "deploy.knob.mtp_min_probability": () => "MTP minimum probability",
+    "deploy.knob.mtp_min_probabilityHint": () =>
+      "Confidence floor for continuing the draft: a guess below it stops the run. Lower accepts more guesses, weaker ones included; 0 accepts every guess.",
     "nav.documentation": () => "Documentation",
     "docs.title": () => "Documentation",
     "docs.subtitle": () =>
@@ -1419,6 +1427,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.mtpDraftTokens": () => "Tokens rascunhados pelo MTP",
     "deploy.mtpDraftTokensHint": () =>
       "Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.",
+    "deploy.mtpWholeOnly": () =>
+      "Indisponível em pipeline fatiado — o bloco mora na última camada e quem monta o lote é a cabeça, então ele só entra em ação quando uma máquina serve o modelo inteiro.",
     "deploy.machines": () => "Máquinas",
     "deploy.machineTitle": () => "O que cada uma tem e quanto lhe sobra",
     "deploy.machineDetail": () => "A memória livre é o que a fatia precisa caber: VRAM onde há placa dedicada, RAM disponível no resto. As duas últimas colunas são decididas por máquina, porque as máquinas não se parecem: quantas camadas esta põe na GPU (em branco vale o padrão do cluster) e se o KV cache dela mora na GPU ou na RAM.",
@@ -1485,6 +1495,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.knob.speculative_lookup_window": () => "Janela de busca",
     "deploy.knob.speculative_lookup_windowHint": () =>
       "Maior n-grama procurado numa repetição anterior. N-gramas menores são tentados depois dele, então isto é o teto, não o único tamanho.",
+    "deploy.knob.mtp_draft_tokens": () => "Tokens rascunhados pelo MTP",
+    "deploy.knob.mtp_draft_tokensHint": () =>
+      "Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.",
+    "deploy.knob.mtp_min_probability": () => "Probabilidade mínima do MTP",
+    "deploy.knob.mtp_min_probabilityHint": () =>
+      "Piso de confiança para continuar o rascunho: palpite abaixo dele para a rodada. Menor aceita mais palpites, inclusive os fracos; 0 aceita todo palpite.",
     "nav.documentation": () => "Documentação",
     "docs.title": () => "Documentação",
     "docs.subtitle": () =>

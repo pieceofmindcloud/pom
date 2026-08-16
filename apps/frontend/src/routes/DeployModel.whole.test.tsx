@@ -18,7 +18,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeployPlan } from "../lib/types";
+import type { DeployPlan, RuntimeParams } from "../lib/types";
 
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
@@ -106,6 +106,12 @@ function wholePlan(target = "ksia"): DeployPlan {
       prefill_chunk_tokens: 512,
       n_gpu_layers: 0,
       offload_kqv: true,
+      speculative_decoding_enabled: false,
+      speculative_k: 4,
+      speculative_lookup_window: 3,
+      mtp_enabled: false,
+      mtp_draft_tokens: 3,
+      mtp_min_probability: 0,
     } as DeployPlan["params"],
     prompt_tokens: 3840,
     chunk_tokens: 512,
@@ -331,5 +337,189 @@ describe("DeployModel · modelo inteiro", () => {
       expect((button as HTMLButtonElement).disabled).toBe(false);
     });
     expect(screen.queryByText("Entra")).toBeTruthy();
+  });
+});
+
+describe("DeployModel · MTP", () => {
+  beforeEach(() => {
+    post.mockReset();
+    localStorage.clear();
+  });
+  afterEach(cleanup);
+
+  /** Plano inteiro com MTP desligado, que é o padrão honesto. */
+  function mountWhole(mtp = false) {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const p = wholePlan();
+      (p.params as RuntimeParams).mtp_enabled = mtp;
+      return Promise.resolve(p);
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchInterval: false } },
+    });
+    client.setQueryData(keys.clusterModels, {
+      peers: [
+        {
+          node_id: "ksia",
+          hostname: "ksia",
+          is_self: false,
+          models: [
+            {
+              id: "1",
+              name: "qwen3.5-9b",
+              source: "lmstudio",
+              source_label: "LM Studio",
+              path: "/lm/qwen3.5-9b.gguf",
+              size_bytes: 5_000_000_000,
+              architecture: "qwen3",
+              total_layers: 32,
+              quant: "Q4_K_M",
+              shard_range: null,
+              shard_group: null,
+            },
+          ],
+          shard_sets: [{ group: "qwen", shards: [] }],
+        },
+      ],
+    });
+    return render(
+      <QueryClientProvider client={client}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeployModel />
+        </LocaleProvider>
+      </QueryClientProvider>,
+    );
+  }
+
+  it("liga o MTP, vê os controles numéricos e os manda na implantação", async () => {
+    mountWhole();
+    chooseWhole();
+
+    const switchEl = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
+    });
+    expect(switchEl).toBeTruthy();
+    fireEvent.click(switchEl);
+
+    await waitFor(() => {
+      expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
+      expect(
+        screen.getByText("Probabilidade mínima do MTP"),
+      ).toBeTruthy();
+    });
+
+    // Tune the draft token count.
+    const draftInput = screen.getByRole("spinbutton", {
+      name: /Tokens rascunhados pelo MTP/,
+    });
+    fireEvent.change(draftInput, { target: { value: "5" } });
+    await waitFor(() => {
+      expect((draftInput as HTMLInputElement).value).toBe("5");
+    });
+
+    // Fire the deploy and check the params.
+    const button = screen.getByRole("button", { name: /Implantar assim/ });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      const deploys = post.mock.calls.filter(
+        ([url]) => url === "/api/ui/deploy",
+      );
+      expect(deploys).toHaveLength(1);
+      const body = deploys[0][1] as {
+        kind: string;
+        params: RuntimeParams;
+      };
+      expect(body.kind).toBe("whole");
+      expect(body.params.mtp_enabled).toBe(true);
+      expect(body.params.mtp_draft_tokens).toBe(5);
+    });
+  });
+
+  it("em modo fatiado o interruptor do MTP aparece desabilitado com a explicação", async () => {
+    post.mockImplementation((url: string) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(shardPlan());
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchInterval: false } },
+    });
+    client.setQueryData(keys.clusterModels, {
+      peers: [
+        {
+          node_id: "ksia",
+          hostname: "ksia",
+          is_self: false,
+          models: [],
+          shard_sets: [{ group: "qwen", shards: [] }],
+        },
+      ],
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeployModel />
+        </LocaleProvider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const switchEl = screen.getByRole("checkbox", {
+        name: /Predição multi-token/,
+      });
+      expect(switchEl.getAttribute("aria-checked")).toBe("false");
+    });
+
+    expect(
+      screen.getByText(/Indisponível em pipeline fatiado/),
+    ).toBeTruthy();
+  });
+
+  it("o MTP desligado por padrão: o interruptor nasce apagado", async () => {
+    mountWhole(false);
+
+    await waitFor(async () => {
+      chooseWhole();
+    });
+
+    const switchEl = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
+    });
+    expect(switchEl.getAttribute("aria-checked")).toBe("false");
+    // Sem MTP ligado, os controles numéricos não aparecem.
+    expect(
+      screen.queryByText("Tokens rascunhados pelo MTP"),
+    ).toBeNull();
+    expect(
+      screen.queryByText("Probabilidade mínima do MTP"),
+    ).toBeNull();
+  });
+
+  it("o MTP e a especulação por lookup são independentes — ligar um não mexe no outro", async () => {
+    mountWhole();
+    chooseWhole();
+
+    const mtpSwitch = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
+    });
+    fireEvent.click(mtpSwitch);
+
+    await waitFor(() => {
+      expect(screen.getByText("Tokens rascunhados pelo MTP")).toBeTruthy();
+    });
+
+    // The speculative decoding switch should still be off.
+    const specSwitch = screen.getByRole("checkbox", {
+      name: /Decodificação especulativa/,
+    });
+    expect(specSwitch.getAttribute("aria-checked")).toBe("false");
+
+    // And none of the speculative knobs are visible.
+    expect(screen.queryByText("Largura do rascunho")).toBeNull();
+    expect(screen.queryByText("Janela de busca")).toBeNull();
   });
 });

@@ -52,7 +52,9 @@ behind an auth extractor.
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
   `frame/v1-f16`, `frame/v2-zstd-f16`, `relay/v1-chain` and
-  `speculate/v1-lookup`; `self_reply_hosts()` lists the addresses by which a
+  `speculate/v1-lookup`; `speculate/v1-mtp-sliced` goes out unconditionally and
+  `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
+  `self_reply_hosts()` lists the addresses by which a
   peer reaches this node (`self_dial_host` first, then `self_addr_candidates`);
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - the KV cache is
   split across sessions, so the window is `n_ctx / max_sessions`, and `n_batch`
@@ -62,10 +64,14 @@ behind an auth extractor.
   prefill and decode executors, so the tail can answer this node directly
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
-  `especulando` - once a speculative round comes back refused (`!step.speculated`,
-  the head did not draft), the gateway stops asking for the rest of the request
-  and calls `prefill::step` (the direct reply) instead; insisting would pin the
-  chain to the bubbled ring (2N hops per token);
+  MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
+  the tail drafts on its own reply (`next_draft`), the gateway stores it and
+  injects it as `speculate.draft` on the next round, and the head only
+  decodes; `especulando` stops when the head refused a ready draft
+  (`draft_sent && !step.speculated`) or the tail returned no `next_draft`
+  (`!draft_sent && step.next_draft.is_none()`), then the gateway calls
+  `prefill::step` (the direct reply) for the rest of the request - insisting
+  would pin the chain to the bubbled ring (2N hops per token);
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,

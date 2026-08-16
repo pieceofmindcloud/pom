@@ -158,8 +158,8 @@ ligadas e o plano capaz, vence o MTP.
 | o que rascunha | `find_draft`: busca uma repetição do próprio final no texto já gerado | o bloco `nextn` treinado dentro do GGUF |
 | usa peso do modelo | não - é busca em array | sim, uma cabeça treinada |
 | quando acerta | saída repetitiva (código, listas, JSON) | texto qualquer, se o modelo trouxer o bloco |
-| capability | `speculate/v1-lookup` (todos os hops) | `speculate/v1-mtp` (**a cabeça**) + lookup em todos |
-| exige | `kv_can_shift` | `kv_can_shift` **e** a cabeça anexada |
+| capability | `speculate/v1-lookup` (todos os hops) | `speculate/v1-mtp` (**a cauda**) + `speculate/v1-mtp-sliced` em todos |
+| exige | `kv_can_shift` | `kv_can_shift` **e** a cauda com o bloco `nextn` |
 
 O campo que separa as duas no fio é `speculate.source` (`"lookup"` / `"mtp"`),
 lido por `infer_server::Speculate::from_meta`. Ausente é gateway antigo e vale
@@ -222,18 +222,36 @@ Studio liga quando oferece "MTP".
 - **Custa um contexto, não um modelo.** O contexto de rascunho é criado sobre
   **os mesmos pesos** (`llama_init_from_model` com `ctx_type = MTP`); o que ele
   acrescenta é um cache KV de uma camada.
-- **Só liga com uma máquina servindo o modelo inteiro**
-  (`NodeConfig::mtp_effective`, e a capability é conferida na cabeça do plano
-  por `PipelinePlan::supports_mtp`). O bloco mora na última camada - ou seja,
-  na fatia final - e quem monta o lote é a cabeça. Num pipeline fatiado são
-  máquinas diferentes.
-- **O que custaria estender ao caso fatiado**, medido em travessias e não em
-  suposição: a cauda já responde direto ao originador (`relay/v2-direct`), e
-  ela é justamente quem tem o bloco. Anexar o rascunho àquela resposta e o
-  gateway pô-lo no `speculate` da rodada seguinte não acrescenta **nenhuma**
-  travessia. O custo real a medir no caso fatiado é a taxa de aceitação (o
-  rascunho nasce uma rodada antes de ser usado, então ele prevê `p+2` a partir
-  de `p`, exatamente como no caso local), e não a rede. Não foi implementado.
+- **Liga no modelo inteiro e no pipeline fatiado.**
+  `NodeConfig::mtp_effective` decide por nó (modelo inteiro, ou a cauda de um
+  pipeline fatiado que serve a última camada); `PipelinePlan::supports_mtp`
+  confere no plano. Quem rascunha é a máquina que serve a última camada - no
+  caso fatiado, a cauda, que tem o bloco `nextn`; quem monta o lote é a cabeça.
+- **A cauda rascunha na própria resposta.** O rascunho viaja de trás para a
+  frente **sem custo extra de travessia**: a cauda anexa `next_draft` ao reply
+  da `relay/v2-direct` que já volta ao gateway, o gateway o injeta no
+  `speculate.draft` da rodada seguinte, e a cabeça decodifica o lote sem
+  rascunhar (`should_draft` aceita draft pronto com `kv_can_shift`, mesmo sem
+  `mtp_ready`). O custo real a medir no caso fatiado é a taxa de aceitação (o
+  rascunho nasce uma rodada antes de ser usado, então prevê `p+2` a partir de
+  `p`, exatamente como no caso local) - e não a rede.
+- **A composição do lote viaja até a cauda.** A cabeça ecoa no reply o lote
+  decodificado (campo `tokens`) e a largura do rascunho pedida (`mtp_k`); os
+  hops do meio repassam; a cauda alimenta o `observe` do MTP com essa
+  composição (`decode_hidden(..., tokens)`). Sem ela - peer velho que não
+  ecoa - o `observe` desliga o MTP com aviso: a resposta continua correta, só
+  não especulativa.
+- **Exige binário novo em todos os hops.** `supports_mtp` pede
+  `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
+  `next_draft` só existe em build novo - um peer velho no anel receberia um
+  `speculate` que não entende) **e** `speculate/v1-mtp` na cauda.
+- **Modelo híbrido/recorrente não rascunha no caso fatiado.** A cauda só
+  devolve `next_draft` quando `kv_can_shift`; recusada, o gateway para de
+  pedir pelo resto da requisição (mesmo flip do prompt-lookup). `/health`
+  expõe `kv_can_shift`.
+- O MTP fatiado roda pelo caminho direto (`prefill::step` + `relay/v2-direct`,
+  N+1 travessias); `step_speculative` (prompt-lookup) continua sem desvio
+  direto - ver seção 5.1.
 - A fatia final é a única que carrega o bloco porque `splitter::split` zera
   `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
 
@@ -350,11 +368,11 @@ prompt e recusa com uma mensagem citando as flags.
   especulação no desvio direto (ver seção 8).
 - **MTP sem medição de tok/s** (2026-08-16, cortado por cota): a implementação
   está completa e verde nos testes de unidade, mas o ganho ponta a ponta não
-  foi medido neste projeto. O que existe é a medição do captain no LM Studio,
-  no mesmo modelo e hardware: **21 → 35 tok/s** no Qwen3.8-27B-Q3_K_S. Enquanto
-  não houver número medido aqui, o ganho no rdma-p2p é expectativa, não fato.
-- **MTP não estendido ao caso fatiado** (ver seção 5.2 para o desenho e o
-  custo).
+  foi medido neste projeto - nem no caso fatiado, onde o que falta medir é a
+  taxa de aceitação do `next_draft` (ver seção 5.2). O que existe é a medição
+  do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
+  Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
+  rdma-p2p é expectativa, não fato.
 
 ## Nota de versão
 

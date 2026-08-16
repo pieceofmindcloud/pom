@@ -440,7 +440,7 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  it("em modo fatiado o interruptor do MTP aparece desabilitado com a explicação", async () => {
+  it("em modo fatiado o interruptor do MTP está habilitado e liga os controles", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
       return Promise.resolve(shardPlan());
@@ -467,16 +467,19 @@ describe("DeployModel · MTP", () => {
       </QueryClientProvider>,
     );
 
-    await waitFor(() => {
-      const switchEl = screen.getByRole("checkbox", {
-        name: /Predição multi-token/,
-      });
-      expect(switchEl.getAttribute("aria-checked")).toBe("false");
+    const switchEl = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
     });
+    expect(switchEl.getAttribute("aria-checked")).toBe("false");
+    expect((switchEl as HTMLInputElement).disabled).toBe(false);
 
-    expect(
-      screen.getByText(/Indisponível em pipeline fatiado/),
-    ).toBeTruthy();
+    fireEvent.click(switchEl);
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Tokens rascunhados pelo MTP"),
+      ).toBeTruthy();
+    });
   });
 
   it("o MTP desligado por padrão: o interruptor nasce apagado", async () => {

@@ -461,7 +461,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
     let mut next = first.token_id;
     let started = Instant::now();
     for _ in 1..DECODE_TOKENS {
-        let (token, _text, _done, _trace) = crate::prefill::step(
+        let step = crate::prefill::step(
             &plan,
             "lab",
             &session,
@@ -471,10 +471,11 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
             &routes,
             reply.as_ref(),
             None,
+            None,
         )
         .await
         .expect("step");
-        next = token;
+        next = step.accepted[0].0;
     }
 
     Outcome {

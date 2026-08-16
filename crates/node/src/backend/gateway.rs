@@ -213,6 +213,7 @@ impl GatewayState {
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
+                        "speculate/v1-mtp-sliced".into(),
                     ];
                     if self.network.mtp_ready() {
                         caps.push("speculate/v1-mtp".into());
@@ -602,23 +603,56 @@ pub async fn generate_stream(
             // aprendeu a resposta direta, então insistir mantém a cadeia no
             // anel borbulhado (2N travessias por token) quando o caminho
             // direto (N+1) está disponível — ver `crate::direct`.
+            // O MTP fatiado é a outra metade da mesma rodada: a cauda (dona
+            // do bloco `nextn`) rascunha na resposta direta e o gateway
+            // injeta o rascunho no `speculate` da rodada seguinte. Só com 2+
+            // hops — com um é o modelo inteiro, que já usa `step_speculative`.
+            let sliced_mtp = mtp_enabled && plan.supports_mtp() && plan.steps.len() >= 2;
             let mut especulando = true;
+            // Rascunho que a cauda devolveu na rodada anterior, esperando
+            // para ser injetado na próxima. `draft_sent` é lido antes do
+            // `take`: distingue a rodada 1 (nenhum rascunho viajou ainda, e a
+            // recusa da cabeça é esperada) das seguintes (o rascunho foi
+            // mandado — ignorado aí é motivo para parar).
+            let mut stored_draft: Option<Vec<i32>> = None;
             while tokens_generated < max_tokens {
+                let draft_sent = especulando && sliced_mtp && stored_draft.is_some();
                 let res = if especulando {
-                    crate::prefill::step_speculative(
-                        &plan,
-                        &model,
-                        &session_id,
-                        next_token,
-                        speculative_k,
-                        speculative_m,
-                        draft_source,
-                        dtype,
-                        &state.http,
-                        &state.network.routes,
-                        state.tunnel_tx.as_ref(),
-                    )
-                    .await
+                    if sliced_mtp {
+                        crate::prefill::step(
+                            &plan,
+                            &model,
+                            &session_id,
+                            next_token,
+                            dtype,
+                            &state.http,
+                            &state.network.routes,
+                            direct.as_ref(),
+                            state.tunnel_tx.as_ref(),
+                            Some(crate::infer_server::Speculate {
+                                k: speculative_k,
+                                m: speculative_m,
+                                source: crate::infer_server::DraftSource::Mtp,
+                                draft: stored_draft.take(),
+                            }),
+                        )
+                        .await
+                    } else {
+                        crate::prefill::step_speculative(
+                            &plan,
+                            &model,
+                            &session_id,
+                            next_token,
+                            speculative_k,
+                            speculative_m,
+                            draft_source,
+                            dtype,
+                            &state.http,
+                            &state.network.routes,
+                            state.tunnel_tx.as_ref(),
+                        )
+                        .await
+                    }
                 } else {
                     crate::prefill::step(
                         &plan,
@@ -630,9 +664,9 @@ pub async fn generate_stream(
                         &state.network.routes,
                         direct.as_ref(),
                         state.tunnel_tx.as_ref(),
+                        None,
                     )
                     .await
-                    .map(crate::prefill::SpeculativeStep::of_one_token)
                 };
 
                 let step = match res {
@@ -670,14 +704,36 @@ pub async fn generate_stream(
                         return;
                     }
                 };
-                if especulando && !step.speculated {
-                    // A cabeça recusou rascunhar — resposta legítima, e a única
-                    // pista que o gateway tem de que este modelo não especula.
-                    info!(
-                        "nenhum hop rascunhou: seguindo sem especulação \
-                         (o cache KV do modelo não desloca — ver kv_can_shift em /health)"
-                    );
-                    especulando = false;
+                if especulando {
+                    if sliced_mtp {
+                        // Dois motivos para desistir, e só dois. (a) O rascunho
+                        // foi mandado e a cabeça o ignorou — o cache KV do
+                        // modelo não desloca (`kv_can_shift`), e pedir de novo
+                        // só repetiria a recusa. (b) A rodada 1 não mandou
+                        // rascunho (ainda não havia um pronto) e a cauda não
+                        // devolveu nenhum — este pipeline fatiado não
+                        // rascunha por aqui.
+                        if (draft_sent && !step.speculated)
+                            || (!draft_sent && step.next_draft.is_none())
+                        {
+                            info!(
+                                "pipeline fatiado sem rascunho MTP: seguindo \
+                                 sem especulação (ver kv_can_shift em /health)"
+                            );
+                            especulando = false;
+                        } else {
+                            stored_draft = step.next_draft;
+                        }
+                    } else if !step.speculated {
+                        // A cabeça recusou rascunhar — resposta legítima, e a
+                        // única pista que o gateway tem de que este modelo não
+                        // especula.
+                        info!(
+                            "nenhum hop rascunhou: seguindo sem especulação \
+                             (o cache KV do modelo não desloca — ver kv_can_shift em /health)"
+                        );
+                        especulando = false;
+                    }
                 }
                 trace.merge(&step.trace);
 
@@ -762,19 +818,23 @@ pub async fn generate_stream(
                     &state.network.routes,
                     direct.as_ref(),
                     state.tunnel_tx.as_ref(),
+                    None,
                 )
                     .await;
 
             match res {
-                Ok((token_id, text, done, step_trace)) => {
-                    trace.merge(&step_trace);
-                    next_token = token_id;
+                Ok(step) => {
+                    trace.merge(&step.trace);
+                    // O formato comum de `step` é um único token confirmado.
+                    let (token_id, text) = &step.accepted[0];
+                    next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty() && tx.send(GenEvent::Token(text)).await.is_err() {
+                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
                         // Client hung up; stop burning GPU time on a dead request.
                         info!("cliente desconectou após {tokens_generated} tokens");
                         return;
                     }
+                    let done = step.done;
 
                     if done || i == max_tokens - 1 {
                         let elapsed = gen_start.elapsed();

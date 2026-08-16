@@ -1669,12 +1669,7 @@ export function DeployModel() {
                               setParams({ ...eff, mtp_enabled: v })
                             }
                             label={t("deploy.mtp")}
-                            hint={
-                              isWhole
-                                ? t("deploy.mtpHint")
-                                : t("deploy.mtpWholeOnly")
-                            }
-                            disabled={!isWhole}
+                            hint={t("deploy.mtpHint")}
                           />
                         </div>
 
@@ -1706,7 +1701,7 @@ export function DeployModel() {
                           </div>
                         )}
 
-                        {(eff.mtp_enabled ?? false) && isWhole && (
+                        {(eff.mtp_enabled ?? false) && (
                           <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
                             {MTP_KNOBS.map((k) => (
                               <Field

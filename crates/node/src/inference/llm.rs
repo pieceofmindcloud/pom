@@ -678,6 +678,10 @@ impl LlmEngine {
     }
 
     /// Decode a batch of embedding vectors (hidden states from the previous peer).
+    ///
+    /// `tokens` são os ids do lote que a cauda decodificou — o caller que os
+    /// tem entrega; sem eles a cabeça `nextn` não se mantém em dia (ver o
+    /// bloco de `observe` no corpo).
     pub fn decode_hidden(
         &mut self,
         hidden: &[f32],
@@ -685,6 +689,7 @@ impl LlmEngine {
         pos_offset: u32,
         seq_id: u32,
         logits_all: bool,
+        tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
         self.capture.lock().unwrap().copy_us = 0;
         let enqueue_started = Instant::now();
@@ -724,16 +729,36 @@ impl LlmEngine {
             bail!("llama_decode (hidden) failed rc={rc}");
         }
 
-        // Um lote de estado oculto não traz os ids dos tokens, e a cabeça
-        // `nextn` embute o token para formar o par que ela consome — não há
-        // como mantê-la em dia por aqui. `NodeConfig::mtp_effective` já impede
-        // que um nó de pipeline anexe a cabeça, então chegar aqui com ela viva
-        // é um caminho que ninguém previu; desligar com aviso é preferível a
-        // rascunhar a partir de um cache que ficou para trás.
-        if self.mtp.is_some() {
+        // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica,
+        // senão o cache dela fica atrás do tronco e o par `(h_p, x_{p+1})` que
+        // ela consome deixa de existir. Ficar aqui, e não em cada chamador, é
+        // o que impede um caminho novo de decodificação de esquecer o passo.
+        // Um erro aqui derruba o rascunho, não a resposta: a cabeça sai de
+        // cena e a geração segue um token por rodada.
+        //
+        // Diferente do `decode_tokens`, um lote de estado oculto não carrega os
+        // ids dos tokens embutidos — quem os tem é o chamador (a cauda de um
+        // pipeline, que conhece a composição do lote). `tokens` traz esses ids;
+        // quando ninguém os oferece (peer velho que não encaminha o campo), a
+        // cabeça não tem como se manter em dia e desligar com aviso é preferível
+        // a rascunhar a partir de um cache que ficou para trás.
+        if let Some(tokens) = tokens {
+            if self.mtp.is_some() {
+                let ctx = self.ctx;
+                let mut drafter = self.mtp.take();
+                if let Some(d) = drafter.as_mut() {
+                    if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
+                        warn!("MTP desligado nesta sessão: {e}");
+                        drafter = None;
+                    }
+                }
+                self.mtp = drafter;
+            }
+        } else if self.mtp.is_some() {
             warn!(
-                "MTP desligado: este contexto recebeu estado oculto, e a cabeça nextn \
-                 precisa dos ids dos tokens para acompanhar o tronco"
+                "MTP desligado: este contexto recebeu estado oculto sem os ids dos \
+                 tokens (peer velho no pipeline?), e a cabeça nextn precisa deles para \
+                 acompanhar o tronco"
             );
             self.mtp = None;
         }
@@ -1306,7 +1331,7 @@ mod tests {
             .map(|i| ((i % 97) as f32 - 48.0) / 48.0)
             .collect();
         engine
-            .decode_hidden(&hidden, n_tokens, 0, 0, true)
+            .decode_hidden(&hidden, n_tokens, 0, 0, true, None)
             .expect("decode of an injected hidden state succeeds");
 
         let residual = engine

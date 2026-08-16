@@ -19,6 +19,7 @@
 //! a parameter rather than an assumption.
 
 use crate::infer_tunnel::TunnelOutboundSender;
+use crate::infer_server::Speculate;
 use crate::pipeline::PipelinePlan;
 use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
@@ -476,7 +477,7 @@ pub async fn run(
                     plan.steps[i - 1].node_id
                 ));
             };
-            let body_meta = json!({
+            let mut body_meta = json!({
                 "session_id": session_id,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
@@ -484,6 +485,9 @@ pub async fn run(
                 "is_final_chunk": is_final_chunk,
                 "scale": 1.0,
             });
+            if let Some(tokens) = meta.get("tokens") {
+                body_meta["tokens"] = tokens.clone();
+            }
             let (m, t) = send_chunk(
                 http,
                 routes,
@@ -896,6 +900,12 @@ async fn send_chunk(
 }
 
 /// One generated token through the whole pipeline, framed like the prefill.
+///
+/// `speculate` é o convite a rascunhar que o gateway anexa no caminho fatiado
+/// (MTP): `None` mantém a rodada no formato antigo de um token; `Some` faz a
+/// cabeça montar o lote — com o rascunho pronto da cauda (`draft`) ou
+/// produzindo o próprio. A resposta é sempre a mesma `SpeculativeStep`: uma
+/// rodada sem especulação tem `accepted.len() == 1` e `speculated == false`.
 #[allow(clippy::too_many_arguments)]
 pub async fn step(
     plan: &PipelinePlan,
@@ -907,13 +917,17 @@ pub async fn step(
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
-) -> Result<(u32, String, bool, RequestTrace)> {
+    speculate: Option<Speculate>,
+) -> Result<SpeculativeStep> {
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
-        return step_direct(plan, model, session_id, token_id, dtype, http, routes, direct, tunnel)
-            .await;
+        return step_direct(
+            plan, model, session_id, token_id, dtype, http, routes, direct, tunnel, speculate,
+        )
+        .await;
     }
     if plan.supports_relay_chain() {
-        return step_ring(plan, model, session_id, token_id, dtype, http, routes, tunnel).await;
+        return step_ring(plan, model, session_id, token_id, dtype, http, routes, tunnel, speculate)
+            .await;
     }
 
     // Nota: o laço hub abaixo (um POST por hop, sem retry) não passa pelo
@@ -930,9 +944,26 @@ pub async fn step(
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
         let body_meta = if i == 0 {
-            json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id })
+            let mut m = json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id });
+            if let Some(spec) = &speculate {
+                m["speculate"] = spec.to_meta();
+            }
+            m
         } else {
-            json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 })
+            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            // Thread o que a cabeça decidiu na ida — o rascunho, a composição
+            // do lote (`tokens`, para o `observe` da cauda) e a largura de
+            // lote da próxima rodada (`mtp_k`).
+            if let Some(draft) = meta.get("draft") {
+                m["draft"] = draft.clone();
+            }
+            if let Some(tokens) = meta.get("tokens") {
+                m["tokens"] = tokens.clone();
+            }
+            if let Some(mtp_k) = meta.get("mtp_k") {
+                m["mtp_k"] = mtp_k.clone();
+            }
+            m
         };
 
         let payload = tensor.take();
@@ -994,19 +1025,7 @@ pub async fn step(
         tensor = t;
     }
 
-    let token = meta
-        .get("token_id")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
-    Ok((
-        token,
-        meta.get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
-        trace,
-    ))
+    speculative_step_from_meta(&meta, trace)
 }
 
 /// One generated token, relayed hop-to-hop instead of gateway-to-every-hop —
@@ -1024,16 +1043,20 @@ async fn step_ring(
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
-) -> Result<(u32, String, bool, RequestTrace)> {
+    speculate: Option<Speculate>,
+) -> Result<SpeculativeStep> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
-    let body_meta = json!({
+    let mut body_meta = json!({
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
     });
+    if let Some(spec) = &speculate {
+        body_meta["speculate"] = spec.to_meta();
+    }
 
     let sent = crate::relay::send_frame_or_tunnel(
         http,
@@ -1058,21 +1081,7 @@ async fn step_ring(
         trace.record_hop_from_json(i, Phase::Decode, &entry);
     }
 
-    let token = sent
-        .meta
-        .get("token_id")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
-    Ok((
-        token,
-        sent.meta
-            .get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        sent.meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
-        trace,
-    ))
+    speculative_step_from_meta(&sent.meta, trace)
 }
 
 /// One generated token, dispatched once and answered once — the decode twin of
@@ -1095,18 +1104,22 @@ async fn step_direct(
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
-) -> Result<(u32, String, bool, RequestTrace)> {
+    speculate: Option<Speculate>,
+) -> Result<SpeculativeStep> {
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
     let mut ticket = direct.ticket();
-    let body_meta = json!({
+    let mut body_meta = json!({
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
         "reply_to": direct.reply_to(ticket.id()),
     });
+    if let Some(spec) = &speculate {
+        body_meta["speculate"] = spec.to_meta();
+    }
 
     let dispatched = Instant::now();
     let ack = crate::relay::send_frame_or_tunnel(
@@ -1139,19 +1152,7 @@ async fn step_direct(
         dispatched.elapsed().as_millis() as u64,
     );
 
-    let token = meta
-        .get("token_id")
-        .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("último peer não devolveu token"))? as u32;
-    Ok((
-        token,
-        meta.get("text")
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string(),
-        meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
-        trace,
-    ))
+    speculative_step_from_meta(&meta, trace)
 }
 
 /// If the failure carries a `RelayFailure` from further down the chain (a
@@ -1192,27 +1193,13 @@ pub struct SpeculativeStep {
     /// `incoming_draft` doc). `false` means exactly that happened, and asking
     /// the same chain to speculate again would just repeat the refusal.
     pub speculated: bool,
+    /// Rascunho que a cauda de um pipeline fatiado produziu para a **próxima**
+    /// rodada (bloco `nextn`), trazido na resposta direta. O gateway o guarda
+    /// e o injeta no `speculate.draft` da rodada seguinte — zero travessia
+    /// extra. `None` quando esta rodada não foi uma cauda de pipeline, ou a
+    /// geração terminou.
+    pub next_draft: Option<Vec<i32>>,
     pub trace: RequestTrace,
-}
-
-impl SpeculativeStep {
-    /// O resultado de um [`step`] comum, na forma que o laço de decodificação
-    /// já sabe consumir.
-    ///
-    /// Um token, largura um: nada foi decodificado além dele, então
-    /// `accept_count == batch_width` e não há posição a rebobinar.
-    pub fn of_one_token(
-        (token_id, text, done, trace): (u32, String, bool, RequestTrace),
-    ) -> Self {
-        Self {
-            accepted: vec![(token_id, text)],
-            done,
-            accept_count: 1,
-            batch_width: 1,
-            speculated: false,
-            trace,
-        }
-    }
 }
 
 /// One speculative round: the head drafts up to `k` tokens from its own
@@ -1431,6 +1418,12 @@ fn speculative_step_from_meta(
     trace: RequestTrace,
 ) -> Result<SpeculativeStep> {
     let done = meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
+    // O rascunho da cauda para a próxima rodada (pipeline fatiado) — presente
+    // nas duas formas de resposta quando a cauda tem o bloco `nextn`.
+    let next_draft: Option<Vec<i32>> = meta
+        .get("next_draft")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect());
     let accepted: Vec<(u32, String)> = meta
         .get("accepted")
         .and_then(|v| v.as_array())
@@ -1464,6 +1457,7 @@ fn speculative_step_from_meta(
             accept_count: 1,
             batch_width: 1,
             speculated: false,
+            next_draft,
             trace,
         });
     }
@@ -1482,6 +1476,7 @@ fn speculative_step_from_meta(
         accept_count,
         batch_width,
         speculated: true,
+        next_draft,
         trace,
     })
 }

@@ -156,12 +156,14 @@ impl NodeConfig {
 
     /// O MTP vale a pena **neste** nó?
     ///
-    /// Só quando ele serve o modelo inteiro. O bloco `nextn` mora na última
-    /// camada, então numa pipeline fatiada quem consegue rascunhar é a cauda -
-    /// e quem monta o lote é a cabeça, do outro lado do anel. Ligar o MTP na
-    /// cauda de um pipeline não aceleraria nada e ainda pagaria o custo fixo:
-    /// `MtpDrafter::attach` liga a saída do estado oculto no contexto alvo
-    /// (`llama_set_embeddings_nextn`), que muda o grafo de toda decodificação.
+    /// Dois casos, e eles não se confundem:
+    ///
+    /// * **Modelo inteiro:** uma máquina só serve todas as camadas, inclusive a
+    ///   última com o bloco `nextn`. O rascunho e o lote saem da mesma cabeça.
+    /// * **Cauda de um pipeline fatiado:** o bloco `nextn` mora aqui mas quem
+    ///   monta o lote é a cabeça, duas máquinas diferentes. Aqui só se liga o
+    ///   *motor* de rascunho — a produção do draft via `mtp_draft` e a
+    ///   observação (`observe`) depois do `decode_hidden`. O gateway faz o resto.
     ///
     /// Que o modelo tenha ou não bloco `nextn` **não** se decide aqui: quem
     /// sabe isso é o GGUF carregado, e `MtpDrafter::attach` devolve `None`
@@ -170,10 +172,19 @@ impl NodeConfig {
         if !self.mtp_enabled {
             return false;
         }
-        let serves_first_layer = self.start_layer == 0;
         let serves_last_layer = self.end_layer + 1 >= self.total_layers;
-        let alone = self.peer_count <= 1;
-        serves_first_layer && serves_last_layer && alone
+        if !serves_last_layer {
+            return false;
+        }
+        // Modelo inteiro.
+        if self.start_layer == 0 && self.peer_count <= 1 {
+            return true;
+        }
+        // Cauda de um pipeline fatiado — só a última camada tem o bloco.
+        if self.start_layer > 0 && self.peer_count > 1 {
+            return true;
+        }
+        false
     }
 
     fn validate(&self) -> Result<()> {
@@ -1114,7 +1125,7 @@ mod tests {
     }
 
     #[test]
-    fn mtp_is_off_on_a_slice_even_when_the_operator_asked_for_it() {
+    fn mtp_only_on_the_tail_of_a_split_and_on_a_whole_model() {
         let mut c = cfg();
         c.mtp_enabled = true;
         c.total_layers = 32;
@@ -1129,8 +1140,8 @@ mod tests {
         c.end_layer = 31;
         c.peer_index = 1;
         assert!(
-            !c.mtp_effective(),
-            "a cauda tem o bloco, mas quem monta o lote é a cabeça, noutra máquina"
+            c.mtp_effective(),
+            "a cauda de um pipeline fatiado tem o bloco nextn — é aqui que o rascunho nasce"
         );
     }
 

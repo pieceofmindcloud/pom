@@ -26,10 +26,12 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
   feature do plano inteiro (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,
   `CAP_SPECULATE_LOOKUP`), em vez de misturar modos no meio da cadeia.
 - `PipelinePlan::supports_mtp` - a exceção à regra all-or-nothing, e de
-  propósito: a **cabeça** precisa de `CAP_SPECULATE_MTP` (é ela quem monta o
-  lote, e o bloco `nextn` mora na última camada do modelo), **todos** precisam
-  de `CAP_SPECULATE_LOOKUP` (o lote maior que um token passa por eles). Ver
-  `inference/mtp.rs`.
+  propósito: a **cauda** precisa de `CAP_SPECULATE_MTP` (é ela quem tem o bloco
+  `nextn`, na última camada do modelo, e quem rascunha - o draft sai na própria
+  resposta direta, `next_draft`), **todos** precisam de `CAP_SPECULATE_LOOKUP`
+  e de `CAP_SPECULATE_MTP_SLICED` (o protocolo novo - `tokens`/`mtp_k`/
+  `next_draft` na wire - só existe em build novo; um peer velho no anel
+  receberia um `speculate` que não entende). Ver `inference/mtp.rs`.
 - `supports_direct_reply` - exige **todos** os passos com `CAP_RELAY_DIRECT`
   (`relay/v2-direct`, estritamente mais forte que `relay/v1-chain`: quem anuncia
   um também anuncia o outro) **e** pelo menos 2 hops - um plano de hop único já
@@ -55,7 +57,8 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
   (`resolve_step_url`).
 - **Consumido por**: `inference/relay.rs` e `inference/infer_server.rs` (as
   capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/`CAP_SPECULATE_LOOKUP`/
-  `CAP_SPECULATE_MTP` viajam em `next_hops` e no wire format); `inference/direct.rs` (o modo direto
+  `CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` viajam em `next_hops` e no
+  wire format); `inference/direct.rs` (o modo direto
   depende de `supports_direct_reply`); `inference/wire.rs` (dtype/codificação
   do tensor).
 - `network.rs::self_announce` pede sincronia com as constants de capability aqui.

@@ -703,6 +703,11 @@ impl Network {
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
+                    // Todo binário novo fala o protocolo do MTP fatiado
+                    // (rascunho pré-fabricado + tokens + mtp_k na wire);
+                    // `supports_mtp` exige a cap de todos os passos para
+                    // excluir peer velho do anel.
+                    "speculate/v1-mtp-sliced".into(),
                 ];
                 if self.mtp_ready() {
                     caps.push("speculate/v1-mtp".into());

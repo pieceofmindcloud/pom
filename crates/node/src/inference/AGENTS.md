@@ -146,12 +146,17 @@ executa a cadeia que o planejador montou.
   toda requisição (2026-08-15, Qwen3.8-27B). Sem `draft`, `speculated` é
   `false` e `batch_width` é 1.
 - `Speculate`/`DraftSource` (`infer_server.rs`) - o convite a rascunhar que
-  viaja no campo `speculate` do quadro: `{k, m, source}`. `source` é o que
-  separa os **dois** mecanismos, e eles não são o mesmo com números
-  diferentes. Quadro sem `source` é gateway antigo e vale `Lookup`.
+  viaja no campo `speculate` do quadro: `{k, m, source, draft?}` (`draft` é o
+  rascunho pré-fabricado que o gateway injeta no modo fatiado - a cabeça só
+  decodifica). `source` é o que separa os **dois** mecanismos, e eles não são o
+  mesmo com números diferentes. Quadro sem `source` é gateway antigo e vale
+  `Lookup`. `Speculate::to_meta`/`from_meta` e `DraftSource::wire` são o par
+  de serialização.
 - `should_draft(speculate, kv_can_shift, mtp_ready)` - `Mtp` exige as duas
   condições; `Lookup` só a primeira. Pedir MTP a um motor sem a cabeça `nextn`
-  é recusa, nunca troca silenciosa por lookup.
+  é recusa, nunca troca silenciosa por lookup. Na cauda de um pipeline fatiado
+  (`mtp_ready` falso) a cabeça ainda aceita rascunho pronto: `kv_can_shift` e
+  `speculate.draft` presente bastam.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
 - `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
@@ -243,9 +248,10 @@ executa a cadeia que o planejador montou.
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
   speculative_k/lookup_window, mtp_enabled, mtp_draft_tokens,
   mtp_min_probability.
-- `NodeConfig::mtp_effective` - o MTP só liga em quem serve o modelo **inteiro**
-  (start_layer 0, end_layer cobrindo tudo, peer_count 1). Ver a seção "Predição
-  multi-token" abaixo.
+- `NodeConfig::mtp_effective` - o MTP liga em quem serve a última camada do
+  modelo (onde mora o bloco `nextn`): o modelo inteiro (start_layer 0,
+  peer_count 1) **ou** a cauda de um pipeline fatiado (start_layer > 0,
+  peer_count > 1). Ver a seção "Predição multi-token" abaixo.
 - `NodeRuntime::apply` - aplica a fatia e sobe o servidor Rust embutido
   (`infer_server::run`); muda a config → reinicia o servidor. Anota a fatia em
   `models/lastslice.rs` como **Pending** - mas a anotação só diz o que o `apply`
@@ -332,15 +338,21 @@ Duas coisas que parecem zelo e são a correção:
   **ou** `embd`, nunca os dois, e o MTP precisa dos dois; o ponteiro volta ao
   original antes do `llama_batch_free`, que liberaria memória do Rust.
 
-**Só entra em ação com uma máquina servindo o modelo inteiro**
-(`NodeConfig::mtp_effective`). O bloco `nextn` mora na última camada, ou seja
-na fatia final, e quem monta o lote é a cabeça: num pipeline de N nós são
-máquinas diferentes. Estender ao caso fatiado significa fazer o rascunho
-viajar da cauda para a cabeça - o caminho barato é a cauda anexar o rascunho à
-resposta que já volta ao gateway (`relay/v2-direct`), que o gateway então põe
-no `speculate` da rodada seguinte: **zero travessia extra**, e o custo real a
-medir é a taxa de aceitação, não a rede. Não foi feito; ver os pendentes no
-subsistema.
+**Liga no modelo inteiro e no pipeline fatiado.** Quem rascunha é a máquina que
+serve a última camada (o bloco `nextn` mora aí) e quem monta o lote é a cabeça;
+no caso fatiado são máquinas diferentes, e o rascunho viaja de trás para a
+frente **sem custo extra de travessia**: a cauda anexa `next_draft` à resposta
+da `relay/v2-direct` que já volta ao gateway, o gateway o injeta no
+`speculate.draft` da rodada seguinte, e a cabeça só decodifica (`should_draft`
+aceita draft pronto com `kv_can_shift`, mesmo sem `mtp_ready`). A cabeça ecoa a
+composição do lote (`tokens`) e a largura pedida (`mtp_k`) no reply, os hops do
+meio repassam, e a cauda alimenta o `observe` com isso
+(`decode_hidden(..., tokens)`) - sem o eco, o `observe` desliga o MTP com aviso,
+e a resposta continua correta, só não especulativa. `PipelinePlan::supports_mtp`
+exige `speculate/v1-mtp-sliced` em **todos** os hops (o protocolo `tokens`/
+`mtp_k`/`next_draft` só existe em build novo) e `speculate/v1-mtp` na cauda.
+Cauda híbrida/recorrente (`kv_can_shift` falso) não devolve `next_draft`; o
+gateway para de pedir pelo resto da requisição, como no prompt-lookup.
 
 **Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
 prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,
@@ -355,8 +367,9 @@ unidade mas **não** tem número medido de ponta a ponta.
   direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),
   `routing/pipeline.rs` (as capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
-  `CAP_SPECULATE_LOOKUP`/`CAP_SPECULATE_MTP` decidem anel vs direto vs hub, o
-  wire format por hop e qual das duas especulações roda).
+  `CAP_SPECULATE_LOOKUP`/`CAP_SPECULATE_MTP`/`CAP_SPECULATE_MTP_SLICED` decidem
+  anel vs direto vs hub, o wire format por hop e qual das duas especulações
+  roda).
 - **Chama**: `llm.rs` (decode/hidden_state), `wire.rs` (encode/decode do
   frame), `relay.rs` (send_frame). `runtime.rs` consome `models/model.rs`
   (`LayerAssignment`, `ModelProfile`) e `network.rs`.

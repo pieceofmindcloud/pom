@@ -777,6 +777,7 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
+        "speculate/v1-mtp-sliced",
     ];
     if s.engine.mtp_ready() {
         caps.push("speculate/v1-mtp");
@@ -928,6 +929,12 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         .get("prompt")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
+    // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
+    // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
+    let chunk_tokens: Option<Vec<i32>> = meta
+        .get("tokens")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
 
     // Scale the hidden state once before moving into spawn_blocking.
     let input_prepare_started = Instant::now();
@@ -958,6 +965,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
             wire_dtype,
             prompt,
             tensor,
+            chunk_tokens,
             queued_at,
         )
     })
@@ -1031,7 +1039,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
             return direct_ack();
         };
 
-        let forward = json!({
+        let mut forward = json!({
             "session_id": sid_for_forward,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
@@ -1039,6 +1047,9 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        if let Some(tokens) = local_meta.get("tokens") {
+            forward["tokens"] = tokens.clone();
+        }
         tokio::spawn(forward_direct(
             hops,
             "/v1/prefill",
@@ -1078,12 +1089,18 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
         http_client(),
         &hops,
         "/v1/prefill",
-        json!({
-            "session_id": sid_for_forward,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_final_chunk": is_final_chunk_for_forward,
-        }),
+        {
+            let mut relay_meta = json!({
+                "session_id": sid_for_forward,
+                "chunk_index": chunk_index,
+                "chunk_size": chunk_size,
+                "is_final_chunk": is_final_chunk_for_forward,
+            });
+            if let Some(tokens) = local_meta.get("tokens") {
+                relay_meta["tokens"] = tokens.clone();
+            }
+            relay_meta
+        },
         (&residual, shape),
         crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
         local_meta["processing_ms"].clone(),
@@ -1185,6 +1202,12 @@ fn prefill_blocking(
     wire_dtype: WireDtype,
     prompt: Option<String>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
+    // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
+    // prompt; hops do meio ecoam): alimenta o `observe` da cabeça `nextn`
+    // dentro do `decode_hidden`. `None` é peer antigo que não encaminha o
+    // campo — o `decode_hidden` desliga o MTP com aviso.
+    chunk_tokens: Option<Vec<i32>>,
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
@@ -1272,9 +1295,14 @@ fn prefill_blocking(
     let engine_timing;
     if let Some((hidden, shape)) = tensor {
         n_tokens = shape[0];
-        engine_timing = s
-            .engine
-            .decode_hidden(&hidden, n_tokens, n_past, seq_id, !is_last)?;
+        engine_timing = s.engine.decode_hidden(
+            &hidden,
+            n_tokens,
+            n_past,
+            seq_id,
+            !is_last,
+            chunk_tokens.as_deref(),
+        )?;
     } else {
         if tokens_for_chunk.is_empty() {
             bail!("chunk {chunk_index} não tem tokens");
@@ -1369,21 +1397,30 @@ fn prefill_blocking(
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let n_embd = s.engine.n_embd;
+    let mut reply_meta = json!({
+        "done": false,
+        "more_chunks": more,
+        "n_prompt_tokens": n_prompt_tokens,
+        // Only meaningful when true: whether *this* peer is the one that
+        // tokenized the prompt, i.e. whether `more_chunks`/`n_prompt_tokens`
+        // above are its own authoritative determination rather than the
+        // `false`/`0` placeholder every other peer replies with. Ring
+        // mode's relay-and-bubble uses this to know which hop's reply is
+        // allowed to overwrite what the tail bubbles back — see
+        // `handle_prefill`.
+        "owns_tokens": owns_tokens,
+    });
+    // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
+    // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
+    // meio ecoam o que receberam.
+    if owns_tokens {
+        reply_meta["tokens"] = json!(tokens_for_chunk);
+    } else if let Some(tokens) = &chunk_tokens {
+        reply_meta["tokens"] = json!(tokens);
+    }
     let encode_started = Instant::now();
     let bytes = wire::encode(
-        &json!({
-            "done": false,
-            "more_chunks": more,
-            "n_prompt_tokens": n_prompt_tokens,
-            // Only meaningful when true: whether *this* peer is the one that
-            // tokenized the prompt, i.e. whether `more_chunks`/`n_prompt_tokens`
-            // above are its own authoritative determination rather than the
-            // `false`/`0` placeholder every other peer replies with. Ring
-            // mode's relay-and-bubble uses this to know which hop's reply is
-            // allowed to overwrite what the tail bubbles back — see
-            // `handle_prefill`.
-            "owns_tokens": owns_tokens,
-        }),
+        &reply_meta,
         Some((&residual, [n_tokens, n_embd])),
         wire_dtype,
     )?;
@@ -1435,6 +1472,15 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
     let incoming_draft: Option<Vec<i32>> = meta
         .get("draft")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
+    // A composição do lote decodificado na cabeça, ecoada de hop em hop até a
+    // cauda — é o que alimenta o `observe` da cabeça `nextn` (ver o doc de
+    // `batch_tokens` em `step_blocking`). Ausente é peer antigo.
+    let batch_tokens: Option<Vec<i32>> = meta
+        .get("tokens")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    // A largura de lote que o gateway quer na rodada seguinte, gerada na
+    // cabeça (do `speculate`) e ecoada até a cauda (ver o doc de `mtp_k`).
+    let mtp_k: Option<u32> = meta.get("mtp_k").and_then(|v| v.as_u64()).map(|v| v as u32);
 
     let input_prepare_started = Instant::now();
     let tensor = match tensor {
@@ -1463,6 +1509,8 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
             tensor,
             speculate,
             incoming_draft,
+            batch_tokens,
+            mtp_k,
             queued_at,
         )
     })
@@ -1541,6 +1589,12 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         if let Some(draft) = local_meta.get("draft") {
             forward["draft"] = draft.clone();
         }
+        if let Some(tokens) = local_meta.get("tokens") {
+            forward["tokens"] = tokens.clone();
+        }
+        if let Some(mtp_k) = local_meta.get("mtp_k") {
+            forward["mtp_k"] = mtp_k.clone();
+        }
         tokio::spawn(forward_direct(
             hops,
             "/v1/step",
@@ -1580,6 +1634,14 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
     // `incoming_draft` relies on above.
     if let Some(draft) = local_meta.get("draft") {
         forward_meta["draft"] = draft.clone();
+    }
+    // Idem para `tokens`/`mtp_k` — o que mantém a cauda observando o lote e
+    // rascunhando a medida certa (ver os docs de `batch_tokens`/`mtp_k`).
+    if let Some(tokens) = local_meta.get("tokens") {
+        forward_meta["tokens"] = tokens.clone();
+    }
+    if let Some(mtp_k) = local_meta.get("mtp_k") {
+        forward_meta["mtp_k"] = mtp_k.clone();
     }
 
     let bubbled = match relay_and_bubble(
@@ -1814,7 +1876,12 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 pub(crate) fn should_draft(speculate: Option<Speculate>, kv_can_shift: bool, mtp_ready: bool) -> bool {
     match speculate {
         None => false,
-        Some(s) if s.source == DraftSource::Mtp => kv_can_shift && mtp_ready,
+        Some(s) if s.source == DraftSource::Mtp => {
+            // MTP exige KV deslocável. O rascunho pode nascer aqui (bloco
+            // `nextn` local, máquina única) ou vir pronto do gateway (a cauda
+            // de um pipeline fatiado o produziu na rodada anterior).
+            kv_can_shift && (mtp_ready || s.draft.is_some())
+        }
         Some(_) => kv_can_shift,
     }
 }
@@ -1827,7 +1894,7 @@ pub(crate) fn should_draft(speculate: Option<Speculate>, kv_can_shift: bool, mtp
 /// é o bloco `nextn` treinado dentro do GGUF (`crate::mtp`). Um `speculate`
 /// sem `source` vem de um gateway antigo e vale `Lookup`, que é o que ele
 /// sempre quis dizer.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone)]
 pub(crate) struct Speculate {
     /// Largura do lote: o token confirmado mais até `k - 1` palpites.
     pub k: u32,
@@ -1835,12 +1902,26 @@ pub(crate) struct Speculate {
     /// história nenhuma.
     pub m: u32,
     pub source: DraftSource,
+    /// Rascunho pronto, produzido pela cauda num pipeline fatiado. A cabeça usa
+    /// este em vez de chamar `mtp_draft`. `None` significa que a cabeça deve
+    /// produzir o próprio rascunho (modelo inteiro) ou que não há rascunho.
+    pub draft: Option<Vec<i32>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DraftSource {
     Lookup,
     Mtp,
+}
+
+impl DraftSource {
+    /// O nome no fio (wire), espelhando o `DraftSource::wire` de `prefill.rs`.
+    pub(crate) fn wire(&self) -> &'static str {
+        match self {
+            DraftSource::Lookup => "lookup",
+            DraftSource::Mtp => "mtp",
+        }
+    }
 }
 
 impl Speculate {
@@ -1851,15 +1932,30 @@ impl Speculate {
     /// contrato sem nunca ter sido conferida contra esta.
     pub(crate) fn from_meta(meta: &Value) -> Option<Self> {
         let v = meta.get("speculate")?;
+        let draft = v.get("draft").and_then(|d| {
+            d.as_array().map(|a| a.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect())
+        });
         Some(Speculate {
             k: v.get("k")?.as_u64()? as u32,
             m: v.get("m")?.as_u64()? as u32,
             source: match v.get("source").and_then(|s| s.as_str()) {
                 Some("mtp") => DraftSource::Mtp,
-                // Ausente é um gateway antigo, que só conhecia o lookup.
                 _ => DraftSource::Lookup,
             },
+            draft,
         })
+    }
+
+    /// Serializa o convite para o campo `speculate` do quadro — a contraparte
+    /// de `from_meta`. O gateway a usa para injetar, no `step` de um pipeline
+    /// fatiado, o rascunho que a cauda produziu na rodada anterior
+    /// (`draft` preenchido).
+    pub(crate) fn to_meta(&self) -> Value {
+        let mut v = json!({"k": self.k, "m": self.m, "source": self.source.wire()});
+        if let Some(draft) = &self.draft {
+            v["draft"] = json!(draft);
+        }
+        v
     }
 }
 
@@ -1928,6 +2024,7 @@ mod speculative_tests {
             k,
             m,
             source: DraftSource::Lookup,
+            draft: None,
         })
     }
 
@@ -1936,6 +2033,7 @@ mod speculative_tests {
             k,
             m: 0,
             source: DraftSource::Mtp,
+            draft: None,
         })
     }
 
@@ -2121,6 +2219,16 @@ fn step_blocking(
     // through the *new* wire format, since the caller committed to it by
     // asking to speculate in the first place.
     incoming_draft: Option<Vec<i32>>,
+    // A composição do lote decodificado na cabeça, viajando pela wire (`tokens`)
+    // para a cauda. É o que alimenta o `observe` da cabeça `nextn` dentro do
+    // `decode_hidden`: a cauda sabe *quais* tokens o tronco decodificou, e sem
+    // eles a cabeça de rascunho não se mantém em dia. `None` é peer antigo que
+    // não encaminha o campo — aí o `decode_hidden` desliga o MTP com aviso.
+    batch_tokens: Option<Vec<i32>>,
+    // Largura de lote que o gateway quer na rodada seguinte, vinda da cabeça
+    // via `mtp_k` na wire. Só a cauda usa (para rascunhar a medida certa); a
+    // cabeça a ecoa a partir do próprio `speculate` (`mtp_k_hint`).
+    mtp_k: Option<u32>,
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut timings = NodeTimings {
@@ -2144,15 +2252,32 @@ fn step_blocking(
     let decode_started = Instant::now();
     let engine_timing;
     let mut head_draft: Option<Vec<i32>> = None;
+    // A composição do lote que este hop decodificou, para o reply não-cauda.
+    // Inicializada nos dois branches (tensor e cabeça) antes de qualquer
+    // leitura, por isso sem valor inicial — ver o uso no reply_meta.
+    let reply_tokens;
+    // Ecoado no reply não-cauda: na cabeça nasce do `speculate` (mtp_k_hint),
+    // nos hops do meio repassa o que chegou da wire. É como a cauda descobre a
+    // largura de lote que o gateway quer na rodada seguinte.
+    let mut mtp_k_echo: Option<u32> = None;
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
-        // handling here beyond what chunked prefill already exercises.
+        // handling here beyond what chunked prefill already exercises. A cauda
+        // de pipeline fatiado tem o bloco `nextn`: o `decode_hidden` alimenta
+        // o `observe` com a composição do lote (`batch_tokens`, vinda da
+        // cabeça via `tokens` na wire); sem ela, ele desliga o MTP com aviso.
         n_tokens = shape[0];
         let logits_all = incoming_draft.is_some() || !is_last;
         engine_timing = s
             .engine
-            .decode_hidden(&hidden, n_tokens, n_past, seq_id, logits_all)?;
+            .decode_hidden(&hidden, n_tokens, n_past, seq_id, logits_all, batch_tokens.as_deref())?;
+        // `batch_tokens` segue vivo: a cauda usa-o no gate do `next_draft`
+        // (verificação) e no caminho plain.
+        reply_tokens = batch_tokens.clone();
+        // `Option<u32>` é Copy — o `mtp_k` do parâmetro continua vivo para o
+        // caminho plain da cauda.
+        mtp_k_echo = mtp_k;
     } else {
         // First peer: receives the token ID sampled by the previous last peer.
         let tid = token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
@@ -2163,26 +2288,33 @@ fn step_blocking(
         // prompt-lookup drafting below needs the head's history to search.
         s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(tid);
 
-        let pode_rascunhar = should_draft(speculate, s.engine.kv_can_shift(), s.engine.mtp_ready());
+        // A largura de lote que o gateway quer na rodada seguinte, extraída do
+        // `speculate` que a cabeça recebeu e ecoada na resposta — é como a
+        // cauda descobre a medida do rascunho (ver `mtp_k` no doc do parâmetro).
+        let mtp_k_hint = speculate
+            .as_ref()
+            .filter(|s| s.source == DraftSource::Mtp)
+            .map(|s| s.k);
+        let pode_rascunhar = should_draft(speculate.clone(), s.engine.kv_can_shift(), s.engine.mtp_ready());
         let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| pode_rascunhar) {
-            let draft = match spec.source {
-                // O bloco `nextn` do próprio modelo: uma cabeça treinada, que
-                // olha o estado oculto do tronco em vez de procurar repetição
-                // no texto. Ver `crate::mtp`.
-                DraftSource::Mtp => {
-                    let p_min = s.mtp_min_probability;
-                    s.engine
-                        .mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
-                }
-                DraftSource::Lookup => {
-                    let session = &s.sessions[&sid_key];
-                    let history: Vec<i32> = session
-                        .prompt_tokens
-                        .iter()
-                        .chain(session.recent_tokens.iter())
-                        .copied()
-                        .collect();
-                    find_draft(&history, spec.m as usize, spec.k)
+            let draft: Vec<i32> = if let Some(premade) = spec.draft {
+                premade
+            } else {
+                match spec.source {
+                    DraftSource::Mtp => {
+                        let p_min = s.mtp_min_probability;
+                        s.engine.mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
+                    }
+                    DraftSource::Lookup => {
+                        let session = &s.sessions[&sid_key];
+                        let history: Vec<i32> = session
+                            .prompt_tokens
+                            .iter()
+                            .chain(session.recent_tokens.iter())
+                            .copied()
+                            .collect();
+                        find_draft(&history, spec.m as usize, spec.k)
+                    }
                 }
             };
             let mut batch = Vec::with_capacity(1 + draft.len());
@@ -2196,6 +2328,15 @@ fn step_blocking(
         n_tokens = batch.len();
         let logits_all = head_draft.is_some() || !is_last;
         engine_timing = s.engine.decode_tokens(&batch, n_past, seq_id, logits_all)?;
+        // A composição do lote decodificado na cabeça — o que a cauda precisa
+        // para o `observe`. Viaja no reply não-cauda e é ecoada até ela.
+        reply_tokens = Some(batch);
+        // Ecoa a largura de lote pedida para a cauda rascunhar. `mtp_k` do
+        // parâmetro fica vivo para o caminho plain da cauda (o `or` usa uma
+        // cópia).
+        if let Some(k) = mtp_k_hint.or(mtp_k) {
+            mtp_k_echo = Some(k);
+        }
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.backend_enqueue_us += engine_timing.enqueue_us;
@@ -2250,10 +2391,41 @@ fn step_blocking(
             // isto ela pareia o token confirmado com o `h` de uma posição que
             // foi descartada, e o rascunho seguinte degenera em silêncio.
             s.engine.mtp_accept(accept_len);
+
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
             let accepted_texts = &texts[..keep];
             let done = accepted_ids.last().copied() == Some(eos);
+
+            // Rascunho para a rodada seguinte. Numa máquina só ele alimenta
+            // o mesmo processo; num pipeline fatiado ele viaja na resposta
+            // direta de volta ao gateway (`relay/v2-direct`), que o injeta
+            // no `speculate.draft` da próxima rodada — zero travessia extra.
+            //
+            // O `batch_tokens` presente é o que garante que esta é a cauda de
+            // um pipeline (a composição do lote veio de fora, via `tokens`):
+            // numa máquina só a cabeça é a própria cauda e não há para onde
+            // devolver o rascunho.
+            let next_draft: Option<Vec<i32>> =
+                if s.engine.mtp_ready() && !done && batch_tokens.is_some() {
+                    // A sessão já avançou `n_tokens`; só as primeiras `keep`
+                    // posições foram confirmadas, então o próximo slot livre do
+                    // tronco é `n_past - (n_tokens - keep)`.
+                    let session_n_past = s.sessions[&sid_key].n_past;
+                    let n_past_next = session_n_past - (n_tokens as u32 - keep as u32);
+                    let id0 = *accepted_ids.last().unwrap_or(&eos);
+                    let p_min = s.mtp_min_probability;
+                    let dr = s.engine.mtp_draft(
+                        id0,
+                        n_past_next,
+                        seq_id,
+                        draft.len() as u32,
+                        p_min,
+                    );
+                    if dr.is_empty() { None } else { Some(dr) }
+                } else {
+                    None
+                };
 
             s.sessions
                 .get_mut(&sid_key)
@@ -2276,6 +2448,7 @@ fn step_blocking(
                     "accepted": accepted,
                     "accept_count": keep as u32,
                     "batch_width": n_tokens as u32,
+                    "next_draft": next_draft,
                 }),
                 None,
                 wire_dtype,
@@ -2317,12 +2490,34 @@ fn step_blocking(
         timings.top_p_us += sampling_timing.top_p_us;
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
+
+        // A cauda de um pipeline fatiado também rascunha na rodada em que a
+        // cabeça recusou — a primeira, quando ainda não há rascunho pronto
+        // para viajar. O `mtp_k` veio da cabeça (via `mtp_k` na wire): é a
+        // largura de lote que o gateway quer na rodada seguinte. O
+        // `mtp_accept(0)` confirma o `pending_h` da linha do token recém
+        // decodificado; sem ele o draft seguinte usaria a linha de uma posição
+        // anterior e parearia errado. Rodada de modelo inteiro recusada não
+        // tem `mtp_k` — nada a devolver, e não há segunda máquina esperando.
+        let next_draft: Option<Vec<i32>> = if s.engine.mtp_ready() && !done {
+            if let Some(k) = mtp_k {
+                s.engine.mtp_accept(0);
+                let session_n_past = s.sessions[&sid_key].n_past;
+                let p_min = s.mtp_min_probability;
+                let dr = s.engine.mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
+                if dr.is_empty() { None } else { Some(dr) }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         let encode_started = Instant::now();
-        let bytes = wire::encode(
-            &json!({"done": done, "token_id": next_id, "text": text}),
-            None,
-            wire_dtype,
-        )?;
+        let mut reply = json!({"done": done, "token_id": next_id, "text": text});
+        if let Some(nd) = &next_draft {
+            reply["next_draft"] = json!(nd);
+        }
+        let bytes = wire::encode(&reply, None, wire_dtype)?;
         timings.encode_us += encode_started.elapsed().as_micros() as u64;
         return Ok(TimedReply { bytes, timings });
     }
@@ -2336,6 +2531,16 @@ fn step_blocking(
     // than recomputed at each hop.
     if let Some(draft) = &draft {
         reply_meta["draft"] = json!(draft);
+    }
+    // A composição do lote decodificado (ver `batch_tokens`) e a largura de
+    // lote da próxima rodada (ver `mtp_k`) viajam da cabeça para a cauda —
+    // são o que mantém a cabeça `nextn` da cauda em dia e rascunhando a
+    // medida certa.
+    if let Some(tokens) = &reply_tokens {
+        reply_meta["tokens"] = json!(tokens);
+    }
+    if let Some(k) = mtp_k_echo {
+        reply_meta["mtp_k"] = json!(k);
     }
     let encode_started = Instant::now();
     let bytes = wire::encode(

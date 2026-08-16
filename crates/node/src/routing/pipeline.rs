@@ -124,6 +124,19 @@ pub const CAP_SPECULATE_LOOKUP: &str = "speculate/v1-lookup";
 /// que é exatamente o que `supports_mtp` exige deles.
 pub const CAP_SPECULATE_MTP: &str = "speculate/v1-mtp";
 
+/// Anunciada por todo binário novo, incondicionalmente, para marcar que ele
+/// fala o protocolo do MTP fatiado: o `speculate` com `draft` pré-fabricado, o
+/// campo `tokens` (que dá à cauda a composição do lote para o `observe`) e o
+/// campo `mtp_k` (a largura de lote pedida pelo gateway).
+///
+/// É **all-or-nothing** de novo, e o motivo é fechamento de buraco: um peer
+/// velho só tem `CAP_SPECULATE_MTP`/`CAP_SPECULATE_LOOKUP` e, sem esta cap,
+/// `supports_mtp` deixaria um anel misto passar — a cabeça velha receberia um
+/// `speculate {source: Mtp, draft}` que ela não entende, e a cauda nova
+/// produziria um `next_draft` que ela ignora. Exigir a cap de **todos** os
+/// passos exclui o cenário de uma vez, em vez de conviver com ele.
+pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
+
 /// Advertised when a node's libp2p swarm has actually come up
 /// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
 /// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
@@ -229,14 +242,26 @@ impl PipelinePlan {
 
     /// Este plano pode rascunhar pelo bloco `nextn` do modelo?
     ///
-    /// Duas exigências, e elas caem em lugares diferentes de propósito: a
-    /// **cabeça** tem que ter a cabeça de rascunho ([`CAP_SPECULATE_MTP`]),
-    /// porque é ela quem monta o lote; **todos** têm que saber decodificar um
-    /// lote maior que um token ([`CAP_SPECULATE_LOOKUP`]), porque o lote passa
-    /// por eles. Ver a nota em `CAP_SPECULATE_MTP` para por que o bloco só
-    /// existe numa ponta.
+    /// O bloco mora na última camada, portanto na **cauda** do pipeline - é
+    /// ela quem anuncia `CAP_SPECULATE_MTP`. A cabeça (que monta o lote)
+    /// recebe o rascunho pronto do gateway, que por sua vez o colheu da
+    /// resposta direta da cauda na rodada anterior (`docs/subsystems/
+    /// inferencia.md` §5.2). **Todos** precisam de `CAP_SPECULATE_LOOKUP`
+    /// porque o lote maior que um token passa por eles, e **todos** precisam
+    /// de `CAP_SPECULATE_MTP_SLICED` porque o protocolo novo (rascunho
+    /// pré-fabricado + `tokens` + `mtp_k` na wire) só existe em binários
+    /// novos — um peer velho no anel receberia um `speculate` que não entende.
     pub fn supports_mtp(&self) -> bool {
-        self.supports_speculation() && self.steps[0].supports(CAP_SPECULATE_MTP)
+        !self.steps.is_empty()
+            && self.steps.iter().all(|s| s.supports(CAP_SPECULATE_LOOKUP))
+            && self
+                .steps
+                .iter()
+                .all(|s| s.supports(CAP_SPECULATE_MTP_SLICED))
+            && self
+                .steps
+                .last()
+                .is_some_and(|s| s.supports(CAP_SPECULATE_MTP))
     }
 }
 
@@ -532,25 +557,30 @@ mod ipv6_tests {
         }
     }
 
-    /// A exigência do MTP cai em lugares diferentes de propósito: a cabeça
-    /// precisa da cabeça de rascunho, todos precisam saber decodificar um lote.
+    /// A exigência do MTP cai na **cauda**, que tem o bloco `nextn`. Todos
+    /// precisam saber decodificar um lote, porque o rascunho viaja para a cabeça.
     #[test]
-    fn mtp_needs_the_head_to_have_the_nextn_head_and_everyone_to_batch() {
-        let com_mtp = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP][..];
-        let so_lote = &[CAP_SPECULATE_LOOKUP][..];
+    fn mtp_needs_the_tail_to_have_nextn_and_everyone_to_batch() {
+        let com_mtp = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP, CAP_SPECULATE_MTP_SLICED][..];
+        let so_lote = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP_SLICED][..];
+        let antigo = &[CAP_SPECULATE_LOOKUP][..];
 
         assert!(plan_of(vec![step(com_mtp)]).supports_mtp(), "uma máquina só");
         assert!(
-            plan_of(vec![step(com_mtp), step(so_lote)]).supports_mtp(),
-            "a cauda não precisa da cabeça de rascunho, só saber decodificar o lote"
+            plan_of(vec![step(so_lote), step(com_mtp)]).supports_mtp(),
+            "a cauda tem o bloco — é ela quem rascunha, o gateway leva o rascunho à cabeça"
         );
         assert!(
-            !plan_of(vec![step(so_lote), step(com_mtp)]).supports_mtp(),
-            "o bloco nextn na cauda não serve: quem monta o lote é a cabeça"
+            !plan_of(vec![step(com_mtp), step(so_lote)]).supports_mtp(),
+            "a cauda sem o bloco não pode rascunhar"
         );
         assert!(
             !plan_of(vec![step(com_mtp), step(&[])]).supports_mtp(),
             "um hop que não decodifica lote quebra a rodada inteira"
+        );
+        assert!(
+            !plan_of(vec![step(so_lote), step(antigo)]).supports_mtp(),
+            "um peer velho no anel não entende o speculate novo — a cap nova é exigida em todos"
         );
         assert!(!plan_of(vec![]).supports_mtp());
     }

@@ -270,7 +270,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         // `mtp_ready` é falso nesta bancada: ela move quadros entre processos
         // fingidos, sem motor nenhum, então a única fonte de rascunho que ela
         // pode exercer de verdade é o lookup.
-        if crate::infer_server::should_draft(speculate, hop.kv_can_shift, false) {
+        if crate::infer_server::should_draft(speculate.clone(), hop.kv_can_shift, false) {
             let spec = speculate.expect("should_draft implica speculate");
             // Histórico fabricado com um padrão que se repete, para
             // `find_draft` ter o que achar.

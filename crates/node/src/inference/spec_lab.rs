@@ -257,12 +257,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         hop.direct_steps.fetch_add(1, Ordering::Relaxed);
     }
 
-    let speculate: Option<(u32, u32)> = inc.meta.get("speculate").and_then(|v| {
-        Some((
-            v.get("k")?.as_u64()? as u32,
-            v.get("m")?.as_u64()? as u32,
-        ))
-    });
+    let speculate = crate::infer_server::Speculate::from_meta(&inc.meta);
     let incoming_draft: Option<Vec<i32>> = inc
         .meta
         .get("draft")
@@ -272,12 +267,15 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
     let mut head_draft: Option<Vec<i32>> = None;
     let mut n_positions = 1usize;
     if hop.is_head {
-        if crate::infer_server::should_draft(speculate, hop.kv_can_shift) {
-            let (k, m) = speculate.expect("should_draft implica speculate");
+        // `mtp_ready` é falso nesta bancada: ela move quadros entre processos
+        // fingidos, sem motor nenhum, então a única fonte de rascunho que ela
+        // pode exercer de verdade é o lookup.
+        if crate::infer_server::should_draft(speculate, hop.kv_can_shift, false) {
+            let spec = speculate.expect("should_draft implica speculate");
             // Histórico fabricado com um padrão que se repete, para
             // `find_draft` ter o que achar.
             let history: Vec<i32> = (0..24).map(|i| i % 4).collect();
-            let draft = crate::infer_server::find_draft(&history, m as usize, k);
+            let draft = crate::infer_server::find_draft(&history, spec.m as usize, spec.k);
             n_positions = 1 + draft.len();
             head_draft = Some(draft);
         }

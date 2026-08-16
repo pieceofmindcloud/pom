@@ -111,6 +111,19 @@ pub const CAP_RELAY_DIRECT: &str = "relay/v2-direct";
 /// one token per call. Same all-or-nothing-per-plan fallback rule.
 pub const CAP_SPECULATE_LOOKUP: &str = "speculate/v1-lookup";
 
+/// Anunciada quando o motor daquele nó conseguiu anexar a cabeça de rascunho
+/// `nextn` do próprio modelo - predição multi-token (MTP). Distinta de
+/// [`CAP_SPECULATE_LOOKUP`], que é a busca por repetição em
+/// `infer_server::find_draft` e não usa peso nenhum: ver `crate::mtp`.
+///
+/// Não é all-or-nothing como as outras. O bloco `nextn` mora na última camada
+/// do modelo, então num pipeline fatiado só a **cauda** o tem, e quem monta o
+/// lote é a **cabeça**. Por isso a condição é "a cabeça consegue rascunhar",
+/// que hoje é o mesmo que dizer que uma máquina serve o modelo inteiro; os
+/// demais hops só precisam saber decodificar um lote (`CAP_SPECULATE_LOOKUP`),
+/// que é exatamente o que `supports_mtp` exige deles.
+pub const CAP_SPECULATE_MTP: &str = "speculate/v1-mtp";
+
 /// Advertised when a node's libp2p swarm has actually come up
 /// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
 /// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
@@ -212,6 +225,18 @@ impl PipelinePlan {
     /// the tail, verify it.
     pub fn supports_speculation(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(|s| s.supports(CAP_SPECULATE_LOOKUP))
+    }
+
+    /// Este plano pode rascunhar pelo bloco `nextn` do modelo?
+    ///
+    /// Duas exigências, e elas caem em lugares diferentes de propósito: a
+    /// **cabeça** tem que ter a cabeça de rascunho ([`CAP_SPECULATE_MTP`]),
+    /// porque é ela quem monta o lote; **todos** têm que saber decodificar um
+    /// lote maior que um token ([`CAP_SPECULATE_LOOKUP`]), porque o lote passa
+    /// por eles. Ver a nota em `CAP_SPECULATE_MTP` para por que o bloco só
+    /// existe numa ponta.
+    pub fn supports_mtp(&self) -> bool {
+        self.supports_speculation() && self.steps[0].supports(CAP_SPECULATE_MTP)
     }
 }
 
@@ -505,6 +530,29 @@ mod ipv6_tests {
             steps,
             edges: Vec::new(),
         }
+    }
+
+    /// A exigência do MTP cai em lugares diferentes de propósito: a cabeça
+    /// precisa da cabeça de rascunho, todos precisam saber decodificar um lote.
+    #[test]
+    fn mtp_needs_the_head_to_have_the_nextn_head_and_everyone_to_batch() {
+        let com_mtp = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP][..];
+        let so_lote = &[CAP_SPECULATE_LOOKUP][..];
+
+        assert!(plan_of(vec![step(com_mtp)]).supports_mtp(), "uma máquina só");
+        assert!(
+            plan_of(vec![step(com_mtp), step(so_lote)]).supports_mtp(),
+            "a cauda não precisa da cabeça de rascunho, só saber decodificar o lote"
+        );
+        assert!(
+            !plan_of(vec![step(so_lote), step(com_mtp)]).supports_mtp(),
+            "o bloco nextn na cauda não serve: quem monta o lote é a cabeça"
+        );
+        assert!(
+            !plan_of(vec![step(com_mtp), step(&[])]).supports_mtp(),
+            "um hop que não decodifica lote quebra a rodada inteira"
+        );
+        assert!(!plan_of(vec![]).supports_mtp());
     }
 
     #[test]

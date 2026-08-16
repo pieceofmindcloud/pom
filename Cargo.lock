@@ -2824,6 +2824,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "axum",
+ "cc",
  "chrono",
  "clap",
  "ed25519-dalek 2.2.0",

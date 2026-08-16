@@ -41,6 +41,8 @@ mod lastslice;
 mod llm;
 #[path = "models/memory.rs"]
 mod memory;
+#[path = "inference/mtp.rs"]
+mod mtp;
 #[path = "backend/messages.rs"]
 mod messages;
 #[path = "models/model.rs"]
@@ -206,6 +208,16 @@ struct Args {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[arg(long, default_value = "512")]
     prefill_chunk_tokens: u32,
+
+    /// Predição multi-token pelo bloco `nextn` do modelo (MTP), quando ele
+    /// tiver um e este nó servir o modelo inteiro. Não é a "decodificação
+    /// especulativa" por lookup — ver `src/inference/mtp.rs`.
+    #[arg(long)]
+    mtp: bool,
+
+    /// Quantos tokens o MTP rascunha por rodada.
+    #[arg(long, default_value = "3")]
+    mtp_draft_tokens: u32,
 
     /// Sampling temperature for inference (0 = greedy).
     #[arg(long, default_value = "0.7")]
@@ -697,6 +709,9 @@ async fn main() -> Result<()> {
             speculative_decoding_enabled: false,
             speculative_k: 4,
             speculative_lookup_window: 3,
+            mtp_enabled: args.mtp,
+            mtp_draft_tokens: args.mtp_draft_tokens,
+            mtp_min_probability: 0.0,
         };
         if let Err(e) = node_runtime.apply(cfg).await {
             error!("não foi possível iniciar o servidor de inferência: {e:#}");

@@ -148,6 +148,25 @@ cauda. O número somado continua certo; dividido por hop, ele não existe.
 
 ## 5. Decodificação especulativa
 
+São **dois** mecanismos, com chaves de operador separadas, e nunca os dois na
+mesma rodada (o lote é um só, e misturar as fontes tornaria a taxa de aceitação
+impossível de atribuir). O gateway escolhe em `generate_stream`: com as duas
+ligadas e o plano capaz, vence o MTP.
+
+| | `speculative_decoding_enabled` | `mtp_enabled` |
+|---|---|---|
+| o que rascunha | `find_draft`: busca uma repetição do próprio final no texto já gerado | o bloco `nextn` treinado dentro do GGUF |
+| usa peso do modelo | não - é busca em array | sim, uma cabeça treinada |
+| quando acerta | saída repetitiva (código, listas, JSON) | texto qualquer, se o modelo trouxer o bloco |
+| capability | `speculate/v1-lookup` (todos os hops) | `speculate/v1-mtp` (**a cabeça**) + lookup em todos |
+| exige | `kv_can_shift` | `kv_can_shift` **e** a cabeça anexada |
+
+O campo que separa as duas no fio é `speculate.source` (`"lookup"` / `"mtp"`),
+lido por `infer_server::Speculate::from_meta`. Ausente é gateway antigo e vale
+`lookup`, que era a única especulação que existia quando ele foi escrito.
+
+### 5.1 Prompt-lookup
+
 `prefill::step_speculative` (prompt-lookup): a cabeça rascunha até `k` tokens a
 partir da própria história recente (procurando na janela de `m` tokens; o
 rascunho mais longo vence, e `m` degrada para `m-1, ..., 1`). O lote inteiro
@@ -186,6 +205,37 @@ extra), `accept_count` e `batch_width`.
   desvio direto - ela não recebe o parâmetro `direct` e continua no anel/hub
   mesmo quando o plano suportaria resposta direta. A decodificação especulativa
   nunca usa o caminho `relay/v2-direct`.
+
+### 5.2 Predição multi-token (MTP) - `inference/mtp.rs`
+
+O bloco `nextn` recebe o estado oculto do tronco na posição `p` com o embedding
+do token de `p+1` e prevê o token de `p+2`. É a cabeça de rascunho que o LM
+Studio liga quando oferece "MTP".
+
+- **O motor embarcado já sabe executá-lo.** `llama-cpp-sys-2` 0.1.154 traz
+  `LLAMA_CONTEXT_TYPE_MTP` e `llama_model_n_layer_nextn` nos bindings. As
+  outras quatro entradas (`llama_{set,get}_embeddings_nextn`,
+  `llama_set_nextn_layer_offset`) existem em `libllama.a` mas **não** nos
+  bindings, porque moram em `llama.cpp/src/llama-ext.h`, fora do `extern "C"`
+  de `llama.h` - o único cabeçalho que o `wrapper.h` da crate inclui. Ponte:
+  `inference/llama_mtp_shim.cpp`, compilada pelo `crates/node/build.rs`.
+- **Custa um contexto, não um modelo.** O contexto de rascunho é criado sobre
+  **os mesmos pesos** (`llama_init_from_model` com `ctx_type = MTP`); o que ele
+  acrescenta é um cache KV de uma camada.
+- **Só liga com uma máquina servindo o modelo inteiro**
+  (`NodeConfig::mtp_effective`, e a capability é conferida na cabeça do plano
+  por `PipelinePlan::supports_mtp`). O bloco mora na última camada - ou seja,
+  na fatia final - e quem monta o lote é a cabeça. Num pipeline fatiado são
+  máquinas diferentes.
+- **O que custaria estender ao caso fatiado**, medido em travessias e não em
+  suposição: a cauda já responde direto ao originador (`relay/v2-direct`), e
+  ela é justamente quem tem o bloco. Anexar o rascunho àquela resposta e o
+  gateway pô-lo no `speculate` da rodada seguinte não acrescenta **nenhuma**
+  travessia. O custo real a medir no caso fatiado é a taxa de aceitação (o
+  rascunho nasce uma rodada antes de ser usado, então ele prevê `p+2` a partir
+  de `p`, exatamente como no caso local), e não a rede. Não foi implementado.
+- A fatia final é a única que carrega o bloco porque `splitter::split` zera
+  `<arch>.nextn_predict_layers` fora dela - ver `docs/subsystems/fatiamento.md`.
 
 ## 6. Planejamento do pipeline (`routing/pipeline.rs`)
 
@@ -298,6 +348,13 @@ prompt e recusa com uma mensagem citando as flags.
   direto (ver seção 5) - a especulação continua no anel/hub.
 - **Sem cobertura de teste**: os quatro modos de falha do modo direto e a
   especulação no desvio direto (ver seção 8).
+- **MTP sem medição de tok/s** (2026-08-16, cortado por cota): a implementação
+  está completa e verde nos testes de unidade, mas o ganho ponta a ponta não
+  foi medido neste projeto. O que existe é a medição do captain no LM Studio,
+  no mesmo modelo e hardware: **21 → 35 tok/s** no Qwen3.8-27B-Q3_K_S. Enquanto
+  não houver número medido aqui, o ganho no rdma-p2p é expectativa, não fato.
+- **MTP não estendido ao caso fatiado** (ver seção 5.2 para o desenho e o
+  custo).
 
 ## Nota de versão
 

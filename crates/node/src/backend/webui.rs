@@ -951,6 +951,15 @@ pub struct RuntimeParams {
     pub speculative_k: u32,
     #[serde(default = "d_speculative_lookup_window")]
     pub speculative_lookup_window: u32,
+    /// Predição multi-token pelo bloco `nextn` do modelo. Interruptor
+    /// separado do de cima de propósito: são mecanismos diferentes, e só
+    /// este usa peso treinado do modelo. Ver `crate::mtp`.
+    #[serde(default)]
+    pub mtp_enabled: bool,
+    #[serde(default = "d_mtp_draft_tokens")]
+    pub mtp_draft_tokens: u32,
+    #[serde(default = "d_mtp_min_probability")]
+    pub mtp_min_probability: f32,
 }
 
 fn d_gpu_layers() -> u32 {
@@ -995,6 +1004,12 @@ fn d_speculative_k() -> u32 {
 fn d_speculative_lookup_window() -> u32 {
     3
 }
+fn d_mtp_draft_tokens() -> u32 {
+    3
+}
+fn d_mtp_min_probability() -> f32 {
+    0.0
+}
 
 impl Default for RuntimeParams {
     fn default() -> Self {
@@ -1016,6 +1031,9 @@ impl Default for RuntimeParams {
             speculative_decoding_enabled: false,
             speculative_k: d_speculative_k(),
             speculative_lookup_window: d_speculative_lookup_window(),
+            mtp_enabled: false,
+            mtp_draft_tokens: d_mtp_draft_tokens(),
+            mtp_min_probability: d_mtp_min_probability(),
         }
     }
 }
@@ -1045,6 +1063,9 @@ impl From<&NodeConfig> for RuntimeParams {
             speculative_decoding_enabled: c.speculative_decoding_enabled,
             speculative_k: c.speculative_k,
             speculative_lookup_window: c.speculative_lookup_window,
+            mtp_enabled: c.mtp_enabled,
+            mtp_draft_tokens: c.mtp_draft_tokens,
+            mtp_min_probability: c.mtp_min_probability,
         }
     }
 }
@@ -1407,6 +1428,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         speculative_decoding_enabled: req.params.speculative_decoding_enabled,
         speculative_k: req.params.speculative_k,
         speculative_lookup_window: req.params.speculative_lookup_window,
+        mtp_enabled: req.params.mtp_enabled,
+        mtp_draft_tokens: req.params.mtp_draft_tokens,
+        mtp_min_probability: req.params.mtp_min_probability,
     };
 
     state.runtime.apply(cfg).await?;

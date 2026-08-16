@@ -84,6 +84,23 @@ pub struct NodeConfig {
     /// `find_draft` searches for a prior repeat of.
     #[serde(default = "default_speculative_lookup_window")]
     pub speculative_lookup_window: u32,
+    /// Predição multi-token pelo bloco `nextn` do próprio modelo.
+    ///
+    /// **Interruptor separado de `speculative_decoding_enabled` de
+    /// propósito**: são dois mecanismos diferentes, e o de cima
+    /// (prompt-lookup) não usa peso nenhum do modelo. Ver `crate::mtp` para
+    /// a diferença e `mtp_effective` para quando ele realmente entra em ação.
+    #[serde(default)]
+    pub mtp_enabled: bool,
+    /// Quantos tokens a cabeça `nextn` rascunha por rodada.
+    #[serde(default = "default_mtp_draft_tokens")]
+    pub mtp_draft_tokens: u32,
+    /// Confiança mínima para o rascunho continuar. Zero aceita qualquer
+    /// palpite (o padrão do llama.cpp); acima disso o rascunho para no
+    /// primeiro token duvidoso, em vez de alargar o lote de todos os hops
+    /// para uma aposta que a verificação vai recusar.
+    #[serde(default = "default_mtp_min_probability")]
+    pub mtp_min_probability: f32,
 }
 
 fn default_max_sessions() -> u32 {
@@ -100,6 +117,15 @@ fn default_speculative_k() -> u32 {
 }
 fn default_speculative_lookup_window() -> u32 {
     3
+}
+/// O mesmo padrão do `llama.cpp` (`common_params_speculative_draft::n_max`).
+fn default_mtp_draft_tokens() -> u32 {
+    3
+}
+/// Zero, como o `p_min` do llama.cpp: sem corte por confiança até que uma
+/// medição diga que cortar rende mais que rascunhar.
+fn default_mtp_min_probability() -> f32 {
+    0.0
 }
 
 impl NodeConfig {
@@ -126,6 +152,28 @@ impl NodeConfig {
         let serves_last_layer = self.end_layer + 1 >= self.total_layers;
         let last_in_split = self.peer_index + 1 >= self.peer_count;
         !serves_last_layer && !last_in_split
+    }
+
+    /// O MTP vale a pena **neste** nó?
+    ///
+    /// Só quando ele serve o modelo inteiro. O bloco `nextn` mora na última
+    /// camada, então numa pipeline fatiada quem consegue rascunhar é a cauda -
+    /// e quem monta o lote é a cabeça, do outro lado do anel. Ligar o MTP na
+    /// cauda de um pipeline não aceleraria nada e ainda pagaria o custo fixo:
+    /// `MtpDrafter::attach` liga a saída do estado oculto no contexto alvo
+    /// (`llama_set_embeddings_nextn`), que muda o grafo de toda decodificação.
+    ///
+    /// Que o modelo tenha ou não bloco `nextn` **não** se decide aqui: quem
+    /// sabe isso é o GGUF carregado, e `MtpDrafter::attach` devolve `None`
+    /// quando não tem.
+    pub fn mtp_effective(&self) -> bool {
+        if !self.mtp_enabled {
+            return false;
+        }
+        let serves_first_layer = self.start_layer == 0;
+        let serves_last_layer = self.end_layer + 1 >= self.total_layers;
+        let alone = self.peer_count <= 1;
+        serves_first_layer && serves_last_layer && alone
     }
 
     fn validate(&self) -> Result<()> {
@@ -383,6 +431,9 @@ impl NodeRuntime {
         };
         let port = cfg.inference_port;
         let cfg_for_health = cfg.clone();
+        // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
+        // Ver `Network::mtp_ready`.
+        let mtp_ready = self.net.mtp_ready_handle();
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -444,14 +495,23 @@ impl NodeRuntime {
                     }
                 }
 
-                match crate::infer_server::run(cfg.clone(), gen_rx.clone(), generation).await {
+                match crate::infer_server::run(
+                    cfg.clone(),
+                    gen_rx.clone(),
+                    generation,
+                    mtp_ready.clone(),
+                )
+                .await
+                {
                     Ok(()) => {
                         info!("servidor de inferência encerrado graciosamente");
                         append_log(port, "encerrado graciosamente");
+                        mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
+                        mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
@@ -893,6 +953,9 @@ mod tests {
             speculative_decoding_enabled: false,
             speculative_k: 4,
             speculative_lookup_window: 3,
+            mtp_enabled: false,
+            mtp_draft_tokens: 3,
+            mtp_min_probability: 0.0,
         }
     }
 
@@ -1033,6 +1096,56 @@ mod tests {
         c.peer_count = 2;
         c.end_layer = 15;
         assert!(!c.needs_residual_export());
+    }
+
+    /// O MTP só faz sentido em quem serve o modelo inteiro. O bloco `nextn`
+    /// mora na última camada e quem monta o lote é a cabeça: numa fatia, as
+    /// duas pontas são máquinas diferentes.
+    #[test]
+    fn mtp_only_where_one_machine_serves_the_whole_model() {
+        let mut c = cfg();
+        c.mtp_enabled = true;
+        c.start_layer = 0;
+        c.end_layer = 31;
+        c.total_layers = 32;
+        c.peer_count = 1;
+        c.peer_index = 0;
+        assert!(c.mtp_effective(), "0-31 de 32, sozinho: é o modelo inteiro");
+    }
+
+    #[test]
+    fn mtp_is_off_on_a_slice_even_when_the_operator_asked_for_it() {
+        let mut c = cfg();
+        c.mtp_enabled = true;
+        c.total_layers = 32;
+        c.peer_count = 2;
+
+        c.start_layer = 0;
+        c.end_layer = 15;
+        c.peer_index = 0;
+        assert!(!c.mtp_effective(), "a cabeça não tem o bloco nextn");
+
+        c.start_layer = 16;
+        c.end_layer = 31;
+        c.peer_index = 1;
+        assert!(
+            !c.mtp_effective(),
+            "a cauda tem o bloco, mas quem monta o lote é a cabeça, noutra máquina"
+        );
+    }
+
+    /// O interruptor desligado vence tudo: ligar o MTP muda o grafo de toda
+    /// decodificação (`llama_set_embeddings_nextn` no contexto alvo), então
+    /// ele não pode ser inferido de "o modelo tem o bloco".
+    #[test]
+    fn mtp_off_stays_off_on_a_whole_model() {
+        let mut c = cfg();
+        c.mtp_enabled = false;
+        c.start_layer = 0;
+        c.end_layer = 31;
+        c.total_layers = 32;
+        c.peer_count = 1;
+        assert!(!c.mtp_effective());
     }
 
     #[test]

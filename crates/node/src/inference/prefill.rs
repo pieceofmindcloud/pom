@@ -1231,6 +1231,7 @@ pub async fn step_speculative(
     token_id: u32,
     k: u32,
     m: u32,
+    source: DraftSource,
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
@@ -1238,11 +1239,36 @@ pub async fn step_speculative(
 ) -> Result<SpeculativeStep> {
     if plan.supports_relay_chain() {
         return step_speculative_ring(
-            plan, model, session_id, token_id, k, m, dtype, http, routes, tunnel,
+            plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
         )
         .await;
     }
-    step_speculative_hub(plan, model, session_id, token_id, k, m, dtype, http, routes, tunnel).await
+    step_speculative_hub(
+        plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
+    )
+    .await
+}
+
+/// De onde a cabeça deve tirar o rascunho desta rodada.
+///
+/// Viaja no quadro (`speculate.source`) porque quem decide é o gateway, que é
+/// o único que vê o plano inteiro e as capacidades anunciadas, e quem executa
+/// é a cabeça. Ver `infer_server::Speculate`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DraftSource {
+    /// `find_draft`: repetição no texto já gerado.
+    Lookup,
+    /// O bloco `nextn` do próprio modelo (`crate::mtp`).
+    Mtp,
+}
+
+impl DraftSource {
+    fn wire(self) -> &'static str {
+        match self {
+            DraftSource::Lookup => "lookup",
+            DraftSource::Mtp => "mtp",
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1253,6 +1279,7 @@ async fn step_speculative_hub(
     token_id: u32,
     k: u32,
     m: u32,
+    source: DraftSource,
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
@@ -1270,7 +1297,7 @@ async fn step_speculative_hub(
                 "session_id": session_id,
                 "is_last": is_last,
                 "token_id": token_id,
-                "speculate": {"k": k, "m": m},
+                "speculate": {"k": k, "m": m, "source": source.wire()},
             })
         } else {
             let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
@@ -1338,6 +1365,7 @@ async fn step_speculative_ring(
     token_id: u32,
     k: u32,
     m: u32,
+    source: DraftSource,
     dtype: WireDtype,
     http: &reqwest::Client,
     routes: &crate::route::RouteTable,
@@ -1350,7 +1378,7 @@ async fn step_speculative_ring(
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
-        "speculate": {"k": k, "m": m},
+        "speculate": {"k": k, "m": m, "source": source.wire()},
         "next_hops": next_hops,
     });
 

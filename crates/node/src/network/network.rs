@@ -295,6 +295,14 @@ pub struct Network {
     /// Mutable through `&self` (mirrors `detached`) because it's known only
     /// after `Network` is already behind an `Arc` and shared.
     libp2p_tunnel_ready: AtomicBool,
+    /// A cabeça de rascunho `nextn` (MTP) está mesmo montada no motor deste
+    /// nó? Só o servidor de inferência sabe - depende do GGUF carregado, não
+    /// da configuração: um modelo sem bloco `nextn`, ou qualquer fatia que não
+    /// seja a final, não tem o que anexar. Por isso o `Arc`: o motor mora em
+    /// outra task e é ele quem escreve aqui, enquanto o anúncio (`self_announce`)
+    /// e a entrada local do gateway leem. Anunciar `speculate/v1-mtp` sem
+    /// cabeça mandaria o gateway pedir um rascunho que nunca vem.
+    mtp_ready: Arc<AtomicBool>,
     /// This node's own address, as reported by a peer's libp2p `identify`
     /// response (`info.observed_addr` — the address *that peer* saw us
     /// connecting from). `host:port`, same shape as `advertise_addr`. Set
@@ -481,6 +489,7 @@ impl Network {
             routes: Arc::new(crate::route::RouteTable::new()),
             libp2p_peer_id: None,
             libp2p_tunnel_ready: AtomicBool::new(false),
+            mtp_ready: Arc::new(AtomicBool::new(false)),
             observed_addr: std::sync::RwLock::new(None),
         })
     }
@@ -695,6 +704,9 @@ impl Network {
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
                 ];
+                if self.mtp_ready() {
+                    caps.push("speculate/v1-mtp".into());
+                }
                 if self.libp2p_tunnel_ready() {
                     caps.push("transport/libp2p-tunnel-v1".into());
                 }
@@ -743,6 +755,16 @@ impl Network {
 
     pub fn libp2p_tunnel_ready(&self) -> bool {
         self.libp2p_tunnel_ready.load(Ordering::Relaxed)
+    }
+
+    /// A alça que o servidor de inferência escreve quando (não) conseguiu
+    /// anexar a cabeça `nextn`. Ver o campo `mtp_ready`.
+    pub fn mtp_ready_handle(&self) -> Arc<AtomicBool> {
+        self.mtp_ready.clone()
+    }
+
+    pub fn mtp_ready(&self) -> bool {
+        self.mtp_ready.load(Ordering::Relaxed)
     }
 
     /// Leave the network: stop speaking, stop listening, forget the peers.

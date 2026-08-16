@@ -104,7 +104,9 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   (rotas de inferência + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
   `wire.rs` (`[len][JSON][tensor]`, f16/zstd), `relay.rs` (chain relay),
-  `prefill.rs`, `llm.rs`, `session.rs`, `spec_lab.rs`.
+  `prefill.rs`, `llm.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
+  `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
+  outro mecanismo, e outra chave, que a especulação por lookup).
 - `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,
   `generate_stream`), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,

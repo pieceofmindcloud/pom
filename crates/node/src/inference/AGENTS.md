@@ -5,7 +5,9 @@ A porta de inferência (8181) e tudo que roda nela: o axum server
 prefill/step nos três modos - hub, anel borbulhado (`relay/v1-chain`) e
 resposta direta (`relay/v2-direct`, `direct.rs`) - a "lei" que mede o modo
 direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
-(`spec_lab.rs`), o formato binário do tensor na rede (`wire.rs`) e a
+(`spec_lab.rs`), a predição multi-token pelo bloco `nextn` do modelo
+(`mtp.rs` + a ponte C++ `llama_mtp_shim.cpp`), o formato binário do tensor na
+rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
@@ -24,8 +26,18 @@ executa a cadeia que o planejador montou.
 - `infer_server.rs` (2204) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
   e o branch de relay.
-- `llm.rs` (1374) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
-  residual capture, sampling.
+- `llm.rs` (1466) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
+  residual capture, sampling, e o dono da cabeça de rascunho `nextn`
+  (`Option<MtpDrafter>`).
+- `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
+  `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
+  `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
+  llama.cpp.
+- `llama_mtp_shim.cpp` (48) - ponte `extern "C"` para
+  `llama_{set,get}_embeddings_nextn` e `llama_set_nextn_layer_offset`, que
+  moram em `llama.cpp/src/llama-ext.h` e por isso **não** estão nos bindings do
+  `llama-cpp-sys-2` (o `wrapper.h` dele só inclui `llama.h`). Compilada pelo
+  `crates/node/build.rs`.
 - `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
   por requisição.
@@ -133,6 +145,13 @@ executa a cadeia que o planejador montou.
   antiga como erro fatal derrubava a geração com um token e `partial: true` em
   toda requisição (2026-08-15, Qwen3.8-27B). Sem `draft`, `speculated` é
   `false` e `batch_width` é 1.
+- `Speculate`/`DraftSource` (`infer_server.rs`) - o convite a rascunhar que
+  viaja no campo `speculate` do quadro: `{k, m, source}`. `source` é o que
+  separa os **dois** mecanismos, e eles não são o mesmo com números
+  diferentes. Quadro sem `source` é gateway antigo e vale `Lookup`.
+- `should_draft(speculate, kv_can_shift, mtp_ready)` - `Mtp` exige as duas
+  condições; `Lookup` só a primeira. Pedir MTP a um motor sem a cabeça `nextn`
+  é recusa, nunca troca silenciosa por lookup.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
 - `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
@@ -222,7 +241,11 @@ executa a cadeia que o planejador montou.
   start/end/total_layers, peer_count/index, primary, inference_port, n_gpu_layers,
   n_ctx, offload_kqv, n_batch, max_sessions, prefill_chunk_tokens, max_new_tokens,
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
-  speculative_k/lookup_window.
+  speculative_k/lookup_window, mtp_enabled, mtp_draft_tokens,
+  mtp_min_probability.
+- `NodeConfig::mtp_effective` - o MTP só liga em quem serve o modelo **inteiro**
+  (start_layer 0, end_layer cobrindo tudo, peer_count 1). Ver a seção "Predição
+  multi-token" abaixo.
 - `NodeRuntime::apply` - aplica a fatia e sobe o servidor Rust embutido
   (`infer_server::run`); muda a config → reinicia o servidor. Anota a fatia em
   `models/lastslice.rs` como **Pending** - mas a anotação só diz o que o `apply`
@@ -263,6 +286,67 @@ executa a cadeia que o planejador montou.
   `ZSTD_LEVEL=6`); `WireDtype{F32, F16}` com `as_str`/`parse`/`bytes_per_value`.
 - `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
 
+## Predição multi-token (MTP) - `mtp.rs`
+
+**Não é a "decodificação especulativa" que já existia.** `find_draft`
+(`infer_server.rs`) procura no texto já gerado uma repetição do próprio final e
+chuta a continuação: é *prompt-lookup decoding*, uma busca em array que nunca
+toca peso nenhum, e por isso só acelera saída repetitiva. MTP usa o bloco
+`nextn` treinado **dentro do GGUF**: ele recebe o estado oculto do tronco na
+posição `p` com o embedding do token de `p+1` e prevê o token de `p+2`. Duas
+chaves separadas (`speculative_decoding_enabled`, `mtp_enabled`) porque são
+dois mecanismos; quando as duas estão ligadas o gateway escolhe o MTP.
+
+Nada disso muda a resposta: a verificação em `step_blocking` amostra cada
+posição de novo pelo mesmo `sample_token_profiled` e só aceita o prefixo que
+bateu. Rascunho ruim custa aceitação, nunca correção.
+
+O motor embarcado **já sabe** executar o bloco: `llama-cpp-sys-2` 0.1.154 traz
+`LLAMA_CONTEXT_TYPE_MTP` e `llama_model_n_layer_nextn` nos bindings; as outras
+quatro entradas (`llama_{set,get}_embeddings_nextn`,
+`llama_set_nextn_layer_offset`) estão em `libllama.a` mas não nos bindings,
+porque moram em `llama.cpp/src/llama-ext.h`, fora do `extern "C"` de `llama.h`
+que o `wrapper.h` da crate inclui. Daí `llama_mtp_shim.cpp`.
+
+Ciclo, por rodada (uma sequência, uma cabeça, memória não compartilhada - o
+caminho qwen35/qwen35moe do upstream):
+
+1. `LlmEngine::decode_tokens` chama `MtpDrafter::observe` depois de **todo**
+   decode do alvo, prompt incluído. Ele repete o lote no contexto de rascunho
+   com o estado oculto deslocado uma posição (linha `k` recebe `h` de `k-1`,
+   linha 0 recebe o `pending_h` da chamada anterior) e guarda as linhas de `h`
+   do alvo. Ficar dentro do `decode_tokens`, e não em cada chamador, é o que
+   impede um caminho novo de esquecer o passo.
+2. `MtpDrafter::accept(accept_len)` move o `pending_h` para a linha que a
+   verificação confirmou.
+3. `MtpDrafter::draft` decodifica a cabeça uma vez por token rascunhado e
+   devolve os ids; `p_min` corta no primeiro palpite duvidoso.
+
+Duas coisas que parecem zelo e são a correção:
+
+- **`seq_rm` antes de cada decode do rascunho** (em `observe` e em `draft`). A
+  rodada anterior deixou no cache do rascunho as posições que ela apostou, e a
+  verificação pode ter recusado parte delas; reescrever por cima sem apagar
+  deixaria duas células para a mesma posição e a atenção leria as duas.
+- **O ponteiro de tokens do lote é nosso.** `llama_batch_init` aloca `token`
+  **ou** `embd`, nunca os dois, e o MTP precisa dos dois; o ponteiro volta ao
+  original antes do `llama_batch_free`, que liberaria memória do Rust.
+
+**Só entra em ação com uma máquina servindo o modelo inteiro**
+(`NodeConfig::mtp_effective`). O bloco `nextn` mora na última camada, ou seja
+na fatia final, e quem monta o lote é a cabeça: num pipeline de N nós são
+máquinas diferentes. Estender ao caso fatiado significa fazer o rascunho
+viajar da cauda para a cabeça - o caminho barato é a cauda anexar o rascunho à
+resposta que já volta ao gateway (`relay/v2-direct`), que o gateway então põe
+no `speculate` da rodada seguinte: **zero travessia extra**, e o custo real a
+medir é a taxa de aceitação, não a rede. Não foi feito; ver os pendentes no
+subsistema.
+
+**Ainda sem medição de tok/s** (cortado por cota em 2026-08-16): o ganho
+prometido pelo bloco é real no LM Studio (21 → 35 tok/s no Qwen3.8-27B-Q3_K_S,
+medido pelo captain), aqui a implementação está completa e verde nos testes de
+unidade mas **não** tem número medido de ponta a ponta.
+
 ## Ligações
 
 - **Chamado por**: `backend/gateway.rs` (monta `DirectReply` com `ReplyInbox` +
@@ -271,7 +355,8 @@ executa a cadeia que o planejador montou.
   direct), `backend/webui.rs` (rollback/release fan-out), `main.rs`
   (`NodeRuntime::apply` no arranque, inclusive com `lastslice::take`),
   `routing/pipeline.rs` (as capabilities `CAP_RELAY_CHAIN`/`CAP_RELAY_DIRECT`/
-  `CAP_SPECULATE_LOOKUP` decidem anel vs direto vs hub e o wire format por hop).
+  `CAP_SPECULATE_LOOKUP`/`CAP_SPECULATE_MTP` decidem anel vs direto vs hub, o
+  wire format por hop e qual das duas especulações roda).
 - **Chama**: `llm.rs` (decode/hidden_state), `wire.rs` (encode/decode do
   frame), `relay.rs` (send_frame). `runtime.rs` consome `models/model.rs`
   (`LayerAssignment`, `ModelProfile`) e `network.rs`.

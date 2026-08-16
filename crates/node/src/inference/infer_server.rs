@@ -251,12 +251,17 @@ mod tests {
             speculative_decoding_enabled: false,
             speculative_k: 4,
             speculative_lookup_window: 3,
+            mtp_enabled: false,
+            mtp_draft_tokens: 3,
+            mtp_min_probability: 0.0,
         };
         cfg.inference_port = port;
         let (_tx, rx) = tokio::sync::watch::channel(0u64);
 
         let comecou = std::time::Instant::now();
-        let erro = run(cfg, rx, 0).await.expect_err("porta ocupada devia falhar");
+        let erro = run(cfg, rx, 0, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+            .await
+            .expect_err("porta ocupada devia falhar");
 
         assert!(
             erro.to_string().to_lowercase().contains("address")
@@ -488,6 +493,8 @@ struct InferState {
     start_layer: u32,
     end_layer: u32,
     original_block_count: Option<u32>,
+    /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
+    mtp_min_probability: f32,
 }
 
 type SharedState = Arc<Mutex<InferState>>;
@@ -513,6 +520,7 @@ impl InferState {
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
+            mtp_min_probability: cfg.mtp_min_probability,
         }
     }
 
@@ -594,6 +602,7 @@ pub async fn run(
     cfg: NodeConfig,
     mut stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
+    mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -626,12 +635,17 @@ pub async fn run(
         n_threads: 0,
         max_sessions: cfg.max_sessions.max(1),
         need_embeddings,
+        mtp: cfg.mtp_effective(),
     };
 
     let model_path = cfg.model_path.clone();
     let engine = tokio::task::spawn_blocking(move || LlmEngine::load(&model_path, &engine_cfg))
         .await
         .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
+
+    // Só agora se sabe se a cabeça `nextn` existe: depende do GGUF, não da
+    // configuração. Ver `Network::mtp_ready`.
+    mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
     let mut state_inner = InferState::new(engine, &cfg);
     state_inner.original_block_count =
@@ -755,6 +769,18 @@ fn err500(msg: impl std::fmt::Display) -> Response {
 
 async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
     let s = state.lock().unwrap();
+    // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
+    // entry, and the capability constants in routing/pipeline.rs.
+    let mut caps = vec![
+        "frame/v1-f16",
+        "frame/v2-zstd-f16",
+        "relay/v1-chain",
+        "relay/v2-direct",
+        "speculate/v1-lookup",
+    ];
+    if s.engine.mtp_ready() {
+        caps.push("speculate/v1-mtp");
+    }
     Json(json!({
         "status": "ok",
         "model_loaded": true,
@@ -769,12 +795,14 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
-        // Keep in sync with network.rs's `self_announce`, gateway.rs's local
-        // peer entry, and the capability constants in routing/pipeline.rs.
-        "inference_frame_capabilities": ["frame/v1-f16", "frame/v2-zstd-f16", "relay/v1-chain", "relay/v2-direct", "speculate/v1-lookup"],
+        "inference_frame_capabilities": caps,
         // Falso em modelo híbrido/recorrente. É a única forma de saber, sem
         // shell na máquina, por que a especulação não está acelerando nada.
         "kv_can_shift": s.engine.kv_can_shift(),
+        // A cabeça de rascunho `nextn` foi mesmo anexada? Depende do GGUF
+        // carregado (fatia não-final não tem o bloco) e do interruptor do
+        // operador, então nem a configuração nem o nome do arquivo respondem.
+        "mtp_ready": s.engine.mtp_ready(),
     }))
 }
 
@@ -1400,12 +1428,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
         .map(|v| v as i32);
     // Present only on the request to the head — see `step_blocking`'s
     // `speculate` param doc.
-    let speculate: Option<(u32, u32)> = meta.get("speculate").and_then(|v| {
-        Some((
-            v.get("k")?.as_u64()? as u32,
-            v.get("m")?.as_u64()? as u32,
-        ))
-    });
+    let speculate = Speculate::from_meta(&meta);
     // Present on every non-head request in a speculative round — see
     // `step_blocking`'s `incoming_draft` param doc for why `None` and
     // `Some(vec![])` mean different things here.
@@ -1788,8 +1811,56 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// Então a decisão é tomada antes de apostar: sem rollback parcial, o nó
 /// simplesmente não rascunha e a geração segue um token por rodada, correta e
 /// mais lenta - em vez de morrer no quarto token.
-pub(crate) fn should_draft(speculate: Option<(u32, u32)>, kv_can_shift: bool) -> bool {
-    speculate.is_some() && kv_can_shift
+pub(crate) fn should_draft(speculate: Option<Speculate>, kv_can_shift: bool, mtp_ready: bool) -> bool {
+    match speculate {
+        None => false,
+        Some(s) if s.source == DraftSource::Mtp => kv_can_shift && mtp_ready,
+        Some(_) => kv_can_shift,
+    }
+}
+
+/// O convite a rascunhar que a cabeça recebe numa rodada.
+///
+/// `source` é o campo que separa os dois mecanismos, e ele existe porque eles
+/// **não** são a mesma coisa com números diferentes: `Lookup` é uma busca por
+/// repetição no texto já gerado (`find_draft`, nenhum peso envolvido) e `Mtp`
+/// é o bloco `nextn` treinado dentro do GGUF (`crate::mtp`). Um `speculate`
+/// sem `source` vem de um gateway antigo e vale `Lookup`, que é o que ele
+/// sempre quis dizer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Speculate {
+    /// Largura do lote: o token confirmado mais até `k - 1` palpites.
+    pub k: u32,
+    /// Janela de história do `find_draft`. Ignorada pelo `Mtp`, que não olha
+    /// história nenhuma.
+    pub m: u32,
+    pub source: DraftSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DraftSource {
+    Lookup,
+    Mtp,
+}
+
+impl Speculate {
+    /// Lê o convite do campo `speculate` do quadro.
+    ///
+    /// Público ao crate porque a bancada `spec_lab` fala o protocolo de
+    /// verdade: uma segunda cópia desta leitura ali passaria a valer como
+    /// contrato sem nunca ter sido conferida contra esta.
+    pub(crate) fn from_meta(meta: &Value) -> Option<Self> {
+        let v = meta.get("speculate")?;
+        Some(Speculate {
+            k: v.get("k")?.as_u64()? as u32,
+            m: v.get("m")?.as_u64()? as u32,
+            source: match v.get("source").and_then(|s| s.as_str()) {
+                Some("mtp") => DraftSource::Mtp,
+                // Ausente é um gateway antigo, que só conhecia o lookup.
+                _ => DraftSource::Lookup,
+            },
+        })
+    }
 }
 
 pub(crate) fn find_draft(history: &[i32], m: usize, k: u32) -> Vec<i32> {
@@ -1852,23 +1923,81 @@ fn rollback_from(n_past_after_batch: u32, batch_width: u32, accept_count: u32) -
 mod speculative_tests {
     use super::*;
 
+    fn lookup(k: u32, m: u32) -> Option<Speculate> {
+        Some(Speculate {
+            k,
+            m,
+            source: DraftSource::Lookup,
+        })
+    }
+
+    fn mtp(k: u32) -> Option<Speculate> {
+        Some(Speculate {
+            k,
+            m: 0,
+            source: DraftSource::Mtp,
+        })
+    }
+
     /// Modelo hibrido nao rascunha. O rascunho recusado precisaria ser
     /// desfeito, e num modelo recorrente o llama.cpp nao sabe desfazer.
     #[test]
     fn a_model_that_cannot_shift_its_cache_never_drafts() {
-        assert!(!should_draft(Some((4, 3)), false));
+        assert!(!should_draft(lookup(4, 3), false, false));
+        assert!(!should_draft(mtp(4), false, true));
     }
 
     #[test]
     fn a_model_that_can_shift_drafts_when_asked() {
-        assert!(should_draft(Some((4, 3)), true));
+        assert!(should_draft(lookup(4, 3), true, false));
+    }
+
+    /// Pedir MTP a um motor sem a cabeça `nextn` é o caso normal de uma fatia
+    /// que não é a final: recusar é a resposta certa, e o gateway lê a recusa
+    /// (`speculated: false`) e para de pedir. Rascunhar por lookup no lugar
+    /// seria trocar o mecanismo por baixo de quem pediu.
+    #[test]
+    fn mtp_asked_of_an_engine_without_the_nextn_head_is_refused() {
+        assert!(!should_draft(mtp(4), true, false));
+        assert!(should_draft(mtp(4), true, true));
+    }
+
+    /// O contrário também vale: um motor **com** a cabeça `nextn` que foi
+    /// convidado a rascunhar por lookup rascunha por lookup.
+    #[test]
+    fn a_lookup_round_does_not_need_the_nextn_head() {
+        assert!(should_draft(lookup(4, 3), true, false));
     }
 
     /// Sem especulacao pedida, o resto nao importa.
     #[test]
     fn without_speculation_asked_there_is_no_draft() {
-        assert!(!should_draft(None, true));
-        assert!(!should_draft(None, false));
+        assert!(!should_draft(None, true, true));
+        assert!(!should_draft(None, false, false));
+    }
+
+    /// O campo `source` é o que separa os dois mecanismos no fio. Um quadro
+    /// de gateway antigo não o traz, e "ausente" tem que continuar querendo
+    /// dizer lookup: era a única especulação que existia quando ele foi
+    /// escrito.
+    #[test]
+    fn a_frame_without_a_draft_source_still_means_lookup() {
+        let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}}))
+            .expect("k e m bastam");
+        assert_eq!(spec.source, DraftSource::Lookup);
+        assert_eq!((spec.k, spec.m), (4, 3));
+    }
+
+    #[test]
+    fn a_frame_asking_for_mtp_says_so() {
+        let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 0, "source": "mtp"}}))
+            .expect("quadro completo");
+        assert_eq!(spec.source, DraftSource::Mtp);
+    }
+
+    #[test]
+    fn a_frame_without_speculate_asks_for_no_draft_at_all() {
+        assert!(Speculate::from_meta(&json!({"session_id": "x"})).is_none());
     }
 
     #[test]
@@ -1981,10 +2110,10 @@ fn step_blocking(
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
-    // (k, m): draft width and lookup window, present only for the head —
-    // everyone else either forwards `incoming_draft` untouched (not the
-    // tail) or verifies against it (the tail).
-    speculate: Option<(u32, u32)>,
+    // Present only for the head — everyone else either forwards
+    // `incoming_draft` untouched (not the tail) or verifies against it (the
+    // tail). Ver `Speculate` para por que a fonte do rascunho viaja junto.
+    speculate: Option<Speculate>,
     // What a previous hop already decided, forwarded via the wire `draft`
     // field. `None` means this round isn't speculative at all (the
     // pre-existing, single-token wire format applies); `Some(vec![])` means
@@ -2034,17 +2163,27 @@ fn step_blocking(
         // prompt-lookup drafting below needs the head's history to search.
         s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(tid);
 
-        let pode_rascunhar = should_draft(speculate, s.engine.kv_can_shift());
-        let batch: Vec<i32> = if let Some((k, m)) = speculate.filter(|_| pode_rascunhar) {
-            let draft = {
-                let session = &s.sessions[&sid_key];
-                let history: Vec<i32> = session
-                    .prompt_tokens
-                    .iter()
-                    .chain(session.recent_tokens.iter())
-                    .copied()
-                    .collect();
-                find_draft(&history, m as usize, k)
+        let pode_rascunhar = should_draft(speculate, s.engine.kv_can_shift(), s.engine.mtp_ready());
+        let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| pode_rascunhar) {
+            let draft = match spec.source {
+                // O bloco `nextn` do próprio modelo: uma cabeça treinada, que
+                // olha o estado oculto do tronco em vez de procurar repetição
+                // no texto. Ver `crate::mtp`.
+                DraftSource::Mtp => {
+                    let p_min = s.mtp_min_probability;
+                    s.engine
+                        .mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
+                }
+                DraftSource::Lookup => {
+                    let session = &s.sessions[&sid_key];
+                    let history: Vec<i32> = session
+                        .prompt_tokens
+                        .iter()
+                        .chain(session.recent_tokens.iter())
+                        .copied()
+                        .collect();
+                    find_draft(&history, spec.m as usize, spec.k)
+                }
             };
             let mut batch = Vec::with_capacity(1 + draft.len());
             batch.push(tid);
@@ -2105,6 +2244,12 @@ fn step_blocking(
             timings.sampling_us += verification_started.elapsed().as_micros() as u64;
 
             let accept_len = longest_match(&sampled, &draft);
+            // A cabeça `nextn` guarda uma linha de estado oculto por posição
+            // decodificada; qual delas alimenta a próxima rodada só se sabe
+            // depois de a verificação dizer até onde o rascunho valeu. Sem
+            // isto ela pareia o token confirmado com o `h` de uma posição que
+            // foi descartada, e o rascunho seguinte degenera em silêncio.
+            s.engine.mtp_accept(accept_len);
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
             let accepted_texts = &texts[..keep];

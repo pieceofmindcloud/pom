@@ -214,6 +214,9 @@ impl GatewayState {
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
                     ];
+                    if self.network.mtp_ready() {
+                        caps.push("speculate/v1-mtp".into());
+                    }
                     if self.network.libp2p_tunnel_ready() {
                         caps.push("transport/libp2p-tunnel-v1".into());
                     }
@@ -490,7 +493,7 @@ pub async fn generate_stream(
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
     // constants baked into the protocol.
-    let (chunk_tokens, dtype, speculative_enabled, speculative_k, speculative_m) = {
+    let (chunk_tokens, dtype, lookup_enabled, lookup_k, speculative_m, mtp_enabled, mtp_k) = {
         let cfg = state.runtime.config().await;
         let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
@@ -504,8 +507,31 @@ pub async fn generate_stream(
                 n_batch,
             ),
             cfg.as_ref().map(|c| c.speculative_lookup_window).unwrap_or(3),
+            cfg.as_ref().is_some_and(|c| c.mtp_enabled),
+            // O parâmetro é "quantos tokens rascunhar"; a largura do lote é
+            // isso mais o token já confirmado.
+            speculative_k_of(
+                cfg.as_ref().map(|c| c.mtp_draft_tokens).unwrap_or(3) + 1,
+                n_batch,
+            ),
         )
     };
+
+    // Qual das duas especulações roda nesta requisição. O MTP vem primeiro
+    // quando os dois estão ligados: ele usa uma cabeça treinada do próprio
+    // modelo, enquanto o lookup só acerta em saída repetitiva. Nunca os dois
+    // na mesma rodada - o lote é um só, e misturar as fontes tornaria a taxa
+    // de aceitação impossível de atribuir.
+    let (speculative_enabled, speculative_k, draft_source) =
+        if mtp_enabled && plan.supports_mtp() {
+            (true, mtp_k, crate::prefill::DraftSource::Mtp)
+        } else {
+            (
+                lookup_enabled,
+                lookup_k,
+                crate::prefill::DraftSource::Lookup,
+            )
+        };
 
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
@@ -586,6 +612,7 @@ pub async fn generate_stream(
                         next_token,
                         speculative_k,
                         speculative_m,
+                        draft_source,
                         dtype,
                         &state.http,
                         &state.network.routes,
@@ -1288,6 +1315,9 @@ mod budget_tests {
             single_peer: false,
             no_embeddings: false,
             speculative_decoding_enabled: false,
+            mtp_enabled: false,
+            mtp_draft_tokens: 3,
+            mtp_min_probability: 0.0,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }
@@ -1524,6 +1554,9 @@ pub(crate) mod testkit {
             single_peer: false,
             no_embeddings: false,
             speculative_decoding_enabled: true,
+            mtp_enabled: false,
+            mtp_draft_tokens: 3,
+            mtp_min_probability: 0.0,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }

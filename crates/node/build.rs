@@ -16,6 +16,26 @@ fn main() {
         .expect("workspace root");
 
     emit_build_id(&root);
+    build_mtp_shim();
+}
+
+/// Compila a ponte C para as entradas NextN/MTP do llama.cpp.
+///
+/// Ver o cabeçalho de `src/inference/llama_mtp_shim.cpp` para o porquê de
+/// existir uma ponte em vez de um `#[link_name]` com o nome mangled. Não
+/// acrescenta requisito de build: o `llama-cpp-sys-2` já exige um compilador
+/// C++ para compilar o próprio llama.cpp.
+///
+/// A ordem do link importa em `ld` do GNU (esquerda para a direita): esta
+/// biblioteca referencia símbolos do `libllama`, então tem que aparecer antes
+/// dele na linha. O rustc emite as bibliotecas nativas do crate atual antes
+/// das dos dependentes, que é exatamente essa ordem.
+fn build_mtp_shim() {
+    println!("cargo:rerun-if-changed=src/inference/llama_mtp_shim.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .file("src/inference/llama_mtp_shim.cpp")
+        .compile("rdma_p2p_llama_mtp_shim");
 }
 
 /// Stamp the binary with the commit it was built from.

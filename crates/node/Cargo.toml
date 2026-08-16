@@ -48,5 +48,10 @@ zstd = "0.13"
 tower-http = { version = "0.5", features = ["compression-full"] }
 routing-contract = { path = "../routing-contract" }
 
+[build-dependencies]
+# Compila `src/inference/llama_mtp_shim.cpp`, a ponte para as entradas NextN
+# (MTP) que o bindgen do llama-cpp-sys-2 não emite. Ver o build.rs.
+cc = "1"
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

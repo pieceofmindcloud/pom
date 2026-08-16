@@ -101,6 +101,9 @@ export interface NodeConfig {
   speculative_decoding_enabled: boolean;
   speculative_k: number;
   speculative_lookup_window: number;
+  mtp_enabled: boolean;
+  mtp_draft_tokens: number;
+  mtp_min_probability: number;
 }
 
 export interface NodeInfo {
@@ -525,6 +528,15 @@ export interface RuntimeParams {
   speculative_k: number;
   /** Maior n-grama que o rascunho por prompt-lookup procura repetir. */
   speculative_lookup_window: number;
+  /** Predição multi-token pelo bloco `nextn` do próprio modelo.
+   *  Interruptor **separado** do de cima: são mecanismos diferentes, e só
+   *  este usa peso treinado. Só entra em ação quando uma máquina serve o
+   *  modelo inteiro — ver `crates/node/src/inference/mtp.rs`. */
+  mtp_enabled: boolean;
+  /** Quantos tokens a cabeça `nextn` rascunha por rodada. */
+  mtp_draft_tokens: number;
+  /** Confiança mínima para o rascunho continuar; 0 aceita qualquer palpite. */
+  mtp_min_probability: number;
 }
 
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */

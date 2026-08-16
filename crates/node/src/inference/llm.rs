@@ -126,6 +126,11 @@ pub struct EngineConfig {
     pub max_sessions: u32,
     /// True for non-last peers that need to hand the residual to the next peer.
     pub need_embeddings: bool,
+    /// Ligar a predição multi-token pelo bloco `nextn` do modelo, quando ele
+    /// tiver um. Distinto da especulação por lookup (`find_draft`) - ver
+    /// `crate::mtp`. Um modelo sem `nextn` ignora o pedido em silêncio: não é
+    /// erro de configuração, é a fatia do meio de um pipeline.
+    pub mtp: bool,
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -172,6 +177,10 @@ pub struct LlmEngine {
     /// registrado no llama.cpp em `cb_eval_user_data` e não pode mudar.
     capture: Box<Mutex<CaptureSlot>>,
     offload_kqv: bool,
+    /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
+    /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
+    /// um modelo com MTP, ou interruptor desligado.
+    mtp: Option<crate::mtp::MtpDrafter>,
 }
 
 /// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
@@ -357,6 +366,30 @@ impl LlmEngine {
             }
         );
 
+        // O contexto de rascunho MTP vem depois do alvo de propósito: ele
+        // precisa do `ctx` já criado para ligar a saída do estado oculto nele.
+        let mtp = if cfg.mtp {
+            match crate::mtp::MtpDrafter::attach(model, ctx, cfg, n_embd, n_vocab) {
+                Ok(d) => {
+                    if d.is_none() {
+                        tracing::info!(
+                            "MTP pedido, mas este modelo não traz bloco nextn \
+                             (llama_model_n_layer_nextn = 0) — seguindo sem MTP"
+                        );
+                    }
+                    d
+                }
+                // Falhar aqui derrubaria um nó que serve bem sem MTP. A
+                // aceleração é opcional; a inferência não.
+                Err(e) => {
+                    warn!("MTP indisponível neste nó: {e}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(LlmEngine {
             loaded,
             ctx,
@@ -365,7 +398,37 @@ impl LlmEngine {
             capture_ok,
             capture,
             offload_kqv: cfg.offload_kqv,
+            mtp,
         })
+    }
+
+    // ── Predição multi-token (MTP) ────────────────────────────────────────────
+
+    /// Este contexto consegue rascunhar pelo bloco `nextn`?
+    ///
+    /// É a pergunta que decide se o nó anuncia `speculate/v1-mtp` e se o
+    /// gateway pede rascunho MTP. Falsa sempre que o modelo não tem o bloco -
+    /// o que inclui **toda fatia não-final** de um pipeline, porque o `nextn`
+    /// mora na última camada.
+    pub fn mtp_ready(&self) -> bool {
+        self.mtp.is_some()
+    }
+
+    /// Rascunha até `k` tokens com a cabeça `nextn`. Vazio quando não há
+    /// cabeça — o chamador então decodifica só o token confirmado, que é o
+    /// comportamento de sempre.
+    pub fn mtp_draft(&mut self, id_last: i32, n_past: u32, seq_id: u32, k: u32, p_min: f32) -> Vec<i32> {
+        match self.mtp.as_mut() {
+            Some(d) => d.draft(id_last, n_past, seq_id, k, p_min),
+            None => Vec::new(),
+        }
+    }
+
+    /// Diz à cabeça quantos tokens **do rascunho** a verificação aceitou.
+    pub fn mtp_accept(&mut self, accepted: usize) {
+        if let Some(d) = self.mtp.as_mut() {
+            d.accept(accepted);
+        }
     }
 
     pub fn n_ctx(&self) -> u32 {
@@ -582,6 +645,25 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
         }
+
+        // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica -
+        // prompt incluído -, senão o cache dela fica atrás do tronco e o par
+        // `(h_p, x_{p+1})` que ela consome deixa de existir. Ficar aqui, e não
+        // em cada chamador, é o que impede um caminho novo de decodificação de
+        // esquecer o passo. Um erro aqui derruba o rascunho, não a resposta: a
+        // cabeça sai de cena e a geração segue um token por rodada.
+        if self.mtp.is_some() {
+            let ctx = self.ctx;
+            let mut drafter = self.mtp.take();
+            if let Some(d) = drafter.as_mut() {
+                if let Err(e) = d.observe(ctx, tokens, pos_offset, seq_id) {
+                    warn!("MTP desligado nesta sessão: {e}");
+                    drafter = None;
+                }
+            }
+            self.mtp = drafter;
+        }
+
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
@@ -640,6 +722,20 @@ impl LlmEngine {
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
+        }
+
+        // Um lote de estado oculto não traz os ids dos tokens, e a cabeça
+        // `nextn` embute o token para formar o par que ela consome — não há
+        // como mantê-la em dia por aqui. `NodeConfig::mtp_effective` já impede
+        // que um nó de pipeline anexe a cabeça, então chegar aqui com ela viva
+        // é um caminho que ninguém previu; desligar com aviso é preferível a
+        // rascunhar a partir de um cache que ficou para trás.
+        if self.mtp.is_some() {
+            warn!(
+                "MTP desligado: este contexto recebeu estado oculto, e a cabeça nextn \
+                 precisa dos ids dos tokens para acompanhar o tronco"
+            );
+            self.mtp = None;
         }
         let mut timings = DecodeTimings {
             enqueue_us: enqueue_started.elapsed().as_micros() as u64,
@@ -765,6 +861,7 @@ mod pool_tests {
             n_threads: 0,
             max_sessions: 2,
             need_embeddings: true,
+            mtp: false,
         }
     }
 
@@ -1198,6 +1295,7 @@ mod tests {
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: true,
+            mtp: false,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
 
@@ -1236,6 +1334,7 @@ mod tests {
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: true,
+            mtp: false,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let toks = engine.tokenize("Explique RDMA em uma frase.", true, true);
@@ -1286,6 +1385,7 @@ mod tests {
             max_sessions: 1,
             // O nó da LM head não exporta residual — é o ponto da Mudança 5.
             need_embeddings: false,
+            mtp: false,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let tokens = engine.tokenize("Explique o que e RDMA em uma frase.", true, true);
@@ -1344,6 +1444,7 @@ mod tests {
             n_threads: 2,
             max_sessions: 1,
             need_embeddings: false,
+            mtp: false,
         };
         let engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let tokens = engine.tokenize("oi", true, true);

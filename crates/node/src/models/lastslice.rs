@@ -317,6 +317,9 @@ mod tests {
             speculative_decoding_enabled: false,
             speculative_k: 4,
             speculative_lookup_window: 3,
+            mtp_enabled: false,
+            mtp_draft_tokens: 3,
+            mtp_min_probability: 0.0,
         }
     }
 }

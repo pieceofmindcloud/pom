@@ -642,6 +642,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.speculative": () => "Speculative decoding",
     "deploy.speculativeHint": () =>
       "Guesses the next tokens from repetitions already in the text and checks them in a single pass through the pipeline, so one internet round trip can yield several tokens. A wrong guess is discarded, never emitted - the answer is the same either way.",
+    "deploy.mtp": () => "Multi-token prediction (MTP)",
+    "deploy.mtpHint": () =>
+      "Uses the model's own trained nextn block as the draft head, instead of guessing from repetitions - a different mechanism from the option above, and a much stronger guess on text that never repeats. It only kicks in on models that ship the block (Qwen3.5 and later) and only when a single machine serves the whole model, because the block lives in the last layer while the batch is assembled at the head. A wrong guess is discarded, never emitted.",
+    "deploy.mtpDraftTokens": () => "MTP draft tokens",
+    "deploy.mtpDraftTokensHint": () =>
+      "How many tokens the nextn head guesses per round. More widens the batch on every hop; fewer wastes less when a guess is rejected.",
     "deploy.machines": () => "Machines",
     "deploy.machineTitle": () => "What each machine has and what remains",
     "deploy.machineDetail": () => "Free memory is where a shard must fit: VRAM where there is a dedicated GPU, available RAM elsewhere. The last two columns are decided per machine, because the machines are not alike: how many layers this one puts on its GPU (blank uses the cluster default) and whether its KV cache lives on the GPU or in RAM.",
@@ -1407,6 +1413,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.speculative": () => "Decodificação especulativa",
     "deploy.speculativeHint": () =>
       "Adivinha os próximos tokens a partir de repetições que já estão no texto e confere todos numa passagem só pelo pipeline, então uma ida e volta pela internet pode render vários tokens. Palpite errado é descartado, nunca sai na resposta - o texto gerado é o mesmo.",
+    "deploy.mtp": () => "Predição multi-token (MTP)",
+    "deploy.mtpHint": () =>
+      "Usa o bloco nextn treinado dentro do próprio modelo como cabeça de rascunho, em vez de adivinhar por repetição - é outro mecanismo, e um palpite muito melhor em texto que não se repete. Só entra em ação em modelo que traga o bloco (Qwen3.5 em diante) e só quando uma máquina serve o modelo inteiro, porque o bloco mora na última camada e quem monta o lote é a cabeça. Palpite errado é descartado, nunca sai na resposta.",
+    "deploy.mtpDraftTokens": () => "Tokens rascunhados pelo MTP",
+    "deploy.mtpDraftTokensHint": () =>
+      "Quantos tokens a cabeça nextn adivinha por rodada. Mais alarga o lote em todos os hops; menos desperdiça menos quando o palpite é recusado.",
     "deploy.machines": () => "Máquinas",
     "deploy.machineTitle": () => "O que cada uma tem e quanto lhe sobra",
     "deploy.machineDetail": () => "A memória livre é o que a fatia precisa caber: VRAM onde há placa dedicada, RAM disponível no resto. As duas últimas colunas são decididas por máquina, porque as máquinas não se parecem: quantas camadas esta põe na GPU (em branco vale o padrão do cluster) e se o KV cache dela mora na GPU ou na RAM.",

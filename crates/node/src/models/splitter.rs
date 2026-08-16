@@ -1344,4 +1344,69 @@ mod tests {
             "a fatia final carrega o bloco nextn e preserva o valor original"
         );
     }
+
+    /// A fatia 0-23 do Qwen3.8-27B-Q3_K_S, com a forma exata do modelo que
+    /// falhou: 65 blocos, `qwen35.nextn_predict_layers = 1` e o bloco `nextn`
+    /// só em `blk.64`. Copiar essa marca para a fatia 0-23 faz o llama.cpp
+    /// derivar `blk.23.nextn.eh_proj.weight` do hiperparâmetro e abortar o
+    /// load com "missing tensor" — foi o que aconteceu na salem-gpu em
+    /// 2026-08-14, enquanto a 24-64 (`block_count = 41`, último bloco = o 64
+    /// original) carregava na ksia.
+    ///
+    /// O teste menor acima prova a mesma regra; este prova que ela vale nos
+    /// números reais, que é o que o defeito relatado citava: fatia não-final
+    /// declara zero e não leva tensor `nextn` nenhum; a final declara 1 e leva
+    /// o bloco, renumerado para `blk.40.*`.
+    #[test]
+    fn the_qwen38_27b_slice_0_23_carries_no_nextn_block_nor_its_hyperparameter() {
+        let dir = std::env::temp_dir().join(format!("rdmap2p-nextn-27b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("qwen38-27b.gguf");
+        std::fs::write(&whole, qwen35_test_gguf_bytes(65)).unwrap();
+
+        let head = dir.join("qwen38_0_23.gguf");
+        split(&whole, &head, 0, 23, true, false, |_| {}).unwrap();
+        let tail = dir.join("qwen38_24_64.gguf");
+        split(&whole, &tail, 24, 64, false, true, |_| {}).unwrap();
+
+        let head_bytes = std::fs::read(&head).unwrap();
+        let tail_bytes = std::fs::read(&tail).unwrap();
+
+        assert_eq!(
+            kv_u32(&head_bytes, "qwen35.nextn_predict_layers"),
+            Some(0),
+            "a fatia 0-23 não tem o bloco nextn: declarar 1 faz o llama.cpp \
+             exigir 'blk.23.nextn.eh_proj.weight' e abortar o load"
+        );
+        assert_eq!(kv_u32(&head_bytes, "qwen35.block_count"), Some(24));
+        let head_src = parse_merged_src(&head_bytes).unwrap();
+        let head_nextn: Vec<&str> = head_src
+            .tensors
+            .iter()
+            .map(|t| t.name.as_str())
+            .filter(|n| n.contains(".nextn."))
+            .collect();
+        assert!(
+            head_nextn.is_empty(),
+            "a fatia 0-23 não deveria levar tensor nextn nenhum, levou {head_nextn:?}"
+        );
+
+        assert_eq!(
+            kv_u32(&tail_bytes, "qwen35.nextn_predict_layers"),
+            Some(1),
+            "a fatia final carrega o bloco nextn de verdade e preserva a marca"
+        );
+        assert_eq!(kv_u32(&tail_bytes, "qwen35.block_count"), Some(41));
+        let tail_src = parse_merged_src(&tail_bytes).unwrap();
+        let tail_nextn: Vec<&str> = tail_src
+            .tensors
+            .iter()
+            .map(|t| t.name.as_str())
+            .filter(|n| n.contains(".nextn."))
+            .collect();
+        assert!(
+            tail_nextn.contains(&"blk.40.nextn.eh_proj.weight"),
+            "o bloco nextn do blk.64 original tem que virar blk.40 na fatia 24-64, veio {tail_nextn:?}"
+        );
+    }
 }

@@ -12,7 +12,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { PeerDetailCard, cardRange } from "./PeerDetailCard";
 import { LocaleProvider } from "../i18n/provider";
-import { fakeNode, fakePeer, fakeSlicePeer } from "../test/fixtures";
+import { fakeNode, fakePeer, fakeSlicePeer, fakeSystem } from "../test/fixtures";
 import type { PeerView } from "../lib/types";
 
 function mount(peer: PeerView) {
@@ -66,6 +66,41 @@ describe("PeerDetailCard com fatia", () => {
   it("mostra a faixa que o peer anuncia", () => {
     mount(fakeSlicePeer("a", 0, 15));
     expect(screen.getByText(/0\s*[-–]\s*15/)).toBeTruthy();
+  });
+});
+
+describe("PeerDetailCard sem GPU (nó Linux, ex. num container Docker)", () => {
+  afterEach(cleanup);
+
+  /// `wired_mb` só é populado no macOS (`sysmon.rs`); um nó Linux sem NVIDIA
+  /// caía no mesmo ramo que mostrava "Wired memory (Metal buffers)" com
+  /// `value={null}`, que trava o `Progress` no modo indeterminado para
+  /// sempre — a barra "fica saltando e nunca se resolve", já que nada nesse
+  /// nó jamais vai preencher `wired_mb`.
+  const semGpu = fakePeer({
+    node_id: "cpu-only",
+    node: fakeNode({
+      node_id: "cpu-only",
+      short_id: "cpu-only",
+      hostname: "node-cpu-1",
+      system: fakeSystem({ hostname: "node-cpu-1", os: "linux", gpu_kind: "none", wired_mb: null }),
+    }),
+  });
+
+  it("não mostra o medidor de memória wired do Metal", () => {
+    mount(semGpu);
+    expect(screen.queryByText(/wired/i)).toBeNull();
+    expect(screen.queryByText(/metal/i)).toBeNull();
+  });
+
+  it("mostra uma barra num estado definido, não indeterminado para sempre", () => {
+    mount(semGpu);
+    const bars = screen.getAllByRole("progressbar");
+    // Toda barra desta máquina tem que ter um valor definido — nenhuma pode
+    // ficar sem `aria-valuenow`, que é como o indeterminado se denuncia.
+    for (const bar of bars) {
+      expect(bar.getAttribute("aria-valuenow")).not.toBeNull();
+    }
   });
 });
 

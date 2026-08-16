@@ -225,7 +225,16 @@ export function PeerDetailCard({
                   total: megabytes(gpu.vram_total_mb),
                 })}
               />
-            ) : (
+            ) : system?.gpu_kind === "unified" ? (
+              // Only macOS/Apple Silicon ever reports `wired_mb` — `sysmon.rs`
+              // hardcodes it to `None` on every other platform. Gating this on
+              // `gpu_kind` (instead of showing it whenever there's no VRAM to
+              // show) matters: `value={null}` drives `Progress` into its
+              // indeterminate/looping animation, meant for "still loading" —
+              // not "will never have a value on this platform." A Linux node
+              // (bare metal or in a container) with no NVIDIA GPU fell into
+              // this branch and bounced forever, since nothing was ever going
+              // to populate `wired_mb` for it.
               <Meter
                 label={t("dashboard.wiredMemory")}
                 value={
@@ -236,6 +245,8 @@ export function PeerDetailCard({
                 tone="sky"
                 detail={system?.wired_mb != null ? megabytes(system.wired_mb) : "—"}
               />
+            ) : (
+              <Meter label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
             )}
             <Meter
               label={t("dashboard.disk", { path: system?.disk.mount_point || "—" })}

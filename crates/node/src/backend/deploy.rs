@@ -840,9 +840,20 @@ fn plan(
     // operator wants: each machine's adjacent slices become a single step that
     // merges them into one file on that machine. Without it, two ranges on one
     // machine stay the refusal they always were.
+    //
+    // "Sem máquina" is not a machine. An empty target id groups by string
+    // equality like any other, which lumped every unplaced range together as if
+    // one node had taken them all: the refusal came out naming a machine with
+    // no name ("` ficou com duas faixas`"), and the steps came back out of
+    // layer order. Each unplaced range keeps its own group and its own line.
     let mut groups: Vec<Vec<(usize, String, PeerOverrides)>> = Vec::new();
     for entry in &chosen {
-        match groups.iter_mut().find(|g| g[0].1 == entry.1) {
+        let existing = if entry.1.is_empty() {
+            None
+        } else {
+            groups.iter_mut().find(|g| g[0].1 == entry.1)
+        };
+        match existing {
             Some(g) => g.push(entry.clone()),
             None => groups.push(vec![entry.clone()]),
         }
@@ -853,7 +864,6 @@ fn plan(
 
     let mut transfer_bytes = 0u64;
     let mut steps: Vec<Step> = Vec::new();
-    let mut position = 0u32;
 
     for grp in groups {
         let target_id = &grp[0].1;
@@ -992,9 +1002,11 @@ fn plan(
                 }
             }
 
-            position += 1;
             steps.push(Step {
-                position,
+                // Numbered after the sort below: the place in the pipeline is
+                // the place in the layer order, not the order the grouping
+                // happened to walk.
+                position: 0,
                 start_layer,
                 end_layer,
                 total_layers,
@@ -1083,9 +1095,8 @@ fn plan(
                     }
                 }
 
-                position += 1;
                 steps.push(Step {
-                    position,
+                    position: 0,
                     start_layer: c.start_layer,
                     end_layer: c.end_layer,
                     total_layers,
@@ -1113,6 +1124,22 @@ fn plan(
                 });
             }
         }
+    }
+
+    // ── The order the answer comes back in ──────────────────────────────────
+    //
+    // The pipeline order *is* the layer order, so `position` is only honest in
+    // layer order, and `run` reads the launch order straight off this list.
+    // Grouping by target machine builds the list in machine order instead: a
+    // machine holding two ranges emitted its second one immediately, ahead of
+    // every range in between. That never reached `run` - two ranges on one
+    // machine is a refusal - but it did reach the screen, which lines the plan
+    // up against rows it keeps in layer order and fell silent when they did not
+    // line up. Sorted here, once, so neither side has to know how the grouping
+    // walked.
+    steps.sort_by_key(|s| (s.start_layer, s.end_layer));
+    for (i, s) in steps.iter_mut().enumerate() {
+        s.position = i as u32 + 1;
     }
 
     // The auto planner runs out of machines before it runs out of slices, and
@@ -2514,6 +2541,101 @@ mod tests {
         let ms = build(vec![m("a", 100_000, &[])]);
         let p = plan("m", &ms, None);
         assert!(p.blocked.unwrap().contains("nenhuma máquina"));
+    }
+
+    // ── The order the steps come back in ────────────────────────────────────
+    //
+    // `position` says "1-based place in the pipeline", the pipeline order *is*
+    // the layer order, and the screen compares the plan it got back against the
+    // rows it has on screen - which it keeps in layer order. Every one of those
+    // three depends on the same promise, so it is asserted here rather than
+    // left to fall out of the grouping loop.
+
+    /// Steps come back in layer order even when the plan is refused.
+    ///
+    /// Grouping by target machine reordered them: two ranges landing on the
+    /// same machine emitted the second one immediately, ahead of every range
+    /// between them. A blocked plan is exactly when the screen most needs to
+    /// line the answer up with its rows, so the order has to hold there too.
+    #[test]
+    fn steps_stay_in_layer_order_when_a_machine_takes_two_ranges() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (16, 23)]),
+            m("b", 100_000, &[(8, 15)]),
+            m("c", 100_000, &[(24, 31)]),
+        ]);
+        let sel = [
+            pick(0, 7, "a"),
+            pick(8, 15, "b"),
+            pick(16, 23, "a"),
+            pick(24, 31, "c"),
+        ];
+        let p = plan("m", &ms, Some(&sel));
+        assert!(p.blocked.is_some(), "duas faixas em 'a' continua recusa");
+        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
+        let positions: Vec<u32> = p.steps.iter().map(|s| s.position).collect();
+        assert_eq!(positions, vec![1, 2, 3, 4], "posição é o lugar no pipeline");
+    }
+
+    /// The auto planner running out of machines still answers in layer order.
+    ///
+    /// This is the captain's screen: four cuts, two machines, so two ranges end
+    /// up with no machine at all. Lumping every unassigned range under the same
+    /// empty node id treated "nobody" as if it were one machine, which both
+    /// reordered the steps and produced a refusal naming an empty machine.
+    #[test]
+    fn ranges_left_without_a_machine_are_not_one_machine() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
+            m("b", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
+        ]);
+        let p = plan("m", &ms, None);
+        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
+
+        let blocked = p.blocked.expect("quatro fatias para duas máquinas é recusa");
+        assert!(blocked.contains("4 fatias"), "{blocked}");
+        assert!(
+            !blocked.contains("ficou com duas faixas"),
+            "sem máquina não é uma máquina com duas faixas: {blocked}"
+        );
+
+        // Each orphan range says so on its own line, so the screen can point at
+        // the row instead of at a machine with no name.
+        let sem_maquina: Vec<&Step> = p
+            .steps
+            .iter()
+            .filter(|s| s.target_node_id.is_empty())
+            .collect();
+        assert_eq!(sem_maquina.len(), 2);
+        for s in sem_maquina {
+            assert!(
+                s.problem.as_deref().is_some_and(|p| p.contains("sem máquina")),
+                "{:?}",
+                s.problem
+            );
+        }
+    }
+
+    /// Same thing from the operator's side: two ranges deliberately left
+    /// without a machine must not read as one machine holding both.
+    #[test]
+    fn two_hand_picked_ranges_without_a_machine_keep_their_own_rows() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
+        ]);
+        let sel = [
+            pick(0, 7, "a"),
+            pick(8, 15, ""),
+            pick(16, 23, ""),
+            pick(24, 31, ""),
+        ];
+        let p = plan("m", &ms, Some(&sel));
+        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
+        let blocked = p.blocked.expect("faixa sem máquina é recusa");
+        assert!(blocked.contains("sem máquina"), "{blocked}");
     }
 
     // ── The operator's own choice ───────────────────────────────────────────

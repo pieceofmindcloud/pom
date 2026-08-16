@@ -78,6 +78,17 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   quer trocar, e escondê-la tornaria a troca impossível. Pegar máquina ocupada é
   pego pela regra de um-nó-por-faixa, que é o lugar honesto para ela.
 
+**`steps` sai sempre em ordem de camada**, plano recusado incluído, e
+`position` é numerado depois dessa ordenação. A ordem não é estética: a ordem do
+pipeline *é* a ordem das camadas, o `run` lê a ordem de lançamento direto dessa
+lista, e a tela alinha o plano com linhas que ela mantém ordenadas por camada. O
+laço de agrupamento anda por máquina de destino, então a ordenação é aplicada uma
+vez no fim - sem ela, uma máquina com duas faixas emitia a segunda na frente de
+tudo que estava no meio, e a tela de implantar emudecia (2026-08-16). Pela mesma
+razão **`target_node_id` vazio nunca agrupa**: "sem máquina" não é uma máquina, e
+juntar toda faixa sem destino sob o mesmo id vazio produzia uma recusa que
+nomeava uma máquina sem nome.
+
 O `Plan` carrega `total_layers` com `total_layers_inferred` (deduzido da cobertura
 quando a fatia não declara), `transfer_bytes`, `steps` (cada um com `ready`
 quando a máquina já tem a fatia, e `merged` quando é unidade fundida com `parts`),

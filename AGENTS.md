@@ -320,22 +320,46 @@ conexões que o swarm já faz) → interfaces locais desta máquina (o `0.0.0.0:
 sentinela só sobra sem nenhum dos três). Os dois caminhos, UDP e gossipsub,
 leem do mesmo `Network`, então um valor fixado chega igual aos dois — não há
 mais o gap descrito aqui antes. `addrs::is_private_or_local` é o que decide se
-um endereço observado é "novidade": intervalos RFC 1918 e IPv6 unique-local
-não contam, porque só provam que o peer que respondeu está na mesma LAN.
+um endereço observado é "novidade": RFC 1918, **`100.64/10` (RFC 6598, o CGNAT
+- e o que a Tailscale usa)** e IPv6 unique-local não contam, porque só provam
+que o peer que respondeu está na mesma rede privada.
+
+**Precedência conferida ao vivo em 2026-08-16**, com um nó extra no cluster de
+três máquinas e sem reiniciar nada: fixar o endereço pela tela de Rede
+(`POST /api/ui/network/advertise-addr`) chega ao MacBook e à ksia em ~10 s;
+limpar o campo volta para o endereço público observado pelo `identify`; e o
+endereço da Tailscale (`100.122.132.97`), que antes era adotado como público na
+primeira resposta de `identify`, deixou de ser aceito. O que **não** é estável é
+o endereço observado quando nada foi fixado: `set_observed_addr` guarda o que o
+último peer disse, e num Mac com vários IPv6 de privacidade ele alterna. Quem
+precisa de endereço estável fixa.
+
+**Túnel de inferência - verificado pela internet em 2026-08-16.**
+`relay::send_frame_or_tunnel` (`inference/relay.rs`) tenta HTTP direto primeiro
+e só cai para o túnel libp2p (`infer_tunnel.rs`, protocolo `request_response`
+próprio) numa falha de `Timeout`/`Transport` contra um hop que anuncia
+`transport/libp2p-tunnel-v1` e tem `libp2p_peer_id` conhecido - nunca numa
+recusa HTTP considerada. As sondas ao vivo são
+`infer_tunnel::tests::tunnel_reaches_a_live_peer` e
+`relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`, as duas
+`#[ignore]` e dirigidas por `RDMA_P2P_TUNNEL_PROBE` (ver o doc de cada uma):
+contra a `salem-gpu` pela internet, a conexão fecha em ~70 ms e o servidor de
+inferência **dela** responde. Não dispara na LAN saudável - inferência
+distribuída de verdade nas três máquinas, zero ocorrência de "tentando via
+túnel libp2p".
+
+Duas ressalvas honestas sobre esse teste: as máquinas se alcançam por IPv6
+global, então o que foi exercitado é "pela internet", não "atrás de um NAT que
+bloqueia"; e o desvio só começa depois que o HTTP direto desiste, o que custa o
+timeout de `connect` do SO - **75 s medidos no macOS**, porque `send_frame`
+fixa 600 s por requisição e sobrepõe o do cliente.
 
 Falta para funcionar de fato pela internet:
 
-1. **O tráfego de inferência tem um caminho alternativo por libp2p, mas ainda
-   não verificado em NAT/CGNAT real.** `relay::send_frame_or_tunnel`
-   (`inference/relay.rs`) tenta HTTP direto primeiro e só cai para o túnel
-   libp2p (`infer_tunnel.rs`, protocolo `request_response` próprio) numa falha
-   de `Timeout`/`Transport` contra um hop que anuncia
-   `transport/libp2p-tunnel-v1` e tem `libp2p_peer_id` conhecido — nunca numa
-   recusa HTTP considerada. Testado em loopback e com swarms falsos; **não**
-   com duas máquinas atrás de NAT/CGNAT de verdade — isso segue como próximo
-   passo.
-2. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
+1. Sem autenticação nem TLS no `/v1/infer` e no gateway - aceitável em LAN
    confiável, não na internet.
+2. O tempo até o desvio (os 75 s acima) não foi tratado: é decisão de produto
+   sobre o prazo do HTTP direto, não defeito de implementação.
 
 ## Arquitetura Principal/Nó e as armadilhas que ela trouxe
 

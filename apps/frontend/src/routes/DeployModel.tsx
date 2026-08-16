@@ -485,8 +485,38 @@ export function DeployModel() {
     [selection, p],
   );
 
-  /** True while the node's answer still describes exactly these rows. */
-  const validated = !!p && sameRows(rows, rowsOf(p));
+  /**
+   * True while the plan in hand is still the answer to an older question.
+   *
+   * `isPlaceholderData` is exactly that and nothing else: react-query sets it
+   * only while showing a previous key's data, so a background refetch of the
+   * same selection does not make the screen blink. The debounce above is the
+   * other half - between the keystroke and `settled` the query key has not
+   * moved yet, so the plan looks current when it is not.
+   */
+  const syncing =
+    plan.isPlaceholderData || settled !== selection || settledParams !== params;
+
+  /** True while the node's answer still describes exactly these rows.
+   *
+   *  Order-insensitive on purpose. The screen keeps its rows in layer order and
+   *  the node builds its answer its own way; comparing position by position
+   *  made a plan that described exactly these rows look like a different plan,
+   *  and everything below - the refusal, the coverage warning, the button -
+   *  hung off that comparison. What matters is the set of (range, machine)
+   *  pairs, not the sequence they arrived in. */
+  const validated = !syncing && !!p && sameRows(rows, rowsOf(p).slice().sort(byLayer));
+
+  /**
+   * True when the node has answered about what is on screen right now.
+   *
+   * The explanations are gated on this rather than on `validated`, because the
+   * moment the node refuses part of a selection is the moment its answer stops
+   * matching the rows - and it is exactly then that the operator needs to read
+   * the reason. Gating the reason on the match meant the screen went silent
+   * precisely when it had something to say.
+   */
+  const answered = !!p && p.group === chosen && !syncing;
 
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
@@ -656,6 +686,27 @@ export function DeployModel() {
   }, 0);
   const canDeploy = validated && !p?.blocked && rows.length > 0;
 
+  /**
+   * Why the button is grey, in one line, next to the button.
+   *
+   * A disabled control with no reason beside it is the defect this screen was
+   * reported for: the operator sees grey and has nowhere to look. The panels
+   * above carry the long version; this says which of them to read, and covers
+   * the two states that have no panel at all - nothing selected, and an answer
+   * still on its way.
+   */
+  const whyNot: string | null = canDeploy
+    ? null
+    : rows.length === 0
+      ? t("deploy.whyNotEmpty")
+      : syncing || !p
+        ? t("deploy.whyNotChecking")
+        : p.blocked
+          ? t("deploy.whyNotBlocked")
+          : !validated
+            ? t("deploy.whyNotMismatch")
+            : null;
+
   return (
     <>
       <PageHeader
@@ -734,7 +785,7 @@ export function DeployModel() {
                 transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
                 className="space-y-5"
               >
-                {validated && p.blocked && (
+                {answered && p.blocked && (
                   <div className="flex items-start gap-3 rounded-xl border border-rose/30 bg-rose/[0.07] px-4 py-3.5">
                     <CircleAlert className="mt-0.5 h-4 w-4 shrink-0 text-rose" />
                     <div className="min-w-0">
@@ -746,7 +797,7 @@ export function DeployModel() {
                   </div>
                 )}
 
-                {validated && !p.blocked && !p.complete && (
+                {answered && !p.blocked && !p.complete && (
                   <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
                     <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
                     <div className="min-w-0">
@@ -767,7 +818,7 @@ export function DeployModel() {
                     here nobody can check: the slices reach layer N and there is
                     no metadata saying whether the model ends there. Said before
                     the button, next to the coverage warning it belongs with. */}
-                {validated && p.total_layers_inferred && (
+                {answered && p.total_layers_inferred && (
                   <div className="flex items-start gap-3 rounded-xl border border-amber/30 bg-amber/[0.07] px-4 py-3.5">
                     <TriangleAlert className="mt-0.5 h-4 w-4 shrink-0 text-amber" />
                     <div className="min-w-0">
@@ -781,7 +832,7 @@ export function DeployModel() {
                   </div>
                 )}
 
-                {validated &&
+                {answered &&
                   p.warnings
                     .filter((w) => w.includes("memória"))
                     .map((w) => (
@@ -825,15 +876,20 @@ export function DeployModel() {
                     title={t("deploy.shardSelection")}
                     subtitle={t("deploy.allRanges")}
                     actions={
-                      <Button
-                        variant="primary"
-                        icon={<Rocket className="h-4 w-4" />}
-                        loading={running}
-                        disabled={!canDeploy}
-                        onClick={() => (p.complete ? void deploy() : setAsked(true))}
-                      >
-                        {t("deploy.deploy")}
-                      </Button>
+                      <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+                        {whyNot && (
+                          <span className="text-[0.78rem] text-muted">{whyNot}</span>
+                        )}
+                        <Button
+                          variant="primary"
+                          icon={<Rocket className="h-4 w-4" />}
+                          loading={running}
+                          disabled={!canDeploy}
+                          onClick={() => (p.complete ? void deploy() : setAsked(true))}
+                        >
+                          {t("deploy.deploy")}
+                        </Button>
+                      </div>
                     }
                   />
 

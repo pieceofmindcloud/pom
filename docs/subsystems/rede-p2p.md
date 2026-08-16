@@ -126,10 +126,17 @@ e em `/ip6/::`.
   filtrando `is_relay`); `--no-default-relays` tira os públicos. Com
   `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por peer,
   1 h de reserva, circuitos de 120 s / 128 kB); sem ele, `max_reservations: 0`.
-- **Gossipsub:** `main.rs` publica o `Announce` a cada 5 s **quando existe
-  assignment**; `handle_event` converte a mensagem em `PeerInfo` preferindo
+- **Gossipsub:** `main.rs` publica o `Announce` a cada 5 s, com ou sem
+  assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->
+  `self_announce`); `handle_event` converte a mensagem em `PeerInfo` preferindo
   `addr_candidates.first()` ao `addr` (o literal `0.0.0.0` só sobrevive se nada
   foi anunciado) e chama `Network::insert_peer`.
+  O id de mensagem é `discovery::announce_message_id` (hash do tópico +
+  payload), e **isso não é detalhe**: a função padrão do libp2p é
+  `source + sequence`, as duas são `None` sob autenticação anônima, e o
+  resultado era o mesmo id constante para todo anúncio. Medido no cluster de
+  verdade em 2026-08-16, com a malha formada: zero mensagem aceita em 90 s e
+  todo publish depois do primeiro recusado. Ver o doc da função.
 - **mDNS:** descoberta na LAN que alimenta o endereço da Kademlia e diala o peer.
 - **Identify:** grava `listen_addrs` do remoto na Kademlia e, para relays
   conectados, escuta no circuito (`P2pCircuit`) do relay.
@@ -172,13 +179,16 @@ O que está no AGENTS.md raiz, com o comportamento atual do código:
    enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem;
    `insert_peer` (libp2p) não reescreve - um peer assim fica com
    `inference_url` apontando para o próprio nó.
-2. **`--public-addr` só alimenta o pkarr**, não o `addr` do `Announce` UDP
-   (para isso existe `--advertise-addr`).
-3. **O tráfego de inferência não passa pelo libp2p.** O gateway fala HTTP direto
-   com `http://<ip-do-peer>:<inference-port>` (`routing/pipeline.rs`, `direct.rs`).
-   Relay e DCuTR só carregam a descoberta; sem IP roteável ou porta liberada, o
-   hop HTTP falha mesmo com os peers "conectados".
-4. **Sem autenticação nem TLS na porta de inferência (`/v1/prefill`,
+2. **O tráfego de inferência tem um caminho por libp2p, mas só como desvio.**
+   O gateway fala HTTP direto com `http://<ip-do-peer>:<inference-port>`
+   (`routing/pipeline.rs`, `direct.rs`) e só cai para o túnel
+   (`network/infer_tunnel.rs`, via `relay::send_frame_or_tunnel`) quando essa
+   chamada falha por `Timeout`/`Transport` contra um hop que anuncia
+   `transport/libp2p-tunnel-v1`. Verificado contra a `salem-gpu` pela internet
+   em 2026-08-16 (ver AGENTS.md raiz). O custo é o tempo até desistir do HTTP
+   direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
+   requisição e quem decide acaba sendo o `connect` do sistema.
+3. **Sem autenticação nem TLS na porta de inferência (`/v1/prefill`,
    `/v1/step`) nem no gateway.** Aceitável em LAN confiável, não na internet.
 
 ## 6. Defeitos anotados
@@ -189,14 +199,14 @@ O que está no AGENTS.md raiz, com o comportamento atual do código:
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
-- **DEFEITO ANOTADO: anúncio do gossipsub (main.rs) diverge do `self_announce`
-  (network.rs)** - a task de publish do main.rs anuncia só `frame/v1-f16` e
-  `frame/v2-zstd-f16`, sem `relay/v1-chain` nem `speculate/v1-lookup`, com
-  `role` e `hostname` vazios, e só publica **quando existe assignment**
-  (`main.rs`, bloco "Publish our own Announce to gossipsub"). Peer que chegue só
-  por gossipsub perde capacidades, papel e nome, e um nó sem modelo é invisível
-  pela internet (o caminho UDP anuncia sempre). O comentário de `self_announce`
-  fala em sincronizar "os outros dois builders" e não conta com este terceiro.
+- **DEFEITO ANOTADO: o endereço observado por um peer não tem critério de
+  desempate** - `Network::set_observed_addr` guarda o que o último `identify`
+  disse. Num Mac com vários IPv6 de privacidade, peers diferentes observam
+  endereços diferentes e o `Announce` alterna entre eles (visto ao vivo em
+  2026-08-16, a mesma tela mostrando dois endereços em leituras seguidas).
+  `addrs::filter_candidates` prefere o estável ao temporário na enumeração
+  local; o caminho do observado não tem essa preferência. Quem precisa de
+  endereço estável fixa em `--advertise-addr` ou na tela de Rede, que vence.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
   `Path::new(".rdma-p2p.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório

@@ -307,6 +307,24 @@ pub struct Network {
     observed_addr: std::sync::RwLock<Option<String>>,
 }
 
+/// Os primeiros 12 bytes de um id, para o log, **sem cortar no meio de um
+/// caractere e sem estourar em id curto**.
+///
+/// `&node_id[..12]` num id de dois caracteres derrubou o cluster do captain em
+/// 2026-08-16: um `PeerList` com um id curto chegou por broadcast na LAN, o
+/// `receive_loop` entrou em pânico em `byte index 12 is out of bounds of 'eu'`,
+/// **a task morreu** e o nó parou de receber UDP para sempre - enquanto o HTTP,
+/// o gossip e a TUI seguiam saudáveis, e a única pista era um socket com a fila
+/// de recepção cheia. O id vem da rede: qualquer coisa que o outro lado mande
+/// tem que ser tratada como texto arbitrário, não como um SHA256 de 64 hexas.
+fn short(id: &str) -> &str {
+    let mut fim = id.len().min(12);
+    while fim > 0 && !id.is_char_boundary(fim) {
+        fim -= 1;
+    }
+    &id[..fim]
+}
+
 /// Payload budget for one UDP datagram, in bytes.
 ///
 /// The measured path from the captain's 5G tethering to his Linux box has an
@@ -1021,7 +1039,7 @@ impl Network {
                         .unwrap_or_default();
                     info!(
                         "🆕 New peer: {} | model={} layers={}-{}{}",
-                        &node_id[..12],
+                        short(&node_id),
                         model,
                         start_layer,
                         end_layer,
@@ -1030,7 +1048,7 @@ impl Network {
                 } else {
                     debug!(
                         "Peer update: {} layers={}-{}",
-                        &node_id[..12],
+                        short(&node_id),
                         start_layer,
                         end_layer
                     );
@@ -1077,7 +1095,7 @@ impl Network {
                     if peer.node_id != self.node_id && !known.contains_key(&peer.node_id) {
                         info!(
                             "📋 Learned peer from gossip: {} layers={}-{}",
-                            &peer.node_id[..12],
+                            short(&peer.node_id),
                             peer.start_layer,
                             peer.end_layer
                         );
@@ -1129,7 +1147,7 @@ impl Network {
         if is_new {
             info!(
                 "🆕 Peer via libp2p: {} model={} layers={}-{}",
-                &node_id[..node_id.len().min(12)],
+                short(&node_id),
                 peer.model,
                 peer.start_layer,
                 peer.end_layer
@@ -1156,6 +1174,21 @@ impl Network {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Um id curto na rede não pode derrubar o `receive_loop`.
+    ///
+    /// Reproduz o que tirou o cluster do captain do ar em 2026-08-16: um
+    /// `PeerList` chegou com `node_id` de dois caracteres, `&id[..12]` entrou em
+    /// pânico, a task do `receive_loop` morreu e o nó parou de receber UDP
+    /// enquanto continuava respondendo HTTP - indistinguível de saudável na tela.
+    #[test]
+    fn a_short_node_id_from_the_wire_never_panics() {
+        assert_eq!(short("eu"), "eu");
+        assert_eq!(short(""), "");
+        assert_eq!(short("0123456789abcdef"), "0123456789ab");
+        // Não corta no meio de um caractere multibyte.
+        assert_eq!(short("ááááááá"), "áááááá");
+    }
 
     /// O gossipsub e o UDP têm que publicar o mesmo anúncio, inclusive quando o
     /// nó ainda não tem modelo. O publish do libp2p já teve construtor próprio,

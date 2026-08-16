@@ -585,6 +585,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.merge": () => "Merge neighboring shards on the same machine",
     "deploy.mergeHint": () => "Two adjacent ranges can stay on the same machine: they are merged into one file before starting. Without this, every machine keeps serving one range.",
     "deploy.deploy": () => "Deploy this way",
+    // Why the deploy button is grey, said next to the button. A disabled
+    // control with no reason beside it is what this screen was reported for.
+    "deploy.whyNotEmpty": () => "select at least one shard",
+    "deploy.whyNotChecking": () => "checking with the node…",
+    "deploy.whyNotBlocked": () => "see the reason above",
+    "deploy.whyNotMismatch": () => "the node did not accept this selection - see the reason above",
     "deploy.prompt": () => "prompt",
     "deploy.response": () => "response",
     "deploy.processesPrompt": () => "processes prompt",
@@ -1325,6 +1331,10 @@ const messages: Record<Locale, Record<string, Message>> = {
     "deploy.merge": () => "Juntar fatias vizinhas na mesma máquina",
     "deploy.mergeHint": () => "Duas faixas adjacentes podem ficar na mesma máquina: elas são fundidas num arquivo só antes de subir. Sem isto, cada máquina continua servindo uma faixa.",
     "deploy.deploy": () => "Implantar assim",
+    "deploy.whyNotEmpty": () => "marque ao menos uma fatia",
+    "deploy.whyNotChecking": () => "conferindo com o nó…",
+    "deploy.whyNotBlocked": () => "veja o motivo acima",
+    "deploy.whyNotMismatch": () => "o nó não aceitou esta seleção - veja o motivo acima",
     "deploy.prompt": () => "prompt",
     "deploy.response": () => "resposta",
     "deploy.processesPrompt": () => "processa o prompt",

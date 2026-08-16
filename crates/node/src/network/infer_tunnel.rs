@@ -181,6 +181,75 @@ pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
     TUNNEL_SENDER.get()
 }
 
+/// A real swarm speaking this protocol, wired to a real `TunnelOutboundSender`:
+/// the same pairing `Discovery::run` provides in production, reduced to the one
+/// behaviour under test.
+///
+/// Exists so the live probes (`tunnel_reaches_a_live_peer` here, and
+/// `relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`) drive
+/// production code against a machine that is actually on the network, instead
+/// of a fake channel. Test-only: production always goes through `Discovery`,
+/// which owns the full behaviour set.
+#[cfg(test)]
+pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutboundSender {
+    use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux};
+    use std::collections::HashMap;
+
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default().nodelay(true),
+            noise::Config::new,
+            yamux::Config::default,
+        )
+        .expect("tcp")
+        .with_dns()
+        .expect("dns")
+        .with_behaviour(|_| infer_tunnel_behaviour())
+        .expect("behaviour")
+        // Mesmo tempo ocioso do enxame de produção (`Discovery::new`). O
+        // padrão do `SwarmBuilder` é zero: a conexão fecha assim que fica
+        // parada, e um desvio que só chega depois do HTTP direto expirar
+        // encontraria o caminho já derrubado.
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(60)))
+        .build();
+    swarm.add_peer_address(peer, addr.clone());
+    swarm.dial(addr).expect("dial");
+
+    let (tx, mut rx) = mpsc::channel::<TunnelOutbound>(8);
+    tokio::spawn(async move {
+        let mut pending: HashMap<_, oneshot::Sender<Result<TunnelResponse, String>>> =
+            HashMap::new();
+        loop {
+            tokio::select! {
+                out = rx.recv() => {
+                    let Some(TunnelOutbound { peer_id, request, reply }) = out else { break };
+                    eprintln!("[probe-swarm] send_request -> {peer_id}");
+                    let id = swarm.behaviour_mut().send_request(&peer_id, request);
+                    pending.insert(id, reply);
+                }
+                event = swarm.select_next_some() => match event {
+                    SwarmEvent::Behaviour(Event::Message {
+                        message: request_response::Message::Response { request_id, response },
+                        ..
+                    }) => {
+                        if let Some(reply) = pending.remove(&request_id) {
+                            let _ = reply.send(Ok(response));
+                        }
+                    }
+                    SwarmEvent::Behaviour(Event::OutboundFailure { request_id, error, .. }) => {
+                        if let Some(reply) = pending.remove(&request_id) {
+                            let _ = reply.send(Err(error.to_string()));
+                        }
+                    }
+                    other => eprintln!("[probe-swarm] {other:?}"),
+                },
+            }
+        }
+    });
+    tx
+}
+
 /// The entire inbound side of the NAT-tunnel: forward a request that arrived
 /// over the swarm to this node's own inference server on loopback, and carry
 /// back whatever it answers.
@@ -427,5 +496,93 @@ mod tests {
         .await;
 
         assert_eq!(response.status, 502);
+    }
+
+    /// Fala o protocolo do túnel contra um peer **de verdade**, pela internet.
+    ///
+    /// O commit que criou o túnel registrou como lacuna conhecida que ele só
+    /// tinha sido exercitado em loopback e com enxames falsos. Isto é o que
+    /// fecha essa lacuna, e não pode virar teste de CI: depende de uma máquina
+    /// remota estar no ar. Fica `#[ignore]` e é dirigido por variável de
+    /// ambiente, como procedimento reproduzível.
+    ///
+    /// ```sh
+    /// RDMA_P2P_TUNNEL_PROBE=/ip6/2804:f30:3:1a6f:96e1:21bd:f074:967/tcp/52777/p2p/12D3KooWRuq6eW5rXSTa87FgrrXrAHdYCGYv3vKuLxtiFn4vfTRM \
+    ///   cargo test -p node --bin rdma-p2p tunnel_reaches_a_live_peer -- --ignored --nocapture
+    /// ```
+    ///
+    /// O multiaddr sai do `libp2p_peer_id` que o peer anuncia mais o endereço
+    /// dele com a porta libp2p (UDP + 10000). Uma resposta qualquer já prova o
+    /// caminho: o 502 sintético de `serve_loopback` é gerado **na outra
+    /// máquina**, então até ele prova que o quadro atravessou.
+    #[tokio::test]
+    #[ignore = "precisa de um peer vivo; ver o doc do teste"]
+    async fn tunnel_reaches_a_live_peer() {
+        use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux, Multiaddr};
+
+        let Ok(target) = std::env::var("RDMA_P2P_TUNNEL_PROBE") else {
+            panic!("defina RDMA_P2P_TUNNEL_PROBE com o multiaddr do peer");
+        };
+        let addr: Multiaddr = target.parse().expect("multiaddr inválido");
+        let peer_id = addr
+            .iter()
+            .find_map(|p| match p {
+                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                _ => None,
+            })
+            .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
+        let path = std::env::var("RDMA_P2P_TUNNEL_PROBE_PATH")
+            .unwrap_or_else(|_| "/v1/step".to_string());
+
+        let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+            .with_tokio()
+            .with_tcp(
+                tcp::Config::default().nodelay(true),
+                noise::Config::new,
+                yamux::Config::default,
+            )
+            .expect("tcp")
+            .with_dns()
+            .expect("dns")
+            .with_behaviour(|_| infer_tunnel_behaviour())
+            .expect("behaviour")
+            .build();
+
+        swarm.add_peer_address(peer_id, addr.clone());
+        swarm.dial(addr).expect("dial");
+        let id = swarm.behaviour_mut().send_request(
+            &peer_id,
+            TunnelRequest {
+                path: path.clone(),
+                body: Vec::new(),
+            },
+        );
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        loop {
+            let event = tokio::time::timeout_at(deadline, swarm.select_next_some())
+                .await
+                .expect("o peer não respondeu no prazo");
+            match event {
+                SwarmEvent::Behaviour(Event::Message {
+                    message: request_response::Message::Response { request_id, response },
+                    ..
+                }) if request_id == id => {
+                    println!(
+                        "túnel respondeu: status={} body={:?}",
+                        response.status,
+                        String::from_utf8_lossy(&response.body[..response.body.len().min(200)])
+                    );
+                    return;
+                }
+                SwarmEvent::Behaviour(Event::OutboundFailure { error, .. }) => {
+                    panic!("o túnel falhou: {error}");
+                }
+                SwarmEvent::OutgoingConnectionError { error, .. } => {
+                    panic!("não deu para conectar: {error}");
+                }
+                other => println!("… {other:?}"),
+            }
+        }
     }
 }

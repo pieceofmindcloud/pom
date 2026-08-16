@@ -21,6 +21,10 @@ fn e_ipv6(ip: &str) -> bool {
     ip.contains(':')
 }
 
+fn sem_colchetes(ip: &str) -> &str {
+    ip.trim_start_matches('[').trim_end_matches(']')
+}
+
 fn descartavel(ip: &str) -> bool {
     ip == "127.0.0.1"
         || ip == "::1"
@@ -32,24 +36,49 @@ fn descartavel(ip: &str) -> bool {
 /// Whether `ip` could never be dialed from outside this machine's own
 /// network — everything `descartavel` already excludes (loopback,
 /// link-local, the `0.0.0.0` sentinel), plus RFC 1918 (`10/8`, `172.16/12`,
-/// `192.168/16`) and IPv6 unique-local (`fc00::/7`).
+/// `192.168/16`), RFC 6598 shared address space (`100.64/10`) and IPv6
+/// unique-local (`fc00::/7`).
 ///
 /// Used to decide whether a peer-observed address (`Network::set_observed_addr`,
 /// from libp2p `identify`) is real new information about this node's public
 /// IP, or just the peer telling us about a private range we already know
 /// isn't reachable from the internet — e.g. a peer on the same LAN, or a NAT
 /// that rewrote to another private range instead of a routable one.
+///
+/// **`100.64/10` is not an optional extra.** `Ipv4Addr::is_private` answers
+/// RFC 1918 only, and RFC 6598 is what a CGNAT hands out - and what Tailscale
+/// hands out too. Measured on this MacBook on 2026-08-16: the very first
+/// `identify` answer came from a peer reached over the tailnet and reported
+/// `100.122.132.97`, which the node then adopted as its *public* address and
+/// announced to the whole cluster. A tailnet address proves the peer is on the
+/// same tailnet, exactly the way a `192.168.` address proves it is on the same
+/// LAN; a peer outside it cannot dial either.
 pub fn is_private_or_local(ip: &str) -> bool {
     if descartavel(ip) {
         return true;
     }
     if let Ok(v4) = ip.parse::<std::net::Ipv4Addr>() {
-        return v4.is_private();
+        let [a, b, ..] = v4.octets();
+        // RFC 6598 shared address space, 100.64.0.0/10.
+        let carrier_grade_nat = a == 100 && (64..128).contains(&b);
+        return v4.is_private()
+            || v4.is_loopback()
+            || v4.is_link_local()
+            // 0.0.0.0/8, "this network" - `is_unspecified` is only 0.0.0.0.
+            || a == 0
+            || v4.is_multicast()
+            || v4.is_broadcast()
+            || carrier_grade_nat;
     }
     let bare = ip.trim_start_matches('[').trim_end_matches(']');
     if let Ok(v6) = bare.parse::<std::net::Ipv6Addr>() {
-        // fc00::/7: top 7 bits are 1111 110.
-        return (v6.segments()[0] & 0xfe00) == 0xfc00;
+        let first = v6.segments()[0];
+        // fc00::/7: top 7 bits are 1111 110. fe80::/10: top 10 are 1111 1110 10.
+        return (first & 0xfe00) == 0xfc00
+            || (first & 0xffc0) == 0xfe80
+            || v6.is_loopback()
+            || v6.is_unspecified()
+            || v6.is_multicast();
     }
     false
 }
@@ -72,7 +101,11 @@ pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<St
     }
     let (mut v4, mut v6) = (0usize, 0usize);
     for a in uteis {
-        if saida.iter().any(|s| *s == a.ip) {
+        // Comparado sem colchetes dos dois lados: `fixado` vem de
+        // `effective_host`, que colchetea o IPv6, e `a.ip` e o endereco cru.
+        // Comparar as duas formas nunca casava, e o endereco fixado saia
+        // duplicado no anuncio - num datagrama cujo orcamento e MTU.
+        if saida.iter().any(|s| sem_colchetes(s) == sem_colchetes(&a.ip)) {
             continue;
         }
         let conta = if e_ipv6(&a.ip) { &mut v6 } else { &mut v4 };
@@ -218,6 +251,23 @@ mod tests {
         assert_eq!(filter_candidates(brutos, None).len(), 1);
     }
 
+    /// O endereco fixado chega colchetado (vem de `effective_host`) e o local
+    /// vem cru. Medido no cluster em 2026-08-16: o anuncio do no saia com o
+    /// mesmo IPv6 duas vezes, num datagrama cujo teto e o MTU.
+    #[test]
+    fn a_pinned_ipv6_is_not_repeated_by_the_local_enumeration() {
+        let saida = filter_candidates(
+            vec![a("2804:d55::9a0d"), a("192.168.1.1")],
+            Some("[2804:d55::9a0d]"),
+        );
+        assert_eq!(saida[0], "[2804:d55::9a0d]");
+        assert_eq!(
+            saida.iter().filter(|s| s.contains("2804:d55::9a0d")).count(),
+            1,
+            "{saida:?}"
+        );
+    }
+
     #[test]
     fn rfc1918_and_ula_ranges_are_private() {
         for ip in [
@@ -238,6 +288,41 @@ mod tests {
     fn a_routable_address_is_not_private() {
         for ip in ["1.2.3.4", "172.32.0.1", "8.8.8.8", "2804:d55::1"] {
             assert!(!is_private_or_local(ip), "{ip} should be routable");
+        }
+    }
+
+    /// A faixa de CGNAT (RFC 6598) e a que a Tailscale usa. Medido em
+    /// 2026-08-16 nesta maquina: o primeiro `identify` veio de um peer
+    /// alcancado pelo tailnet e reportou `100.122.132.97`, que o no adotou
+    /// como endereco *publico*. `Ipv4Addr::is_private` responde so RFC 1918 e
+    /// deixa essa faixa passar.
+    #[test]
+    fn carrier_grade_nat_is_not_a_public_address() {
+        for ip in ["100.64.0.1", "100.122.132.97", "100.127.255.255"] {
+            assert!(is_private_or_local(ip), "{ip} e CGNAT/tailnet");
+        }
+        // As bordas de fora da /10 continuam publicas.
+        for ip in ["100.63.255.255", "100.128.0.1"] {
+            assert!(!is_private_or_local(ip), "{ip} esta fora de 100.64/10");
+        }
+    }
+
+    /// Loopback e link-local sao faixas, nao os dois enderecos que
+    /// `descartavel` cita pelo nome.
+    #[test]
+    fn the_whole_loopback_and_link_local_ranges_are_local() {
+        for ip in [
+            "127.0.0.2",
+            "127.255.255.254",
+            "0.0.0.1",
+            "169.254.10.1",
+            "224.0.0.1",
+            "255.255.255.255",
+            "febf::1",
+            "::",
+            "ff02::1",
+        ] {
+            assert!(is_private_or_local(ip), "{ip} nao e endereco publico");
         }
     }
 

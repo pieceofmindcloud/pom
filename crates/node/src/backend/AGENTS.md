@@ -126,6 +126,16 @@ behind an auth extractor.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
   every prompt); one range per node unless `merge` (adjacent ranges joined via
   `splitter::merge`); overlap is refused, a gap only warns.
+  **`steps` always comes back in layer order**, blocked plans included:
+  `position` only means "place in the pipeline" in that order, `run` reads the
+  launch order straight off the list, and the screen lines the plan up against
+  rows it keeps sorted by layer. The grouping loop walks by target machine, so
+  the sort is applied once at the end - without it, a machine holding two
+  ranges emitted its second one ahead of everything in between and the deploy
+  screen fell silent (2026-08-16). For the same reason an **empty
+  `target_node_id` never groups**: "no machine" is not a machine, and lumping
+  every unplaced range under one empty id produced a refusal naming a machine
+  with no name.
   `undeploy_endpoint` re-surveys the cluster (never trusts the screen),
   resolves `UndeployRequest.group` via `resolve_group` (empty picks the only
   pipeline in the air; two pipelines is a 400 - never guess), then calls

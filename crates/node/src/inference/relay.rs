@@ -745,4 +745,113 @@ mod tests {
             "an HTTP refusal must never touch the tunnel channel"
         );
     }
+
+    /// A troca de transporte, contra uma máquina que está mesmo na rede.
+    ///
+    /// Os testes acima provam a decisão com um canal falso; este prova o que
+    /// eles não podem: que o quadro sai daqui pelo enxame libp2p, chega ao
+    /// servidor de inferência do outro lado e volta com a resposta *dele*. É a
+    /// lacuna que o commit do túnel registrou por escrito ("only loopback and
+    /// in-process fakes").
+    ///
+    /// ```sh
+    /// RDMA_P2P_TUNNEL_PROBE=/ip6/<ip-do-peer>/tcp/<porta-p2p+10000>/p2p/<peer-id> \\
+    ///   cargo test -p node --bin rdma-p2p the_tunnel_carries_a_real_frame -- --ignored --nocapture
+    /// ```
+    ///
+    /// Duas afirmações, nesta ordem:
+    ///
+    /// 1. **O desvio abre pelo motivo certo.** O HTTP direto aponta para
+    ///    `192.0.2.1` (TEST-NET-1, RFC 5737, nunca roteável), então a primeira
+    ///    perna falha por `Timeout`/`Transport` - o gatilho real - e não por
+    ///    uma recusa considerada, que nunca deve desviar. Custa caro: o prazo
+    ///    do `send_frame` é de 600 s por requisição (ele sobrepõe o do cliente),
+    ///    então quem manda a conta é o `connect` do sistema - medido em 75 s no
+    ///    macOS contra um endereço que engole os SYN. É esse o atraso que um
+    ///    hop atrás de NAT impõe **antes** de o desvio começar.
+    /// 2. **O quadro atravessa.** `/v1/session/release` é a rota mais barata do
+    ///    servidor de inferência e não toca o modelo; ela lê JSON, não um
+    ///    quadro, então recusa este com um status *dela*. Uma recusa HTTP vinda
+    ///    do peer prova o caminho inteiro; um erro de transporte provaria o
+    ///    contrário. `/v1/step` não serve aqui: com uma sessão que não existe
+    ///    ele fica esperando, e a sonda mediria a espera em vez do caminho.
+    #[tokio::test]
+    #[ignore = "precisa de um peer vivo; ver o doc do teste"]
+    async fn the_tunnel_carries_a_real_frame_to_a_live_peer() {
+        let target = std::env::var("RDMA_P2P_TUNNEL_PROBE")
+            .expect("defina RDMA_P2P_TUNNEL_PROBE com o multiaddr do peer");
+        let addr: libp2p::Multiaddr = target.parse().expect("multiaddr inválido");
+        let peer_id = addr
+            .iter()
+            .find_map(|p| match p {
+                libp2p::multiaddr::Protocol::P2p(id) => Some(id),
+                _ => None,
+            })
+            .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
+
+        let tunnel_tx = crate::infer_tunnel::live_probe_swarm(peer_id, addr);
+        // Um endereço que nunca responde: é assim que se força o `Timeout` sem
+        // mexer na máquina do outro lado.
+        let step = step_with("http://192.0.2.1:8181", true, Some(peer_id.to_string()));
+
+        let mut issues = Vec::new();
+        let direto = std::time::Instant::now();
+        let _ = send_frame_or_tunnel(
+            &reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(3))
+                .build()
+                .unwrap(),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/session/release",
+            &json!({"session_id": "sonda-do-tunel"}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-vivo",
+            |issue| issues.push(issue.kind),
+        )
+        .await;
+
+        println!(
+            "primeira perna (HTTP direto): {issues:?} em {} s",
+            direto.elapsed().as_secs()
+        );
+        assert!(
+            issues
+                .iter()
+                .any(|k| matches!(k, SendIssueKind::Timeout | SendIssueKind::Transport)),
+            "o HTTP direto tem que falhar por Timeout/Transport para o desvio abrir: {issues:?}"
+        );
+
+        let crossed = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            send_frame_via_tunnel(
+                &tunnel_tx,
+                peer_id,
+                "/v1/session/release",
+                &json!({"session_id": "sonda-do-tunel"}),
+                None,
+                WireDtype::F16,
+                FrameEncoding::F16,
+                "peer-vivo",
+            ),
+        )
+        .await
+        .expect("o peer não respondeu pelo túnel dentro do prazo");
+
+        match crossed {
+            Ok(sent) => println!("o peer respondeu pelo túnel: {:?}", sent.meta),
+            Err(e) => {
+                let refusal = e.downcast_ref::<HttpRefusal>().unwrap_or_else(|| {
+                    panic!("o quadro não chegou ao peer - isto é falha de transporte: {e}")
+                });
+                println!(
+                    "o peer recusou pelo túnel (o que já prova o caminho): {} {}",
+                    refusal.status, refusal.body
+                );
+            }
+        }
+    }
 }

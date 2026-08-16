@@ -133,6 +133,17 @@ Key logic carriers:
   the selection model: merged steps expand back into per-slice rows, edits are
   sent back to the plan for validation, machine collision swaps ranges, and
   pipeline reorder is a machine swap between adjacent rows.
+- `DeployModel.validated`/`syncing`/`answered`/`whyNot` (DeployModel.tsx) - why
+  the button is grey, and who is allowed to say so. `sameRows` compares both
+  sides **sorted by layer**: the screen keeps its rows in layer order and the
+  node builds its answer its own way, and comparing position by position made a
+  plan that described exactly these rows look like a different plan. The
+  explanation panels hang off `answered` (the node has replied about *these*
+  rows), never off `validated` - gating the reason on the match is what left the
+  screen silent at the exact moment it had something to say, which is the defect
+  the captain reported on 2026-08-16. `whyNot` puts the one-line reason next to
+  the disabled button, including the two states with no panel at all (nothing
+  selected, answer still in flight). Regression test: `DeployModel.test.tsx`.
 - `DeployModel.deploy` (DeployModel.tsx:602) — posts the current rows/settings
   (from `rows`/`eff`, not the nullable edit state), remembers them via
   `rememberDeploy`, and tracks the returned job id.

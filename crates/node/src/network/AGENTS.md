@@ -13,12 +13,16 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
   Único arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem
   teste que roda em qualquer sistema.
+- `infer_tunnel.rs` - protocolo request/response que carrega uma chamada HTTP
+  de inferência pelo enxame libp2p, como alternativa quando o HTTP direto não
+  alcança o peer. `serve_loopback` é o lado de dentro: repassa para o próprio
+  servidor de inferência em `127.0.0.1:<inference_port>`.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
-  (cliente e servidor), DCuTR, AutoNAT, bitswap. Põe peers no `Network` via
-  `insert_peer`.
+  (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
+  no `Network` via `insert_peer`.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.rdma-p2p-node.key` (ou `$RDMA_P2P_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
@@ -69,12 +73,34 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
+- `observed_host_port` - inverso do anterior: tira o `host:port` deste nó do
+  `observed_addr` do `identify`. É o "qual é o meu IP público" sem dependência
+  de STUN. Recusa endereço privado/CGNAT (`addrs::is_private_or_local`) e
+  qualquer coisa que não seja `/ip4|ip6/.../tcp/<porta>`.
+- `announce_message_id` - **como o gossipsub distingue dois anúncios, e sem ela
+  ele não distingue nada.** A função padrão do libp2p é `source + sequence`, e
+  as duas são `None` sob `MessageAuthenticity::Anonymous`, que é o modo deste
+  swarm: todo anúncio saía com o id constante `15R0` (`31355230` no log). O
+  efeito medido em 2026-08-16, no cluster de verdade e com a malha formada
+  (4 peers grafados): **zero** mensagem de gossipsub aceita em 90 s, e todo
+  publish depois do primeiro recusado com `Not publishing a message that has
+  already been published`. Hoje o id é hash do tópico + payload; o `timestamp`
+  que o `self_announce` já grava faz cada anúncio diferir. É configuração
+  local, então um nó atualizado convive com um que ainda usa o padrão.
 
 `addrs.rs`:
 - `filter_candidates` - descarta loopback/link-local/deprecated, estável antes
   de temporário, teto de 2 por família (o macOS cria vários IPv6 sozinho e o
   `PeerList` já está no limite da MTU); endereço fixado pelo operador vem
-  primeiro e não conta para o teto.
+  primeiro e não conta para o teto. A comparação com o que já entrou é feita
+  sem colchetes dos dois lados - `fixado` vem colchetado de `effective_host` e
+  o local vem cru, e comparar as duas formas duplicava o IPv6 no anúncio.
+- `is_private_or_local` - decide se um endereço observado por um peer é notícia
+  sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
+  **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.
+  Medido em 2026-08-16 no MacBook: a primeira resposta de `identify` veio por
+  um peer alcançado pelo tailnet e reportou `100.122.132.97`, que o nó adotou
+  como endereço *público* e anunciou ao cluster inteiro.
 - `local_addrs` - `ifconfig` (macOS) / `ip -o addr` (Linux); Windows vazio
   (cai no endereço observado pelo peer).
 
@@ -134,3 +160,31 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   é atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
   (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
   servidor.
+
+- **O endereço observado troca a cada `identify`, e não há preferência entre
+  eles**: `set_observed_addr` sobrescreve com o que o último peer disse. Num
+  MacBook com vários IPv6 de privacidade, peers diferentes observam endereços
+  diferentes e o `Announce` alterna entre eles - visto ao vivo em 2026-08-16,
+  a mesma tela mostrando `…fc93:da35:2de:2926` e `…99c3:77db:53b:cc08` em
+  leituras seguidas. `filter_candidates` prefere o estável ao temporário na
+  enumeração local, mas o caminho do observado não tem esse critério. Quem
+  precisa de endereço estável fixa em `--advertise-addr` / na tela de Rede,
+  que vence os dois.
+- **Um hop inalcançável custa o timeout de `connect` do sistema antes de o
+  túnel ser tentado**: `relay::send_frame` fixa 600 s por requisição (sobrepõe
+  o do cliente), então quem decide é o SO - medido em **75 s** no macOS contra
+  um endereço que engole os SYN (`relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`).
+  O desvio pelo túnel funciona e é rápido depois disso; o problema é o tempo
+  até chegar nele.
+- **O `receive_loop` não tem isolamento de pânico**: ele aguarda
+  `handle_message` em linha, então um pânico ali mata a task e o nó **para de
+  receber UDP para sempre**, enquanto HTTP, gossip e TUI seguem saudáveis - a
+  única pista é o socket com a fila de recepção cheia. Aconteceu de verdade em
+  2026-08-16 (`&node_id[..12]` num id de dois caracteres, corrigido com
+  `short()`), e derrubou os dois nós do captain que ficam na porta 42777 da LAN.
+  O guarda contra o próximo pânico não existe.
+- **A suíte de testes transmite na LAN de verdade**: `broadcast_local` manda
+  para `255.255.255.255:42777` qualquer que seja a porta do nó, e há teste que
+  chama `announce` num nó não destacado. Rodar `cargo test` ao lado de um
+  cluster vivo injeta mensagens de teste nele - foi assim que o id `"eu"` chegou
+  ao nó do captain.

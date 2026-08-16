@@ -191,6 +191,15 @@ entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
   e o progresso vem de `GET /api/ui/jobs`. A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
+  **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
+  linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
+  mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os
+  painéis de explicação renderizam sob `answered` (o nó respondeu sobre *estas*
+  linhas), nunca sob `validated`. Pendurar a explicação na comparação foi o
+  defeito de 2026-08-16: no estado em que o operador mais precisava do motivo -
+  duas faixas na mesma máquina - a tela ficava muda e o botão só cinza. `whyNot`
+  ainda põe a razão em uma linha ao lado do botão, inclusive nos dois casos sem
+  painel (nada selecionado, resposta a caminho).
 - **Transferir** (`Transfers`/`SendFile`/`Notifications`): ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
   ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")

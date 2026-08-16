@@ -95,6 +95,42 @@ fn observed_host_port(addr: &Multiaddr) -> Option<String> {
     Some(format!("{host}:{udp_port}"))
 }
 
+/// How gossipsub tells two announces apart.
+///
+/// **This has to be set, and the default is silently wrong for us.** Gossipsub
+/// dedupes by message id, both when publishing (`PublishError::Duplicate`) and
+/// when receiving (`duplicate_cache`, 60 s by default). Its default id function
+/// is `source + sequence_number` - and both of those are `None` under
+/// [`gossipsub::MessageAuthenticity::Anonymous`], which is what this swarm
+/// uses. Every message this node ever published therefore carried the *same*
+/// id, the constant `15R0` (`31355230` in the hex the log prints): the captain
+/// saw `Not publishing a message that has already been published
+/// message_id=31355230` every 5 s, with the same id, forever.
+///
+/// The damage is not the log line. It is that dedup by a constant id means
+/// **one announce per minute gets through in each direction**, whatever it
+/// says: this node could publish one, and - worse - could *accept* one, from
+/// whichever peer's announce arrived first. Every other peer's announce, and
+/// every change of model, layer range or advertised address, was dropped as a
+/// duplicate of an unrelated message. Peers time out after 30 s
+/// (`PEER_TIMEOUT`), so a peer reachable only over gossipsub flapped.
+///
+/// Hashing the payload is the whole fix: the announce already carries
+/// `timestamp: Utc::now()` (`Network::self_announce`), so consecutive
+/// announces differ in bytes and get distinct ids, while the same message
+/// arriving twice through two mesh paths still collapses into one - which is
+/// what the dedup is actually for.
+///
+/// Local by construction: `message_id_fn` never travels, so an upgraded node
+/// interoperates with one still running the default.
+fn announce_message_id(message: &gossipsub::Message) -> gossipsub::MessageId {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    message.topic.hash(&mut h);
+    message.data.hash(&mut h);
+    gossipsub::MessageId::from(h.finish().to_be_bytes().to_vec())
+}
+
 #[derive(NetworkBehaviour)]
 struct DiscBehaviour {
     gossipsub: gossipsub::Behaviour,
@@ -181,6 +217,9 @@ impl Discovery {
                 let gossipsub_cfg = gossipsub::ConfigBuilder::default()
                     .heartbeat_interval(Duration::from_secs(1))
                     .validation_mode(gossipsub::ValidationMode::Anonymous)
+                    // Without this, gossipsub silently stops carrying
+                    // announces. See `announce_message_id`.
+                    .message_id_fn(announce_message_id)
                     .build()
                     .expect("gossipsub config");
                 let gossipsub = gossipsub::Behaviour::new(
@@ -702,6 +741,65 @@ mod tests {
         assert_eq!(
             observed_host_port(&"/ip4/203.0.113.5/tcp/80".parse().unwrap()),
             None
+        );
+    }
+
+    // ── Como o gossipsub distingue dois anúncios ────────────────────────────
+
+    fn gossip_msg(data: &[u8]) -> gossipsub::Message {
+        gossipsub::Message {
+            source: None,
+            data: data.to_vec(),
+            sequence_number: None,
+            topic: gossipsub::IdentTopic::new(GOSSIP_TOPIC).hash(),
+        }
+    }
+
+    /// O id que o `message_id_fn` padrão dá a todo anúncio deste projeto.
+    ///
+    /// Reproduz o defeito no lugar exato: com `MessageAuthenticity::Anonymous`
+    /// não há `source` nem `sequence_number`, então a função padrão devolve
+    /// sempre `15R0` - o `message_id=31355230` do log do captain, em hexa.
+    /// Dois anúncios diferentes recebem o mesmo id, e é por isso que o
+    /// gossipsub parou de propagar.
+    fn libp2p_default_message_id(message: &gossipsub::Message) -> gossipsub::MessageId {
+        let mut source_string = match message.source.as_ref() {
+            Some(peer_id) => peer_id.to_base58(),
+            None => PeerId::from_bytes(&[0, 1, 0])
+                .expect("valid peer id")
+                .to_base58(),
+        };
+        source_string.push_str(&message.sequence_number.unwrap_or_default().to_string());
+        gossipsub::MessageId::from(source_string)
+    }
+
+    #[test]
+    fn the_libp2p_default_id_collapses_every_announce_into_one() {
+        let a = libp2p_default_message_id(&gossip_msg(br#"{"type":"Announce","t":1}"#));
+        let b = libp2p_default_message_id(&gossip_msg(br#"{"type":"Announce","t":2}"#));
+        assert_eq!(a, b, "é este o defeito que `announce_message_id` corrige");
+        // O id que o captain viu no log, hexa de "15R0".
+        assert_eq!(a.to_string(), "31355230");
+    }
+
+    /// Dois anúncios consecutivos diferem no `timestamp`, então precisam de
+    /// ids diferentes - senão o publish periódico é recusado como duplicata e
+    /// o peer some da rede do outro lado depois de `PEER_TIMEOUT`.
+    #[test]
+    fn two_different_announces_get_two_different_ids() {
+        let a = announce_message_id(&gossip_msg(br#"{"type":"Announce","t":1}"#));
+        let b = announce_message_id(&gossip_msg(br#"{"type":"Announce","t":2}"#));
+        assert_ne!(a, b);
+    }
+
+    /// E o mesmo anúncio chegando por dois caminhos da malha continua sendo
+    /// uma duplicata - que é para isso que o cache serve.
+    #[test]
+    fn the_same_announce_keeps_one_id() {
+        let bytes = br#"{"type":"Announce","node_id":"abc"}"#;
+        assert_eq!(
+            announce_message_id(&gossip_msg(bytes)),
+            announce_message_id(&gossip_msg(bytes))
         );
     }
 

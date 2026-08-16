@@ -56,6 +56,17 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 - `nextn_predict_layers` - MTP/Qwen3.5+: o bloco nextn vive só na última camada;
   fatia que não termina no fim do modelo precisa zerar o hiperparâmetro ou o
   llama.cpp aborta o load procurando `blk.<last>.nextn.*`.
+- `attention.recurrent_layers` - modelo híbrido attention/SSM (Qwen3-Next-style,
+  como o Qwen3.8-27B): na ausência de um array explícito com essa chave, o
+  llama.cpp decide sozinho quais camadas são recorrentes (levam
+  `ssm_conv1d.weight`) por uma fórmula sobre o índice **absoluto** da camada
+  (`(i+1) % full_attention_interval != 0`). `blk.(start+i)` -> `blk.i` muda esse
+  índice; sem reescrever o array, uma fatia que não começa na camada 0 recalcula
+  com o índice local errado e o llama.cpp exige `ssm_conv1d.weight` no bloco
+  local errado - `missing tensor 'blk.0.ssm_conv1d.weight'` na fatia 35-64 do
+  Qwen3.8-27B-Q3_K_S, em 2026-08-16, apesar do peso genuíno estar na 36 original.
+  `splitter::split`/`merge` corrigem isso escrevendo o array explícito, derivado
+  da presença real do tensor no arquivo fonte (não da fórmula) - ver §4.
 - `slice_bytes(start, end, is_last)` - bytes de uma fatia: camadas + `token_embd`
   (toda fatia) + output head (só a última). É o que o plano soma.
 - `ggml_type_info` + `ggml_type_table_matches_ggml` - a tabela de tipos é
@@ -115,9 +126,14 @@ O arquivo de saída é `{base}_{start}_{end}.gguf` em `<shard_dir>/<base>/`
 4. Fatia não-final injeta `output_norm.weight` identidade (o llama.cpp precisa
    dele para ler a fatia); zera `nextn_predict_layers` fora da última; atualiza
    `{arch}.block_count`.
-5. Grava `rdmap2p.original_block_count/start_layer/end_layer` no KV - a metadata
+5. Modelo híbrido (qualquer tensor `blk.N.ssm_conv1d.weight` na tabela): grava
+   `{arch}.attention.recurrent_layers` explícito, sizado e indexado para a
+   fatia, a partir de quais camadas **absolutas** realmente têm o tensor -
+   nunca reimplementando a fórmula do llama.cpp. Modelo comum não ganha a
+   chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
+6. Grava `rdmap2p.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
-6. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
+7. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
    chamando `on_progress(0..100)`; o progresso é do arquivo, não do trabalho
    (100% de uma fatia é 1/N do serviço).
 

@@ -9,7 +9,7 @@
 
 use anyhow::{bail, Context, Result};
 use memmap2::Mmap;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::Path;
@@ -178,6 +178,37 @@ fn encode_kv_u32(key: &str, value: u32) -> Vec<u8> {
     buf.extend_from_slice(&T_U32.to_le_bytes());
     buf.extend_from_slice(&value.to_le_bytes());
     buf
+}
+
+fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + values.len() * 4);
+    let kb = key.as_bytes();
+    buf.extend_from_slice(&(kb.len() as u64).to_le_bytes());
+    buf.extend_from_slice(kb);
+    buf.extend_from_slice(&T_ARR.to_le_bytes());
+    buf.extend_from_slice(&T_U32.to_le_bytes());
+    buf.extend_from_slice(&(values.len() as u64).to_le_bytes());
+    for &v in values {
+        buf.extend_from_slice(&v.to_le_bytes());
+    }
+    buf
+}
+
+/// The absolute layer index of a `blk.N.ssm_conv1d.weight` tensor, if `name`
+/// is one. Hybrid attention/SSM models (Qwen3-Next-style) mark which layers
+/// are recurrent either via an explicit `<arch>.attention.recurrent_layers`
+/// array or, absent that, via a pattern formula keyed to the *absolute*
+/// layer index (llama.cpp's `set_recr_pattern`/`is_recr_impl`). A slice's
+/// `blk.(start+i)` -> `blk.i` renumbering silently breaks that formula for
+/// any `start_layer > 0`, so llama.cpp ends up expecting `ssm_conv1d` on the
+/// wrong local layers and fails to load with "missing tensor". Presence of
+/// this tensor in the source file is ground truth for which layers actually
+/// are recurrent, independent of the formula or the arch's name.
+fn ssm_conv1d_layer_index(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("blk.")?;
+    let dot = rest.find('.')?;
+    let idx: u32 = rest[..dot].parse().ok()?;
+    (&rest[dot..] == ".ssm_conv1d.weight").then_some(idx)
 }
 
 fn tensor_header_size(name: &str, dims: &[u64]) -> usize {
@@ -375,6 +406,10 @@ pub fn split(
             // Replace with the split layer count
             kv_out.push(KvOut::Encoded(encode_kv_u32(&key, n_split)));
             block_count_updated = true;
+        } else if key.ends_with(".attention.recurrent_layers") {
+            r.skip_value(vtype)?;
+            // Dropped — its length is tied to the source's block count, not
+            // this slice's. Recomputed below from tensor ground truth.
         } else {
             r.skip_value(vtype)?;
             kv_out.push(KvOut::Raw(kv_start, r.pos));
@@ -444,6 +479,23 @@ pub fn split(
         for t in &mut all_tensors {
             t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
         }
+    }
+
+    // A hybrid model's recurrent layers, keyed by their *absolute* index in
+    // the source file (see `ssm_conv1d_layer_index`). Empty for every plain
+    // transformer — the common case — so this is a no-op there.
+    let ssm_layers: HashSet<u32> = all_tensors
+        .iter()
+        .filter_map(|t| ssm_conv1d_layer_index(&t.name))
+        .collect();
+    if !ssm_layers.is_empty() {
+        let flags: Vec<u32> = (start_layer..=end_layer)
+            .map(|i| ssm_layers.contains(&i) as u32)
+            .collect();
+        kv_out.push(KvOut::Encoded(encode_kv_u32_array(
+            &format!("{arch}.attention.recurrent_layers"),
+            &flags,
+        )));
     }
 
     // ── Select tensors ────────────────────────────────────────────────────────
@@ -790,7 +842,10 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     // ── Header: the first slice's KVs, with the total and the metadata fixed ──
     let mut kv_out: Vec<KvOut> = Vec::new();
     for (key, entry) in &parsed[0].kv {
-        if key.starts_with("rdmap2p.") || key.ends_with(".block_count") {
+        if key.starts_with("rdmap2p.")
+            || key.ends_with(".block_count")
+            || key.ends_with(".attention.recurrent_layers")
+        {
             continue; // re-added below
         }
         kv_out.push(entry.clone());
@@ -865,6 +920,20 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 
     if out.is_empty() {
         bail!("nenhum tensor para juntar");
+    }
+
+    // Same ground-truth recomputation as `split`, over the merged file's own
+    // 0-based numbering (`out` names are already remapped to it above).
+    let ssm_layers: HashSet<u32> = out
+        .iter()
+        .filter_map(|t| ssm_conv1d_layer_index(&t.name))
+        .collect();
+    if !ssm_layers.is_empty() {
+        let flags: Vec<u32> = (0..total).map(|j| ssm_layers.contains(&j) as u32).collect();
+        kv_out.push(KvOut::Encoded(encode_kv_u32_array(
+            &format!("{arch}.attention.recurrent_layers"),
+            &flags,
+        )));
     }
 
     // ── Layout and write ────────────────────────────────────────────────────
@@ -1168,6 +1237,117 @@ fn qwen35_test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
 }
 
 #[cfg(test)]
+/// A qwen35 GGUF shaped like the real Qwen3.8-27B: hybrid attention/SSM
+/// layers, `ssm_conv1d.weight` only on the recurrent ones — every layer
+/// except every `full_attn_interval`-th, matching llama.cpp's own fallback
+/// pattern (`is_recr_impl[i] = (i+1) % full_attn_interval != 0`) — plus the
+/// same trailing `nextn` (MTP) block as `qwen35_test_gguf_bytes`.
+fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<u8> {
+    let n = 4u64;
+    let f32v = |vals: &[f32]| -> Vec<u8> { vals.iter().flat_map(|v| v.to_le_bytes()).collect() };
+    let mut tensors: Vec<(String, Vec<u64>, u32, Vec<u8>)> = Vec::new();
+    tensors.push((
+        "token_embd.weight".into(),
+        vec![n, n],
+        T_F32,
+        f32v(&[0.5; 16]),
+    ));
+    for i in 0..n_blocks {
+        let base = i as f32 * 10.0;
+        let data: Vec<f32> = (0..16).map(|j| base + j as f32).collect();
+        if (i + 1) % full_attn_interval != 0 {
+            tensors.push((
+                format!("blk.{i}.ssm_conv1d.weight"),
+                vec![n, n],
+                T_F32,
+                f32v(&data),
+            ));
+        } else {
+            tensors.push((
+                format!("blk.{i}.attn_q.weight"),
+                vec![n, n],
+                T_F32,
+                f32v(&data),
+            ));
+        }
+    }
+    let last = n_blocks - 1;
+    tensors.push((
+        format!("blk.{last}.nextn.eh_proj.weight"),
+        vec![n, n],
+        T_F32,
+        f32v(&[4.0; 16]),
+    ));
+    tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
+    tensors.push(("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])));
+
+    let s = |b: &str| -> Vec<u8> {
+        let mut v = (b.len() as u64).to_le_bytes().to_vec();
+        v.extend_from_slice(b.as_bytes());
+        v
+    };
+    let str_kv = |key: &str, val: &str| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_STR.to_le_bytes());
+        v.extend_from_slice(&s(val));
+        v
+    };
+    let u32_kv = |key: &str, val: u32| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_U32.to_le_bytes());
+        v.extend_from_slice(&val.to_le_bytes());
+        v
+    };
+
+    let kv: Vec<Vec<u8>> = vec![
+        str_kv("general.architecture", "qwen35"),
+        u32_kv("qwen35.embedding_length", n as u32),
+        u32_kv("qwen35.block_count", n_blocks),
+        u32_kv("qwen35.vocab_size", n as u32),
+        u32_kv("qwen35.nextn_predict_layers", 1),
+        u32_kv("qwen35.full_attention_interval", full_attn_interval),
+        u32_kv("rdmap2p.original_block_count", n_blocks),
+    ];
+
+    let mut header = Vec::new();
+    header.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+    header.extend_from_slice(&3u32.to_le_bytes());
+    header.extend_from_slice(&(tensors.len() as u64).to_le_bytes());
+    header.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+    for b in &kv {
+        header.extend_from_slice(b);
+    }
+
+    let mut cur = 0u64;
+    let offsets: Vec<u64> = tensors
+        .iter()
+        .map(|(_, _, _, bytes)| {
+            let off = cur;
+            cur = align_up(cur + bytes.len() as u64);
+            off
+        })
+        .collect();
+    for ((name, dims, dtype, _), off) in tensors.iter().zip(&offsets) {
+        header.extend_from_slice(&s(name));
+        header.extend_from_slice(&(dims.len() as u32).to_le_bytes());
+        for d in dims {
+            header.extend_from_slice(&d.to_le_bytes());
+        }
+        header.extend_from_slice(&dtype.to_le_bytes());
+        header.extend_from_slice(&off.to_le_bytes());
+    }
+    let pad = align_up(header.len() as u64) as usize - header.len();
+    header.extend_from_slice(&vec![0u8; pad]);
+
+    for (_, _, _, bytes) in &tensors {
+        header.extend_from_slice(bytes);
+        let aligned = align_up(bytes.len() as u64) as usize;
+        header.extend_from_slice(&vec![0u8; aligned - bytes.len()]);
+    }
+    header
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1189,6 +1369,33 @@ mod tests {
                     T_U64 => Some(r.u64().ok()? as u32),
                     _ => None,
                 };
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
+    fn kv_u32_array(mm: &[u8], want: &str) -> Option<Vec<u32>> {
+        let mut r = R { data: mm, pos: 0 };
+        let magic = r.u32().ok()?;
+        if magic != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?; // version
+        let _n_tensors = r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_ARR {
+                let elem = r.u32().ok()?;
+                let count = r.u64().ok()? as usize;
+                if elem != T_U32 {
+                    return None;
+                }
+                return (0..count)
+                    .map(|_| Some(u32::from_le_bytes(r.take(4).ok()?.try_into().unwrap())))
+                    .collect();
             }
             r.skip_value(vtype).ok()?;
         }
@@ -1408,5 +1615,106 @@ mod tests {
             tail_nextn.contains(&"blk.40.nextn.eh_proj.weight"),
             "o bloco nextn do blk.64 original tem que virar blk.40 na fatia 24-64, veio {tail_nextn:?}"
         );
+    }
+
+    /// A fatia 35-64 do Qwen3.8-27B-Q3_K_S — a forma exata do arquivo que
+    /// falhou com "missing tensor 'blk.0.ssm_conv1d.weight'" em 2026-08-16.
+    ///
+    /// O modelo é híbrido: camadas recorrentes (SSM/linear attention) levam
+    /// `ssm_conv1d.weight`, e llama.cpp decide qual é qual, na ausência de um
+    /// array explícito, pela fórmula `(i+1) % full_attention_interval != 0`
+    /// sobre o índice ABSOLUTO da camada. `split` renumeia `blk.35` para
+    /// `blk.0`; sem o array explícito, o llama.cpp da fatia recalcula com
+    /// i=0 (em vez de 35) e erra qual bloco local precisa do tensor.
+    #[test]
+    fn hybrid_slice_carries_an_explicit_ground_truth_recurrent_layers_array() {
+        let dir = std::env::temp_dir().join(format!("rdmap2p-hybrid-27b-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("qwen38-27b-hybrid.gguf");
+        std::fs::write(&whole, qwen35_hybrid_test_gguf_bytes(65, 4)).unwrap();
+
+        let tail = dir.join("qwen38_35_64.gguf");
+        split(&whole, &tail, 35, 64, false, true, |_| {}).unwrap();
+        let tail_bytes = std::fs::read(&tail).unwrap();
+
+        // Global layer 35 is full attention ((35+1)%4 == 0, the exact block
+        // that failed in production); 36,37,38 are recurrent. Local j =
+        // global - 35.
+        let flags = kv_u32_array(&tail_bytes, "qwen35.attention.recurrent_layers")
+            .expect("fatia híbrida precisa do array explícito de camadas recorrentes");
+        assert_eq!(&flags[..4], &[0, 1, 1, 1], "{flags:?}");
+
+        let tail_src = parse_merged_src(&tail_bytes).unwrap();
+        let names: std::collections::HashSet<&str> =
+            tail_src.tensors.iter().map(|t| t.name.as_str()).collect();
+        assert!(
+            !names.contains("blk.0.ssm_conv1d.weight"),
+            "o bloco local 0 (original 35) é full-attention e não deveria ter ssm_conv1d — \
+             é exatamente o tensor que o llama.cpp exigia erroneamente antes deste fix \
+             (deduzido pela fórmula sobre o índice LOCAL em vez do original 35)"
+        );
+        assert!(
+            names.contains("blk.1.ssm_conv1d.weight")
+                && names.contains("blk.2.ssm_conv1d.weight")
+                && names.contains("blk.3.ssm_conv1d.weight"),
+            "os blocos locais 1-3 (originais 36-38) são recorrentes e têm o tensor: {names:?}"
+        );
+    }
+
+    /// Sem tensor `ssm_conv1d` no arquivo inteiro (modelo comum, não híbrido),
+    /// `split` não deve inventar a chave — o llama.cpp nem olha para ela.
+    #[test]
+    fn plain_transformer_slice_gets_no_recurrent_layers_array() {
+        let dir = std::env::temp_dir().join(format!("rdmap2p-nonhybrid-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(4)).unwrap();
+
+        let a = dir.join("a.gguf");
+        split(&whole, &a, 2, 3, false, true, |_| {}).unwrap();
+        let bytes = std::fs::read(&a).unwrap();
+        assert_eq!(
+            kv_u32_array(&bytes, "llama.attention.recurrent_layers"),
+            None,
+            "modelo sem ssm_conv1d não deve ganhar essa chave"
+        );
+    }
+
+    /// `merge` reconstrói o array híbrido para a numeração 0-based do arquivo
+    /// unido — não pode só copiar o array (errado) da primeira fatia.
+    #[test]
+    fn merging_hybrid_slices_recomputes_recurrent_layers_for_the_union() {
+        let dir = std::env::temp_dir().join(format!("rdmap2p-hybrid-merge-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, qwen35_hybrid_test_gguf_bytes(8, 4)).unwrap();
+
+        let a = dir.join("a.gguf");
+        let b = dir.join("b.gguf");
+        split(&whole, &a, 0, 3, true, false, |_| {}).unwrap();
+        split(&whole, &b, 4, 7, false, true, |_| {}).unwrap();
+
+        let merged = dir.join("merged.gguf");
+        merge(
+            &[
+                MergePart {
+                    path: a.clone(),
+                    start_layer: 0,
+                    end_layer: 3,
+                },
+                MergePart {
+                    path: b.clone(),
+                    start_layer: 4,
+                    end_layer: 7,
+                },
+            ],
+            &merged,
+            |_| {},
+        )
+        .unwrap();
+
+        let bytes = std::fs::read(&merged).unwrap();
+        let flags = kv_u32_array(&bytes, "qwen35.attention.recurrent_layers").unwrap();
+        assert_eq!(flags, vec![1, 1, 1, 0, 1, 1, 1, 0], "{flags:?}");
     }
 }

@@ -30,6 +30,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "topbar.useDarkTheme": () => "Use dark theme",
     "topbar.openMenu": () => "Open menu",
     "topbar.closeMenu": () => "Close menu",
+    "topbar.tlsOn": () => "TLS",
+    "topbar.tlsOff": () => "no TLS",
+    "topbar.tlsOnHint": () =>
+      "Traffic between nodes is encrypted. Only the main node changes this.",
+    "topbar.tlsOffHint": () =>
+      "Traffic between nodes goes in the clear. Only the main node changes this.",
     "topbar.nodeCount": ({ count }) => String(count) + (Number(count) === 1 ? " node" : " nodes"),
     "topbar.layers": ({ covered, total }) => String(covered) + "/" + String(total) + " layers",
     "topbar.unloaded": () => "Model unloaded",
@@ -812,6 +818,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "topbar.useDarkTheme": () => "Usar tema escuro",
     "topbar.openMenu": () => "Abrir menu",
     "topbar.closeMenu": () => "Fechar menu",
+    "topbar.tlsOn": () => "TLS",
+    "topbar.tlsOff": () => "sem TLS",
+    "topbar.tlsOnHint": () =>
+      "A comunicação entre os nós está cifrada. Só o nó principal muda isso.",
+    "topbar.tlsOffHint": () =>
+      "A comunicação entre os nós vai em texto claro. Só o nó principal muda isso.",
     "topbar.nodeCount": ({ count }) => String(count) + (Number(count) === 1 ? " nó" : " nós"),
     "topbar.layers": ({ covered, total }) => String(covered) + "/" + String(total) + " camadas",
     "topbar.unloaded": () => "Modelo descarregado",

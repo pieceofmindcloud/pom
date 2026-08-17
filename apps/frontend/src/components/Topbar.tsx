@@ -5,9 +5,12 @@ import {
   LogOut,
   Menu,
   PowerOff,
+  ShieldCheck,
+  ShieldOff,
   X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "../lib/api";
 import { isServing } from "../lib/format";
 import { useCluster, useInvalidate, useNode } from "../lib/queries";
@@ -57,6 +60,40 @@ function NodeChip() {
         </Badge>
       )}
     </div>
+  );
+}
+
+/**
+ * Estado da criptografia do cluster, visível em toda tela.
+ *
+ * Fica aqui, e não só em Configurações, porque "o cluster está cifrado?" é uma
+ * pergunta que o operador faz a qualquer momento - e uma virada pela metade,
+ * enquanto os peers ainda não adotaram a política nova, precisa ser vista sem
+ * ninguém ir procurar.
+ */
+export function TlsChip() {
+  const { t } = useI18n();
+  const node = useNode();
+  if (!node.data) return null;
+
+  const on = node.data.tls_required;
+  return (
+    <Link
+      to="/config/rede"
+      title={t(on ? "topbar.tlsOnHint" : "topbar.tlsOffHint")}
+      className="shrink-0"
+    >
+      <Badge tone={on ? "aqua" : "amber"}>
+        {on ? (
+          <ShieldCheck className="h-3.5 w-3.5" />
+        ) : (
+          <ShieldOff className="h-3.5 w-3.5" />
+        )}
+        <span className="hidden sm:inline">
+          {t(on ? "topbar.tlsOn" : "topbar.tlsOff")}
+        </span>
+      </Badge>
+    </Link>
   );
 }
 
@@ -226,6 +263,7 @@ export function Topbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          <TlsChip />
           <Notifications />
           <NodeActions />
         </div>

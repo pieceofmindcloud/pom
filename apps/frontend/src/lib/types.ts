@@ -131,6 +131,10 @@ export interface NodeInfo {
   advertise_addr: string | null;
   /** O que este nó anuncia agora de fato (fixado, observado, ou o sentinela). */
   effective_address: string;
+  /** Se o cluster fala TLS entre peers agora. `webui.rs` - `NodeInfo`. */
+  tls_required: boolean;
+  /** Se **este** nó pode mudar isso: só o principal pode. */
+  tls_authority: boolean;
 }
 
 export interface PeerView {

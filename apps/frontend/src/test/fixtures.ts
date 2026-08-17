@@ -56,6 +56,8 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
     dev_update: false,
     advertise_addr: null,
     effective_address: "10.0.0.1:42777",
+    tls_required: false,
+    tls_authority: false,
     ...over,
   };
 }

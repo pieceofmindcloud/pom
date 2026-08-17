@@ -138,6 +138,12 @@ quebra o produto inteiro.
   (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,
   `brand::dns_record()`). A única exceção que o cargo obriga é o `[[bin]]` em
   `crates/node/Cargo.toml`. → `build-execucao.md`
+- **O gossip nunca é fonte de verdade da flag de TLS.** O campo `tls` do
+  Announce é gatilho; a política só é gravada depois de busca autenticada no
+  principal, e busca que falha preserva o valor local. O UDP é em claro e não
+  autenticado: obedecer a ele seria oferecer o rebaixamento que o TLS existe
+  para impedir. O certificado de cada nó é derivado da `.pom-node.key` e
+  verificado por `SHA256(pubkey) == node_id`. → `rede-p2p.md`
 - **Testes de rota usam `gateway::testkit`**, nunca UDP de verdade - a suíte
   transmite na LAN e pode injetar mensagens num cluster vivo. → `api-http.md`
 

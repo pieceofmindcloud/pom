@@ -210,8 +210,99 @@ Comportamento atual do código:
    em 2026-08-16 (ver `operacao.md`). O custo é o tempo até desistir do HTTP
    direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
    requisição e quem decide acaba sendo o `connect` do sistema.
-3. **Sem autenticação nem TLS na porta de inferência (`/v1/prefill`,
-   `/v1/step`) nem no gateway.** Aceitável em LAN confiável, não na internet.
+3. **Sem autenticação na porta de inferência (`/v1/prefill`, `/v1/step`).**
+   TLS deixou de ser uma limitação - ver a seção 5 -, mas quem alcança a porta
+   ainda não precisa provar quem é para mandar um quadro. O que o TLS
+   acrescentou foi confidencialidade e a certeza de *com quem* se fala, não uma
+   política de quem pode falar.
+
+## 5. TLS entre peers
+
+Ligado por um interruptor em Configurações / Rede que **só o nó principal**
+opera, e vale para o cluster inteiro. Desligado por padrão, e um `pom.json`
+anterior a isto continua válido (`Config.tls_required`, `#[serde(default)]`).
+
+**O certificado é derivado da identidade, não emitido por ninguém**
+(`network/tls.rs`). `node_id` já é `hex(SHA256(pubkey))` da chave Ed25519 de
+longa duração, e o cluster já distribui esse hash pelo gossip - então o
+certificado só precisa **provar posse da chave que dá naquele node_id**, e é
+isso que o handshake TLS faz. O `rcgen` monta um auto assinado com a própria
+`.pom-node.key`, em memória; nada vai para o disco, não há CA, não há o que
+renovar, revogar ou distribuir.
+
+**A verificação é pinning** (`PinnedNodeId`): o cliente extrai a pubkey do SPKI
+do certificado apresentado, calcula SHA256 e compara com o node_id que ele já
+aprendeu para aquele peer. Validade, cadeia e nome são **ignorados de
+propósito** - a confiança não vem deles. Checar validade só produziria falha por
+relógio torto, e checar nome só produziria falha por discar um IP em vez do CN;
+nenhuma das duas diria nada sobre com quem estamos falando. Sem o pinning o
+auto assinado cifraria sem autenticar, e quem estivesse no meio apresentaria o
+próprio auto assinado e seria aceito.
+
+O teste `fingerprint_do_certificado_e_o_mesmo_de_from_pubkey` prende as duas
+contas juntas: se um dia divergirem, o pinning recusa todo mundo, e é ele que
+avisa.
+
+**Uma porta, duas falas** (`backend/serve.rs`). O servidor espia o primeiro byte
+sem consumi-lo (`TcpStream::peek`): `0x16` é handshake TLS, qualquer outra coisa
+é HTTP em claro; as duas caem no mesmo router. Isso é o que permite a virada
+**não** ser simultânea - enquanto uns peers já falam TLS e outros ainda não, o
+servidor atende os dois. Com a política ligada, texto claro vindo de fora do
+loopback é recusado logo após o peek.
+
+**Loopback fala claro sempre**, e é requisito: `infer_tunnel::serve_loopback`, a
+sonda de `runtime.rs` e o `gateway::testkit` batem em `127.0.0.1` e não têm par
+de chaves a apresentar. Tráfego que não sai da máquina não tem o que proteger.
+
+**O cliente passa a ser por destino** (`network/peer_client.rs`), porque o
+verifier carrega qual node_id esperar e é fixado na construção. Sem TLS volta a
+ser um só, que é o comportamento anterior. O esquema das URLs (`http`/`https`)
+sai de um estado global do processo, `peer_client::tls_ativo`, porque é
+propriedade do nó e não da conexão.
+
+**O que fica de fora, e por quê:**
+
+- **Gossip UDP.** TLS não se aplica a datagrama, e o conteúdo é endereço, faixa
+  de camadas e capabilities - nenhum dado de usuário, nenhum peso, nenhuma
+  credencial.
+- **libp2p.** Já é cifrado ponta a ponta por Noise; sobrepor TLS não
+  acrescentaria segurança. Um salto pelo túnel reporta `tls: false` na
+  telemetria de propósito: ele é cifrado, mas não por TLS, e dizer `true` ali
+  alegaria uma garantia que aquele salto não deu.
+- **A UI no navegador.** Um auto assinado faria o navegador gritar em toda
+  máquina do cluster; o ganho não paga o custo operacional.
+- **Ollama.** `PeerInfo::ollama_url` continua em `http://`: é um servidor de
+  terceiros na máquina do peer, sem o nosso certificado e sem a nossa
+  identidade.
+
+### A catraca: o gossip nunca é fonte de verdade
+
+O Announce ganhou um campo `tls`, e ele é **gatilho, nunca valor**. O UDP é em
+claro e não autenticado: se a política viesse dele, qualquer um na rede
+anunciaria `tls: false` e rebaixaria o cluster inteiro para texto claro -
+exatamente o ataque que o TLS existe para impedir.
+
+O caminho é `network/tls_policy.rs`:
+
+1. Um Announce **do principal** discorda da política local.
+2. Isso dispara `GET /api/cluster/tls` no principal, autenticado com a chave de
+   conexão.
+3. Só a resposta dessa busca é gravada em `pom.json`.
+
+Um intruso pode disparar a busca à vontade; não pode responder por ela. O
+booleano anunciado é usado para **uma coisa só**: saber por qual esquema discar
+a sonda. Sem isso, um nó que ainda acha o cluster em claro discaria `http://`
+num principal estrito, seria recusado, e a catraca nunca conseguiria *ligar*.
+Forjar a dica não muda o que é gravado - só faz a sonda bater na porta errada e
+falhar.
+
+**Fail-closed:** busca que falha preserva o valor local. Principal fora do ar ou
+rede partida nunca rebaixam o cluster.
+
+**Sem reinício, e nos dois sentidos.** Ligar ou desligar esvazia o cache de
+clientes, muda o que o anúncio diz e liga/desliga a recusa de texto claro. Os
+demais nós adotam dentro de um ciclo de gossip (5 s), e o operador pode virar
+quantas vezes quiser.
 
 ## 6. Defeitos anotados
 

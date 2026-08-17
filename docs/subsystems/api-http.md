@@ -64,6 +64,10 @@ haver chave.
 - **`POST /v1/relay-result`** - onde a **cauda** de um pipeline entrega o
   resultado direto (`relay/v2-direct`). Sem auth de chave por desenho (ver
   abaixo); ticket vivo = entrega no `ReplyInbox`, ticket morto = `410 Gone`.
+- **`GET /api/cluster/tls`** - `{ tls_required }`. É o que a catraca dos outros
+  nós consulta no principal. **Exige a chave de conexão**, e é isso que impede
+  um intruso de responder pelo principal e rebaixar o cluster para texto claro.
+  Ver `rede-p2p.md`, seção 5.
 
 ### OpenAI (`/v1/*`)
 
@@ -98,8 +102,18 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
 `requests` (o log de requisições, `reqlog::list_requests`), `dev/update` +
-`dev/restart`. `leave` aceita `LeaveRequest { node_id }` opcional e **repassa**
-para o peer quando é um id alheio (o painel só fala com o próprio nó).
+`dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
+`LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
+alheio (o painel só fala com o próprio nó).
+
+**`POST /api/ui/network/tls`** - corpo `{ tls_required: bool }`, liga ou desliga
+o TLS entre peers do cluster inteiro. Responde **403 fora do nó principal**, e
+essa checagem é do servidor: esconder o interruptor na tela de um nó comum é
+conveniência, não controle. Não precisa de reinício e pode ser virado quantas
+vezes o operador quiser - o efeito é imediato neste nó (cache de clientes,
+anúncio, recusa de texto claro remoto) e chega aos demais pela catraca, em um
+ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
+`tls_authority` (se **este** nó pode mudar). Ver `rede-p2p.md`, seção 5.
 
 ## 3. Autenticação (`auth.rs`)
 

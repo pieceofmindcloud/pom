@@ -78,6 +78,17 @@ conteúdo `immutable` por 1 ano.
   `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
 - `*` -> NotFound
 
+A **Topbar** traz, antes do sino de notificações, o selo de criptografia do
+cluster (`TlsChip`): `ShieldCheck` em `aqua` com "TLS" quando a política está
+ligada, `ShieldOff` em `amber` com "sem TLS" quando não, e um link para
+`/config/rede`. Ele fica em toda tela porque "o cluster está cifrado?" é uma
+pergunta que o operador faz a qualquer momento, e uma virada pela metade -
+enquanto os peers ainda não adotaram a política nova - precisa ser vista sem
+ninguém ir procurar. O dado sai do `useNode()`, que já é polled: nenhuma chamada
+nova. Em tela estreita fica só o ícone. **Um selo que sumisse quando o TLS
+caísse seria pior que nenhum**: a ausência se lê como "a tela não mostra isso",
+não como "está em texto claro" - por isso ele diz os dois estados.
+
 Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
 derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a
 borda (`LogoFull variant="band"`) fechada por uma linha divisória. O **rodapé**
@@ -162,6 +173,23 @@ modelo, só quando serve; `LeaveNode` - sai da rede, sempre) e o botão de
 atualizar/reiniciar só quando o peer anuncia `dev_update`. Ao lado de
 "Adicionar nó" há `UndeployPipeline` quando há modelo no ar. `PipelineRail`
 ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
+
+## Configurações / Rede: quem decide o TLS
+
+O painel "Criptografia entre nós" (`TlsPanel`, em `routes/NetworkSettings.tsx`)
+mostra o estado do cluster e, **só no nó principal**, o interruptor que o vira.
+Nos demais ele aparece desabilitado, com um rodapé dizendo que a decisão é do
+principal e vale para a rede inteira. O estado continua visível em todo nó de
+propósito: esconder o painel faria o operador de um nó comum não ter onde ver se
+o tráfego da máquina dele está cifrado.
+
+A autoridade que vale é a do servidor - `POST /api/ui/network/tls` responde 403
+fora do principal (ver `api-http.md`). A tela usa `NodeInfo.tls_authority` só
+para não mentir antes do clique.
+
+Virar não pede reinício e vale nos dois sentidos; o toast diz que os demais nós
+adotam em poucos segundos, que é o ciclo de gossip mais a busca autenticada da
+catraca (ver `rede-p2p.md`, seção 5).
 
 ## Chat de teste
 

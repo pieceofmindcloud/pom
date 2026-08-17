@@ -27,8 +27,18 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
   dual-stack, gossip, lifecycle de peers, varredura de descoberta.
+- `peer_client.rs` - `PeerClients`, um `reqwest::Client` por peer, porque o
+  verifier do TLS é por destino. Sem TLS volta a ser um só. Guarda também o
+  esquema global das URLs (`tls_ativo`/`peer_scheme`) e `peer_base_url`, que é
+  quem colcheta IPv6.
 - `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
+- `tls.rs` - certificado auto assinado derivado da `.pom-node.key` e o
+  `ServerCertVerifier` que confere `SHA256(pubkey) == node_id`. Nada vai para o
+  disco; não há CA. Ver `docs/subsystems/rede-p2p.md`, seção 5.
+- `tls_policy.rs` - a catraca: o campo `tls` do Announce é gatilho, e só a
+  busca autenticada em `GET /api/cluster/tls` no principal grava a política.
+  Busca que falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health` e histerese contra troca de rota por ruído.
 

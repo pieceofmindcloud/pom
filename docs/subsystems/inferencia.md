@@ -368,7 +368,37 @@ prompt e recusa com uma mensagem citando as flags.
   e ~8000 no agente padrão; config que funcionou: `--n-ctx 32768 --n-batch 3072
   --max-new-tokens 256` → orçamento de 3072 tokens.
 
-## 10. Defeitos anotados
+## 10. O canal de cada salto na telemetria
+
+`SentFrame` e `PhaseTrace` carregam dois campos sobre o transporte, e eles
+aparecem numa linha própria da tabela de telemetria do Chat.
+
+- **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
+  **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte
+  delas foi por TLS a tela mostra a fração (`TLS em 3/4 chamadas`) em vez de
+  arredondar para "cifrado". É assim que uma virada de política pela metade
+  aparece, e também como um ponto de chamada que ficou de fora da conversão para
+  o cliente pinado se denuncia.
+- **`tls_handshake_ms`** - medido **no servidor**, cercando o
+  `TlsAcceptor::accept` do laço de accept (`backend/serve.rs`), que é onde o
+  tempo é exato. Volta no `meta` da resposta e é agregado como os `node_timings`
+  já são.
+
+**O que esse número é, e por que a tela diz isso com todas as letras.** O
+handshake acontece **uma vez por conexão**, e as conexões ficam no pool do
+`reqwest`: quase todo salto reporta zero. Isso é a verdade, não falta de
+medição. Sem o rótulo, quem olhasse um salto zerado concluiria que TLS é grátis
+e quem olhasse o salto que abriu conexão concluiria que é caro por token - duas
+leituras erradas do mesmo número. O custo por requisição depois do handshake é a
+cifra do record layer, diluída dentro de `response_body_ms` e não separável sem
+instrumentar o socket; a tela nomeia essa limitação em vez de inventar uma
+coluna.
+
+**Um salto pelo túnel libp2p reporta `tls: false`.** Ele é cifrado - por Noise,
+ponta a ponta -, mas não por TLS, e dizer `true` ali alegaria uma garantia que
+aquele salto não deu.
+
+## 11. Defeitos anotados
 
 - (não é defeito, é o comportamento de hoje) Porta ocupada: `runtime::free_port` acha quem segura a porta (`lsof -ti :PORT`
   no Unix, `netstat -ano`+`taskkill` no Windows) e mata (SIGKILL) antes de subir

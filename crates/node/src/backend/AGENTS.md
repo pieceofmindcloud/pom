@@ -131,12 +131,15 @@ behind an auth extractor.
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be
   authenticated and would rotate the connection key on a configured node).
-- `deploy.rs` - `DeployKind` (`shards` | `whole`) escolhe qual inventário o
-  `survey` lê: `shard_sets`, ou os modelos inteiros via `parse_whole`, que lê um
-  GGUF não fatiado como a faixa `0..total-1`. Daí em diante é o mesmo planner,
-  o mesmo `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as
-  recusas mudam de substantivo (`DeployKind::unit`). Ver
-  `docs/subsystems/implantacao.md` §1.1.
+- `deploy.rs` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
+  qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
+  `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
+  `tensor_parallel` (caminho C) nomeia o grupo (primary + workers); a v1 da
+  varredura lê o modelo do primary, e a descoberta de workers fica junto do
+  fork do llama.cpp. Daí em diante é o mesmo planner, o mesmo `launch_targets`
+  e o mesmo `launch` - não há segundo caminho. Só as recusas mudam de
+  substantivo (`DeployKind::unit`). Ver `docs/subsystems/implantacao.md` §1.1
+  e §1.2.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).

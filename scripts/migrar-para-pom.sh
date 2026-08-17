@@ -64,7 +64,13 @@ for antigo in rdma-p2p*.last-slice.json; do
     mover "$antigo" "pom${antigo#rdma-p2p}"
 done
 
-mover ".rdma-p2p-node.key" ".pom-node.key"
+# Chaves de identidade, incluindo as variantes por papel
+# (`.rdma-p2p-node-cpu.key` e afins - o proprio .gitignore do projeto sempre
+# usou o padrao `.rdma-p2p-node*.key`, entao elas existem no campo).
+for antigo in .rdma-p2p-node*.key; do
+    [ -e "$antigo" ] || continue
+    mover "$antigo" ".pom-node${antigo#.rdma-p2p-node}"
+done
 mover ".rdma-p2p.key" ".pom.key"
 
 if [ "$renomeou" -eq 0 ]; then

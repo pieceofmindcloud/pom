@@ -125,6 +125,11 @@ desconhecido", caso que o codigo ja trata; refatiar restaura.
 modo que os scripts de deploy do operador usam, porque eles rodam a migracao em
 toda subida e numa maquina ja migrada nao ha o que dizer.
 
+Cobre tambem as **variantes por papel** (`rdma-p2p-cpu.json`,
+`.rdma-p2p-node-cpu.key`): o `.gitignore` do projeto sempre usou os padroes
+`rdma-p2p*.json` e `.rdma-p2p-node*.key`, e a ksia tinha as duas variantes no
+disco - migrar so os nomes exatos deixava chave orfa.
+
 ## make-macos-app.sh
 
 Monta `POM.app` em volta do binario ja compilado (padrao:

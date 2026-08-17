@@ -208,6 +208,7 @@ impl GatewayState {
             );
             peers.push(PeerInfo {
                 node_id: self.network.node_id.clone(),
+                tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
                 addr: format!("{}:{}", self_host, self.network.bind_addr.port()),
                 addr_candidates: self.network.self_addr_candidates(),
@@ -1532,6 +1533,7 @@ mod peer_visibility_tests {
 
     fn peer(id: &str) -> PeerInfo {
         PeerInfo {
+            tls: false,
             node_id: id.into(),
             pubkey: String::new(),
             addr: "127.0.0.1:42777".into(),
@@ -1615,6 +1617,7 @@ pub(crate) mod testkit {
     /// Um peer alcançável no `gateway_port` dado, na loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
         PeerInfo {
+            tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
             addr: format!("127.0.0.1:{gateway_port}"),

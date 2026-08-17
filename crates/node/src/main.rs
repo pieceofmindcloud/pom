@@ -65,6 +65,8 @@ pub mod route;
 pub mod peer_client;
 #[path = "network/tls.rs"]
 pub mod tls;
+#[path = "network/tls_policy.rs"]
+pub mod tls_policy;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]
@@ -751,6 +753,15 @@ async fn main() -> Result<()> {
             .build()?;
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
+        // A catraca do TLS: escuta o gatilho do gossip e confirma a política
+        // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
+        tls_policy::spawn_ratchet(
+            net.clone(),
+            peer_clients.clone(),
+            auth_config.clone(),
+            tls_server.clone(),
+        );
+
         let gw_state = GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
@@ -1312,6 +1323,13 @@ async fn start_gateway_only(
     peer_clients.apply_cluster_policy(app_config.tls_required);
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
+
+    tls_policy::spawn_ratchet(
+        net.clone(),
+        peer_clients.clone(),
+        auth_state.clone(),
+        tls_server.clone(),
+    );
 
     let gw_state = GatewayState {
         network: net.clone(),

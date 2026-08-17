@@ -406,6 +406,7 @@ mod ipv6_tests {
 
     fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
+            tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),
             addr: addr.into(),

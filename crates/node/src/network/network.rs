@@ -72,6 +72,13 @@ pub enum P2PMessage {
         gateway_port: Option<u16>,
         #[serde(default)]
         role: String,
+        /// Se este nó fala TLS com os peers.
+        ///
+        /// **Gatilho, não valor**: quem recebe não grava isto. Ver
+        /// `tls_policy` - o gossip é em claro e não autenticado, então obedecer
+        /// a ele seria oferecer o rebaixamento que o TLS existe para impedir.
+        #[serde(default)]
+        tls: bool,
         #[serde(default)]
         hostname: String,
         /// Full inventory for new peers. The legacy model/range fields remain
@@ -134,6 +141,9 @@ pub struct PeerInfo {
     pub gateway_port: Option<u16>,
     #[serde(default)]
     pub role: String,
+    /// Ver `P2PMessage::Announce::tls`: gatilho para a catraca, nunca valor.
+    #[serde(default)]
+    pub tls: bool,
     #[serde(default)]
     pub hostname: String,
     #[serde(default)]
@@ -321,6 +331,18 @@ pub struct Network {
     /// e a entrada local do gateway leem. Anunciar `speculate/v1-mtp` sem
     /// cabeça mandaria o gateway pedir um rascunho que nunca vem.
     mtp_ready: Arc<AtomicBool>,
+    /// Se este nó fala TLS com os peers, na forma que o anúncio lê.
+    ///
+    /// A fonte de verdade é `Config.tls_required`; isto é a cópia que o gossip
+    /// e o laço de accept consultam sem tocar no lock da configuração.
+    tls: Arc<AtomicBool>,
+    /// Por onde a catraca é acionada: recebe o node_id do principal quando um
+    /// anúncio dele discorda da política local.
+    ///
+    /// É um canal, e não uma chamada direta, porque o `Network` não conhece a
+    /// configuração nem a chave de conexão - quem sabe buscar e gravar é a task
+    /// montada no `main.rs`. Ver `tls_policy`.
+    tls_probe: std::sync::RwLock<Option<tokio::sync::mpsc::UnboundedSender<(String, bool)>>>,
     /// This node's own address, as reported by a peer's libp2p `identify`
     /// response (`info.observed_addr` — the address *that peer* saw us
     /// connecting from). `host:port`, same shape as `advertise_addr`. Set
@@ -508,6 +530,8 @@ impl Network {
             libp2p_peer_id: None,
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
+            tls: Arc::new(AtomicBool::new(false)),
+            tls_probe: std::sync::RwLock::new(None),
             observed_addr: std::sync::RwLock::new(None),
         })
     }
@@ -737,6 +761,7 @@ impl Network {
             },
             gateway_port: self.gateway_port,
             role: self.role.clone(),
+            tls: self.tls_enabled(),
             hostname: self.hostname.clone(),
             capabilities: assignment
                 .map(|a| {
@@ -788,6 +813,24 @@ impl Network {
 
     pub fn mtp_ready(&self) -> bool {
         self.mtp_ready.load(Ordering::Relaxed)
+    }
+
+    pub fn tls_enabled(&self) -> bool {
+        self.tls.load(Ordering::Relaxed)
+    }
+
+    /// Ligado ou desligado pela rota do principal, ou pela catraca depois de
+    /// confirmar com ele. Nunca a partir de um Announce.
+    pub fn set_tls(&self, on: bool) {
+        self.tls.store(on, Ordering::Relaxed);
+    }
+
+    /// Liga o canal da catraca. Sem isto, discordância de anúncio é ignorada -
+    /// que é o comportamento certo para um nó de teste, sem config para gravar.
+    pub fn set_tls_probe(&self, tx: tokio::sync::mpsc::UnboundedSender<(String, bool)>) {
+        if let Ok(mut slot) = self.tls_probe.write() {
+            *slot = Some(tx);
+        }
     }
 
     /// Leave the network: stop speaking, stop listening, forget the peers.
@@ -1031,6 +1074,7 @@ impl Network {
                 inference_frame_capabilities,
                 gateway_port,
                 role,
+                tls,
                 hostname,
                 capabilities,
                 disk_total_mb,
@@ -1067,6 +1111,7 @@ impl Network {
                     inference_frame_capabilities,
                     gateway_port,
                     role,
+                    tls,
                     hostname,
                     capabilities,
                     connection_verified: false,
@@ -1100,6 +1145,32 @@ impl Network {
                         start_layer,
                         end_layer
                     );
+                }
+
+                // A catraca do TLS. O anúncio é **gatilho, nunca valor**: nada
+                // aqui grava a política. Discordar do principal só pede uma
+                // busca autenticada nele, e é a resposta dela que vale. Ver
+                // `tls_policy`.
+                if let crate::tls_policy::PolicyOutcome::Fetch { principal } =
+                    crate::tls_policy::on_announce(
+                        self.tls_enabled(),
+                        tls,
+                        peer.role.eq_ignore_ascii_case("principal"),
+                        &peer.node_id,
+                    )
+                {
+                    if let Ok(slot) = self.tls_probe.read() {
+                        if let Some(tx) = slot.as_ref() {
+                            // O `tls` anunciado vai junto, e serve para **uma
+                            // coisa só**: saber por qual esquema discar a
+                            // sonda. Sem isso um nó que ainda acha o cluster em
+                            // claro discaria `http://` num principal estrito,
+                            // seria recusado, e a catraca nunca conseguiria
+                            // ligar. Forjar a dica não muda o que é gravado -
+                            // só faz a sonda bater na porta errada e falhar.
+                            let _ = tx.send((principal, tls));
+                        }
+                    }
                 }
 
                 // O endereco de onde o pacote veio e o unico comprovadamente
@@ -1286,8 +1357,20 @@ mod tests {
                 assert!(caps.iter().any(|c| c == cap), "faltou {cap} em {caps:?}");
             }
             assert_eq!(gossip["role"], "Principal");
+            // Os dois anúncios (UDP e gossipsub) têm que carregar a flag: se só
+            // um carregasse, a virada chegaria por um caminho e não pelo outro,
+            // e o cluster ficaria meio cifrado sem ninguém notar.
+            assert_eq!(gossip["tls"], false);
             assert_eq!(gossip["hostname"], "macbook");
         }
+
+        // E a flag ligada aparece nos dois caminhos, não só num deles.
+        net.set_tls(true);
+        let udp: serde_json::Value = serde_json::to_value(net.self_announce(None)).unwrap();
+        let gossip: serde_json::Value =
+            serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
+        assert_eq!(udp["tls"], true);
+        assert_eq!(gossip["tls"], true);
     }
 
     /// Sending an IPv4 destination on the dual-stack socket fails with EINVAL on
@@ -1451,6 +1534,7 @@ mod tests {
     #[test]
     fn an_advertised_ipv6_survives_into_the_peer_urls() {
         let peer = PeerInfo {
+            tls: false,
             node_id: "n".into(),
             pubkey: "p".into(),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -1489,6 +1573,7 @@ mod tests {
     #[test]
     fn peer_lists_are_split_to_fit_the_path_mtu() {
         let peer = PeerInfo {
+            tls: false,
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
             addr: "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777".into(),
@@ -1534,6 +1619,7 @@ mod tests {
 
     fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {
         PeerInfo {
+            tls: false,
             node_id: "n1".into(),
             pubkey: "p".into(),
             addr: "192.168.1.9:42777".into(),
@@ -1733,6 +1819,7 @@ mod tests {
 
     fn dummy_peer(node_id: &str, addr: &str) -> PeerInfo {
         PeerInfo {
+            tls: false,
             node_id: node_id.into(),
             pubkey: "p".into(),
             addr: addr.into(),

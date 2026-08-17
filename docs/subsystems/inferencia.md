@@ -159,7 +159,7 @@ ligadas e o plano capaz, vence o MTP.
 | usa peso do modelo | não - é busca em array | sim, uma cabeça treinada |
 | quando acerta | saída repetitiva (código, listas, JSON) | texto qualquer, se o modelo trouxer o bloco |
 | capability | `speculate/v1-lookup` (todos os hops) | `speculate/v1-mtp` (**a cauda**) + `speculate/v1-mtp-sliced` em todos |
-| exige | `kv_can_shift` | `kv_can_shift` **e** a cauda com o bloco `nextn` |
+| exige | nada além do pedido | a cauda com o bloco `nextn` (ou um `draft` já pronto) |
 
 O campo que separa as duas no fio é `speculate.source` (`"lookup"` / `"mtp"`),
 lido por `infer_server::Speculate::from_meta`. Ausente é gateway antigo e vale
@@ -179,21 +179,38 @@ extra), `accept_count` e `batch_width`.
   `rollback_from` descartam do KV o que não foi confirmado; sessão desconhecida
   é no-op, não erro). Todo hop decodificou o lote inteiro, então todo hop
   precisa do rollback - não só a cauda.
-- **Modelo híbrido/recorrente não rascunha**: `should_draft` exige
-  `speculate` pedido **e** `kv_can_shift`. Sem rollback parcial o llama.cpp não
-  sabe desfazer (o estado recorrente é acumulado), e insistir não dá erro na
-  hora - dá divergência entre `n_past` e o cache, que explode na rodada
-  seguinte com "inconsistent sequence positions". A decisão é tomada antes de
-  apostar. `/health` expõe `kv_can_shift` justamente para diagnosticar por que
-  a especulação não acelera.
+- **Modelo híbrido/recorrente aceita rascunhar - `n_rs_seq` é quem decide, não
+  `kv_can_shift`.** Achava-se (até 2026-08-16) que `should_draft` tinha que
+  recusar sempre que `llama_memory_can_shift` fosse falso em modelo híbrido -
+  engano duplo: essa flag é sobre o K-shift do `--ctx-shift` de referência do
+  llama.cpp (reindexar RoPE quando o contexto estoura), que este projeto nunca
+  liga; e o Qwen3.5/3.8 (`LLM_ARCH_QWEN35`) tem suporte dedicado a rollback
+  recorrente parcial no llama.cpp vendorizado
+  (`llm_arch_supports_rs_rollback`/`cparams.n_rs_seq`, "\[EXPERIMENTAL\]" no
+  `llama.h`), só que **desligado por padrão** (`n_rs_seq = 0` = "sem
+  rollback"). `EngineConfig::rs_seq_window` (`llm.rs`) pede
+  `max(speculative_k, mtp_draft_tokens + 1)` - a maior largura de lote que este
+  nó pode receber -, e arquitetura sem esse suporte simplesmente zera o pedido
+  de volta (`llama-context.cpp`), então pedir aqui não machuca modelo comum.
+  `should_draft` não recebe mais `kv_can_shift`: hoje toda rodada de lookup
+  rascunha, e MTP só recusa sem cabeça `nextn` local e sem `draft` pronto.
+- **A prova de verdade não é mais estática, é o `seq_rm` de cada rodada.**
+  `handle_rollback` (`/v1/session/rollback`) chama `kv_remove`
+  (`llama_memory_seq_rm`) e devolve `{rolled_back, reason}` no corpo -
+  `rollback_sessions` (`gateway.rs`) lê esse corpo (200 OK não é sucesso por
+  si, `handle_rollback` sempre responde 200); se algum hop devolver
+  `rolled_back: false`, o gateway **encerra a geração** com o que já foi
+  confirmado (`partial: true`) em vez de continuar sobre um cache que pode ter
+  ficado com o rascunho recusado sem remover - é mais seguro que arriscar o
+  modelo atender a tokens que o cliente nunca confirmou.
 - **Uma rodada especulativa tem duas respostas legítimas.** A cabeça avisa que
   recusou rascunhar **omitindo `draft`** do quadro; sem `draft`, a cauda
   responde no formato antigo de um token (`{done, token_id, text}`) em vez de
   `{done, accepted, accept_count, batch_width}` - `speculated` fica `false` e
   `batch_width` é 1. `prefill::speculative_step_from_meta` aceita as duas
   formas; tratar a antiga como erro fatal derrubava a geração com um token e
-  `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B). Sem shell na
-  máquina, `kv_can_shift` no `/health` é como se confere isso.
+  `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B) - esse defeito
+  era real e independente do engano do `kv_can_shift` acima.
 - **Recusada a especulação, o gateway para de insistir** pelo resto da
   requisição (`especulando`, em `generate_stream`): passa a chamar
   `prefill::step`, que já usa a resposta direta (N+1 travessias). Não é só
@@ -231,10 +248,10 @@ Studio liga quando oferece "MTP".
   frente **sem custo extra de travessia**: a cauda anexa `next_draft` ao reply
   da `relay/v2-direct` que já volta ao gateway, o gateway o injeta no
   `speculate.draft` da rodada seguinte, e a cabeça decodifica o lote sem
-  rascunhar (`should_draft` aceita draft pronto com `kv_can_shift`, mesmo sem
-  `mtp_ready`). O custo real a medir no caso fatiado é a taxa de aceitação (o
-  rascunho nasce uma rodada antes de ser usado, então prevê `p+2` a partir de
-  `p`, exatamente como no caso local) - e não a rede.
+  rascunhar (`should_draft` aceita todo `draft` pronto incondicionalmente,
+  mesmo sem `mtp_ready`). O custo real a medir no caso fatiado é a taxa de
+  aceitação (o rascunho nasce uma rodada antes de ser usado, então prevê `p+2`
+  a partir de `p`, exatamente como no caso local) - e não a rede.
 - **A composição do lote viaja até a cauda.** A cabeça ecoa no reply o lote
   decodificado (campo `tokens`) e a largura do rascunho pedida (`mtp_k`); os
   hops do meio repassam; a cauda alimenta o `observe` do MTP com essa
@@ -245,10 +262,12 @@ Studio liga quando oferece "MTP".
   `speculate/v1-mtp-sliced` em cada step (o protocolo `tokens`/`mtp_k`/
   `next_draft` só existe em build novo - um peer velho no anel receberia um
   `speculate` que não entende) **e** `speculate/v1-mtp` na cauda.
-- **Modelo híbrido/recorrente não rascunha no caso fatiado.** A cauda só
-  devolve `next_draft` quando `kv_can_shift`; recusada, o gateway para de
-  pedir pelo resto da requisição (mesmo flip do prompt-lookup). `/health`
-  expõe `kv_can_shift`.
+- **Modelo híbrido/recorrente rascunha no caso fatiado, desde que `n_rs_seq`
+  esteja pedido** (ver a entrada de `should_draft` na seção 5.1 - mesmo
+  mecanismo, mesma correção de 2026-08-16). Se mesmo assim o rollback de uma
+  rodada falhar (`rolled_back: false`), o gateway encerra a geração em vez de
+  seguir sem especular - mesmo flip de resultado que o prompt-lookup, causa
+  diferente.
 - O MTP fatiado roda pelo caminho direto (`prefill::step` + `relay/v2-direct`,
   N+1 travessias); `step_speculative` (prompt-lookup) continua sem desvio
   direto - ver seção 5.1.
@@ -319,9 +338,11 @@ inteiro.
   desvio direto (ver seção 5).
 - A especulação tem a sua bancada própria, `spec_lab.rs` (cfg(test)):
   `generate_stream` de verdade contra hops falsos que decidem com
-  `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
-  como botão. O motor é fingido (sem GGUF nesta máquina ela prova o contrato
-  entre os processos, não o que o llama.cpp faz com o lote).
+  `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
+  (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
+  llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
+  verdade - só o llama.cpp faz isso, ver o doc do módulo para o que mudou em
+  2026-08-16.
 
 ## 9. Limite de prompt
 

@@ -3,15 +3,30 @@
 //!
 //! O contrato do fio já diz que a cabeça pode recusar o rascunho — está escrito
 //! no doc de `step_blocking::incoming_draft`: `draft` ausente significa "esta
-//! rodada não é especulativa, vale o formato antigo de um token". A cabeça
-//! recusa sempre que o cache KV do modelo não desloca (`should_draft`), que é o
-//! caso de todo modelo híbrido ou recorrente — `handle_health` até publica
-//! `kv_can_shift` para o operador poder descobrir isso sem shell na máquina.
+//! rodada não é especulativa, vale o formato antigo de um token".
+//!
+//! **Correção de 2026-08-16, depois desta bancada ter sido escrita**: a cabeça
+//! achava que recusava "sempre que o cache KV do modelo não desloca"
+//! (`kv_can_shift`) e chamava isso de propriedade de todo modelo híbrido ou
+//! recorrente. Era engano nos dois pontos — `kv_can_shift`
+//! (`llama_memory_can_shift`) é sobre o K-shift do `--ctx-shift` de referência
+//! do llama.cpp, nada a ver com desfazer um rascunho, e nada neste projeto liga
+//! `--ctx-shift`; e o Qwen3.5/3.8 (`LLM_ARCH_QWEN35`) tem suporte dedicado a
+//! rollback recorrente parcial no llama.cpp
+//! (`llm_arch_supports_rs_rollback`/`cparams.n_rs_seq`), que só precisava ser
+//! ligado (`EngineConfig::rs_seq_window`). `should_draft` não recebe mais
+//! `kv_can_shift` - hoje toda invocação de lookup rascunha, e a única recusa
+//! que sobra é MTP sem cabeça `nextn` local e sem rascunho pronto. O que esta
+//! bancada media (recusa antes de rascunhar, seguida de resposta direta) não
+//! tem mais como acontecer no caminho de lookup; o defeito real que pode
+//! acontecer agora é *depois* de rascunhar - `gateway::rollback_sessions`
+//! recusado -, que é uma bancada diferente.
 //!
 //! O que faltava era a outra metade do contrato: quem pediu a especulação não
 //! sabia ler a resposta antiga, e tratava uma resposta legítima como erro fatal.
 //! O efeito visível é a requisição morrer com **um** token e `partial: true`,
-//! que foi o que o captain viu em 2026-08-15 no Qwen3.8-27B.
+//! que foi o que o captain viu em 2026-08-15 no Qwen3.8-27B. Essa metade
+//! continua valendo e é o que os testes abaixo ainda provam.
 //!
 //! Aqui o caminho de orquestração é o de produção inteiro — `generate_stream`,
 //! `prefill::run`, `prefill::step_speculative`, `relay::send_frame`,
@@ -47,14 +62,10 @@ const PROMPT_TOKENS: u32 = 6;
 
 // ── O hop falso ───────────────────────────────────────────────────────────────
 
-/// Um peer de inferência falso, com a decisão de rascunhar exposta como botão.
-///
-/// `kv_can_shift` é o botão que reproduz o defeito: `false` é o modelo híbrido
-/// do captain, e faz `should_draft` — a função de produção — recusar o rascunho.
+/// Um peer de inferência falso.
 #[derive(Clone)]
 struct Hop {
     is_head: bool,
-    kv_can_shift: bool,
     /// Estado por sessão que a bancada precisa: quantos tokens já saíram, para
     /// o "motor" devolver texto diferente a cada rodada e parar no fim.
     emitted: Arc<AtomicU64>,
@@ -89,6 +100,14 @@ async fn fake_health() -> impl IntoResponse {
 
 async fn fake_ok() -> impl IntoResponse {
     Json(json!({"ok": true}))
+}
+
+/// A bancada não tem cache de verdade para um rollback poder falhar contra -
+/// só o llama.cpp real decide isso (`n_rs_seq`/`seq_rm`, ver o doc do módulo).
+/// A forma da resposta importa: `gateway::rollback_sessions` lê o corpo, não
+/// só o status HTTP, então `fake_ok` (`{"ok": true}`) leria como recusado.
+async fn fake_rollback() -> impl IntoResponse {
+    Json(json!({"rolled_back": true}))
 }
 
 /// Lido com as mesmas regras do `infer_server` real.
@@ -270,7 +289,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
         // `mtp_ready` é falso nesta bancada: ela move quadros entre processos
         // fingidos, sem motor nenhum, então a única fonte de rascunho que ela
         // pode exercer de verdade é o lookup.
-        if crate::infer_server::should_draft(speculate.clone(), hop.kv_can_shift, false) {
+        if crate::infer_server::should_draft(speculate.clone(), false) {
             let spec = speculate.expect("should_draft implica speculate");
             // Histórico fabricado com um padrão que se repete, para
             // `find_draft` ter o que achar.
@@ -389,7 +408,7 @@ async fn spawn_hop(hop: Hop) -> String {
         .route("/v1/prefill", post(fake_prefill))
         .route("/v1/step", post(fake_step))
         .route("/v1/session/release", post(fake_ok))
-        .route("/v1/session/rollback", post(fake_ok))
+        .route("/v1/session/rollback", post(fake_rollback))
         .with_state(hop);
     tokio::spawn(async move {
         let _ = axum::serve(listener, router).tcp_nodelay(true).await;
@@ -416,7 +435,7 @@ struct Visto {
 
 /// Sobe dois hops falsos, um gateway de verdade com a config do captain e roda
 /// uma geração pelo mesmo caminho que `/v1/chat/completions` usa.
-async fn gerar(kv_can_shift: bool, direto: bool, max_tokens: u32) -> Visto {
+async fn gerar(direto: bool, max_tokens: u32) -> Visto {
     // Com `RUST_LOG=info` a bancada imprime as mesmas linhas que o captain leu
     // no servidor — é assim que se confere que ela reproduz o caso dele, e não
     // um primo.
@@ -440,7 +459,6 @@ async fn gerar(kv_can_shift: bool, direto: bool, max_tokens: u32) -> Visto {
         urls.push(
             spawn_hop(Hop {
                 is_head: i == 0,
-                kv_can_shift,
                 emitted: emitted.clone(),
                 step_calls: step_calls[i].clone(),
                 direct_steps: direct_steps[i].clone(),
@@ -525,87 +543,45 @@ async fn gerar(kv_can_shift: bool, direto: bool, max_tokens: u32) -> Visto {
 }
 
 // ── A lei ─────────────────────────────────────────────────────────────────────
+//
+// As três leis que provavam a recusa-antes-de-rascunhar via `kv_can_shift`
+// saíram daqui em 2026-08-16 (ver o doc do módulo): a única recusa que
+// `should_draft` ainda faz é MTP sem cabeça `nextn` local e sem rascunho
+// pronto, que esta bancada (só lookup, sem MTP) não constrói. O que
+// continua valendo — toda invocação de lookup rascunha, direto ou pelo
+// anel — está provado abaixo.
 
-/// O defeito do captain, no caminho dele: resposta direta negociada, modelo cujo
-/// cache KV não desloca. Antes da correção isto parava em 1 token com
-/// `partial: true` e `decode.calls == 0`.
+/// Quem rascunha continua no anel, que é o único caminho que
+/// `step_speculative` conhece — sem resposta direta negociada.
 #[tokio::test]
-async fn um_modelo_que_nao_rascunha_ainda_gera_o_texto_inteiro() {
-    let visto = gerar(false, true, 5).await;
+async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
+    let visto = gerar(false, 5).await;
 
     assert_eq!(visto.falhou, None, "a geração não pode falhar");
-    assert_eq!(
-        visto.tokens, 5,
-        "a rodada que não rascunha é resposta legítima, não erro — \
-         parar em {} token(s) é o defeito de 2026-08-15",
-        visto.tokens
-    );
-    assert!(!visto.partial, "o resultado não pode vir marcado como parcial");
+    assert_eq!(visto.tokens, 5);
+    assert!(!visto.partial);
     assert_eq!(visto.texto, "ABCDE");
     assert!(
-        !visto.decode_calls.is_empty() && visto.decode_calls.iter().all(|c| *c > 0),
-        "todo hop tem que aparecer no trace com decode.calls > 0, e não {:?}",
-        visto.decode_calls
-    );
-    assert!(
-        visto.step_calls.iter().all(|c| *c >= 4),
-        "todo hop tem que decodificar em toda rodada: {:?}",
-        visto.step_calls
-    );
-}
-
-/// A outra metade da correção: uma vez que a cabeça recusou o rascunho, o
-/// gateway para de pedir e a cadeia passa a usar a resposta direta.
-///
-/// Insistir custava caro e em silêncio — `step_speculative` só sabe o anel
-/// borbulhado (2N travessias por token), e o caminho direto (N+1) estava ali o
-/// tempo todo.
-#[tokio::test]
-async fn depois_da_recusa_a_cadeia_passa_a_responder_direto() {
-    let visto = gerar(false, true, 5).await;
-
-    assert_eq!(visto.tokens, 5);
-    assert_eq!(
-        visto.direct_steps[0], 3,
-        "a primeira rodada descobre a recusa pelo anel; as outras três têm que \
-         ir pelo caminho direto — passos diretos por hop: {:?}",
+        visto.direct_steps.iter().all(|c| *c == 0),
+        "sem resposta direta negociada, nenhum passo pode sair por ali: {:?}",
         visto.direct_steps
     );
+    assert!(visto.decode_calls.iter().all(|c| *c > 0));
 }
 
-/// E o contrário: quem rascunha continua no anel, que é o único caminho que
-/// `step_speculative` conhece. Sem isto o teste acima passaria por acidente.
+/// E com resposta direta negociada: toda rodada especula, então nenhuma
+/// pode ser desviada — sem isto o teste anterior passaria por acidente.
 #[tokio::test]
-async fn quem_rascunha_nao_e_desviado_para_a_resposta_direta() {
-    let visto = gerar(true, true, 5).await;
-    assert_eq!(
-        visto.direct_steps[0], 0,
-        "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
-    );
-}
-
-/// O contrafactual que refuta a hipótese da resposta direta: o mesmo modelo, o
-/// mesmo defeito, com o anel borbulhado. `step_speculative` nunca recebeu o
-/// `DirectReply` — o caminho é o mesmo dos dois lados.
-#[tokio::test]
-async fn o_anel_borbulhado_se_comporta_igual_ao_modo_direto() {
-    let anel = gerar(false, false, 5).await;
-    assert_eq!(anel.falhou, None);
-    assert_eq!(anel.tokens, 5, "o defeito nunca dependeu da resposta direta");
-    assert!(!anel.partial);
-    assert_eq!(anel.texto, "ABCDE");
-}
-
-/// O caminho comprovadamente bom continua bom: um modelo que rascunha usa o
-/// formato novo e confirma pelo menos o token semeado por rodada.
-#[tokio::test]
-async fn um_modelo_que_rascunha_continua_no_formato_especulativo() {
-    let visto = gerar(true, true, 5).await;
-
+async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
+    let visto = gerar(true, 5).await;
     assert_eq!(visto.falhou, None);
     assert_eq!(visto.tokens, 5);
     assert!(!visto.partial);
     assert_eq!(visto.texto, "ABCDE");
+    assert_eq!(
+        visto.direct_steps[0], 0,
+        "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
+    );
     assert!(visto.decode_calls.iter().all(|c| *c > 0));
 }
 

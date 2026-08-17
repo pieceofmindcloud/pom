@@ -480,6 +480,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: false,
             mtp: true,
+            rs_seq_window: 0,
         };
         let mut engine = crate::llm::LlmEngine::load(&path, &cfg).expect("carregar o modelo");
         assert!(

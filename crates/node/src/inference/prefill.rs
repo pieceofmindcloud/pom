@@ -1186,12 +1186,13 @@ pub struct SpeculativeStep {
     pub batch_width: u32,
     /// Whether this round actually was speculative.
     ///
-    /// The head is free to decline — `should_draft` says no whenever the
-    /// engine's KV cache cannot shift, which is every hybrid or recurrent
-    /// model — and it says so by omitting `draft`, which puts the whole round
-    /// back on the plain one-token wire format (see `step_blocking`'s
-    /// `incoming_draft` doc). `false` means exactly that happened, and asking
-    /// the same chain to speculate again would just repeat the refusal.
+    /// The head is free to decline — `should_draft` says no for an MTP round
+    /// with no local `nextn` head and no premade draft yet (round one of a
+    /// sliced pipeline) — and it says so by omitting `draft`, which puts the
+    /// whole round back on the plain one-token wire format (see
+    /// `step_blocking`'s `incoming_draft` doc). `false` means exactly that
+    /// happened, and asking the same chain to speculate again would just
+    /// repeat the refusal.
     pub speculated: bool,
     /// Rascunho que a cauda de um pipeline fatiado produziu para a **próxima**
     /// rodada (bloco `nextn`), trazido na resposta direta. O gateway o guarda
@@ -1399,7 +1400,7 @@ async fn step_speculative_ring(
 /// paths, which only differ in how they get to that reply.
 ///
 /// Two shapes are legitimate, and reading only the first one is what killed
-/// every generation on a model whose KV cache cannot shift:
+/// every generation on a round the head declined to speculate:
 ///
 /// * `{done, accepted, accept_count, batch_width}` — the tail verified a
 ///   batch, which is what happens when the head drafted;

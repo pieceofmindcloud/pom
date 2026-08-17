@@ -707,31 +707,29 @@ pub async fn generate_stream(
                 if especulando {
                     if sliced_mtp {
                         // Dois motivos para desistir, e só dois. (a) O rascunho
-                        // foi mandado e a cabeça o ignorou — o cache KV do
-                        // modelo não desloca (`kv_can_shift`), e pedir de novo
-                        // só repetiria a recusa. (b) A rodada 1 não mandou
-                        // rascunho (ainda não havia um pronto) e a cauda não
-                        // devolveu nenhum — este pipeline fatiado não
-                        // rascunha por aqui.
+                        // foi mandado e a cabeça o ignorou — só acontece hoje
+                        // se ela não é da versão nova (`should_draft` aceita
+                        // todo `draft` pronto incondicionalmente), e pedir de
+                        // novo só repetiria a recusa. (b) A rodada 1 não
+                        // mandou rascunho (ainda não havia um pronto) e a
+                        // cauda não devolveu nenhum — este pipeline fatiado
+                        // não rascunha por aqui.
                         if (draft_sent && !step.speculated)
                             || (!draft_sent && step.next_draft.is_none())
                         {
                             info!(
                                 "pipeline fatiado sem rascunho MTP: seguindo \
-                                 sem especulação (ver kv_can_shift em /health)"
+                                 sem especulação"
                             );
                             especulando = false;
                         } else {
                             stored_draft = step.next_draft;
                         }
                     } else if !step.speculated {
-                        // A cabeça recusou rascunhar — resposta legítima, e a
-                        // única pista que o gateway tem de que este modelo não
-                        // especula.
-                        info!(
-                            "nenhum hop rascunhou: seguindo sem especulação \
-                             (o cache KV do modelo não desloca — ver kv_can_shift em /health)"
-                        );
+                        // A cabeça recusou rascunhar — hoje só acontece se
+                        // ela é de uma versão anterior a este fix, ou se o
+                        // rascunho por repetição não achou nada para propor.
+                        info!("nenhum hop rascunhou: seguindo sem especulação");
                         especulando = false;
                     }
                 }
@@ -793,7 +791,7 @@ pub async fn generate_stream(
                 // block wipes the whole session anyway, making a partial
                 // rollback moot.
                 if step.accept_count < step.batch_width {
-                    rollback_sessions(
+                    let ok = rollback_sessions(
                         &plan,
                         &session_id,
                         step.accept_count,
@@ -801,6 +799,44 @@ pub async fn generate_stream(
                         &state.http,
                     )
                     .await;
+                    if !ok {
+                        // A hop kept the rejected tail's KV entries — its
+                        // cache still holds attention/recurrent state for
+                        // positions the client never confirmed. Continuing
+                        // this session risks the model attending to wrong
+                        // (rejected) tokens in silence, not just a crash, so
+                        // this ends the generation with whatever was already
+                        // confirmed rather than trust the cache further —
+                        // same shape as the `Err(e)` branch above.
+                        warn!(
+                            "rollback parcial recusado por algum hop após \
+                             {tokens_generated} tokens: encerrando a geração \
+                             em vez de arriscar cache contaminado"
+                        );
+                        let elapsed = gen_start.elapsed();
+                        if tokens_generated > 0 {
+                            let _ = tx
+                                .send(GenEvent::Done(GenSummary {
+                                    source: format!("pipeline:{} (partial)", plan.hop_chain()),
+                                    tokens_generated,
+                                    tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+                                    duration_ms: elapsed.as_millis() as u64,
+                                    partial: true,
+                                    trace: {
+                                        trace.output_tokens = tokens_generated;
+                                        Some(trace)
+                                    },
+                                }))
+                                .await;
+                        } else {
+                            let _ = tx
+                                .send(GenEvent::Failed(
+                                    "rollback especulativo recusado pelo hop".to_string(),
+                                ))
+                                .await;
+                        }
+                        return;
+                    }
                 }
             }
             return;
@@ -925,13 +961,20 @@ async fn release_sessions(plan: &PipelinePlan, session_id: &str, http: &reqwest:
 /// just the tail, so every hop needs this. Same best-effort fan-out shape as
 /// `release_sessions`: streaming the accepted tokens to the client does not
 /// wait on this, only the *next* speculative round does.
+///
+/// Returns `false` when any hop's `rolled_back` came back `false` (or the
+/// request itself failed) — a 200 response is not success by itself,
+/// `handle_rollback` returns 200 either way and puts the real answer in the
+/// body. The caller has to treat `false` as fatal for the generation: see
+/// its call site in `generate_stream`.
 async fn rollback_sessions(
     plan: &PipelinePlan,
     session_id: &str,
     accept_count: u32,
     batch_width: u32,
     http: &reqwest::Client,
-) {
+) -> bool {
+    let mut all_ok = true;
     for step in &plan.steps {
         let url = format!("{}/v1/session/rollback", step.inference_url);
         match http
@@ -945,15 +988,45 @@ async fn rollback_sessions(
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => warn!(
-                "rollback de sessão em {} respondeu {}",
-                step.node_id,
-                r.status()
-            ),
-            Err(e) => warn!("rollback de sessão em {} falhou: {e}", step.node_id),
+            Ok(r) if r.status().is_success() => {
+                match r.json::<serde_json::Value>().await {
+                    Ok(body) => {
+                        if !body
+                            .get("rolled_back")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        {
+                            warn!(
+                                "rollback de sessão em {} recusado: {}",
+                                step.node_id,
+                                body.get("reason")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("sem motivo informado")
+                            );
+                            all_ok = false;
+                        }
+                    }
+                    Err(e) => {
+                        warn!("rollback de sessão em {}: corpo ilegível: {e}", step.node_id);
+                        all_ok = false;
+                    }
+                }
+            }
+            Ok(r) => {
+                warn!(
+                    "rollback de sessão em {} respondeu {}",
+                    step.node_id,
+                    r.status()
+                );
+                all_ok = false;
+            }
+            Err(e) => {
+                warn!("rollback de sessão em {} falhou: {e}", step.node_id);
+                all_ok = false;
+            }
         }
     }
+    all_ok
 }
 
 /// Pessimistic token count for a prompt, used only by the size guard.

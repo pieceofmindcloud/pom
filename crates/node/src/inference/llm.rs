@@ -131,6 +131,18 @@ pub struct EngineConfig {
     /// `crate::mtp`. Um modelo sem `nextn` ignora o pedido em silêncio: não é
     /// erro de configuração, é a fatia do meio de um pipeline.
     pub mtp: bool,
+    /// Quantos snapshots de estado recorrente manter por sequência
+    /// (`llama_context_params::n_rs_seq`), para permitir desfazer um
+    /// rascunho especulativo recusado num modelo híbrido/recorrente
+    /// (Qwen3.5+: `llm_arch_supports_rs_rollback` no llama.cpp). `0` é o
+    /// padrão do llama.cpp - sem isto, `llama_memory_recurrent::seq_rm`
+    /// nunca aceita um rollback parcial, e vale a pena pedir um valor maior
+    /// que a maior largura de lote especulativo configurada (`speculative_k`,
+    /// `mtp_draft_tokens + 1`); arquitetura sem suporte simplesmente zera o
+    /// pedido de volta (`llama-context.cpp`), então pedir aqui não machuca
+    /// modelo comum. Ver `infer_server::should_draft` e
+    /// `gateway::rollback_sessions`, que são o resto do mecanismo.
+    pub rs_seq_window: u32,
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -313,6 +325,7 @@ impl LlmEngine {
         cparams.n_seq_max = cfg.max_sessions;
         cparams.offload_kqv = cfg.offload_kqv;
         cparams.embeddings = cfg.need_embeddings;
+        cparams.n_rs_seq = cfg.rs_seq_window;
         if cfg.n_threads > 0 {
             cparams.n_threads = cfg.n_threads;
             cparams.n_threads_batch = cfg.n_threads;
@@ -846,11 +859,14 @@ impl LlmEngine {
         }
     }
 
-    /// Este modelo aceita remover posições do meio do cache?
-    ///
-    /// `false` em modelo recorrente/híbrido. É a pergunta que decide se dá
-    /// para especular: sem rollback parcial, um rascunho recusado não tem como
-    /// ser desfeito.
+    /// `llama_memory_can_shift` - se o llama.cpp consegue reindexar (RoPE) as
+    /// posições já cacheadas, o "K-shift" que o llama.cpp de referência usa
+    /// para `--ctx-shift`/geração infinita quando o contexto enche. **Não
+    /// governa remoção de posições do meio do cache** - isso é `kv_remove`
+    /// (`llama_memory_seq_rm`), uma operação diferente que este projeto usa
+    /// para desfazer um rascunho especulativo recusado (`handle_rollback`) e
+    /// que não depende deste valor. Nada aqui liga `--ctx-shift`; exposto só
+    /// como diagnóstico em `/health`.
     pub fn kv_can_shift(&self) -> bool {
         unsafe {
             let mem = sys::llama_get_memory(self.ctx);
@@ -887,6 +903,7 @@ mod pool_tests {
             max_sessions: 2,
             need_embeddings: true,
             mtp: false,
+            rs_seq_window: 0,
         }
     }
 
@@ -1321,6 +1338,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: true,
             mtp: false,
+            rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
 
@@ -1360,6 +1378,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: true,
             mtp: false,
+            rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let toks = engine.tokenize("Explique RDMA em uma frase.", true, true);
@@ -1411,6 +1430,7 @@ mod tests {
             // O nó da LM head não exporta residual — é o ponto da Mudança 5.
             need_embeddings: false,
             mtp: false,
+            rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let tokens = engine.tokenize("Explique o que e RDMA em uma frase.", true, true);
@@ -1470,6 +1490,7 @@ mod tests {
             max_sessions: 1,
             need_embeddings: false,
             mtp: false,
+            rs_seq_window: 0,
         };
         let engine = LlmEngine::load(&path, &cfg).expect("model loads");
         let tokens = engine.tokenize("oi", true, true);

@@ -875,29 +875,52 @@ teste de ponta a ponta.
 `step_speculative` continua só no anel borbulhado - o desvio direto não foi
 estendido a ele. Ver a seção seguinte para o que o gateway faz por causa disso.
 
-### Uma rodada especulativa tem duas respostas legítimas
+### Modelo híbrido/recorrente e a especulação - `n_rs_seq`, não `kv_can_shift`
 
-A cabeça **pode recusar** rascunhar: `should_draft` (`infer_server.rs`) diz não
-sempre que o cache KV do modelo não desloca, que é todo modelo híbrido ou
-recorrente. Ela avisa **omitindo `draft`**, e sem `draft` a cauda responde no
-formato antigo de um token (`{done, token_id, text}`) em vez de
+Corrigido em 2026-08-16: achava-se que a cabeça tinha que **recusar** rascunhar
+sempre em modelo híbrido/recorrente, porque `llama_memory_can_shift` (exposta
+como `kv_can_shift`) dava falso para eles. Engano duplo, achado ao investigar
+por que o Qwen3.8-27B (Unsloth, hybrid attention/SSM, MTP funcionando no LM
+Studio) não especulava aqui: `kv_can_shift` é sobre outra coisa (o K-shift do
+`--ctx-shift` de referência do llama.cpp, que este projeto nunca liga); e o
+llama.cpp vendorizado (`llama-cpp-sys-2` 0.1.154) tem suporte dedicado a
+rollback recorrente parcial para `LLM_ARCH_QWEN35`/`QWEN35MOE`
+(`llm_arch_supports_rs_rollback`, `cparams.n_rs_seq`, "\[EXPERIMENTAL\]" no
+`llama.h`) - só que **desligado por padrão** (`n_rs_seq = 0`). `should_draft`
+(`infer_server.rs`) não recebe mais `kv_can_shift`: toda rodada de lookup
+rascunha, e MTP só recusa sem cabeça `nextn` local e sem `draft` pronto.
+`EngineConfig::rs_seq_window` (`llm.rs`) pede
+`max(speculative_k, mtp_draft_tokens + 1)` ao criar o contexto - arquitetura
+sem esse suporte zera o pedido de volta, então pedir não machuca modelo comum.
+
+A prova de que o rollback deu certo deixou de ser estática: é o `seq_rm`
+(`llama_memory_seq_rm`) de cada rodada, via `/v1/session/rollback` ->
+`handle_rollback` -> `kv_remove`, que devolve `{rolled_back, reason}` no corpo
+(200 OK sempre, sucesso ou não). `gateway::rollback_sessions` lê esse corpo
+agora; se algum hop devolver `rolled_back: false`, a geração **encerra** com o
+que já foi confirmado em vez de continuar sobre um cache que pode ter mantido
+o rascunho recusado sem remover.
+
+Duas respostas legítimas continuam existindo, por outro motivo agora (MTP sem
+cabeça local, ou peer de versão anterior a este fix): a cabeça avisa que
+recusou **omitindo `draft`**, e sem `draft` a cauda responde no formato antigo
+de um token (`{done, token_id, text}`) em vez de
 `{accepted, accept_count, batch_width}`. Está escrito no doc de
-`step_blocking::incoming_draft`; o que faltava era a outra metade -
-`prefill::speculative_step_from_meta` só sabia ler a forma nova e tratava a
-antiga como erro fatal. O efeito era a geração morrer com **um** token e
-`partial: true`, em toda requisição, no anel e no modo direto igualmente
-(2026-08-15, Qwen3.8-27B). `kv_can_shift` em `/health` é como se confere isso
-sem shell na máquina.
+`step_blocking::incoming_draft`; tratar a forma antiga como erro fatal
+derrubava a geração com **um** token e `partial: true` em toda requisição,
+no anel e no modo direto igualmente - esse defeito (2026-08-15, Qwen3.8-27B)
+era real e independente do engano do `kv_can_shift` acima.
 
 Recusada a especulação, o gateway **para de pedir** pelo resto da requisição
 (`especulando`, em `generate_stream`) e passa a chamar `prefill::step`. Não é
 só economia do campo `speculate`: insistir prende a cadeia no anel borbulhado
 (2N travessias por token) quando `step` já usa a resposta direta (N+1).
 
-A bancada é `crates/node/src/inference/spec_lab.rs`: `generate_stream` de verdade contra hops
-falsos que decidem com `should_draft`/`find_draft`/`longest_match` de produção,
-com `kv_can_shift` como botão. O motor é fingido - sem GGUF nesta máquina ela
-prova o contrato entre os processos, não o que o llama.cpp faz com o lote.
+A bancada é `crates/node/src/inference/spec_lab.rs`: `generate_stream` de
+verdade contra hops falsos que decidem com
+`should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido -
+sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
+llama.cpp faz com o lote (`n_rs_seq`/`seq_rm` de verdade incluídos).
 
 ### Limite de prompt
 

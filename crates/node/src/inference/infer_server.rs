@@ -627,6 +627,11 @@ pub async fn run(
     info!("porta {port} ligada; carregando o modelo");
 
     let need_embeddings = cfg.needs_residual_export();
+    // Maior largura de lote especulativo que este nó pode receber, dos dois
+    // mecanismos (lookup e MTP) - é o que `cparams.n_rs_seq` precisa cobrir
+    // para um modelo híbrido/recorrente aceitar desfazer um rascunho
+    // recusado. Ver o doc de `EngineConfig::rs_seq_window`.
+    let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
         offload_kqv: cfg.offload_kqv,
@@ -636,6 +641,7 @@ pub async fn run(
         max_sessions: cfg.max_sessions.max(1),
         need_embeddings,
         mtp: cfg.mtp_effective(),
+        rs_seq_window,
     };
 
     let model_path = cfg.model_path.clone();
@@ -797,8 +803,10 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
         "inference_frame_capabilities": caps,
-        // Falso em modelo híbrido/recorrente. É a única forma de saber, sem
-        // shell na máquina, por que a especulação não está acelerando nada.
+        // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
+        // `--ctx-shift` de referência do llama.cpp. Não decide mais se a
+        // especulação roda (ver o doc de `should_draft`); mantido aqui
+        // porque é informação real do motor.
         "kv_can_shift": s.engine.kv_can_shift(),
         // A cabeça de rascunho `nextn` foi mesmo anexada? Depende do GGUF
         // carregado (fatia não-final não tem o bloco) e do interruptor do
@@ -1864,25 +1872,34 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// drafted token widens the batch on every hop of the ring.
 /// Vale rascunhar nesta rodada?
 ///
-/// Especular é apostar: o rascunho recusado tem de ser desfeito do cache. Num
-/// modelo híbrido de atenção linear o llama.cpp não sabe desfazer (o estado
-/// recorrente é acumulado, não indexado por posição), e insistir não dá erro na
-/// hora - dá divergência entre o `n_past` do nó e o cache, que só explode na
-/// rodada seguinte com "inconsistent sequence positions".
+/// Especular é apostar: um rascunho recusado tem de ser desfeito do cache
+/// antes da rodada seguinte (`gateway::rollback_sessions`, via
+/// `/v1/session/rollback` -> `kv_remove` -> `llama_memory_seq_rm`).
 ///
-/// Então a decisão é tomada antes de apostar: sem rollback parcial, o nó
-/// simplesmente não rascunha e a geração segue um token por rodada, correta e
-/// mais lenta - em vez de morrer no quarto token.
-pub(crate) fn should_draft(speculate: Option<Speculate>, kv_can_shift: bool, mtp_ready: bool) -> bool {
+/// **Não é `kv_can_shift`/`llama_memory_can_shift` quem decide isso** - essa
+/// flag é sobre outra coisa (o "K-shift" de reposicionar RoPE quando o
+/// contexto some por cima, `common.cpp`'s `ctx_shift` no llama.cpp de
+/// referência; nenhum código deste projeto ativa esse recurso). A
+/// especulação de verdade só depende de `seq_rm` aceitar remover o fim da
+/// sequência, e isso já é decidido - e reportado de volta - em tempo real
+/// por `handle_rollback`; não há necessidade de adivinhar antes. Um modelo
+/// híbrido/recorrente (Qwen3.5+) só aceita esse `seq_rm` parcial se o
+/// contexto foi criado com `n_rs_seq > 0` (`EngineConfig::rs_seq_window`,
+/// `llm_arch_supports_rs_rollback` no llama.cpp) - sem isso `seq_rm`
+/// simplesmente recusa, `rollback_sessions` percebe pela resposta e encerra
+/// a geração com o que já foi confirmado (ver seu call site em
+/// `gateway::generate_stream`) em vez de deixar o `n_past` do nó divergir do
+/// cache, que é o que produzia "inconsistent sequence positions".
+pub(crate) fn should_draft(speculate: Option<Speculate>, mtp_ready: bool) -> bool {
     match speculate {
         None => false,
         Some(s) if s.source == DraftSource::Mtp => {
-            // MTP exige KV deslocável. O rascunho pode nascer aqui (bloco
-            // `nextn` local, máquina única) ou vir pronto do gateway (a cauda
-            // de um pipeline fatiado o produziu na rodada anterior).
-            kv_can_shift && (mtp_ready || s.draft.is_some())
+            // O rascunho pode nascer aqui (bloco `nextn` local, máquina
+            // única) ou vir pronto do gateway (a cauda de um pipeline
+            // fatiado o produziu na rodada anterior).
+            mtp_ready || s.draft.is_some()
         }
-        Some(_) => kv_can_shift,
+        Some(_) => true,
     }
 }
 
@@ -2037,41 +2054,41 @@ mod speculative_tests {
         })
     }
 
-    /// Modelo hibrido nao rascunha. O rascunho recusado precisaria ser
-    /// desfeito, e num modelo recorrente o llama.cpp nao sabe desfazer.
+    /// Um pedido de lookup sempre rascunha - a decisão de aceitar o desfazer
+    /// não é mais estática (`kv_can_shift`), é o `seq_rm` de verdade em
+    /// `handle_rollback`, checada em tempo real. Ver o doc de `should_draft`.
     #[test]
-    fn a_model_that_cannot_shift_its_cache_never_drafts() {
-        assert!(!should_draft(lookup(4, 3), false, false));
-        assert!(!should_draft(mtp(4), false, true));
+    fn a_lookup_round_always_drafts_when_asked() {
+        assert!(should_draft(lookup(4, 3), false));
+        assert!(should_draft(lookup(4, 3), true));
     }
 
-    #[test]
-    fn a_model_that_can_shift_drafts_when_asked() {
-        assert!(should_draft(lookup(4, 3), true, false));
-    }
-
-    /// Pedir MTP a um motor sem a cabeça `nextn` é o caso normal de uma fatia
-    /// que não é a final: recusar é a resposta certa, e o gateway lê a recusa
-    /// (`speculated: false`) e para de pedir. Rascunhar por lookup no lugar
-    /// seria trocar o mecanismo por baixo de quem pediu.
+    /// Pedir MTP a um motor sem a cabeça `nextn` e sem rascunho pronto é o
+    /// caso normal de uma fatia que não é a final: recusar é a resposta
+    /// certa, e o gateway lê a recusa (`speculated: false`) e para de pedir.
+    /// Rascunhar por lookup no lugar seria trocar o mecanismo por baixo de
+    /// quem pediu.
     #[test]
     fn mtp_asked_of_an_engine_without_the_nextn_head_is_refused() {
-        assert!(!should_draft(mtp(4), true, false));
-        assert!(should_draft(mtp(4), true, true));
+        assert!(!should_draft(mtp(4), false));
+        assert!(should_draft(mtp(4), true));
     }
 
-    /// O contrário também vale: um motor **com** a cabeça `nextn` que foi
-    /// convidado a rascunhar por lookup rascunha por lookup.
+    /// Um rascunho MTP já pronto (a cauda de um pipeline fatiado produziu na
+    /// rodada anterior) faz a cabeça aceitar mesmo sem a cabeça `nextn` local
+    /// - ela só precisa verificar o lote, não gerá-lo.
     #[test]
-    fn a_lookup_round_does_not_need_the_nextn_head() {
-        assert!(should_draft(lookup(4, 3), true, false));
+    fn a_premade_mtp_draft_is_accepted_without_the_local_nextn_head() {
+        let mut spec = mtp(4).unwrap();
+        spec.draft = Some(vec![1, 2, 3]);
+        assert!(should_draft(Some(spec), false));
     }
 
     /// Sem especulacao pedida, o resto nao importa.
     #[test]
     fn without_speculation_asked_there_is_no_draft() {
-        assert!(!should_draft(None, true, true));
-        assert!(!should_draft(None, false, false));
+        assert!(!should_draft(None, true));
+        assert!(!should_draft(None, false));
     }
 
     /// O campo `source` é o que separa os dois mecanismos no fio. Um quadro
@@ -2295,7 +2312,7 @@ fn step_blocking(
             .as_ref()
             .filter(|s| s.source == DraftSource::Mtp)
             .map(|s| s.k);
-        let pode_rascunhar = should_draft(speculate.clone(), s.engine.kv_can_shift(), s.engine.mtp_ready());
+        let pode_rascunhar = should_draft(speculate.clone(), s.engine.mtp_ready());
         let batch: Vec<i32> = if let Some(spec) = speculate.filter(|_| pode_rascunhar) {
             let draft: Vec<i32> = if let Some(premade) = spec.draft {
                 premade

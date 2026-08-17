@@ -57,15 +57,17 @@ vitest.
 
 # Fase 1: splitter de shard de tensor (independente)
 
-- [ ] Classificação row/column/não-shardado por arquitetura (Llama primeiro).
-- [ ] splitter.rs produz N GGUFs de shard (row/column split respeitando
+- [x] Classificação row/column/não-shardado por arquitetura (Llama primeiro).
+- [x] splitter.rs produz N GGUFs de shard (row/column split respeitando
   blck_size, metadata pom.tp_rank/pom.tp_size).
-- [ ] Testes com o GGUF sintético compartilhado (test_gguf_bytes).
+- [x] Testes com o GGUF sintético compartilhado (test_gguf_bytes).
 
 # Fase 2: coletivas all-reduce na rede (independente)
 
-- [ ] collective.rs: all-reduce (ring/tree/centralizado) sobre wire.rs (f16/zstd).
-- [ ] Testes com hops falsos, no estilo do direct_lab.
+- [x] collective.rs: reduce_sum + ReduceBarrier (barreira centralizada). O anel/
+  árvore e o transporte wire.rs ficam como otimização junto do fork.
+- [x] Testes em memória (tokio): soma alinhada, todos os ranks recebem a soma,
+  rank duplicado e tamanho divergente são recusados.
 
 # Fase 3: motor worker + primário TP (depende do fork)
 
@@ -75,20 +77,23 @@ vitest.
 
 # Fase 4: anúncio e roteamento de grupo TP
 
-- [ ] Announce/PeerInfo ganham parallel_role, rpc/coletivo port, tp_group_id,
-  tp_size, tp_rank (tudo serde(default)).
-- [ ] plan_pipeline exclui workers dos candidatos; um hop = o primário.
+- [x] Announce/PeerInfo ganham TpIdentity (role, group_id, size, rank), tudo
+  serde(default).
+- [x] plan_pipeline exclui workers (PeerInfo::is_tp_worker); um hop = o primário.
 
 # Fase 5: implantação e UI
 
-- [ ] DeployKind::TensorParallel: grupo = primário + K workers para uma faixa.
-- [ ] webui::apply: worker extrai o shard local; primário recebe o grupo.
+- [ ] DeployKind::TensorParallel completo: survey/plan/launch montando o grupo
+  primary + K workers. (O enum + nomeação já entrou; a descoberta de workers e
+  a tela ficam junto do fork.)
+- [x] webui::apply: worker extrai o shard local (plan::extract_tp_shard) e
+  anuncia o grupo (Network::set_tp).
 - [ ] Tela: escolher formato pipeline ou TP, desenhar o grupo no canvas.
 
 # Fase 6: documentação, testes finais e observação
 
-- [ ] docs/subsystems/{fatiamento,inferencia,implantacao,rede-p2p,build-execucao}.md
-  e AGENTS.md de inference/, network/, routing/, backend/ e raiz.
+- [x] docs/subsystems/{fatiamento,inferencia,implantacao,rede-p2p}.md e AGENTS.md
+  de inference/, network/, routing/. Falta build-execucao.md (o fork) e backend/.
 - [ ] cargo test e cargo test --workspace verdes.
 - [ ] Medir tok/s, memória por máquina e bytes de ativação por token, nos
   formatos pipeline puro, TP puro e misto.

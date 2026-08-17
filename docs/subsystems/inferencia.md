@@ -10,6 +10,17 @@ descreve os três modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+## 0. Coletiva de tensor parallelism (`collective.rs`)
+
+Para o caminho C (tensor parallelism sem transferir peso), o núcleo de troca é a
+coletiva all-reduce: cada rank produz uma soma parcial da projeção por linhas e
+o resultado é a soma das parciais. `inference/collective.rs` tem `reduce_sum` (a
+soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
+rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
+`direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
+cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
+forward pass. Ver `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

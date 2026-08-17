@@ -147,7 +147,8 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// idempotency protection against being redecoded).
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame(
-    http: &reqwest::Client,
+    clients: &crate::peer_client::PeerClients,
+    peer_id: &str,
     base_url: &str,
     path: &str,
     meta: &Value,
@@ -158,6 +159,10 @@ pub async fn send_frame(
     peer_label: &str,
     mut on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
+    // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
+    // certificado esperado deste destino, e o pinning é o que distingue o peer
+    // de quem se põe no meio dele.
+    let http = &clients.for_peer(peer_id)?;
     let encode_started = Instant::now();
     let body = match (tensor, dtype) {
         (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
@@ -263,7 +268,7 @@ pub async fn send_frame(
 /// reaches the fallback check.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame_or_tunnel(
-    http: &reqwest::Client,
+    clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
     path: &str,
@@ -277,7 +282,8 @@ pub async fn send_frame_or_tunnel(
 ) -> Result<SentFrame> {
     let mut last_kind = None;
     let result = send_frame(
-        http,
+        clients,
+        &step.node_id,
         &step.inference_url,
         path,
         meta,
@@ -606,7 +612,7 @@ mod tests {
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
 
         let sent = send_frame_or_tunnel(
-            &reqwest::Client::new(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &step,
             Some(&tunnel_tx),
             "/v1/step",
@@ -667,7 +673,7 @@ mod tests {
         }));
 
         let sent = send_frame_or_tunnel(
-            &reqwest::Client::new(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &unreachable,
             Some(&tunnel_tx),
             "/v1/step",
@@ -697,7 +703,7 @@ mod tests {
         }));
 
         let result = send_frame_or_tunnel(
-            &reqwest::Client::new(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &unreachable,
             Some(&tunnel_tx),
             "/v1/step",
@@ -724,7 +730,7 @@ mod tests {
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
 
         let result = send_frame_or_tunnel(
-            &reqwest::Client::new(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &step,
             Some(&tunnel_tx),
             "/v1/step",
@@ -797,10 +803,7 @@ mod tests {
         let mut issues = Vec::new();
         let direto = std::time::Instant::now();
         let _ = send_frame_or_tunnel(
-            &reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(3))
-                .build()
-                .unwrap(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             &step,
             Some(&tunnel_tx),
             "/v1/session/release",

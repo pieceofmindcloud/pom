@@ -750,7 +750,7 @@ async fn main() -> Result<()> {
             .timeout(Duration::from_secs(600))
             .build()?;
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-        peer_clients.set_tls(app_config.tls_required);
+        peer_clients.apply_cluster_policy(app_config.tls_required);
         let gw_state = GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
@@ -1309,7 +1309,7 @@ async fn start_gateway_only(
         .timeout(Duration::from_secs(600))
         .build()?;
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
-    peer_clients.set_tls(app_config.tls_required);
+    peer_clients.apply_cluster_policy(app_config.tls_required);
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
 

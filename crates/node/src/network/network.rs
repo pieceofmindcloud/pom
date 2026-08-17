@@ -181,6 +181,11 @@ impl PeerInfo {
     }
 
     /// Full Ollama HTTP URL for this peer (None if no ollama_port advertised).
+    ///
+    /// **Continua em `http://` mesmo com o cluster em TLS, de propósito**: o
+    /// Ollama é um servidor de terceiros rodando na máquina do peer, não um nó
+    /// deste cluster. Ele não tem o nosso certificado nem a nossa identidade, e
+    /// pedir TLS a ele só produziria conexão recusada.
     pub fn ollama_url(&self) -> Option<String> {
         self.ollama_port
             .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
@@ -210,7 +215,14 @@ impl PeerInfo {
             self.addr_candidates.iter().collect()
         };
         base.iter()
-            .map(|a| format!("http://{}:{}", ip_host(a), porta))
+            .map(|a| {
+                format!(
+                    "{}://{}:{}",
+                    crate::peer_client::peer_scheme(),
+                    ip_host(a),
+                    porta
+                )
+            })
             .collect()
     }
 
@@ -231,8 +243,14 @@ impl PeerInfo {
 
     /// Base URL of this peer's HTTP API / web UI.
     pub fn gateway_url(&self) -> Option<String> {
-        self.gateway_port
-            .map(|port| format!("http://{}:{}", ip_host(&self.addr), port))
+        self.gateway_port.map(|port| {
+            format!(
+                "{}://{}:{}",
+                crate::peer_client::peer_scheme(),
+                ip_host(&self.addr),
+                port
+            )
+        })
     }
 }
 
@@ -936,7 +954,10 @@ impl Network {
         // gossip e quem expira peer morto.
         let net_routes = self.clone();
         tokio::spawn(async move {
-            let http = reqwest::Client::new();
+            // Um cache próprio, e não o do gateway: esta task nasce dentro do
+            // `Network`, que não conhece o `GatewayState`. O timeout curto é o
+            // da sonda, não o de inferência.
+            let clientes = crate::peer_client::PeerClients::new(Duration::from_secs(10));
             let mut ticker = interval(Duration::from_secs(30));
             loop {
                 ticker.tick().await;
@@ -953,7 +974,7 @@ impl Network {
                     }
                     net_routes
                         .routes
-                        .measure_peer(&http, &peer.node_id, &candidatos)
+                        .measure_peer(&clientes, &peer.node_id, &candidatos)
                         .await;
                 }
             }

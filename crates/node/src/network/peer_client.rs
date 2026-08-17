@@ -21,6 +21,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::RwLock;
 use std::time::Duration;
 
+/// Se este nó fala TLS com os peers, visível de qualquer lugar do processo.
+///
+/// É global porque a flag é propriedade **do nó**, não de uma conexão: os
+/// construtores de URL do `PeerInfo` (`inference_candidates`, `gateway_url`)
+/// precisam do esquema, e passá-lo por parâmetro em cada um deles espalharia um
+/// argumento por dezenas de assinaturas para carregar um único bit que nunca
+/// difere entre eles. Dois nós no mesmo processo só acontecem em teste.
+static TLS_ATIVO: AtomicBool = AtomicBool::new(false);
+
+pub fn tls_ativo() -> bool {
+    TLS_ATIVO.load(Ordering::Relaxed)
+}
+
+pub fn set_tls_ativo(on: bool) {
+    TLS_ATIVO.store(on, Ordering::Relaxed);
+}
+
+/// Esquema em vigor para falar com um peer.
+pub fn peer_scheme() -> &'static str {
+    scheme(tls_ativo())
+}
+
 /// `https` quando o cluster está cifrado, `http` quando não.
 pub fn scheme(tls: bool) -> &'static str {
     if tls {
@@ -77,6 +99,16 @@ impl PeerClients {
                 m.clear();
             }
         }
+    }
+
+    /// Aplica a política do cluster: este cache **e** o esquema global das URLs.
+    ///
+    /// É o caminho da produção, e o único que mexe em `TLS_ATIVO`. `set_tls`
+    /// fica só com o cache, para um teste de unidade não empurrar o esquema
+    /// global para dentro dos testes que rodam em paralelo com ele.
+    pub fn apply_cluster_policy(&self, on: bool) {
+        set_tls_ativo(on);
+        self.set_tls(on);
     }
 
     /// Cliente sem pinning, para destino que não é peer (loopback, Ollama).

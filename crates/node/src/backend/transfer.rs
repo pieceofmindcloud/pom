@@ -657,6 +657,7 @@ async fn receive_offer(
         );
         return match spawn_download(
             state.clone(),
+            offer.from_node_id.clone(),
             offer.from_gateway.clone(),
             offer.remote_path.clone(),
             offer.grant.clone(),
@@ -732,6 +733,7 @@ async fn accept_offer(
 
     match spawn_download(
         state.clone(),
+        offer.from_node_id.clone(),
         offer.from_gateway.clone(),
         offer.remote_path.clone(),
         offer.grant.clone(),
@@ -781,7 +783,17 @@ async fn start_pull(
         peer.hostname.clone()
     };
 
-    match spawn_download(state.clone(), base, req.remote_path, None, req.name, host).await {
+    match spawn_download(
+        state.clone(),
+        peer.node_id.clone(),
+        base,
+        req.remote_path,
+        None,
+        req.name,
+        host,
+    )
+    .await
+    {
         Ok(job_id) => Json(json!({ "started": true, "job_id": job_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
@@ -865,8 +877,11 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
         return;
     };
     let key = state.auth.read().await.connection_key.clone();
-    let sent = state
-        .http
+    let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
+        warn!("não deu para avisar {peer_host}: sem cliente para o peer");
+        return;
+    };
+    let sent = cliente
         .post(format!("{base}/api/transfer/jobs/{id}/cancel"))
         .bearer_auth(&key)
         .json(&json!({ "by": by, "from_peer": true }))
@@ -1002,8 +1017,17 @@ async fn send_to_peer(
     });
 
     let key = state.auth.read().await.connection_key.clone();
-    match state
-        .http
+    let cliente = match state.peer_http.for_peer(&req.to_node_id) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                Json(json!({ "error": format!("sem cliente para o peer: {e}") })),
+            )
+                .into_response()
+        }
+    };
+    match cliente
         .post(format!("{peer_base}/api/transfer/offer"))
         .bearer_auth(&key)
         .json(&body)
@@ -1105,8 +1129,12 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// não uma espera. O que o operador ganha em troca é o job já na lista de
 /// transferências, dizendo em que etapa está; um erro de manifesto vira job
 /// `failed` com o motivo, no mesmo lugar onde ele já procuraria.
+/// `peer_id` é o node_id de quem serve os bytes: é o que fixa o certificado do
+/// outro lado quando o cluster está em TLS. Vem da oferta (`from_node_id`) ou
+/// do `PeerInfo` que o operador escolheu.
 async fn spawn_download(
     state: GatewayState,
+    peer_id: String,
     base_url: String,
     remote_path: String,
     grant: Option<String>,
@@ -1160,8 +1188,16 @@ async fn spawn_download(
         let dest = dir.join(&name);
         let part = dir.join(format!("{name}.part"));
         let outcome = async {
-            let (total, md5) =
-                fetch_manifest(&task_state, &base_url, &key, &locator, &from_host, &name).await?;
+            let (total, md5) = fetch_manifest(
+                &task_state,
+                &peer_id,
+                &base_url,
+                &key,
+                &locator,
+                &from_host,
+                &name,
+            )
+            .await?;
             {
                 let mut jobs = task_state.transfers.jobs.write().await;
                 if let Some(j) = jobs.get_mut(&job_id) {
@@ -1172,6 +1208,7 @@ async fn spawn_download(
             run_download(
                 &task_state,
                 &job_id,
+                &peer_id,
                 &base_url,
                 &key,
                 &locator,
@@ -1214,6 +1251,7 @@ async fn set_detail(state: &GatewayState, job_id: &str, detail: &str) {
 /// Tamanho e digest do arquivo do outro lado — o que decide se vale começar.
 async fn fetch_manifest(
     state: &GatewayState,
+    peer_id: &str,
     base_url: &str,
     key: &str,
     locator: &[(&str, String)],
@@ -1221,7 +1259,9 @@ async fn fetch_manifest(
     name: &str,
 ) -> Result<(u64, String), String> {
     let manifest: serde_json::Value = state
-        .http
+        .peer_http
+        .for_peer(peer_id)
+        .map_err(|e| e.to_string())?
         .get(format!("{base_url}/api/transfer/manifest"))
         .bearer_auth(key)
         .query(locator)
@@ -1255,6 +1295,7 @@ async fn fetch_manifest(
 async fn run_download(
     state: &GatewayState,
     job_id: &str,
+    peer_id: &str,
     base_url: &str,
     key: &str,
     locator: &[(&str, String)],
@@ -1273,7 +1314,9 @@ async fn run_download(
     let already = already.min(total);
 
     let mut req = state
-        .http
+        .peer_http
+        .for_peer(peer_id)
+        .map_err(|e| e.to_string())?
         .get(format!("{base_url}/api/transfer/download"))
         .bearer_auth(key)
         .query(locator)
@@ -1748,6 +1791,7 @@ mod offer_latency_tests {
         let started = Instant::now();
         let job_id = spawn_download(
             state.clone(),
+            "peer-b".into(),
             format!("http://127.0.0.1:{port}"),
             "/qualquer/fatia.gguf".into(),
             None,

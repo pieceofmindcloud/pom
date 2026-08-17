@@ -99,18 +99,24 @@ fn peers_visible_to_cluster(peers: Vec<PeerInfo>, blocked: &[String]) -> Vec<Pee
 /// per-request admission check: a stale UDP announcer must not poison the
 /// layer count or leave a request waiting for a hop that no longer serves HTTP.
 async fn ready_for_pipeline(
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     peers: Vec<PeerInfo>,
     timeout: Duration,
 ) -> Vec<PeerInfo> {
     futures::future::join_all(peers.into_iter().map(|peer| {
-        let http = http.clone();
+        // Um cliente por peer: a sonda tem que falar a mesma língua que a
+        // inferência vai falar com aquele nó, senão ela mede - ou recusa - um
+        // caminho que a requisição de verdade não percorre.
+        let cliente = http.for_peer(&peer.node_id);
         async move {
             let Some(base) = peer.inference_url() else {
                 return None;
             };
+            let Ok(cliente) = cliente else {
+                return None;
+            };
             let url = format!("{base}/health");
-            match tokio::time::timeout(timeout, http.get(url).send()).await {
+            match tokio::time::timeout(timeout, cliente.get(url).send()).await {
                 Ok(Ok(response)) if response.status().is_success() => Some(peer),
                 _ => None,
             }
@@ -431,7 +437,7 @@ pub async fn generate_stream(
     }
 
     let peers = ready_for_pipeline(
-        &state.http,
+        &state.peer_http,
         state.all_peers().await,
         PIPELINE_HEALTH_TIMEOUT,
     )
@@ -480,6 +486,7 @@ pub async fn generate_stream(
             state.self_reply_hosts(),
             state.gateway_port,
         ),
+        state.network.node_id.clone(),
     );
 
     info!(
@@ -558,7 +565,7 @@ pub async fn generate_stream(
             &prompt,
             chunk_tokens,
             dtype,
-            &state.http,
+            &state.peer_http,
             &state.network.routes,
             direct.as_ref(),
             state.tunnel_tx.as_ref(),
@@ -635,7 +642,7 @@ pub async fn generate_stream(
                             &session_id,
                             next_token,
                             dtype,
-                            &state.http,
+                            &state.peer_http,
                             &state.network.routes,
                             direct.as_ref(),
                             state.tunnel_tx.as_ref(),
@@ -657,7 +664,7 @@ pub async fn generate_stream(
                             speculative_m,
                             draft_source,
                             dtype,
-                            &state.http,
+                            &state.peer_http,
                             &state.network.routes,
                             state.tunnel_tx.as_ref(),
                         )
@@ -670,7 +677,7 @@ pub async fn generate_stream(
                         &session_id,
                         next_token,
                         dtype,
-                        &state.http,
+                        &state.peer_http,
                         &state.network.routes,
                         direct.as_ref(),
                         state.tunnel_tx.as_ref(),
@@ -806,7 +813,7 @@ pub async fn generate_stream(
                         &session_id,
                         step.accept_count,
                         step.batch_width,
-                        &state.http,
+                        &state.peer_http,
                     )
                     .await;
                     if !ok {
@@ -860,7 +867,7 @@ pub async fn generate_stream(
                     &session_id,
                     next_token,
                     dtype,
-                    &state.http,
+                    &state.peer_http,
                     &state.network.routes,
                     direct.as_ref(),
                     state.tunnel_tx.as_ref(),
@@ -982,12 +989,17 @@ async fn rollback_sessions(
     session_id: &str,
     accept_count: u32,
     batch_width: u32,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
 ) -> bool {
     let mut all_ok = true;
     for step in &plan.steps {
         let url = format!("{}/v1/session/rollback", step.inference_url);
-        match http
+        let Ok(cliente) = http.for_peer(&step.node_id) else {
+            warn!("rollback: sem cliente para {}", step.node_id);
+            all_ok = false;
+            continue;
+        };
+        match cliente
             .post(&url)
             .json(&serde_json::json!({
                 "session_id": session_id,
@@ -1576,7 +1588,7 @@ mod peer_visibility_tests {
         stalled.inference_port = Some(stalled_port);
 
         let reachable = ready_for_pipeline(
-            &reqwest::Client::new(),
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
             vec![healthy, stalled],
             Duration::from_millis(25),
         )

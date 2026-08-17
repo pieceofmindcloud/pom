@@ -399,7 +399,7 @@ pub async fn run(
     prompt: &str,
     chunk_size: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
@@ -553,7 +553,7 @@ async fn run_ring(
     prompt: &str,
     chunk_size: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<PrefillOutcome> {
@@ -665,7 +665,7 @@ async fn run_direct(
     prompt: &str,
     chunk_size: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
@@ -823,7 +823,7 @@ fn record_direct_hops(
 /// `SendIssue`s into `TraceIssue`s on the gateway's `RequestTrace`.
 #[allow(clippy::too_many_arguments)]
 async fn send_chunk(
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
@@ -913,7 +913,7 @@ pub async fn step(
     session_id: &str,
     token_id: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
@@ -980,7 +980,11 @@ pub async fn step(
         let url = format!("{}/v1/step", peer.inference_url);
         let started = Instant::now();
         let bytes_sent = body.len() as u64;
-        let resp = http
+        // Este caminho monta o POST à mão em vez de passar pelo `send_frame`
+        // (ver o comentário logo acima sobre o túnel), então a resolução do
+        // cliente pinado tem que ser feita aqui também.
+        let cliente = http.for_peer(&peer.node_id)?;
+        let resp = cliente
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body)
@@ -1040,7 +1044,7 @@ async fn step_ring(
     session_id: &str,
     token_id: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
@@ -1100,7 +1104,7 @@ async fn step_direct(
     session_id: &str,
     token_id: u32,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
@@ -1221,7 +1225,7 @@ pub async fn step_speculative(
     m: u32,
     source: DraftSource,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
@@ -1269,7 +1273,7 @@ async fn step_speculative_hub(
     m: u32,
     source: DraftSource,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
@@ -1355,7 +1359,7 @@ async fn step_speculative_ring(
     m: u32,
     source: DraftSource,
     dtype: WireDtype,
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {

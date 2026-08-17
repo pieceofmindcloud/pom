@@ -94,15 +94,20 @@ fn build_args(features: Option<&str>) -> Vec<String> {
 /// A URL é montada com `network::ip_host`, a mesma função por trás de
 /// `PeerInfo::gateway_url()` — não uma reimplementação com `rsplit_once`, que
 /// quebra em IPv6 sem colchetes.
+///
+/// Devolve `(node_id, url)`: o irmão está na mesma máquina, mas o POST sai pelo
+/// endereço da interface e não pelo loopback, então num cluster em TLS ele
+/// precisa do certificado daquele nó fixado como qualquer outra chamada entre
+/// peers. Ver `serve::plain_allowed`.
 fn sibling_urls(
     my_hostname: &str,
-    peers: &[(&str, &str, Option<u16>)],
+    peers: &[(&str, &str, Option<u16>, &str)],
     same_host: impl Fn(&str) -> bool,
-) -> Vec<String> {
+) -> Vec<(String, String)> {
     peers
         .iter()
-        .filter(|(h, _, _)| *h == my_hostname)
-        .filter(|(_, addr, _)| {
+        .filter(|(h, _, _, _)| *h == my_hostname)
+        .filter(|(_, addr, _, _)| {
             // `0.0.0.0`/`::` é o sentinela "endereço ainda não reescrito"
             // (`Network::announce_addr`) de um peer chegado por libp2p; sem
             // este descarte explícito o POST iria para este próprio nó, que
@@ -110,9 +115,16 @@ fn sibling_urls(
             let host = crate::network::ip_host(addr);
             host != "0.0.0.0" && host != "::" && host != "[::]" && same_host(addr)
         })
-        .filter_map(|(_, addr, port)| {
+        .filter_map(|(_, addr, port, node_id)| {
             let port = (*port)?;
-            Some(format!("http://{}:{}", crate::network::ip_host(addr), port))
+            Some((
+                node_id.to_string(),
+                crate::peer_client::peer_base_url(
+                    &crate::network::ip_host(addr),
+                    port,
+                    crate::peer_client::tls_ativo(),
+                ),
+            ))
         })
         .collect()
 }
@@ -203,8 +215,17 @@ async fn update_endpoint(
         };
         let key = { state.auth.read().await.connection_key.clone() };
         let url = format!("{base}/api/ui/dev/update");
-        return match state
-            .http
+        let cliente = match state.peer_http.for_peer(&alvo) {
+            Ok(c) => c,
+            Err(e) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({ "error": format!("sem cliente para o peer {alvo}: {e}") })),
+                )
+                    .into_response()
+            }
+        };
+        return match cliente
             .post(&url)
             .bearer_auth(&key)
             .timeout(crate::webui::PEER_TIMEOUT)
@@ -311,9 +332,16 @@ async fn update_endpoint(
         step(&job_id, "reiniciando os nós desta máquina").await;
         let me = crate::sysmon::sample().await.hostname;
         let peers = state.network.alive_peers().await;
-        let tuples: Vec<(&str, &str, Option<u16>)> = peers
+        let tuples: Vec<(&str, &str, Option<u16>, &str)> = peers
             .iter()
-            .map(|p| (p.hostname.as_str(), p.addr.as_str(), p.gateway_port))
+            .map(|p| {
+                (
+                    p.hostname.as_str(),
+                    p.addr.as_str(),
+                    p.gateway_port,
+                    p.node_id.as_str(),
+                )
+            })
             .collect();
         let key = { state.auth.read().await.connection_key.clone() };
         let alvos = sibling_urls(&me, &tuples, same_machine);
@@ -325,9 +353,12 @@ async fn update_endpoint(
         // própria.
         let mut reiniciados = 0usize;
         let mut falharam: Vec<String> = Vec::new();
-        for url in &alvos {
-            match state
-                .http
+        for (node_id, url) in &alvos {
+            let Ok(cliente) = state.peer_http.for_peer(node_id) else {
+                falharam.push(url.clone());
+                continue;
+            };
+            match cliente
                 .post(format!("{url}/api/ui/dev/restart"))
                 .bearer_auth(&key)
                 .timeout(std::time::Duration::from_secs(10))
@@ -589,18 +620,18 @@ mod tests {
         let alvos = sibling_urls(
             "ksia",
             &[
-                ("ksia", "[2804:d55::1]:42777", Some(8090)),
-                ("ksia", "[2804:d55::1]:42778", Some(8094)),
-                ("tiago-pc", "[2804:f30::9]:42777", Some(8080)),
-                ("ksia", "[2804:d55::1]:42779", None),
+                ("ksia", "[2804:d55::1]:42777", Some(8090), "id-a"),
+                ("ksia", "[2804:d55::1]:42778", Some(8094), "id-b"),
+                ("tiago-pc", "[2804:f30::9]:42777", Some(8080), "id-c"),
+                ("ksia", "[2804:d55::1]:42779", None, "id-d"),
             ],
             |_| true,
         );
         assert_eq!(
             alvos,
             vec![
-                "http://[2804:d55::1]:8090".to_string(),
-                "http://[2804:d55::1]:8094".to_string(),
+                ("id-a".to_string(), "http://[2804:d55::1]:8090".to_string()),
+                ("id-b".to_string(), "http://[2804:d55::1]:8094".to_string()),
             ],
             "outra máquina fica de fora, e peer sem gateway_port não dá para chamar"
         );
@@ -614,14 +645,14 @@ mod tests {
         let alvos = sibling_urls(
             "ksia",
             &[
-                ("ksia", "[2804:d55::1]:42777", Some(8090)),
-                ("ksia", "203.0.113.9:42777", Some(8091)),
+                ("ksia", "[2804:d55::1]:42777", Some(8090), "id-a"),
+                ("ksia", "203.0.113.9:42777", Some(8091), "id-b"),
             ],
             |addr| addr.starts_with("[2804:d55::1]"),
         );
         assert_eq!(
             alvos,
-            vec!["http://[2804:d55::1]:8090".to_string()],
+            vec![("id-a".to_string(), "http://[2804:d55::1]:8090".to_string())],
             "a VM em 203.0.113.9 tem o mesmo hostname mas não é esta máquina"
         );
     }
@@ -636,8 +667,8 @@ mod tests {
         let alvos = sibling_urls(
             "ksia",
             &[
-                ("ksia", "0.0.0.0:42777", Some(8090)),
-                ("ksia", "[::]:42778", Some(8091)),
+                ("ksia", "0.0.0.0:42777", Some(8090), "id-a"),
+                ("ksia", "[::]:42778", Some(8091), "id-b"),
             ],
             |_| true,
         );

@@ -150,7 +150,19 @@ impl RouteTable {
     /// A sonda e `GET /health` por HTTP na porta de inferencia, nao ICMP: mede
     /// o caminho que a inferencia usa de verdade, com firewall e proxy no meio.
     /// ICMP liberado onde o TCP nao esta mediria um caminho que ninguem percorre.
-    pub async fn measure_peer(&self, http: &reqwest::Client, node_id: &str, candidatos: &[String]) {
+    /// O cliente vem do cache por peer porque a sonda fala com o mesmo servidor
+    /// que a inferência vai falar: se o cluster está em TLS, medir em texto
+    /// claro mediria um caminho que a inferência não percorre - e, no modo
+    /// estrito, um caminho que o outro lado recusa.
+    pub async fn measure_peer(
+        &self,
+        clientes: &crate::peer_client::PeerClients,
+        node_id: &str,
+        candidatos: &[String],
+    ) {
+        let Ok(http) = clientes.for_peer(node_id) else {
+            return;
+        };
         let mut medidas = Vec::with_capacity(candidatos.len());
         for base in candidatos {
             let inicio = Instant::now();
@@ -271,7 +283,7 @@ mod tests {
         let rapido = tests_support::health_server(0).await;
         let lento = tests_support::health_server(80).await;
         let tabela = RouteTable::new();
-        let http = reqwest::Client::new();
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
         tabela.measure_peer(&http, "n1", &[lento.clone(), rapido.clone()]).await;
         assert_eq!(tabela.resolve("n1"), Some(rapido));
     }
@@ -282,7 +294,7 @@ mod tests {
     async fn a_failure_drops_the_route_right_away() {
         let vivo = tests_support::health_server(0).await;
         let tabela = RouteTable::new();
-        let http = reqwest::Client::new();
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
         tabela.measure_peer(&http, "n1", &[vivo.clone()]).await;
         assert_eq!(tabela.resolve("n1"), Some(vivo.clone()));
         tabela.mark_failure("n1", &vivo);
@@ -294,7 +306,7 @@ mod tests {
     async fn a_dead_candidate_is_never_chosen() {
         let vivo = tests_support::health_server(0).await;
         let tabela = RouteTable::new();
-        let http = reqwest::Client::new();
+        let http = crate::peer_client::PeerClients::new(Duration::from_secs(10));
         // Porta 1 fechada: a sonda falha rapido em vez de esperar o timeout.
         tabela
             .measure_peer(&http, "n1", &["http://127.0.0.1:1".to_string(), vivo.clone()])
@@ -315,7 +327,13 @@ mod tests {
         let vivo = tests_support::health_server(0).await;
         let tabela = RouteTable::new();
         assert!(tabela.precisa_medir("n1"), "nunca medido precisa medir");
-        tabela.measure_peer(&reqwest::Client::new(), "n1", &[vivo]).await;
+        tabela
+            .measure_peer(
+                &crate::peer_client::PeerClients::new(Duration::from_secs(10)),
+                "n1",
+                &[vivo],
+            )
+            .await;
         assert!(!tabela.precisa_medir("n1"));
     }
 }

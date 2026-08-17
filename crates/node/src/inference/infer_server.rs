@@ -337,7 +337,7 @@ mod relay_tests {
 
         let hops = vec![step("tail", url)];
         let residual = vec![0.0f32; 8];
-        let http = reqwest::Client::new();
+        let http = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
 
         let meta = relay_and_bubble(
             &http,
@@ -379,7 +379,7 @@ mod relay_tests {
 
         let hops = vec![step("directly-called-hop", url)];
         let residual = vec![0.0f32; 8];
-        let http = reqwest::Client::new();
+        let http = crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600));
 
         let response = relay_and_bubble(
             &http,
@@ -760,13 +760,26 @@ async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
-/// One shared outbound client, used only when relaying to this node's own
+/// One shared outbound client cache, used only when relaying to this node's own
 /// next hop (`PipelineStep::supports(CAP_RELAY_CHAIN)`) — this server has no
 /// other reason to make outbound HTTP calls. Same lazy-static pattern as
 /// `webui::catalog_cache`.
-fn http_client() -> &'static reqwest::Client {
-    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    CLIENT.get_or_init(reqwest::Client::new)
+///
+/// É um `PeerClients` e não um `reqwest::Client` porque o próximo salto é um
+/// peer: com o cluster em TLS ele precisa do certificado daquele node_id
+/// fixado. O esquema global (`peer_client::tls_ativo`) é quem diz se há TLS -
+/// este processo é o mesmo do nó, então a política já está aplicada aqui.
+fn http_client() -> &'static crate::peer_client::PeerClients {
+    static CLIENT: std::sync::OnceLock<crate::peer_client::PeerClients> =
+        std::sync::OnceLock::new();
+    let c = CLIENT.get_or_init(|| {
+        crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600))
+    });
+    // A cada uso, não só na criação: o `OnceLock` nasce uma vez e o operador
+    // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
+    // então isto custa uma leitura atômica no caminho comum.
+    c.set_tls(crate::peer_client::tls_ativo());
+    c
 }
 
 fn err400(msg: impl std::fmt::Display) -> Response {
@@ -1705,7 +1718,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
 /// it's directly testable against a fake next-hop server — see the
 /// `relay_tests` module — without needing a loaded `LlmEngine`.
 async fn relay_and_bubble(
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     hops: &[PipelineStep],
     path: &str,
     mut base_meta: Value,

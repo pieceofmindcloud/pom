@@ -140,17 +140,28 @@ impl Drop for Ticket {
 pub struct DirectReply {
     inbox: ReplyInbox,
     urls: Vec<String>,
+    /// node_id de quem vai receber a resposta.
+    ///
+    /// Viaja no `reply_to` porque quem entrega precisa dele para fixar o
+    /// certificado do gateway: com o cluster em TLS, uma URL sem identidade não
+    /// dá para verificar. Peer em binário antigo não manda o campo, e aí a
+    /// entrega cai no cliente sem pinning - ver `deliver_result`.
+    node_id: String,
 }
 
 impl DirectReply {
     /// `None` quando este nó não sabe nenhum endereço de si mesmo: sem isso a
     /// cauda não teria para onde responder, e o certo é cair no anel de sempre
     /// em vez de despachar um quadro que nunca volta.
-    pub fn new(inbox: ReplyInbox, urls: Vec<String>) -> Option<Self> {
+    pub fn new(inbox: ReplyInbox, urls: Vec<String>, node_id: String) -> Option<Self> {
         if urls.is_empty() {
             return None;
         }
-        Some(Self { inbox, urls })
+        Some(Self {
+            inbox,
+            urls,
+            node_id,
+        })
     }
 
     pub fn ticket(&self) -> Ticket {
@@ -158,7 +169,7 @@ impl DirectReply {
     }
 
     pub fn reply_to(&self, ticket: &str) -> Value {
-        json!({ "urls": self.urls, "ticket": ticket })
+        json!({ "urls": self.urls, "ticket": ticket, "node_id": self.node_id })
     }
 }
 
@@ -188,7 +199,14 @@ pub fn self_reply_urls(
         if host.is_empty() || (!fixado_pelo_operador && is_unroutable_host(&host)) {
             continue;
         }
-        let url = format!("http://{host}:{gateway_port}");
+        // O esquema segue a política do cluster: estas URLs são as que a cauda
+        // vai discar de volta, e num cluster em TLS o `/relay/result` deste nó
+        // recusa texto claro vindo de fora.
+        let url = crate::peer_client::peer_base_url(
+            &host,
+            gateway_port,
+            crate::peer_client::tls_ativo(),
+        );
         if !urls.contains(&url) {
             urls.push(url);
         }
@@ -302,7 +320,7 @@ pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
 /// certo de fora: o gateway anuncia todos os que conhece de si e quem entrega
 /// descobre qual funciona. Falhou em todos, o gateway fecha no prazo — não há
 /// terceira via, e inventar uma seria pior que a espera.
-pub async fn deliver_result(http: &reqwest::Client, reply_to: &Value, mut meta: Value) -> bool {
+pub async fn deliver_result(http: &crate::peer_client::PeerClients, reply_to: &Value, mut meta: Value) -> bool {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
         warn!("reply_to sem ticket — resultado direto descartado");
         return false;
@@ -322,10 +340,24 @@ pub async fn deliver_result(http: &reqwest::Client, reply_to: &Value, mut meta: 
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
+    // Sem node_id no `reply_to` o remetente roda binário antigo: não há o que
+    // fixar, e a entrega vai pelo cliente compartilhado. Num cluster estrito
+    // ela será recusada do outro lado, que é o resultado correto - o que não
+    // pode acontecer é entregar em texto claro fingindo que foi verificado.
+    let cliente = match reply_to.get("node_id").and_then(|v| v.as_str()) {
+        Some(id) => match http.for_peer(id) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("sem cliente para entregar o resultado a {id}: {e}");
+                return false;
+            }
+        },
+        None => http.plain(),
+    };
     let mut last = String::new();
     for url in urls.iter().filter_map(|u| u.as_str()) {
         let target = format!("{url}{RELAY_RESULT_PATH}");
-        match http
+        match cliente
             .post(&target)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body.clone())
@@ -351,7 +383,7 @@ pub async fn deliver_result(http: &reqwest::Client, reply_to: &Value, mut meta: 
 /// Entrega uma falha no lugar do resultado, para que o gateway nomeie o nó que
 /// morreu em vez de esperar o prazo inteiro.
 pub async fn deliver_failure(
-    http: &reqwest::Client,
+    http: &crate::peer_client::PeerClients,
     reply_to: &Value,
     failure: crate::relay::RelayFailure,
 ) {
@@ -508,7 +540,7 @@ mod tests {
         );
         assert!(urls.is_empty(), "loopback não alcança outra máquina: {urls:?}");
         assert!(
-            DirectReply::new(ReplyInbox::new(), urls).is_none(),
+            DirectReply::new(ReplyInbox::new(), urls, "n1".into()).is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
         );
 

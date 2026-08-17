@@ -152,7 +152,8 @@ async fn bubble(
     base_meta["next_hops"] = json!(remaining);
 
     let sent = crate::relay::send_frame(
-        &reqwest::Client::new(),
+        &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+        &next.node_id,
         &next.inference_url,
         path,
         &base_meta,
@@ -220,7 +221,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             crate::infer_server::apply_prompt_progress(&inc.meta, &mut result);
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
-                crate::direct::deliver_result(&reqwest::Client::new(), &reply_to, result).await;
+                crate::direct::deliver_result(&crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)), &reply_to, result).await;
             });
         } else {
             let forward = json!({
@@ -360,7 +361,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             let mut result = local;
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
-                crate::direct::deliver_result(&reqwest::Client::new(), &reply_to, result).await;
+                crate::direct::deliver_result(&crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)), &reply_to, result).await;
             });
         } else {
             let mut forward = json!({

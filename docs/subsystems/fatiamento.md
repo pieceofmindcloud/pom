@@ -173,6 +173,11 @@ de hoje não o carrega sozinho - ele é a metade que o fork do llama.cpp (caminh
 C) carrega junto com a coletiva all-reduce. Testado com o GGUF sintético
 (`test_gguf_bytes`) para rank 0 e rank 1, incluindo a recusa de grupo inválido.
 
+`plan::extract_tp_shard`/`plan::tp_shard_filename` embrulham isso para o caminho
+de `apply` (webui): rodam num `spawn_blocking`, reaproveitam arquivo já completo e
+escrevem `{base}_tp{rank}of{size}.gguf`, que o `parse_shard_name` não confunde
+com a convenção de faixa `{base}_{start}_{end}.gguf`.
+
 ## 5. Junção (merge)
 
 `splitter::merge` junta fatias adjacentes num arquivo único (`MergePart { path,

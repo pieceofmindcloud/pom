@@ -1180,6 +1180,11 @@ pub struct ApplyRequest {
     pub peer_index: u32,
     #[serde(default)]
     pub primary: bool,
+    /// Identidade de tensor parallelism deste nó (caminho C). `None` = nó sem
+    /// TP. Um worker extrai o próprio shard de tensor; um primary anuncia o
+    /// grupo e serve o modelo normalmente.
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
     /// Set when the source is already a shard (or covers the whole model) and
     /// no slicing is needed.
     #[serde(default)]
@@ -1425,7 +1430,32 @@ async fn apply(
 }
 
 async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
-    let model_path = if let Some(parts) = req.merge.clone() {
+    let model_path = if req.tp.as_ref().is_some_and(|t| t.role == "worker") {
+        let tp = req.tp.as_ref().expect("tp.role == worker");
+        set_job(
+            job_id,
+            "running",
+            "fatiando",
+            &format!("extraindo shard de tensor rank {}/{}", tp.rank, tp.size),
+        )
+        .await;
+        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
+        let progress_job = job_id.to_string();
+        let outcome = plan::extract_tp_shard(
+            &req.source_model_path,
+            &out_dir,
+            &req.base_name,
+            tp.size,
+            tp.rank,
+            move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            },
+        )
+        .await?;
+        invalidate_catalog().await;
+        outcome.output_path
+    } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
         merge_parts(shard_dir, &req, &parts, job_id).await?
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
@@ -1500,7 +1530,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_count: req.peer_count.max(1),
         peer_index: req.peer_index,
         primary: req.primary,
-        tp: None,
+        tp: req.tp.clone(),
         inference_port,
         n_gpu_layers: req.params.n_gpu_layers,
         n_ctx: req.params.n_ctx,
@@ -1526,6 +1556,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     };
 
     state.runtime.apply(cfg).await?;
+    state.network.set_tp(req.tp.clone());
     Ok(model_path)
 }
 
@@ -2235,6 +2266,7 @@ async fn release_slice(
         peer_count: cfg.peer_count,
         peer_index: cfg.peer_index,
         primary: cfg.primary,
+        tp: cfg.tp.clone(),
         skip_split: true,
         merge: None,
         params: RuntimeParams::from(&cfg),
@@ -2484,6 +2516,7 @@ pub(crate) async fn launch(
             peer_count: target.peer_count.unwrap_or(peer_count),
             peer_index: target.peer_index.unwrap_or(index as u32),
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
+            tp: None,
             skip_split: target.skip_split,
             merge: target.merge.clone(),
             params,
@@ -3210,6 +3243,7 @@ mod tests {
             peer_count: peers,
             peer_index: 0,
             primary: true,
+            tp: None,
             skip_split: false,
             merge: None,
             params: RuntimeParams::default(),

@@ -305,6 +305,64 @@ pub async fn extract_shard(
     })
 }
 
+/// Nome de um shard de tensor parallelism: `{base}_tp{rank}of{size}.gguf`.
+///
+/// Distinto da convenção de faixa `{base}_{start}_{end}.gguf` de propósito:
+/// o `parse_shard_name` do catálogo não confunde os dois, e o sufixo `_tp`
+/// deixa claro que o arquivo é a metade de um grupo, não um modelo autônomo.
+pub fn tp_shard_filename(base: &str, rank: u32, size: u32) -> String {
+    format!("{base}_tp{rank}of{size}.gguf")
+}
+
+/// Extrai o shard de tensor de um rank de tensor parallelism (caminho C).
+///
+/// Espelho de `extract_shard`: roda `splitter::shard_tensor_parallel` num
+/// `spawn_blocking`, reaproveita arquivo já completo e apaga o parcial no
+/// erro. O shard NÃO é carregável pelo llama.cpp de hoje; é a metade que o
+/// fork do caminho C carrega junto com a coletiva all-reduce.
+pub async fn extract_tp_shard(
+    source_model: &str,
+    output_dir: &Path,
+    base_name: &str,
+    tp_size: u32,
+    tp_rank: u32,
+    on_progress: impl Fn(f64) + Send + Sync + 'static,
+) -> Result<SliceOutcome> {
+    let output = output_dir.join(tp_shard_filename(base_name, tp_rank, tp_size));
+
+    if let Ok(meta) = std::fs::metadata(&output) {
+        if meta.len() > 1024 {
+            info!("shard de tensor já existe, reaproveitando: {}", output.display());
+            return Ok(SliceOutcome {
+                output_path: output.to_string_lossy().into_owned(),
+                bytes: meta.len(),
+                reused: true,
+            });
+        }
+    }
+
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("criar {}", output_dir.display()))?;
+
+    let src = std::path::PathBuf::from(source_model);
+    let dst = output.clone();
+
+    let bytes = tokio::task::spawn_blocking(move || {
+        crate::splitter::shard_tensor_parallel(&src, &dst, tp_size, tp_rank, on_progress)
+    })
+    .await
+    .context("spawn_blocking para shard_tensor_parallel")?
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(&output);
+    })?;
+
+    Ok(SliceOutcome {
+        output_path: output.to_string_lossy().into_owned(),
+        bytes,
+        reused: false,
+    })
+}
+
 /// Where slices go: `<pasta de fatias>/<base>/`.
 pub fn shard_output_dir(shard_dir: &Path, base_name: &str) -> PathBuf {
     shard_dir.join(sanitize(base_name))
@@ -806,6 +864,33 @@ mod tests {
     #[test]
     fn shard_filename_matches_the_parsed_convention() {
         assert_eq!(shard_filename("qwen", 0, 15), "qwen_0_15.gguf");
+    }
+
+    #[test]
+    fn tp_shard_filename_does_not_collide_with_the_range_convention() {
+        assert_eq!(tp_shard_filename("qwen", 0, 2), "qwen_tp0of2.gguf");
+        assert_eq!(tp_shard_filename("qwen", 1, 4), "qwen_tp1of4.gguf");
+    }
+
+    #[tokio::test]
+    async fn extract_tp_shard_writes_and_reuses_a_tensor_shard() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-extract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
+
+        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(!outcome.reused);
+        assert!(outcome.output_path.ends_with("whole_tp0of2.gguf"));
+        assert!(std::path::Path::new(&outcome.output_path).exists());
+
+        let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(again.reused, "arquivo já completo é reaproveitado, não reescrito");
     }
 
     // ── Fatias de tamanhos diferentes ────────────────────────────────────────

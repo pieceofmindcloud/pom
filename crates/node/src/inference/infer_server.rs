@@ -259,7 +259,7 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(0u64);
 
         let comecou = std::time::Instant::now();
-        let erro = run(cfg, rx, 0, Arc::new(std::sync::atomic::AtomicBool::new(false)))
+        let erro = run(cfg, rx, 0, Arc::new(std::sync::atomic::AtomicBool::new(false)), None)
             .await
             .expect_err("porta ocupada devia falhar");
 
@@ -603,6 +603,7 @@ pub async fn run(
     mut stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    tls: Option<crate::serve::TlsServer>,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -677,12 +678,17 @@ pub async fn run(
 
     info!("inference server pronto em [::]:{port}");
 
-    // Ver a nota gêmea em `gateway::start_gateway`: sem isto, toda resposta de
-    // hop sai com Nagle ligado, e um ack de resposta direta é exatamente a
-    // escrita pequena que ele segura.
-    axum::serve(listener, router)
-        .tcp_nodelay(true)
-        .with_graceful_shutdown(async move {
+    // Ver a nota gêmea em `gateway::start_gateway`: sem `tcp_nodelay`, toda
+    // resposta de hop sai com Nagle ligado, e um ack de resposta direta é
+    // exatamente a escrita pequena que ele segura. Quem o aplica agora é o
+    // `serve`, que também decide entre TLS e texto claro por conexão.
+    //
+    // O desligamento gracioso virou uma corrida entre o laço de accept e o
+    // watch de geração: quando a geração muda, paramos de aceitar. Conexão em
+    // voo termina sozinha, como antes.
+    tokio::select! {
+        r = crate::serve::serve(listener, router, tls) => r?,
+        _ = async move {
             loop {
                 if stop_rx.changed().await.is_err() {
                     break;
@@ -691,9 +697,9 @@ pub async fn run(
                     break;
                 }
             }
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("axum: {e}"))
+        } => {}
+    }
+    Ok(())
 }
 
 // ── Socket ────────────────────────────────────────────────────────────────────

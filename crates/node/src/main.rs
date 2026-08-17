@@ -77,6 +77,8 @@ mod reqlog;
 mod respawn;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "backend/serve.rs"]
+mod serve;
 #[path = "backend/session.rs"]
 mod session;
 #[path = "models/splitter.rs"]
@@ -672,7 +674,22 @@ async fn main() -> Result<()> {
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
-    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
+    // ── TLS entre peers ──────────────────────────────────────────────────────
+    // O certificado é derivado da identidade que acabou de ser carregada e
+    // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
+    // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
+    // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
+    // remoto continua aceito.
+    let tls_server = match serve::TlsServer::from_identity(&identity, app_config.tls_required) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+            None
+        }
+    };
+
+    let node_runtime =
+        runtime::NodeRuntime::new_with_tls(net.clone(), assignment_shared.clone(), tls_server.clone());
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
     // fatia anotada por um reinício anterior. Este caminho nunca consome o
@@ -743,6 +760,7 @@ async fn main() -> Result<()> {
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: Some(tunnel_tx.clone()),
+            tls_server: tls_server.clone(),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1243,7 +1261,22 @@ async fn start_gateway_only(
     let assignment_shared = stack.assignment_shared;
     let tunnel_tx = stack.tunnel_tx;
 
-    let node_runtime = runtime::NodeRuntime::new(net.clone(), assignment_shared.clone());
+    // ── TLS entre peers ──────────────────────────────────────────────────────
+    // O certificado é derivado da identidade que acabou de ser carregada e
+    // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
+    // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
+    // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
+    // remoto continua aceito.
+    let tls_server = match serve::TlsServer::from_identity(&identity, app_config.tls_required) {
+        Ok(t) => Some(t),
+        Err(e) => {
+            warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+            None
+        }
+    };
+
+    let node_runtime =
+        runtime::NodeRuntime::new_with_tls(net.clone(), assignment_shared.clone(), tls_server.clone());
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o
@@ -1290,6 +1323,7 @@ async fn start_gateway_only(
         // fast with a closed-channel error, the same already-handled
         // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
         tunnel_tx: Some(tunnel_tx),
+        tls_server: tls_server.clone(),
     };
 
     info!(

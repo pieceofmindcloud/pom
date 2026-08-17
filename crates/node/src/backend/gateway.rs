@@ -67,6 +67,10 @@ pub struct GatewayState {
     /// (disabled or failed to start); every prefill/decode call site treats
     /// that exactly like "the fallback wasn't available this time."
     pub tunnel_tx: Option<crate::infer_tunnel::TunnelOutboundSender>,
+    /// Certificado deste nó e a política de texto claro, quando o binário
+    /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
+    /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
+    pub tls_server: Option<crate::serve::TlsServer>,
 }
 
 impl axum::extract::FromRef<GatewayState> for AuthState {
@@ -1173,6 +1177,7 @@ pub async fn generate_blocking(
 
 pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     let warm = state.clone();
+    let tls_server = state.tls_server.clone();
     let admin = admin::admin_routes().with_state(state.clone());
     let app = Router::new()
         .route("/api/generate", post(handle_generate))
@@ -1223,9 +1228,11 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
     // Nagle atrasa uma escrita pequena até o ACK da anterior. No SSE cada token
     // é uma escrita pequena, e a interação com o delayed-ACK do outro lado soma
     // dezenas de ms ao que o cliente sente. O `reqwest` já desliga isso no lado
-    // cliente por padrão; o `axum::serve` deixa `tcp_nodelay` em `None`, então
-    // o lado servidor ficava com Nagle ligado em todas as respostas.
-    axum::serve(listener, app).tcp_nodelay(true).await?;
+    // cliente por padrão; o `axum::serve` deixava `tcp_nodelay` em `None`, então
+    // o lado servidor ficava com Nagle ligado em todas as respostas. O
+    // `tcp_nodelay` mudou de lugar, não sumiu: `serve` o aplica em cada conexão
+    // aceita, junto com a decisão entre TLS e texto claro.
+    crate::serve::serve(listener, app, tls_server).await?;
     Ok(())
 }
 
@@ -1656,6 +1663,7 @@ pub(crate) mod testkit {
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: None,
+            tls_server: None,
         }
     }
 

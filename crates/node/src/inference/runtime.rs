@@ -294,10 +294,23 @@ pub struct NodeRuntime {
     net: Arc<Network>,
     /// Bumped on every `apply`; the supervisor of an older generation exits.
     generation: watch::Sender<u64>,
+    /// Certificado que o servidor de inferência apresenta, quando há um.
+    /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
+    tls: Option<crate::serve::TlsServer>,
 }
 
 impl NodeRuntime {
     pub fn new(net: Arc<Network>, assignment: Arc<RwLock<Option<LayerAssignment>>>) -> Arc<Self> {
+        Self::new_with_tls(net, assignment, None)
+    }
+
+    /// Como `new`, mas dizendo qual certificado o servidor de inferência
+    /// apresenta. É o caminho que o `main.rs` usa; `new` fica para os testes.
+    pub fn new_with_tls(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
             config: RwLock::new(None),
@@ -308,6 +321,7 @@ impl NodeRuntime {
             assignment,
             net,
             generation,
+            tls,
         })
     }
 
@@ -445,6 +459,7 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
+        let tls = self.tls.clone();
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;
@@ -511,6 +526,7 @@ impl NodeRuntime {
                     gen_rx.clone(),
                     generation,
                     mtp_ready.clone(),
+                    tls.clone(),
                 )
                 .await
                 {

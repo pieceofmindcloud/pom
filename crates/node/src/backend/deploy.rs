@@ -230,6 +230,22 @@ pub struct DeployRequest {
     /// that a node serves one range.
     #[serde(default)]
     pub merge: bool,
+    /// Grupo de tensor parallelism (caminho C). Presente só com
+    /// `kind: "tensor_parallel"`: o primary serve o modelo inteiro e os
+    /// workers extraem o próprio shard de tensor.
+    #[serde(default)]
+    pub tp: Option<TpLaunch>,
+}
+
+/// Especificação de um grupo de tensor parallelism para o deploy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TpLaunch {
+    /// Quantos ranks no grupo (1 primary + size-1 workers).
+    pub size: u32,
+    /// URL do primary (rank 0) para a coletiva (POST /v1/tp/reduce).
+    pub rank0_url: String,
+    /// node_ids dos workers (rank 1..size-1), na ordem dos ranks.
+    pub worker_node_ids: Vec<String>,
 }
 
 // ── What a machine can tell us about itself ──────────────────────────────────
@@ -595,6 +611,9 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
+    /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
+    /// usa isto para gerar os alvos dos workers.
+    tp: Option<TpLaunch>,
     /// How many layers the original model has. `None` means nobody could say —
     /// which is a refusal (`blocked`), never a zero passed down the line.
     total_layers: Option<u32>,
@@ -837,6 +856,7 @@ fn plan(
     params: &RuntimeParams,
     merge: bool,
     kind: DeployKind,
+    tp: Option<TpLaunch>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -1347,6 +1367,7 @@ fn plan(
     Plan {
         group: group.to_string(),
         kind,
+        tp,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -1461,6 +1482,7 @@ async fn plan_endpoint(
         &req.params,
         req.merge,
         req.kind,
+        req.tp,
     ))
     .into_response()
 }
@@ -1485,6 +1507,7 @@ async fn deploy_endpoint(
         &req.params,
         req.merge,
         req.kind,
+        req.tp,
     );
 
     if let Some(reason) = plan.blocked {
@@ -1542,10 +1565,21 @@ async fn deploy_endpoint(
 /// whose range happens to be the entire model, so it comes out as a plain
 /// target with `skip_split` — which is also what makes the receiving peer a
 /// `single_peer`, running without hidden-state extraction.
+fn tp_identity(tp: &TpLaunch, group_id: &str, rank: u32, role: &str) -> crate::network::TpIdentity {
+    crate::network::TpIdentity {
+        role: role.into(),
+        group_id: group_id.into(),
+        size: tp.size,
+        rank,
+        rank0_url: Some(tp.rank0_url.clone()),
+    }
+}
+
 fn launch_targets(
     steps: &[Step],
     machines: &[Machine],
     kind: DeployKind,
+    tp: Option<&TpLaunch>,
 ) -> Result<Vec<LaunchTarget>, String> {
     let mut targets = Vec::new();
     for step in steps {
@@ -1593,7 +1627,7 @@ fn launch_targets(
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
                 peer_count: None,
-                tp: None,
+                tp: tp.map(|t| tp_identity(t, &step.name, 0, "primary")),
             });
             continue;
         }
@@ -1622,9 +1656,45 @@ fn launch_targets(
             offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
-            tp: None,
+            tp: tp.map(|t| tp_identity(t, &step.name, 0, "primary")),
         });
     }
+
+    // Grupo de tensor parallelism: além do primary (o step do modelo inteiro),
+    // cada worker vira um alvo que extrai o próprio shard de tensor.
+    if let Some(tp) = tp {
+        let head = steps.first().ok_or("plano TP sem step")?;
+        for (i, worker_id) in tp.worker_node_ids.iter().enumerate() {
+            let rank = (i + 1) as u32;
+            let worker_machine = machines
+                .iter()
+                .find(|m| m.node_id == *worker_id)
+                .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
+            let path = worker_machine
+                .holds(head.start_layer, head.end_layer)
+                .map(|s| s.path.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "{} não tem o modelo para extrair o shard de tensor",
+                        worker_machine.hostname
+                    )
+                })?;
+            targets.push(LaunchTarget {
+                node_id: worker_id.clone(),
+                source_model_path: path,
+                start_layer: head.start_layer,
+                end_layer: head.end_layer,
+                skip_split: true,
+                merge: None,
+                n_gpu_layers: head.n_gpu_layers,
+                offload_kqv: head.offload_kqv,
+                peer_index: None,
+                peer_count: None,
+                tp: Some(tp_identity(tp, &head.name, rank, "worker")),
+            });
+        }
+    }
+
     Ok(targets)
 }
 
@@ -1768,7 +1838,7 @@ async fn run(
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
     let machines = survey(&state, &plan.group, plan.kind).await;
-    let targets = launch_targets(&plan.steps, &machines, plan.kind)?;
+    let targets = launch_targets(&plan.steps, &machines, plan.kind, plan.tp.as_ref())?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -2860,6 +2930,7 @@ mod tests {
             &RuntimeParams::default(),
             false,
             DeployKind::Shards,
+            None,
         )
     }
 
@@ -2872,6 +2943,7 @@ mod tests {
             &RuntimeParams::default(),
             true,
             DeployKind::Shards,
+            None,
         )
     }
 
@@ -2884,6 +2956,7 @@ mod tests {
             &RuntimeParams::default(),
             false,
             DeployKind::Whole,
+            None,
         )
     }
 
@@ -3374,7 +3447,7 @@ mod tests {
             prefill_chunk_tokens: 4096,
             ..RuntimeParams::default()
         };
-        let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards);
+        let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards, None);
 
         assert_eq!(p.params.n_ctx, 32768);
         // 32768 / 2 sessões − 256 gerados.
@@ -3797,7 +3870,7 @@ mod tests {
     fn a_whole_model_is_launched_as_one_plain_target() {
         let ms = vec![whole_machine("a", 900_000, true)];
         let p = whole("qwen3.5-9b", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole).expect("um alvo");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole, None).expect("um alvo");
 
         assert_eq!(alvos.len(), 1);
         let alvo = &alvos[0];
@@ -3814,6 +3887,44 @@ mod tests {
         );
     }
 
+    /// Um grupo de tensor parallelism vira um alvo por rank: o primary (rank 0)
+    /// e cada worker, todos apontando o mesmo rank0_url para a coletiva.
+    #[test]
+    fn a_tensor_parallel_group_launches_one_target_per_rank() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let p = whole("qwen3.5-9b", &ms, None);
+        let tp = TpLaunch {
+            size: 2,
+            rank0_url: "http://192.168.1.10:8181".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        let alvos =
+            launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp)).expect("dois alvos");
+
+        assert_eq!(alvos.len(), 2);
+
+        let primary = &alvos[0];
+        assert_eq!(primary.node_id, "a");
+        assert_eq!(primary.tp.as_ref().unwrap().role, "primary");
+        assert_eq!(primary.tp.as_ref().unwrap().rank, 0);
+        assert_eq!(
+            primary.tp.as_ref().unwrap().rank0_url.as_deref(),
+            Some("http://192.168.1.10:8181")
+        );
+
+        let worker = &alvos[1];
+        assert_eq!(worker.node_id, "b");
+        assert_eq!(worker.tp.as_ref().unwrap().role, "worker");
+        assert_eq!(worker.tp.as_ref().unwrap().rank, 1);
+        assert_eq!(
+            worker.tp.as_ref().unwrap().rank0_url.as_deref(),
+            Some("http://192.168.1.10:8181")
+        );
+    }
+
     /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
     /// modelo, não uma implantação que sobe apontando para lugar nenhum.
     #[test]
@@ -3823,7 +3934,7 @@ mod tests {
             whole_machine("nao-tem", 900_000, false),
         ];
         let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
-        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole)
+        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None)
             .expect_err("o destino não tem o arquivo");
         assert!(erro.contains("nao-tem") && erro.contains("o modelo"), "{erro}");
     }
@@ -3837,7 +3948,7 @@ mod tests {
             m("b", 200_000, &[(16, 31)]),
         ]);
         let p = plan("m", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards).expect("dois alvos");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("dois alvos");
         assert_eq!(alvos.len(), 2);
         assert_eq!(alvos[0].source_model_path, "/models/m_0_15.gguf");
         assert_eq!((alvos[0].start_layer, alvos[0].end_layer), (0, 15));

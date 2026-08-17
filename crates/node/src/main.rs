@@ -61,6 +61,8 @@ mod pipeline;
 pub mod addrs;
 #[path = "network/route.rs"]
 pub mod route;
+#[path = "network/peer_client.rs"]
+pub mod peer_client;
 #[path = "network/tls.rs"]
 pub mod tls;
 #[path = "network/pkarr_node.rs"]
@@ -747,6 +749,8 @@ async fn main() -> Result<()> {
         let http_client = reqwest::Client::builder()
             .timeout(Duration::from_secs(600))
             .build()?;
+        let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
+        peer_clients.set_tls(app_config.tls_required);
         let gw_state = GatewayState {
             network: net.clone(),
             ollama: Arc::new(OllamaClient::new(&args.ollama_url)),
@@ -754,6 +758,7 @@ async fn main() -> Result<()> {
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(http_client),
+            peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             gateway_port,
             auth: auth_config,
@@ -1303,6 +1308,8 @@ async fn start_gateway_only(
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(600))
         .build()?;
+    let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
+    peer_clients.set_tls(app_config.tls_required);
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
 
@@ -1313,6 +1320,7 @@ async fn start_gateway_only(
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
         http: Arc::new(http_client),
+        peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         gateway_port,
         auth: auth_state,

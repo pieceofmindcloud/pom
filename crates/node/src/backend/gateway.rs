@@ -46,7 +46,13 @@ pub struct GatewayState {
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
     /// Shared HTTP client with long timeout for pipeline calls.
+    ///
+    /// Sem pinning: serve para destino que não é peer (loopback, Ollama). Toda
+    /// chamada peer a peer passa por `peer_http`.
     pub http: Arc<reqwest::Client>,
+    /// Clientes por peer, com o certificado do destino fixado pelo node_id.
+    /// Ver `peer_client::PeerClients`.
+    pub peer_http: Arc<crate::peer_client::PeerClients>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
     /// HTTP port this node serves the API and UI on.
@@ -1643,6 +1649,9 @@ pub(crate) mod testkit {
             local_assignment: assignment.clone(),
             loads: Arc::new(LoadTracker::new()),
             http: Arc::new(reqwest::Client::new()),
+            peer_http: Arc::new(crate::peer_client::PeerClients::new(
+                std::time::Duration::from_secs(600),
+            )),
             runtime: NodeRuntime::new(net, assignment),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {

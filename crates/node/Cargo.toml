@@ -22,7 +22,7 @@ clap = { version = "4", features = ["derive"] }
 serde.workspace = true
 serde_json.workspace = true
 uuid = { version = "1", features = ["v4"] }
-ed25519-dalek = { version = "2", features = ["rand_core"] }
+ed25519-dalek = { version = "2", features = ["rand_core", "pkcs8"] }
 rand = "0.8"
 sha2 = "0.10"
 hex = "0.4"
@@ -30,8 +30,17 @@ chrono = { version = "0.4", features = ["serde"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow.workspace = true
-reqwest = { version = "0.12", features = ["json", "stream"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-manual-roots"] }
 axum = "0.7"
+# TLS entre peers: certificado auto assinado derivado da identidade do nó.
+# Ver `network/tls.rs` para por que não há CA nem arquivo de certificado.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+rcgen = { version = "0.13", default-features = false, features = ["pem", "ring"] }
+x509-parser = "0.16"
+hyper = { version = "1", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio"] }
+tower = { version = "0.5", features = ["util"] }
 md-5 = "0.10"
 memmap2 = "0.9"
 futures = "0.3"

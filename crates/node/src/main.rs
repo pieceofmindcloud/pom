@@ -61,6 +61,8 @@ mod pipeline;
 pub mod addrs;
 #[path = "network/route.rs"]
 pub mod route;
+#[path = "network/tls.rs"]
+pub mod tls;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]

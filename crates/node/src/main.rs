@@ -946,6 +946,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
 
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
+        tls_required: false,
         connection_key: String::new(),
         gateway_port,
         p2p_port: 42777,

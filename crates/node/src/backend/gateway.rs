@@ -1640,6 +1640,7 @@ pub(crate) mod testkit {
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
                 role: Role::Node,
+                tls_required: false,
                 node_name: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,

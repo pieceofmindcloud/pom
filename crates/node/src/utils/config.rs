@@ -61,6 +61,16 @@ pub struct Config {
     pub api_keys: Vec<ApiKey>,
     #[serde(default)]
     pub blocked_nodes: Vec<String>,
+    /// Todo HTTP entre peers vai por TLS quando isto é `true`.
+    ///
+    /// A decisão é do nó principal e vale para o cluster inteiro; os demais nós
+    /// gravam aqui o que buscaram dele por canal autenticado. **Nunca grave
+    /// isto a partir do gossip**: o UDP de descoberta é em claro e não
+    /// autenticado, e um anúncio forjado rebaixaria a rede para texto claro,
+    /// que é exatamente o ataque que o TLS existe para impedir. Ver
+    /// `tls_policy`.
+    #[serde(default)]
+    pub tls_required: bool,
     /// Directories holding **whole** models.
     ///
     /// `None` — the field missing from an old `pom.json`, or never edited —
@@ -313,6 +323,7 @@ mod tests {
     fn test_roundtrip_principal_config() {
         let cfg = Config {
             role: Role::Principal,
+            tls_required: false,
             connection_key: "test-key".into(),
             gateway_port: 8080,
             p2p_port: 42777,
@@ -335,6 +346,7 @@ mod tests {
     fn test_roundtrip_node_config() {
         let cfg = Config {
             role: Role::Node,
+            tls_required: false,
             connection_key: "node-key".into(),
             gateway_port: 8090,
             p2p_port: 42777,
@@ -381,6 +393,24 @@ mod tests {
         );
     }
 
+    /// `pom.json` gravado antes do TLS não pode deixar de parsear - e o padrão
+    /// tem que ser "sem TLS", senão atualizar o binário derruba o cluster.
+    #[test]
+    fn config_antiga_parseia_sem_tls_required() {
+        let cfg: Config = serde_json::from_str(r#"{"role":"node","connection_key":"k"}"#).unwrap();
+        assert!(!cfg.tls_required);
+    }
+
+    #[test]
+    fn tls_required_sobrevive_ao_roundtrip() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"role":"principal","tls_required":true}"#).unwrap();
+        assert!(cfg.tls_required);
+        let texto = serde_json::to_string(&cfg).unwrap();
+        let volta: Config = serde_json::from_str(&texto).unwrap();
+        assert!(volta.tls_required);
+    }
+
     #[test]
     fn a_blank_shard_dir_falls_back_instead_of_writing_to_the_root() {
         let cfg: Config = serde_json::from_str(r#"{"role":"node","shard_dir":"   "}"#).unwrap();
@@ -391,6 +421,7 @@ mod tests {
     fn test_active_api_key() {
         let cfg = Config {
             role: Role::Principal,
+            tls_required: false,
             connection_key: "k".into(),
             gateway_port: 8080,
             p2p_port: 42777,

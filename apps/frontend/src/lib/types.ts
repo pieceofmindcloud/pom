@@ -569,7 +569,21 @@ export interface DeploySelection {
  * that only have one answer — the order of a pipeline of one, and which layers
  * of all of them to include.
  */
-export type DeployKind = "shards" | "whole";
+export type DeployKind = "shards" | "whole" | "tensor_parallel";
+
+/**
+ * Tensor parallelism group (caminho C), from src/backend/deploy.rs TpLaunch.
+ * Present only with kind "tensor_parallel": the primary serves the whole
+ * model and each worker extracts its own tensor shard.
+ */
+export interface TpLaunch {
+  /** Ranks in the group (1 primary + size-1 workers). */
+  size: number;
+  /** Primary (rank 0) URL for the all-reduce (POST /v1/tp/reduce). */
+  rank0_url: string;
+  /** node_ids of the workers, in rank order (rank 1..size-1). */
+  worker_node_ids: string[];
+}
 
 export interface DeployPlan {
   group: string;

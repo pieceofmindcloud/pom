@@ -93,6 +93,7 @@ import type {
   DeploySelection,
   DeployStep,
   RuntimeParams,
+  TpLaunch,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -440,8 +441,8 @@ function KindPicker({
   labels: Record<DeployKind, { label: string; hint: string }>;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {(["shards", "whole"] as DeployKind[]).map((k) => {
+    <div className="grid gap-2 sm:grid-cols-3">
+      {(["shards", "whole", "tensor_parallel"] as DeployKind[]).map((k) => {
         const on = value === k;
         return (
           <button
@@ -473,6 +474,8 @@ export function DeployModel() {
   const [group, setGroup] = useState("");
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
+  /** Tensor parallelism group, when that is the question being asked. */
+  const [tp, setTp] = useState<TpLaunch>({ size: 2, rank0_url: "", worker_node_ids: [] });
   /** `null` until the operator says — see `kind` below for what that means. */
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -511,8 +514,9 @@ export function DeployModel() {
   const kind: DeployKind =
     pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
   const isWhole = kind === "whole";
+  const isTp = kind === "tensor_parallel";
 
-  const chosen = isWhole
+  const chosen = isWhole || isTp
     ? wholeName || wholes[0]?.name || ""
     : group || groups[0] || "";
   /** The whole model on screen, for the facts the plan does not carry. */
@@ -555,6 +559,7 @@ export function DeployModel() {
         kind,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
+        ...(isTp ? { tp } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
@@ -783,6 +788,7 @@ export function DeployModel() {
         ...(selection ? { selection: rows } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
+        ...(isTp ? { tp } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -915,11 +921,12 @@ export function DeployModel() {
                   labels={{
                     shards: { label: t("deploy.kindShards"), hint: t("deploy.kindShardsHint") },
                     whole: { label: t("deploy.kindWhole"), hint: t("deploy.kindWholeHint") },
+                    tensor_parallel: { label: t("deploy.kindTp"), hint: t("deploy.kindTpHint") },
                   }}
                 />
               </div>
 
-              {isWhole ? (
+              {isWhole || isTp ? (
                 wholes.length === 0 ? (
                   <Empty icon={<Boxes className="h-5 w-5" />} title={t("deploy.wholeEmpty")}>
                     {t("deploy.wholeEmptyDetail")}
@@ -980,6 +987,43 @@ export function DeployModel() {
                           </dd>
                         </div>
                       </dl>
+                    )}
+                    {isTp && (
+                      <div className="grid max-w-2xl gap-3 sm:grid-cols-3">
+                        <Field label={t("deploy.tpSize")}>
+                          <input
+                            type="number"
+                            min={2}
+                            value={tp.size}
+                            onChange={(e) => setTp({ ...tp, size: Number(e.target.value) || 2 })}
+                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
+                          />
+                        </Field>
+                        <Field label={t("deploy.tpRank0Url")} hint={t("deploy.tpRank0UrlHint")}>
+                          <input
+                            value={tp.rank0_url}
+                            onChange={(e) => setTp({ ...tp, rank0_url: e.target.value })}
+                            placeholder="http://192.168.1.10:8181"
+                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
+                          />
+                        </Field>
+                        <Field label={t("deploy.tpWorkers")} hint={t("deploy.tpWorkersHint")}>
+                          <input
+                            value={tp.worker_node_ids.join(", ")}
+                            onChange={(e) =>
+                              setTp({
+                                ...tp,
+                                worker_node_ids: e.target.value
+                                  .split(",")
+                                  .map((s) => s.trim())
+                                  .filter(Boolean),
+                              })
+                            }
+                            placeholder="node-id-1, node-id-2"
+                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
+                          />
+                        </Field>
+                      </div>
                     )}
                   </div>
                 )

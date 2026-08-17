@@ -30,6 +30,23 @@ const messages: Record<Locale, Record<string, Message>> = {
     "topbar.useDarkTheme": () => "Use dark theme",
     "topbar.openMenu": () => "Open menu",
     "topbar.closeMenu": () => "Close menu",
+    "network.tlsTitle": () => "Encryption between nodes",
+    "network.tlsSubtitle": () =>
+      "When on, every HTTP call between peers goes over TLS, and each node's certificate is verified against the node_id the cluster already knows.",
+    "network.tlsState": () => "Cluster",
+    "network.tlsOn": () => "encrypted",
+    "network.tlsOff": () => "in the clear",
+    "network.tlsEnable": () => "Turn TLS on",
+    "network.tlsDisable": () => "Turn TLS off",
+    "network.tlsEnabled": () => "TLS turned on",
+    "network.tlsDisabled": () => "TLS turned off",
+    "network.tlsPropagates": () =>
+      "No restart needed. The other nodes confirm the change with the main node and adopt it within a few seconds.",
+    "network.tlsFailed": () => "Could not change the TLS policy",
+    "network.tlsHowItWorks": () =>
+      "The certificate is derived from each node's own key and never written to disk. Discovery over UDP stays in the clear, and traffic on 127.0.0.1 is never encrypted.",
+    "network.tlsNotAuthority": () =>
+      "Only the main node decides this, and the decision applies to the whole cluster.",
     "topbar.tlsOn": () => "TLS",
     "topbar.tlsOff": () => "no TLS",
     "topbar.tlsOnHint": () =>
@@ -818,6 +835,23 @@ const messages: Record<Locale, Record<string, Message>> = {
     "topbar.useDarkTheme": () => "Usar tema escuro",
     "topbar.openMenu": () => "Abrir menu",
     "topbar.closeMenu": () => "Fechar menu",
+    "network.tlsTitle": () => "Criptografia entre nós",
+    "network.tlsSubtitle": () =>
+      "Ligado, todo HTTP entre peers vai por TLS, e o certificado de cada nó é conferido contra o node_id que o cluster já conhece.",
+    "network.tlsState": () => "Cluster",
+    "network.tlsOn": () => "cifrado",
+    "network.tlsOff": () => "em texto claro",
+    "network.tlsEnable": () => "Ligar TLS",
+    "network.tlsDisable": () => "Desligar TLS",
+    "network.tlsEnabled": () => "TLS ligado",
+    "network.tlsDisabled": () => "TLS desligado",
+    "network.tlsPropagates": () =>
+      "Não precisa reiniciar. Os demais nós confirmam a mudança com o principal e adotam em poucos segundos.",
+    "network.tlsFailed": () => "Não deu para mudar a política de TLS",
+    "network.tlsHowItWorks": () =>
+      "O certificado é derivado da chave do próprio nó e nunca vai para o disco. A descoberta por UDP continua em claro, e o tráfego em 127.0.0.1 nunca é cifrado.",
+    "network.tlsNotAuthority": () =>
+      "Só o nó principal decide isso, e a decisão vale para o cluster inteiro.",
     "topbar.tlsOn": () => "TLS",
     "topbar.tlsOff": () => "sem TLS",
     "topbar.tlsOnHint": () =>

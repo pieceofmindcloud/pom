@@ -2,7 +2,18 @@
  * The network as an administrator sees it: who is connected, who is blocked,
  * and whether this machine is even taking part.
  */
-import { Ban, LogIn, LogOut, Network, Radio, Save, ShieldOff, Undo2 } from "lucide-react";
+import {
+  Ban,
+  LogIn,
+  LogOut,
+  Lock,
+  Network,
+  Radio,
+  Save,
+  ShieldCheck,
+  ShieldOff,
+  Undo2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
 import { MachineIcon } from "../components/MachineIcon";
@@ -29,6 +40,76 @@ import { useToast } from "../lib/toast";
 import type { NodeInfo } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
+/**
+ * A criptografia do cluster, e quem manda nela.
+ *
+ * O interruptor só é editável no nó principal - a decisão é dele e vale para a
+ * rede inteira. Nos demais o painel aparece em leitura, porque esconder o
+ * estado faria o operador de um nó comum não ter onde ver se o tráfego da
+ * máquina dele está cifrado. A recusa que vale é a do servidor (`save_tls`
+ * responde 403); isto aqui é só a tela dizendo a verdade antes do clique.
+ */
+export function TlsPanel({
+  tlsRequired,
+  authority,
+  busy = false,
+  onToggle,
+}: {
+  tlsRequired: boolean;
+  authority: boolean;
+  busy?: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <Panel>
+      <PanelHeader
+        title={t("network.tlsTitle")}
+        subtitle={t("network.tlsSubtitle")}
+        actions={
+          <Button
+            variant={tlsRequired ? "danger" : "primary"}
+            role="switch"
+            aria-checked={tlsRequired}
+            disabled={!authority || busy}
+            loading={busy}
+            icon={
+              tlsRequired ? (
+                <ShieldOff className="h-3.5 w-3.5" />
+              ) : (
+                <Lock className="h-3.5 w-3.5" />
+              )
+            }
+            onClick={() => onToggle?.(!tlsRequired)}
+          >
+            {t(tlsRequired ? "network.tlsDisable" : "network.tlsEnable")}
+          </Button>
+        }
+      />
+      <div className="space-y-3 px-5 py-4">
+        <KeyValue label={t("network.tlsState")}>
+          <Badge tone={tlsRequired ? "aqua" : "amber"}>
+            {tlsRequired ? (
+              <ShieldCheck className="h-3.5 w-3.5" />
+            ) : (
+              <ShieldOff className="h-3.5 w-3.5" />
+            )}
+            {t(tlsRequired ? "network.tlsOn" : "network.tlsOff")}
+          </Badge>
+        </KeyValue>
+        <Footnote icon={<ShieldCheck className="h-3.5 w-3.5" />}>
+          {t("network.tlsHowItWorks")}
+        </Footnote>
+        {!authority && (
+          <Footnote icon={<Ban className="h-3.5 w-3.5" />}>
+            {t("network.tlsNotAuthority")}
+          </Footnote>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export function NetworkSettings() {
   const { t } = useI18n();
   const node = useNode();
@@ -39,6 +120,24 @@ export function NetworkSettings() {
 
   const [pending, setPending] = useState<{ id: string; hostname: string } | null>(null);
   const [busy, setBusy] = useState(false);
+
+  const [tlsSaving, setTlsSaving] = useState(false);
+
+  async function toggleTls(next: boolean) {
+    setTlsSaving(true);
+    try {
+      await api.post("/api/ui/network/tls", { tls_required: next });
+      toast.success(
+        t(next ? "network.tlsEnabled" : "network.tlsDisabled"),
+        t("network.tlsPropagates"),
+      );
+      invalidate();
+    } catch (e) {
+      toast.fromError(t("network.tlsFailed"), e);
+    } finally {
+      setTlsSaving(false);
+    }
+  }
 
   const [advertiseAddr, setAdvertiseAddr] = useState("");
   const [addrSaving, setAddrSaving] = useState(false);
@@ -149,6 +248,13 @@ export function NetworkSettings() {
             </dl>
           )}
         </Panel>
+
+        <TlsPanel
+          tlsRequired={node.data?.tls_required ?? false}
+          authority={node.data?.tls_authority ?? false}
+          busy={tlsSaving}
+          onToggle={(next) => void toggleTls(next)}
+        />
 
         <Panel>
           <PanelHeader

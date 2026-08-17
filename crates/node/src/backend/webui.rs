@@ -1500,6 +1500,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_count: req.peer_count.max(1),
         peer_index: req.peer_index,
         primary: req.primary,
+        tp: None,
         inference_port,
         n_gpu_layers: req.params.n_gpu_layers,
         n_ctx: req.params.n_ctx,

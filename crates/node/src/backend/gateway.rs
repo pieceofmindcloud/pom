@@ -262,6 +262,7 @@ impl GatewayState {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
+                tp: self.network.tp_identity(),
             });
         }
         peers
@@ -1501,6 +1502,7 @@ mod budget_tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }
@@ -1580,6 +1582,7 @@ mod peer_visibility_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 
@@ -1664,6 +1667,7 @@ pub(crate) mod testkit {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 
@@ -1746,6 +1750,7 @@ pub(crate) mod testkit {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }

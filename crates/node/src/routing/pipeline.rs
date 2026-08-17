@@ -282,7 +282,12 @@ pub async fn plan_pipeline(
     // Only peers that expose an inference server AND match the model name
     let candidates: Vec<&PeerInfo> = peers
         .iter()
-        .filter(|p| p.inference_port.is_some() && p.is_alive() && p.model == model_name)
+        .filter(|p| {
+            p.inference_port.is_some()
+                && p.is_alive()
+                && p.model == model_name
+                && !p.is_tp_worker()
+        })
         .collect();
 
     if candidates.is_empty() {
@@ -429,7 +434,35 @@ mod ipv6_tests {
             api_keys_active: 0,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            tp: None,
         }
+    }
+
+    fn peer_tp(addr: &str, start: u32, end: u32, role: &str, rank: u32) -> PeerInfo {
+        let mut p = peer(addr, start, end);
+        p.tp = Some(crate::network::TpIdentity {
+            role: role.into(),
+            group_id: "g".into(),
+            size: 2,
+            rank,
+        });
+        p
+    }
+
+    /// Um worker de tensor parallelism não é hop do pipeline: quem entra na
+    /// cadeia é o primary do grupo, mesmo cobrindo a mesma faixa.
+    #[tokio::test]
+    async fn a_tp_worker_is_not_a_pipeline_hop() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let worker = peer_tp("192.168.1.10:42777", 0, 31, "worker", 1);
+        let mut primary = peer_tp("192.168.1.11:42777", 0, 31, "primary", 0);
+        primary.node_id = "primary".into();
+        let tracker = LoadTracker::new();
+        let plan = plan_pipeline(&[worker, primary], "qwen35", 32, &tracker)
+            .await
+            .expect("plano");
+        assert_eq!(plan.steps.len(), 1);
+        assert_eq!(plan.steps[0].node_id, "primary");
     }
 
     #[test]

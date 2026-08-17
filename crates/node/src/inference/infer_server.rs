@@ -254,6 +254,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
         };
         cfg.inference_port = port;
         let (_tx, rx) = tokio::sync::watch::channel(0u64);

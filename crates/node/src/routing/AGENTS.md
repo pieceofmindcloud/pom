@@ -15,8 +15,10 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
 
 - `plan_pipeline` - varre de 0 até `total_layers`; em cada posição escolhe o
   peer vivo com `inference_port` e `model` iguais que cubra a posição, com
-  score `layers_count * 100 - current_load * 10`. Devolve `None` no primeiro
-  buraco de cobertura - aí o gateway cai para Ollama local / peer.
+  score `layers_count * 100 - current_load * 10`. **Exclui workers de tensor
+  parallelism** (`PeerInfo::is_tp_worker`): só o primary de um grupo entra na
+  cadeia. Devolve `None` no primeiro buraco de cobertura - aí o gateway cai
+  para Ollama local / peer.
 - `LoadTracker::acquire` - incrementa o contador e devolve `LoadGuard`, que
   decrementa no drop (RAII): o balanço de carga nunca fica preso num erro.
 - `PipelineStep::frame_encoding` - escolhe o wire format do tensor: v2-zstd-f16

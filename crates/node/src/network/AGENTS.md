@@ -71,6 +71,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (`--no-discovery`); rejoin refaz bootstrap + announce.
 - `self_announce` - monta o Announce; anuncia zero camadas quando não há
   assignment, para que nó configurado pela UI ainda seja visível.
+- `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
+  parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
+  (`None` = nó sem TP). `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
+  workers da cadeia.
 
 `discovery.rs`:
 - `Discovery::new` - constrói o swarm (porta TCP = UDP+10000), diala bootstrap

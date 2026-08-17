@@ -43,6 +43,10 @@ pub struct NodeConfig {
     pub peer_index: u32,
     /// This peer is the entry point clients talk to.
     pub primary: bool,
+    /// Identidade de tensor parallelism deste nó (caminho C), quando ele é
+    /// primary/worker de um grupo. `None` = nó sem TP (o caso de hoje).
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -985,6 +989,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
         }
     }
 

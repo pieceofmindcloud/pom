@@ -502,6 +502,13 @@ struct InferState {
     /// o tempo é exato. Sai daqui para o `meta` da resposta, e de lá para a
     /// telemetria por salto do gateway. `None` quando o nó não tem TLS.
     tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Coletiva de tensor parallelism (caminho C). Usada só quando o nó é o
+    /// primary (rank 0) do grupo: acumula as parciais que chegam por
+    /// `POST /v1/tp/reduce` e devolve a soma a todos. `Clone` porque o
+    /// handler a copia para fora do mutex antes do `await`.
+    tp_barrier: crate::collective::ReduceBarrier,
+    /// Quantos ranks há no grupo TP (1 = sem TP).
+    tp_size: u32,
 }
 
 type SharedState = Arc<Mutex<InferState>>;
@@ -529,6 +536,8 @@ impl InferState {
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
             mtp_min_probability: cfg.mtp_min_probability,
+            tp_barrier: crate::collective::ReduceBarrier::new(),
+            tp_size: cfg.tp.as_ref().map(|t| t.size).unwrap_or(1),
         }
     }
 
@@ -682,6 +691,7 @@ pub async fn run(
         )
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rollback", post(handle_rollback))
+        .route("/v1/tp/reduce", post(handle_tp_reduce))
         .route("/health", get(handle_health))
         .with_state(state);
 
@@ -857,6 +867,35 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         // operador, então nem a configuração nem o nome do arquivo respondem.
         "mtp_ready": s.engine.mtp_ready(),
     }))
+}
+
+// ── /v1/tp/reduce ────────────────────────────────────────────────────────────
+
+/// Uma parcial de um reduce de tensor parallelism (caminho C). Cada rank do
+/// grupo faz um POST desta com a própria parcial e o mesmo `barrier_id`; o
+/// endpoint (no primary/rank 0) acumula e devolve a soma quando todos chegam.
+#[derive(Deserialize)]
+struct TpReduceRequest {
+    barrier_id: String,
+    rank: u32,
+    data: Vec<f32>,
+}
+
+async fn handle_tp_reduce(
+    State(state): State<SharedState>,
+    Json(req): Json<TpReduceRequest>,
+) -> Response {
+    let (barrier, size) = {
+        let s = state.lock().unwrap();
+        (s.tp_barrier.clone(), s.tp_size)
+    };
+    match barrier.contribute(&req.barrier_id, req.rank, size, req.data) {
+        Ok(rx) => match rx.await {
+            Ok(sum) => Json(json!({ "sum": sum })).into_response(),
+            Err(e) => err500(format!("barreira abandonada: {e}")),
+        },
+        Err(e) => err400(e),
+    }
 }
 
 // ── /v1/session/release ───────────────────────────────────────────────────────

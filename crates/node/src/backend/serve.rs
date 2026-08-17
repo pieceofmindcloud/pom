@@ -169,6 +169,105 @@ async fn handle_conn(
 }
 
 #[cfg(test)]
+mod integracao {
+    use super::*;
+    use crate::identity::Identity;
+    use axum::{routing::get, Router};
+    use std::time::Duration;
+
+    async fn subir(id: &Identity, strict: bool) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route("/health", get(|| async { "ok" }));
+        let tls = TlsServer::from_identity(id, strict).unwrap();
+        tokio::spawn(async move {
+            let _ = serve(listener, app, Some(tls)).await;
+        });
+        addr
+    }
+
+    fn clientes() -> crate::peer_client::PeerClients {
+        let c = crate::peer_client::PeerClients::new(Duration::from_secs(5));
+        c.set_tls(true);
+        c
+    }
+
+    /// O caminho feliz inteiro: certificado derivado da identidade, cliente que
+    /// fixa o node_id, handshake, resposta.
+    #[tokio::test]
+    async fn cliente_pinado_fala_com_o_servidor() {
+        let id = Identity::generate();
+        let addr = subir(&id, false).await;
+        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let r = http
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .expect("o handshake tinha que fechar");
+        assert!(r.status().is_success());
+    }
+
+    /// E o ataque que o pinning existe para impedir: quem espera outro node_id
+    /// não completa o handshake, mesmo o certificado sendo válido como
+    /// auto assinado.
+    #[tokio::test]
+    async fn cliente_que_espera_outro_no_e_recusado() {
+        let servidor = Identity::generate();
+        let outro = Identity::generate();
+        let addr = subir(&servidor, false).await;
+        let http = clientes().for_peer(&outro.node_id.0).unwrap();
+        let r = http
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await;
+        assert!(r.is_err(), "o handshake tinha que falhar, veio {r:?}");
+    }
+
+    /// A virada não é simultânea: o mesmo servidor atende texto claro enquanto
+    /// peers ainda não souberam da política nova.
+    #[tokio::test]
+    async fn o_mesmo_servidor_atende_texto_claro() {
+        let id = Identity::generate();
+        let addr = subir(&id, false).await;
+        let r = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+    }
+
+    /// No modo estrito o loopback continua passando em claro - é requisito, não
+    /// descuido: `infer_tunnel::serve_loopback`, a sonda do `runtime` e o
+    /// `testkit` batem em 127.0.0.1 sem par de chaves.
+    #[tokio::test]
+    async fn no_modo_estrito_o_loopback_ainda_fala_claro() {
+        let id = Identity::generate();
+        let addr = subir(&id, true).await;
+        let r = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .unwrap();
+        assert!(r.status().is_success());
+    }
+
+    /// E TLS continua funcionando no modo estrito, que é o ponto dele.
+    #[tokio::test]
+    async fn no_modo_estrito_o_tls_continua_passando() {
+        let id = Identity::generate();
+        let addr = subir(&id, true).await;
+        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let r = http
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .expect("TLS tem que passar no modo estrito");
+        assert!(r.status().is_success());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::net::SocketAddr;

@@ -99,6 +99,28 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 - `self_announce` monta o `Announce`; anuncia zero camadas quando não há
   `LayerAssignment`, para um nó configurado pela UI continuar visível.
 
+**Precedência do endereço anunciado** (`announce_addr()`/`self_addr_candidates()`,
+a mesma para UDP e gossipsub - os dois leem do mesmo `Network`):
+
+1. endereço fixado pelo operador - `--advertise-addr` ou `--public-addr`
+   alimentam o mesmo campo, `--advertise-addr` vence se os dois vierem;
+2. endereço público observado por um peer via libp2p `identify`
+   (`Network::set_observed_addr`, chamado de `discovery.rs` no evento
+   `identify::Event::Received` - mesmo princípio de um STUN, sobre as conexões
+   que o swarm já faz);
+3. interfaces locais desta máquina;
+4. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
+
+`addrs::is_private_or_local` decide se um endereço observado é novidade: RFC 1918,
+**`100.64/10` (RFC 6598, o CGNAT - e o que a Tailscale usa)** e IPv6 unique-local
+não contam, porque só provam que quem respondeu está na mesma rede privada.
+
+Conferido ao vivo em 2026-08-16, sem reiniciar nada: fixar o endereço pela tela
+de Rede (`POST /api/ui/network/advertise-addr`) chega aos outros nós em ~10 s;
+limpar o campo volta para o observado pelo `identify`; e o endereço da Tailscale
+(`100.122.132.97`), antes adotado como público, deixou de ser aceito. O que
+**não** é estável é o observado quando nada foi fixado - ver Defeitos anotados.
+
 ### Rotas dinâmicas (`route.rs`)
 
 Um nó pode ter vários endereços válidos e qual serve depende de quem pergunta.
@@ -169,7 +191,7 @@ parar. A chave do pkarr é separada: `.rdma-p2p.key` (ver Defeitos).
 
 ## 5. Limitações conhecidas para a internet
 
-O que está no AGENTS.md raiz, com o comportamento atual do código:
+Comportamento atual do código:
 
 1. **Endereço no gossipsub pode ser `0.0.0.0:<porta>`.** O `Announce` do
    gossipsub leva `addr = announce_addr()` (literal `0.0.0.0` sem
@@ -185,7 +207,7 @@ O que está no AGENTS.md raiz, com o comportamento atual do código:
    (`network/infer_tunnel.rs`, via `relay::send_frame_or_tunnel`) quando essa
    chamada falha por `Timeout`/`Transport` contra um hop que anuncia
    `transport/libp2p-tunnel-v1`. Verificado contra a `salem-gpu` pela internet
-   em 2026-08-16 (ver AGENTS.md raiz). O custo é o tempo até desistir do HTTP
+   em 2026-08-16 (ver `operacao.md`). O custo é o tempo até desistir do HTTP
    direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
    requisição e quem decide acaba sendo o `connect` do sistema.
 3. **Sem autenticação nem TLS na porta de inferência (`/v1/prefill`,

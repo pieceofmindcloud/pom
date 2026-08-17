@@ -68,9 +68,6 @@ commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 
 ## Defeitos anotados
 
-- O `README.md` (raiz) ficou defasado em relacao ao codigo e foi corrigido na
-  reconciliacao de 2026-08-15: o build Docker agora tem dois estagios
-  compilando `--features cuda`, e o roadmap nao lista mais "Interface de
-  inferencia" nem "Dashboard web" (ja existem em Rust). Nao use o README como
-  fonte de verdade para arquitetura - o `AGENTS.md` da raiz e os `docs/subsystems/*`
-  prevalecem.
+Nenhum em aberto. O `README.md` da raiz foi reconciliado com o codigo em
+2026-08-15, mas continua sendo apresentacao: para arquitetura valem o
+`AGENTS.md` da raiz e os `docs/subsystems/*`.

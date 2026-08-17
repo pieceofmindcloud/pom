@@ -32,7 +32,7 @@ describe("Documentation", () => {
     renderDoc();
     // O documento padrão é o primeiro do manifesto; o primeiro heading dele
     // rende como <h1> no viewer.
-    expect(screen.getByRole("heading", { name: "CLAUDE.md", level: 1 })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "AGENTS.md - raiz", level: 1 })).toBeTruthy();
     // Cabeçalhos de seção; `getAllByRole` porque a mesma string pode casar
     // também com o nome de uma folha (ex.: "Open crates/").
     for (const pattern of [

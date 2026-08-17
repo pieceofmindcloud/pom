@@ -25,7 +25,7 @@ behind an auth extractor.
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
-  fallback. The `include_str!` claim in `webui.rs`'s module doc is stale.
+  fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave
   (local or forwarded to a peer).
@@ -270,11 +270,6 @@ behind an auth extractor.
   holding the connection key can no longer claim another machine's `node_id`
   (which is the `blocked_nodes` key). A possession proof would need a signed
   challenge, i.e. a protocol change; open for decision.
-- **`webui.rs` module doc claims the UI assets are compiled in via
-  `include_str!`** (`webui.rs:1-9`) - there is no `include_str!`/`include_bytes!`
-  anywhere in the backend. The bundle is read from disk by `webapp.rs` at
-  `config::ui_dist_dir()` (default `<project_root>/apps/frontend/dist`); the
-  doc is stale and would mislead anyone grepping for where the UI ships from.
 - **`undeploy_authority` lets any role undeploy the whole pipeline**
   (`deploy.rs:1794` returns `Ok(())` for every role). Deliberate for now - the
   test `any_node_may_undeploy_for_now` (`deploy.rs:2242`) documents the open

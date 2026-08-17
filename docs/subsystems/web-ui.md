@@ -208,35 +208,19 @@ entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
   vira "ler qualquer coisa". O progresso vem dos nós, então recarregar a aba
   não perde nada. `RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS=1` (variável do processo
   receptor, lida no arranque) aceita toda oferta sem clique - só dev.
+  Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
+  de disponibilidade levam o começo do `node_id` quando o nome se repete
+  (`uniqueName`, `routes/Shards.tsx`).
 
 ## Defeitos anotados
 
-- DEFEITO ANOTADO: o doc do módulo `crates/node/src/backend/webui.rs` (linhas
-  1-9) afirma que os assets da UI são compilados no binário com `include_str!`.
-  Não existe `include_str!` em lugar nenhum do backend: o bundle é lido do
-  disco por `webapp.rs` em `config::ui_dist_dir()`. O doc engana quem procurar
-  de onde a UI sai.
-- DEFEITO ANOTADO: strings em português fixas no código furam o i18n. Com o
-  idioma EN ativo continuam em português: `deleteModel.ts` e `toast.tsx`
-  (confirmações de apagar, `aria-label`), `Shards.tsx`/`WholeModels.tsx`/
-  `Transfers.tsx` ("Excluir", "apagado", "Cancelar", "enviando para" ...),
-  a tabela inteira de telemetria do Chat (`ExecutionTelemetry`) e os botões/
-  estados vazios do `ModelNetworkCanvas`. Cosmético, mas inconsistente com o
-  resto do app.
 - `AddNodeDialog` re-semeia as escolhas **na transição para aberto**, não a cada
   props nova: o Painel remonta `peers`/`slices` a cada polling do cluster, e um
   efeito dependente desses arrays descartava a escolha do operador no meio da
   edição (a combo "voltava" para outra máquina sozinha). Um segundo efeito só
   troca a escolha que sumiu da lista; a fatia é identificada pela faixa
   (`keyOf`), não pelo índice. Testes em `AddNodeDialog.test.tsx`.
-- DEFEITO ANOTADO: `networkLayout.ts` escreve `localStorage` sem `try/catch`
-  (`writePositions`/`clearPositions`), diferente de todo helper de storage da
-  pasta - exceção de quota/segurança lançaria do handler de drag do canvas.
-- DEFEITO ANOTADO: `ModelNetworkDemo.tsx` é código morto (nada o importa) e
-  mantém cópia própria da lógica de layout/medidores, que vai divergir do
-  canvas real.
-- DEFEITO ANOTADO: `transferStatus.ts` exporta o tipo `TransferState` que nada
-  fora do módulo usa (os predicados tipam em `TransferJob["state"]` direto).
+Nenhum outro em aberto nesta tela.
 - DEFEITO ANOTADO: `LeaveNode` reusa o rótulo do gatilho no botão de
   confirmar - a janela mostra dois botões com o mesmo texto ("Sair da rede").
   Cosmético, mas um usuário pode confundir o gatilho com a confirmação.

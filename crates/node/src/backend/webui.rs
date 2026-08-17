@@ -1,8 +1,10 @@
 //! Web interface served by the peer itself, plus the control API behind it.
 //!
-//! The assets are compiled into the binary (`include_str!`), so there is no
-//! frontend build step and no files to deploy alongside `rdma-p2p` — the same
-//! single binary that joins the network also serves the dashboard.
+//! The assets are NOT compiled into the binary: `webapp.rs` reads the built
+//! bundle from disk at `config::ui_dist_dir()` (default
+//! `<project_root>/apps/frontend/dist`, overridable with `RDMA_P2P_UI_DIST`),
+//! so editing the frontend requires `npm run build` in `apps/frontend/` and
+//! shipping `dist/` next to the binary.
 //!
 //! Every node serves it, so the UI can be opened on any peer. The cluster view
 //! works by asking each peer's own `/api/ui/node`, which is why `PeerInfo`

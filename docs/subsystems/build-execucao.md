@@ -1,8 +1,8 @@
 # Build e execução
 
 Como o projeto compila, empacota e roda. Autoritativo é o código; este
-documento reflete o estado atual do repositório, não o que o AGENTS.md da raiz
-ou o README.md possam afirmar em pontos defasados (ver Defeitos anotados).
+documento reflete o estado atual do repositório. O `README.md` da raiz é
+apresentação, não fonte de verdade para arquitetura.
 
 ## Workspace de crates
 
@@ -61,6 +61,33 @@ máquina. Precedência:
 `rerun-if-env-changed` na variável e `rerun-if-changed` em `.git/HEAD` e
 `.git/index` impedem o carimbo de congelar no primeiro build.
 
+## Atualizar um nó pela própria interface (só desenvolvimento)
+
+`backend/devupdate.rs`. O card de cada peer ganha "Atualizar e reiniciar" quando
+**aquele processo** subiu com `RDMA_P2P_DEV_UPDATE=1` - é variável de ambiente,
+por processo, porque a config é reescrita pela própria interface e um campo lá
+deixaria o portão ligável pela rede. `RDMA_P2P_BUILD_FEATURES=cuda` (ou `metal`)
+diz com que features a máquina compila; sem isso uma máquina com GPU perde o
+offload no primeiro clique.
+
+- **Agir sobre outro peer é repasse**: o painel só fala com o próprio nó
+  (caminhos relativos em `apps/frontend/src/lib/api.ts`), então
+  `POST /api/ui/dev/update` com `{"node_id": "..."}` faz o nó local encaminhar.
+  O portão é verificado **no destino**, nunca em quem repassa.
+- **Nenhum comando destrutivo**: a sequência recusa branch fora do `main`, HEAD
+  destacado e árvore suja, e só então faz `git pull --ff-only` e
+  `cargo build --release`. Não há `reset`, `checkout`, `clean` nem `stash`, então
+  numa máquina onde alguém está codificando o botão falha e explica. Falhou em
+  qualquer passo, ninguém reinicia.
+- **Cada nó reinicia a si mesmo** (`/api/ui/dev/restart`): nenhum consegue
+  respawnar o irmão, porque não conhece o `RDMA_P2P_CONFIG` nem o
+  `RDMA_P2P_NODE_KEY` dele. Irmão é peer com o mesmo hostname **e** o mesmo host
+  de rede (`same_machine`) - hostname sozinho casaria duas VMs chamadas `ubuntu`;
+  peer com `addr` `0.0.0.0`/`::` é descartado, porque esse endereço não reescrito
+  aponta para o próprio nó.
+- `devupdate` **não** escreve a anotação de última fatia: esse ciclo de vida é do
+  `runtime.rs` (ver `implantacao.md`), e uma escrita aqui só poderia mentir.
+
 ## Docker
 
 - **`Dockerfile`**: dois estágios. Builder
@@ -68,9 +95,7 @@ máquina. Precedência:
   `npm run build` em `apps/frontend` e `cargo build --release --features cuda`
   com cache mounts (registry/git/target). Runtime é a base CUDA 13.0.3 com
   `LD_LIBRARY_PATH` incluindo `compat/` e `RDMA_P2P_HOME=/app`. O `ARG
-  RDMA_P2P_BUILD_COMMIT` recebe o commit do host. (O README.md da raiz ainda
-  descreve um build de três estágios com `cargo-chef` sem GPU - defasado, ver
-  Defeitos.)
+  RDMA_P2P_BUILD_COMMIT` recebe o commit do host.
 - **`scripts/build-docker.sh`**: leia o commit **no host** (`git rev-parse
   --short HEAD`, sufixo `-sujo` se a árvore tem mudanças), exporta
   `RDMA_P2P_BUILD_COMMIT`, roda `npm run build` e `docker compose build`.
@@ -84,8 +109,9 @@ máquina. Precedência:
   `deploy.resources` (exige NVIDIA Container Toolkit). Cada serviço define
   `RDMA_P2P_HOME=/data` e `RDMA_P2P_UI_DIST=/app/apps/frontend/dist` (a UI
   não ficaria sob o diretório de dados montado). As portas de cada nó vêm da
-  config, não do CLI - daí o gerador abaixo. Ver Defeitos sobre os nomes das
-  fixtures.
+  config, não do CLI - daí o gerador abaixo. Os nomes de fixture do compose
+  (`node-gpu`, `node-cpu-1`...) e os do gerador (`node-<N>`) são de ambientes
+  diferentes de propósito e não precisam se encontrar - ver `scripts/AGENTS.md`.
 - **`scripts/gen-node-configs.py`**: gera um `rdma-p2p.json` por nó em
   `tests/fixtures/node-<N>` (nó 1 = principal, guarda `connection_key` e
   `api_keys`; demais = node com bootstrap para `127.0.0.1:42777`). Recusa
@@ -110,9 +136,9 @@ externamente é o `gen-node-configs.py` (não é do build, é de operação).
 
 ## Scripts de cluster
 
-Os lançadores citados pelo AGENTS.md da raiz (`run-p1.sh`, `run-p2.sh`,
-`request.sh`) **não estão na raiz**: vivem em `old/scripts/` e são referência
-de operador (o binário não os usa).
+Os lançadores (`run-p1.sh`, `run-p2.sh`, `request.sh`) **não estão na raiz**:
+vivem em `old/scripts/` e são referência de operador (o binário não os usa).
+O procedimento de subida está em `operacao.md`.
 
 - `old/scripts/run-p1.sh` - peer 1 (MacBook, Metal): camadas 0-15, `--port
   42777`, gateway em 8080, `--inference-port 8181`, `--n-gpu-layers 99`,
@@ -154,17 +180,8 @@ Windows empacota com 7z.
 
 ## Defeitos anotados
 
-- O `README.md` (raiz) ficou defasado em relação ao código e foi corrigido na
-  reconciliação de 2026-08-15: o build Docker agora tem dois estágios
-  compilando `--features cuda`, e o roadmap não lista mais "Interface de
-  inferência" nem "Dashboard web". Não use o README como fonte de verdade para
-  arquitetura.
-- O AGENTS.md da raiz já não descreve `inference_server.py` e `split_model.py`
-  como se vivessem na raiz nem como se o binário os subisse (corrigido em
-  2026-08-15): estão em `old/python-inference/`, legado, e o runtime suportado
-  é Rust. Igualmente, os lançadores `run-p1.sh`/`run-p2.sh`/`request.sh` são
-  citados como referência de operador, mas vivem em `old/scripts/` (legado).
 - DEFEITO ANOTADO: `routing-base::plan` (sua única lógica real) não é chamado
   por ninguém - o planejador do nó
   (`crates/node/src/routing/pipeline.rs::plan_pipeline`) faz o próprio plano
   greedy. `routing-base` é código morto mantido vivo só pelos próprios testes.
+  Adiado até a decisão de open-core (ver `TODO.md`).

@@ -25,8 +25,8 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 ## Python (nao esta na raiz - esta em old/python-inference/)
 
-O AGENTS.md da raiz descreve `inference_server.py` e `split_model.py` como se
-vivessem na raiz do repo. **Nao vivem.** O runtime suportado hoje e Rust
+`inference_server.py` e `split_model.py` **nao vivem na raiz do repo**.
+O runtime suportado hoje e Rust
 (`crates/node/src/inference/infer_server.rs`, `crates/node/src/models/splitter.rs`);
 os scripts Python sao legado preservado em `old/python-inference/` e nao sao
 invocados pelo binario (ver o `README.md` de la).
@@ -58,7 +58,8 @@ invocados pelo binario (ver o `README.md` de la).
   inspecao do modelo e do cabecalho GGUF.
 - `old/scripts/` - lancadores legados (`run-p1.sh`, `run-p2.sh`, `run-inf.sh`,
   `request.sh`, `run.sh`, `run-p0.sh`, `p2.sh`), para referencia do operador
-  apenas; o AGENTS.md da raiz os cita como se estivessem na raiz. `run-inf.sh`
+  apenas (o procedimento de subida esta em `docs/subsystems/operacao.md`).
+  `run-inf.sh`
   invoca `old/python-inference/inference_server.py` explicitamente (unico
   caminho de compatibilidade).
 

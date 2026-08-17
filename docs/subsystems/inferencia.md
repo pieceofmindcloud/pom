@@ -302,12 +302,11 @@ O gateway **só tem o caminho do pipeline**. `generate_stream` falha com
 0..N)" quando `plan_pipeline` devolve `None`; o handler de `/api/generate`
 responde 503 com "Start peers with --inference-port." e `source: "none"`.
 
-- **DEFEITO ANOTADO**: a documentação (AGENTS.md raiz e `backend/AGENTS.md`)
-  descreve um fallback de três níveis "pipeline → Ollama local → Ollama de um
-  peer". O código não implementa isso: `OllamaClient` só é usado para resolver
-  modelos (`/api/tags`) e para o campo `ollama_available` do `/health`. Um
-  prompt sem pipeline válido **não** cai no Ollama local nem de peer - a
-  requisição falha. A descrição documentada é de um estado anterior do código.
+Não existe fallback para Ollama: `OllamaClient` só resolve modelos
+(`/api/tags`) e alimenta o campo `ollama_available` do `/health`. Um prompt sem
+pipeline válido **não** cai no Ollama local nem de peer - a requisição falha.
+(Documentação antiga descrevia um fallback de três níveis; era estado anterior
+do código, corrigido em 2026-08-15.)
 
 ## 8. direct_lab.rs - a "lei"
 
@@ -379,10 +378,6 @@ prompt e recusa com uma mensagem citando as flags.
   em vez do rótulo fixo `inference_server`. O histórico fica em
   `<project_root>/infer_server_<porta>.log` (`runtime::log_file_path`, apontado
   por `status.log_path`), porque a TUI limpa a tela a cada `--refresh`.
-- O fallback "pipeline → Ollama local → peer Ollama" documentado antigamente
-  não existe no código: `generate_stream` só tem o pipeline e falha sem ele
-  (ver seção 7). A AGENTS.md raiz e `backend/AGENTS.md` foram corrigidas para
-  dizer isso (2026-08-15).
 - **Limitação conhecida**: `step_speculative` não foi estendida ao desvio
   direto (ver seção 5) - a especulação continua no anel/hub.
 - **Sem cobertura de teste**: os quatro modos de falha do modo direto e a

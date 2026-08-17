@@ -142,6 +142,37 @@ O arquivo de saída é `{base}_{start}_{end}.gguf` em `<shard_dir>/<base>/`
 Arquivo já existente é reaproveitado sem reescrever: o `SliceOutcome { output_path,
 bytes, reused }` distingue "gerado" de "reusado", e a UI mostra isso.
 
+### Shard por tensor (tensor parallelism, caminho C)
+
+`splitter::shard_tensor_parallel(src, dst, tp_size, tp_rank, on_progress)`
+produz um GGUF com os tensores do rank `tp_rank` de um grupo de `tp_size`. É a
+dimensão ortogonal ao fatiamento por faixa de camadas: todas as camadas
+continuam presentes, só com tensores menores. Não há remapeamento de nome nem
+mudança de `block_count`.
+
+A classificação é por nome (`tp_role`), estilo Megatron:
+
+- **Coluna** (split por `ne[1]`, a dimensão de saída; fatia contígua, sem
+  redução): `attn_q/k/v.weight`, `ffn_gate/up.weight`.
+- **Linha** (split por `ne[0]`, a dimensão de entrada contígua; soma parcial a
+  ser all-reduced): `attn_output.weight`, `ffn_down.weight`, `output.weight`.
+- **Replicado** (igual em todos os ranks): `*_norm.weight`, `token_embd.weight`,
+  rope/pos_embd.
+- **Recusa** (não shardável com segurança, v1): tensores 3D de MoE
+  (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
+  com `token_embd` (weight tying).
+
+O split por linha exige que `ne[0]` divida por `tp_size` em limite de bloco
+do tipo ggml (senão o corte parte um bloco de quantização e o tensor fica
+ilegível); a divisão por coluna exige `ne[1]` divisível por `tp_size`. Ambos
+recusam em vez de estimar, na mesma regra do resto do fatiador.
+
+A metadata de saída é `pom.tp_shard=1`, `pom.tp_size`, `pom.tp_rank`
+(via `brand::gguf_key`). Um shard NÃO é um modelo autossuficiente: o llama.cpp
+de hoje não o carrega sozinho - ele é a metade que o fork do llama.cpp (caminho
+C) carrega junto com a coletiva all-reduce. Testado com o GGUF sintético
+(`test_gguf_bytes`) para rank 0 e rank 1, incluindo a recusa de grupo inválido.
+
 ## 5. Junção (merge)
 
 `splitter::merge` junta fatias adjacentes num arquivo único (`MergePart { path,

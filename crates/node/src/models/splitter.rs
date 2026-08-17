@@ -672,6 +672,353 @@ pub fn split(
     Ok(final_size)
 }
 
+// ── Tensor parallelism: shard por tensor ─────────────────────────────────────
+
+/// Papel de um tensor num shard de tensor parallelism (estilo Megatron).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TpRole {
+    /// Split pela dimensão de saída (ne[1]): Q/K/V e MLP gate/up. Fatia
+    /// contígua; a saída já nasce particionada, sem redução.
+    Column,
+    /// Split pela dimensão de entrada (ne[0], a contígua): projeção de saída
+    /// da atenção, MLP down e a cabeça de saída. Soma parcial a ser reduzida.
+    Row,
+    /// Replicado igual em todos os ranks: norms, token_embd, rope.
+    Shared,
+    /// Não shardável com segurança (MoE 3D, nome não reconhecido).
+    Unsupported,
+}
+
+/// Classifica o papel de um tensor pelo nome (o que vem depois de `blk.N.`).
+fn tp_role(name: &str) -> TpRole {
+    let tail = match name.strip_prefix("blk.") {
+        Some(rest) => rest.splitn(2, '.').nth(1).unwrap_or(name),
+        None => name,
+    };
+    match tail {
+        "attn_q.weight" | "attn_k.weight" | "attn_v.weight" | "ffn_gate.weight" | "ffn_up.weight" => {
+            TpRole::Column
+        }
+        "attn_output.weight" | "ffn_down.weight" | "output.weight" => TpRole::Row,
+        "attn_norm.weight" | "attn_norm.bias" | "ffn_norm.weight" | "ffn_norm.bias"
+        | "output_norm.weight" | "output_norm.bias" | "token_embd.weight" => TpRole::Shared,
+        t if t.contains("rope") || t.contains("pos_embd") || t.contains("_norm.") => TpRole::Shared,
+        _ => TpRole::Unsupported,
+    }
+}
+
+/// Shard de um modelo GGUF por tensor parallelism.
+///
+/// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
+/// `tp_rank` de um grupo de `tp_size`: projeções de saída partidas em fatias
+/// contíguas (coluna), projeções de entrada partidas em fatias alinhadas ao
+/// bloco do tipo ggml (linha) e o resto replicado. Todas as camadas continuam
+/// presentes; não há remapeamento de nome nem mudança de `block_count`.
+///
+/// Um shard não é um modelo autossuficiente: o llama.cpp de hoje não o carrega
+/// sozinho. Ele é a metade que o fork do llama.cpp (caminho C) carrega junto
+/// com a coletiva all-reduce.
+pub fn shard_tensor_parallel(
+    src: &Path,
+    dst: &Path,
+    tp_size: u32,
+    tp_rank: u32,
+    on_progress: impl Fn(f64),
+) -> Result<u64> {
+    if tp_size < 2 {
+        bail!("tp_size precisa ser >= 2");
+    }
+    if tp_rank >= tp_size {
+        bail!("tp_rank {tp_rank} fora de um grupo de {tp_size}");
+    }
+
+    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
+    let src_mm =
+        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
+    let mm: &[u8] = &src_mm;
+
+    let mut r = R { data: mm, pos: 0 };
+    let magic = r.u32()?;
+    if magic != GGUF_MAGIC {
+        bail!("não é um arquivo GGUF (magic={magic:#x})");
+    }
+    let version = r.u32()?;
+    if version != 2 && version != 3 {
+        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+    }
+    let n_tensors = r.u64()? as usize;
+    let n_kv = r.u64()? as usize;
+    if n_tensors > 1_000_000 || n_kv > 100_000 {
+        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+    }
+
+    // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo).
+    // block_count e embedding_length não mudam: todas as camadas seguem
+    // presentes, só com tensores menores.
+    let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
+    let pom_prefix = format!("{}.", crate::brand::slug());
+    for _ in 0..n_kv {
+        let kv_start = r.pos;
+        let key = r.string()?;
+        let vtype = r.u32()?;
+        r.skip_value(vtype)?;
+        if !key.starts_with(&pom_prefix) {
+            kv_out.push(KvOut::Raw(kv_start, r.pos));
+        }
+    }
+    kv_out.push(KvOut::Encoded(encode_kv_u32(
+        &crate::brand::gguf_key("tp_shard"),
+        1,
+    )));
+    kv_out.push(KvOut::Encoded(encode_kv_u32(
+        &crate::brand::gguf_key("tp_size"),
+        tp_size,
+    )));
+    kv_out.push(KvOut::Encoded(encode_kv_u32(
+        &crate::brand::gguf_key("tp_rank"),
+        tp_rank,
+    )));
+
+    // Tensor table
+    let mut all_tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
+    for _ in 0..n_tensors {
+        let name = r.string()?;
+        let n_dims = r.u32()? as usize;
+        if n_dims > 8 {
+            bail!("rank {n_dims} implausível para tensor '{name}'");
+        }
+        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
+        let dtype = r.u32()?;
+        let src_offset = r.u64()?;
+        all_tensors.push(TensorRecord {
+            name,
+            dims,
+            dtype,
+            src_offset,
+            byte_size: 0,
+        });
+    }
+
+    let src_data_start = align_up(r.pos as u64) as usize;
+    {
+        let total_data = (mm.len() - src_data_start) as u64;
+        let mut unique: Vec<u64> = all_tensors.iter().map(|t| t.src_offset).collect();
+        unique.sort_unstable();
+        unique.dedup();
+        let size_map: HashMap<u64, u64> = unique
+            .iter()
+            .enumerate()
+            .map(|(i, &off)| {
+                let next = unique.get(i + 1).copied().unwrap_or(total_data);
+                (off, next - off)
+            })
+            .collect();
+        for t in &mut all_tensors {
+            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
+        }
+    }
+
+    // Weight-tied output (output.weight compartilha offset com token_embd)
+    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    let embd_offset = all_tensors
+        .iter()
+        .find(|t| t.name == "token_embd.weight")
+        .map(|t| t.src_offset);
+    if let Some(out) = all_tensors.iter().find(|t| t.name == "output.weight") {
+        if embd_offset == Some(out.src_offset) {
+            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+        }
+    }
+
+    // Segmento de bytes a copiar do fonte para o destino.
+    #[derive(Debug, Clone, Copy)]
+    struct Seg {
+        src: usize, // absoluto no mmap
+        len: usize,
+    }
+    #[derive(Debug)]
+    struct OutT {
+        name: String,
+        dims: Vec<u64>,
+        dtype: u32,
+        segs: Vec<Seg>,
+    }
+
+    let mut out_tensors: Vec<OutT> = Vec::with_capacity(n_tensors);
+    for t in &all_tensors {
+        if t.byte_size == 0 {
+            bail!(
+                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                t.name,
+                t.dtype
+            );
+        }
+        let role = tp_role(&t.name);
+        let full_abs = src_data_start + t.src_offset as usize;
+        match role {
+            TpRole::Unsupported => {
+                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+            }
+            TpRole::Shared => out_tensors.push(OutT {
+                name: t.name.clone(),
+                dims: t.dims.clone(),
+                dtype: t.dtype,
+                segs: vec![Seg {
+                    src: full_abs,
+                    len: t.byte_size as usize,
+                }],
+            }),
+            TpRole::Column | TpRole::Row => {
+                if t.dims.len() < 2 {
+                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                }
+                let ne0 = t.dims[0];
+                let ne1 = t.dims[1];
+                if t.byte_size % ne1 != 0 {
+                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                }
+                let row_stride = t.byte_size / ne1; // bytes por linha completa
+                let mut dims = t.dims.clone();
+                let segs: Vec<Seg> = match role {
+                    TpRole::Column => {
+                        if ne1 % tp_size as u64 != 0 {
+                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                        }
+                        let new_ne1 = ne1 / tp_size as u64;
+                        dims[1] = new_ne1;
+                        let start = tp_rank as u64 * new_ne1 * row_stride;
+                        vec![Seg {
+                            src: full_abs + start as usize,
+                            len: (new_ne1 * row_stride) as usize,
+                        }]
+                    }
+                    TpRole::Row => {
+                        if row_stride % tp_size as u64 != 0 {
+                            bail!(
+                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                t.name,
+                                t.dtype
+                            );
+                        }
+                        let chunk = row_stride / tp_size as u64;
+                        dims[0] = ne0 / tp_size as u64;
+                        let rank_off = tp_rank as u64 * chunk;
+                        (0..ne1)
+                            .map(|j| Seg {
+                                src: full_abs + (j * row_stride + rank_off) as usize,
+                                len: chunk as usize,
+                            })
+                            .collect()
+                    }
+                    _ => unreachable!(),
+                };
+                out_tensors.push(OutT {
+                    name: t.name.clone(),
+                    dims,
+                    dtype: t.dtype,
+                    segs,
+                });
+            }
+        }
+    }
+
+    // ── Layout e escrita ────────────────────────────────────────────────────
+    let out_byte_size: u64 = out_tensors
+        .iter()
+        .map(|t| t.segs.iter().map(|s| s.len as u64).sum::<u64>())
+        .sum();
+    let new_offsets: Vec<u64> = {
+        let mut v = Vec::with_capacity(out_tensors.len());
+        let mut cur = 0u64;
+        for t in &out_tensors {
+            let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
+            v.push(cur);
+            cur = align_up(cur + size);
+        }
+        v
+    };
+    let kv_bytes: usize = kv_out
+        .iter()
+        .map(|e| match e {
+            KvOut::Raw(s, e) => e - s,
+            KvOut::Encoded(v) => v.len(),
+        })
+        .sum();
+    let tensor_header_bytes: usize = out_tensors
+        .iter()
+        .map(|t| tensor_header_size(&t.name, &t.dims))
+        .sum();
+    let meta_size = 4 + 4 + 8 + 8 + kv_bytes + tensor_header_bytes;
+    let new_data_offset = align_up(meta_size as u64) as usize;
+
+    if let Some(parent) = dst.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("criar diretório {}", parent.display()))?;
+    }
+    let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
+    let mut w = BufWriter::with_capacity(CHUNK, dst_file);
+
+    w.write_all(&GGUF_MAGIC.to_le_bytes())?;
+    w.write_all(&version.to_le_bytes())?;
+    w.write_all(&(out_tensors.len() as u64).to_le_bytes())?;
+    w.write_all(&(kv_out.len() as u64).to_le_bytes())?;
+    for entry in &kv_out {
+        match entry {
+            KvOut::Raw(s, e) => w.write_all(&mm[*s..*e])?,
+            KvOut::Encoded(v) => w.write_all(v)?,
+        }
+    }
+    for (t, &off) in out_tensors.iter().zip(&new_offsets) {
+        let nb = t.name.as_bytes();
+        w.write_all(&(nb.len() as u64).to_le_bytes())?;
+        w.write_all(nb)?;
+        w.write_all(&(t.dims.len() as u32).to_le_bytes())?;
+        for &d in &t.dims {
+            w.write_all(&d.to_le_bytes())?;
+        }
+        w.write_all(&t.dtype.to_le_bytes())?;
+        w.write_all(&off.to_le_bytes())?;
+    }
+    let header_written = meta_size;
+    w.write_all(&vec![0u8; new_data_offset - header_written])?;
+
+    let mut done: u64 = 0;
+    for t in &out_tensors {
+        let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
+        for seg in &t.segs {
+            let bytes = &mm[seg.src..seg.src + seg.len];
+            let mut pos = 0usize;
+            while pos < bytes.len() {
+                let n = CHUNK.min(bytes.len() - pos);
+                w.write_all(&bytes[pos..pos + n])?;
+                pos += n;
+                done += n as u64;
+                if out_byte_size > 0 {
+                    on_progress(100.0 * done as f64 / out_byte_size as f64);
+                }
+            }
+        }
+        let aligned = align_up(size) as usize;
+        let pad = aligned - size as usize;
+        if pad > 0 {
+            w.write_all(&vec![0u8; pad])?;
+        }
+    }
+    w.flush()?;
+
+    let final_size = std::fs::metadata(dst)
+        .with_context(|| format!("stat {}", dst.display()))?
+        .len();
+
+    info!(
+        "shard de tensor pronto: {} ({:.0} MB)",
+        dst.display(),
+        final_size as f64 / (1024.0 * 1024.0)
+    );
+
+    Ok(final_size)
+}
+
 // ── Merge: the inverse of split ──────────────────────────────────────────────
 
 /// One input slice of a `merge`, with its place inside the original model.
@@ -1716,5 +2063,133 @@ mod tests {
         let bytes = std::fs::read(&merged).unwrap();
         let flags = kv_u32_array(&bytes, "qwen35.attention.recurrent_layers").unwrap();
         assert_eq!(flags, vec![1, 1, 1, 0, 1, 1, 1, 0], "{flags:?}");
+    }
+
+    // ── Tensor parallelism: shard por tensor ──────────────────────────────
+
+    /// Lê dims e dados f32 de um tensor de um GGUF no disco. O modelo de teste
+    /// é todo f32, então os dados são interpretados como floats.
+    fn read_shard_tensor(path: &std::path::Path, name: &str) -> (Vec<u64>, Vec<f32>) {
+        let bytes = std::fs::read(path).unwrap();
+        let mut r = R { data: &bytes, pos: 0 };
+        assert_eq!(r.u32().unwrap(), GGUF_MAGIC);
+        r.u32().unwrap(); // version
+        let n_tensors = r.u64().unwrap() as usize;
+        let n_kv = r.u64().unwrap() as usize;
+        for _ in 0..n_kv {
+            r.string().unwrap();
+            let vtype = r.u32().unwrap();
+            r.skip_value(vtype).unwrap();
+        }
+        let mut dims = Vec::new();
+        let mut offset = 0u64;
+        let mut found = false;
+        for _ in 0..n_tensors {
+            let tn = r.string().unwrap();
+            let n_dims = r.u32().unwrap() as usize;
+            let ds: Vec<u64> = (0..n_dims).map(|_| r.u64().unwrap()).collect();
+            r.u32().unwrap(); // dtype
+            let off = r.u64().unwrap();
+            if tn == name {
+                dims = ds;
+                offset = off;
+                found = true;
+            }
+        }
+        assert!(found, "tensor {name} não encontrado no shard");
+        let data_start = align_up(r.pos as u64) as usize;
+        // Tamanho real vem das dims (o modelo de teste é f32), não do delta de
+        // offset: o delta inclui o padding de alinhamento entre tensores.
+        let size = dims.iter().product::<u64>() * 4;
+        let start = data_start + offset as usize;
+        let floats: Vec<f32> = bytes[start..start + size as usize]
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+            .collect();
+        (dims, floats)
+    }
+
+    #[test]
+    fn tp_role_classifies_each_tensor() {
+        assert_eq!(tp_role("blk.0.attn_q.weight"), TpRole::Column);
+        assert_eq!(tp_role("blk.3.ffn_gate.weight"), TpRole::Column);
+        assert_eq!(tp_role("blk.0.attn_output.weight"), TpRole::Row);
+        assert_eq!(tp_role("blk.0.ffn_down.weight"), TpRole::Row);
+        assert_eq!(tp_role("output.weight"), TpRole::Row);
+        assert_eq!(tp_role("token_embd.weight"), TpRole::Shared);
+        assert_eq!(tp_role("blk.0.attn_norm.weight"), TpRole::Shared);
+        assert_eq!(tp_role("output_norm.weight"), TpRole::Shared);
+        assert_eq!(tp_role("blk.0.ffn_gate_exps.weight"), TpRole::Unsupported);
+        assert_eq!(tp_role("blk.0.ssm_conv1d.weight"), TpRole::Unsupported);
+    }
+
+    #[test]
+    fn shard_tensor_parallel_rank_zero_takes_the_first_slices() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-rank0-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        let out = dir.join("rank0.gguf");
+        shard_tensor_parallel(&whole, &out, 2, 0, |_| {}).unwrap();
+
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_size")), Some(2));
+        assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_rank")), Some(0));
+        assert_eq!(kv_u32(&bytes, &crate::brand::gguf_key("tp_shard")), Some(1));
+
+        // Replicado: inteiro, igual ao fonte.
+        let (dims, data) = read_shard_tensor(&out, "token_embd.weight");
+        assert_eq!(dims, vec![4, 4]);
+        assert_eq!(data.len(), 16);
+        assert!(data.iter().all(|&v| (v - 0.5).abs() < 1e-6));
+
+        let (dims, data) = read_shard_tensor(&out, "output_norm.weight");
+        assert_eq!(dims, vec![4]);
+        assert_eq!(data, vec![2.0; 4]);
+
+        // Coluna: ne[1] 4 -> 2; rank 0 fica com as duas primeiras linhas.
+        let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
+        assert_eq!(dims, vec![4, 2]);
+        assert_eq!(data, (0..8).map(|j| j as f32).collect::<Vec<_>>());
+
+        // Linha: ne[0] 4 -> 2; dados uniformes 3.0.
+        let (dims, data) = read_shard_tensor(&out, "output.weight");
+        assert_eq!(dims, vec![2, 4]);
+        assert_eq!(data, vec![3.0; 8]);
+    }
+
+    #[test]
+    fn shard_tensor_parallel_rank_one_takes_the_second_slices() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-rank1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        let out = dir.join("rank1.gguf");
+        shard_tensor_parallel(&whole, &out, 2, 1, |_| {}).unwrap();
+
+        // Coluna: rank 1 fica com as duas últimas linhas (floats 8..16).
+        let (dims, data) = read_shard_tensor(&out, "blk.0.attn_q.weight");
+        assert_eq!(dims, vec![4, 2]);
+        assert_eq!(data, (8..16).map(|j| j as f32).collect::<Vec<_>>());
+
+        // Linha: a segunda metade de ne[0] de cada linha (dados uniformes).
+        let (dims, data) = read_shard_tensor(&out, "output.weight");
+        assert_eq!(dims, vec![2, 4]);
+        assert_eq!(data, vec![3.0; 8]);
+    }
+
+    #[test]
+    fn shard_tensor_parallel_rejects_bad_group() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(1)).unwrap();
+        let out = dir.join("bad.gguf");
+
+        assert!(shard_tensor_parallel(&whole, &out, 1, 0, |_| {}).is_err());
+        assert!(shard_tensor_parallel(&whole, &out, 2, 2, |_| {}).is_err());
+        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
     }
 }

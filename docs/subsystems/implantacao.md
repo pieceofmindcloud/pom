@@ -15,7 +15,8 @@ Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
 chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
 cluster). O pedido carrega `group` (o conjunto de fatias, pelo `shard_group` do
 catálogo - ou o **nome** do modelo no catálogo, com `kind: "whole"`), `kind`
-(`"shards"`, o padrão, ou `"whole"` - ver a seção 1.1), `params` (o
+(`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
+`"tensor_parallel"` - ver a seção 1.2), `params` (o
 `RuntimeParams` do pipeline inteiro), `selection` (a escolha explícita do
 operador - `None` = o nó decide) e `merge` (junção das fatias adjacentes de uma
 máquina). O `selection` viaja na requisição porque o
@@ -66,6 +67,21 @@ sentido **puxar**, que `transfer::safe_model_path` prende à pasta de fatias de
 quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
+
+## 1.2 Tensor parallel (caminho C): o grupo
+
+`kind: "tensor_parallel"` (`DeployKind::TensorParallel`) implanta um modelo num
+grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
+pipeline) + K **workers** (cada um extrai o próprio shard de tensor da própria
+cópia local). O enum e a recusa nomeiam o grupo (`DeployKind::unit` devolve "o
+grupo tensor-parallel <nome>"), mas a v1 da varredura lê só o modelo inteiro do
+primary - a descoberta de workers (que seguram shards, não modelos) é o passo
+seguinte, junto com o fork do llama.cpp que torna o shard carregável.
+
+O lado de `apply` já está pronto: `ApplyRequest.tp` (a `TpIdentity` de
+`network.rs`) faz o worker extrair o shard por `plan::extract_tp_shard` e
+anunciar o papel via `Network::set_tp`. Ver `docs/subsystems/fatiamento.md`
+(seção do shard por tensor) e `docs/subsystems/rede-p2p.md`.
 
 `AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
 inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.

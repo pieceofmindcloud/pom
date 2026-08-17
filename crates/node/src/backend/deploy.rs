@@ -176,6 +176,10 @@ pub enum DeployKind {
     Shards,
     /// One un-sliced GGUF, served whole by a single machine.
     Whole,
+    /// One model split across a group of machines by tensor parallelism
+    /// (caminho C): um primary + K workers. O primary segura o modelo inteiro;
+    /// cada worker extrai o próprio shard de tensor da própria cópia local.
+    TensorParallel,
 }
 
 impl DeployKind {
@@ -192,6 +196,7 @@ impl DeployKind {
         match self {
             DeployKind::Shards => format!("a fatia L{start}-{end}"),
             DeployKind::Whole => format!("o modelo {group}"),
+            DeployKind::TensorParallel => format!("o grupo tensor-parallel {group}"),
         }
     }
 
@@ -200,6 +205,7 @@ impl DeployKind {
         match self {
             DeployKind::Shards => "uma fatia",
             DeployKind::Whole => "um modelo",
+            DeployKind::TensorParallel => "um grupo tensor-parallel",
         }
     }
 }
@@ -336,7 +342,9 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                     })
                     .filter_map(parse_shard)
                     .collect(),
-                DeployKind::Whole => body
+                // TP v1 lê o modelo inteiro do primary; a descoberta de workers
+                // (que seguram shards de tensor, não modelos) é o passo seguinte.
+                DeployKind::Whole | DeployKind::TensorParallel => body
                     .get("models")
                     .and_then(|v| v.as_array())
                     .into_iter()
@@ -2677,6 +2685,22 @@ mod undeploy_tests {
 
 #[cfg(test)]
 mod tests {
+    /// O tipo tensor-parallel nomeia o grupo, não uma fatia nem um modelo: a
+    /// tela oferece o formato, e a recusa tem que falar a língua do formato.
+    #[test]
+    fn tensor_parallel_kind_names_the_group() {
+        use super::DeployKind;
+        assert_eq!(
+            DeployKind::TensorParallel.unit("qwen", 0, 31),
+            "o grupo tensor-parallel qwen"
+        );
+        assert_eq!(
+            DeployKind::TensorParallel.indefinite(),
+            "um grupo tensor-parallel"
+        );
+        assert!(!DeployKind::TensorParallel.whole(), "TP não é whole");
+    }
+
     /// Um no somado no meio do pipeline NAO e o ultimo da divisao.
     ///
     /// `peer_index`/`peer_count` respondem a uma pergunta so - "sou o ultimo?" -

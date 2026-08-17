@@ -1,4 +1,7 @@
 target*
+# fork do llama.cpp clonado por ssh para o trabalho de tensor parallelism
+# (caminho C): repositorio git proprio, nunca entra no historico do pom.
+/llama.cpp/
 # ancorado na raiz de proposito: o filesystem do macOS e case-insensitive e
 # `logs*` solto engolia web-ui/src/routes/Logs*.tsx sem avisar. *.log abaixo
 # cobre arquivo de log em qualquer pasta.

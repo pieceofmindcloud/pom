@@ -73,15 +73,17 @@ arquivo pela tela de Transferências antes.
 `kind: "tensor_parallel"` (`DeployKind::TensorParallel`) implanta um modelo num
 grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
 pipeline) + K **workers** (cada um extrai o próprio shard de tensor da própria
-cópia local). O enum e a recusa nomeiam o grupo (`DeployKind::unit` devolve "o
-grupo tensor-parallel <nome>"), mas a v1 da varredura lê só o modelo inteiro do
-primary - a descoberta de workers (que seguram shards, não modelos) é o passo
-seguinte, junto com o fork do llama.cpp que torna o shard carregável.
+cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, rank0_url,
+worker_node_ids}` - a varredura lê o modelo inteiro do primary, e o
+`launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
+cada worker com rank 1..size-1), todos apontando o mesmo `rank0_url` para a
+coletiva.
 
-O lado de `apply` já está pronto: `ApplyRequest.tp` (a `TpIdentity` de
-`network.rs`) faz o worker extrair o shard por `plan::extract_tp_shard` e
-anunciar o papel via `Network::set_tp`. Ver `docs/subsystems/fatiamento.md`
-(seção do shard por tensor) e `docs/subsystems/rede-p2p.md`.
+O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
+faz o worker extrair o shard por `plan::extract_tp_shard`, anunciar o papel via
+`Network::set_tp` e registrar a coletiva (`register_tp_reduce`). Ver
+`docs/subsystems/fatiamento.md` (seção do shard por tensor) e
+`docs/subsystems/rede-p2p.md`.
 
 `AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
 inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.

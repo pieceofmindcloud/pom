@@ -445,6 +445,7 @@ mod ipv6_tests {
             group_id: "g".into(),
             size: 2,
             rank,
+            rank0_url: None,
         });
         p
     }

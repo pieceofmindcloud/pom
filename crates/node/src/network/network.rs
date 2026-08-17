@@ -49,6 +49,10 @@ pub struct TpIdentity {
     pub group_id: String,
     pub size: u32,
     pub rank: u32,
+    /// URL do primary (rank 0) da coletiva, por onde todos os ranks fazem o
+    /// POST /v1/tp/reduce. O deploy preenche para todos os membros do grupo.
+    #[serde(default)]
+    pub rank0_url: Option<String>,
 }
 
 /// Message types exchanged between nodes

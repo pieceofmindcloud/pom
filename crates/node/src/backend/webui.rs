@@ -1555,6 +1555,16 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         mtp_min_probability: req.params.mtp_min_probability,
     };
 
+    // Liga/desliga a coletiva TP antes de subir o servidor: o callback tem que
+    // estar registrado no llama.cpp antes do primeiro decode. Reaplicar muda o
+    // grupo só num reinício (o estado do tp.rs é OnceLock, por desenho da v1).
+    match &req.tp {
+        Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
+            crate::tp::register_tp_reduce(tp.rank, tp.rank0_url.clone().unwrap());
+        }
+        _ => crate::tp::unregister_tp_reduce(),
+    }
+
     state.runtime.apply(cfg).await?;
     state.network.set_tp(req.tp.clone());
     Ok(model_path)

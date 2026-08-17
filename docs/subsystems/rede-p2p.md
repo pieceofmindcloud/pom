@@ -35,8 +35,10 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   `ollama_port`, `inference_port`, `inference_frame_capabilities`, `gateway_port`,
   `role`, `hostname`, `capabilities` (catálogo completo de `ModelCapability`),
   `disk_total_mb`, `disk_free_mb`, e `tp` (a `TpIdentity` de tensor parallelism:
-  `{role, group_id, size, rank}`, `None` = nó sem TP - ver `network.rs`). Campos
-  novos têm `serde(default)` para um nó antigo continuar parseável em cluster de
+  `{role, group_id, size, rank, rank0_url}`, `None` = nó sem TP - ver
+  `network.rs`). `rank0_url` é a URL do primary onde os ranks fazem o
+  `POST /v1/tp/reduce` da coletiva. Campos novos têm `serde(default)` para um nó
+  antigo continuar parseável em cluster de
   versões misturadas.
 - **`PeerRequest`** - pede a lista de peers de um nó conhecido.
 - **`PeerList`** - resposta com `Vec<PeerInfo>`, fatiada por MTU (ver abaixo).

@@ -121,10 +121,10 @@ impl ReduceBarrier {
 
 /// Barreira de redução BLOQUEANTE, o gêmeo síncrono de `ReduceBarrier`.
 ///
-/// O callback de tensor parallelism (`tp.rs`) roda num thread de blocking
-/// durante o `llama_decode`, então a coletiva tem que bloquear - não dá para
-/// `await`. Mesma semântica da versão async: cada rank contribui com o parcial
-/// e todos recebem a soma quando o grupo inteiro chegou.
+/// Superseded pelo transporte HTTP de `tp.rs` (o callback faz POST para o
+/// primary, cujo endpoint usa o `ReduceBarrier` async). Mantida pelo teste
+/// em-processo e como primitiva síncrona; não tem chamador de produção.
+#[allow(dead_code)]
 #[derive(Clone, Default)]
 pub struct BlockingReduceBarrier {
     inner: Arc<Mutex<HashMap<String, BlockingEntry>>>,

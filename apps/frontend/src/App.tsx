@@ -49,9 +49,12 @@ export default function App() {
   const { t } = useI18n();
   const location = useLocation();
   const isChat = location.pathname === "/chat";
+  // Screens that own the whole viewport and scroll inside themselves, instead
+  // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
+  const isFullBleed = isDashboard || location.pathname === "/documentacao";
   /*
-   * A node with no `rdma-p2p.json` runs a router carrying only `/api/setup/*`,
+   * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
    *
    * Deliberately not probed with `/api/setup/key`: that route *mints* a new
@@ -87,7 +90,7 @@ export default function App() {
         </ErrorBoundary>
         <main
           className={
-            isChat || isDashboard
+            isChat || isFullBleed
               ? "min-h-0 flex-1 overflow-hidden"
               : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
           }
@@ -97,7 +100,7 @@ export default function App() {
               <Chat />
             </ErrorBoundary>
           ) : (
-            <div className={isDashboard ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
+            <div className={isFullBleed ? "h-full w-full" : "mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8"}>
               <ErrorBoundary resetKey={location.pathname}>
                 <AnimatePresence mode="wait">
                   <Routes location={location} key={location.pathname}>

@@ -1,32 +1,41 @@
 /**
- * The Documentation screen: the repository's living documentation rendered as
- * navigable markdown.
+ * The Documentation screen: two audiences, one address.
+ *
+ * **Guides** (`src/guides/`) are written for people - ordered pages with
+ * diagrams that explain how the platform works. **Reference** is the
+ * repository's living markdown, written for agents: exhaustive, file-level, and
+ * true to the code. Mixing them was the old mistake; a person landing here got
+ * `AGENTS.md - crates/routing-base/` as a first impression.
  *
  * Content never leaves the browser because it never had a network path to take:
  * `scripts/build-docs.mjs` copies the folder AGENTS.md files, the subsystem
  * READMEs and the root README into `src/docs/` (gitignored) before every build,
  * and this module reads them through two build-time imports:
  *
- * - `manifest.json` (generated) - order, section and title per document;
+ * - `manifest.json` (generated) - order, section, human label and role;
  * - `import.meta.glob` over the copied `.md` files as raw strings.
  *
- * Embedding is the point: the panel is served from `dist/` on any machine, and
- * only what the bundle carries survives there. No node route, no disk reads at
- * runtime, no missing files on a machine that never had the repository.
+ * Two things the manifest carries so this screen never parses paths: `kind`
+ * ("overview" for a folder's AGENTS.md, "doc" otherwise) and `label`, the short
+ * human name. A folder's AGENTS.md is not a file called AGENTS.md - it is that
+ * section's own page, which is why clicking a section header opens it instead
+ * of listing it as a leaf.
  *
- * The tree on the left mirrors the repository layout (root, docs/, crates/,
- * apps/frontend/, scripts/); the crates section is grouped by crate so the
- * tree stays two levels deep. The search filters title and content across the
- * whole embedded set. The selection is a `?doc=` search param, so a document
- * is a shareable address.
+ * The screen is full-bleed (see `App.tsx`) and owns its scrolling: the
+ * navigation column and the reading column scroll independently, so a long
+ * document never drags the tree out of reach.
+ *
+ * Address: `?tab=`, `?guia=` and `?doc=` - every page is a shareable link.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { BookOpen, ChevronDown, FileText, Search, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { BookOpen, ChevronRight, FileText, Layers, Search, X } from "lucide-react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Markdown } from "../components/Markdown";
-import { Empty, Input, PageHeader, Panel } from "../components/ui";
+import { Empty, Input, Panel } from "../components/ui";
+import { GuideView } from "../guides/Guide";
+import { guidesFor } from "../guides/content";
 import { useI18n } from "../i18n/provider";
 import manifest from "../docs/manifest.json";
 
@@ -43,6 +52,11 @@ const SECTIONS: { id: string; labelKey: string }[] = [
   { id: "scripts", labelKey: "docs.section.scripts" },
 ];
 
+/** Localized name of the section an entry belongs to. */
+function sectionLabelKey(section: string): string {
+  return SECTIONS.find((s) => s.id === section)?.labelKey ?? "docs.section.root";
+}
+
 /** First path segment after `crates/`: the crate the entry belongs to. */
 function crateGroupOf(id: string): string {
   const rest = id.replace(/^crates\//, "");
@@ -50,76 +64,144 @@ function crateGroupOf(id: string): string {
   return slash === -1 ? rest : rest.slice(0, slash);
 }
 
+/** The entry a section header opens: that section's own overview page. */
+function overviewOf(entries: DocEntry[], section: string): DocEntry | undefined {
+  const inSection = entries.filter((e) => e.section === section && e.kind === "overview");
+  // The shallowest overview is the section's own: `crates/AGENTS.md` before
+  // `crates/node/src/backend/AGENTS.md`.
+  return inSection.sort((a, b) => a.id.split("/").length - b.id.split("/").length)[0];
+}
+
+/**
+ * What the reader is called on screen. Never the file name, and never the
+ * heading an agent doc gives itself ("AGENTS.md - crates/routing-base/"): a
+ * folder overview is named after its folder, and the repository root is named
+ * after the section it heads.
+ */
+function nameOf(entry: DocEntry, t: (key: string) => string): string {
+  if (entry.kind === "overview") return entry.label || t("docs.section.root");
+  return entry.label || entry.title;
+}
+
+/**
+ * The reader prints the subject in its own header, so the document's first `# `
+ * heading would say it a second time, in a different wording. Only a leading
+ * H1 is dropped - a `#` further down is a real section of the text.
+ */
+function withoutLeadingH1(markdown: string): string {
+  return markdown.replace(/^\s*#\s+[^\n]*\n/, "");
+}
+
 function Leaf({
   entry,
   active,
   onSelect,
+  hint,
 }: {
   entry: DocEntry;
   active: boolean;
   onSelect: () => void;
+  hint?: string;
 }) {
   const { t } = useI18n();
+  const name = nameOf(entry, t);
+  // The hint says *where* the page lives, never the file name: a search result
+  // needs the section to be told apart, not `rede-p2p.md`.
   return (
     <button
       type="button"
       onClick={onSelect}
       aria-pressed={active}
-      aria-label={t("docs.selectAria", { title: entry.title })}
+      aria-label={t("docs.selectAria", { title: name })}
       className={clsx(
-        "flex min-w-0 flex-col items-start gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors duration-150",
+        "flex min-w-0 flex-col items-start rounded-md px-2 py-1.5 text-left transition-colors duration-150",
         active
           ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25"
           : "text-muted hover:bg-line/40 hover:text-fg",
       )}
     >
-      <span className="w-full truncate text-[0.8rem] font-medium leading-snug">{entry.title}</span>
-      <span className="w-full truncate font-mono text-[0.62rem] leading-tight text-faint">
-        {entry.path}
-      </span>
+      <span className="w-full truncate text-[0.8rem] leading-snug">{name}</span>
+      {hint && (
+        <span className="w-full truncate text-[0.62rem] leading-tight text-faint">{hint}</span>
+      )}
     </button>
   );
 }
 
+/**
+ * A collapsible section.
+ *
+ * The header does two things on purpose, and they are the same intent: it opens
+ * the section and shows the section's own overview page. Collapsing is the
+ * chevron, which is a separate control so that closing a section never changes
+ * what is being read.
+ */
 function Section({
   section,
   entries,
+  overview,
   selectedId,
   onSelect,
-  defaultOpen,
+  open,
+  onToggle,
 }: {
   section: { id: string; labelKey: string };
   entries: DocEntry[];
+  overview?: DocEntry;
   selectedId: string;
   onSelect: (id: string) => void;
-  defaultOpen: boolean;
+  open: boolean;
+  onToggle: () => void;
 }) {
   const { t } = useI18n();
-  const holdsSelection = entries.some((e) => e.id === selectedId);
-  const [open, setOpen] = useState(defaultOpen);
-  const expanded = open || holdsSelection;
+  const label = t(section.labelKey);
+  const headerActive = overview ? overview.id === selectedId : false;
+  // A section whose only page is its own overview (docs/, scripts/) has
+  // nothing to expand; the chevron would be a control that does nothing.
+  const collapsible = entries.length > 0;
 
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        aria-expanded={expanded}
-        className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[0.8rem] font-semibold text-fg transition-colors hover:bg-line/40"
+      <div
+        className={clsx(
+          "flex items-center rounded-md pr-1 transition-colors",
+          headerActive ? "bg-iris/12 ring-1 ring-inset ring-iris/25" : "hover:bg-line/40",
+        )}
       >
-        <ChevronDown
-          className={clsx(
-            "h-3.5 w-3.5 shrink-0 text-faint transition-transform duration-200 ease-swift",
-            expanded && "rotate-180",
-          )}
-        />
-        <span className="flex-1 truncate">{t(section.labelKey)}</span>
-        <span className="rounded-md border border-line bg-raised px-1.5 py-0.5 font-mono text-[0.62rem] text-faint">
-          {entries.length}
-        </span>
-      </button>
+        {collapsible ? (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            aria-label={t(open ? "docs.collapse" : "docs.expand", { section: label })}
+            className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-faint hover:text-fg"
+          >
+            <ChevronRight
+              className={clsx(
+                "h-3.5 w-3.5 transition-transform duration-200 ease-swift",
+                open && "rotate-90",
+              )}
+            />
+          </button>
+        ) : (
+          <span className="h-7 w-7 shrink-0" aria-hidden="true" />
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (collapsible && !open) onToggle();
+            if (overview) onSelect(overview.id);
+          }}
+          className="min-w-0 flex-1 py-1.5 text-left text-[0.8rem] font-semibold tracking-tight text-fg"
+        >
+          <span className="block truncate">{label}</span>
+        </button>
+        {collapsible && (
+          <span className="shrink-0 font-mono text-[0.62rem] text-faint">{entries.length}</span>
+        )}
+      </div>
       <AnimatePresence initial={false}>
-        {expanded && (
+        {open && entries.length > 0 && (
           <motion.div
             initial={{ height: 0, opacity: 0 }}
             animate={{ height: "auto", opacity: 1 }}
@@ -127,7 +209,7 @@ function Section({
             transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
             className="overflow-hidden"
           >
-            <div className="ml-2.5 mt-0.5 flex flex-col gap-0.5 border-l border-line pb-1 pl-2">
+            <div className="ml-3.5 mt-0.5 flex flex-col gap-0.5 border-l border-line pb-1 pl-2">
               {section.id === "crates" ? (
                 <CrateGroups entries={entries} selectedId={selectedId} onSelect={onSelect} />
               ) : (
@@ -171,15 +253,10 @@ function CrateGroups({
       {groups.map(([crate, group]) => (
         <div key={crate}>
           <div className="px-2 pb-0.5 pt-2 font-mono text-[0.62rem] font-semibold uppercase tracking-wider text-faint">
-            {crate}/
+            {crate}
           </div>
           {group.map((e) => (
-            <Leaf
-              key={e.id}
-              entry={e}
-              active={e.id === selectedId}
-              onSelect={() => onSelect(e.id)}
-            />
+            <Leaf key={e.id} entry={e} active={e.id === selectedId} onSelect={() => onSelect(e.id)} />
           ))}
         </div>
       ))}
@@ -187,70 +264,147 @@ function CrateGroups({
   );
 }
 
-export function Documentation() {
+/** The two audiences, switched at the top of the navigation column. */
+function TabSwitch({ tab, onChange }: { tab: Tab; onChange: (t: Tab) => void }) {
   const { t } = useI18n();
+  const options: { id: Tab; label: string; icon: typeof BookOpen }[] = [
+    { id: "guias", label: t("docs.tab.guides"), icon: BookOpen },
+    { id: "referencia", label: t("docs.tab.reference"), icon: Layers },
+  ];
+  return (
+    <div role="tablist" className="flex items-center gap-1 rounded-lg border border-line bg-raised p-1">
+      {options.map((o) => {
+        const active = tab === o.id;
+        const Icon = o.icon;
+        return (
+          <button
+            key={o.id}
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(o.id)}
+            className={clsx(
+              "flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 text-[0.78rem] font-medium transition-colors",
+              active ? "bg-iris/15 text-fg ring-1 ring-inset ring-iris/25" : "text-muted hover:text-fg",
+            )}
+          >
+            <Icon className="h-3.5 w-3.5" />
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+type Tab = "guias" | "referencia";
+
+export function Documentation() {
+  const { t, locale } = useI18n();
   const [params, setParams] = useSearchParams();
   const [query, setQuery] = useState("");
-  const viewerRef = useRef<HTMLDivElement>(null);
+  const readerRef = useRef<HTMLDivElement>(null);
 
   const entries = manifest.entries;
   const byId = useMemo(() => new Map(entries.map((e) => [e.id, e])), [entries]);
+  const guides = useMemo(() => guidesFor(locale), [locale]);
 
-  const selectedId = byId.has(params.get("doc") ?? "") ? (params.get("doc") as string) : entries[0]?.id ?? "";
+  const tab: Tab = params.get("tab") === "referencia" ? "referencia" : "guias";
+  const selectedId = byId.has(params.get("doc") ?? "")
+    ? (params.get("doc") as string)
+    : entries[0]?.id ?? "";
   const selected = selectedId ? byId.get(selectedId) : undefined;
   const selectedContent = selected ? CONTENT[`../docs/${selected.id}`] : undefined;
+  const guideId = guides.some((g) => g.id === params.get("guia"))
+    ? (params.get("guia") as string)
+    : guides[0]?.id ?? "";
+  const guide = guides.find((g) => g.id === guideId);
 
-  const select = (id: string) => {
-    setParams({ doc: id }, { replace: true });
-    // The viewer scrolls with the page; a new document must not open halfway
-    // down an old one. jsdom does not implement scrollIntoView, hence the guard.
+  // A new page must not open halfway down the previous one. jsdom has no
+  // layout, hence the guard.
+  const toTop = useCallback(() => {
     requestAnimationFrame(() => {
       try {
-        viewerRef.current?.scrollIntoView({ block: "start" });
+        readerRef.current?.scrollTo({ top: 0 });
       } catch {
         // test environment
       }
     });
+  }, []);
+
+  const openDoc = useCallback(
+    (id: string) => {
+      setParams({ tab: "referencia", doc: id }, { replace: true });
+      toTop();
+    },
+    [setParams, toTop],
+  );
+
+  const openGuide = useCallback(
+    (id: string) => {
+      setParams({ tab: "guias", guia: id }, { replace: true });
+      toTop();
+    },
+    [setParams, toTop],
+  );
+
+  const switchTab = (next: Tab) => {
+    if (next === tab) return;
+    setParams(next === "guias" ? { tab: "guias", guia: guideId } : { tab: "referencia", doc: selectedId }, {
+      replace: true,
+    });
+    toTop();
   };
+
+  // Sections start open, but the operator's collapse wins: an explicit `false`
+  // is remembered, and the selection no longer forces a section back open (that
+  // was the bug - a section holding the open document could not be closed).
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const toggle = (id: string) => setCollapsed((c) => ({ ...c, [id]: !c[id] }));
 
   const q = query.trim().toLowerCase();
   const results = useMemo(() => {
     if (!q) return null;
     return entries.filter(
       (e) =>
-        e.title.toLowerCase().includes(q) ||
+        (e.label || e.title).toLowerCase().includes(q) ||
+        e.path.toLowerCase().includes(q) ||
         (CONTENT[`../docs/${e.id}`] ?? "").toLowerCase().includes(q),
     );
   }, [q, entries]);
 
   if (entries.length === 0) {
     return (
-      <Panel>
-        <Empty
-          icon={<BookOpen className="h-5 w-5" />}
-          title={t("docs.empty")}
-          action={
-            <button
-              type="button"
-              className="rounded-lg border border-line bg-raised px-3 py-2 text-sm font-medium text-fg hover:border-line-strong hover:bg-line/40"
-              onClick={() => window.location.reload()}
-            >
-              {t("common.retry")}
-            </button>
-          }
-        >
-          {t("docs.emptyDetail")}
-        </Empty>
-      </Panel>
+      <div className="p-6">
+        <Panel>
+          <Empty
+            icon={<BookOpen className="h-5 w-5" />}
+            title={t("docs.empty")}
+            action={
+              <button
+                type="button"
+                className="rounded-lg border border-line bg-raised px-3 py-2 text-sm font-medium text-fg hover:border-line-strong hover:bg-line/40"
+                onClick={() => window.location.reload()}
+              >
+                {t("common.retry")}
+              </button>
+            }
+          >
+            {t("docs.emptyDetail")}
+          </Empty>
+        </Panel>
+      </div>
     );
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <PageHeader title={t("docs.title")} subtitle={t("docs.subtitle")} />
-      <div className="grid gap-4 lg:grid-cols-[minmax(0,290px)_minmax(0,1fr)] lg:items-start">
-        <Panel className="overflow-hidden lg:sticky lg:top-0 lg:max-h-[calc(100vh-8.5rem)]">
-          <div className="border-b border-line p-3">
+    <div className="flex h-full min-h-0 w-full">
+      <nav className="flex w-[16.5rem] shrink-0 flex-col border-r border-line bg-surface">
+        <div className="shrink-0 border-b border-line p-3">
+          <TabSwitch tab={tab} onChange={switchTab} />
+        </div>
+
+        {tab === "referencia" && (
+          <div className="shrink-0 border-b border-line p-3">
             <label className="relative block">
               <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" />
               <Input
@@ -272,75 +426,119 @@ export function Documentation() {
               )}
             </label>
           </div>
-          <div className="max-h-[calc(100vh-13rem)] min-h-0 overflow-y-auto p-2 lg:max-h-none lg:min-h-[20rem]">
-            {results ? (
-              results.length === 0 ? (
-                <div className="px-2 py-4">
-                  <p className="text-sm font-medium text-fg">{t("docs.noResults")}</p>
-                  <p className="mt-1 text-xs leading-relaxed text-muted">
-                    {t("docs.noResultsDetail")}
-                  </p>
-                </div>
-              ) : (
-                <div>
-                  <p className="px-2 pb-1 text-[0.68rem] font-medium text-faint">
-                    {t("docs.resultCount", { count: results.length })}
-                  </p>
-                  <div className="flex flex-col gap-0.5">
-                    {results.map((e) => (
-                      <Leaf
-                        key={e.id}
-                        entry={e}
-                        active={e.id === selectedId}
-                        onSelect={() => select(e.id)}
-                      />
-                    ))}
-                  </div>
-                </div>
-              )
-            ) : (
-              <div className="flex flex-col gap-0.5">
-                {SECTIONS.map((section) => {
-                  const inSection = entries.filter((e) => e.section === section.id);
-                  if (inSection.length === 0) return null;
-                  return (
-                    <Section
-                      key={section.id}
-                      section={section}
-                      entries={inSection}
-                      selectedId={selectedId}
-                      onSelect={select}
-                      defaultOpen
-                    />
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </Panel>
+        )}
 
-        <Panel className="min-w-0 overflow-hidden">
-          {selected && selectedContent !== undefined ? (
-            <div ref={viewerRef}>
-              <div className="border-b border-line px-5 py-4">
-                <div className="eyebrow mb-1.5 flex items-center gap-1.5">
-                  <FileText className="h-3 w-3" />
-                  <span className="truncate font-mono">{selected.path}</span>
-                </div>
-                <h2 className="font-display text-[0.98rem] font-semibold tracking-tight text-fg">
-                  {selected.title}
-                </h2>
-              </div>
-              <div className="min-w-0 px-5 py-4">
-                <Markdown>{selectedContent}</Markdown>
-              </div>
+        {/*
+          `min-h-0` is what makes this scroll: without it the flex child grows
+          to its content and the overflow never engages - which is exactly how
+          the search results used to run off the bottom of the screen with no
+          scrollbar.
+        */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-2">
+          {tab === "guias" ? (
+            <div className="flex flex-col gap-0.5">
+              {guides.map((g) => {
+                const active = g.id === guideId;
+                return (
+                  <button
+                    key={g.id}
+                    type="button"
+                    onClick={() => openGuide(g.id)}
+                    aria-pressed={active}
+                    className={clsx(
+                      "flex min-w-0 flex-col items-start rounded-md px-2.5 py-2 text-left transition-colors duration-150",
+                      active
+                        ? "bg-iris/12 text-fg ring-1 ring-inset ring-iris/25"
+                        : "text-muted hover:bg-line/40 hover:text-fg",
+                    )}
+                  >
+                    <span className="w-full truncate text-[0.82rem] font-medium leading-snug">
+                      {g.label}
+                    </span>
+                    <span className="w-full text-[0.68rem] leading-snug text-faint">{g.summary}</span>
+                  </button>
+                );
+              })}
             </div>
+          ) : results ? (
+            results.length === 0 ? (
+              <div className="px-2 py-4">
+                <p className="text-sm font-medium text-fg">{t("docs.noResults")}</p>
+                <p className="mt-1 text-xs leading-relaxed text-muted">{t("docs.noResultsDetail")}</p>
+              </div>
+            ) : (
+              <div>
+                <p className="px-2 pb-1 text-[0.68rem] font-medium text-faint">
+                  {t("docs.resultCount", { count: results.length })}
+                </p>
+                <div className="flex flex-col gap-0.5">
+                  {results.map((e) => (
+                    <Leaf
+                      key={e.id}
+                      entry={e}
+                      active={e.id === selectedId}
+                      hint={t(sectionLabelKey(e.section))}
+                      onSelect={() => openDoc(e.id)}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          ) : (
+            <div className="flex flex-col gap-0.5">
+              {SECTIONS.map((section) => {
+                const overview = overviewOf(entries, section.id);
+                const inSection = entries.filter(
+                  (e) => e.section === section.id && e.id !== overview?.id,
+                );
+                if (inSection.length === 0 && !overview) return null;
+                return (
+                  <Section
+                    key={section.id}
+                    section={section}
+                    entries={inSection}
+                    overview={overview}
+                    selectedId={selectedId}
+                    onSelect={openDoc}
+                    open={collapsed[section.id] !== true}
+                    onToggle={() => toggle(section.id)}
+                  />
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </nav>
+
+      <div ref={readerRef} className="min-w-0 flex-1 overflow-y-auto">
+        <div className="mx-auto w-full max-w-[62rem] px-6 py-7 sm:px-10">
+          {tab === "guias" ? (
+            guide ? (
+              <GuideView guide={guide} onOpenDoc={openDoc} />
+            ) : (
+              <Empty icon={<BookOpen className="h-5 w-5" />} title={t("docs.noDoc")}>
+                {t("docs.noDocDetail")}
+              </Empty>
+            )
+          ) : selected && selectedContent !== undefined ? (
+            <article className="min-w-0">
+              <header className="mb-5 border-b border-line pb-4">
+                <h2 className="font-display text-[1.5rem] font-bold tracking-tight text-fg">
+                  {nameOf(selected, t)}
+                </h2>
+                <p className="mt-1.5 flex items-center gap-1.5 font-mono text-[0.7rem] text-faint">
+                  <FileText className="h-3 w-3 shrink-0" />
+                  <span className="truncate">{selected.path}</span>
+                </p>
+              </header>
+              <Markdown>{withoutLeadingH1(selectedContent)}</Markdown>
+            </article>
           ) : (
             <Empty icon={<FileText className="h-5 w-5" />} title={t("docs.noDoc")}>
               {t("docs.noDocDetail")}
             </Empty>
           )}
-        </Panel>
+        </div>
       </div>
     </div>
   );

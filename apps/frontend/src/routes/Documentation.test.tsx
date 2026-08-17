@@ -1,15 +1,16 @@
 // @vitest-environment jsdom
 /**
  * A rota Documentação é auto-contida: o conteúdo viaja embutido no bundle
- * (`scripts/build-docs.mjs` gera `src/docs/` no build), então o que se testa
- * aqui é o contrato entre a tela e esse conjunto embutido - a árvore navega
- * pelas seções do repositório, a busca filtra título e corpo, e o documento
- * selecionado é um endereço (`?doc=`).
+ * (`scripts/build-docs.mjs` gera `src/docs/` no build, os guias vivem em
+ * `src/guides/`), então o que se testa aqui é o contrato entre a tela e esse
+ * conjunto - duas abas para dois públicos, a árvore que navega o repositório,
+ * a busca, e o endereço (`?tab=`, `?guia=`, `?doc=`).
  *
- * O jsdom não calcula layout nem implementa scrollIntoView; o componente já
- * guarda a chamada, e estes testes não dependem de posição.
+ * O jsdom não calcula layout; os testes que valem a pena aqui são de
+ * comportamento, não de posição. As afirmações sobre a rolagem são estruturais
+ * (quem é o container que rola), porque é a estrutura que estava errada.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
@@ -25,64 +26,106 @@ function renderDoc(initialEntry = "/documentacao") {
   );
 }
 
+/** Abre a aba de referência, que é onde a árvore e a busca vivem. */
+function openReference() {
+  fireEvent.click(screen.getByRole("tab", { name: "Reference" }));
+}
+
 describe("Documentation", () => {
   afterEach(cleanup);
 
-  it("abre o primeiro documento (AGENTS.md da raiz) e desenha a árvore de seções", () => {
+  it("abre nos guias, não no markdown de agente", () => {
     renderDoc();
-    // O documento padrão é o primeiro do manifesto; o primeiro heading dele
-    // rende como <h1> no viewer.
-    expect(screen.getByRole("heading", { name: "AGENTS.md - raiz", level: 1 })).toBeTruthy();
-    // Cabeçalhos de seção; `getAllByRole` porque a mesma string pode casar
-    // também com o nome de uma folha (ex.: "Open crates/").
-    for (const pattern of [
-      /Project root/,
-      /Subsystem docs/,
-      /crates\//,
-      /apps\/frontend/,
-      /scripts\//,
-    ]) {
-      expect(screen.getAllByRole("button", { name: pattern }).length).toBeGreaterThan(0);
-    }
+    // O primeiro guia é o "o que é esta plataforma"; o markdown da raiz não
+    // pode ser a primeira coisa que um humano vê.
+    expect(screen.getByRole("heading", { name: "What this platform is", level: 2 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "AGENTS.md - raiz" })).toBeNull();
   });
 
-  it("selecionar um documento da árvore o renderiza e ativa o item", () => {
+  it("um guia leva o leitor à referência pelo link de aprofundamento", () => {
     renderDoc();
-    const leaf = screen.getByRole("button", { name: /Open .*Subsistema: transferência/ });
-    fireEvent.click(leaf);
-    // O h1 do viewer é o primeiro heading do README de subsistema.
-    expect(
-      screen.getByRole("heading", {
-        name: "Subsistema: transferência de arquivos (fatias) entre máquinas",
-        level: 1,
-      }),
-    ).toBeTruthy();
-    // O item ativo marca aria-pressed no leaf.
-    expect(leaf.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: /Discovery, advertised addresses/ }));
+    // O leitor imprime o assunto no próprio cabeçalho e o markdown entra sem o
+    // H1 dele, que só repetiria o mesmo em outra redação.
+    expect(screen.getByRole("heading", { name: "Rede P2P e descoberta", level: 2 })).toBeTruthy();
+    expect(screen.queryByRole("heading", { level: 1 })).toBeNull();
+    expect(screen.getByRole("tab", { name: "Reference" }).getAttribute("aria-selected")).toBe(
+      "true",
+    );
   });
 
-  it("o parâmetro ?doc= é o endereço do documento", () => {
-    renderDoc("/documentacao?doc=docs/subsystems/inferencia.md");
-    // O h1 do viewer é o primeiro heading do README de subsistema.
-    expect(
-      screen.getByRole("heading", { name: "Caminho de inferência", level: 1 }),
-    ).toBeTruthy();
+  it("a lista de arquivos não mostra nome de arquivo nem AGENTS.md", () => {
+    renderDoc();
+    openReference();
+    // "backend/" e não "AGENTS.md - crates/node/src/backend/"; "Rede P2P e
+    // descoberta" e não "rede-p2p.md".
+    expect(screen.getByRole("button", { name: "Open backend/" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Rede P2P e descoberta" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Open AGENTS\.md/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /\.md$/ })).toBeNull();
   });
 
-  it("a busca filtra por título e corpo; limpar volta à árvore", () => {
+  it("o cabeçalho da seção abre a visão geral daquela pasta", () => {
     renderDoc();
+    openReference();
+    fireEvent.click(screen.getByRole("button", { name: "docs/" }));
+    expect(screen.getByRole("heading", { name: "docs/", level: 2 })).toBeTruthy();
+  });
+
+  it("uma seção pode ser recolhida mesmo segurando o documento aberto", async () => {
+    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
+    const collapse = screen.getByRole("button", { name: "Collapse Subsystem docs" });
+    expect(screen.getByRole("button", { name: "Open Caminho de inferência" })).toBeTruthy();
+
+    fireEvent.click(collapse);
+
+    // O defeito antigo: a seção que continha a seleção voltava a abrir sozinha.
+    // A saída é animada, então a folha some no fim da animação, não no clique.
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Open Caminho de inferência" })).toBeNull(),
+    );
+    expect(screen.getByRole("button", { name: "Expand Subsystem docs" })).toBeTruthy();
+    // Recolher não muda o que está sendo lido.
+    expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+  });
+
+  it("a lista de navegação rola sozinha, e não a página", () => {
+    const { container } = renderDoc();
+    openReference();
+    // A regressão foi estrutural: sem `min-h-0` o filho flex cresce com o
+    // conteúdo e o overflow nunca engata, então a busca corria para fora da
+    // tela sem barra de rolagem.
+    const scrollers = container.querySelectorAll(".overflow-y-auto");
+    expect(scrollers.length).toBe(2);
+    expect(scrollers[0].className).toContain("min-h-0");
+  });
+
+  it("?doc= e ?guia= são endereços", () => {
+    renderDoc("/documentacao?tab=referencia&doc=docs/subsystems/inferencia.md");
+    expect(screen.getByRole("heading", { name: "Caminho de inferência", level: 2 })).toBeTruthy();
+    cleanup();
+
+    renderDoc("/documentacao?tab=guias&guia=operar");
+    expect(screen.getByRole("heading", { name: "Operate and diagnose", level: 2 })).toBeTruthy();
+  });
+
+  it("a busca filtra por rótulo e corpo; limpar volta à árvore", () => {
+    renderDoc();
+    openReference();
     const search = screen.getByLabelText("Search documentation");
     fireEvent.change(search, { target: { value: "transferência" } });
-    // Com busca ativa, a árvore some e sobra a lista de resultados.
-    expect(screen.queryByText("Project root")).toBeNull();
-    expect(screen.getByRole("button", { name: /Open .*transferência/ })).toBeTruthy();
+    // Com busca ativa a árvore some; "Project root" ainda aparece como *dica*
+    // de seção num resultado, então o que tem de sumir é o cabeçalho.
+    expect(screen.queryByRole("button", { name: "Project root" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Open .*ransferência/ })).toBeTruthy();
 
     fireEvent.click(screen.getByLabelText("Clear search"));
-    expect(screen.getByText("Project root")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Project root" })).toBeTruthy();
   });
 
   it("uma busca sem resultado avisa em vez de quebrar", () => {
     renderDoc();
+    openReference();
     fireEvent.change(screen.getByLabelText("Search documentation"), {
       target: { value: "zzz-não-existe" },
     });

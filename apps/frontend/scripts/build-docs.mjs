@@ -97,6 +97,53 @@ function titleOf(p) {
   return p.split("/").pop() ?? p;
 }
 
+/**
+ * A folder's `AGENTS.md` is not a document *named* AGENTS.md - it is that
+ * folder's overview. The reader picks a subject, never a file name, so the
+ * manifest carries the role (`kind`) and the folder it covers (`scope`)
+ * instead of leaving the screen to parse paths.
+ */
+function kindOf(p) {
+  return p.endsWith("AGENTS.md") ? "overview" : "doc";
+}
+
+/** Folder an overview covers, with trailing slash; "" for the repository root. */
+function scopeOf(p) {
+  const dir = dirname(p);
+  return dir === "." ? "" : dir + "/";
+}
+
+/**
+ * Short human label for the navigation. Titles written for agents carry
+ * prefixes that only repeat the tree ("Subsistema: ", "AGENTS.md - "); the
+ * reader already knows which section they clicked.
+ */
+function labelOf(p, title) {
+  if (kindOf(p) === "overview") {
+    const scope = scopeOf(p);
+    if (scope === "") return "";
+    const parts = scope.split("/").filter(Boolean);
+    return parts[parts.length - 1] + "/";
+  }
+  let label = title
+    .replace(/^Subsistema:\s*/i, "")
+    .replace(/^AGENTS\.md\s*-\s*/i, "")
+    .trim();
+  // A subject, not a sentence: everything after the first ":", " - ", " — " or
+  // "(" is the explanation, and the reader gets it from the page itself.
+  const cut = label.search(/(:| - | — | \()/);
+  if (cut > 0) {
+    const head = label.slice(0, cut).trim();
+    const tail = label.slice(cut).replace(/^(:| - | — )/, "").trim();
+    // "CODAI-SERVER — interface web": the head is a product code, the tail is
+    // the subject. Anything shouted in caps loses to what follows it.
+    label = head === head.toUpperCase() && tail && !tail.startsWith("(") ? tail : head;
+  }
+  const first = label.split(/\s/)[0] ?? "";
+  if (!/[-.]/.test(first)) label = label.charAt(0).toUpperCase() + label.slice(1);
+  return label;
+}
+
 const entries = [];
 for (const p of [...wanted].sort()) {
   const section = sectionOf(p);
@@ -106,10 +153,20 @@ for (const p of [...wanted].sort()) {
   const dest = join(out, id);
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, body);
-  entries.push({ id, path: p, title: titleOf(p), section });
+  const title = titleOf(p);
+  entries.push({
+    id,
+    path: p,
+    title,
+    label: labelOf(p, title),
+    kind: kindOf(p),
+    scope: scopeOf(p),
+    section,
+  });
 }
 
 const SUBSYSTEMS_ORDER = [
+  "operacao.md",
   "rede-p2p.md",
   "fatiamento.md",
   "implantacao.md",

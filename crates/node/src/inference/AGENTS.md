@@ -17,6 +17,12 @@ executa a cadeia que o planejador montou.
 
 ## Arquivos
 
+- `collective.rs` (novo) - núcleo das coletivas de tensor parallelism (caminho
+  C): `reduce_sum` (a soma matemática) e `ReduceBarrier` (barreira que
+  acumula os parciais de cada rank e devolve a soma a todos via `oneshot`,
+  modelada no `ReplyInbox` de `direct.rs`). O transporte HTTP
+  (`POST /v1/tp/reduce`) é uma camada fina, ligada junto com o fork do
+  llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; inbox de
   tickets, `reply_to`, telemetria acumulada na ida.

@@ -11,6 +11,8 @@ mod bitswap;
 mod brand;
 #[path = "models/catalog.rs"]
 mod catalog;
+#[path = "inference/collective.rs"]
+mod collective;
 #[path = "utils/config.rs"]
 mod config;
 #[path = "backend/deploy.rs"]

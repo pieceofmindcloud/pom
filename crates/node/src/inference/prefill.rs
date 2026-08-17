@@ -60,6 +60,19 @@ pub struct PrefillOutcome {
 /// apart because they are different workloads: prefill moves a whole prompt
 /// through the peer once, decode moves one token at a time. Averaging them
 /// together hides which of the two is slow.
+/// O que uma chamada de salto conta sobre o canal que ela usou.
+///
+/// Existe como struct, e não como dois parâmetros soltos, porque `record_hop`
+/// já carrega nove posicionais - dois `u64` a mais ali seriam trocados de
+/// ordem no primeiro chamador distraído.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct TlsHop {
+    /// A chamada foi cifrada.
+    pub on: bool,
+    /// Handshake medido no servidor, em ms. Zero quando a conexão veio do pool.
+    pub handshake_ms: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
@@ -73,6 +86,17 @@ pub struct PhaseTrace {
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
+    /// Chamadas deste salto que foram cifradas.
+    ///
+    /// Contagem e não booleano porque uma fase soma várias chamadas: se só
+    /// parte delas foi por TLS, a tela precisa poder dizer isso em vez de
+    /// escolher um dos dois e mentir sobre o resto.
+    pub tls_calls: u32,
+    /// Soma dos handshakes TLS deste salto, medidos no servidor.
+    ///
+    /// Quase sempre zero: o handshake acontece uma vez por conexão e as
+    /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
+    pub tls_handshake_ms: u64,
     pub node_frame_decode_ms: u64,
     pub node_input_prepare_ms: u64,
     pub node_queue_ms: u64,
@@ -119,6 +143,7 @@ impl PhaseTrace {
         response_headers_ms: u64,
         response_body_ms: u64,
         client_decode_ms: u64,
+        tls: TlsHop,
         node: &serde_json::Value,
     ) {
         let node_ms = |key: &str| node[key].as_u64().unwrap_or(0);
@@ -133,6 +158,10 @@ impl PhaseTrace {
         self.response_headers_ms += response_headers_ms;
         self.response_body_ms += response_body_ms;
         self.client_decode_ms += client_decode_ms;
+        if tls.on {
+            self.tls_calls += 1;
+        }
+        self.tls_handshake_ms += tls.handshake_ms;
         self.node_frame_decode_ms += node_ms("frame_decode_ms");
         self.node_input_prepare_ms += node_ms("input_prepare_ms");
         self.node_queue_ms += node_ms("queue_ms");
@@ -168,6 +197,8 @@ impl PhaseTrace {
         self.response_headers_ms += next.response_headers_ms;
         self.response_body_ms += next.response_body_ms;
         self.client_decode_ms += next.client_decode_ms;
+        self.tls_calls += next.tls_calls;
+        self.tls_handshake_ms += next.tls_handshake_ms;
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
@@ -323,6 +354,7 @@ impl RequestTrace {
         response_headers_ms: u64,
         response_body_ms: u64,
         client_decode_ms: u64,
+        tls: TlsHop,
         node: &serde_json::Value,
     ) {
         let Some(entry) = self.hops.get_mut(hop) else {
@@ -341,6 +373,7 @@ impl RequestTrace {
             response_headers_ms,
             response_body_ms,
             client_decode_ms,
+            tls,
             node,
         );
         self.total_bytes_sent += bytes_sent;
@@ -366,6 +399,10 @@ impl RequestTrace {
             get("response_headers_ms"),
             get("response_body_ms"),
             get("client_decode_ms"),
+            TlsHop {
+                on: entry.get("tls").and_then(|v| v.as_bool()).unwrap_or(false),
+                handshake_ms: get("tls_handshake_ms"),
+            },
             &entry["node_timings"],
         );
     }
@@ -894,6 +931,10 @@ async fn send_chunk(
         sent.response_headers_ms,
         sent.response_body_ms,
         sent.client_decode_ms,
+        TlsHop {
+            on: sent.tls,
+            handshake_ms: sent.tls_handshake_ms,
+        },
         &sent.meta["node_timings"],
     );
     Ok((sent.meta, sent.tensor))
@@ -1023,6 +1064,15 @@ pub async fn step(
             response_headers_ms,
             response_body_ms,
             client_decode_ms,
+            // Este caminho monta o POST à mão em vez de usar o `send_frame`,
+            // então lê os dois do que ele mesmo fez e do que o peer reportou.
+            TlsHop {
+                on: url.starts_with("https://"),
+                handshake_ms: m
+                    .get("tls_handshake_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            },
             &m["node_timings"],
         );
         meta = m;
@@ -1340,6 +1390,10 @@ async fn step_speculative_hub(
             sent.response_headers_ms,
             sent.response_body_ms,
             sent.client_decode_ms,
+            TlsHop {
+                on: sent.tls,
+                handshake_ms: sent.tls_handshake_ms,
+            },
             &sent.meta["node_timings"],
         );
         meta = sent.meta;
@@ -1509,6 +1563,7 @@ mod tests {
             2,
             3,
             4,
+            TlsHop::default(),
             &json!({"decode_ms": 5}),
         );
 
@@ -1539,6 +1594,7 @@ mod tests {
             0,
             0,
             0,
+            TlsHop::default(),
             &json!({"decode_ms": 34, "lock_wait_ms": 194}),
         );
 
@@ -1555,7 +1611,7 @@ mod tests {
         let node = json!({"decode_ms": 10, "residual_ms": 2});
 
         let mut direct = RequestTrace::new("qwen", &[("no1", 0, 15)]);
-        direct.record_hop(0, Phase::Decode, 70, 13, 100, 200, 1, 2, 3, 4, &node);
+        direct.record_hop(0, Phase::Decode, 70, 13, 100, 200, 1, 2, 3, 4, TlsHop::default(), &node);
 
         let mut from_json = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         from_json.record_hop_from_json(
@@ -1604,6 +1660,7 @@ mod tests {
             25,
             1,
             1,
+            TlsHop::default(),
             &json!({"decode_ms": 11, "residual_ms": 4, "top_p_ms": 3, "backend_completion_ms": 9}),
         );
 
@@ -1627,10 +1684,10 @@ mod tests {
     fn hop_trace_keeps_prefill_and_decode_transport_independent() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         trace.record_hop(
-            0, Phase::Prefill, 10, 6, 100, 200, 1, 8, 1, 0, &json!({}),
+            0, Phase::Prefill, 10, 6, 100, 200, 1, 8, 1, 0, TlsHop::default(), &json!({}),
         );
         trace.record_hop(
-            0, Phase::Decode, 20, 9, 10, 20, 1, 18, 1, 0, &json!({}),
+            0, Phase::Decode, 20, 9, 10, 20, 1, 18, 1, 0, TlsHop::default(), &json!({}),
         );
 
         assert_eq!(trace.hops[0].prefill.network_ms, 4);

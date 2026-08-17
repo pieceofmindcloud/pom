@@ -158,6 +158,39 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
   </details>;
 }
 
+/**
+ * A linha que descreve o canal deste salto.
+ *
+ * Ela existe para dizer duas coisas que um número sozinho não diz. A primeira é
+ * se o salto foi cifrado - e, quando só parte das chamadas foi, ela mostra a
+ * fração, porque é assim que uma virada de política pela metade aparece em vez
+ * de passar despercebida.
+ *
+ * A segunda é o que `tls_handshake_ms` mede. O handshake acontece **uma vez por
+ * conexão**, e as conexões ficam no pool: quase todo salto reporta zero. Sem
+ * dizer isso com todas as letras, quem olhasse um salto zerado concluiria que
+ * TLS é grátis, e quem olhasse o salto que abriu conexão concluiria que é caro
+ * por token - duas leituras erradas do mesmo número. O custo por requisição
+ * depois do handshake é a cifra do record layer, que está diluída dentro de
+ * `response_body_ms` e não é separável sem instrumentar o socket; a tela diz
+ * isso em vez de inventar uma coluna.
+ */
+function tlsLine(
+  t: ReturnType<typeof useI18n>["t"],
+  phase: { calls: number; tls_calls: number; tls_handshake_ms: number },
+) {
+  if (phase.calls === 0) return t("chat.telemetry.tlsIdle");
+  if (phase.tls_calls === 0) return t("chat.telemetry.tlsOff");
+  if (phase.tls_calls < phase.calls) {
+    return t("chat.telemetry.tlsPartial", {
+      cifradas: phase.tls_calls,
+      total: phase.calls,
+      handshake: phase.tls_handshake_ms,
+    });
+  }
+  return t("chat.telemetry.tlsOn", { handshake: phase.tls_handshake_ms });
+}
+
 function PhaseRow({
   hop,
   label,
@@ -199,6 +232,7 @@ function PhaseRow({
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}{phase.node_backend_completion_ms === 0 ? ` ${t("chat.telemetry.syncOff")}` : ""}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
+        <span className="block">{tlsLine(t, phase)}</span>
       </td>
     </tr>
   </>;

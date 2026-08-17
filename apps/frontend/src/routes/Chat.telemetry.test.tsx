@@ -21,6 +21,7 @@ function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
     node_softmax_ms: 0, node_top_k_ms: 0, node_top_p_ms: 0, node_selection_ms: 0,
     node_token_text_ms: 0, node_sampling_ms: 0, node_encode_ms: 0,
     node_p50_ms: 0, node_p95_ms: 0,
+    tls_calls: 0, tls_handshake_ms: 0,
     ...overrides,
   };
 }
@@ -147,5 +148,58 @@ describe("ExecutionTelemetry", () => {
     // ...and the row says why there is no prefill/decode split, rather than
     // printing one total twice under two labels.
     expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();
+  });
+});
+
+/**
+ * O canal de cada salto, e o que o número do handshake significa.
+ *
+ * O handshake acontece uma vez por conexão e as conexões ficam no pool: quase
+ * todo salto reporta zero. Se a tela mostrasse o número sem dizer isso, quem
+ * olhasse um salto zerado concluiria que TLS é grátis e quem olhasse o salto
+ * que abriu conexão concluiria que é caro por token. Por isso o rótulo é parte
+ * do que se afirma aqui, não enfeite.
+ */
+function traceCom(prefill: Partial<PhaseTrace>): RequestTrace {
+  return {
+    model: "qwen",
+    input_tokens: 10,
+    output_tokens: 1,
+    prefill_ms: 10,
+    total_bytes_sent: 0,
+    total_bytes_received: 0,
+    hops: [
+      {
+        node_id: "no1",
+        start_layer: 0,
+        end_layer: 15,
+        prefill: phase(prefill),
+        decode: phase({ calls: 0 }),
+      },
+    ],
+  };
+}
+
+describe("ExecutionTelemetry: o canal de cada salto", () => {
+  afterEach(cleanup);
+
+  it("diz que o salto foi cifrado e que o handshake é por conexão", () => {
+    mount(<ExecutionTelemetry trace={traceCom({ calls: 1, tls_calls: 1, tls_handshake_ms: 4 })} />);
+    expect(screen.getByText(/canal: TLS/)).toBeTruthy();
+    expect(screen.getByText(/handshake 4 ms/)).toBeTruthy();
+    expect(screen.getByText(/por conexão, não por token/)).toBeTruthy();
+  });
+
+  it("um salto em claro é visível como tal", () => {
+    mount(<ExecutionTelemetry trace={traceCom({ calls: 2, tls_calls: 0 })} />);
+    expect(screen.getByText(/canal: texto claro/)).toBeTruthy();
+  });
+
+  /** Uma virada de política pela metade tem que aparecer, não ser arredondada
+   * para "cifrado". */
+  it("mostra a fração quando só parte das chamadas foi cifrada", () => {
+    mount(<ExecutionTelemetry trace={traceCom({ calls: 4, tls_calls: 3, tls_handshake_ms: 6 })} />);
+    expect(screen.getByText(/TLS em 3\/4 chamadas/)).toBeTruthy();
+    expect(screen.getByText(/as demais foram em claro/)).toBeTruthy();
   });
 });

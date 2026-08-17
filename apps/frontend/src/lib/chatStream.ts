@@ -26,6 +26,20 @@ export interface PhaseTrace {
   response_headers_ms: number;
   response_body_ms: number;
   client_decode_ms: number;
+  /**
+   * Chamadas deste salto que foram cifradas.
+   *
+   * Contagem e não booleano: uma fase soma várias chamadas, e se só parte
+   * delas foi por TLS a tela precisa dizer isso em vez de escolher um dos dois.
+   */
+  tls_calls: number;
+  /**
+   * Soma dos handshakes TLS deste salto, medidos no servidor.
+   *
+   * Quase sempre zero: o handshake acontece uma vez por conexão e as conexões
+   * ficam no pool. É custo de estabelecimento, não custo por token.
+   */
+  tls_handshake_ms: number;
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;

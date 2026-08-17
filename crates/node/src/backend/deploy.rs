@@ -1593,6 +1593,7 @@ fn launch_targets(
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
                 peer_count: None,
+                tp: None,
             });
             continue;
         }
@@ -1621,6 +1622,7 @@ fn launch_targets(
             offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
+            tp: None,
         });
     }
     Ok(targets)
@@ -1920,6 +1922,7 @@ async fn add_node_endpoint(
                 // isto o nó somado se diz o último da divisão.
                 peer_index: Some(peer_index),
                 peer_count: Some(peer_count),
+                tp: None,
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
             // a camada 0 recebe o prompt, e o `launch` so marca `primary` no

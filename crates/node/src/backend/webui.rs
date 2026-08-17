@@ -2394,6 +2394,11 @@ pub struct LaunchTarget {
     pub peer_index: Option<u32>,
     #[serde(default)]
     pub peer_count: Option<u32>,
+    /// Identidade de tensor parallelism deste alvo (caminho C). Quando presente
+    /// (primary ou worker de um grupo), o apply extrai o shard/registra a
+    /// coletiva em vez de só fatiar por camadas.
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2526,7 +2531,7 @@ pub(crate) async fn launch(
             peer_count: target.peer_count.unwrap_or(peer_count),
             peer_index: target.peer_index.unwrap_or(index as u32),
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
-            tp: None,
+            tp: target.tp.clone(),
             skip_split: target.skip_split,
             merge: target.merge.clone(),
             params,
@@ -3223,6 +3228,7 @@ mod tests {
             offload_kqv: kqv,
             peer_index: None,
             peer_count: None,
+            tp: None,
         };
 
         let cpu_only = params_for(&base, &target(Some(0), Some(false)));

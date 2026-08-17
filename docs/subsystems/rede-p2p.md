@@ -281,11 +281,58 @@ o operador usa para implantar.
   acrescentaria segurança. Um salto pelo túnel reporta `tls: false` na
   telemetria de propósito: ele é cifrado, mas não por TLS, e dizer `true` ali
   alegaria uma garantia que aquele salto não deu.
-- **A UI no navegador.** Um auto assinado faria o navegador gritar em toda
-  máquina do cluster; o ganho não paga o custo operacional.
+- **Nada, do lado do navegador** - ver "Dois certificados na mesma porta"
+  abaixo. A primeira versão deixou a UI de fora, e o resultado foi ligar o TLS e
+  trancar o operador para fora do painel.
 - **Ollama.** `PeerInfo::ollama_url` continua em `http://`: é um servidor de
   terceiros na máquina do peer, sem o nosso certificado e sem a nossa
   identidade.
+
+### Dois certificados na mesma porta
+
+O certificado do pinning é **Ed25519**, porque a chave dele é a identidade do
+nó - e é exatamente isso que navegador não sabe verificar. Medido com o
+curl/LibreSSL do macOS: `sslv3 alert handshake failure`. Somado ao modo estrito,
+ligar o TLS deixava a interface inalcançável de qualquer outra máquina: em claro
+a conexão era derrubada, em TLS o handshake não fechava.
+
+Então o nó apresenta **dois** certificados auto assinados na mesma porta,
+escolhidos por conexão (`tls::NodeCertResolver`):
+
+- **Peer** - o Ed25519 derivado da `.pom-node.key`, que sustenta o pinning.
+- **Navegador** - um ECDSA P-256, que ele sabe verificar, com os endereços do nó
+  no SAN (`serve::browser_sans`: locais, o fixado pelo operador, o hostname e o
+  loopback). Os SANs existem para o aviso ser "emissor desconhecido" e não "host
+  errado" - o segundo faz o operador desconfiar da máquina em vez do
+  certificado.
+
+**O discriminador é o ALPN**, e a escolha dele não é estética: SNI não serve
+(peer disca IP, e IP não leva SNI) e a lista de algoritmos do cliente varia
+entre navegadores. O ALPN está sob nosso controle - o cliente de peer oferece
+`pom/1` (`tls::PEER_ALPN`), navegador nenhum oferece. Se um dia essa escolha
+errar para um peer, ele recebe o ECDSA e o verifier, que só aceita Ed25519,
+recusa: falha fechada.
+
+Sendo auto assinado, o navegador avisa na primeira visita de cada máquina. Isso
+é inerente a não ter uma CA; distribuir uma CA própria e instalá-la em cada
+máquina é outro projeto.
+
+### Texto claro: redireciona, menos onde não deve
+
+Com a política ligada, a porta do gateway responde **301 para `https://` na
+mesma porta** a quem chegar em claro, em vez de fechar a conexão. Caminho e
+query são preservados, e o host sai do cabeçalho `Host` - reconstruí-lo do
+socket daria o IP e trocaria o nome que o operador digitou por um endereço que
+pode nem estar no certificado.
+
+Duas exceções, ambas por um motivo concreto:
+
+- **Rotas exclusivamente de peer** (`/api/transfer/*`, `/v1/relay-result`,
+  `/v1/prefill`, `/v1/step`) respondem **403**, não 301. O `reqwest` segue
+  redirecionamento por padrão: um 301 aqui faria um peer antigo tentar TLS sem
+  saber verificar nada e falhar com um erro que não diz o motivo.
+- **A porta de inferência (`serve::PlainPolicy::Refuse`)** fecha a conexão, como
+  antes. Não há navegador ali para acomodar.
 
 ### A catraca: o gossip nunca é fonte de verdade
 

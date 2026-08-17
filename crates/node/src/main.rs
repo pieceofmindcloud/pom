@@ -684,7 +684,15 @@ async fn main() -> Result<()> {
     // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
     // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
     // remoto continua aceito.
-    let tls_server = match serve::TlsServer::from_identity(&identity, app_config.tls_required) {
+    // Endereços que entram no certificado do navegador: os locais desta
+    // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
+    // reclamaria do host, e não do emissor.
+    let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let tls_server = match serve::TlsServer::from_identity(
+        &identity,
+        app_config.tls_required,
+        &tls_sans,
+    ) {
         Ok(t) => Some(t),
         Err(e) => {
             warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
@@ -1279,7 +1287,15 @@ async fn start_gateway_only(
     // com a flag desligada, porque é o que permite ligar TLS sem reiniciar: o
     // servidor já sabe falar as duas línguas, e a flag só decide se texto claro
     // remoto continua aceito.
-    let tls_server = match serve::TlsServer::from_identity(&identity, app_config.tls_required) {
+    // Endereços que entram no certificado do navegador: os locais desta
+    // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
+    // reclamaria do host, e não do emissor.
+    let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
+    let tls_server = match serve::TlsServer::from_identity(
+        &identity,
+        app_config.tls_required,
+        &tls_sans,
+    ) {
         Ok(t) => Some(t),
         Err(e) => {
             warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");

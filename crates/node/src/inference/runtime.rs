@@ -459,7 +459,9 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
-        let tls = self.tls.clone();
+        // A porta de inferência só recebe peer: nada de redirecionar para
+        // https quem chegar em claro, porque não há navegador aqui.
+        let tls = self.tls.as_ref().map(|t| t.so_de_peers());
 
         tokio::spawn(async move {
             status.set_log(&log_file_path(port).to_string_lossy()).await;

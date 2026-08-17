@@ -242,6 +242,18 @@ Três decisões que não são estética:
   seção que contém o documento aberto não é mais forçada a reabrir - esse era
   o defeito: categoria que ficava sempre expandida.
 
+## A interface com o cluster em TLS
+
+Com a política ligada, abrir `http://<peer>:8080/` devolve **301 para
+`https://`** na mesma porta, e o painel funciona normalmente a partir daí. O
+certificado que o navegador recebe é um ECDSA auto assinado, diferente do
+Ed25519 que os peers recebem - navegador não verifica Ed25519. Ver
+`rede-p2p.md`, "Dois certificados na mesma porta".
+
+**O navegador avisa na primeira visita de cada máquina**, porque o certificado é
+auto assinado e não há CA para validá-lo. É esperado; o operador aceita uma vez
+por máquina.
+
 ## O canvas do Fluxo: arranjo por camadas
 
 `ModelNetworkCanvas` desenha a rede, e `lib/networkLayout.ts` decide onde cada

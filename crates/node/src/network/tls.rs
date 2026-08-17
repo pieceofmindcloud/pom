@@ -171,19 +171,112 @@ pub fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+/// ALPN que só os nós deste projeto oferecem.
+///
+/// É o discriminador que decide **qual dos dois certificados** o servidor
+/// apresenta, e ele precisa ser confiável: SNI não serve (peer disca IP, e IP
+/// não leva SNI) e a lista de algoritmos do cliente varia entre navegadores. O
+/// ALPN está inteiramente sob nosso controle - nosso cliente oferece `pom/1`,
+/// navegador nenhum oferece.
+pub const PEER_ALPN: &[u8] = b"pom/1";
+
+/// Certificado que um **navegador** aceita, para a interface web.
+///
+/// Não pode ser o mesmo do pinning: aquele é Ed25519, porque a chave dele é a
+/// identidade do nó, e navegador não verifica certificado Ed25519 - medido com
+/// o curl/LibreSSL do macOS, que responde `sslv3 alert handshake failure`. Este
+/// aqui é ECDSA P-256, que eles sabem verificar.
+///
+/// Continua auto assinado, então o navegador avisa na primeira visita de cada
+/// máquina. Isso é inerente a não ter uma CA; os endereços entram no SAN para o
+/// aviso ser "emissor desconhecido" e não "host errado", que é o que faria o
+/// operador desconfiar da máquina em vez do certificado.
+pub fn browser_certificate(sans: &[String]) -> Result<NodeCertificate> {
+    use rcgen::{CertificateParams, DistinguishedName, DnType, KeyPair};
+
+    let mut nomes: Vec<String> = vec!["localhost".into()];
+    nomes.extend(sans.iter().cloned());
+    nomes.sort();
+    nomes.dedup();
+
+    let mut params = CertificateParams::new(nomes)
+        .map_err(|e| anyhow!("parâmetros do certificado de navegador inválidos: {e}"))?;
+    let mut dn = DistinguishedName::new();
+    dn.push(DnType::CommonName, "pom");
+    params.distinguished_name = dn;
+
+    // Padrão do rcgen: ECDSA P-256.
+    let key_pair = KeyPair::generate().map_err(|e| anyhow!("chave do certificado web: {e}"))?;
+    let cert = params
+        .self_signed(&key_pair)
+        .map_err(|e| anyhow!("não deu para auto assinar o certificado web: {e}"))?;
+
+    Ok(NodeCertificate {
+        cert: cert.der().clone(),
+        key: PrivateKeyDer::try_from(key_pair.serialize_der())
+            .map_err(|e| anyhow!("chave do certificado web inválida: {e}"))?,
+    })
+}
+
+/// Escolhe o certificado por conexão: peer recebe o do pinning, navegador
+/// recebe o que ele sabe verificar.
+#[derive(Debug)]
+pub struct NodeCertResolver {
+    peer: Arc<rustls::sign::CertifiedKey>,
+    browser: Arc<rustls::sign::CertifiedKey>,
+}
+
+impl NodeCertResolver {
+    pub fn new(id: &Identity, sans: &[String]) -> Result<Self> {
+        Ok(Self {
+            peer: Arc::new(certified(node_certificate(id)?)?),
+            browser: Arc::new(certified(browser_certificate(sans)?)?),
+        })
+    }
+
+    /// A regra, isolada do trait para ter teste sem handshake.
+    pub fn quer_peer<'a>(alpn: Option<impl Iterator<Item = &'a [u8]>>) -> bool {
+        match alpn {
+            Some(mut oferecidos) => oferecidos.any(|p| p == PEER_ALPN),
+            None => false,
+        }
+    }
+}
+
+fn certified(c: NodeCertificate) -> Result<rustls::sign::CertifiedKey> {
+    let key = rustls::crypto::ring::sign::any_supported_type(&c.key)
+        .map_err(|e| anyhow!("rustls não soube assinar com esta chave: {e}"))?;
+    Ok(rustls::sign::CertifiedKey::new(vec![c.cert], key))
+}
+
+impl rustls::server::ResolvesServerCert for NodeCertResolver {
+    fn resolve(
+        &self,
+        client_hello: rustls::server::ClientHello<'_>,
+    ) -> Option<Arc<rustls::sign::CertifiedKey>> {
+        if Self::quer_peer(client_hello.alpn()) {
+            Some(self.peer.clone())
+        } else {
+            Some(self.browser.clone())
+        }
+    }
+}
+
 /// Configuração de servidor: apresenta o certificado do nó, não pede
 /// certificado do cliente.
 ///
 /// mTLS fica de fora porque o cliente já se autentica pela chave de conexão no
 /// header, e duplicar a política de autorização em dois lugares é como ela
 /// passa a divergir.
-pub fn server_config(id: &Identity) -> Result<Arc<rustls::ServerConfig>> {
+pub fn server_config(id: &Identity, sans: &[String]) -> Result<Arc<rustls::ServerConfig>> {
     install_crypto_provider();
-    let c = node_certificate(id)?;
-    let cfg = rustls::ServerConfig::builder()
+    let mut cfg = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![c.cert], c.key)
-        .context("rustls recusou o certificado derivado da identidade")?;
+        .with_cert_resolver(Arc::new(NodeCertResolver::new(id, sans)?));
+    // `pom/1` primeiro: a preferência é do servidor, e um peer que ofereça os
+    // dois tem que fechar no nosso. `h2` e `http/1.1` existem para o navegador,
+    // e o builder automático do hyper serve os dois.
+    cfg.alpn_protocols = vec![PEER_ALPN.to_vec(), b"h2".to_vec(), b"http/1.1".to_vec()];
     Ok(Arc::new(cfg))
 }
 
@@ -194,8 +287,11 @@ pub fn client_config(expected: &str) -> Result<rustls::ClientConfig> {
         .dangerous()
         .with_custom_certificate_verifier(Arc::new(PinnedNodeId::new(expected.to_string())))
         .with_no_client_auth();
-    // Sem ALPN o reqwest cai em HTTP/1.1 sobre TLS, que é o que os pares falam.
-    cfg.alpn_protocols = vec![b"http/1.1".to_vec()];
+    // `pom/1` é o que faz o servidor escolher o certificado do pinning; sem ele
+    // viria o certificado de navegador, que é ECDSA, e este verifier - que só
+    // aceita Ed25519 - recusaria. Falha fechada, mas por engano. O `http/1.1`
+    // continua na lista porque é o protocolo que os pares de fato falam.
+    cfg.alpn_protocols = vec![PEER_ALPN.to_vec(), b"http/1.1".to_vec()];
     Ok(cfg)
 }
 

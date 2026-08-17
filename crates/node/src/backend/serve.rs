@@ -22,10 +22,53 @@ use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
 use tracing::{debug, warn};
 
+/// O que fazer com uma conexão em texto claro vinda de fora, com a política
+/// ligada.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PlainPolicy {
+    /// Porta que também serve gente: responde 301 para `https://` na mesma
+    /// porta, para o operador não ficar trancado para fora do painel.
+    Redirect,
+    /// Porta exclusivamente de peers (o servidor de inferência): a conexão é
+    /// fechada. Não há navegador aqui para acomodar, e redirecionar tráfego de
+    /// peer só trocaria uma falha clara por uma confusa.
+    Refuse,
+}
+
+/// O que responder a uma requisição que chegou em claro quando o cluster exige
+/// TLS.
+#[derive(Debug, PartialEq)]
+pub enum PlainAction {
+    /// Manda o cliente refazer em `https://`.
+    Redirect,
+    /// Rota que só peer usa: nada a redirecionar, e o `reqwest` segue
+    /// redirecionamento por padrão - devolver 301 aqui faria um peer antigo
+    /// tentar TLS sem saber verificar nada e falhar com um erro que não diz o
+    /// motivo. O 403 diz.
+    Refuse,
+}
+
+/// Rotas que só existem entre peers, e que por isso nunca são redirecionadas.
+pub fn plain_action(path: &str) -> PlainAction {
+    const SO_DE_PEER: [&str; 4] = [
+        "/api/transfer/",
+        "/v1/relay-result",
+        "/v1/prefill",
+        "/v1/step",
+    ];
+    if SO_DE_PEER.iter().any(|p| path.starts_with(p)) {
+        PlainAction::Refuse
+    } else {
+        PlainAction::Redirect
+    }
+}
+
 /// O que o servidor precisa para falar TLS, e o estado que ele publica de volta.
 #[derive(Clone)]
 pub struct TlsServer {
     pub config: Arc<rustls::ServerConfig>,
+    /// O que fazer com texto claro remoto quando a política está ligada.
+    pub plain: PlainPolicy,
     /// Com `true`, texto claro de fora do loopback é recusado.
     pub strict: Arc<AtomicBool>,
     /// Duração do último handshake aceito, em ms. É daqui que sai o
@@ -35,12 +78,30 @@ pub struct TlsServer {
 
 impl TlsServer {
     /// Monta o estado do servidor a partir da identidade do nó.
-    pub fn from_identity(id: &crate::identity::Identity, strict: bool) -> Result<Self> {
+    ///
+    /// `sans` são os endereços por onde este nó é alcançado, e entram no
+    /// certificado que o **navegador** recebe - sem eles o aviso do navegador
+    /// seria "host errado", que faz o operador desconfiar da máquina em vez do
+    /// certificado. Ver `tls::browser_certificate`.
+    pub fn from_identity(
+        id: &crate::identity::Identity,
+        strict: bool,
+        sans: &[String],
+    ) -> Result<Self> {
         Ok(Self {
-            config: crate::tls::server_config(id)?,
+            config: crate::tls::server_config(id, sans)?,
+            plain: PlainPolicy::Redirect,
             strict: Arc::new(AtomicBool::new(strict)),
             last_handshake_ms: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    /// A mesma configuração, para uma porta que só peers usam.
+    pub fn so_de_peers(&self) -> Self {
+        Self {
+            plain: PlainPolicy::Refuse,
+            ..self.clone()
+        }
     }
 
     /// Liga ou desliga a recusa de texto claro remoto.
@@ -52,6 +113,33 @@ impl TlsServer {
     pub fn last_handshake_ms(&self) -> u64 {
         self.last_handshake_ms.load(Ordering::Relaxed)
     }
+}
+
+/// Endereços que entram no certificado do navegador.
+///
+/// Os locais da máquina, o endereço fixado pelo operador (se houver) e o
+/// hostname. Loopback entra porque abrir o painel na própria máquina é o caso
+/// mais comum de todos.
+pub fn browser_sans(pinned: Option<&str>) -> Vec<String> {
+    let mut nomes: Vec<String> = vec!["127.0.0.1".into(), "::1".into()];
+    if let Some(p) = pinned {
+        nomes.push(crate::network::ip_host(p).trim_matches(['[', ']']).to_string());
+    }
+    for addr in crate::addrs::filter_candidates(crate::addrs::local_addrs(), None) {
+        nomes.push(crate::network::ip_host(&addr).trim_matches(['[', ']']).to_string());
+    }
+    if let Ok(h) = hostname_local() {
+        nomes.push(h);
+    }
+    nomes.retain(|n| !n.is_empty());
+    nomes.sort();
+    nomes.dedup();
+    nomes
+}
+
+fn hostname_local() -> Result<String> {
+    let saida = std::process::Command::new("hostname").output()?;
+    Ok(String::from_utf8_lossy(&saida.stdout).trim().to_string())
 }
 
 /// `0x16` é `ContentType::Handshake` do TLS; nenhum método HTTP começa assim.
@@ -131,8 +219,20 @@ async fn handle_conn(
         .unwrap_or(false);
 
     if !is_tls && !plain_allowed(peer, strict) {
-        warn!("recusada conexão em texto claro de {peer}: o cluster está em TLS");
-        return Ok(());
+        let politica = tls.as_ref().map(|t| t.plain).unwrap_or(PlainPolicy::Refuse);
+        if politica == PlainPolicy::Refuse {
+            warn!("recusada conexão em texto claro de {peer}: o cluster está em TLS");
+            return Ok(());
+        }
+        // Porta que também serve gente: em vez de fechar na cara do operador,
+        // manda o navegador refazer em https. Ver `plain_action` para o que
+        // continua sendo recusado.
+        debug!("redirecionando para https a conexão em claro de {peer}");
+        let svc = hyper::service::service_fn(redirecionar_para_https);
+        return Builder::new(TokioExecutor::new())
+            .serve_connection(TokioIo::new(stream), svc)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"));
     }
 
     let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
@@ -168,6 +268,55 @@ async fn handle_conn(
     Ok(())
 }
 
+/// A resposta para quem falou em claro numa porta que exige TLS, decidida sem
+/// tocar em socket nenhum: `(status, Location)`.
+///
+/// O destino é a **mesma porta** - o servidor atende as duas falas nela. O host
+/// vem do cabeçalho porque é o nome que o operador digitou; reconstruí-lo a
+/// partir do socket daria o IP, e trocaria o nome dele por um endereço que pode
+/// nem estar no certificado.
+pub fn plain_reply(host: &str, path_and_query: &str) -> (u16, Option<String>) {
+    let caminho = path_and_query.split('?').next().unwrap_or("/");
+    if plain_action(caminho) == PlainAction::Refuse {
+        return (403, None);
+    }
+    if host.is_empty() {
+        // Sem `Host` não há para onde mandar, e um `Location` quebrado é pior
+        // que uma recusa: o cliente segue e falha longe daqui.
+        return (403, None);
+    }
+    (301, Some(format!("https://{host}{path_and_query}")))
+}
+
+/// Resposta para quem falou em claro numa porta que exige TLS.
+async fn redirecionar_para_https(
+    req: hyper::Request<hyper::body::Incoming>,
+) -> std::result::Result<hyper::Response<String>, std::convert::Infallible> {
+    let host = req
+        .headers()
+        .get(hyper::header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or("")
+        .to_string();
+    let alvo = req
+        .uri()
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".to_string());
+
+    let (status, location) = plain_reply(&host, &alvo);
+    let mut resposta = hyper::Response::builder().status(status);
+    if let Some(l) = &location {
+        resposta = resposta.header(hyper::header::LOCATION, l);
+    }
+    let corpo = if location.is_some() {
+        String::new()
+    } else {
+        "este cluster exige TLS entre nós; refaça a chamada em https\n".to_string()
+    };
+    Ok(resposta.body(corpo).expect("resposta é construível"))
+}
+
 #[cfg(test)]
 mod integracao {
     use super::*;
@@ -179,7 +328,7 @@ mod integracao {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let app = Router::new().route("/health", get(|| async { "ok" }));
-        let tls = TlsServer::from_identity(id, strict).unwrap();
+        let tls = TlsServer::from_identity(id, strict, &["127.0.0.1".to_string()]).unwrap();
         tokio::spawn(async move {
             let _ = serve(listener, app, Some(tls)).await;
         });
@@ -252,6 +401,47 @@ mod integracao {
         assert!(r.status().is_success());
     }
 
+    /// O navegador tem que conseguir abrir o painel com o cluster em TLS.
+    ///
+    /// Este teste existe por uma falha real: o certificado do pinning é
+    /// Ed25519, que navegador não verifica - medido com o curl/LibreSSL do
+    /// macOS, `sslv3 alert handshake failure`. Somado ao modo estrito, ligar o
+    /// TLS deixava a interface inalcançável de qualquer outra máquina. Um
+    /// cliente que **não** oferece o ALPN `pom/1` recebe o certificado ECDSA,
+    /// que ele sabe verificar.
+    #[tokio::test]
+    async fn um_navegador_consegue_abrir_a_interface_por_tls() {
+        let id = Identity::generate();
+        let addr = subir(&id, true).await;
+
+        // Como um navegador: sem `pom/1`, e sem confiar em CA nenhuma (é auto
+        // assinado; o navegador de verdade mostra o aviso e o operador segue).
+        let navegador = reqwest::Client::builder()
+            .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
+        let r = navegador
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .expect("o navegador tinha que fechar o handshake");
+        assert!(r.status().is_success());
+    }
+
+    /// E o peer continua recebendo o certificado do pinning na mesma porta.
+    #[tokio::test]
+    async fn na_mesma_porta_o_peer_recebe_o_certificado_do_pinning() {
+        let id = Identity::generate();
+        let addr = subir(&id, true).await;
+        let http = clientes().for_peer(&id.node_id.0).unwrap();
+        let r = http
+            .get(format!("https://127.0.0.1:{}/health", addr.port()))
+            .send()
+            .await
+            .expect("o peer tinha que fechar o handshake com o cert do pinning");
+        assert!(r.status().is_success());
+    }
+
     /// E TLS continua funcionando no modo estrito, que é o ponto dele.
     #[tokio::test]
     async fn no_modo_estrito_o_tls_continua_passando() {
@@ -297,6 +487,50 @@ mod tests {
         // O socket dual-stack entrega IPv4 como `::ffff:a.b.c.d`, então sem
         // desmapear o loopback local seria recusado pelo próprio nó.
         assert!(plain_allowed(mapeado, true));
+    }
+
+    /// A UI e as rotas de gente são redirecionadas; as de peer, não.
+    #[test]
+    fn so_rota_de_peer_deixa_de_ser_redirecionada() {
+        assert_eq!(plain_action("/"), PlainAction::Redirect);
+        assert_eq!(plain_action("/assets/app.js"), PlainAction::Redirect);
+        assert_eq!(plain_action("/api/ui/node"), PlainAction::Redirect);
+        assert_eq!(plain_action("/admin/nodes"), PlainAction::Redirect);
+
+        // Estas o `reqwest` de um peer seguiria em silêncio, e a falha
+        // resultante não diria o motivo. O 403 diz.
+        assert_eq!(plain_action("/api/transfer/download"), PlainAction::Refuse);
+        assert_eq!(plain_action("/v1/relay-result"), PlainAction::Refuse);
+        assert_eq!(plain_action("/v1/prefill"), PlainAction::Refuse);
+        assert_eq!(plain_action("/v1/step"), PlainAction::Refuse);
+    }
+
+    /// O painel é redirecionado preservando caminho e query - um 301 que joga
+    /// o operador na raiz perde o link que ele abriu.
+    #[test]
+    fn o_redirecionamento_preserva_o_caminho_e_a_query() {
+        assert_eq!(
+            plain_reply("ksia:8080", "/config/rede?aba=tls"),
+            (301, Some("https://ksia:8080/config/rede?aba=tls".to_string()))
+        );
+        // A porta vai junto porque é a mesma: o servidor atende as duas falas.
+        assert_eq!(
+            plain_reply("192.168.100.138:8080", "/"),
+            (301, Some("https://192.168.100.138:8080/".to_string()))
+        );
+    }
+
+    #[test]
+    fn rota_de_peer_recebe_403_em_vez_de_redirecionamento() {
+        assert_eq!(plain_reply("ksia:8080", "/api/transfer/download?path=x"), (403, None));
+        assert_eq!(plain_reply("ksia:8080", "/v1/relay-result"), (403, None));
+    }
+
+    /// Sem `Host` não há para onde mandar, e um `Location` quebrado faria o
+    /// cliente falhar longe daqui, com um erro que não aponta para cá.
+    #[test]
+    fn sem_host_nao_se_inventa_destino() {
+        assert_eq!(plain_reply("", "/"), (403, None));
     }
 
     /// De fora, o modo estrito recusa texto claro - é o que faz a flag valer.

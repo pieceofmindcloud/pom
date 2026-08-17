@@ -50,6 +50,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
+        .route("/api/ui/network/tls", post(save_tls))
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
@@ -115,13 +116,25 @@ pub struct NodeInfo {
     /// receiver" sentinel. Always present — lets the UI show the fix taking
     /// effect without a second round trip.
     pub effective_address: String,
+    /// Se o cluster fala TLS entre peers agora.
+    pub tls_required: bool,
+    /// Se **este** nó pode mudar isso - só o principal pode. A tela usa para
+    /// decidir entre interruptor e leitura; a checagem que vale é a do
+    /// `save_tls`, no servidor.
+    pub tls_authority: bool,
 }
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     let system = sysmon::sample().await;
-    let (role, conn_key, advertise_addr) = {
+    let (role, conn_key, advertise_addr, tls_required, tls_authority) = {
         let cfg = state.auth.read().await;
-        (cfg.role.to_string(), cfg.connection_key.clone(), cfg.advertise_addr.clone())
+        (
+            cfg.role.to_string(),
+            cfg.connection_key.clone(),
+            cfg.advertise_addr.clone(),
+            cfg.tls_required,
+            cfg.role == crate::config::Role::Principal,
+        )
     };
     Json(NodeInfo {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
@@ -146,6 +159,8 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         detached: state.network.is_detached(),
         advertise_addr,
         effective_address: state.network.announce_addr(),
+        tls_required,
+        tls_authority,
         system,
     })
 }
@@ -434,6 +449,64 @@ async fn save_advertise_addr(
         "effective_address": state.network.announce_addr(),
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SaveTlsRequest {
+    pub tls_required: bool,
+}
+
+/// Liga ou desliga o TLS entre peers, para o cluster inteiro.
+///
+/// Não precisa de reinício, e pode ser virado quantas vezes o operador quiser:
+/// o servidor aceita as duas falas desde o arranque (`serve.rs`), e o que muda
+/// aqui é qual delas os clientes usam e se texto claro remoto passa a ser
+/// recusado. Os demais nós descobrem pela catraca de `tls_policy`, dentro de um
+/// ciclo de gossip (5 s), nos dois sentidos.
+async fn save_tls(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveTlsRequest>,
+) -> Response {
+    // A autoridade é verificada **aqui**, no servidor. Esconder o interruptor
+    // na tela de um nó comum é conveniência; isto é o controle.
+    if state.auth.read().await.role != crate::config::Role::Principal {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "só o nó principal decide o TLS do cluster." })),
+        )
+            .into_response();
+    }
+
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.tls_required = req.tls_required;
+        if let Err(e) = cfg.save() {
+            return bad_request(format!(
+                "não deu para gravar {}: {e}",
+                crate::brand::config_filename()
+            ));
+        }
+    }
+
+    // A ordem importa pouco, mas as três têm que acontecer juntas: o esquema
+    // das URLs e o cache de clientes, o que o anúncio diz, e se o servidor
+    // passa a recusar texto claro de fora.
+    state.peer_http.apply_cluster_policy(req.tls_required);
+    state.network.set_tls(req.tls_required);
+    if let Some(t) = &state.tls_server {
+        t.set_strict(req.tls_required);
+    }
+    info!(
+        "TLS entre peers {} pela interface",
+        if req.tls_required {
+            "ligado"
+        } else {
+            "desligado"
+        }
+    );
+
+    Json(json!({ "tls_required": req.tls_required })).into_response()
 }
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
@@ -2821,6 +2894,87 @@ mod leave_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod tls_settings_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+
+    /// Só o principal decide. A checagem é **no servidor**: esconder o botão na
+    /// tela é conveniência, não controle.
+    #[tokio::test]
+    async fn no_comum_nao_pode_ligar_tls() {
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.role = crate::config::Role::Node;
+
+        let resp = save_tls(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTlsRequest { tls_required: true }),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(
+            !state.auth.read().await.tls_required,
+            "403 não pode ter gravado nada"
+        );
+        assert!(!state.network.tls_enabled());
+    }
+
+    /// No principal, virar a flag vale na hora: config gravada, anúncio novo, e
+    /// os clientes trocados. Sem reinício, e nos dois sentidos.
+    #[tokio::test]
+    async fn principal_liga_e_desliga_sem_reinicio() {
+        // Este teste mexe no esquema global das URLs; ver a nota em
+        // `peer_client::POLITICA_GLOBAL`.
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.role = crate::config::Role::Principal;
+
+        let resp = save_tls(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTlsRequest { tls_required: true }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_of(resp).await["tls_required"], true);
+        assert!(state.auth.read().await.tls_required);
+        assert!(state.network.tls_enabled(), "o anúncio precisa dizer a verdade");
+        assert!(state.peer_http.tls_enabled());
+
+        let resp = save_tls(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(SaveTlsRequest {
+                tls_required: false,
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(!state.auth.read().await.tls_required);
+        assert!(!state.network.tls_enabled());
+        assert!(!state.peer_http.tls_enabled());
+    }
+
+    /// A tela precisa de duas coisas diferentes: se está ligado, e se **este**
+    /// nó pode mexer.
+    #[tokio::test]
+    async fn node_info_conta_estado_e_autoridade() {
+        let state = state_with("eu", vec![]).await;
+        state.auth.write().await.role = crate::config::Role::Node;
+        let info = node_info(State(state.clone())).await;
+        assert!(!info.0.tls_required);
+        assert!(!info.0.tls_authority, "nó comum não decide");
+
+        state.auth.write().await.role = crate::config::Role::Principal;
+        state.auth.write().await.tls_required = true;
+        let info = node_info(State(state)).await;
+        assert!(info.0.tls_required);
+        assert!(info.0.tls_authority);
     }
 }
 

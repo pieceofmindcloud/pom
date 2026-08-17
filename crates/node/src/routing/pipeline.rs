@@ -639,6 +639,11 @@ mod ipv6_tests {
     /// cortado no primeiro ':' e o hop morria com "builder error" no reqwest.
     #[tokio::test]
     async fn an_ipv6_peer_becomes_a_valid_step_url() {
+        // O esquema da URL sai de um estado global do processo
+        // (`peer_client::tls_ativo`), e os testes rodam em paralelo. Sem esta
+        // trava, um teste que liga a política do cluster faz este aqui ver
+        // `https://` onde espera `http://`.
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let peers = vec![peer(
             "[2804:d55:5579:1000:89f3:3f94:7c07:e183]:42777",
             0,
@@ -658,6 +663,7 @@ mod ipv6_tests {
 
     #[tokio::test]
     async fn an_ipv4_peer_is_unchanged() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let peers = vec![peer("192.168.100.138:42777", 0, 31)];
         let tracker = LoadTracker::new();
         let plan = plan_pipeline(&peers, "qwen35", 32, &tracker)

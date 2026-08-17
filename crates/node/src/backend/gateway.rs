@@ -1203,6 +1203,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .route("/generate", post(handle_generate)) // alias
         .route("/peers", get(handle_peers))
         .route("/health", get(handle_health))
+        .route(crate::tls_policy::TLS_POLICY_PATH, get(cluster_tls))
         .route("/handshake", post(session::handle_handshake))
         // Onde a cauda de um pipeline entrega o resultado. Sem autenticação de
         // chave por desenho: o hop que responde é um par de inferência, que
@@ -1256,6 +1257,19 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
 }
 
 // ── Route handlers ────────────────────────────────────────────────────────────
+
+/// O que o principal responde à catraca dos outros nós.
+///
+/// Autenticada pela chave de conexão: é isso que impede um intruso de responder
+/// pelo principal e rebaixar o cluster para texto claro. Ver `tls_policy`.
+async fn cluster_tls(
+    _auth: crate::auth::ConnectionAuth,
+    State(state): State<GatewayState>,
+) -> impl IntoResponse {
+    Json(serde_json::json!({
+        "tls_required": state.auth.read().await.tls_required,
+    }))
+}
 
 async fn handle_relay_result(State(state): State<GatewayState>, body: Bytes) -> impl IntoResponse {
     crate::direct::handle_relay_result(&state.reply_inbox, body)

@@ -43,6 +43,15 @@ pub fn peer_scheme() -> &'static str {
     scheme(tls_ativo())
 }
 
+/// Trava que serializa os testes que leem ou escrevem `TLS_ATIVO`.
+///
+/// O estado é global ao processo e os testes rodam em paralelo: sem isto, um
+/// teste que liga a política faz outro, que monta URL de peer, ver `https://`
+/// onde esperava `http://`. Já aconteceu. Todo teste que toque no esquema
+/// global pega esta trava primeiro.
+#[cfg(test)]
+pub static POLITICA_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// `https` quando o cluster está cifrado, `http` quando não.
 pub fn scheme(tls: bool) -> &'static str {
     if tls {

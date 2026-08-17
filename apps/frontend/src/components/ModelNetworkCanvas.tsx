@@ -1,5 +1,5 @@
 import clsx from "clsx";
-import { Minus, Plus, RotateCcw } from "lucide-react";
+import { LayoutGrid, Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
@@ -8,6 +8,7 @@ import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
 import { useI18n } from "../i18n/provider";
 import {
+  autoLayout,
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
@@ -137,7 +138,21 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
 
   useEffect(() => { setPositions(readPositions(layoutKey)); }, [layoutKey]);
 
-  const positionOf = (range: GraphRange, index: number) => positions[keyFor(range)] ?? fallbackPosition(index);
+  /**
+   * O arranjo que a rede tem quando ninguém arrastou nada: uma coluna por faixa
+   * de camadas, réplicas empilhadas. Recalculado quando a topologia muda, não a
+   * cada poll - senão os cards andariam sozinhos enquanto o operador olha.
+   */
+  const arranjo = useMemo(
+    () => autoLayout(ranges.map((range) => ({ id: keyFor(range), start_layer: range.start_layer, end_layer: range.end_layer }))),
+    [ranges],
+  );
+
+  // A posição arrastada vence o arranjo, e o arranjo vence a grade. A grade só
+  // sobra para um nó que o `autoLayout` não conheça, o que não deveria
+  // acontecer - mas sumir da tela seria pior que aparecer no lugar errado.
+  const positionOf = (range: GraphRange, index: number) =>
+    positions[keyFor(range)] ?? arranjo[keyFor(range)] ?? fallbackPosition(index);
   const updatePosition = (id: string, next: CanvasPosition) => setPositions((current) => {
     const updated = { ...current, [id]: next };
     writePositions(layoutKey, updated);
@@ -147,7 +162,24 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
   const detailPeer = detailNodeId ? cluster.peers.find((peer) => peer.node_id === detailNodeId) ?? null : null;
   const pipeline = pipelinePeers(cluster);
 
-  const reset = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
+  /**
+   * Arruma a rede **sem jogar fora o que o operador arrastou**.
+   *
+   * Quem foi movido à mão fica onde está: aquilo é uma decisão, e o botão que
+   * apagasse decisões seria o botão que ninguém aperta. O arranjo automático
+   * entra para todo o resto. Para descartar as decisões existe `redefinir`.
+   */
+  const organizar = () => {
+    setPositions((current) => {
+      const arrastados = Object.fromEntries(Object.entries(current).filter(([id]) => id in arranjo));
+      const proximo = { ...arranjo, ...arrastados };
+      writePositions(layoutKey, proximo);
+      return proximo;
+    });
+    setZoom(1);
+  };
+
+  const redefinir = () => { clearPositions(layoutKey); setPositions({}); setZoom(1); };
   const fit = () => setZoom(1);
 
   function beginDrag(range: GraphRange, index: number, event: React.PointerEvent<HTMLElement>) {
@@ -181,7 +213,8 @@ export function ModelNetworkCanvas({ cluster }: { cluster: ClusterView }) {
       <Button size="sm" aria-label={t("canvas.zoomOut")} onClick={() => setZoom((value) => Math.max(.65, value - .1))}><Minus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.zoomIn")} onClick={() => setZoom((value) => Math.min(1.25, value + .1))}><Plus className="h-4 w-4" /></Button>
       <Button size="sm" aria-label={t("canvas.fit")} onClick={fit}>Fit</Button>
-      <Button size="sm" aria-label={t("canvas.autoLayout")} onClick={reset}><RotateCcw className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.autoLayout")} title={t("canvas.autoLayout")} onClick={organizar}><LayoutGrid className="h-4 w-4" /></Button>
+      <Button size="sm" aria-label={t("canvas.resetLayout")} title={t("canvas.resetLayout")} onClick={redefinir}><RotateCcw className="h-4 w-4" /></Button>
     </div>
     {ranges.length === 0 ? <div className="flex h-full items-center justify-center text-sm text-muted">{t("canvas.noCapacity")}</div> : <div className="absolute inset-0 origin-top-left" style={{ transform: `scale(${zoom})`, width: `${100 / zoom}%`, height: `${100 / zoom}%` }}>
       <svg aria-hidden="true" className="pointer-events-none absolute inset-0 h-full w-full overflow-visible">

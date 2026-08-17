@@ -242,6 +242,35 @@ Três decisões que não são estética:
   seção que contém o documento aberto não é mais forçada a reabrir - esse era
   o defeito: categoria que ficava sempre expandida.
 
+## O canvas do Fluxo: arranjo por camadas
+
+`ModelNetworkCanvas` desenha a rede, e `lib/networkLayout.ts` decide onde cada
+card fica. A regra é **uma coluna por faixa de camadas, na ordem do pipeline, e
+réplicas da mesma faixa empilhadas dentro da coluna, centradas no mesmo eixo**
+(`autoLayout`). É isso que faz a bifurcação parecer uma bifurcação e a aresta
+virar uma linha curta.
+
+A precedência é: posição arrastada > arranjo calculado > grade
+(`fallbackPosition`, que só sobra para um card que o arranjo não conheça).
+**Uma implantação nova já nasce arrumada**, sem ninguém clicar em nada.
+
+Dois botões, e a diferença entre eles importa:
+
+- **Organizar** (`LayoutGrid`) - aplica o arranjo por camadas **mantendo quem o
+  operador arrastou**. Um arranjo feito à mão é uma decisão, e o botão que
+  apagasse decisões seria o botão que ninguém aperta.
+- **Redefinir** (`RotateCcw`) - descarta tudo, inclusive os arrastos.
+
+`autoLayout` é estável quanto à ordem de entrada (desempate por `start_layer`,
+`end_layer`, `id`): a lista de peers se reordena a cada poll do cluster, e um
+arranjo que dependesse dela tremeria na tela.
+
+**Defeito corrigido:** `deploymentLayoutKey` incluía o `changed_at` de cada
+peer. Ele muda a cada reinício de nó, o que mudava a chave, o que fazia
+`readPositions` devolver vazio - o arranjo do operador não era reorganizado, era
+**perdido**, e a tela caía na grade toda vez que uma máquina reiniciava. Hoje a
+impressão digital é só modelo + conjunto de faixas.
+
 ## Fatiar, implantar e transferir na tela
 
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =

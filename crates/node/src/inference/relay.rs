@@ -38,6 +38,19 @@ pub struct SentFrame {
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
     pub client_decode_ms: u64,
+    /// Se este salto foi cifrado.
+    ///
+    /// Também é o que denuncia uma virada pela metade, ou um ponto de chamada
+    /// que ficou de fora da conversão para o cliente pinado.
+    pub tls: bool,
+    /// Custo do handshake TLS **medido no servidor**, onde ele é exato
+    /// (`serve.rs` cerca o `TlsAcceptor::accept`).
+    ///
+    /// Vem preenchido no salto que abriu conexão nova e **zero nos demais**,
+    /// porque as conexões ficam no pool do reqwest. Isso é a verdade, não falta
+    /// de medição: é custo de estabelecimento de conexão, não custo por token,
+    /// e a tela precisa dizer isso - ver `Chat.tsx`.
+    pub tls_handshake_ms: u64,
 }
 
 impl SentFrame {
@@ -56,6 +69,8 @@ impl SentFrame {
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
             "client_decode_ms": self.client_decode_ms,
+            "tls": self.tls,
+            "tls_handshake_ms": self.tls_handshake_ms,
             "node_timings": self.meta.get("node_timings").cloned().unwrap_or(json!({})),
         })
     }
@@ -202,9 +217,17 @@ pub async fn send_frame(
                     }
                 };
                 let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                // O handshake é medido no servidor e volta no meta da resposta:
+                // é lá que o tempo é exato, porque é lá que o `accept` acontece.
+                let tls_handshake_ms = meta
+                    .get("tls_handshake_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 return Ok(SentFrame {
                     meta,
                     tensor,
+                    tls: url.starts_with("https://"),
+                    tls_handshake_ms,
                     round_trip_ms: started.elapsed().as_millis() as u64,
                     bytes_sent: body.len() as u64,
                     bytes_received: bytes.len() as u64,
@@ -426,6 +449,11 @@ pub async fn send_frame_via_tunnel(
     Ok(SentFrame {
         meta,
         tensor,
+        // O túnel libp2p já é cifrado por Noise ponta a ponta, mas não é TLS:
+        // dizer `true` aqui faria a tela alegar uma garantia que este salto não
+        // deu. O handshake do túnel também não é o do TLS, e fica em zero.
+        tls: false,
+        tls_handshake_ms: 0,
         round_trip_ms,
         bytes_sent: body.len() as u64,
         bytes_received: response.body.len() as u64,
@@ -439,6 +467,47 @@ pub async fn send_frame_via_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn frame(tls: bool, handshake: u64) -> SentFrame {
+        SentFrame {
+            meta: json!({ "processing_ms": 7 }),
+            tensor: None,
+            round_trip_ms: 12,
+            bytes_sent: 100,
+            bytes_received: 200,
+            client_encode_ms: 1,
+            response_headers_ms: 5,
+            response_body_ms: 3,
+            client_decode_ms: 1,
+            tls,
+            tls_handshake_ms: handshake,
+        }
+    }
+
+    /// O handshake acontece **uma vez por conexão**, e as conexões ficam no pool
+    /// do reqwest. Então zero na maioria dos saltos é a verdade, não falta de
+    /// medição - e é por isso que a tela rotula o campo como custo de
+    /// estabelecimento de conexão, nunca como custo por token.
+    #[test]
+    fn hop_timing_carrega_tls_e_handshake() {
+        let e = frame(true, 4).as_hop_timing_entry();
+        assert_eq!(e["tls"], true);
+        assert_eq!(e["tls_handshake_ms"], 4);
+
+        // Mesmo salto, conexão reaproveitada: cifrado e sem handshake.
+        let e = frame(true, 0).as_hop_timing_entry();
+        assert_eq!(e["tls"], true);
+        assert_eq!(e["tls_handshake_ms"], 0);
+    }
+
+    /// Um salto em claro tem que ser visível como tal: é assim que uma virada
+    /// pela metade aparece na tela em vez de passar despercebida.
+    #[test]
+    fn salto_em_claro_reporta_tls_falso() {
+        let e = frame(false, 0).as_hop_timing_entry();
+        assert_eq!(e["tls"], false);
+        assert_eq!(e["tls_handshake_ms"], 0);
+    }
     use tokio::sync::mpsc;
 
     #[test]

@@ -495,6 +495,12 @@ struct InferState {
     original_block_count: Option<u32>,
     /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
     mtp_min_probability: f32,
+    /// Duração do último handshake TLS aceito por este servidor, em ms.
+    ///
+    /// Medida no laço de accept (`serve.rs`), que é onde o `TlsAcceptor` roda e
+    /// o tempo é exato. Sai daqui para o `meta` da resposta, e de lá para a
+    /// telemetria por salto do gateway. `None` quando o nó não tem TLS.
+    tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
 }
 
 type SharedState = Arc<Mutex<InferState>>;
@@ -504,6 +510,7 @@ impl InferState {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         Self {
+            tls_handshake_ms: None,
             engine,
             sessions: HashMap::new(),
             seq_pool,
@@ -655,6 +662,7 @@ pub async fn run(
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
     let mut state_inner = InferState::new(engine, &cfg);
+    state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
     state_inner.original_block_count =
         crate::gguf::read_info(std::path::Path::new(&cfg.model_path))
             .ok()
@@ -780,6 +788,22 @@ fn http_client() -> &'static crate::peer_client::PeerClients {
     // então isto custa uma leitura atômica no caminho comum.
     c.set_tls(crate::peer_client::tls_ativo());
     c
+}
+
+/// Duração do último handshake TLS que este servidor aceitou, em ms.
+///
+/// Zero quando não há TLS, e zero também quando o salto reaproveitou uma
+/// conexão do pool - que é a maioria deles. Ver o doc de
+/// `SentFrame::tls_handshake_ms` sobre por que isso é a verdade e não uma
+/// falha de medição.
+fn last_handshake_ms(state: &SharedState) -> u64 {
+    state
+        .lock()
+        .unwrap()
+        .tls_handshake_ms
+        .as_ref()
+        .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap_or(0)
 }
 
 fn err400(msg: impl std::fmt::Display) -> Response {
@@ -911,6 +935,9 @@ async fn handle_rollback(
 
 async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
     let processing_started = Instant::now();
+    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
+    // mesmo em qualquer ponto do handler.
+    let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
@@ -1026,6 +1053,7 @@ async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Respon
     };
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
+    local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
     // `prompt_progress`: no anel borbulhado a cabeça sobrescrevia
@@ -1459,6 +1487,9 @@ fn prefill_blocking(
 
 async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
     let processing_started = Instant::now();
+    // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
+    // mesmo em qualquer ponto do handler.
+    let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
     let (meta, tensor) = match wire::decode(&body) {
@@ -1571,6 +1602,7 @@ async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response 
     };
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
+    local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
 
     // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
     // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.

@@ -121,6 +121,10 @@ Fatia cortada antes do rename perde o `original_block_count` (o metadado agora
 se chama `pom.original_block_count`) e volta a ser "total de camadas
 desconhecido", caso que o codigo ja trata; refatiar restaura.
 
+`--quiet` so fala quando renomeou alguma coisa e cala o lembrete do fim: e o
+modo que os scripts de deploy do operador usam, porque eles rodam a migracao em
+toda subida e numa maquina ja migrada nao ha o que dizer.
+
 ## make-macos-app.sh
 
 Monta `POM.app` em volta do binario ja compilado (padrao:

@@ -24,6 +24,15 @@
 # implantação continua funcionando, e refatiar o modelo restaura o metadado.
 set -euo pipefail
 
+# --quiet: so fala quando renomeou alguma coisa, e cala o lembrete do fim. E o
+# modo que os scripts de deploy usam, porque eles rodam a migracao em toda
+# subida e numa maquina ja migrada nao ha o que dizer.
+QUIET=0
+if [ "${1:-}" = "--quiet" ]; then
+  QUIET=1
+  shift
+fi
+
 dir="${1:-$(pwd)}"
 cd "$dir"
 
@@ -41,7 +50,7 @@ mover() {
     renomeou=$((renomeou + 1))
 }
 
-echo "Migrando $dir para POM"
+[ "$QUIET" = 1 ] || echo "Migrando $dir para POM"
 
 # Config: o nome exato e as variantes (rdma-p2p-cpu.json e afins).
 for antigo in rdma-p2p*.json; do
@@ -59,10 +68,13 @@ mover ".rdma-p2p-node.key" ".pom-node.key"
 mover ".rdma-p2p.key" ".pom.key"
 
 if [ "$renomeou" -eq 0 ]; then
-    echo "Nada a migrar aqui."
+    [ "$QUIET" = 1 ] || echo "Nada a migrar aqui."
+    [ "$QUIET" = 1 ] && exit 0
 else
-    echo "$renomeou arquivo(s) renomeado(s)."
+    echo "$renomeou arquivo(s) renomeado(s) em $dir."
 fi
+
+[ "$QUIET" = 1 ] && exit 0
 
 cat <<'AVISO'
 

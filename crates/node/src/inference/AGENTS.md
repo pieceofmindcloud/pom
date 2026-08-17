@@ -55,6 +55,11 @@ executa a cadeia que o planejador montou.
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão.
+- `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
+  (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
+  lê a parcial (f32), soma via `BlockingReduceBarrier` e devolve no buffer. O
+  fork insere o op de reduce (`GGML_OP_CUSTOM`) depois de wo/ffn_down e chama
+  esse callback durante o decode.
 - `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
   em trânsito.
 

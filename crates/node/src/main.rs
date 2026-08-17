@@ -83,6 +83,8 @@ mod reqlog;
 mod respawn;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "inference/tp.rs"]
+mod tp;
 #[path = "backend/serve.rs"]
 mod serve;
 #[path = "backend/session.rs"]

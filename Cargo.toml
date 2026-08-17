@@ -16,3 +16,10 @@ edition = "2021"
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# O fork do llama.cpp do pereirajair (branch pom-tensor-parallel) substitui o
+# llama.cpp vendado na crates.io: o bindgen e o cmake leem o diretorio `llama.cpp`
+# via symlink para /llama.cpp (o clone do fork). Ver o trabalho de tensor
+# parallelism (caminho C).
+[patch.crates-io]
+llama-cpp-sys-2 = { path = "vendor/llama-cpp-sys-2" }

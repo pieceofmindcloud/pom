@@ -748,9 +748,6 @@ async fn main() -> Result<()> {
         let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
             Arc::new(tokio::sync::RwLock::new(app_config.clone()));
 
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(600))
-            .build()?;
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
         // A catraca do TLS: escuta o gatilho do gossip e confirma a política
@@ -768,7 +765,6 @@ async fn main() -> Result<()> {
             default_model: profile.name.clone(),
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
-            http: Arc::new(http_client),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             gateway_port,
@@ -1316,9 +1312,6 @@ async fn start_gateway_only(
         lastslice::LastSlice::Nothing => {}
     }
 
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(600))
-        .build()?;
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
 
@@ -1337,7 +1330,6 @@ async fn start_gateway_only(
         default_model: String::new(),
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
-        http: Arc::new(http_client),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         gateway_port,

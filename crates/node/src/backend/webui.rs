@@ -656,11 +656,19 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         .map(|p| {
             let is_self = p.node_id == self_id;
             let url = p.gateway_url();
-            let http = state.http.clone();
+            // Cliente pinado no node_id do destino: com o cluster em TLS, o
+            // compartilhado não tem como verificar o certificado do peer e toda
+            // chamada de controle falharia - foi assim que a tela de implantar
+            // parou de enxergar as fatias dos outros nós.
+            let http = state.peer_http.for_peer(&p.node_id);
             async move {
                 if is_self || url.is_none() {
                     return (None, None);
                 }
+                let http = match http {
+                    Ok(c) => c,
+                    Err(e) => return (None, Some(format!("sem cliente: {e}"))),
+                };
                 let url = format!("{}/api/ui/node", url.unwrap());
                 match tokio::time::timeout(PEER_TIMEOUT, http.get(&url).send()).await {
                     Ok(Ok(r)) if r.status().is_success() => match r.json().await {
@@ -849,7 +857,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
         .filter(|p| p.node_id != self_id)
         .map(|p| {
             let url = p.gateway_url();
-            let http = state.http.clone();
+            let http = state.peer_http.for_peer(&p.node_id);
             let node_id = p.node_id.clone();
             async move {
                 let Some(base) = url else {
@@ -858,6 +866,10 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                         None,
                         Some("sem porta de gateway anunciada".to_string()),
                     );
+                };
+                let http = match http {
+                    Ok(c) => c,
+                    Err(e) => return (node_id, None, Some(format!("sem cliente: {e}"))),
                 };
                 let url = format!("{base}/api/ui/models");
                 match tokio::time::timeout(PEER_TIMEOUT * 3, http.get(&url).send()).await {
@@ -942,11 +954,15 @@ async fn plan_split_endpoint(
             let Some(base) = base else {
                 return bad_request(format!("peer {target} não está acessível para ler o GGUF"));
             };
+            // Resolvido antes de mover `req`: `target` empresta dele.
+            let cliente = match state.peer_http.for_peer(target) {
+                Ok(c) => c,
+                Err(e) => return bad_request(format!("sem cliente para o peer {target}: {e}")),
+            };
             let mut forwarded = req;
             // Clear the hop marker so the receiving peer measures locally.
             forwarded.layout_node_id = None;
-            return match state
-                .http
+            return match cliente
                 .post(format!("{base}/api/ui/plan"))
                 .json(&forwarded)
                 .send()
@@ -1981,8 +1997,10 @@ async fn forward_leave(state: &GatewayState, node_id: &str) -> Response {
         return bad_request("peer desconhecido ou sem porta de gateway anunciada");
     };
     let key = state.auth.read().await.connection_key.clone();
-    match state
-        .http
+    let Ok(cliente) = state.peer_http.for_peer(node_id) else {
+        return bad_request(format!("sem cliente para o peer {node_id}"));
+    };
+    match cliente
         .post(format!("{base}/api/ui/leave"))
         .bearer_auth(&key)
         .json(&json!({}))
@@ -2044,9 +2062,12 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
             continue;
         };
 
+        let Ok(cliente) = state.peer_http.for_peer(&peer.node_id) else {
+            continue;
+        };
+
         // Busy peers are out: a node serves one range at a time.
-        match state
-            .http
+        match cliente
             .get(format!("{base}/api/ui/node"))
             .bearer_auth(&key)
             .timeout(PEER_TIMEOUT)
@@ -2062,8 +2083,7 @@ async fn find_release_candidate(state: &GatewayState, cfg: &NodeConfig) -> Optio
             _ => continue,
         }
 
-        let Ok(r) = state
-            .http
+        let Ok(r) = cliente
             .get(format!("{base}/api/ui/models"))
             .timeout(PEER_TIMEOUT * 3)
             .send()
@@ -2220,8 +2240,11 @@ async fn release_slice(
     };
 
     let key = state.auth.read().await.connection_key.clone();
-    match state
-        .http
+    let cliente = match state.peer_http.for_peer(&candidate.node_id) {
+        Ok(c) => c,
+        Err(e) => return bad_request(format!("sem cliente para {}: {e}", candidate.node_id)),
+    };
+    match cliente
         .post(format!("{}/api/ui/apply", candidate.gateway))
         .bearer_auth(&key)
         .json(&apply_req)
@@ -2412,8 +2435,11 @@ pub(crate) async fn launch(
             continue;
         };
         let url = format!("{base}/api/ui/stop-inference");
-        match state
-            .http
+        let Ok(cliente) = state.peer_http.for_peer(&target.node_id) else {
+            warn!("sem cliente para {} em stop-inference", target.node_id);
+            continue;
+        };
+        match cliente
             .post(&url)
             .bearer_auth(&key)
             .timeout(PEER_TIMEOUT)
@@ -2490,8 +2516,18 @@ pub(crate) async fn launch(
         // the remote leg of a launch always came back 401.
         let url = format!("{base}/api/ui/apply");
         let key = state.auth.read().await.connection_key.clone();
-        match state
-            .http
+        let cliente = match state.peer_http.for_peer(&target.node_id) {
+            Ok(c) => c,
+            Err(e) => {
+                results.push(json!({
+                    "node_id": target.node_id,
+                    "dispatched": false,
+                    "error": format!("sem cliente para o peer: {e}"),
+                }));
+                continue;
+            }
+        };
+        match cliente
             .post(&url)
             .bearer_auth(&key)
             .json(&apply_req)
@@ -2894,6 +2930,64 @@ mod leave_tests {
         )
         .await;
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+#[cfg(test)]
+mod catalogo_sob_tls_tests {
+    use super::*;
+    use crate::gateway::testkit::state_with;
+    use crate::network::PeerInfo;
+
+    /// Porta 1, fechada de proposito: o que se afirma aqui nao e que a chamada
+    /// deu certo, e sim **por qual cliente** ela saiu.
+    fn peer_com_gateway(node_id: &str) -> PeerInfo {
+        crate::gateway::testkit::peer(node_id, node_id, 1)
+    }
+
+    /// A tela de implantar lista as fatias perguntando a cada peer, e essas
+    /// chamadas tem que sair pelo cliente com pinning.
+    ///
+    /// Este teste existe por um defeito real: o plano de controle continuou
+    /// usando o cliente compartilhado e sem pinning depois do TLS entrar, e com
+    /// a politica ligada **toda** consulta a peer falhava calada - a tela dizia
+    /// "nenhuma maquina do cluster tem fatias de <modelo>" e nao havia como
+    /// implantar nada. O cache por peer so ganha entrada quando alguem pediu um
+    /// cliente pinado, entao ele e a prova de que o caminho certo foi usado.
+    #[tokio::test]
+    async fn cluster_models_fala_com_os_peers_pelo_cliente_pinado() {
+        let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
+        state.peer_http.apply_cluster_policy(true);
+        assert!(state.peer_http.cached_peers().is_empty());
+
+        let _ = cluster_models(State(state.clone())).await;
+
+        assert_eq!(
+            state.peer_http.cached_peers(),
+            vec!["outro".to_string()],
+            "a consulta de catalogo saiu por um cliente sem pinning"
+        );
+        state.peer_http.apply_cluster_policy(false);
+    }
+
+    /// Mesma prova para o levantamento da tela de implantar (`deploy::survey`),
+    /// que e por onde o defeito apareceu para o operador.
+    #[tokio::test]
+    async fn a_lista_de_maquinas_para_implantar_tambem_e_pinada() {
+        let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
+        state.peer_http.apply_cluster_policy(true);
+
+        let _ = crate::deploy::survey_for_tests(&state, "qwen35").await;
+
+        // O proprio no tambem entra: o levantamento pergunta o catalogo dele
+        // pela mesma rota HTTP, e sob TLS isso tambem precisa de certificado
+        // verificado. O que importa e o peer estar la.
+        assert!(
+            state.peer_http.cached_peers().contains(&"outro".to_string()),
+            "o levantamento saiu por um cliente sem pinning: {:?}",
+            state.peer_http.cached_peers()
+        );
+        state.peer_http.apply_cluster_policy(false);
     }
 }
 

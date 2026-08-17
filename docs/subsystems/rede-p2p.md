@@ -260,6 +260,18 @@ ser um só, que é o comportamento anterior. O esquema das URLs (`http`/`https`)
 sai de um estado global do processo, `peer_client::tls_ativo`, porque é
 propriedade do nó e não da conexão.
 
+**Isso vale para o plano de controle também, não só para a inferência.** A
+primeira versão converteu o caminho de inferência e o de transferência e deixou
+de fora `/api/ui/cluster/models`, o levantamento de `deploy::survey`, o
+encaminhamento de `plan`/`leave`/`apply`/`unload`/`stop-inference` e a sondagem
+de jobs. Com a política ligada, **toda** consulta a peer falhava calada: a tela
+de implantar dizia "nenhuma máquina do cluster tem fatias de <modelo>" e não
+havia como implantar nada. Para o defeito não voltar, o `GatewayState` **não tem
+mais** um cliente compartilhado sem pinning - existe só o `peer_http`, e quem
+fala com destino que não é peer (loopback, Ollama) pede `peer_http.plain()`, que
+diz o que está fazendo. `webui::catalogo_sob_tls_tests` prende as duas rotas que
+o operador usa para implantar.
+
 **O que fica de fora, e por quê:**
 
 - **Gossip UDP.** TLS não se aplica a datagrama, e o conteúdo é endereço, faixa

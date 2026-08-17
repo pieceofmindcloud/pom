@@ -40,6 +40,11 @@ behind an auth extractor.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
 - `reqlog.rs` (205) - bounded in-memory request log (500 entries), `Caller`/`Entry`.
+- **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
+  fixa o certificado do destino pelo node_id. Não existe mais cliente
+  compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
+  e um chamador que o pegasse por hábito falhava calado. Loopback e Ollama usam
+  `peer_http.plain()`.
 - `serve.rs` - o laço de accept: espia o primeiro byte e serve TLS ou texto
   claro na mesma porta. `TlsServer` (certificado, modo estrito, duração do
   último handshake). Ver `docs/subsystems/rede-p2p.md`, seção 5.

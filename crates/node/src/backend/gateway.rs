@@ -45,13 +45,15 @@ pub struct GatewayState {
     pub local_assignment: Arc<tokio::sync::RwLock<Option<LayerAssignment>>>,
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
-    /// Shared HTTP client with long timeout for pipeline calls.
+    /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
+    /// fixado pelo node_id (`peer_client::PeerClients`).
     ///
-    /// Sem pinning: serve para destino que não é peer (loopback, Ollama). Toda
-    /// chamada peer a peer passa por `peer_http`.
-    pub http: Arc<reqwest::Client>,
-    /// Clientes por peer, com o certificado do destino fixado pelo node_id.
-    /// Ver `peer_client::PeerClients`.
+    /// Aqui havia também um `http` compartilhado e sem pinning. Ele saiu de
+    /// propósito: com o cluster em TLS ele não tem como verificar o certificado
+    /// de ninguém, e todo ponto de chamada que o pegasse por hábito falhava
+    /// calado - foi assim que a tela de implantar parou de enxergar as fatias
+    /// dos peers. Para destino que não é peer (loopback, Ollama) use
+    /// `peer_http.plain()`, que diz o que está fazendo.
     pub peer_http: Arc<crate::peer_client::PeerClients>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
@@ -946,15 +948,23 @@ pub async fn generate_stream(
     }
     .await;
 
-    release_sessions(&plan, &session_id, &state.http).await;
+    release_sessions(&plan, &session_id, &state.peer_http).await;
 }
 
 /// Hand every peer in the plan its KV slot back. Best effort: a peer that is
 /// already gone has nothing to release, and failing here must not turn a good
 /// answer into an error.
-async fn release_sessions(plan: &PipelinePlan, session_id: &str, http: &reqwest::Client) {
+async fn release_sessions(
+    plan: &PipelinePlan,
+    session_id: &str,
+    clients: &crate::peer_client::PeerClients,
+) {
     for step in &plan.steps {
         let url = format!("{}/v1/session/release", step.inference_url);
+        let Ok(http) = clients.for_peer(&step.node_id) else {
+            warn!("sem cliente para liberar sessão em {}", step.node_id);
+            continue;
+        };
         match http
             .post(&url)
             .json(&serde_json::json!({ "session_id": session_id }))
@@ -1677,7 +1687,6 @@ pub(crate) mod testkit {
             default_model: String::new(),
             local_assignment: assignment.clone(),
             loads: Arc::new(LoadTracker::new()),
-            http: Arc::new(reqwest::Client::new()),
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),

@@ -282,16 +282,28 @@ impl Machine {
 /// cluster catalog screen shows — a machine is the only honest source for where
 /// its own files are, and for a path we would otherwise have to guess — and its
 /// `/api/ui/node`, which is the only honest source for how much room it has.
+/// Porta de teste para `survey`, que e privado: a suite precisa provar que o
+/// levantamento fala com os peers pelo cliente pinado. Ver
+/// `webui::catalogo_sob_tls_tests`.
+#[cfg(test)]
+pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
+    survey(state, group, DeployKind::Shards).await.len()
+}
+
 async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Machine> {
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
 
     let futures = peers.into_iter().map(|peer| {
-        let http = state.http.clone();
+        // Pinado no node_id do destino: sem isto, com o cluster em TLS o
+        // levantamento inteiro falhava calado e a tela de implantar dizia
+        // "nenhuma máquina do cluster tem fatias de <modelo>".
+        let http = state.peer_http.for_peer(&peer.node_id);
         let is_self = peer.node_id == self_id;
         let group = group.to_string();
         async move {
             let base = peer.gateway_url()?;
+            let http = http.ok()?;
 
             let (models, node) = futures::future::join(
                 http.get(format!("{base}/api/ui/models"))
@@ -1688,14 +1700,20 @@ async fn run(
         )
         .await;
 
-        let mut watching: Vec<(String, String)> = Vec::new(); // (gateway, job id)
+        // (node_id, gateway, job id). O node_id entrou porque a sondagem do job
+        // fala com o peer, e com o cluster em TLS ela precisa fixar o
+        // certificado dele - uma URL sozinha não tem identidade a verificar.
+        let mut watching: Vec<(String, String, String)> = Vec::new();
         for pull in &pulls {
             let gateway = gateway_of(&state, &pull.target_node_id)
                 .await
                 .ok_or_else(|| format!("{} não anuncia porta de gateway", pull.target_host))?;
 
-            let body: serde_json::Value = state
-                .http
+            let cliente = state
+                .peer_http
+                .for_peer(&pull.target_node_id)
+                .map_err(|e| format!("{}: sem cliente para o peer: {e}", pull.target_host))?;
+            let body: serde_json::Value = cliente
                 .post(format!("{gateway}/api/transfer/pull"))
                 .bearer_auth(&key)
                 .json(&json!({
@@ -1716,7 +1734,7 @@ async fn run(
                         "{} puxando L{}-{} de {}",
                         pull.target_host, pull.start_layer, pull.end_layer, pull.source_node_id
                     );
-                    watching.push((gateway, tid.to_string()));
+                    watching.push((pull.target_node_id.clone(), gateway, tid.to_string()));
                 }
                 None => {
                     return Err(format!(
@@ -1951,8 +1969,11 @@ async fn remove_node_endpoint(
         let Some(base) = gateway_of(&state, &req.target_node_id).await else {
             return bad(json!({ "error": "peer sem porta de gateway anunciada" }));
         };
-        match state
-            .http
+        let cliente = match state.peer_http.for_peer(&req.target_node_id) {
+            Ok(c) => c,
+            Err(e) => return bad(json!({ "error": format!("sem cliente para o peer: {e}") })),
+        };
+        match cliente
             .post(format!("{base}/api/ui/unload"))
             .bearer_auth(&key)
             .timeout(PEER_TIMEOUT)
@@ -2166,8 +2187,11 @@ async fn release_one(
     let base = peer
         .gateway_url()
         .ok_or_else(|| "peer sem porta de gateway anunciada".to_string())?;
-    match state
-        .http
+    let cliente = state
+        .peer_http
+        .for_peer(&peer.node_id)
+        .map_err(|e| format!("sem cliente para a máquina: {e}"))?;
+    match cliente
         .post(format!("{base}/api/ui/unload"))
         .bearer_auth(key)
         .timeout(PEER_TIMEOUT)
@@ -2222,16 +2246,19 @@ async fn gateway_of(state: &GatewayState, node_id: &str) -> Option<String> {
 async fn wait_for_transfers(
     state: &GatewayState,
     key: &str,
-    watching: &[(String, String)],
+    watching: &[(String, String, String)],
     job_id: &str,
 ) -> Result<(), String> {
     loop {
         let mut done = 0usize;
         let mut fraction_sum = 0.0;
 
-        for (gateway, id) in watching {
-            let body: serde_json::Value = state
-                .http
+        for (node_id, gateway, id) in watching {
+            let cliente = state
+                .peer_http
+                .for_peer(node_id)
+                .map_err(|e| format!("sem cliente para {gateway}: {e}"))?;
+            let body: serde_json::Value = cliente
                 .get(format!("{gateway}/api/transfer/jobs"))
                 .bearer_auth(key)
                 .timeout(PEER_TIMEOUT)

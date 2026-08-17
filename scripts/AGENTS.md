@@ -7,18 +7,18 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
 
 - `build-docker.sh` - constroi a imagem do cluster: le o commit **no host**
   (`git rev-parse --short HEAD`, sufixo `-sujo` se a arvore tem alteracoes),
-  exporta `RDMA_P2P_BUILD_COMMIT`, roda `npm run build` em `apps/frontend` e
+  exporta `POM_BUILD_COMMIT`, roda `npm run build` em `apps/frontend` e
   `docker compose build`. O commit nao pode ser lido dentro da imagem builder
   (`.dockerignore` corta `.git/` e a imagem nao tem `git`); sem a variavel o
   `crates/node/build.rs` carimba "desconhecido" em todo container. Construa a
   imagem por este script, nunca `docker compose build` na mao.
-- `gen-node-configs.py` - gera um `rdma-p2p.json` por no em
+- `gen-node-configs.py` - gera um `pom.json` por no em
   `tests/fixtures/node-<N>/`. As portas de cada no vem da config, nao do CLI
   (com `network_mode: host`, colisao de porta e o erro tipico). No 1 =
   principal (guarda `connection_key` e `api_keys`); demais = node com
   `bootstrap_nodes` para `127.0.0.1:42777`. Recusa gerar sem `connection_key`;
   `--force` sobrescreve config existente. Nunca gera a chave de conexao - herda
-  da config base (`--base`, padrao `rdma-p2p.json` na raiz) para nao partir um
+  da config base (`--base`, padrao `pom.json` na raiz) para nao partir um
   cluster existente.
 - `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
   a imagem; use `build-docker.sh` para isso.
@@ -68,13 +68,13 @@ invocados pelo binario (ver o `README.md` de la).
 - `Dockerfile` - dois estagios: builder `nvidia/cuda:13.0.3-devel-ubuntu24.04`
   compila `--features cuda` com cache mounts (registry/git/target) e monta a UI
   (`apps/frontend/dist`); runtime e a base CUDA 13.0.3 com `LD_LIBRARY_PATH`
-  no `compat/` e `RDMA_P2P_HOME=/app`. `ARG RDMA_P2P_BUILD_COMMIT` recebe o
+  no `compat/` e `POM_HOME=/app`. `ARG POM_BUILD_COMMIT` recebe o
   commit do host (ver `build-docker.sh`).
 - `docker-compose.yml` - cluster local de 4 servicos (`node-gpu`, `node-gpu-2`,
   `node-cpu-1`, `node-cpu-2`) com `network_mode: host`; estado em
   `tests/fixtures/<nome>` e modelos montados de `./models`. GPU so via
   `deploy.resources` (exige NVIDIA Container Toolkit no host). UI reencontrada
-  por `RDMA_P2P_UI_DIST=/app/apps/frontend/dist` porque `RDMA_P2P_HOME=/data` nao
+  por `POM_UI_DIST=/app/apps/frontend/dist` porque `POM_HOME=/data` nao
   e o /app da imagem. Sobre os nomes das fixtures, veja "Sobre os nomes das
   fixtures do docker-compose" abaixo: nao e defeito, sao dois ambientes distintos.
 - `.github/workflows/release.yml` - release so manual (`workflow_dispatch` com
@@ -94,7 +94,7 @@ invocados pelo binario (ver o `README.md` de la).
   monta o docker.sock e a chave ssh do host; `install-buildkit.sh` baixa o
   binario `linux-amd64` do buildx (arm64 precisa de `docker-buildx-plugin`).
 - `.dockerignore` - corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
-  `*.key`, `rdma-p2p.json`, `docs/` do contexto de build; e por isso que o
+  `*.key`, `pom.json`, `docs/` do contexto de build; e por isso que o
   commit precisa chegar por variavel e a config nao entra na imagem.
 
 ## Sobre os nomes das fixtures do docker-compose
@@ -107,3 +107,38 @@ trata-los. A razao: sao dois ambientes de gente diferente -
 **nao precisam se encontrar** - cada um atende a um operador distinto.
 
 Nao e defeito. Nao voltar a propor essa "correcao".
+
+## migrar-para-pom.sh
+
+Migra uma maquina do nome antigo do projeto para POM. O binario nao conhece
+mais o nome antigo - ele procura `pom.json`, `.pom-node.key` e `.pom.key` e le
+as variaveis `POM_*` -, entao quem carrega a compatibilidade e este script:
+renomeia config (inclusive variantes como `-cpu.json`), a anotacao
+`*.last-slice.json` e as duas chaves de identidade. Nao toca em modelo nem em
+fatia. Depois de rodado em todas as maquinas, pode ser apagado.
+
+Fatia cortada antes do rename perde o `original_block_count` (o metadado agora
+se chama `pom.original_block_count`) e volta a ser "total de camadas
+desconhecido", caso que o codigo ja trata; refatiar restaura.
+
+## make-macos-app.sh
+
+Monta `POM.app` em volta do binario ja compilado (padrao:
+`target/release/pom` -> `dist-release/POM.app`). E o unico jeito de um
+executavel ter icone no macOS: o icone pertence ao bundle, nao ao arquivo.
+Nome, slug e caminho do `.icns` saem do `brand.json`; o Info.plist marca
+`LSUIElement` (o no nao abre janela - a interface e web, na porta do gateway) e
+o bundle continua chamavel por linha de comando em
+`POM.app/Contents/MacOS/pom`. O workflow de release chama este script no alvo
+macOS e copia o `dist` da interface para `Contents/Resources/apps/frontend/`,
+que e onde `config::bundled_ui_dist()` a procura.
+
+## derive-dark-logo.py
+
+Deriva `assets/brand/pom-logo-dark.png` a partir da arte clara. Nao e arte
+nova: espelha a luminancia do letreiro (azul-petroleo chapado, desenhado para
+fundo claro, que sumia no painel escuro) preservando matiz e saturacao, e
+**nao toca na ilustracao do cerebro** - recolori-la achatava o volume, e ela ja
+tem contraste proprio no escuro. A regiao preservada e o retangulo do brilho
+dourado, com borda suave para nao deixar costura. Quando existir uma arte
+escura desenhada de verdade, sobrescreva o PNG e apague este script.

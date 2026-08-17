@@ -15,7 +15,7 @@
 //! na memória mata o processo antes de carregar, o Docker religa o container, e
 //! uma anotação otimista faz o nó tentar a mesma fatia para sempre. O contador
 //! `MAX_RESTARTS` não protege disso — é de memória e morre com o processo.
-//! Reproduzido em `data/rdma-p2p-reinicio-infinito-carga/`.
+//! Reproduzido em `data/pom-reinicio-infinito-carga/`.
 
 use crate::runtime::NodeConfig;
 use anyhow::{Context, Result};
@@ -65,7 +65,7 @@ pub enum LastSlice {
 /// Onde este nó anota a sua fatia.
 ///
 /// Deriva do caminho da config porque dois nós da mesma máquina rodam com
-/// `RDMA_P2P_CONFIG` diferentes; um nome fixo faria um sobrescrever o outro.
+/// `POM_CONFIG` diferentes; um nome fixo faria um sobrescrever o outro.
 pub fn path() -> PathBuf {
     path_for(&crate::config::Config::config_path())
 }
@@ -129,22 +129,22 @@ fn take_from(p: &Path) -> LastSlice {
 mod tests {
     use super::*;
 
-    /// Dois nós na mesma máquina rodam com RDMA_P2P_CONFIG diferentes. Se o
+    /// Dois nós na mesma máquina rodam com POM_CONFIG diferentes. Se o
     /// arquivo de fatia tivesse nome fixo, um sobrescreveria o do outro e a
     /// máquina voltaria com as duas fatias trocadas.
     #[test]
     fn o_caminho_deriva_da_config_de_cada_no() {
         assert_eq!(
-            path_for(std::path::Path::new("/repo/rdma-p2p.json")),
-            std::path::PathBuf::from("/repo/rdma-p2p.json.last-slice.json")
+            path_for(std::path::Path::new("/repo/pom.json")),
+            std::path::PathBuf::from("/repo/pom.json.last-slice.json")
         );
         assert_eq!(
-            path_for(std::path::Path::new("/repo/rdma-p2p-cpu.json")),
-            std::path::PathBuf::from("/repo/rdma-p2p-cpu.json.last-slice.json")
+            path_for(std::path::Path::new("/repo/pom-cpu.json")),
+            std::path::PathBuf::from("/repo/pom-cpu.json.last-slice.json")
         );
         assert_ne!(
-            path_for(std::path::Path::new("/repo/rdma-p2p.json")),
-            path_for(std::path::Path::new("/repo/rdma-p2p-cpu.json"))
+            path_for(std::path::Path::new("/repo/pom.json")),
+            path_for(std::path::Path::new("/repo/pom-cpu.json"))
         );
     }
 
@@ -280,7 +280,7 @@ mod tests {
 
     fn tmp(nome: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "rdma-lastslice-{nome}-{}-{:?}",
+            "pom-lastslice-{nome}-{}-{:?}",
             std::process::id(),
             std::thread::current().id()
         ));

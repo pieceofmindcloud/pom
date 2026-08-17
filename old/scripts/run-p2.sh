@@ -5,7 +5,7 @@
 
 MODEL="./models/qwen/qwen_16_31.gguf"
 
-./target/release/rdma-p2p \
+./target/release/pom \
     --model "$MODEL" \
     --port 42777 \
     --bootstrap 2804:d55:5579:1000:3939:e9e9:a832:bc6f:42777 \

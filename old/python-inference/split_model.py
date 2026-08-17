@@ -1,5 +1,5 @@
 """
-Split a GGUF model file into per-peer slices for rdma-p2p pipeline inference.
+Split a GGUF model file into per-peer slices for pom pipeline inference.
 
 Each slice is a *valid standalone GGUF* that llama.cpp can load:
   - All slices:        blk.<N>.* for N in [start_layer, end_layer] (remapped to 0..)
@@ -563,12 +563,12 @@ def split_model(
     if not updated_block_count:
         new_kv.append(KVEntry(f"{arch}.block_count", GGUF_VAL_UINT32, n_split_layers))
 
-    # Store original model metadata so rdma-p2p peers can self-describe their
+    # Store original model metadata so pom peers can self-describe their
     # layer range and reconstruct total_layers without the original file.
     if original_block_count is not None:
-        new_kv.append(KVEntry("rdmap2p.original_block_count", GGUF_VAL_UINT32, original_block_count))
-    new_kv.append(KVEntry("rdmap2p.original_block_start", GGUF_VAL_UINT32, start_layer))
-    new_kv.append(KVEntry("rdmap2p.original_block_end",   GGUF_VAL_UINT32, end_layer))
+        new_kv.append(KVEntry("pom.original_block_count", GGUF_VAL_UINT32, original_block_count))
+    new_kv.append(KVEntry("pom.original_block_start", GGUF_VAL_UINT32, start_layer))
+    new_kv.append(KVEntry("pom.original_block_end",   GGUF_VAL_UINT32, end_layer))
 
     ALIGN = 32
 
@@ -624,7 +624,7 @@ def split_model(
         pct = 100 * done / total_data_bytes
         if int(pct) != last_reported:
             last_reported = int(pct)
-            print(f"RDMAP2P_PROGRESS {pct:.1f}", file=sys.stderr, flush=True)
+            print(f"POM_PROGRESS {pct:.1f}", file=sys.stderr, flush=True)
 
     with output_path.open("wb") as f:
         f.write(header)

@@ -3,7 +3,11 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-const CONFIG_FILENAME: &str = "rdma-p2p.json";
+/// Nome do arquivo de config: derivado da marca (`brand.json`), não escrito à
+/// mão, para renomear o produto ser uma edição só.
+fn config_filename() -> String {
+    crate::brand::config_filename()
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -59,7 +63,7 @@ pub struct Config {
     pub blocked_nodes: Vec<String>,
     /// Directories holding **whole** models.
     ///
-    /// `None` — the field missing from an old `rdma-p2p.json`, or never edited —
+    /// `None` — the field missing from an old `pom.json`, or never edited —
     /// means "whatever LM Studio and Ollama have on this machine", exactly what
     /// the scan did before it was configurable. Once the operator saves the list
     /// it becomes law, and an empty list really means "look nowhere": the
@@ -134,24 +138,24 @@ pub fn normalize_peer_addr(raw: &str) -> String {
 /// slice is actually assigned.
 pub const DEFAULT_INFERENCE_PORT: u16 = 8181;
 
-/// Directory `rdma-p2p.json`, `models/` and `venv/` are resolved against.
+/// Directory `pom.json`, `models/` and `venv/` are resolved against.
 ///
 /// Everything used to be resolved against the working directory, so launching
-/// the binary by absolute path from somewhere else (`ssh host '/path/to/rdma-p2p'`
+/// the binary by absolute path from somewhere else (`ssh host '/path/to/pom'`
 /// runs in `$HOME`) silently read a different config and found no models at all —
 /// the node then reported it had none of the shards sitting right next to it.
 ///
 /// Resolution order, first hit wins:
-///  1. `$RDMA_P2P_HOME`, for anyone who wants to be explicit;
+///  1. `$POM_HOME`, for anyone who wants to be explicit;
 ///  2. the working directory, when it actually looks like the project;
 ///  3. the directory holding the executable, climbing out of `target/release`.
 pub fn project_root() -> PathBuf {
-    if let Ok(home) = std::env::var("RDMA_P2P_HOME") {
+    if let Ok(home) = crate::brand::env("HOME") {
         return PathBuf::from(home);
     }
 
     let looks_like_project =
-        |d: &std::path::Path| d.join(CONFIG_FILENAME).exists() || d.join("models").is_dir();
+        |d: &std::path::Path| d.join(config_filename()).exists() || d.join("models").is_dir();
 
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     if looks_like_project(&cwd) {
@@ -160,7 +164,7 @@ pub fn project_root() -> PathBuf {
 
     if let Ok(exe) = std::env::current_exe() {
         let mut dir = exe.parent().map(PathBuf::from);
-        // …/target/release/rdma-p2p → climb to the project directory.
+        // …/target/release/pom → climb to the project directory.
         for _ in 0..3 {
             let Some(d) = dir else { break };
             if looks_like_project(&d) {
@@ -175,9 +179,9 @@ pub fn project_root() -> PathBuf {
 
 impl Config {
     pub fn config_path() -> PathBuf {
-        std::env::var("RDMA_P2P_CONFIG")
+        crate::brand::env("CONFIG")
             .map(PathBuf::from)
-            .unwrap_or_else(|_| project_root().join(CONFIG_FILENAME))
+            .unwrap_or_else(|_| project_root().join(config_filename()))
     }
 
     pub fn exists() -> bool {
@@ -239,13 +243,40 @@ pub fn default_shard_dir() -> PathBuf {
 }
 
 /// Where the built web interface (`apps/frontend/dist`) is read from at
-/// runtime. `$RDMA_P2P_UI_DIST` overrides it — the runtime Docker image sets
+/// runtime. `$POM_UI_DIST` overrides it — the runtime Docker image sets
 /// it explicitly rather than relying on `project_root()` detection, and a dev
 /// setup that keeps the bundle elsewhere can point straight at it.
 pub fn ui_dist_dir() -> PathBuf {
-    std::env::var("RDMA_P2P_UI_DIST")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| project_root().join("apps/frontend/dist"))
+    if let Ok(dir) = crate::brand::env("UI_DIST") {
+        return PathBuf::from(dir);
+    }
+    if let Some(dir) = bundled_ui_dist() {
+        return dir;
+    }
+    project_root().join("apps/frontend/dist")
+}
+
+/// A interface dentro de um bundle `.app` do macOS.
+///
+/// O bundle é o único jeito de um executável ter ícone no macOS
+/// (`scripts/make-macos-app.sh`), e nele o binário vive em
+/// `POM.app/Contents/MacOS/`. Dali, `project_root()` cai no cwd de quem
+/// abriu - o Finder abre em `/`, e a tela responderia 500. A interface viaja
+/// em `Contents/Resources/apps/frontend/dist`, que é o que esta função acha.
+///
+/// Vale em qualquer plataforma porque é só um teste de caminho; fora de um
+/// bundle o diretório não existe e a função devolve `None`.
+fn bundled_ui_dist() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let macos_dir = exe.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let dir = macos_dir
+        .parent()?
+        .join("Resources")
+        .join("apps/frontend/dist");
+    dir.is_dir().then_some(dir)
 }
 
 #[cfg(test)]
@@ -321,7 +352,7 @@ mod tests {
         assert_eq!(parsed.role, Role::Node);
     }
 
-    /// A `rdma-p2p.json` written before the directories were configurable has
+    /// A `pom.json` written before the directories were configurable has
     /// to keep behaving exactly as it did: auto-detected libraries, slices in
     /// `<project_root>/models`.
     #[test]

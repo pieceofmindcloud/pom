@@ -5,7 +5,7 @@
 //! sem ele, e os peers passam a guardar um endereço temporário que expira.
 //!
 //! O ambiente não precisa de cuidado: `Command` o herda por padrão, e é isso
-//! que preserva `RDMA_P2P_CONFIG` e `RDMA_P2P_NODE_KEY` de cada nó de uma
+//! que preserva `POM_CONFIG` e `POM_NODE_KEY` de cada nó de uma
 //! máquina com vários.
 
 use std::sync::OnceLock;
@@ -58,7 +58,7 @@ mod tests {
     #[test]
     fn argv_lembrado_volta_igual_sem_o_programa() {
         remember_argv(vec![
-            "./target/release/rdma-p2p".into(),
+            "./target/release/pom".into(),
             "--refresh".into(),
             "3600".into(),
             "--advertise-addr".into(),
@@ -80,9 +80,9 @@ mod tests {
     /// lista vazia não pode virar um argumento vazio na linha de comando.
     #[test]
     fn argv_so_com_o_programa_nao_gera_argumento() {
-        assert!(argv_rest(vec!["./target/release/rdma-p2p".to_string()]).is_empty());
+        assert!(argv_rest(vec!["./target/release/pom".to_string()]).is_empty());
         assert_eq!(
-            argv_rest(vec!["rdma-p2p".into(), "--no-discovery".into()]),
+            argv_rest(vec!["pom".into(), "--no-discovery".into()]),
             vec!["--no-discovery".to_string()]
         );
     }

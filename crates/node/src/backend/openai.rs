@@ -341,7 +341,7 @@ async fn list_models(_auth: ApiKeyAuth, State(state): State<GatewayState>) -> im
             id,
             object: "model",
             created,
-            owned_by: "rdma-p2p",
+            owned_by: "pom",
         })
         .collect();
 
@@ -363,7 +363,7 @@ async fn get_model(
                 "id": id,
                 "object": "model",
                 "created": chrono::Utc::now().timestamp(),
-                "owned_by": "rdma-p2p",
+                "owned_by": "pom",
             })),
         )
             .into_response()
@@ -565,7 +565,7 @@ async fn blocking_response(
                     },
                     // Not part of the OpenAI schema; kept so the hop chain that
                     // proves distributed execution stays visible to clients.
-                    "x_rdma_p2p": {
+                    "x_pom": {
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
@@ -886,7 +886,7 @@ fn chunk_json(
         "choices": [choice],
     });
     if let Some(summary) = summary {
-        payload["x_rdma_p2p"] = json!({
+        payload["x_pom"] = json!({
             "source": summary.source,
             "tokens_per_sec": summary.tokens_per_sec,
             "tokens_generated": summary.tokens_generated,
@@ -933,8 +933,8 @@ mod tests {
         // Must stay byte-identical to what /api/generate would receive, so the
         // simple path behaves the same in both APIs.
         assert_eq!(
-            render_prompt(&[msg("user", "O que e RDMA?")], &[]),
-            "O que e RDMA?"
+            render_prompt(&[msg("user", "O que e inferencia distribuida?")], &[]),
+            "O que e inferencia distribuida?"
         );
     }
 
@@ -1246,8 +1246,8 @@ mod tests {
         ))
         .expect("JSON válido");
 
-        assert_eq!(payload["x_rdma_p2p"]["tokens_per_sec"], 4.5);
-        assert_eq!(payload["x_rdma_p2p"]["tokens_generated"], 12);
-        assert_eq!(payload["x_rdma_p2p"]["trace"]["model"], "qwen35");
+        assert_eq!(payload["x_pom"]["tokens_per_sec"], 4.5);
+        assert_eq!(payload["x_pom"]["tokens_generated"], 12);
+        assert_eq!(payload["x_pom"]["trace"]["model"], "qwen35");
     }
 }

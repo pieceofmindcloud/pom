@@ -1,6 +1,6 @@
-# crates/node - o nó rdma-p2p
+# crates/node - o nó pom
 
-Crate `node` (binário `rdma-p2p`), o processo completo do cluster: P2P,
+Crate `node` (binário `pom`), o processo completo do cluster: P2P,
 inferência distribuída, gateway HTTP, UI web e monitor. É um binário de raiz
 única (`src/main.rs`) que declara os módulos via `#[path]` e um `lib.rs` do
 workspace que faz o papel de crate-raiz para os módulos auxiliares
@@ -8,9 +8,9 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 
 ## Cargo.toml
 
-- Binário único: `rdma-p2p` em `src/main.rs`.
+- Binário único: `pom` em `src/main.rs`.
 - Features `cuda`/`metal` repassadas a `llama-cpp-sys-2` (compilação do GGML com
-  GPU). Usadas por `scripts/build-docker.sh`/`RDMA_P2P_BUILD_FEATURES` no
+  GPU). Usadas por `scripts/build-docker.sh`/`POM_BUILD_FEATURES` no
   devupdate.
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
@@ -20,8 +20,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 
 ## build.rs
 
-- Carimba `RDMA_P2P_BUILD_COMMIT` no binário (`cargo:rustc-env`). Precedência:
-  variável `RDMA_P2P_BUILD_COMMIT` (o Dockerfile não tem `git` nem `.git`) →
+- Carimba `POM_BUILD_COMMIT` no binário (`cargo:rustc-env`). Precedência:
+  variável `POM_BUILD_COMMIT` (o Dockerfile não tem `git` nem `.git`) →
   `git rev-parse --short HEAD` + sufixo `-sujo` se `git status --porcelain`
   mostrar mudanças → `desconhecido`.
 - `rerun-if-changed` em `.git/HEAD` e `.git/index`, e `rerun-if-env-changed` na
@@ -52,7 +52,7 @@ como `primary` na config de inferência montada pela linha de comando),
 
 **Fluxo (`main`):**
 1. `respawn::remember_argv` + tracing.
-2. Sem `rdma-p2p.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`
+2. Sem `pom.json` → `start_setup_mode`: só `/api/setup/key`, `/api/setup/save`
    + a UI (`webapp::routes`); gravar a config respawna o processo.
 3. Com config: porta P2P/HTTP vêm da config; `inference_port` = flag ou default 8181.
 4. `--list-models` imprime perfis + modelos do Ollama e sai.
@@ -65,7 +65,7 @@ como `primary` na config de inferência montada pela linha de comando),
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
    arquivo, depois nome cru) → Ollama `/api/tags` (perfil por tamanho real,
    `from_ollama_model`) → `guess_from_name`.
-7. Identidade `Identity::load_or_create`; chave pkarr em `.rdma-p2p.key`
+7. Identidade `Identity::load_or_create`; chave pkarr em `.pom.key`
    (relativa ao cwd - ver Defeitos).
 8. Bootstrap = config + `--bootstrap`, ambos passando por
    `config::normalize_peer_addr`. `--advertise-addr` vence a config.

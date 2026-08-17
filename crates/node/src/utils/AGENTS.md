@@ -6,7 +6,7 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 
 ## Arquivos
 
-- `config.rs` - o `Config` persistido em `rdma-p2p.json` e a resolução do
+- `config.rs` - o `Config` persistido em `pom.json` e a resolução do
   project root / diretório da UI.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
@@ -16,16 +16,26 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 ## Funções-chave
 
 `config.rs`:
-- `project_root` - `$RDMA_P2P_HOME` → cwd que "parece o projeto" → subindo do
+- `brand.rs` - a identidade do produto, lida de `brand.json` na raiz do
+  repositório em tempo de compilação (`include_str!`). É a fonte única do nome,
+  do slogan e dos arquivos de logo, e **todo nome derivado sai daqui**:
+  `config_filename()` (`pom.json`), `env_var("HOME")` (`POM_HOME`),
+  `gguf_key("start_layer")` (`pom.start_layer`), `dns_record()` (`_pom`) e o
+  nome das chaves de identidade. Renomear o produto é editar `brand.json` - e,
+  só para o executável, o `[[bin]]` do `Cargo.toml`, que o cargo exige literal.
+  O frontend lê o mesmo arquivo (`apps/frontend/scripts/build-brand.mjs`), então
+  tela e binário não têm como discordar sobre o nome.
+
+- `project_root` - `$POM_HOME` → cwd que "parece o projeto" → subindo do
   diretório do executável. É de onde saem `models/`, `venv/` e a config; sem
-  isto um `ssh host '/caminho/rdma-p2p'` lia outra config e não achava fatia
+  isto um `ssh host '/caminho/pom'` lia outra config e não achava fatia
   nenhuma.
-- `Config::load`/`save`/`config_path` - `$RDMA_P2P_CONFIG` ou
-  `<project_root>/rdma-p2p.json`.
+- `Config::load`/`save`/`config_path` - `$POM_CONFIG` ou
+  `<project_root>/pom.json`.
 - `normalize_peer_addr` - completa a porta que falta em endereço digitado
   (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
   sempre no log); mantém o que está gravado igual ao que se imprime.
-- `ui_dist_dir` - `$RDMA_P2P_UI_DIST` ou `<project_root>/apps/frontend/dist`
+- `ui_dist_dir` - `$POM_UI_DIST` ou `<project_root>/apps/frontend/dist`
   (a UI é lida do disco em runtime por `webapp.rs`).
 - `model_dir_paths`/`shard_dir_path` - onde procurar modelos inteiros e onde
   escrever/ler fatias. `model_dirs` ausente = detectar (LM Studio + Ollama);

@@ -1,22 +1,41 @@
 use crate::model::LayerAssignment;
 use crate::network::PeerInfo;
 
+/// The banner, drawn from the brand rather than from a literal: the ASCII
+/// wordmark is fixed art, but the name and the tagline under it come from
+/// `brand.json`, so a rename never leaves the terminal announcing the old
+/// product.
 pub fn print_banner() {
+    let width: usize = 62;
+    let center = |text: &str| {
+        let pad = width.saturating_sub(text.chars().count());
+        let left = pad / 2;
+        format!("║{}{}{}║", " ".repeat(left), text, " ".repeat(pad - left))
+    };
+    println!();
+    println!("╔{}╗", "═".repeat(width));
+    for line in [
+        r"██████╗  ██████╗ ███╗   ███╗",
+        r"██╔══██╗██╔═══██╗████╗ ████║",
+        r"██████╔╝██║   ██║██╔████╔██║",
+        r"██╔═══╝ ██║   ██║██║╚██╔╝██║",
+        r"██║     ╚██████╔╝██║ ╚═╝ ██║",
+        r"╚═╝      ╚═════╝ ╚═╝     ╚═╝",
+    ] {
+        println!("{}", center(line));
+    }
+    println!("{}", center(""));
     println!(
-        r#"
-╔══════════════════════════════════════════════════════════════╗
-║         ██████╗ ██████╗ ███╗   ███╗ █████╗                  ║
-║         ██╔══██╗██╔══██╗████╗ ████║██╔══██╗                 ║
-║         ██████╔╝██║  ██║██╔████╔██║███████║                 ║
-║         ██╔══██╗██║  ██║██║╚██╔╝██║██╔══██║                 ║
-║         ██║  ██║██████╔╝██║ ╚═╝ ██║██║  ██║                 ║
-║         ╚═╝  ╚═╝╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝                ║
-║                                                              ║
-║              P2P Distributed LLM Inference                   ║
-║                    rdma-sim layer                            ║
-╚══════════════════════════════════════════════════════════════╝
-"#
+        "{}",
+        center(&format!(
+            "{} · {}",
+            crate::brand::name(),
+            crate::brand::tagline()
+        ))
     );
+    println!("{}", center("P2P Distributed LLM Inference"));
+    println!("╚{}╝", "═".repeat(width));
+    println!();
 }
 
 pub fn print_node_info(node_id: &str, pubkey: &str, port: u16) {

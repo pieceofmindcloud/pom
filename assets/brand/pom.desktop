@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=POM
+GenericName=Piece Of Mind
+Comment=Inferência distribuída de LLM entre máquinas comuns, sem servidor central
+Exec=pom
+Icon=pom
+Terminal=true
+Categories=Development;Network;Utility;
+Keywords=LLM;inference;cluster;p2p;

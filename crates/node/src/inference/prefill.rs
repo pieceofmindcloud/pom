@@ -85,7 +85,7 @@ pub struct PhaseTrace {
     pub node_backend_enqueue_ms: u64,
     /// Queued backend work plus already-queued output transfer, measured with
     /// `llama_synchronize`. Zero unless the peer runs with
-    /// `RDMA_P2P_PROFILE_SYNC` (on by default; `=0` turns it off); it is a
+    /// `POM_PROFILE_SYNC` (on by default; `=0` turns it off); it is a
     /// diagnostic boundary, not kernel time.
     pub node_backend_completion_ms: u64,
     /// Device-to-host copy of the residual, measured inside the capture hook.

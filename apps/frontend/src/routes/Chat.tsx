@@ -542,7 +542,7 @@ export function Chat() {
             streamed = consumeChatDelta(streamed, delta);
             patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
           }
-          const metrics = chunk?.x_rdma_p2p;
+          const metrics = chunk?.x_pom;
           if (metrics && typeof metrics === "object") {
             streamed = finishChatStream(streamed, metrics);
             patchReply({

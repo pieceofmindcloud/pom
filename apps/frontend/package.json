@@ -1,15 +1,15 @@
 {
-  "name": "codai-server-ui",
+  "name": "pom-ui",
   "private": true,
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/build-docs.mjs",
+    "predev": "node scripts/build-brand.mjs && node scripts/build-docs.mjs",
     "dev": "vite --port 5199 --strictPort",
-    "prebuild": "node scripts/build-docs.mjs",
+    "prebuild": "node scripts/build-brand.mjs && node scripts/build-docs.mjs",
     "build": "tsc -b && vite build",
     "preview": "vite preview --port 5199 --strictPort",
-    "pretest": "node scripts/build-docs.mjs",
+    "pretest": "node scripts/build-brand.mjs && node scripts/build-docs.mjs",
     "test": "vitest run"
   },
   "dependencies": {

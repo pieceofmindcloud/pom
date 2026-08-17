@@ -755,8 +755,8 @@ mod tests {
     /// in-process fakes").
     ///
     /// ```sh
-    /// RDMA_P2P_TUNNEL_PROBE=/ip6/<ip-do-peer>/tcp/<porta-p2p+10000>/p2p/<peer-id> \\
-    ///   cargo test -p node --bin rdma-p2p the_tunnel_carries_a_real_frame -- --ignored --nocapture
+    /// POM_TUNNEL_PROBE=/ip6/<ip-do-peer>/tcp/<porta-p2p+10000>/p2p/<peer-id> \\
+    ///   cargo test -p node --bin pom the_tunnel_carries_a_real_frame -- --ignored --nocapture
     /// ```
     ///
     /// Duas afirmações, nesta ordem:
@@ -778,8 +778,8 @@ mod tests {
     #[tokio::test]
     #[ignore = "precisa de um peer vivo; ver o doc do teste"]
     async fn the_tunnel_carries_a_real_frame_to_a_live_peer() {
-        let target = std::env::var("RDMA_P2P_TUNNEL_PROBE")
-            .expect("defina RDMA_P2P_TUNNEL_PROBE com o multiaddr do peer");
+        let target = std::env::var("POM_TUNNEL_PROBE")
+            .expect("defina POM_TUNNEL_PROBE com o multiaddr do peer");
         let addr: libp2p::Multiaddr = target.parse().expect("multiaddr inválido");
         let peer_id = addr
             .iter()

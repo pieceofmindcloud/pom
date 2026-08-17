@@ -29,19 +29,19 @@ float * llama_get_embeddings_nextn_ith(llama_context * ctx, int i);
 
 extern "C" {
 
-void rdma_p2p_llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
+void pom_llama_set_embeddings_nextn(llama_context * ctx, bool value, bool masked) {
     llama_set_embeddings_nextn(ctx, value, masked);
 }
 
-void rdma_p2p_llama_set_nextn_layer_offset(llama_context * ctx, int offset) {
+void pom_llama_set_nextn_layer_offset(llama_context * ctx, int offset) {
     llama_set_nextn_layer_offset(ctx, offset);
 }
 
-float * rdma_p2p_llama_get_embeddings_nextn(llama_context * ctx) {
+float * pom_llama_get_embeddings_nextn(llama_context * ctx) {
     return llama_get_embeddings_nextn(ctx);
 }
 
-float * rdma_p2p_llama_get_embeddings_nextn_ith(llama_context * ctx, int i) {
+float * pom_llama_get_embeddings_nextn_ith(llama_context * ctx, int i) {
     return llama_get_embeddings_nextn_ith(ctx, i);
 }
 

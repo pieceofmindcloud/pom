@@ -1,0 +1,33 @@
+{
+  "name": "POM",
+  "tagline": "Piece Of Mind",
+  "description": "Inferência distribuída de LLM entre máquinas comuns, sem servidor central.",
+  "slug": "pom",
+  "logo": {
+    "light": "assets/brand/pom-logo-light.png",
+    "dark": "assets/brand/pom-logo-dark.png"
+  },
+  "mark": "assets/brand/pom-mark.png",
+  "icon": "assets/brand/pom-icon-512.png",
+  "favicon": "assets/brand/favicon.ico",
+  "icons": {
+    "16": "assets/brand/pom-icon-16.png",
+    "32": "assets/brand/pom-icon-32.png",
+    "48": "assets/brand/pom-icon-48.png",
+    "64": "assets/brand/pom-icon-64.png",
+    "128": "assets/brand/pom-icon-128.png",
+    "180": "assets/brand/pom-icon-180.png",
+    "256": "assets/brand/pom-icon-256.png",
+    "512": "assets/brand/pom-icon-512.png"
+  },
+  "flags": {
+    "en": "assets/brand/flags/us.svg",
+    "pt-BR": "assets/brand/flags/br.svg"
+  },
+  "app_icons": {
+    "macos": "assets/brand/pom.icns",
+    "windows": "assets/brand/pom.ico",
+    "linux": "assets/brand/linux/hicolor",
+    "desktop_entry": "assets/brand/pom.desktop"
+  }
+}

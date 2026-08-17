@@ -236,7 +236,7 @@ struct HeldShard {
     /// How many layers the *original* model had, when the slice says so.
     ///
     /// `None` is the normal state of an old slice: only `split_model.py` writes
-    /// `rdmap2p.original_block_count`, so anything cut before it — the captain's
+    /// `pom.original_block_count`, so anything cut before it — the captain's
     /// `qwen_0_15.gguf` / `qwen_16_31.gguf` — carries no total at all. It stays
     /// an `Option` all the way to `model_size` because a missing total and a
     /// total of zero are different facts, and collapsing them is what let a
@@ -647,7 +647,7 @@ fn candidates(machines: &[Machine]) -> Vec<Candidate> {
 /// How many layers the model being deployed has, and how we know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ModelSize {
-    /// A slice said so, in `rdmap2p.original_block_count`.
+    /// A slice said so, in `pom.original_block_count`.
     Declared(u32),
     /// No slice said so, but the ranges reach this far from layer 0, which is
     /// the same reading `catalog::build_shard_sets` makes for one machine.
@@ -2739,7 +2739,7 @@ mod tests {
         disk_free_mb: u64,
         held: Vec<(u32, u32)>,
         /// What each of this machine's slices declares as the model's size.
-        /// `None` is a slice cut before `rdmap2p.original_block_count` existed.
+        /// `None` is a slice cut before `pom.original_block_count` existed.
         declares: Option<u32>,
     }
 
@@ -3401,7 +3401,7 @@ mod tests {
     //
     // Reproduced on the captain's own cluster: both machines answer
     // `"total_layers": null` for the `qwen` set (slices cut before
-    // `split_model.py` wrote `rdmap2p.original_block_count`). That `null`
+    // `split_model.py` wrote `pom.original_block_count`). That `null`
     // became a `0`, the plan called itself complete, and every peer's apply
     // died on `runtime::NodeConfig::validate` with "total_layers não pode ser
     // zero" — after `launch` had already stopped inference on all of them.

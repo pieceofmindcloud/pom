@@ -8,8 +8,9 @@ import {
   type ReactNode,
 } from "react";
 import { type Locale, formatMessage, resolveLocale, setActiveLocale } from "./locales";
+import { storageKey } from "../lib/brand";
 
-const STORAGE_KEY = "codai.locale";
+const STORAGE_KEY = storageKey("locale");
 
 type I18nContextValue = {
   locale: Locale;

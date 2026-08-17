@@ -24,6 +24,6 @@ describe("LocaleProvider", () => {
 
     expect(screen.getByRole("status").textContent).toBe("pt-BR");
     expect(document.documentElement.lang).toBe("pt-BR");
-    expect(localStorage.getItem("codai.locale")).toBe("pt-BR");
+    expect(localStorage.getItem("pom.locale")).toBe("pt-BR");
   });
 });

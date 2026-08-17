@@ -13,8 +13,8 @@ commit=$(git rev-parse --short HEAD 2>/dev/null || echo desconhecido)
 if [ -n "$(git status --porcelain --untracked-files=no 2>/dev/null)" ]; then
   commit="${commit}-sujo"
 fi
-export RDMA_P2P_BUILD_COMMIT="$commit"
-echo "build commit: $RDMA_P2P_BUILD_COMMIT"
+export POM_BUILD_COMMIT="$commit"
+echo "build commit: $POM_BUILD_COMMIT"
 
 pushd apps/frontend
 npm run build

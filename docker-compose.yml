@@ -3,16 +3,16 @@
 # Host networking is required, same as the manual `docker run --net host`
 # this replaces: P2P discovery broadcasts to 255.255.255.255:42777 and the
 # gateway/inference ports are only reachable that way. Because every node
-# shares the host's network namespace, each one's rdma-p2p.json must pick its
+# shares the host's network namespace, each one's pom.json must pick its
 # own gateway_port/p2p_port/inference_port so they don't collide (see
 # old/scripts/run-p1.sh + run-p2.sh for the same pattern on bare metal).
 #
-# Each node's state — rdma-p2p.json, .rdma-p2p-node.key, models/ — lives under
-# its own directory in ./tests/fixtures (RDMA_P2P_HOME below), gitignored so
+# Each node's state — pom.json, .pom-node.key, models/ — lives under
+# its own directory in ./tests/fixtures (POM_HOME below), gitignored so
 # generated keys and models never land in the repo. A node with nothing in
 # its directory yet just boots into setup mode
-# (https://<host>:<gateway_port>/) same as on bare metal. RDMA_P2P_UI_DIST is
-# pinned to the path baked into the image because RDMA_P2P_HOME no longer
+# (https://<host>:<gateway_port>/) same as on bare metal. POM_UI_DIST is
+# pinned to the path baked into the image because POM_HOME no longer
 # points at /app, and the web interface would otherwise be looked for under
 # the (bind-mounted, UI-less) data directory instead.
 x-node: &node
@@ -24,17 +24,17 @@ x-node: &node
       # (`.dockerignore` drops `.git/`, the image has no `git`). Build through
       # `scripts/build-docker.sh`, which exports the host's commit, or the
       # interface shows "desconhecido" for every container.
-      RDMA_P2P_BUILD_COMMIT: ${RDMA_P2P_BUILD_COMMIT:-}
+      POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
   image: pom:latest
   network_mode: host
   environment:
-    RDMA_P2P_HOME: /data
-    RDMA_P2P_UI_DIST: /app/apps/frontend/dist
+    POM_HOME: /data
+    POM_UI_DIST: /app/apps/frontend/dist
 
 services:
   node-gpu:
     <<: *node
-    container_name: rdma-p2p-node-gpu
+    container_name: pom-node-gpu
     volumes:
       - ./tests/fixtures/node-gpu:/data
       - ./models:/data/models
@@ -50,7 +50,7 @@ services:
 
   node-gpu2:
     <<: *node
-    container_name: rdma-p2p-node-gpu2
+    container_name: pom-node-gpu2
     volumes:
       - ./tests/fixtures/node-gpu-2:/data
       - ./models:/data/models
@@ -66,14 +66,14 @@ services:
 
   node-cpu-1:
     <<: *node
-    container_name: rdma-p2p-node-cpu-1
+    container_name: pom-node-cpu-1
     volumes:
       - ./tests/fixtures/node-cpu-1:/data
       - ./models:/data/models
 
   node-cpu-2:
     <<: *node
-    container_name: rdma-p2p-node-cpu-2
+    container_name: pom-node-cpu-2
     volumes:
       - ./tests/fixtures/node-cpu-2:/data
       - ./models:/data/models

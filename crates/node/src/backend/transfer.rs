@@ -6,9 +6,9 @@
 //! * **push** — a node *offers* a slice to a peer, the peer's owner accepts,
 //!   and the peer then pulls it. The sender never writes to the receiver's
 //!   disk on its own; acceptance is what starts the transfer. A development
-//!   machine can waive that click with `RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS`,
+//!   machine can waive that click with `POM_DEV_AUTO_ACCEPT_TRANSFERS`,
 //!   which only the *receiver* can set and which is off everywhere else —
-//!   see [`DEV_AUTO_ACCEPT_ENV`].
+//!   see [`dev_auto_accept_env`].
 //!
 //! The bytes travel over the peers' existing HTTP gateway rather than the
 //! libp2p bitswap behaviour: that is the path already proven to carry traffic
@@ -23,7 +23,7 @@
 //! never names a path of ours. See [`TransferState::grants`].
 //!
 //! Received files are always written under `<pasta de fatias>/recebidos/` — the
-//! directory configured in `rdma-p2p.json`, `models/` until someone changes it —
+//! directory configured in `pom.json`, `models/` until someone changes it —
 //! and a file only takes its final name once its MD5 matches the sender's.
 
 use crate::auth::ConnectionAuth;
@@ -58,7 +58,9 @@ const CHUNK: usize = 1024 * 1024;
 /// turn it on remotely. It exists because testing the push direction by hand
 /// means driving two browsers to move one file. Never set it on a machine whose
 /// disk you care about.
-const DEV_AUTO_ACCEPT_ENV: &str = "RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS";
+fn dev_auto_accept_env() -> String {
+    crate::brand::env_var("DEV_AUTO_ACCEPT_TRANSFERS")
+}
 
 /// Whether this process was started with the auto-accept gate open.
 ///
@@ -67,7 +69,13 @@ const DEV_AUTO_ACCEPT_ENV: &str = "RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS";
 /// question worth having.
 fn dev_auto_accept() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| auto_accept_set(std::env::var(DEV_AUTO_ACCEPT_ENV).ok().as_deref()))
+    *ON.get_or_init(|| {
+        auto_accept_set(
+            crate::brand::env("DEV_AUTO_ACCEPT_TRANSFERS")
+                .ok()
+                .as_deref(),
+        )
+    })
 }
 
 /// A gate this dangerous does not open by accident: unset, empty, `0` and
@@ -640,10 +648,11 @@ async fn receive_offer(
     let id = offer.id.clone();
 
     // Development gate, off by default and read from *this* machine's
-    // environment: the sender has no way to ask for it. See `DEV_AUTO_ACCEPT_ENV`.
+    // environment: the sender has no way to ask for it. See `dev_auto_accept_env`.
     if dev_auto_accept() {
         warn!(
-            "⚙️  {DEV_AUTO_ACCEPT_ENV} ligado — aceitando {} sem confirmação",
+            "⚙️  {} ligado — aceitando {} sem confirmação",
+            dev_auto_accept_env(),
             offer.name
         );
         return match spawn_download(
@@ -1460,7 +1469,7 @@ mod tests {
     /// `.gguf`. Blob do Ollama não tem extensão nenhuma e precisa passar.
     #[test]
     fn only_real_gguf_files_pass_the_gate() {
-        let dir = std::env::temp_dir().join(format!("rdma-gguf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-gguf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         let ok = dir.join("fatia.gguf");
@@ -1500,7 +1509,7 @@ mod tests {
     /// O que o operador escolhe na própria tela ainda precisa ser um GGUF.
     #[test]
     fn the_operator_cannot_send_a_non_gguf() {
-        let dir = std::env::temp_dir().join(format!("rdma-xfer-nogguf-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-xfer-nogguf-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("anotacoes.txt");
         std::fs::write(&f, b"nada a ver").unwrap();
@@ -1512,7 +1521,7 @@ mod tests {
 
     #[test]
     fn a_peer_cannot_ask_for_files_outside_the_models_dir() {
-        let dir = std::env::temp_dir().join(format!("rdma-xfer-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-xfer-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         std::fs::write(dir.join("sub/ok.gguf"), b"GGUF\x03\x00\x00\x00").unwrap();
 
@@ -1525,7 +1534,7 @@ mod tests {
 
     #[test]
     fn an_absolute_path_inside_the_models_dir_is_allowed() {
-        let dir = std::env::temp_dir().join(format!("rdma-xfer-abs-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-xfer-abs-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("slice.gguf");
         std::fs::write(&f, b"GGUF\x03\x00\x00\x00").unwrap();
@@ -1540,7 +1549,7 @@ mod tests {
     /// nowhere near `models/` — LM Studio, Ollama, or a loose directory.
     #[test]
     fn the_operator_may_send_a_file_from_anywhere() {
-        let dir = std::env::temp_dir().join(format!("rdma-xfer-any-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-xfer-any-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("solto.gguf");
         std::fs::write(&f, b"GGUF\x03\x00\x00\x00").unwrap();
@@ -1555,7 +1564,7 @@ mod tests {
     /// Choosing a file is one thing; a directory is not a transfer.
     #[test]
     fn a_directory_is_not_sendable() {
-        let dir = std::env::temp_dir().join(format!("rdma-xfer-dir-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-xfer-dir-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
 
         assert!(local_send_path(dir.to_str().unwrap()).is_err());
@@ -1627,7 +1636,7 @@ mod offer_latency_tests {
     /// outro lado pelo tempo de ler o arquivo inteiro.
     #[tokio::test]
     async fn an_offer_leaves_without_reading_the_whole_file() {
-        let dir = std::env::temp_dir().join(format!("rdma-offer-fast-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-offer-fast-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("fatia_0_15.gguf");
         write_gguf(&file, 24);
@@ -1679,7 +1688,7 @@ mod offer_latency_tests {
     /// na notificação antes de decidir aceitar gigabytes.
     #[tokio::test]
     async fn the_offer_carries_the_real_size_without_a_digest() {
-        let dir = std::env::temp_dir().join(format!("rdma-offer-size-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-offer-size-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("solto.gguf");
         write_gguf(&file, 3);
@@ -1732,7 +1741,7 @@ mod offer_latency_tests {
         });
 
         let state = sender_state(port).await;
-        let dir = std::env::temp_dir().join(format!("rdma-accept-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-accept-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
 

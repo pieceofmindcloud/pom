@@ -49,10 +49,10 @@ pub struct GgufInfo {
     pub name: Option<String>,
     /// `<arch>.block_count` — layers present *in this file*.
     pub block_count: Option<u32>,
-    /// `rdmap2p.original_block_count` — layers in the model this file was sliced from.
+    /// `pom.original_block_count` — layers in the model this file was sliced from.
     /// Only present on shards written by `split_model.py`.
     pub original_block_count: Option<u32>,
-    /// `rdmap2p.start_layer` / `rdmap2p.end_layer` on shards.
+    /// `pom.start_layer` / `pom.end_layer` on shards.
     pub shard_range: Option<(u32, u32)>,
     /// `<arch>.embedding_length`.
     pub embedding_length: Option<u32>,
@@ -183,9 +183,14 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             "general.architecture" if vtype == T_STRING => info.architecture = Some(r.string()?),
             "general.name" if vtype == T_STRING => info.name = Some(r.string()?),
             "general.size_label" if vtype == T_STRING => info.size_label = Some(r.string()?),
-            "rdmap2p.original_block_count" => info.original_block_count = r.value_as_u32(vtype)?,
-            "rdmap2p.start_layer" => start_layer = r.value_as_u32(vtype)?,
-            "rdmap2p.end_layer" => end_layer = r.value_as_u32(vtype)?,
+            // Chaves nossas: o prefixo vem da marca (`brand.json`), não de um
+            // literal, para renomear o produto não deixar metade do leitor
+            // procurando o nome velho.
+            k if k == crate::brand::gguf_key("original_block_count") => {
+                info.original_block_count = r.value_as_u32(vtype)?
+            }
+            k if k == crate::brand::gguf_key("start_layer") => start_layer = r.value_as_u32(vtype)?,
+            k if k == crate::brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
             // `<arch>.block_count` / `<arch>.embedding_length` — the arch prefix
             // varies per model, so match on the suffix.
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
@@ -480,7 +485,7 @@ mod tests {
     #[test]
     fn rejects_non_gguf() {
         let mut p = std::env::temp_dir();
-        p.push("rdma-p2p-not-a-gguf.bin");
+        p.push("pom-not-a-gguf.bin");
         std::fs::write(&p, b"hello world, definitely not gguf").unwrap();
         assert!(read_info(&p).is_err());
         let _ = std::fs::remove_file(&p);
@@ -509,7 +514,7 @@ mod tests {
     fn read_layout_sees_nextn_predict_layers() {
         let dir = std::env::temp_dir();
         let mut p = dir.clone();
-        p.push("rdma-p2p-nextn-layout.gguf");
+        p.push("pom-nextn-layout.gguf");
         std::fs::write(
             &p,
             header_only_gguf(&[
@@ -528,7 +533,7 @@ mod tests {
 
         // Absent or non-scalar means "no predictor", not a broken plan.
         let mut q = dir.clone();
-        q.push("rdma-p2p-no-nextn-layout.gguf");
+        q.push("pom-no-nextn-layout.gguf");
         std::fs::write(
             &q,
             header_only_gguf(&[("general.architecture", T_STRING, "llama".into())]),

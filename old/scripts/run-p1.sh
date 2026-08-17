@@ -12,7 +12,7 @@ cd "$(dirname "$0")"
 
 MODEL="${MODEL:-./models/qwen/qwen_0_15.gguf}"
 
-exec ./target/release/rdma-p2p \
+exec ./target/release/pom \
     --model "$MODEL" \
     --port 42777 \
     --gateway \

@@ -1,6 +1,6 @@
 # Subsistema: rede P2P e descoberta
 
-O subsistema de rede resolve o problema de um nó rdma-p2p achar os outros nós
+O subsistema de rede resolve o problema de um nó pom achar os outros nós
 do cluster e se anunciar para eles. São dois mundos no mesmo diretório
 (`crates/node/src/network/`): o transporte nativo UDP (`network.rs`, `addrs.rs`,
 `identity.rs`, `route.rs`), que é o coração da LAN, e o caminho libp2p/pkarr
@@ -135,7 +135,7 @@ medido", e o chamador cai no `inference_url` do plano.
 ## 3. Caminho libp2p (internet)
 
 `Discovery` (`discovery.rs`) constrói o swarm (`DiscBehaviour`) com gossipsub
-(tópico `rdma-p2p/announce/1.0.0`, heartbeat 1 s, autenticação anônima),
+(tópico `pom/announce/1.0.0`, heartbeat 1 s, autenticação anônima),
 Kademlia em modo `Server`, mDNS, identify, relay (cliente **e** servidor),
 DCuTR, AutoNAT e o behaviour de bitswap. Escuta em `/ip4/0.0.0.0/tcp/<udp+10000>`
 e em `/ip6/::`.
@@ -164,12 +164,12 @@ e em `/ip6/::`.
   conectados, escuta no circuito (`P2pCircuit`) do relay.
 - **DCuTR:** hole punch; sucesso loga conexão direta, falha avisa que o fallback
   do relay está ativo. **AutoNAT:** só loga a mudança de status do NAT.
-- **Bitswap:** protocolo request/response (`/rdma-p2p/bitswap/1.0.0`) no swarm,
+- **Bitswap:** protocolo request/response (`/pom/bitswap/1.0.0`) no swarm,
   mas é código órfão (ver Defeitos).
 
 ### pkarr (`pkarr_node.rs`)
 
-Cada nó publica uma TXT `_rdmap2p` assinada no DHT pkarr: JSON compacto com
+Cada nó publica uma TXT `_pom` assinada no DHT pkarr: JSON compacto com
 campos de uma letra (`a` endereço, `i` porta de inferência, `m` modelo, `s`/`e`
 faixa de camadas, `t` total, `r` é relay) para caber no limite DNS de ~1000 B.
 Publicação inicial e republish a cada 30 min (TTL 300 s), apenas quando há
@@ -182,12 +182,12 @@ pkarr; `--pkarr-peers` são chaves a resolver e dialar no arranque;
 ## 4. Identidade
 
 `Identity` (`identity.rs`) é um par Ed25519 de longa duração, vivendo em
-`<project_root>/.rdma-p2p-node.key` (ou `$RDMA_P2P_NODE_KEY`). O `node_id` é o
+`<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`). O `node_id` é o
 hex de `SHA256(pubkey)` (`NodeId::from_pubkey`), impresso com os primeiros 12
 caracteres. A chave tem que sobreviver a reinícios: regenerar a cada boot
 duplicava o peer na lista até o timeout e voidava `blocked_nodes`, que é
 chaveado por node_id. Um arquivo corrompido gera identidade nova em vez de
-parar. A chave do pkarr é separada: `.rdma-p2p.key` (ver Defeitos).
+parar. A chave do pkarr é separada: `.pom.key` (ver Defeitos).
 
 ## 5. Limitações conhecidas para a internet
 
@@ -230,7 +230,7 @@ Comportamento atual do código:
   local; o caminho do observado não tem essa preferência. Quem precisa de
   endereço estável fixa em `--advertise-addr` ou na tela de Rede, que vence.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
-  `Path::new(".rdma-p2p.key")`) - diferente de `identity::key_path()`, que
+  `Path::new(".pom.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório
   gera/ignora outra identidade pkarr, inconsistente com a regra documentada do
   project root. Registrado no `AGENTS.md` de `crates/node/`.

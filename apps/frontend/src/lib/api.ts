@@ -11,8 +11,9 @@
  */
 
 import { getActiveLocale } from "../i18n/locales";
+import { storageKey } from "./brand";
 
-const KEY_STORAGE = "codai.connectionKey";
+const KEY_STORAGE = storageKey("connectionKey");
 
 let connectionKey: string = localStorage.getItem(KEY_STORAGE) ?? "";
 

@@ -94,7 +94,7 @@ pub struct ShardSet {
     pub group: String,
     pub total_layers: Option<u32>,
     /// True when the total came from the slices' own coverage rather than from
-    /// `rdmap2p.original_block_count`. Old slices carry no such metadata.
+    /// `pom.original_block_count`. Old slices carry no such metadata.
     pub total_layers_inferred: bool,
     pub shards: Vec<DiscoveredModel>,
     /// True when the slices cover 0..total_layers with no gap or overlap.
@@ -392,7 +392,7 @@ fn describe(path: &Path, name: String, source: ModelSource) -> Option<Discovered
     let shard_group = from_name.as_ref().map(|(base, _, _)| base.clone());
 
     // For a slice, `block_count` counts the layers *inside the file*, not the
-    // model it came from. Only `rdmap2p.original_block_count` — written by
+    // model it came from. Only `pom.original_block_count` — written by
     // split_model.py — is a real total. Older slices lack it, so report unknown
     // rather than a number that is wrong; `build_shard_sets` infers it from the
     // coverage of the whole set instead.
@@ -852,7 +852,7 @@ mod tests {
 
     #[test]
     fn a_directory_is_read_according_to_what_it_is() {
-        let base = std::env::temp_dir().join(format!("rdma-cat-kind-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("pom-cat-kind-{}", std::process::id()));
         let ollama = base.join("store/models");
         std::fs::create_dir_all(ollama.join("manifests")).unwrap();
         std::fs::create_dir_all(ollama.join("blobs")).unwrap();
@@ -889,7 +889,7 @@ mod tests {
     /// about it.
     #[test]
     fn only_the_configured_directories_are_scanned() {
-        let base = std::env::temp_dir().join(format!("rdma-cat-dirs-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("pom-cat-dirs-{}", std::process::id()));
         let listed = base.join("listada");
         let unlisted = base.join("nao-listada");
         let shards = base.join("fatias");
@@ -922,7 +922,7 @@ mod tests {
 
     #[test]
     fn old_slices_without_metadata_infer_the_total_from_coverage() {
-        // Slices predating `rdmap2p.original_block_count` report no total; the
+        // Slices predating `pom.original_block_count` report no total; the
         // set must not claim the shard's own block count is the model's.
         let mk = |start: u32, end: u32| DiscoveredModel {
             id: format!("s{start}"),

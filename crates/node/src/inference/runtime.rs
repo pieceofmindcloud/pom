@@ -632,7 +632,7 @@ impl NodeRuntime {
 /// Onde ficam os logs do servidor de inferência desta porta.
 ///
 /// Um arquivo por porta, sob o project root, porque duas instâncias na mesma
-/// máquina (`RDMA_P2P_HOME` diferente) não podem escrever no mesmo arquivo.
+/// máquina (`POM_HOME` diferente) não podem escrever no mesmo arquivo.
 pub fn log_file_path(port: u16) -> PathBuf {
     crate::config::project_root().join(format!("infer_server_{port}.log"))
 }
@@ -866,9 +866,9 @@ mod tests {
     /// `--refresh` e o stdout não sobrevive.
     #[tokio::test]
     async fn a_porta_presa_aparece_no_status_e_no_log() {
-        let dir = std::env::temp_dir().join(format!("rdma-porta-presa-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-porta-presa-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::env::set_var("RDMA_P2P_HOME", &dir);
+        std::env::set_var("POM_HOME", &dir);
 
         // Alguém já está com a porta, e é este processo: `free_port` nunca se
         // mata, então a porta segue presa como no defeito real.
@@ -901,7 +901,7 @@ mod tests {
 
         let log = log_file_path(port);
         let conteudo = std::fs::read_to_string(&log).unwrap_or_default();
-        std::env::remove_var("RDMA_P2P_HOME");
+        std::env::remove_var("POM_HOME");
         std::fs::remove_dir_all(&dir).ok();
 
         assert_eq!(
@@ -980,10 +980,10 @@ mod tests {
     /// que ele prova é o contrato entre o watch e o disco, não o llama.cpp.
     #[tokio::test]
     async fn o_health_e_quem_promove_a_anotacao_para_servindo() {
-        let dir = std::env::temp_dir().join(format!("rdma-health-watch-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-health-watch-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let cfg_path = dir.join("rdma-p2p.json");
-        std::env::set_var("RDMA_P2P_CONFIG", &cfg_path);
+        let cfg_path = dir.join("pom.json");
+        std::env::set_var("POM_CONFIG", &cfg_path);
         let anotacao = crate::lastslice::path();
         std::fs::remove_file(&anotacao).ok();
 
@@ -1033,7 +1033,7 @@ mod tests {
             "uma fatia vista carregada tem que voltar no próximo arranque"
         );
 
-        std::env::remove_var("RDMA_P2P_CONFIG");
+        std::env::remove_var("POM_CONFIG");
         std::fs::remove_dir_all(&dir).ok();
     }
 

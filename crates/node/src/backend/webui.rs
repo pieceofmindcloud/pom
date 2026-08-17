@@ -2,7 +2,7 @@
 //!
 //! The assets are NOT compiled into the binary: `webapp.rs` reads the built
 //! bundle from disk at `config::ui_dist_dir()` (default
-//! `<project_root>/apps/frontend/dist`, overridable with `RDMA_P2P_UI_DIST`),
+//! `<project_root>/apps/frontend/dist`, overridable with `POM_UI_DIST`),
 //! so editing the frontend requires `npm run build` in `apps/frontend/` and
 //! shipping `dist/` next to the binary.
 //!
@@ -77,7 +77,7 @@ pub fn routes() -> Router<GatewayState> {
     //
     // Quem precisa delas e o modo setup, que monta o proprio roteador com estas
     // duas rotas e a setup.html (ver `start_setup_mode` em main.rs). O unico
-    // consumidor e aquela pagina, servida so enquanto nao ha `rdma-p2p.json`.
+    // consumidor e aquela pagina, servida so enquanto nao ha `pom.json`.
 }
 
 // ── Node view ────────────────────────────────────────────────────────────────
@@ -127,7 +127,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         short_id: state.network.node_id[..state.network.node_id.len().min(12)].to_string(),
         node_id: state.network.node_id.clone(),
         // Not `system.hostname`: that's the raw OS hostname, and ignores
-        // `node_name` from rdma-p2p.json. `network.hostname` is what
+        // `node_name` from pom.json. `network.hostname` is what
         // `with_identity` (main.rs) actually announces to peers — the same
         // value `/admin/nodes` already shows correctly on the Network tab.
         hostname: state.network.hostname.clone(),
@@ -380,7 +380,7 @@ async fn save_paths(
         cfg.model_dirs = Some(model_dirs);
         cfg.shard_dir = shard_dir;
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar rdma-p2p.json: {e}"));
+            return bad_request(format!("não deu para gravar pom.json: {e}"));
         }
     }
 
@@ -422,7 +422,7 @@ async fn save_advertise_addr(
         let mut cfg = state.auth.write().await;
         cfg.advertise_addr = normalized.clone();
         if let Err(e) = cfg.save() {
-            return bad_request(format!("não deu para gravar rdma-p2p.json: {e}"));
+            return bad_request(format!("não deu para gravar pom.json: {e}"));
         }
     }
 
@@ -2691,7 +2691,7 @@ mod delete_tests {
     /// nosso para consertar.
     #[test]
     fn an_ollama_blob_is_recognised_by_its_layout() {
-        let root = std::env::temp_dir().join(format!("rdma-del-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!("pom-del-{}", std::process::id()));
         let blobs = root.join("blobs");
         std::fs::create_dir_all(&blobs).unwrap();
         std::fs::create_dir_all(root.join("manifests")).unwrap();
@@ -2702,7 +2702,7 @@ mod delete_tests {
 
         // Um `blobs/` sem `manifests/` ao lado não é o store do Ollama — o
         // LM Studio também tem uma pasta com esse nome, e vazia.
-        let outro = std::env::temp_dir().join(format!("rdma-del2-{}", std::process::id()));
+        let outro = std::env::temp_dir().join(format!("pom-del2-{}", std::process::id()));
         std::fs::create_dir_all(outro.join("blobs")).unwrap();
         let solto = outro.join("blobs").join("sha256-xyz");
         std::fs::write(&solto, b"GGUF").unwrap();
@@ -3028,7 +3028,7 @@ mod tests {
     fn merge_parts_joins_two_slices_into_a_whole() {
         block_on(async {
             let root =
-                std::env::temp_dir().join(format!("rdmap2p-webui-merge-{}", std::process::id()));
+                std::env::temp_dir().join(format!("pom-webui-merge-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");
@@ -3088,7 +3088,7 @@ mod tests {
     fn merge_parts_refuses_one_part_or_a_gap() {
         block_on(async {
             let root = std::env::temp_dir()
-                .join(format!("rdmap2p-webui-merge-bad-{}", std::process::id()));
+                .join(format!("pom-webui-merge-bad-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");

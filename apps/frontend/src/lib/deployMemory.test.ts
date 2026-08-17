@@ -34,7 +34,7 @@ describe("rememberDeploy / recallDeploy", () => {
   });
 
   it("survives a corrupt entry instead of taking the screen down with it", () => {
-    localStorage.setItem("codai.deploy.last", "{ not json");
+    localStorage.setItem("pom.deploy.last", "{ not json");
     expect(recallDeploy("qwen")).toBeNull();
   });
 });

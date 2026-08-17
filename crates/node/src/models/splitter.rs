@@ -339,7 +339,7 @@ pub fn split(
 
     // ── Parse KV section ─────────────────────────────────────────────────────
     // Pass most entries through as raw byte slices. Only modify *.block_count
-    // and strip/replace rdmap2p.* entries.
+    // and strip/replace pom.* entries.
 
     let mut arch = "llama".to_string();
     let mut hidden_dim: u32 = 4096;
@@ -365,7 +365,7 @@ pub fn split(
                 }
             };
             kv_out.push(KvOut::Raw(kv_start, r.pos));
-        } else if key == "rdmap2p.original_block_count" {
+        } else if key == crate::brand::gguf_key("original_block_count") {
             original_block_count = match vtype {
                 T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
                 _ => {
@@ -374,9 +374,9 @@ pub fn split(
                 }
             };
             // Drop — re-added below with updated values
-        } else if key.starts_with("rdmap2p.") {
+        } else if key.starts_with(&format!("{}.", crate::brand::slug())) {
             r.skip_value(vtype)?;
-            // Drop all rdmap2p.* — re-added below
+            // Drop all pom.* — re-added below
         } else if key.ends_with(".nextn_predict_layers") {
             // NextN/MTP (Qwen3.5+): the predictor block lives only at the very
             // end of the model. llama.cpp derives the expected `blk.<last>.
@@ -424,16 +424,16 @@ pub fn split(
     }
     if let Some(orig) = original_block_count {
         kv_out.push(KvOut::Encoded(encode_kv_u32(
-            "rdmap2p.original_block_count",
+            &crate::brand::gguf_key("original_block_count"),
             orig,
         )));
     }
     kv_out.push(KvOut::Encoded(encode_kv_u32(
-        "rdmap2p.start_layer",
+        &crate::brand::gguf_key("start_layer"),
         start_layer,
     )));
     kv_out.push(KvOut::Encoded(encode_kv_u32(
-        "rdmap2p.end_layer",
+        &crate::brand::gguf_key("end_layer"),
         end_layer,
     )));
 
@@ -684,13 +684,13 @@ pub struct MergePart {
 
 /// What a `merge` reads out of each slice: the parts that survive into the
 /// joined file are its tensors, and the joined header is the first slice's with
-/// `*.block_count` and `rdmap2p.*` rewritten.
+/// `*.block_count` and `pom.*` rewritten.
 struct MergedSrc {
     version: u32,
     arch: String,
     original_block_count: Option<u32>,
     /// Every KV entry of this file, tagged with its key so the merge can drop
-    /// `rdmap2p.*` and swap `*.block_count` before re-emitting.
+    /// `pom.*` and swap `*.block_count` before re-emitting.
     kv: Vec<(String, KvOut)>,
     tensors: Vec<TensorRecord>,
     data_start: usize,
@@ -723,7 +723,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
 
         if key == "general.architecture" && vtype == T_STR {
             arch = r.string()?;
-        } else if key == "rdmap2p.original_block_count" {
+        } else if key == crate::brand::gguf_key("original_block_count") {
             original_block_count = match vtype {
                 T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
                 T_U64 => Some(r.u64()? as u32),
@@ -842,7 +842,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     // ── Header: the first slice's KVs, with the total and the metadata fixed ──
     let mut kv_out: Vec<KvOut> = Vec::new();
     for (key, entry) in &parsed[0].kv {
-        if key.starts_with("rdmap2p.")
+        if key.starts_with(&format!("{}.", crate::brand::slug()))
             || key.ends_with(".block_count")
             || key.ends_with(".attention.recurrent_layers")
         {
@@ -856,15 +856,15 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
     )));
     if let Some(orig) = parsed.iter().filter_map(|p| p.original_block_count).max() {
         kv_out.push(KvOut::Encoded(encode_kv_u32(
-            "rdmap2p.original_block_count",
+            &crate::brand::gguf_key("original_block_count"),
             orig,
         )));
     }
     kv_out.push(KvOut::Encoded(encode_kv_u32(
-        "rdmap2p.start_layer",
+        &crate::brand::gguf_key("start_layer"),
         start_first,
     )));
-    kv_out.push(KvOut::Encoded(encode_kv_u32("rdmap2p.end_layer", end_last)));
+    kv_out.push(KvOut::Encoded(encode_kv_u32(&crate::brand::gguf_key("end_layer"), end_last)));
 
     // ── Tensors, one per physical file so the data streams from where it is ──
     struct Out {
@@ -1083,7 +1083,7 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.embedding_length", n as u32),
         u32_kv("llama.block_count", n_blocks),
         u32_kv("llama.vocab_size", n as u32),
-        u32_kv("rdmap2p.original_block_count", n_blocks),
+        u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
     ];
 
     let mut header = Vec::new();
@@ -1195,7 +1195,7 @@ fn qwen35_test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("qwen35.vocab_size", n as u32),
         u32_kv("qwen35.nextn_predict_layers", 1),
         u32_kv("qwen35.full_attention_interval", 4),
-        u32_kv("rdmap2p.original_block_count", n_blocks),
+        u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
     ];
 
     let mut header = Vec::new();
@@ -1306,7 +1306,7 @@ fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<
         u32_kv("qwen35.vocab_size", n as u32),
         u32_kv("qwen35.nextn_predict_layers", 1),
         u32_kv("qwen35.full_attention_interval", full_attn_interval),
-        u32_kv("rdmap2p.original_block_count", n_blocks),
+        u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
     ];
 
     let mut header = Vec::new();
@@ -1417,7 +1417,7 @@ mod tests {
     /// only property a pipeline hop actually depends on.
     #[test]
     fn merged_slices_round_trip_into_a_whole() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-merge-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-merge-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(4)).unwrap();
@@ -1495,7 +1495,7 @@ mod tests {
 
     #[test]
     fn merging_non_adjacent_slices_is_refused() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-merge-bad-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-merge-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(6)).unwrap();
@@ -1526,7 +1526,7 @@ mod tests {
 
     #[test]
     fn nextn_predict_layers_zeroed_on_non_last_slices() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-nextn-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-nextn-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, qwen35_test_gguf_bytes(4)).unwrap();
@@ -1566,7 +1566,7 @@ mod tests {
     /// o bloco, renumerado para `blk.40.*`.
     #[test]
     fn the_qwen38_27b_slice_0_23_carries_no_nextn_block_nor_its_hyperparameter() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-nextn-27b-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-nextn-27b-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("qwen38-27b.gguf");
         std::fs::write(&whole, qwen35_test_gguf_bytes(65)).unwrap();
@@ -1628,7 +1628,7 @@ mod tests {
     /// i=0 (em vez de 35) e erra qual bloco local precisa do tensor.
     #[test]
     fn hybrid_slice_carries_an_explicit_ground_truth_recurrent_layers_array() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-hybrid-27b-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-hybrid-27b-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("qwen38-27b-hybrid.gguf");
         std::fs::write(&whole, qwen35_hybrid_test_gguf_bytes(65, 4)).unwrap();
@@ -1665,7 +1665,7 @@ mod tests {
     /// `split` não deve inventar a chave — o llama.cpp nem olha para ela.
     #[test]
     fn plain_transformer_slice_gets_no_recurrent_layers_array() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-nonhybrid-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-nonhybrid-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, test_gguf_bytes(4)).unwrap();
@@ -1684,7 +1684,7 @@ mod tests {
     /// unido — não pode só copiar o array (errado) da primeira fatia.
     #[test]
     fn merging_hybrid_slices_recomputes_recurrent_layers_for_the_union() {
-        let dir = std::env::temp_dir().join(format!("rdmap2p-hybrid-merge-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-hybrid-merge-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, qwen35_hybrid_test_gguf_bytes(8, 4)).unwrap();

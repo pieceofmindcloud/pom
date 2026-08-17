@@ -206,7 +206,7 @@ pub struct DecodeTimings {
     pub residual_capture_d2h_sync_us: u64,
 }
 
-/// **Ligado por padrão** desde 2026-08-13; `RDMA_P2P_PROFILE_SYNC=0` desliga.
+/// **Ligado por padrão** desde 2026-08-13; `POM_PROFILE_SYNC=0` desliga.
 ///
 /// O `llama_synchronize` é uma barreira de medição, e a suspeita de que ela
 /// custasse tempo foi o motivo de nascer desligada. Medido em
@@ -225,7 +225,7 @@ pub struct DecodeTimings {
 /// Foi essa conta errada que a Mudança 6 do spec de 2026-08-12 pedia para
 /// fechar.
 fn profile_backend_sync() -> bool {
-    std::env::var("RDMA_P2P_PROFILE_SYNC")
+    std::env::var("POM_PROFILE_SYNC")
         .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
 }
@@ -1295,7 +1295,7 @@ mod tests {
     /// How many layers the tests offload. Real peers run with everything on the
     /// GPU, and the capture behaves differently there, so this has to be a knob.
     fn test_gpu_layers() -> i32 {
-        std::env::var("RDMA_P2P_TEST_GPU_LAYERS")
+        std::env::var("POM_TEST_GPU_LAYERS")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0)
@@ -1320,13 +1320,13 @@ mod tests {
     /// out. This is the one the pipeline actually breaks on and the one the
     /// token test above cannot reach — `decode_hidden` builds a different batch
     /// (`batch.token = NULL`, data in `batch.embd`) and therefore a different
-    /// graph. Set `RDMA_P2P_TEST_GPU_LAYERS=99` to run it with the weights
+    /// graph. Set `POM_TEST_GPU_LAYERS=99` to run it with the weights
     /// offloaded, which is how every real peer runs it.
     #[test]
     fn residual_capture_fires_for_an_injected_hidden_state() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
-            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
             return;
         };
         let cfg = EngineConfig {
@@ -1365,8 +1365,8 @@ mod tests {
     #[test]
     fn residual_capture_fires_with_one_row_per_token() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
-            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
             return;
         };
         let cfg = EngineConfig {
@@ -1381,7 +1381,7 @@ mod tests {
             rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
-        let toks = engine.tokenize("Explique RDMA em uma frase.", true, true);
+        let toks = engine.tokenize("Explique inferencia distribuida em uma frase.", true, true);
         assert!(!toks.is_empty(), "prompt must tokenize");
         engine
             .decode_tokens(&toks, 0, 0, true)
@@ -1405,19 +1405,19 @@ mod tests {
     /// etapa errada — o primeiro toque de CPU nos logits é quem espera.
     ///
     /// Este teste decide isso sem precisar de duas máquinas: decodifica um
-    /// token na mesma fatia duas vezes, uma com `RDMA_P2P_PROFILE_SYNC`
+    /// token na mesma fatia duas vezes, uma com `POM_PROFILE_SYNC`
     /// desligado e outra com ele ligado, e imprime para onde o tempo foi.
     ///
     /// ```text
-    /// RDMA_P2P_TEST_GGUF=<fatia final>.gguf RDMA_P2P_TEST_GPU_LAYERS=99 \
+    /// POM_TEST_GGUF=<fatia final>.gguf POM_TEST_GPU_LAYERS=99 \
     ///   cargo test -p node --release --features metal logits_access_versus -- --ignored --nocapture
     /// ```
     #[test]
     #[ignore]
     fn logits_access_versus_backend_completion() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
-            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
             return;
         };
         let cfg = EngineConfig {
@@ -1433,10 +1433,10 @@ mod tests {
             rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
-        let tokens = engine.tokenize("Explique o que e RDMA em uma frase.", true, true);
+        let tokens = engine.tokenize("Explique o que e inferencia distribuida em uma frase.", true, true);
 
         for sync in [false, true, false, true] {
-            std::env::set_var("RDMA_P2P_PROFILE_SYNC", if sync { "1" } else { "0" });
+            std::env::set_var("POM_PROFILE_SYNC", if sync { "1" } else { "0" });
             // Cache limpo entre as rodadas; o `false` aqui seria o cache que
             // não desloca, e este teste não depende disso.
             let _ = engine.kv_remove(0, 0, -1);
@@ -1471,14 +1471,14 @@ mod tests {
                 access_us as f64 / reps as f64 / 1000.0,
             );
         }
-        std::env::remove_var("RDMA_P2P_PROFILE_SYNC");
+        std::env::remove_var("POM_PROFILE_SYNC");
     }
 
     #[test]
     fn tokenize_returns_tokens_for_a_real_vocab() {
         let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let Ok(path) = std::env::var("RDMA_P2P_TEST_GGUF") else {
-            eprintln!("skipping: set RDMA_P2P_TEST_GGUF to a .gguf to run this");
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
             return;
         };
         let cfg = EngineConfig {
@@ -1497,7 +1497,7 @@ mod tests {
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
             engine
-                .tokenize("Explique o que e RDMA em uma frase.", true, true)
+                .tokenize("Explique o que e inferencia distribuida em uma frase.", true, true)
                 .len()
                 > tokens.len(),
             "a longer prompt must produce more tokens"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-./target/release/rdma-p2p \
+./target/release/pom \
       --model "./models/qwen/qwen_16_31.gguf" \
       --port 42777 \
       --inference-port 8182 \

@@ -46,8 +46,8 @@ RUN cd apps/frontend && npm run build
 # read here: `.dockerignore` excludes `.git/` and this image has no `git`, so
 # `crates/node/build.rs` would stamp "desconhecido" on every container. The host
 # reads it and passes it in — see `scripts/build-docker.sh`.
-ARG RDMA_P2P_BUILD_COMMIT=""
-ENV RDMA_P2P_BUILD_COMMIT=$RDMA_P2P_BUILD_COMMIT
+ARG POM_BUILD_COMMIT=""
+ENV POM_BUILD_COMMIT=$POM_BUILD_COMMIT
 
 # Cache mounts persist the registry, git checkouts, and incremental build
 # artifacts across builds, so unchanged dependencies aren't recompiled.
@@ -55,7 +55,7 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     --mount=type=cache,target=/root/.cargo/git \
     --mount=type=cache,target=/build/target \
     cargo build --release --features cuda && \
-    cp target/release/rdma-p2p /build/rdma-p2p
+    cp target/release/pom /build/pom
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
 FROM nvidia/cuda:13.0.3-base-ubuntu24.04
@@ -67,7 +67,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /build/rdma-p2p /usr/local/bin/rdma-p2p
+COPY --from=builder /build/pom /usr/local/bin/pom
 COPY --from=builder /build/apps/frontend/dist /app/apps/frontend/dist
 
 # P2P UDP, HTTP gateway, inference server
@@ -76,9 +76,9 @@ EXPOSE 8080/tcp
 EXPOSE 8181/tcp
 
 ENV LD_LIBRARY_PATH=/usr/lib/x86_64-linux-gnu/:/usr/local/cuda-13.0/compat/
-# project_root() would otherwise need models/ or rdma-p2p.json in /app to
+# project_root() would otherwise need models/ or pom.json in /app to
 # recognize it; this makes the resolution explicit instead of incidental.
-ENV RDMA_P2P_HOME=/app
+ENV POM_HOME=/app
 
 WORKDIR /app
-ENTRYPOINT ["rdma-p2p"]
+ENTRYPOINT ["pom"]

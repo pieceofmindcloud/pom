@@ -18,7 +18,7 @@ use std::{
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
-const GOSSIP_TOPIC: &str = "rdma-p2p/announce/1.0.0";
+const GOSSIP_TOPIC: &str = "pom/announce/1.0.0";
 
 const DEFAULT_RELAY_NODES: &[&str] = &[
     "/ip4/147.75.87.27/tcp/4001/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
@@ -237,7 +237,7 @@ impl Discovery {
                     .expect("mdns init");
 
                 let identify = identify::Behaviour::new(identify::Config::new(
-                    "/rdma-p2p/1.0.0".to_string(),
+                    "/pom/1.0.0".to_string(),
                     key.public(),
                 ));
 

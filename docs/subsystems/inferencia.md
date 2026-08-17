@@ -388,11 +388,11 @@ prompt e recusa com uma mensagem citando as flags.
   taxa de aceitação do `next_draft` (ver seção 5.2). O que existe é a medição
   do captain no LM Studio, no mesmo modelo e hardware: **21 → 35 tok/s** no
   Qwen3.8-27B-Q3_K_S. Enquanto não houver número medido aqui, o ganho no
-  rdma-p2p é expectativa, não fato.
+  pom é expectativa, não fato.
 
 ## Nota de versão
 
-Documentado a partir dos fontes na branch `fm/rdma-p2p-linha-2` (2026-08-15):
+Documentado a partir dos fontes na branch `fm/pom-linha-2` (2026-08-15):
 `inference/infer_server.rs`, `inference/prefill.rs`, `inference/direct.rs`,
 `inference/direct_lab.rs`, `inference/spec_lab.rs`, `inference/relay.rs`,
 `inference/wire.rs`, `inference/runtime.rs`, `routing/pipeline.rs`,

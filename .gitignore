@@ -7,12 +7,12 @@ models*
 venv*
 __pycache__*
 *.log
-.rdma-p2p.key
-# Toda variante da config, nao so o nome exato: rdma-p2p-cpu.json e afins
+.pom.key
+# Toda variante da config, nao so o nome exato: pom-cpu.json e afins
 # carregam a connection_key, que vale como credencial de operador e como chave
 # de API. Um `git add -A` de script de deploy publicaria o segredo.
-rdma-p2p*.json
-.rdma-p2p-node*.key
+pom*.json
+.pom-node*.key
 
 # lixo do Finder do macOS; entrava no repo por si so
 .DS_Store
@@ -23,6 +23,10 @@ web-ui/dist/
 # dist-release is the exception: it is the versioned bundle a release build
 # embeds, and cut-ui-bundle.sh is what regenerates it.
 !web-ui/dist-release/
+
+# Empacotamento local: o POM.app que scripts/make-macos-app.sh monta em volta
+# do binario. Artefato de build, sempre reproduzivel.
+/dist-release/
 *.tsbuildinfo
 
 # conteudo da rota Documentacao: gerado pelo apps/frontend/scripts/build-docs.mjs

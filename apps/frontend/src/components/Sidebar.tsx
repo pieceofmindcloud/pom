@@ -3,45 +3,96 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ChevronDown, Moon, Sun } from "lucide-react";
 import { useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
-import { Logo } from "./Logo";
+import { LogoFull } from "./Logo";
+import { brand } from "../lib/brand";
 import { NAV, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 
+/**
+ * O cabeçalho da barra: só a marca, ocupando a faixa inteira.
+ *
+ * A arte precisa de fundo claro para o slogan não sumir no tema escuro (ver
+ * `LogoFull`), e um cartão arredondado dentro de uma coluna já delimitada era
+ * caixa dentro de caixa. A faixa vai de borda a borda e a linha de baixo faz o
+ * mesmo papel que o cartão fazia: separar a marca do menu.
+ */
+function SidebarBrand() {
+  return (
+    <div className="h-[92px] shrink-0 border-b border-line">
+      <LogoFull width={104} variant="band" />
+    </div>
+  );
+}
+
+/**
+ * Idioma e tema, no pé da barra.
+ *
+ * O idioma é uma bandeira, não "EN"/"PT-BR": o rótulo em texto só ajuda quem já
+ * sabe o que a sigla quer dizer, e o alvo aqui é justamente quem abriu a tela
+ * no idioma errado. O nome do idioma continua no `aria-label` e no `title`,
+ * porque bandeira não é idioma para um leitor de tela.
+ */
 function SidebarUtilityControls() {
   const { locale, setLocale, t } = useI18n();
   const { theme, toggle } = useTheme();
-  // O commit deste nó, sempre visível: num cluster de várias máquinas, "qual
-  // build é esse?" não se responde sem shell na máquina, e um peer rodando
-  // binário velho parece sadio até a hora da inferência.
+  // O commit deste nó vive aqui, ao lado dos controles: num cluster de várias
+  // máquinas "qual build é esse?" não se responde sem shell, e um peer rodando
+  // binário velho parece sadio até a hora da inferência. Sem a palavra "build"
+  // na frente - é um hash em fonte mono, e o que ele é fica no tooltip.
   const { data: node } = useNode();
+  const languages = [
+    { id: "en", label: "English" },
+    { id: "pt-BR", label: "Português (Brasil)" },
+  ] as const;
   return (
-    <div className="border-t border-line p-3">
-      <div role="group" aria-label={locale === "pt-BR" ? "Idioma" : "Language"} className="flex gap-1">
-        {(["en", "pt-BR"] as const).map((next) => (
+    <div className="border-t border-line px-3 py-2.5">
+      <div
+        role="group"
+        aria-label={locale === "pt-BR" ? "Idioma" : "Language"}
+        className="flex items-center gap-1.5"
+      >
+        {languages.map((lang) => (
           <button
-            key={next}
+            key={lang.id}
             type="button"
-            aria-pressed={locale === next}
-            onClick={() => setLocale(next)}
-            className={clsx("min-h-11 flex-1 rounded-lg border px-2 text-xs font-semibold", locale === next ? "border-iris/50 bg-iris/12 text-fg" : "border-line text-muted hover:text-fg")}
+            aria-pressed={locale === lang.id}
+            aria-label={lang.label}
+            title={lang.label}
+            onClick={() => setLocale(lang.id)}
+            className={clsx(
+              "flex h-8 w-10 items-center justify-center rounded-md border transition-colors",
+              locale === lang.id
+                ? "border-iris/50 bg-iris/12"
+                : "border-line opacity-55 hover:opacity-100",
+            )}
           >
-            {next === "en" ? "EN" : "PT-BR"}
+            <img
+              src={brand.flags[lang.id]}
+              alt=""
+              aria-hidden="true"
+              className="h-3.5 w-5 rounded-[2px] object-cover ring-1 ring-inset ring-black/20"
+            />
           </button>
         ))}
-        <button type="button" onClick={toggle} aria-label={theme === "dark" ? t("topbar.useLightTheme") : t("topbar.useDarkTheme")} className="flex min-h-11 w-11 items-center justify-center rounded-lg border border-line text-muted hover:text-fg">
-          {theme === "dark" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
+        {node?.build_commit && (
+          <span
+            title={t("sidebar.buildTitle")}
+            className="min-w-0 flex-1 truncate px-1 text-center font-mono text-[0.68rem] text-muted"
+          >
+            {node.build_commit}
+          </span>
+        )}
+        <button
+          type="button"
+          onClick={toggle}
+          aria-label={theme === "dark" ? t("topbar.useLightTheme") : t("topbar.useDarkTheme")}
+          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-line text-muted hover:text-fg"
+        >
+          {theme === "dark" ? <Moon className="h-3.5 w-3.5" /> : <Sun className="h-3.5 w-3.5" />}
         </button>
       </div>
-      {node?.build_commit && (
-        <p
-          title={t("sidebar.buildTitle")}
-          className="mt-2 truncate px-1 font-mono text-[0.62rem] text-faint"
-        >
-          {t("sidebar.build")} {node.build_commit}
-        </p>
-      )}
     </div>
   );
 }
@@ -180,10 +231,10 @@ function Section({
 export function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
   return (
     <>
-      <div className="flex h-16 shrink-0 items-center px-5">
-        <Logo size={30} />
-      </div>
-      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4">
+      <SidebarBrand />
+      {/* O respiro do topo é o que separa o primeiro item da linha divisória:
+          sem ele a pílula ativa encosta na borda da faixa da marca. */}
+      <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4 pt-[5px]">
         {NAV.map((s) => (
           <Section key={s.labelKey} section={s} onNavigate={onNavigate} />
         ))}

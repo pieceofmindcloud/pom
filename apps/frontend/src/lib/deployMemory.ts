@@ -13,8 +13,9 @@
  * that it does not follow you to another browser.
  */
 import type { DeploySelection, RuntimeParams } from "./types";
+import { storageKey } from "./brand";
 
-const STORAGE = "codai.deploy.last";
+const STORAGE = storageKey("deploy.last");
 /** Models remembered before the oldest is dropped. */
 const MAX_MODELS = 20;
 

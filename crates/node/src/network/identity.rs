@@ -26,36 +26,42 @@ pub struct Identity {
 }
 
 /// Where the node's long-lived keypair lives, under the project root.
-pub const KEY_FILENAME: &str = ".rdma-p2p-node.key";
+/// Arquivo da identidade do nó, derivado da marca: `.pom-node.key`.
+pub fn key_filename() -> String {
+    format!(".{}-node.key", crate::brand::slug())
+}
 
 /// Resolves the key file path.
 ///
-/// `$RDMA_P2P_NODE_KEY` overrides the default so Docker deployments and
+/// `$POM_NODE_KEY` overrides the default so Docker deployments and
 /// multi-instance setups can pin a specific file without touching the
-/// project directory.  Falls back to `<project_root>/.rdma-p2p-node.key`.
+/// project directory.  Falls back to `<project_root>/.pom-node.key`.
 pub fn key_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("RDMA_P2P_NODE_KEY") {
+    if let Ok(p) = crate::brand::env("NODE_KEY") {
         return std::path::PathBuf::from(p);
     }
-    crate::config::project_root().join(KEY_FILENAME)
+    crate::config::project_root().join(key_filename())
 }
 
-/// Where the pkarr keypair lives. Not the same key as [`KEY_FILENAME`]: this
+/// Where the pkarr keypair lives. Not the same key as [`key_filename`]: this
 /// one names the node on the pkarr DHT, the other names it in the cluster.
-pub const PKARR_KEY_FILENAME: &str = ".rdma-p2p.key";
+/// Arquivo da chave pkarr, derivado da marca: `.pom.key`.
+pub fn pkarr_key_filename() -> String {
+    format!(".{}.key", crate::brand::slug())
+}
 
 /// Resolves the pkarr key file path, under the project root.
 ///
-/// Era `Path::new(".rdma-p2p.key")`, relativo ao cwd: lançar o binário de outro
-/// diretório (um `ssh host /caminho/rdma-p2p` roda em `$HOME`) criava uma
+/// Era `Path::new(".pom.key")`, relativo ao cwd: lançar o binário de outro
+/// diretório (um `ssh host /caminho/pom` roda em `$HOME`) criava uma
 /// segunda identidade pkarr e o endereço publicado na DHT mudava. O project
-/// root é a regra do resto do projeto (`models/`, `rdma-p2p.json`, a chave do
+/// root é a regra do resto do projeto (`models/`, `pom.json`, a chave do
 /// nó) e vale aqui também.
 pub fn pkarr_key_path() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("RDMA_P2P_PKARR_KEY") {
+    if let Ok(p) = crate::brand::env("PKARR_KEY") {
         return std::path::PathBuf::from(p);
     }
-    crate::config::project_root().join(PKARR_KEY_FILENAME)
+    crate::config::project_root().join(pkarr_key_filename())
 }
 
 impl Identity {
@@ -126,27 +132,27 @@ mod tests {
     #[test]
     fn the_pkarr_key_lives_under_the_project_root_not_the_cwd() {
         let cwd_antes = std::env::current_dir().unwrap();
-        let home_antes = std::env::var("RDMA_P2P_PKARR_KEY").ok();
-        std::env::remove_var("RDMA_P2P_PKARR_KEY");
+        let home_antes = std::env::var("POM_PKARR_KEY").ok();
+        std::env::remove_var("POM_PKARR_KEY");
 
-        let raiz = std::env::temp_dir().join(format!("rdma-root-{}", std::process::id()));
-        let outro = std::env::temp_dir().join(format!("rdma-cwd-{}", std::process::id()));
+        let raiz = std::env::temp_dir().join(format!("pom-root-{}", std::process::id()));
+        let outro = std::env::temp_dir().join(format!("pom-cwd-{}", std::process::id()));
         std::fs::create_dir_all(raiz.join("models")).unwrap();
         std::fs::create_dir_all(&outro).unwrap();
-        std::env::set_var("RDMA_P2P_HOME", &raiz);
+        std::env::set_var("POM_HOME", &raiz);
         std::env::set_current_dir(&outro).unwrap();
 
         let caminho = pkarr_key_path();
 
         std::env::set_current_dir(&cwd_antes).unwrap();
-        std::env::remove_var("RDMA_P2P_HOME");
+        std::env::remove_var("POM_HOME");
         if let Some(v) = home_antes {
-            std::env::set_var("RDMA_P2P_PKARR_KEY", v);
+            std::env::set_var("POM_PKARR_KEY", v);
         }
         std::fs::remove_dir_all(&raiz).ok();
         std::fs::remove_dir_all(&outro).ok();
 
-        assert_eq!(caminho, raiz.join(PKARR_KEY_FILENAME));
+        assert_eq!(caminho, raiz.join(pkarr_key_filename()));
         assert!(
             !caminho.starts_with(&outro),
             "a chave pkarr não pode sair do cwd: {caminho:?}"
@@ -155,9 +161,9 @@ mod tests {
 
     #[test]
     fn identity_survives_a_restart() {
-        let dir = std::env::temp_dir().join(format!("rdma-id-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-id-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(KEY_FILENAME);
+        let path = dir.join(key_filename());
 
         let first = Identity::load_or_create(&path);
         let second = Identity::load_or_create(&path);
@@ -172,9 +178,9 @@ mod tests {
 
     #[test]
     fn a_corrupt_key_file_does_not_stop_the_node() {
-        let dir = std::env::temp_dir().join(format!("rdma-id-bad-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-id-bad-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(KEY_FILENAME);
+        let path = dir.join(key_filename());
         std::fs::write(&path, "isto nao e uma chave").unwrap();
 
         let id = Identity::load_or_create(&path);

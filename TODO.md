@@ -52,7 +52,7 @@ não voltarem a ser propostos).
 
 - **O par do `docker-compose`** (`docker-compose.yml` montando fixtures que
   `scripts/gen-node-configs.py` não escreve, e o `.dockerignore` cortando
-  `rdma-p2p.json`). **Não é defeito**: são dois ambientes de gente diferente -
+  `pom.json`). **Não é defeito**: são dois ambientes de gente diferente -
   o gerador serve a máquina do captain, o compose serve a do salem - e os dois
   esquemas de nome não precisam se encontrar. Registrado em `scripts/AGENTS.md`.
 

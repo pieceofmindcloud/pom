@@ -17,6 +17,7 @@ fn main() {
 
     emit_build_id(&root);
     build_mtp_shim();
+    embed_windows_icon(&root);
 }
 
 /// Compila a ponte C para as entradas NextN/MTP do llama.cpp.
@@ -35,8 +36,46 @@ fn build_mtp_shim() {
     cc::Build::new()
         .cpp(true)
         .file("src/inference/llama_mtp_shim.cpp")
-        .compile("rdma_p2p_llama_mtp_shim");
+        .compile("pom_llama_mtp_shim");
 }
+
+/// Grava o ícone do aplicativo dentro do `.exe` (só no Windows).
+///
+/// Um executável Unix não carrega ícone: no macOS quem o mostra é o bundle
+/// `.app` (`scripts/make-macos-app.sh`) e no Linux é o `.desktop` com a árvore
+/// `hicolor` (os dois saem de `assets/brand/`). No Windows o ícone é um recurso
+/// dentro do próprio arquivo, e é aqui que ele entra - sem isto o Explorer
+/// mostra o ícone genérico de console.
+///
+/// O `cfg(windows)` é do **host**, não do alvo, e é o mesmo critério que traz o
+/// `winresource` como build-dependency (`[target.'cfg(windows)'.build-dependencies]`
+/// também é host). Os dois casam: o release compila o alvo Windows num runner
+/// Windows. Cruzar de Linux para Windows sai sem ícone, em silêncio, em vez de
+/// falhar o build de quem só quer o nó.
+#[cfg(windows)]
+fn embed_windows_icon(root: &Path) {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let icon = root.join("assets/brand/pom.ico");
+    println!("cargo:rerun-if-changed={}", icon.display());
+    if !icon.exists() {
+        println!(
+            "cargo:warning=ícone do Windows não encontrado em {}",
+            icon.display()
+        );
+        return;
+    }
+    let mut res = winresource::WindowsResource::new();
+    res.set_icon(&icon.to_string_lossy());
+    if let Err(e) = res.compile() {
+        // Um ícone ausente não pode impedir alguém de compilar o nó.
+        println!("cargo:warning=não deu para embutir o ícone no executável: {e}");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon(_root: &Path) {}
 
 /// Stamp the binary with the commit it was built from.
 ///
@@ -54,11 +93,11 @@ fn emit_build_id(root: &Path) {
     // most need, since a container is the hardest place to get a shell into.
     // `scripts/build-docker.sh` reads the commit on the host and passes it in
     // through this variable.
-    println!("cargo:rerun-if-env-changed=RDMA_P2P_BUILD_COMMIT");
-    if let Ok(stamped) = std::env::var("RDMA_P2P_BUILD_COMMIT") {
+    println!("cargo:rerun-if-env-changed=POM_BUILD_COMMIT");
+    if let Ok(stamped) = std::env::var("POM_BUILD_COMMIT") {
         let stamped = stamped.trim();
         if !stamped.is_empty() {
-            println!("cargo:rustc-env=RDMA_P2P_BUILD_COMMIT={stamped}");
+            println!("cargo:rustc-env=POM_BUILD_COMMIT={stamped}");
             return;
         }
     }
@@ -83,7 +122,7 @@ fn emit_build_id(root: &Path) {
         .unwrap_or(false);
 
     println!(
-        "cargo:rustc-env=RDMA_P2P_BUILD_COMMIT={}{}",
+        "cargo:rustc-env=POM_BUILD_COMMIT={}{}",
         commit,
         if dirty { "-sujo" } else { "" }
     );

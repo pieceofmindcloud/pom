@@ -5,7 +5,7 @@ edition.workspace = true
 build = "build.rs"
 
 [[bin]]
-name = "rdma-p2p"
+name = "pom"
 path = "src/main.rs"
 
 [features]
@@ -47,6 +47,9 @@ mime_guess = "2"
 zstd = "0.13"
 tower-http = { version = "0.5", features = ["compression-full"] }
 routing-contract = { path = "../routing-contract" }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
 
 [build-dependencies]
 # Compila `src/inference/llama_mtp_shim.cpp`, a ponte para as entradas NextN

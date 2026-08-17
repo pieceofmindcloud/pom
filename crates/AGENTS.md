@@ -9,7 +9,7 @@ shared `[workspace.package]` metadata, shared `[workspace.dependencies]` for
 - `types` - infrastructure-free shared domain types (currently empty scaffolding)
 - `routing-contract` - versioned data contract for routing providers
 - `routing-base` - deterministic open-source routing provider
-- `node` - the only binary (`rdma-p2p`), the whole product
+- `node` - the only binary (`pom`), the whole product
 
 `default-members = ["crates/node"]`, so `cargo build`/`cargo test` at the root
 builds and tests the node crate. `resolver = "2"`.

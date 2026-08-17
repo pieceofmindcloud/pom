@@ -1,15 +1,19 @@
 /**
- * CODAI mark — **placeholder**.
+ * The product mark and wordmark.
  *
- * Swapping in the real logo means replacing the contents of `<LogoMark>` with
- * the brand SVG and nothing else: the mark is a square that fills its box, and
- * every caller sizes it through `size`, so the wordmark, the sidebar, the setup
- * screen and the favicon all follow automatically.
+ * Both come from `brand.json` (via `lib/brand`), never from literals here: the
+ * name, the tagline and the image file are one edit at the repository root, and
+ * the binary reads the same file. What used to be a hand-drawn placeholder is
+ * now the real artwork, served from `/brand/` as a static asset rather than
+ * inlined - the mark is a detailed raster and every caller shows it small.
  *
- * The stand-in draws what the product does — three layer bars converging on one
- * output — so the space reads as intentional until the real thing arrives.
+ * The mark is a square that fills its box and every caller sizes it through
+ * `size`, so the sidebar, the setup screen and the browser tab all follow the
+ * same source.
  */
 import clsx from "clsx";
+import { brand } from "../lib/brand";
+import { useTheme } from "../lib/theme";
 
 export function LogoMark({
   size = 32,
@@ -19,28 +23,25 @@ export function LogoMark({
   className?: string;
 }) {
   return (
-    <span
+    <img
+      src={brand.icon ?? brand.mark ?? ""}
+      alt=""
+      aria-hidden="true"
+      width={size}
+      height={size}
+      // The artwork is a full-colour illustration with its own white glow: at
+      // 32px, loose on a dark panel, it read as a smudge. The icon files carry
+      // the rounded plate baked in (see `assets/brand/`), which is what makes
+      // it read as a mark at every size and on both themes.
+      // A hairline follows the baked-in plate radius: on the light theme the
+      // plate is nearly the panel colour and the mark lost its edge without it.
       className={clsx(
-        "relative inline-flex shrink-0 items-center justify-center rounded-[28%]",
-        "bg-gradient-to-br from-iris/90 to-iris/60 text-white",
-        "ring-1 ring-inset ring-white/15",
+        "shrink-0 select-none rounded-[22%] object-contain ring-1 ring-inset ring-line",
         className,
       )}
       style={{ width: size, height: size }}
-      aria-hidden="true"
-      data-logo-placeholder="true"
-    >
-      <svg viewBox="0 0 32 32" width={size * 0.72} height={size * 0.72} fill="none">
-        <path
-          d="M7 10.5h7M7 16h11M7 21.5h7"
-          stroke="currentColor"
-          strokeWidth="2.4"
-          strokeLinecap="round"
-          opacity="0.9"
-        />
-        <circle cx="24" cy="16" r="3.1" fill="rgb(var(--aqua))" />
-      </svg>
-    </span>
+      draggable={false}
+    />
   );
 }
 
@@ -62,16 +63,65 @@ export function Logo({
             className="font-display font-bold tracking-tight text-fg"
             style={{ fontSize: size * 0.5 }}
           >
-            CODAI
+            {brand.name}
           </span>
           <span
             className="font-mono uppercase tracking-[0.22em] text-faint"
             style={{ fontSize: size * 0.26, marginTop: size * 0.1 }}
           >
-            server
+            {brand.tagline}
           </span>
         </span>
       )}
+    </span>
+  );
+}
+
+/**
+ * The full lockup - mark, wordmark and tagline in one drawing, as the brand was
+ * designed. This is what the sidebar header and the setup screen show; the
+ * icon-plus-text `Logo` above stays for places too small for the tagline.
+ *
+ * **Two arts, one per theme** (`brand.logo.light` / `brand.logo.dark`), so the
+ * lockup needs no plate behind it: each theme gets art drawn for its own
+ * ground. The dark one is derived from the light one by
+ * `scripts/derive-dark-logo.py` until a hand-drawn version exists - replacing
+ * the file is the whole change.
+ *
+ * `variant` is only about how it fills its box:
+ * - `"card"` - padded, for the setup screen, where the lockup floats mid-page;
+ * - `"band"` - fills its container edge to edge, for the sidebar header, which
+ *   *is* the band.
+ */
+export function LogoFull({
+  width = 260,
+  variant = "card",
+  className,
+}: {
+  width?: number;
+  variant?: "card" | "band";
+  className?: string;
+}) {
+  const { theme } = useTheme();
+  const src = brand.logo?.[theme] ?? brand.logo?.light;
+  if (!src) return <Logo size={48} className={className} />;
+  const band = variant === "band";
+  return (
+    <span
+      className={clsx(
+        "inline-flex items-center justify-center",
+        band ? "h-full w-full px-4 py-4" : "px-2 py-1",
+        className,
+      )}
+    >
+      <img
+        src={src}
+        alt={`${brand.name} — ${brand.tagline}`}
+        width={width}
+        className="h-auto max-w-full select-none object-contain"
+        style={{ width }}
+        draggable={false}
+      />
     </span>
   );
 }

@@ -6,15 +6,19 @@
 //! um campo de config — a config é reescrita pela própria interface, o que
 //! deixaria o portão ligável pela rede.
 
-/// Nome da variável que abre o recurso.
-pub const ENV_GATE: &str = "RDMA_P2P_DEV_UPDATE";
+/// Nome da variável que abre o recurso (`POM_DEV_UPDATE`), derivado da marca.
+pub fn env_gate() -> String {
+    crate::brand::env_var("DEV_UPDATE")
+}
 
 /// Variável que diz com que features esta máquina compila.
-pub const ENV_FEATURES: &str = "RDMA_P2P_BUILD_FEATURES";
+pub fn env_features() -> String {
+    crate::brand::env_var("BUILD_FEATURES")
+}
 
 /// Este nó aceita pedidos de atualização?
 pub fn enabled() -> bool {
-    enabled_from(std::env::var(ENV_GATE).ok().as_deref())
+    enabled_from(crate::brand::env("DEV_UPDATE").ok().as_deref())
 }
 
 fn enabled_from(v: Option<&str>) -> bool {
@@ -39,8 +43,8 @@ fn gate_rejection() -> Option<(StatusCode, String)> {
     Some((
         StatusCode::FORBIDDEN,
         format!(
-            "atualização remota desligada neste nó. Suba o processo com \
-             {ENV_GATE}=1 para habilitar."
+            "atualização remota desligada neste nó. Suba o processo com {}=1 para habilitar.",
+            env_gate()
         ),
     ))
 }
@@ -272,7 +276,7 @@ async fn update_endpoint(
 
         // ── Build ────────────────────────────────────────────────────────────
         step(&job_id, "compilando").await;
-        let features = std::env::var(ENV_FEATURES).ok();
+        let features = std::env::var(env_features()).ok();
         let args = build_args(features.as_deref());
         let out =
             tokio::process::Command::new(std::env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
@@ -488,7 +492,7 @@ mod tests {
         let r = gate_rejection().expect("sem a variável, tem que recusar");
         assert_eq!(r.0, axum::http::StatusCode::FORBIDDEN);
         assert!(
-            r.1.contains(ENV_GATE),
+            r.1.contains(&env_gate()),
             "a mensagem tem que dizer qual variável liga: {}",
             r.1
         );

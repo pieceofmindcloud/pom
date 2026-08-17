@@ -106,7 +106,7 @@ Um job cancelado por alguém nunca é sobrescrito por um "falhou" anônimo.
 
 ## 7. Aceite automático - só desenvolvimento
 
-`RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS` faz o **receptor** aceitar toda oferta sem
+`POM_DEV_AUTO_ACCEPT_TRANSFERS` faz o **receptor** aceitar toda oferta sem
 clique. É variável do processo que recebe, lida **uma vez** no arranque
 (`OnceLock`), e desligada por padrão: ausente, vazia, `0` e `false` todas
 continuam exigindo confirmação. O remetente não tem como pedi-la - quem abre o

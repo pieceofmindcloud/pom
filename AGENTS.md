@@ -20,7 +20,7 @@ dele é lá, não aqui.
 | `fatiamento.md` | split/merge de GGUF, tabela de tipos ggml, planejamento por tamanho |
 | `implantacao.md` | pôr fatias em serviço, fusão, ordem do pipeline, ciclo de vida da fatia |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |
-| `api-http.md` | todas as rotas, autenticação, `x_rdma_p2p.source`, `gateway::testkit` |
+| `api-http.md` | todas as rotas, autenticação, `x_pom.source`, `gateway::testkit` |
 | `web-ui.md` | como a UI sobe, menu, modais, Painel, chat de teste, telas de fatiar/implantar |
 
 **Por pasta** (`AGENTS.md`) - o que cada arquivo faz, função a função, e as
@@ -31,6 +31,12 @@ ligações com outras pastas: `crates/`, `crates/node/`, e dentro de
 
 `docs/AGENTS.md` explica specs e planos (`docs/superpowers/`);
 `docs/architecture/routing-plugin-contract.md` é a fronteira open-core.
+
+**`brand.json` (raiz)** é a identidade do produto - nome, slogan e logo - e a
+fonte única de todo nome derivado: arquivo de config, variáveis de ambiente,
+chaves de identidade, metadados GGUF e o registro pkarr. O binário o embute em
+tempo de compilação (`utils/brand.rs`) e a interface o copia para o bundle
+(`apps/frontend/scripts/build-brand.mjs`). As imagens ficam em `assets/brand/`.
 
 **Não é fonte de verdade para arquitetura:** o `README.md` da raiz (é
 apresentação) e `old/` (Python legado, fora do runtime).
@@ -58,24 +64,24 @@ Nunca edite lá.
 ## Comandos
 
 ```bash
-cargo build --release                 # ./target/release/rdma-p2p
+cargo build --release                 # ./target/release/pom
 cargo build --release --features metal   # Apple Silicon
 cargo build --release --features cuda    # NVIDIA (toolkit >= 12.8 para sm_120)
 cargo test                            # crates/node
 cargo test --workspace                # todos os crates públicos
-RUST_LOG=debug ./target/release/rdma-p2p ...
+RUST_LOG=debug ./target/release/pom ...
 
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução
-(`config::ui_dist_dir()`, `$RDMA_P2P_UI_DIST` sobrescreve), não embutida no
+(`config::ui_dist_dir()`, `$POM_UI_DIST` sobrescreve), não embutida no
 binário: `cargo build` não reconstrói a tela e não precisa de Node.
 
 ```bash
-./target/release/rdma-p2p --list-models
-./target/release/rdma-p2p                       # sem args: usa rdma-p2p.json
-./target/release/rdma-p2p --model split_0_15.gguf --port 42777 --inference-port 8181
+./target/release/pom --list-models
+./target/release/pom                       # sem args: usa pom.json
+./target/release/pom --model split_0_15.gguf --port 42777 --inference-port 8181
 ```
 
 Todo nó serve a UI e a API na `--gateway-port` (8080): abra
@@ -104,29 +110,34 @@ wire, relay, direct, especulativa), `utils/` (config, TUI, sysmon).
 Cada uma é detalhada no subsistema indicado; estão aqui porque quebrá-las
 quebra o produto inteiro.
 
-- **Project root.** `models/`, `rdma-p2p.json`, chaves e a UI saem de
-  `config::project_root()` (`$RDMA_P2P_HOME` → cwd que pareça o projeto →
+- **Project root.** `models/`, `pom.json`, chaves e a UI saem de
+  `config::project_root()` (`$POM_HOME` → cwd que pareça o projeto →
   diretório do executável). Lançar o binário de outro cwd lê outra config.
-  Dois nós na mesma máquina precisam de `RDMA_P2P_HOME` distintos, porque a
-  identidade (`.rdma-p2p-node.key`) mora ali. → `operacao.md`
+  Dois nós na mesma máquina precisam de `POM_HOME` distintos, porque a
+  identidade (`.pom-node.key`) mora ali. → `operacao.md`
 - **`node_id` é o nome da máquina no cluster** e a chave de `blocked_nodes`;
-  apagar `.rdma-p2p-node.key` cria uma máquina nova. Não confundir com
-  `.rdma-p2p.key`, do pkarr. → `rede-p2p.md`
+  apagar `.pom-node.key` cria uma máquina nova. Não confundir com
+  `.pom.key`, do pkarr. → `rede-p2p.md`
 - **A chave de conexão é a mesma no cluster inteiro** e é a credencial de
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e as rotas
-  `/v1`. Sem `rdma-p2p.json` o nó sobe em **modo setup**, que serve só a tela de
+  `/v1`. Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de
   escolha Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
 - **A ordem do pipeline é a ordem das camadas**, e um nó serve uma faixa (duas
   só com `merge`). Sobreposição é recusa; buraco é aviso. Quem fica com a camada
   0 processa o prompt inteiro de toda requisição. → `implantacao.md`
 - **Quantas camadas o modelo tem é `Option`, não número.** Fatia sem metadata
-  `rdmap2p.*` não sabe o total; inventar zero foi um bug real. → `fatiamento.md`
+  `pom.*` não sabe o total; inventar zero foi um bug real. → `fatiamento.md`
 - **`<config>.last-slice.json` só vira `serving` pelo watcher do `/health`.**
   Anotar no `apply` o que só o `/health` sabe é laço infinito de reinício. →
   `implantacao.md`
 - **Nenhum peso trafega na rede por causa do fatiamento**: cada peer extrai a
   própria faixa da própria cópia. Transferência de arquivo é ato explícito do
   operador. → `fatiamento.md`, `transferencia.md`
+- **O nome do produto não é literal em lugar nenhum.** Config, env, chaves,
+  metadados GGUF e registro pkarr derivam do `slug` de `brand.json`
+  (`brand::config_filename()`, `brand::env_var()`, `brand::gguf_key()`,
+  `brand::dns_record()`). A única exceção que o cargo obriga é o `[[bin]]` em
+  `crates/node/Cargo.toml`. → `build-execucao.md`
 - **Testes de rota usam `gateway::testkit`**, nunca UDP de verdade - a suíte
   transmite na LAN e pode injetar mensagens num cluster vivo. → `api-http.md`
 

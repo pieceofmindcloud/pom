@@ -2,7 +2,7 @@
 
 ## What this folder is
 
-The HTTP backend of the `rdma-p2p` node: every axum router and handler the
+The HTTP backend of the `pom` node: every axum router and handler the
 binary serves. It owns the single generation path (`gateway::generate_stream`,
 which routes to the **distributed pipeline** - there is no fallback to a local
 or peer Ollama, a missing plan fails the request), the gateway state all
@@ -93,7 +93,7 @@ behind an auth extractor.
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
-  `x_rdma_p2p` extension with source/tps/duration/partial/trace),
+  `x_pom` extension with source/tps/duration/partial/trace),
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
@@ -121,7 +121,7 @@ behind an auth extractor.
   at the end; reuses an already-complete output and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
   which are deliberately NOT registered here - the setup mode router in
-  `main.rs` serves them only while there is no `rdma-p2p.json` (they cannot be
+  `main.rs` serves them only while there is no `pom.json` (they cannot be
   authenticated and would rotate the connection key on a configured node).
 - `deploy.rs` - `DeployKind` (`shards` | `whole`) escolhe qual inventário o
   `survey` lê: `shard_sets`, ou os modelos inteiros via `parse_whole`, que lê um
@@ -187,7 +187,7 @@ behind an auth extractor.
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.
-  `DEV_AUTO_ACCEPT_ENV` (`RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
+  `DEV_AUTO_ACCEPT_ENV` (`POM_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.
 - `admin.rs` - `admin_routes()`: `GET /admin/nodes`, `POST
@@ -196,8 +196,8 @@ behind an auth extractor.
   `DELETE /admin/api-keys/{key}`, `GET /admin/transfer-offers` (same offers as
   `transfer.rs::list_offers`).
   `list_nodes` appends blocked-but-disconnected nodes so the panel is not empty.
-- `devupdate.rs` - `ENV_GATE=RDMA_P2P_DEV_UPDATE`, `ENV_FEATURES=
-  RDMA_P2P_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
+- `devupdate.rs` - `ENV_GATE=POM_DEV_UPDATE`, `ENV_FEATURES=
+  POM_BUILD_FEATURES`; `enabled()` = env `== "1"`; `gate_rejection` 403
   when closed. Routes `POST /api/ui/dev/update` (preflight: refuses non-main
   branch, detached HEAD, dirty tree; then `git pull --ff-only` + `cargo build
   --release`; no destructive commands) and `POST /api/ui/dev/restart`
@@ -234,7 +234,7 @@ behind an auth extractor.
   não encontrado", anything else falls back to `index.html`. `resolve`
   rejects `..`, absolute and prefixed components. Cache: index.html no-cache,
   hashed assets immutable (1 year). Missing bundle -> 500 explaining the
-  `npm run build` / `RDMA_P2P_UI_DIST` remedy.
+  `npm run build` / `POM_UI_DIST` remedy.
 - `session.rs` - `handle_handshake` compares `connection_key` (403 invalid_key)
   then `blocked_nodes` (403 blocked), else approves with `peer_id`.
 

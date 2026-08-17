@@ -1,5 +1,5 @@
 /// Commit this binary was built from, stamped by `build.rs`.
-pub const BUILD_COMMIT: &str = env!("RDMA_P2P_BUILD_COMMIT");
+pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 
 #[path = "backend/admin.rs"]
 mod admin;
@@ -7,6 +7,8 @@ mod admin;
 mod auth;
 #[path = "network/bitswap.rs"]
 mod bitswap;
+#[path = "utils/brand.rs"]
+mod brand;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "utils/config.rs"]
@@ -107,8 +109,8 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "rdma-p2p",
-    about = "Distributed P2P LLM inference with RDMA-sim layer",
+    name = "pom",
+    about = "Inferência distribuída de LLM entre máquinas, sem servidor central",
     long_about = "Runs a node in a distributed LLM inference network.\n\
                   Each node allocates a slice of RAM, loads model layers that fit,\n\
                   and coordinates with peers to cover the full model."
@@ -134,7 +136,7 @@ struct Args {
     bootstrap: String,
 
     /// Address peers should keep for this node, e.g. `[2804:d55::1]:42777` or a
-    /// bare IPv6. Overrides `advertise_addr` in rdma-p2p.json. Without it each
+    /// bare IPv6. Overrides `advertise_addr` in pom.json. Without it each
     /// peer reads the address off the packet, which on the public internet means
     /// a temporary IPv6 that rotates.
     #[arg(long, default_value = "")]
@@ -174,7 +176,7 @@ struct Args {
     end_layer: Option<u32>,
 
     /// Port for the llama-cpp-python inference server on this node.
-    /// When set, rdma-p2p auto-starts inference_server.py on this port.
+    /// When set, pom auto-starts inference_server.py on this port.
     #[arg(long)]
     inference_port: Option<u16>,
 
@@ -852,7 +854,7 @@ async fn main() -> Result<()> {
             };
 
             println!(
-                "\x1b[1m rdma-p2p\x1b[0m  node:{} │ {}  │ peers:{} │ {}{}{}",
+                "\x1b[1m pom\x1b[0m  node:{} │ {}  │ peers:{} │ {}{}{}",
                 &node_id[..12],
                 chrono::Utc::now().format("%H:%M:%S"),
                 peers.len(),
@@ -1305,11 +1307,11 @@ mod main_tests {
     /// nenhum peer soubesse - ninguém conseguia rotear para cá.
     #[test]
     fn the_advertised_ollama_port_does_not_depend_on_the_deprecated_flag() {
-        let args = Args::parse_from(["rdma-p2p"]);
+        let args = Args::parse_from(["pom"]);
         assert!(!args.gateway, "sem a flag, que é o caso que quebrava");
         assert_eq!(advertised_ollama_port(&args.ollama_url), Some(11434));
 
-        let com_flag = Args::parse_from(["rdma-p2p", "--gateway"]);
+        let com_flag = Args::parse_from(["pom", "--gateway"]);
         assert_eq!(
             advertised_ollama_port(&com_flag.ollama_url),
             advertised_ollama_port(&args.ollama_url),
@@ -1318,7 +1320,7 @@ mod main_tests {
     }
 
     /// `--advertise-addr` é mais específico que `--public-addr`, e os dois
-    /// vencem o que já estava salvo em `rdma-p2p.json` — a mesma ordem que
+    /// vencem o que já estava salvo em `pom.json` — a mesma ordem que
     /// `main()`'s CLI path e `start_gateway_only` têm que aplicar igual, ou
     /// os dois divergem silenciosamente com o tempo.
     #[test]

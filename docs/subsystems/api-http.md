@@ -1,6 +1,6 @@
 # Subsistema: API HTTP (gateway) e autenticação
 
-O gateway HTTP é a superfície de rede do nó rdma-p2p, montada por
+O gateway HTTP é a superfície de rede do nó pom, montada por
 `start_gateway` (`crates/node/src/backend/gateway.rs`) como um router axum
 único. **Todo nó serve o mesmo conjunto de rotas na porta de gateway**
 (`--gateway-port`, padrão 8080), então qualquer endereço de peer vale como
@@ -32,14 +32,14 @@ a condição de a cabeça rascunhar na decodificação especulativa.
 - **Implantação** (`deploy.rs`): `/api/ui/deploy/*` + `POST /api/ui/undeploy`.
 - **Transferência** (`transfer.rs`): `/api/transfer/*` (ver `transferencia.md`).
 - **Dev update** (`devupdate.rs`): `POST /api/ui/dev/update`, `POST
-  /api/ui/dev/restart` (gated por `RDMA_P2P_DEV_UPDATE`).
+  /api/ui/dev/restart` (gated por `POM_DEV_UPDATE`).
 - **Operador** (`admin.rs`): `/admin/*`.
 - **UI** (`webapp.rs`): `GET /` e `/*path` - serve o bundle do disco
   (`config::ui_dist_dir()`); o fallback de SPA é estreito: miss sob prefixo de
   API vira 404 JSON, miss com extensão de arquivo vira "asset não encontrado",
   o resto cai em `index.html`.
 
-Em **modo setup** (sem `rdma-p2p.json`), `main.rs` monta um router menor: só
+Em **modo setup** (sem `pom.json`), `main.rs` monta um router menor: só
 `/api/setup/key`, `/api/setup/save` e a UI. As duas rotas de setup não estão no
 router principal e não podem ser autenticadas - existem justamente antes de
 haver chave.
@@ -71,7 +71,7 @@ Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
 achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
 passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
 512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Todas as respostas
-levam a extensão `x_rdma_p2p` (fora do schema) com a prova de execução
+levam a extensão `x_pom` (fora do schema) com a prova de execução
 distribuída. CORS `*` para harnesses de navegador.
 
 ### Anthropic (`/v1/messages`)
@@ -80,7 +80,7 @@ Mesmo caminho de geração, próprio `render_prompt` (system/messages/tools
 separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
 (`end_turn`/`max_tokens`/`tool_use`), SSE com os nomes de evento Anthropic.
 `tool_choice` e `stop_sequences` são parseados e ignorados (serde descarta
-campos desconhecidos). `x_rdma_p2p` vai na resposta não-streaming.
+campos desconhecidos). `x_pom` vai na resposta não-streaming.
 
 ### `/admin/*`
 
@@ -135,12 +135,12 @@ um UUID v4 sorteado por quadro, conhecido só pela própria cadeia, removido do
 `ReplyInbox` no `Drop` em qualquer caminho de saída. Uma resposta atrasada leva
 `410` e nunca pode cair no token seguinte.
 
-## 4. `x_rdma_p2p.source` - a prova de execução distribuída
+## 4. `x_pom.source` - a prova de execução distribuída
 
 A mesma string que o log de requisições guarda como `source`: `"pipeline:<id1>→<id2>"`
 (com `" (partial)"` quando um peer falhou no meio mas sobrou texto),
 `"local"` ou `"peer:<node_id>"`. Aparece como campo `source` no
-`/api/generate`, como extensão `x_rdma_p2p` no `/v1` não-streaming e no último
+`/api/generate`, como extensão `x_pom` no `/v1` não-streaming e no último
 chunk do SSE, e como `source` no `reqlog`. `"none"` marca erro/abandono. É o
 único jeito de um harness saber que a inferência foi conjunta: `source`
 começando com `pipeline:` e com **dois** hops é a prova.

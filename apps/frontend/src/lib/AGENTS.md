@@ -1,6 +1,6 @@
 # src/lib
 
-Shared browser-side logic for the rdma-p2p web UI: the HTTP client, all
+Shared browser-side logic for the pom web UI: the HTTP client, all
 react-query reads, localStorage persistence (chat history, last deploy, canvas
 layout, theme, connection key), the streaming chat state machine, formatting,
 toasts and every type the panel exchanges with the node.
@@ -34,6 +34,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### api.ts
 - `request<T>(path, opts)` - the single fetch path: JSON body, optional `Authorization: Bearer <connectionKey>`, throws `ApiError` on non-2xx. Everything in the app goes through it.
 - `class ApiError` - carries `status` and the decoded JSON `body` so 409-style refusals (e.g. delete warnings list) survive to the caller.
+- `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
 - `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`.
 - `streamSse(path, body, signal)` - async generator yielding each `data:` payload of an SSE stream (blank-line framing); used by Chat for `/v1/chat/completions`.
 - `api.get/post/del` - typed conveniences over `request`.

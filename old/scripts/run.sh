@@ -4,10 +4,10 @@
 
 set -euo pipefail
 
-BIN="./target/release/rdma-p2p"
+BIN="./target/release/pom"
 
 # ── Preflight ─────────────────────────────────────────────────────────────────
-echo "Building rdma-p2p..."
+echo "Building pom..."
 cargo build --release
 
 # ── Create run-p1.sh (Gateway + Peer 1) ───────────────────────────────────────

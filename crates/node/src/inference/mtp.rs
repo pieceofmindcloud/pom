@@ -58,12 +58,12 @@ use llama_cpp_sys_2 as sys;
 // Ver `llama_mtp_shim.cpp`: elas moram em `llama-ext.h`, fora do `extern "C"`
 // de `llama.h`, e o `wrapper.h` da crate `-sys` não inclui esse cabeçalho.
 extern "C" {
-    fn rdma_p2p_llama_set_embeddings_nextn(
+    fn pom_llama_set_embeddings_nextn(
         ctx: *mut sys::llama_context,
         value: bool,
         masked: bool,
     );
-    fn rdma_p2p_llama_get_embeddings_nextn_ith(
+    fn pom_llama_get_embeddings_nextn_ith(
         ctx: *mut sys::llama_context,
         i: std::os::raw::c_int,
     ) -> *mut f32;
@@ -166,10 +166,10 @@ impl MtpDrafter {
         unsafe {
             // Alvo: emite `h` para toda posição do lote (`masked = false`),
             // porque `observe` lê uma linha por posição decodificada.
-            rdma_p2p_llama_set_embeddings_nextn(ctx_tgt, true, false);
+            pom_llama_set_embeddings_nextn(ctx_tgt, true, false);
             // Rascunho: só nas posições com logits (`masked = true`) - são as
             // únicas cujo `h` alimenta o passo seguinte do rascunho.
-            rdma_p2p_llama_set_embeddings_nextn(ctx, true, true);
+            pom_llama_set_embeddings_nextn(ctx, true, true);
         }
 
         tracing::info!(
@@ -250,7 +250,7 @@ impl MtpDrafter {
             ptr::copy_nonoverlapping(self.pending_h.as_ptr(), batch.embd, self.n_embd);
             let mut faltou = None;
             for i in 1..n {
-                let src = rdma_p2p_llama_get_embeddings_nextn_ith(ctx_tgt, (i - 1) as i32);
+                let src = pom_llama_get_embeddings_nextn_ith(ctx_tgt, (i - 1) as i32);
                 if src.is_null() {
                     faltou = Some(i - 1);
                     break;
@@ -276,7 +276,7 @@ impl MtpDrafter {
         self.verify_h.clear();
         self.verify_h.reserve(n * self.n_embd);
         for i in 0..n {
-            let src = unsafe { rdma_p2p_llama_get_embeddings_nextn_ith(ctx_tgt, i as i32) };
+            let src = unsafe { pom_llama_get_embeddings_nextn_ith(ctx_tgt, i as i32) };
             if src.is_null() {
                 self.verify_rows = 0;
                 bail!("llama_get_embeddings_nextn_ith devolveu NULL para i={i}");
@@ -386,7 +386,7 @@ impl MtpDrafter {
         let logits = unsafe { std::slice::from_raw_parts(logits, self.n_vocab) };
         let (id, p) = argmax_with_probability(logits);
 
-        let next_h = unsafe { rdma_p2p_llama_get_embeddings_nextn_ith(self.ctx, 0) };
+        let next_h = unsafe { pom_llama_get_embeddings_nextn_ith(self.ctx, 0) };
         if next_h.is_null() {
             return None;
         }
@@ -448,14 +448,14 @@ mod tests {
     /// Sonda ao vivo: carrega um GGUF **com** bloco `nextn` e exerce o ciclo
     /// inteiro - anexar, `observe` de um prompt, `draft`, `accept`.
     ///
-    /// `#[ignore]` e dirigida por `RDMA_P2P_MTP_MODEL=<caminho.gguf>` porque
+    /// `#[ignore]` e dirigida por `POM_MTP_MODEL=<caminho.gguf>` porque
     /// precisa de um modelo em disco (o de referência é
     /// `unsloth/Qwen3.5-4B-MTP-GGUF`, 33 blocos com `nextn` em `blk.32`) e de
     /// backend de GPU compilado. Rode com:
     ///
     /// ```text
-    /// RDMA_P2P_MTP_MODEL=/caminho/Qwen3.5-4B-Q4_K_M.gguf \
-    ///   cargo test --release --features metal --bin rdma-p2p \
+    /// POM_MTP_MODEL=/caminho/Qwen3.5-4B-Q4_K_M.gguf \
+    ///   cargo test --release --features metal --bin pom \
     ///   mtp::tests::the_nextn_head_drafts_from_a_real_model -- --ignored --nocapture
     /// ```
     ///
@@ -467,8 +467,8 @@ mod tests {
     #[test]
     #[ignore]
     fn the_nextn_head_drafts_from_a_real_model() {
-        let Ok(path) = std::env::var("RDMA_P2P_MTP_MODEL") else {
-            eprintln!("defina RDMA_P2P_MTP_MODEL para rodar esta sonda");
+        let Ok(path) = std::env::var("POM_MTP_MODEL") else {
+            eprintln!("defina POM_MTP_MODEL para rodar esta sonda");
             return;
         };
         let cfg = crate::llm::EngineConfig {

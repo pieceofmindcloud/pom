@@ -1,6 +1,45 @@
+import { readFileSync } from "node:fs";
 import { fileURLToPath, URL } from "node:url";
-import { defineConfig } from "vite";
+import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
+
+/**
+ * `index.html` is the one file the app cannot import from, so the product
+ * identity is injected into it at build time from the same `brand.json` the
+ * binary embeds. Placeholders (`%BRAND_NAME%`, `%BRAND_SLUG%`, ...) keep the
+ * title, the icons and the pre-paint storage keys in one source - renaming the
+ * product must never leave the browser tab announcing the old name.
+ *
+ * `scripts/build-brand.mjs` runs first (npm pre-hooks) and is what copies the
+ * images into `public/brand/`.
+ */
+function brandHtml(): Plugin {
+  // O manifesto **gerado** (`src/brand/brand.json`), não o da raiz: é ele que
+  // tem as URLs com hash de conteúdo que o navegador precisa para não segurar
+  // um ícone velho por um ano.
+  const brand = JSON.parse(
+    readFileSync(fileURLToPath(new URL("./src/brand/brand.json", import.meta.url)), "utf8"),
+  );
+  const icons: Record<string, string> = brand.icons ?? {};
+  const asset = (p?: string) => p ?? "";
+  const values: Record<string, string> = {
+    "%BRAND_NAME%": brand.name,
+    "%BRAND_TAGLINE%": brand.tagline,
+    "%BRAND_SLUG%": brand.slug,
+    "%BRAND_FAVICON%": asset(brand.favicon),
+    "%BRAND_ICON%": asset(icons["512"] ?? brand.mark),
+    "%BRAND_APPLE_ICON%": asset(icons["180"] ?? brand.mark),
+  };
+  return {
+    name: "brand-html",
+    transformIndexHtml(html) {
+      return Object.entries(values).reduce(
+        (out, [token, value]) => out.split(token).join(value),
+        html,
+      );
+    },
+  };
+}
 
 /**
  * Where the browser's API calls are forwarded.
@@ -23,7 +62,7 @@ const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
 const proxied = ["/api", "/v1", "/admin", "/peers", "/health", "/generate"];
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), brandHtml()],
   /**
    * Pinned, and not left to the default, because the default has a silent
    * fallback that hid a real failure for a while.

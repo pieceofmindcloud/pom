@@ -78,7 +78,7 @@ timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
 
 - `Machine { node_id, hostname, mem_free_mb, disk_free_mb, held: Vec<HeldShard> }`.
 - `HeldShard` é uma fatia do conjunto naquela máquina, com `total_layers` como
-  `Option` - `None` é o estado normal de fatia antiga (sem metadata `rdmap2p.*`),
+  `Option` - `None` é o estado normal de fatia antiga (sem metadata `pom.*`),
   e fica `Option` até `model_size` porque "não sei" e "zero" são fatos
   diferentes.
 - `mem_free_mb` é VRAM livre numa máquina com GPU discreta, RAM disponível em
@@ -137,7 +137,7 @@ os dois números de engenharia que derivam de `params` (`prompt_tokens` e
 ### O modelo e seu tamanho
 
 `model_size` resolve o total de camadas do modelo com precedência
-**Declared > Inferred > Unknown**: uma fatia que declara `rdmap2p.original_block_count`
+**Declared > Inferred > Unknown**: uma fatia que declara `pom.original_block_count`
 manda; sem declaração, o total é deduzido do alcance da cobertura no cluster
 inteiro (nunca chute de uma fatia só); sem nada disso, `Unknown`. Isso é o que
 impede o bug de 2026-08-10, quando o plano se dizia completo e todo `apply` morria

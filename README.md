@@ -1,14 +1,14 @@
-# rdma-p2p
+# pom
 
 > Architecture note: this repository is a Cargo workspace. The shipped
-> `rdma-p2p` binary is the `node` package in `crates/node`; public routing
+> `pom` binary is the `node` package in `crates/node`; public routing
 > crates live in `crates/routing-contract` and `crates/routing-base`. The
 > contract extraction is complete, but runtime provider selection remains on
 > the existing node planner while equivalence coverage is expanded. A future
 > enterprise provider is a separate private local plugin, never a dependency of
 > this repository. See `docs/architecture/routing-plugin-contract.md`.
 
-**P2P Distributed LLM Inference with RDMA-sim layer**
+**POM - Piece Of Mind: inferência distribuída de LLM entre máquinas comuns, sem servidor central**
 
 Cada nó aloca uma fatia de RAM, calcula automaticamente quantas camadas do modelo cabem, e se coordena com outros nós via UDP P2P para cobrir o modelo completo.
 
@@ -22,11 +22,11 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 source ~/.cargo/env
 
 git clone <repo>
-cd rdma-p2p
+cd pom
 cargo build --release
 ```
 
-O binário estará em `./target/release/rdma-p2p`.
+O binário estará em `./target/release/pom`.
 
 ---
 
@@ -35,7 +35,7 @@ O binário estará em `./target/release/rdma-p2p`.
 ### Build
 
 ```bash
-docker build -t rdma-p2p .
+docker build -t pom .
 ```
 
 O build usa dois estágios. O builder parte de
@@ -45,7 +45,7 @@ em `apps/frontend/`). A imagem final é `nvidia/cuda:13.0.3-base-ubuntu24.04` e
 fica com `libstdc++6` e `libgomp1` apenas.
 
 Use `scripts/build-docker.sh` para construir: ele lê o commit do host e o passa
-como `ARG RDMA_P2P_BUILD_COMMIT` (o `.dockerignore` corta `.git/` do contexto, então
+como `ARG POM_BUILD_COMMIT` (o `.dockerignore` corta `.git/` do contexto, então
 sem isso o binário carimba `desconhecido` em `/api/ui/node`).
 
 ### Executar
@@ -55,14 +55,14 @@ sem isso o binário carimba `desconhecido` em `/api/ui/node`).
 docker run --rm \
     -p 8080:8080 -p 42777:42777/udp -p 8181:8181 \
     -v ./models:/models \
-    rdma-p2p --model /models/meu-modelo.gguf \
+    pom --model /models/meu-modelo.gguf \
              --gateway --gateway-port 8080 --inference-port 8181
 
 # Nó conectando a bootstrap
 docker run --rm \
     -p 8080:8080 -p 42778:42778/udp -p 8182:8182 \
     -v ./models:/models \
-    rdma-p2p --model /models/shard_16_31.gguf \
+    pom --model /models/shard_16_31.gguf \
              --port 42778 --bootstrap 192.168.1.10:42777 \
              --gateway --gateway-port 8080 --inference-port 8182
 ```
@@ -75,16 +75,16 @@ A interface web fica disponível em `http://localhost:8080/` assim que o contêi
 
 ```bash
 # Ver modelos suportados
-./rdma-p2p --list-models
+./pom --list-models
 
 # Iniciar um nó com 10GB para o modelo gemma3
-./rdma-p2p --model gemma3 --memory 10GB
+./pom --model gemma3 --memory 10GB
 
 # Nó com porta customizada e bootstrap
-./rdma-p2p --model gemma3 --memory 4GB --port 42777 --bootstrap 192.168.1.10:42777
+./pom --model gemma3 --memory 4GB --port 42777 --bootstrap 192.168.1.10:42777
 
 # Nó conectando a bootstrap remoto (internet)
-./rdma-p2p --model llama3:70b --memory 16GB --bootstrap 45.33.32.156:42777
+./pom --model llama3:70b --memory 16GB --bootstrap 45.33.32.156:42777
 ```
 
 ---
@@ -128,7 +128,7 @@ Cada 5 segundos o nó:
 ```
 Cargo.toml                     # workspace e dependências compartilhadas
 crates/
-├── node/                      # pacote que produz o binário rdma-p2p
+├── node/                      # pacote que produz o binário pom
 │   ├── src/main.rs             # CLI e orquestração de inicialização
 │   ├── src/models/             # catálogo, GGUF, perfis e fatiamento
 │   ├── src/network/            # descoberta, identidade e transporte P2P
@@ -143,7 +143,7 @@ apps/frontend/                  # fonte React/Vite; build lido do disco pelo nod
 old/                            # ferramentas Python e scripts legados, fora do runtime suportado
 ```
 
-`cargo build`, `cargo test` e `cargo run --bin rdma-p2p -- <argumentos>` na
+`cargo build`, `cargo test` e `cargo run --bin pom -- <argumentos>` na
 raiz usam `crates/node` como membro padrão do workspace. Para validar todos os
 crates públicos e o nó, use `cargo test --workspace`.
 

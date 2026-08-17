@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Node 1: rdma-p2p auto-starts inference_server.py internamente.
+# Node 1: pom auto-starts inference_server.py internamente.
 MODEL="./models/Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf"
 
-./target/release/rdma-p2p \
+./target/release/pom \
     --model "$MODEL" \
     --memory 15GB \
     --port 42777 \

@@ -35,9 +35,20 @@ Per-file list:
   App router both consume it; the routes themselves are declared in `../App.tsx`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `Section`/`Leaf` render `NAV` with an animated
-  active pill; a section holding the current path stays open. Bottom controls:
-  EN/PT-BR switch, dark/light theme toggle (`../lib/theme`), and the node's
-  `build_commit` from `useNode`.
+  active pill; a section holding the current path stays open. `SidebarBrand` is
+  the header and holds **only the lockup** (`LogoFull variant="band"`), filling
+  the strip edge to edge with a divider under it; the menu below it keeps a 5px
+  top gap so the first item does not touch that line - the hash sits **on the identity** because in
+  a multi-machine cluster "which build is that?" is unanswerable without a
+  shell, and a peer on an old binary looks healthy until inference.
+  `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
+  there now, beside the controls: the bare hash in mono, no "build" label in
+  front of it, with the explanation in a `title` tooltip. `SidebarUtilityControls` shows language as **flags**
+  (`brand.flags[locale]`, from `brand.json`) rather than "EN"/"PT-BR", since a
+  text label only helps someone who already knows what the code means and the
+  target here is whoever opened the panel in the wrong language - the language
+  name stays in `aria-label`/`title`, because a flag is not a language to a
+  screen reader. Plus the dark/light toggle (`../lib/theme`).
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
@@ -83,7 +94,7 @@ Per-file list:
   not offer "Remover" (`RemoveNode` renders only for `serving && group &&
   range`). `cardRange` falls back to `node.config` when the peer has loaded a
   slice it has not announced yet. `UpdateNode` (update+restart, dev-only via
-  `RDMA_P2P_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
+  `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
   render from here now.
 - `AddNodeDialog.tsx` — "Add a machine to a live model" dialog:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
@@ -137,9 +148,14 @@ Per-file list:
   `App.tsx` (the chrome survives a broken screen). Clears on `resetKey` change
   (the route path); `fallback` lets the chrome collapse to a line; retry button
   plus the error message in a `<pre>`.
-- `Logo.tsx` — `LogoMark` (placeholder CODAI mark: three layer bars converging
-  on an output) + `Logo` with wordmark. Callers size it through `size` only;
-  swapping the real brand means replacing the SVG inside `LogoMark`.
+- `Logo.tsx` — `LogoFull` draws the lockup from `brand.logo[theme]`: two arts,
+  one per theme, which is why it needs **no plate behind it** - each theme gets
+  art drawn for its own ground. The dark one is derived from the light one by
+  `scripts/derive-dark-logo.py` (luminance of the flat teal wordmark mirrored,
+  brain illustration untouched) until hand-drawn art exists; replacing
+  `assets/brand/pom-logo-dark.png` is the whole change. `variant` is only about
+  filling: `"card"` pads (setup screen), `"band"` fills edge to edge (the
+  sidebar header, which is the band). `LogoMark` (the real artwork, `<img>` from `/brand/`, served as a static asset because it is a detailed raster shown small) + `Logo` with wordmark. Name, tagline and image URL all come from `lib/brand` (`brand.json` at the repository root), never from literals here; callers size it through `size` only, so sidebar, setup screen and tab icon follow one source. The mark carries its own glow on transparency, so it gets no plate behind it.
 - `MachineIcon.tsx` — `machineKind(system)` classifies a machine from its
   `SystemLoad` (nvidia GPU box, Apple Silicon Mac, Windows, Linux) into a
   label/icon/accent color; `MachineIcon` renders it. Reused by Dashboard,

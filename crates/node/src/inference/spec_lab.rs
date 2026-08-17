@@ -424,7 +424,7 @@ struct Visto {
     tokens: u32,
     partial: bool,
     /// `decode.calls` de cada hop do trace — o número que o captain leu no
-    /// `x_rdma_p2p` e viu zerado nos dois.
+    /// `x_pom` e viu zerado nos dois.
     decode_calls: Vec<u32>,
     /// Quantas vezes cada hop serviu `/v1/step`, visto de dentro dos hops.
     step_calls: Vec<u64>,

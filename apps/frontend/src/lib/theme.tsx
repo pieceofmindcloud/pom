@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
+import { storageKey } from "./brand";
 
 type Theme = "dark" | "light";
 
@@ -18,7 +19,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    localStorage.setItem("codai.theme", theme);
+    localStorage.setItem(storageKey("theme"), theme);
   }, [theme]);
 
   const toggle = useCallback(

@@ -1,3 +1,5 @@
+import { storageKey } from "./brand";
+
 export type CanvasPosition = { left: number; top: number };
 
 export interface DeploymentPeer {
@@ -7,7 +9,7 @@ export interface DeploymentPeer {
   changed_at?: string;
 }
 
-const STORAGE_PREFIX = "codai.network-layout";
+const STORAGE_PREFIX = storageKey("network-layout");
 
 /**
  * Identifies the deployment displayed by this browser. Reconfiguring a node

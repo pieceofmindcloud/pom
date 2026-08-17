@@ -7,7 +7,7 @@ models/
 *.part
 *.log
 *.key
-rdma-p2p.json
+pom.json
 docs/superpowers/
 apps/frontend/node_modules
 apps/frontend/dist*

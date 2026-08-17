@@ -125,7 +125,7 @@ export interface NodeInfo {
   detached?: boolean;
   /** Commit de que o binário foi construído. */
   build_commit: string;
-  /** Este nó aceita atualizar-se pela interface (RDMA_P2P_DEV_UPDATE=1). */
+  /** Este nó aceita atualizar-se pela interface (POM_DEV_UPDATE=1). */
   dev_update: boolean;
   /** Endereço fixado pelo operador. `null` quando nada foi fixado. */
   advertise_addr: string | null;
@@ -481,7 +481,7 @@ export interface DeployCandidate {
   start_layer: number;
   end_layer: number;
   /** What this slice itself declares. `null` for slices cut before
-   *  `split_model.py` started writing `rdmap2p.original_block_count`. */
+   *  `split_model.py` started writing `pom.original_block_count`. */
   total_layers: number | null;
   name: string;
   size_bytes: number;

@@ -24,10 +24,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
   no `Network` via `insert_peer`.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
-  pubkey). Vive em `<project_root>/.rdma-p2p-node.key` (ou `$RDMA_P2P_NODE_KEY`).
+  pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
   dual-stack, gossip, lifecycle de peers, varredura de descoberta.
-- `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_rdmap2p` assinado,
+- `pkarr_node.rs` - publicação/resolução no DHT pkarr: TXT `_pom` assinado,
   `publish`/`resolve_peers`.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
   `/health` e histerese contra troca de rota por ruído.
@@ -109,10 +109,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   duplicava o peer na lista até o timeout e voidava `blocked_nodes` (chaveado
   por node_id). Corrompida, gera nova em vez de parar.
 - `NodeId::from_pubkey` - SHA256 da pubkey; `Display` imprime os primeiros 12.
-- `key_path` / `pkarr_key_path` - `.rdma-p2p-node.key` (identidade no cluster) e
-  `.rdma-p2p.key` (identidade na DHT pkarr), ambas resolvidas contra
-  `config::project_root()`, com override por `$RDMA_P2P_NODE_KEY` e
-  `$RDMA_P2P_PKARR_KEY`. Nenhuma das duas sai do cwd: lançar o binário de outro
+- `key_path` / `pkarr_key_path` - `.pom-node.key` (identidade no cluster) e
+  `.pom.key` (identidade na DHT pkarr), ambas resolvidas contra
+  `config::project_root()`, com override por `$POM_NODE_KEY` e
+  `$POM_PKARR_KEY`. Nenhuma das duas sai do cwd: lançar o binário de outro
   diretório criaria uma segunda identidade.
 
 `route.rs`:
@@ -128,7 +128,7 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   "ainda não medido", e o chamador cai no `inference_url` do plano.
 
 `pkarr_node.rs`:
-- `PkarrNode::publish` - assina TXT `_rdmap2p` (JSON compacto, campos de uma
+- `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
   letra para caber no limite DNS de ~1000 B) e publica no DHT.
 - `resolve_peers`/`resolve_one` - resolve chaves `pk:` em `ResolvedPeer`
   (multiaddr + faixa de camadas + `is_relay`); falha vira `None`, nunca erro.
@@ -139,7 +139,7 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `BitswapCodec` - enquadramento `[4 bytes BE len][JSON]` sobre o
   request/response do libp2p.
 - `bitswap_behaviour` - behaviour request/response para `BSWP_PROTOCOL`
-  (`/rdma-p2p/bitswap/1.0.0`).
+  (`/pom/bitswap/1.0.0`).
 
 ## Ligações
 

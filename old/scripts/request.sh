@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-PROMPT="${1:-Explique em uma frase o que e RDMA.}"
+PROMPT="${1:-Explique em uma frase o que e inferencia distribuida.}"
 GATEWAY="${2:-${GATEWAY:-192.168.100.240}}"
 PORT="${3:-${PORT:-8080}}"
 

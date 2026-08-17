@@ -1,12 +1,12 @@
-# CODAI-SERVER — interface web
+# POM — interface web
 
-Interface administrativa do `rdma-p2p`. **É a interface do produto**: o nó lê o
+Interface administrativa do `pom`. **É a interface do produto**: o nó lê o
 build de produção deste diretório do disco e o serve na porta do gateway (8080
 por padrão), incluindo a tela de configuração inicial. O antigo `web/` foi
 removido.
 
-A marca é só da interface. Crate, binário, config (`rdma-p2p.json`) e rotas
-continuam `rdma-p2p`.
+A marca é só da interface. Crate, binário, config (`pom.json`) e rotas
+continuam `pom`.
 
 **React 18 + TypeScript + Vite + Tailwind**, com `react-router`, `framer-motion`,
 `@tanstack/react-query`, `react-markdown` + `remark-gfm` + `rehype-highlight`,
@@ -27,7 +27,7 @@ npm run build
 
 `config::ui_dist_dir()` decide onde procurar: por padrão
 `<project_root>/apps/frontend/dist` (o mesmo `project_root()` usado por
-`rdma-p2p.json` e `models/`); `RDMA_P2P_UI_DIST` sobrescreve, para um container
+`pom.json` e `models/`); `POM_UI_DIST` sobrescreve, para um container
 ou um layout de disco diferente — é o que a imagem Docker usa, apontando para
 onde o `dist` gerado no build foi copiado.
 
@@ -53,7 +53,7 @@ Vite continua sendo o caminho — ele fala com um nó de verdade por proxy.
 ```bash
 # 1. o backend, na raiz do repo
 cargo build --release
-./target/release/rdma-p2p --no-discovery
+./target/release/pom --no-discovery
 
 # 2. a interface, apontada para ele
 cd apps/frontend
@@ -117,7 +117,7 @@ A regra prática: **mexeu no git com o dev server rodando, reinicie o dev server
 
 ### A porta e a configuração usadas na validação
 
-`rdma-p2p.json` não é versionado. O que subiu durante esta entrega:
+`pom.json` não é versionado. O que subiu durante esta entrega:
 
 ```json
 {
@@ -176,7 +176,7 @@ a cobertura de camadas nem faz a requisição esperar por um hop indisponível.
 
 **API token por nó está ligado de verdade**, não é maquete: os tokens são
 emitidos, listados e revogados em `/admin/api-keys`, ficam em `api_keys` no
-`rdma-p2p.json`, valem como credencial nas rotas `/v1` (`ApiKeyAuth`, `src/auth.rs`),
+`pom.json`, valem como credencial nas rotas `/v1` (`ApiKeyAuth`, `src/auth.rs`),
 e cada requisição atendida é atribuída ao token que a pagou — é isso que a tela
 de Logs mostra. O registro vive **na memória do processo** (`src/reqlog.rs`):
 reiniciar o nó zera o histórico, e só as mais recentes ficam.
@@ -359,7 +359,7 @@ validar e revisar, sem apertar "Implantar" contra as máquinas dele, e sem tocar
 na ksia. Então:
 
 - **Backend real, uma máquina.** Um nó isolado (`--no-discovery`, com
-  `RDMA_P2P_HOME` num diretório temporário) com quatro fatias GGUF de cabeçalho
+  `POM_HOME` num diretório temporário) com quatro fatias GGUF de cabeçalho
   só, sobrepostas de propósito (0-4 / 5-31 e 0-10 / 11-31). É a origem dos
   estados de recusa: "são 2 fatias para 1 máquina", faixa sem máquina, e a
   escolha automática pegando 0-10 + 11-31 entre os quatro cortes.

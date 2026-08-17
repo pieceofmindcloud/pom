@@ -1,5 +1,5 @@
 {
-  "name": "rdma-p2p",
+  "name": "pom",
   "build": {
     "dockerfile": "Dockerfile"
   },

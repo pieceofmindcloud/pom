@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::io;
 use std::time::Duration;
 
-pub const BSWP_PROTOCOL: &str = "/rdma-p2p/bitswap/1.0.0";
+pub const BSWP_PROTOCOL: &str = "/pom/bitswap/1.0.0";
 
 /// Manifest describing a file available for transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]

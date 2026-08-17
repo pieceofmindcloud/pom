@@ -29,7 +29,7 @@ O nome da fatia é a convenção que sustenta tudo:
   a cobertura fecha o modelo.
 
 `total_layers` é `Option` do catálogo ao plano: fatia antiga sem metadata
-`rdmap2p.*` não declara nada, e "não sei" e "zero" são fatos diferentes
+`pom.*` não declara nada, e "não sei" e "zero" são fatos diferentes
 (colapsá-los foi o bug de 2026-08-10, quando um plano "completo" morria em
 `NodeConfig::validate`). O catálogo serve o resultado anterior enquanto revalida
 por trás: `local_catalog` usa `CATALOG_TTL = 20 s` com stale-while-revalidate, e
@@ -41,7 +41,7 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 
 `gguf.rs` lê o GGUF sem carregar pesos:
 
-- `read_info` - só o KV header: arquitetura, `block_count`, `rdmap2p.*`
+- `read_info` - só o KV header: arquitetura, `block_count`, `pom.*`
   (original/total), `shard_range`, `embedding_length`. Quem decide se um
   arquivo é fatia é `catalog::InstalledModel::is_shard`; a cópia que existia em
   `GgufInfo` não tinha chamador e saiu.
@@ -131,7 +131,7 @@ O arquivo de saída é `{base}_{start}_{end}.gguf` em `<shard_dir>/<base>/`
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -
    nunca reimplementando a fórmula do llama.cpp. Modelo comum não ganha a
    chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
-6. Grava `rdmap2p.original_block_count/start_layer/end_layer` no KV - a metadata
+6. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
 7. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
    chamando `on_progress(0..100)`; o progresso é do arquivo, não do trabalho
@@ -178,7 +178,7 @@ nó voltava sem fatia - sumindo do pipeline em silêncio. O outro lado da moeda
 fazia a fatia que não cabe na memória matar o processo antes de carregar, o
 container religar, e a mesma fatia ressuscitar para sempre (`MAX_RESTARTS` é
 contador de memória e morre com o processo). Reprodução E2E em
-`data/rdma-p2p-reinicio-infinito-carga/`.
+`data/pom-reinicio-infinito-carga/`.
 
 ## 7. Estimativa de memória e perfis
 
@@ -221,7 +221,7 @@ números escritos lendo o llama.cpp, não de memória.
   `crates/node/src/models/AGENTS.md` reconhece: "A migração aconteceu e o doc não
   seguiu". O Python (`old/python-inference/split_model.py`) é legado.
 - **DEFEITO ANOTADO: `guess_from_name` inventa camadas e tamanhos**
-  (`crates/node/src/models/model.rs:109`) - fatia antiga sem metadata `rdmap2p.*`
+  (`crates/node/src/models/model.rs:109`) - fatia antiga sem metadata `pom.*`
   não tem como corrigir o total, e o palpite vem da heurística do nome de arquivo
   (qualquer nome contendo `qwen` vira `qwen35` 32/380/700; "9b"/"8b"/"7b" ->
   7b-llm 32/380/700; "3b"/"4b" -> 3b-llm 32/200/400; "1b"/"2b" -> 1b-llm 28/130/300;

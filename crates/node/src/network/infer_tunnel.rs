@@ -20,7 +20,7 @@ use std::io;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 
-pub const INFER_TUNNEL_PROTOCOL: &str = "/rdma-p2p/infer-tunnel/1.0.0";
+pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
 /// A single generic HTTP call, forwarded to the receiving peer's own
 /// loopback inference server (`http://127.0.0.1:<inference_port><path>`)
@@ -507,8 +507,8 @@ mod tests {
     /// ambiente, como procedimento reproduzível.
     ///
     /// ```sh
-    /// RDMA_P2P_TUNNEL_PROBE=/ip6/2804:f30:3:1a6f:96e1:21bd:f074:967/tcp/52777/p2p/12D3KooWRuq6eW5rXSTa87FgrrXrAHdYCGYv3vKuLxtiFn4vfTRM \
-    ///   cargo test -p node --bin rdma-p2p tunnel_reaches_a_live_peer -- --ignored --nocapture
+    /// POM_TUNNEL_PROBE=/ip6/2804:f30:3:1a6f:96e1:21bd:f074:967/tcp/52777/p2p/12D3KooWRuq6eW5rXSTa87FgrrXrAHdYCGYv3vKuLxtiFn4vfTRM \
+    ///   cargo test -p node --bin pom tunnel_reaches_a_live_peer -- --ignored --nocapture
     /// ```
     ///
     /// O multiaddr sai do `libp2p_peer_id` que o peer anuncia mais o endereço
@@ -520,8 +520,8 @@ mod tests {
     async fn tunnel_reaches_a_live_peer() {
         use libp2p::{noise, request_response::Event, swarm::SwarmEvent, tcp, yamux, Multiaddr};
 
-        let Ok(target) = std::env::var("RDMA_P2P_TUNNEL_PROBE") else {
-            panic!("defina RDMA_P2P_TUNNEL_PROBE com o multiaddr do peer");
+        let Ok(target) = std::env::var("POM_TUNNEL_PROBE") else {
+            panic!("defina POM_TUNNEL_PROBE com o multiaddr do peer");
         };
         let addr: Multiaddr = target.parse().expect("multiaddr inválido");
         let peer_id = addr
@@ -531,7 +531,7 @@ mod tests {
                 _ => None,
             })
             .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
-        let path = std::env::var("RDMA_P2P_TUNNEL_PROBE_PATH")
+        let path = std::env::var("POM_TUNNEL_PROBE_PATH")
             .unwrap_or_else(|_| "/v1/step".to_string());
 
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()

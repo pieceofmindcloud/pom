@@ -1,10 +1,10 @@
 """
-Per-node inference server for rdma-p2p distributed pipeline.
+Per-node inference server for pom distributed pipeline.
 
 Uses llama-cpp-python (GGUF backend) for partial forward passes via
 hidden-state threading.
 
-Each peer runs this server alongside the rdma-p2p binary.
+Each peer runs this server alongside the pom binary.
   - First node:   prompt text -> token ids -> layers -> hidden state
   - Middle nodes: hidden state -> layers -> hidden state
   - Last node:    hidden state -> layers -> lm_head -> text
@@ -46,7 +46,7 @@ except ImportError:
 
 # ── App & shared state ────────────────────────────────────────────────────────
 
-app = FastAPI(title="rdma-p2p inference node (llama-cpp-python / GGUF)")
+app = FastAPI(title="pom inference node (llama-cpp-python / GGUF)")
 
 _llama: Optional[Llama] = None
 _args = None
@@ -170,10 +170,10 @@ def _skip_gguf_value(f, vtype: int) -> None:
         raise ValueError(f"Unknown GGUF vtype {vtype}")
 
 
-def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
-    """Parse rdmap2p.* UINT32 KV entries from a GGUF file without loading tensors.
+def _read_gguf_pom_meta(model_path: str) -> dict:
+    """Parse pom.* UINT32 KV entries from a GGUF file without loading tensors.
 
-    Returns a dict with keys like 'rdmap2p.original_block_count'. Called before
+    Returns a dict with keys like 'pom.original_block_count'. Called before
     Llama() so the values are available immediately in /health.
     """
     result: dict = {}
@@ -189,7 +189,7 @@ def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
                 key_len = struct.unpack("<Q", f.read(8))[0]
                 key = f.read(key_len).decode("utf-8")
                 vtype = struct.unpack("<I", f.read(4))[0]
-                if vtype == 4 and key.startswith("rdmap2p."):  # UINT32
+                if vtype == 4 and key.startswith("pom."):  # UINT32
                     result[key] = struct.unpack("<I", f.read(4))[0]
                 # Read model training context to auto-cap n_ctx — phi-4 and other
                 # smaller models fail llama_new_context_with_model when n_ctx
@@ -199,7 +199,7 @@ def _read_gguf_rdmap2p_meta(model_path: str) -> dict:
                 else:
                     _skip_gguf_value(f, vtype)
     except Exception as e:
-        print(f"WARNING: _read_gguf_rdmap2p_meta: {e}", flush=True)
+        print(f"WARNING: _read_gguf_pom_meta: {e}", flush=True)
     return result
 
 
@@ -1282,7 +1282,7 @@ def _serve(app, host: str, port: int) -> None:
 def main():
     global _llama, _args, _n_embd, _n_vocab
 
-    parser = argparse.ArgumentParser(description="rdma-p2p inference node (transformers backend)")
+    parser = argparse.ArgumentParser(description="pom inference node (transformers backend)")
     parser.add_argument("--model",       required=True,
                         help="Path to GGUF model slice")
     parser.add_argument("--start-layer", type=int, default=None,
@@ -1335,17 +1335,17 @@ def main():
     if args.no_thinking:
         args.chat_template = True
 
-    # Read rdmap2p.* metadata from the GGUF file BEFORE the heavy Llama() load
+    # Read pom.* metadata from the GGUF file BEFORE the heavy Llama() load
     # so /health returns original_block_count immediately (Rust polls after 5 s).
-    gguf_meta = _read_gguf_rdmap2p_meta(args.model)
+    gguf_meta = _read_gguf_pom_meta(args.model)
     if args.start_layer is None:
-        v = gguf_meta.get("rdmap2p.original_block_start")
+        v = gguf_meta.get("pom.original_block_start")
         args.start_layer = int(v) if v is not None else 0
     if args.end_layer is None:
-        v = gguf_meta.get("rdmap2p.original_block_end")
+        v = gguf_meta.get("pom.original_block_end")
         args.end_layer = int(v) if v is not None else 31
     args.original_block_count = None
-    v = gguf_meta.get("rdmap2p.original_block_count")
+    v = gguf_meta.get("pom.original_block_count")
     if v is not None:
         args.original_block_count = int(v)
 

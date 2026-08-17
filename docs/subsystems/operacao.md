@@ -34,7 +34,7 @@ medidas em campo.
 ./old/scripts/run-p1.sh
 
 # peer 2 (camadas 16-31):
-ssh root@<peer2> 'cd /caminho/rdma-p2p && ./old/scripts/run-p2.sh'
+ssh root@<peer2> 'cd /caminho/pom && ./old/scripts/run-p2.sh'
 # BOOTSTRAP=<ip-do-peer1>:42777 sobrescreve o endereço do peer 1.
 ```
 
@@ -50,7 +50,7 @@ until curl -sf localhost:8181/health; do sleep 5; done
 ```bash
 curl -s localhost:8080/peers | python3 -m json.tool   # 2 peers, 0-15 e 16-31
 ssh root@<peer2> 'nvidia-smi --query-compute-apps=pid,used_memory --format=csv'
-./old/scripts/request.sh "Explique em uma frase o que e RDMA."
+./old/scripts/request.sh "Explique em uma frase o que e inferencia distribuida."
 # → "source": "pipeline:<id-peer1>→<id-peer2>"
 ```
 
@@ -69,9 +69,9 @@ conferir o offload, veja a VRAM durante o carregamento - a TUI mostra
   `<usuario>` e o acesso é como `root`, rode
   `git config --global --add safe.directory <caminho>`. Repositório privado
   precisa de *deploy key* read-only e remoto `git@github.com:...`.
-- **Shards sem metadata `rdmap2p.*`** (splits antigos) não corrigem
+- **Shards sem metadata `pom.*`** (splits antigos) não corrigem
   `total_layers` via `/health`; o valor cai no palpite de `guess_from_name`.
-  Shards novos (splitter Rust) gravam `rdmap2p.original_block_count` e são a via
+  Shards novos (splitter Rust) gravam `pom.original_block_count` e são a via
   confiável. Quantas camadas o modelo tem é **`Option`, não número**, do catálogo
   até o plano: `catalog.rs` deduz o total da cobertura do conjunto quando a fatia
   não declara (`total_layers_inferred`) e `deploy::model_size` faz o mesmo no
@@ -80,7 +80,7 @@ conferir o offload, veja a VRAM durante o carregamento - a TUI mostra
   ter parado a inferência das máquinas alvo.
 - **A TUI limpa a tela a cada `--refresh` segundos.** Para ver logs, redirecione
   para arquivo (`./old/scripts/run-p1.sh > /tmp/p1.out 2>&1`) e leia de lá.
-- **`pkill -f "target/release/rdma-p2p"` por ssh mata o próprio shell do ssh** -
+- **`pkill -f "target/release/pom"` por ssh mata o próprio shell do ssh** -
   o padrão casa com a linha de comando do `bash -c` remoto, e o ssh volta com
   exit 255 sem ter matado o peer. Use um padrão que não se auto-inclua, ou
   `pgrep -fa` antes para conferir o que vai morrer.
@@ -91,9 +91,9 @@ conferir o offload, veja a VRAM durante o carregamento - a TUI mostra
   `curl -s localhost:8181/health` tem que responder; o servidor expõe
   `/v1/prefill` e `/v1/step` (não há `/openapi.json` - é Rust, não FastAPI).
 - **Nunca lance o binário por caminho absoluto e pronto.** `models/`,
-  `rdma-p2p.json` e `venv/` saem do project root (`utils/config.rs`:
-  `$RDMA_P2P_HOME` → cwd se parecer o projeto → diretório do executável,
-  subindo de `target/release`). Um `ssh host '/caminho/rdma-p2p'` roda em `$HOME`,
+  `pom.json` e `venv/` saem do project root (`utils/config.rs`:
+  `$POM_HOME` → cwd se parecer o projeto → diretório do executável,
+  subindo de `target/release`). Um `ssh host '/caminho/pom'` roda em `$HOME`,
   lê outra config e não acha fatia nenhuma. A linha `Project root: ...` no
   arranque diz qual foi escolhido; confira-a antes de suspeitar do catálogo.
 
@@ -104,21 +104,21 @@ Serve para dar janela grande sem arriscar a RAM da máquina menor. O que se perd
 continuam valendo; tempo de rede, não.
 
 Portas diferentes **não bastam**. A identidade fica em
-`<project_root>/.rdma-p2p-node.key`, então dois processos no mesmo diretório
+`<project_root>/.pom-node.key`, então dois processos no mesmo diretório
 carregam a mesma chave, anunciam o mesmo `node_id` - e o cluster indexa peers por
-`node_id`. O segundo peer precisa de outra *casa*, via `RDMA_P2P_HOME`:
+`node_id`. O segundo peer precisa de outra *casa*, via `POM_HOME`:
 
 ```bash
-B=/caminho/rdma-p2p-b
+B=/caminho/pom-b
 mkdir -p $B && cd $B
-for f in models apps; do ln -s ../rdma-p2p/$f $f; done
+for f in models apps; do ln -s ../pom/$f $f; done
 # a config nao e herdada: sem ela o no sobe em modo setup e nao carrega modelo.
 # copie a do peer A trocando gateway_port, p2p_port e bootstrap_nodes.
-RDMA_P2P_HOME=$B ../rdma-p2p/target/release/rdma-p2p --model ./models/qwen/qwen_16_31.gguf \
+POM_HOME=$B ../pom/target/release/pom --model ./models/qwen/qwen_16_31.gguf \
     --port 42778 --bootstrap 127.0.0.1:42777 --gateway-port 8091 --inference-port 8182
 ```
 
-A UI é lida do disco em `<RDMA_P2P_HOME>/apps/frontend/dist`, daí o symlink de
+A UI é lida do disco em `<POM_HOME>/apps/frontend/dist`, daí o symlink de
 `apps` - sem ele o segundo peer sobe mas responde 500 na interface. Confira com
 `/api/ui/cluster`: dois `node_id` **distintos**.
 
@@ -130,7 +130,7 @@ internet em 2026-08-16: a conexão fecha em ~70 ms e o servidor de inferência d
 peer remoto responde. As sondas ao vivo são
 `infer_tunnel::tests::tunnel_reaches_a_live_peer` e
 `relay::tests::the_tunnel_carries_a_real_frame_to_a_live_peer`, as duas
-`#[ignore]` e dirigidas por `RDMA_P2P_TUNNEL_PROBE`. Elas não disparam na LAN
+`#[ignore]` e dirigidas por `POM_TUNNEL_PROBE`. Elas não disparam na LAN
 saudável.
 
 Duas ressalvas honestas: as máquinas se alcançavam por IPv6 global, então o que

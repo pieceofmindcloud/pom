@@ -1,5 +1,5 @@
 /**
- * First run: the screen a node shows when it has no `rdma-p2p.json` yet.
+ * First run: the screen a node shows when it has no `pom.json` yet.
  *
  * The node serves this from the same bundle as the rest of the panel, so there
  * is one interface to maintain rather than a separate first-run page that drifts.
@@ -15,7 +15,7 @@ import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ArrowRight, Check, Copy, KeyRound, Landmark, Network, Server } from "lucide-react";
 import { api } from "../lib/api";
-import { Logo } from "../components/Logo";
+import { LogoFull } from "../components/Logo";
 import { Button, Field, Footnote, Input, Panel, PanelHeader, Skeleton } from "../components/ui";
 import { useToast } from "../lib/toast";
 import { LanguageSelect, useI18n } from "../i18n/provider";
@@ -87,7 +87,7 @@ export function Setup() {
           transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
           className="mb-8 flex flex-col items-center text-center"
         >
-          <Logo size={48} />
+          <LogoFull width={240} />
           <h1 className="mt-5 font-display text-2xl font-bold tracking-tight text-fg">
             {t("setup.title")}
           </h1>

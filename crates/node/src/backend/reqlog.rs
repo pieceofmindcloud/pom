@@ -81,7 +81,7 @@ pub struct Entry {
     pub entry_node_id: String,
     /// Node ids the generation actually went through, in order.
     pub hops: Vec<String>,
-    /// The same string the API returns as `x_rdma_p2p.source`.
+    /// The same string the API returns as `x_pom.source`.
     pub source: String,
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,

@@ -4,7 +4,7 @@
 //! `<project_root>/apps/frontend/dist`, built independently with
 //! `npm run build` in `apps/frontend`. Nothing here is compiled into the
 //! binary, so editing the interface no longer touches the Rust build: run
-//! `npm run build` (or point `RDMA_P2P_UI_DIST` at a Vite watch build) and
+//! `npm run build` (or point `POM_UI_DIST` at a Vite watch build) and
 //! reload the browser.
 //!
 //! The routing rule is the part worth reading. A single-page app owns paths
@@ -140,7 +140,7 @@ fn missing_bundle(base: &Path) -> Response {
         StatusCode::INTERNAL_SERVER_ERROR,
         format!(
             "A interface não foi encontrada em {}. Rode `npm run build` em apps/frontend \
-             (ou aponte RDMA_P2P_UI_DIST para o bundle).",
+             (ou aponte POM_UI_DIST para o bundle).",
             base.display()
         ),
     )
@@ -176,7 +176,7 @@ mod tests {
     /// path, not just the pure path-joining logic above.
     #[tokio::test]
     async fn serves_files_from_the_bundle_directory() {
-        let dir = std::env::temp_dir().join(format!("rdma-p2p-webapp-test-{}", uuid::Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("pom-webapp-test-{}", uuid::Uuid::new_v4()));
         tokio::fs::create_dir_all(dir.join("assets"))
             .await
             .unwrap();

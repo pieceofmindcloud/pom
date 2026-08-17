@@ -17,23 +17,41 @@ Per-file list:
   (`useCluster`, `useNode`, `useServableModels`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
   connection key by `api`.
-- `Documentation.tsx` - The repository's living documentation, self-contained
-  and build-time embedded: `scripts/build-docs.mjs` copies the folder
-  `AGENTS.md` files, the `docs/subsystems/*.md` READMEs and the root README into
-  `../docs/` (gitignored) plus `manifest.json`, and this screen reads them via
+- `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
+  the top of the navigation column (`?tab=guias|referencia`).
+  **Guides** (`../guides/`) are written for people: ordered pages with SVG
+  diagrams, rendered by `GuideView` from `Block[]` data. **Reference** is the
+  repository's living markdown, written for agents, self-contained and
+  build-time embedded: `scripts/build-docs.mjs` copies the folder `AGENTS.md`
+  files, the `docs/subsystems/*.md` READMEs and the root README into `../docs/`
+  (gitignored) plus `manifest.json`, and this screen reads them via
   `import.meta.glob` + the manifest - no node route, so it renders on any
-  machine serving `dist/`, even one that never had the repo. Layout: tree on
-  the left (root/docs/subsystems/crates grouped by crate/apps/frontend/scripts,
-  each section collapsible), markdown viewer on the right. The selection is a
-  `?doc=<id>` search param, so a document is a shareable address; the search
-  box filters title *and* body across the whole embedded set and replaces the
-  tree with a flat result list while active. The active item carries
-  `aria-pressed`, each leaf an `Open <title>` label, and the sticky tree is
-  capped at the viewport so it never slides under the top bar. Test file
-  `Documentation.test.tsx` covers the contract: default first document, section
-  tree, `?doc=` deep link, search + clear, and the no-results empty state.
-  Loading the embedded set requires `src/docs/` to exist, which `npm test`'s
-  `pretest` hook guarantees.
+  machine serving `dist/`, even one that never had the repo.
+  Three decisions that are not cosmetic:
+  - **The screen is full-bleed** (`App.tsx` lists `/documentacao` alongside `/`
+    in `isFullBleed`) and owns its scrolling: the nav column and the reader
+    scroll independently, each a flex child with `min-h-0`. Without that
+    `min-h-0` the child grows to its content and the overflow never engages -
+    that is exactly how the search results used to run off the screen with no
+    scrollbar.
+  - **No file names in the navigation.** The manifest carries `label` (short
+    human name) and `kind` (`overview` for a folder's `AGENTS.md`, `doc`
+    otherwise). A folder's `AGENTS.md` is that section's own page, so the
+    section *header* opens it - clicking "docs/" shows `docs/AGENTS.md` - and it
+    is never listed as a leaf. `nameOf` never falls back to a file name;
+    `withoutLeadingH1` drops the document's own `# ` title because the reader
+    header already states the subject.
+  - **Collapsing is honest.** The chevron toggles, the label opens the
+    overview, and holding the open document no longer forces a section back
+    open (`collapsed` state, explicit `true` wins).
+  Search filters label, path *and* body, and replaces the tree with a flat
+  result list whose hint is the section name, not the file. Test file
+  `Documentation.test.tsx` covers the contract: guides first (a person must not
+  land on agent markdown), the guide->reference deep link, no `.md` or
+  `AGENTS.md` in the list, section header opens the overview, collapse works
+  while holding the selection, the two scroll containers, `?doc=`/`?guia=` deep
+  links, search + clear, empty state. Loading the embedded set requires
+  `src/docs/` to exist, which `npm test`'s `pretest` hook guarantees.
 - `Dashboard.tsx` — Cluster overview: coverage/machines/model/in-flight stats,
   a graph view ("minima", `ModelNetworkCanvas`) or a details grid ("estendida").
   The details grid lists the **whole network**, not just the pipeline:
@@ -101,7 +119,7 @@ Per-file list:
   `POST /api/transfer/send` (`{to_node_id, path}`); the receiver only ever sees
   an opaque grant, so "any path out" never becomes "any path in". Pre-fills from
   `?path=` and offers a picker built from the local catalog.
-- `Setup.tsx` — First run (no `rdma-p2p.json`): choose Principal (mints key via
+- `Setup.tsx` — First run (no `pom.json`): choose Principal (mints key via
   `GET /api/setup/key`) or Nó (paste key + `ip:port` bootstrap), then
   `POST /api/setup/save`; the node writes config, respawns, and the screen
   reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
@@ -133,7 +151,7 @@ Key logic carriers:
 
 - `Chat.send` (Chat.tsx:469) — the streaming loop: snapshots turns before the
   placeholder reply, streams deltas into `consumeChatDelta` (keeps
-  reasoning/content split), merges `x_rdma_p2p` metrics via `finishChatStream`,
+  reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
 - `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` — the

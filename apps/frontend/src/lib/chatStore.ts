@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getActiveLocale } from "../i18n/locales";
 import type { RequestTrace } from "./chatStream";
+import { storageKey } from "./brand";
 
 export interface ChatMessage {
   id: string;
@@ -25,7 +26,7 @@ export interface ChatMessage {
   content: string;
   /** Set when the answer failed; the turn stays visible with its reason. */
   error?: string;
-  /** `x_rdma_p2p.source`-style hop chain, when the node reported one. */
+  /** `x_pom.source`-style hop chain, when the node reported one. */
   source?: string;
   /** Thinking blocks emitted by models with reasoning enabled. */
   reasoning?: string;
@@ -58,7 +59,7 @@ export interface ChatSession {
 export const turnsOnly = (messages: ChatMessage[]) =>
   messages.filter((m) => m.role === "user" || m.role === "assistant");
 
-const STORAGE = "codai.chat.sessions";
+const STORAGE = storageKey("chat.sessions");
 /** Sessions kept before the oldest is dropped, so storage cannot grow forever. */
 const MAX_SESSIONS = 50;
 

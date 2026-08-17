@@ -1,11 +1,15 @@
-# Web UI (CODAI-SERVER)
+# Web UI
 
-Interface web administrativa do rdma-p2p, um SPA React 18 + TypeScript + Vite
+Interface web administrativa do POM, um SPA React 18 + TypeScript + Vite
 em `apps/frontend/`. É a interface do produto: todo nó serve a UI junto com a
 API na porta do gateway (`--gateway-port`, 8080 por padrão), então abrir
-`http://<peer>:<porta>/` em qualquer máquina mostra o painel daquele nó. A
-marca é só da interface; crate, binário, config (`rdma-p2p.json`) e rotas
-continuam `rdma-p2p`.
+`http://<peer>:<porta>/` em qualquer máquina mostra o painel daquele nó.
+
+O nome e a logo que a tela mostra vêm do `brand.json` da raiz, copiado para o
+bundle por `scripts/build-brand.mjs` - o mesmo arquivo que o binário embute.
+`Logo.tsx` desenha a marca de `/brand/pom-mark.png` e escreve nome e slogan a
+partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
+`brandHtml` do `vite.config.ts`. Nenhum dos dois tem o nome escrito à mão.
 
 ## Como a interface sobe
 
@@ -15,13 +19,13 @@ continuam `rdma-p2p`.
   recarregar o navegador). O comentário no topo de `build.rs` registra a mesma
   separação: build de UI e build Rust são passos independentes.
 - O diretório é decidido por `config::ui_dist_dir()` (`crates/node/src/utils/
-  config.rs`): `$RDMA_P2P_UI_DIST` se preenchida, senão
+  config.rs`): `$POM_UI_DIST` se preenchida, senão
   `<project_root>/apps/frontend/dist`. A imagem Docker usa a variável porque
-  `RDMA_P2P_HOME=/data` não é o `/app` da imagem; dev que guarda o bundle em
+  `POM_HOME=/data` não é o `/app` da imagem; dev que guarda o bundle em
   outro lugar aponta direto nela.
 - Sem `index.html` no diretório o nó sobe normalmente e responde **500** nas
   rotas de UI, com a mensagem dizendo onde procurou e o comando de remédio
-  (`npm run build` ou apontar `RDMA_P2P_UI_DIST`). `dist/` e `dist-release/`
+  (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
   são artefatos locais ignorados pelo git.
 
 ### Roteamento no axum (`webapp.rs`)
@@ -69,13 +73,18 @@ conteúdo `immutable` por 1 ano.
   serviço)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
+- `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
 - `*` -> NotFound
 
 Sidebar e Topbar vivem em `ErrorBoundary` próprio, então uma tela quebrada não
-derruba o menu. O rodapé da Sidebar mostra EN/PT-BR, tema claro/escuro e o
-`build_commit` do nó (de `useNode`). O PipelineRail ainda é renderizado oculto
+derruba o menu. O **cabeçalho** da Sidebar traz só o lockup da marca, numa faixa de borda a
+borda (`LogoFull variant="band"`) fechada por uma linha divisória. O **rodapé**
+traz o idioma em **bandeiras** (`brand.flags`, do `brand.json`) em vez de
+"EN"/"PT-BR" - com o nome do idioma no `aria-label`/`title`, porque bandeira não
+é idioma para leitor de tela -, o `build_commit` do nó (só o hash, em mono, com
+a explicação no tooltip) e o tema claro/escuro. O PipelineRail ainda é renderizado oculto
 no Dashboard (`hidden`, para uma superfície futura).
 
 ## Arquitetura do frontend
@@ -122,7 +131,7 @@ a `connection_key` do cluster, que o `useNode()` guarda em `localStorage`
 `auth.rs`, que também aceita `x-api-key`. A chave de conexão vale como chave de
 API nas rotas `/v1` e como credencial de operador em `/admin/*`. `POST
 /api/setup/key` e `/api/setup/save` **não** estão no router normal de
-propósito: só o modo setup (sem `rdma-p2p.json`) as serve, porque `GET
+propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
 /api/setup/key` rotacionaria a credencial num nó já configurado.
 
 ## Janelas modais: portal e pilha de Esc
@@ -173,6 +182,38 @@ guarda além das falas:
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
 
+## Documentação: dois públicos na mesma rota
+
+`apps/frontend/src/routes/Documentation.tsx`, com as abas em `?tab=`.
+
+- **Guias** (`src/guides/`) - a metade escrita para humanos: páginas ordenadas
+  com diagramas SVG, geradas de dados (`Block[]`, `content.ts`) por
+  `GuideView`. Cinco páginas hoje: o que é a plataforma, o caminho de uma
+  pergunta, do modelo ao cluster servindo, operar e diagnosticar, acesso e
+  exposição. É a aba padrão: um humano não pode aterrissar em
+  `AGENTS.md - crates/routing-base/`. Nenhum número aparece ali sem estar no
+  markdown - quando divergirem, o markdown vence.
+- **Referência** - o markdown vivo do repositório, escrito para agentes,
+  embutido no bundle por `apps/frontend/scripts/build-docs.mjs` (não há rota no
+  nó; a tela lê `manifest.json` + `import.meta.glob`).
+
+Três decisões que não são estética:
+
+- **A tela é de largura total** (`App.tsx` lista `/documentacao` junto de `/`
+  em `isFullBleed`) e rola por dentro: a coluna de navegação e a de leitura são
+  filhos flex com `min-h-0`, cada uma com o próprio scroll. Sem esse `min-h-0`
+  o filho cresce com o conteúdo e o overflow nunca engata - era assim que a
+  busca corria para fora da tela sem barra de rolagem.
+- **Nome de arquivo não aparece na navegação.** O manifesto carrega `label`
+  (nome humano curto) e `kind`: o `AGENTS.md` de uma pasta é a **visão geral
+  daquela seção**, então o cabeçalho da seção é que o abre (clicar em "docs/"
+  mostra `docs/AGENTS.md`) e ele nunca é listado como folha. O leitor também
+  descarta o `# ` do próprio documento, que só repetiria o título do cabeçalho
+  em outra redação.
+- **Recolher funciona.** O chevron alterna, o rótulo abre a visão geral, e a
+  seção que contém o documento aberto não é mais forçada a reabrir - esse era
+  o defeito: categoria que ficava sempre expandida.
+
 ## Fatiar, implantar e transferir na tela
 
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
@@ -206,7 +247,7 @@ entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
   oferece qualquer caminho legível via `POST /api/transfer/send`; o receptor
   só vê uma concessão opaca (`grant`), então "mandar qualquer coisa" nunca
   vira "ler qualquer coisa". O progresso vem dos nós, então recarregar a aba
-  não perde nada. `RDMA_P2P_DEV_AUTO_ACCEPT_TRANSFERS=1` (variável do processo
+  não perde nada. `POM_DEV_AUTO_ACCEPT_TRANSFERS=1` (variável do processo
   receptor, lida no arranque) aceita toda oferta sem clique - só dev.
   Peers da mesma máquina compartilham o hostname, então o destino e a etiqueta
   de disponibilidade levam o começo do `node_id` quando o nome se repete

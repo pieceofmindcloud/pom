@@ -1,7 +1,7 @@
-//! Pkarr-based peer discovery and publishing for rdma-p2p nodes.
+//! Pkarr-based peer discovery and publishing for pom nodes.
 //!
 //! Each node publishes its layer assignment and addresses as a TXT record
-//! under the `_rdmap2p` DNS name in a signed pkarr packet keyed by its
+//! under the `_pom` DNS name in a signed pkarr packet keyed by its
 //! Ed25519 keypair.  Peers can be resolved by looking up their public key.
 
 use anyhow::Result;
@@ -40,7 +40,7 @@ pub struct ResolvedPeer {
 
 // ── Private helper ────────────────────────────────────────────────────────────
 
-/// Compact JSON payload stored in the `_rdmap2p` TXT record.
+/// Compact JSON payload stored in the `_pom` TXT record.
 /// Field names are kept short to stay within the 1000-byte DNS packet limit.
 #[derive(Debug, Serialize, Deserialize)]
 struct TxtPayload {
@@ -127,7 +127,7 @@ impl PkarrNode {
         let json = serde_json::to_string(&payload)?;
 
         let sp = SignedPacket::builder()
-            .txt("_rdmap2p".try_into()?, json.as_str().try_into()?, 300)
+            .txt(crate::brand::dns_record().as_str().try_into()?, json.as_str().try_into()?, 300)
             .sign(&self.keypair)?;
 
         self.client.publish(&sp, None).await?;
@@ -154,9 +154,9 @@ impl PkarrNode {
 // ── Free functions ────────────────────────────────────────────────────────────
 
 /// Parse a [SignedPacket] into a [ResolvedPeer] by reading the first valid
-/// `_rdmap2p` TXT record.
+/// `_pom` TXT record.
 fn parse_signed_packet(sp: &SignedPacket) -> Option<ResolvedPeer> {
-    for rr in sp.resource_records("_rdmap2p") {
+    for rr in sp.resource_records(&crate::brand::dns_record()) {
         if let pkarr::dns::rdata::RData::TXT(txt) = &rr.rdata {
             let raw: Result<String, _> = txt.clone().try_into();
             if let Ok(json) = raw {
@@ -193,7 +193,7 @@ async fn resolve_one(client: &pkarr::Client, key_str: &str) -> Option<ResolvedPe
                 info!("Resolved pkarr peer {}: {}", key_str, peer.multiaddr);
                 Some(peer)
             } else {
-                warn!("No _rdmap2p TXT record for {}", key_str);
+                warn!("No _pom TXT record for {}", key_str);
                 None
             }
         }
@@ -273,9 +273,9 @@ mod tests {
     /// That only holds if the same seed always yields the same `PeerId`.
     #[test]
     fn the_same_pkarr_seed_always_derives_the_same_libp2p_peer_id() {
-        let dir = std::env::temp_dir().join(format!("rdma-pkarr-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("pom-pkarr-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let key_path = dir.join(".rdma-p2p.key");
+        let key_path = dir.join(".pom.key");
 
         let node = PkarrNode::load_or_create(&key_path).expect("create pkarr node");
         let seed = node.secret_key_bytes();

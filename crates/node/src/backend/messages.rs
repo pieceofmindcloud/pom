@@ -411,7 +411,7 @@ async fn blocking_response(
                     },
                     // Not part of the Anthropic schema; kept so the hop chain
                     // that proves distributed execution stays visible.
-                    "x_rdma_p2p": {
+                    "x_pom": {
                         "source": summary.source,
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
@@ -744,8 +744,8 @@ mod tests {
     #[test]
     fn single_user_message_with_no_system_passes_through_unchanged() {
         assert_eq!(
-            render_prompt(None, &[msg("user", "O que e RDMA?")], &[]),
-            "O que e RDMA?"
+            render_prompt(None, &[msg("user", "O que e inferencia distribuida?")], &[]),
+            "O que e inferencia distribuida?"
         );
     }
 

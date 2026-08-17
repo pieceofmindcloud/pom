@@ -1,6 +1,6 @@
 # src/i18n
 
-Two-language UI localization (English and Brazilian Portuguese) for the rdma-p2p
+Two-language UI localization (English and Brazilian Portuguese) for the pom
 panel. All visible strings live here as flat message keys; components consume
 them through `useI18n().t`. The same file also holds a module-level active
 locale used by non-React code (`api.ts`, `chatStore.ts`) and a shim that keeps

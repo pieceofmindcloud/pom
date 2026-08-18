@@ -653,10 +653,32 @@ impl LlmEngine {
             }
         }
 
+        let tp_antes = crate::tp::reduce_count();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
+        }
+        // Coletiva ligada e nenhum reduce no decode inteiro: o op do fork não
+        // entrou no grafo. O rank rodou com meia largura e sem soma nenhuma, e
+        // a resposta é falsa - o modo de falha de 18/08, que não tinha sintoma
+        // além do texto sem sentido.
+        if crate::tp::is_active() && crate::tp::reduce_count() == tp_antes {
+            bail!(
+                "coletiva de tensor parallelism ligada mas nenhum reduce rodou \
+                 neste decode: o op do llama.cpp não entrou no grafo"
+            );
+        }
+        // Coletiva de tensor parallelism: o op roda **dentro** do decode, num
+        // callback `extern "C"` que não tem como devolver erro. Quem falhou
+        // anotou o motivo, e é aqui que ele vira erro da requisição.
+        //
+        // Isto não é zelo: um all-reduce que falha não piora a resposta, ele a
+        // torna falsa. O rank fica com a própria parcial - metade das cabeças e
+        // metade do FFN - e a geração sai plausível e sem sentido, sem nenhum
+        // sinal de erro (18/08). Responder errado é pior que não responder.
+        if let Some(motivo) = crate::tp::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica -
@@ -740,6 +762,11 @@ impl LlmEngine {
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
+        }
+        // Ver a nota gêmea em `decode_tokens`: a coletiva falha por callback e
+        // só pode virar erro aqui fora.
+        if let Some(motivo) = crate::tp::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica,

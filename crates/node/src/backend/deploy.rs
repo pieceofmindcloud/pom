@@ -1752,6 +1752,7 @@ fn tp_identity(
     rank: u32,
     role: &str,
     rank0_url: &str,
+    rank0_node_id: &str,
 ) -> crate::network::TpIdentity {
     crate::network::TpIdentity {
         role: role.into(),
@@ -1759,6 +1760,9 @@ fn tp_identity(
         size,
         rank,
         rank0_url: Some(rank0_url.to_string()),
+        // O certificado da coletiva é pinado por este id; sem ele o cliente
+        // padrão recusa o autoassinado do cluster e o all-reduce falha calado.
+        rank0_node_id: Some(rank0_node_id.to_string()),
     }
 }
 
@@ -1785,6 +1789,7 @@ fn launch_targets(
         })
         .transpose()?;
     let rank0 = rank0_url.as_deref().unwrap_or("");
+    let rank0_id = tp.map(|t| t.primary_node_id.as_str()).unwrap_or("");
 
     let mut targets = Vec::new();
     for step in steps {
@@ -1832,7 +1837,7 @@ fn launch_targets(
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
                 peer_count: None,
-                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0)),
+                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0, rank0_id)),
             });
             continue;
         }
@@ -1861,7 +1866,7 @@ fn launch_targets(
             offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
-            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0)),
+            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0, rank0_id)),
         });
     }
 
@@ -1895,7 +1900,7 @@ fn launch_targets(
                 offload_kqv: head.offload_kqv,
                 peer_index: None,
                 peer_count: None,
-                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", rank0)),
+                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", rank0, rank0_id)),
             });
         }
     }

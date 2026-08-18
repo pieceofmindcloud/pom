@@ -1574,7 +1574,11 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     // grupo só num reinício (o estado do tp.rs é OnceLock, por desenho da v1).
     match &req.tp {
         Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
-            crate::tp::register_tp_reduce(tp.rank, tp.rank0_url.clone().unwrap());
+            crate::tp::register_tp_reduce(
+                tp.rank,
+                tp.rank0_url.clone().unwrap(),
+                tp.rank0_node_id.clone(),
+            );
         }
         _ => crate::tp::unregister_tp_reduce(),
     }
@@ -3266,6 +3270,7 @@ mod tests {
             size: 2,
             rank,
             rank0_url: Some("http://127.0.0.1:8181".into()),
+            rank0_node_id: Some("primary-id".into()),
         };
 
         let primary = req(Some(ident(0, "primary")));

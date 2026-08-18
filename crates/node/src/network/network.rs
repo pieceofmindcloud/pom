@@ -53,6 +53,15 @@ pub struct TpIdentity {
     /// POST /v1/tp/reduce. O deploy preenche para todos os membros do grupo.
     #[serde(default)]
     pub rank0_url: Option<String>,
+    /// `node_id` do primary, que é **o que pina o certificado** do cliente da
+    /// coletiva (`SHA256(pubkey) == node_id`).
+    ///
+    /// Sem isto o `tp.rs` usava um `reqwest::Client::new()` padrão contra um
+    /// `rank0_url` https com certificado autoassinado: todo POST da coletiva
+    /// morria em 13 ms por certificado inválido, o erro era engolido, e a
+    /// parcial seguia como se fosse a soma (18/08).
+    #[serde(default)]
+    pub rank0_node_id: Option<String>,
 }
 
 /// Message types exchanged between nodes

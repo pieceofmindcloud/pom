@@ -447,6 +447,7 @@ mod ipv6_tests {
             rank,
             rank0_url: None,
             rank0_node_id: None,
+            members: Vec::new(),
         });
         p
     }

@@ -62,6 +62,24 @@ pub struct TpIdentity {
     /// parcial seguia como se fosse a soma (18/08).
     #[serde(default)]
     pub rank0_node_id: Option<String>,
+    /// Todos os membros do grupo, **indexados pelo rank** (0 = primary).
+    ///
+    /// É o que permite o rank 0 pôr os workers para rodar o mesmo decode: TP
+    /// exige que todos os ranks executem o mesmo grafo sobre os mesmos tokens
+    /// ao mesmo tempo, e sem esta lista o rank 0 não tem para quem transmitir.
+    /// Sem lockstep as parciais nunca se encontram na barreira e o decode
+    /// trava - o estado de 18/08.
+    #[serde(default)]
+    pub members: Vec<TpMember>,
+}
+
+/// Um membro de um grupo de tensor parallelism.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TpMember {
+    /// Pina o certificado deste membro (`SHA256(pubkey) == node_id`).
+    pub node_id: String,
+    /// Base da URL do servidor de inferência (onde o decode é disparado).
+    pub url: String,
 }
 
 /// Message types exchanged between nodes

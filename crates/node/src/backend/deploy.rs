@@ -1751,19 +1751,55 @@ fn tp_identity(
     group_id: &str,
     rank: u32,
     role: &str,
-    rank0_url: &str,
-    rank0_node_id: &str,
+    members: &[crate::network::TpMember],
 ) -> crate::network::TpIdentity {
+    let rank0 = members.first();
     crate::network::TpIdentity {
         role: role.into(),
         group_id: group_id.into(),
         size,
         rank,
-        rank0_url: Some(rank0_url.to_string()),
+        rank0_url: rank0.map(|m| m.url.clone()),
         // O certificado da coletiva é pinado por este id; sem ele o cliente
         // padrão recusa o autoassinado do cluster e o all-reduce falha calado.
-        rank0_node_id: Some(rank0_node_id.to_string()),
+        rank0_node_id: rank0.map(|m| m.node_id.clone()),
+        // Todo membro recebe a lista inteira: o rank 0 usa para transmitir o
+        // decode, e os demais para saber quem são.
+        members: members.to_vec(),
     }
+}
+
+/// Os membros do grupo TP em ordem de rank (0 = primary), com a URL de
+/// inferência de cada um.
+///
+/// Recusa cedo quem não anuncia porta de inferência: sem ela o rank 0 não teria
+/// como disparar o decode daquele rank, e o grupo travaria na primeira barreira
+/// em vez de falhar aqui.
+fn tp_members(
+    tp: &TpLaunch,
+    machines: &[Machine],
+) -> Result<Vec<crate::network::TpMember>, String> {
+    let de = |node_id: &str| -> Result<crate::network::TpMember, String> {
+        let m = machines
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .ok_or_else(|| format!("{node_id} não está no cluster"))?;
+        let url = m.inference_url.clone().ok_or_else(|| {
+            format!(
+                "não foi possível descobrir a URL de inferência de {} (ele precisa anunciar a porta de inferência)",
+                m.label()
+            )
+        })?;
+        Ok(crate::network::TpMember {
+            node_id: node_id.to_string(),
+            url,
+        })
+    };
+    let mut out = vec![de(&tp.primary_node_id)?];
+    for w in &tp.worker_node_ids {
+        out.push(de(w)?);
+    }
+    Ok(out)
 }
 
 fn launch_targets(
@@ -1788,8 +1824,11 @@ fn launch_targets(
                 })
         })
         .transpose()?;
-    let rank0 = rank0_url.as_deref().unwrap_or("");
-    let rank0_id = tp.map(|t| t.primary_node_id.as_str()).unwrap_or("");
+    let _ = rank0_url;
+    let membros = match tp {
+        Some(t) => tp_members(t, machines)?,
+        None => Vec::new(),
+    };
 
     let mut targets = Vec::new();
     for step in steps {
@@ -1837,7 +1876,7 @@ fn launch_targets(
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
                 peer_count: None,
-                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0, rank0_id)),
+                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
             });
             continue;
         }
@@ -1866,7 +1905,7 @@ fn launch_targets(
             offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
-            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", rank0, rank0_id)),
+            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
         });
     }
 
@@ -1900,7 +1939,7 @@ fn launch_targets(
                 offload_kqv: head.offload_kqv,
                 peer_index: None,
                 peer_count: None,
-                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", rank0, rank0_id)),
+                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
             });
         }
     }
@@ -4277,6 +4316,44 @@ mod tests {
             Some("Bearer chave".to_string()),
             "a checagem chegou sem a chave de operador: {header:?}"
         );
+    }
+
+    /// Os membros saem em ordem de rank, e quem não anuncia porta de inferência
+    /// é recusado **aqui**.
+    ///
+    /// O rank 0 dispara o decode de cada membro por essa URL; um membro sem ela
+    /// travaria o grupo na primeira barreira, que é o pior lugar para descobrir
+    /// o problema.
+    #[test]
+    fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
+        let mut a = whole_machine("a", 900_000, true);
+        a.inference_url = Some("https://a:8181".into());
+        let mut b = whole_machine("b", 900_000, true);
+        b.inference_url = Some("https://b:8181".into());
+        let mut mudo = whole_machine("c", 900_000, true);
+        mudo.inference_url = None;
+
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        // A ordem no cluster não é a ordem dos ranks: o teste embaralha de
+        // propósito, porque quem manda é `worker_node_ids`.
+        let membros = tp_members(&tp, &[b, a]).unwrap();
+        assert_eq!(membros.len(), 2);
+        assert_eq!(membros[0].node_id, "a", "rank 0 é o primary");
+        assert_eq!(membros[1].url, "https://b:8181");
+
+        let com_mudo = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["c".into()],
+        };
+        let mut a2 = whole_machine("a", 900_000, true);
+        a2.inference_url = Some("https://a:8181".into());
+        let erro = tp_members(&com_mudo, &[a2, mudo]).unwrap_err();
+        assert!(erro.contains("URL de inferência"), "{erro}");
     }
 
     /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o

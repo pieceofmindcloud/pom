@@ -509,6 +509,9 @@ struct InferState {
     tp_barrier: crate::collective::ReduceBarrier,
     /// Quantos ranks há no grupo TP (1 = sem TP).
     tp_size: u32,
+    /// Identidade TP deste nó. O rank 0 precisa da lista de membros para pôr
+    /// os workers no mesmo decode; sem isso a barreira nunca fecha.
+    tp: Option<crate::network::TpIdentity>,
 }
 
 type SharedState = Arc<Mutex<InferState>>;
@@ -538,6 +541,7 @@ impl InferState {
             mtp_min_probability: cfg.mtp_min_probability,
             tp_barrier: crate::collective::ReduceBarrier::new(),
             tp_size: cfg.tp.as_ref().map(|t| t.size).unwrap_or(1),
+            tp: cfg.tp.clone(),
         }
     }
 
@@ -973,8 +977,51 @@ async fn handle_rollback(
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
-async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
+
+/// Abre o decode nos **dois** papéis e, no rank 0, põe os workers para rodar o
+/// mesmo lote.
+///
+/// TP só funciona em lockstep: todo rank percorre o mesmo grafo sobre os mesmos
+/// tokens, e as parciais se encontram na barreira. O gateway só fala com o rank
+/// 0 (o worker é excluído do pipeline de propósito), então é aqui que os outros
+/// ranks entram no decode. Sem isto o rank 0 postava a parcial e esperava para
+/// sempre - o travamento de 18/08.
+///
+/// O quadro é repassado byte a byte, com o id do decode no cabeçalho. Quem
+/// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
+/// retransmite, senão o grupo se multiplicaria a cada salto.
+fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &str, body: &Bytes) {
+    let tp = {
+        let s = state.lock().unwrap();
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1) else {
+        return;
+    };
+    if let Some(id) = headers
+        .get(crate::tp::TP_DECODE_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        crate::tp::begin_decode(id);
+        return;
+    }
+    if tp.rank != 0 {
+        // Worker recebendo quadro sem cabeçalho: veio de fora do grupo. Abrir
+        // um decode aqui produziria reduces com id que ninguém mais conhece.
+        return;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    crate::tp::begin_decode(&id);
+    crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
+}
+
+async fn handle_prefill(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
     let processing_started = Instant::now();
+    open_tp_decode(&state, &headers, "/v1/prefill", &body);
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
     // mesmo em qualquer ponto do handler.
     let tls_handshake_ms = last_handshake_ms(&state);
@@ -1525,7 +1572,12 @@ fn prefill_blocking(
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
 
-async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
+async fn handle_step(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
     // mesmo em qualquer ponto do handler.

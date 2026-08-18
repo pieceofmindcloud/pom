@@ -60,6 +60,38 @@ pub fn take_failure() -> Option<String> {
     TP_FAILURE.lock().ok().and_then(|mut f| f.take())
 }
 
+/// Decode em curso: `(id, próxima sequência de reduce)`.
+///
+/// O `barrier_id` **tem que ser o mesmo em todos os ranks** para as parciais se
+/// encontrarem. Ele era um contador por processo, o que só casa enquanto os
+/// processos estiverem perfeitamente alinhados desde o arranque: um worker que
+/// reinicia zera o contador e o grupo nunca mais se encontra - erro que não dá
+/// erro, só trava. Agora o rank 0 gera o id do decode, manda junto do lote, e
+/// os dois lados numeram os reduces daquele decode a partir de zero.
+///
+/// Global porque o `llama_context` não é seguro para uso concorrente e já vive
+/// atrás de um mutex: há no máximo um decode por processo de cada vez.
+static DECODE: std::sync::Mutex<Option<(String, u64)>> = std::sync::Mutex::new(None);
+
+/// Abre um decode: os reduces seguintes pertencem a `id` e recomeçam do zero.
+///
+/// Chamado pelos handlers de `/v1/prefill` e `/v1/step` nos **dois** lados - o
+/// rank 0 com o id que ele sorteou, o worker com o id que recebeu no cabeçalho.
+pub fn begin_decode(id: &str) {
+    if let Ok(mut d) = DECODE.lock() {
+        *d = Some((id.to_string(), 0));
+    }
+}
+
+/// Consome o próximo `barrier_id` deste decode.
+fn next_barrier_id() -> Option<String> {
+    let mut d = DECODE.lock().ok()?;
+    let (id, seq) = d.as_mut()?;
+    let atual = *seq;
+    *seq += 1;
+    Some(format!("{id}#{atual}"))
+}
+
 /// A coletiva está ligada neste processo?
 pub fn is_active() -> bool {
     TP_STATE.get().is_some()
@@ -152,6 +184,12 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     let n = n_bytes / 4;
     let partial = unsafe { std::slice::from_raw_parts(data as *const f32, n).to_vec() };
     let seq = state.counter.fetch_add(1, Ordering::Relaxed);
+    let Some(barrier_id) = next_barrier_id() else {
+        // Reduce fora de um decode conhecido: não há id que case com os outros
+        // ranks, então a soma seria por acaso. Melhor falhar nomeando isso.
+        note_failure("reduce fora de um decode conhecido (begin_decode não foi chamado)".into());
+        return;
+    };
     if seq == 0 {
         // A primeira invocação é a prova de que o op do fork está no grafo.
         // Sem esta linha, "o callback não é chamado" e "o callback falha" têm
@@ -163,7 +201,7 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
             state.rank0_url
         );
     }
-    let barrier_id = seq.to_string();
+
     let sum = tokio::runtime::Handle::current()
         .block_on(post_reduce(state, &barrier_id, partial));
     match sum {
@@ -179,6 +217,86 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         // O buffer continua com a parcial deste rank. Não copiar nada e seguir
         // era o defeito: a parcial passava por soma e a resposta saía errada.
         Err(e) => note_failure(e),
+    }
+}
+
+/// Cabeçalho que marca um quadro como réplica de TP e carrega o id do decode.
+///
+/// Presente = "você é um worker executando o decode que o rank 0 está
+/// executando agora". Ausente = quadro normal, vindo do gateway.
+pub const TP_DECODE_HEADER: &str = "x-pom-tp-decode";
+
+/// Põe os workers para rodar **o mesmo decode**, com o mesmo lote.
+///
+/// Esta é a metade que faltava do tensor parallelism. O gateway só fala com o
+/// rank 0 (o worker é excluído do pipeline de propósito), então sem esta
+/// transmissão o rank 0 postava a parcial e ficava esperando na barreira uma
+/// contribuição que ninguém ia mandar: o decode travava. TP exige que todos os
+/// ranks percorram o mesmo grafo sobre os mesmos tokens.
+///
+/// O corpo repassado é **o quadro original, byte a byte** - o worker roda o
+/// mesmo handler e produz a mesma sequência de reduces. A resposta dele é
+/// descartada: quem amostra o token é o rank 0, e com a cabeça de saída
+/// replicada os dois chegam aos mesmos logits depois das somas.
+///
+/// Dispara em paralelo e **não espera**: quem espera é a barreira, no momento
+/// certo. Esperar aqui seria serializar o que precisa ser simultâneo.
+pub fn broadcast_decode(
+    members: &[crate::network::TpMember],
+    rota: &str,
+    decode_id: &str,
+    body: Vec<u8>,
+) {
+    for membro in members.iter().skip(1) {
+        let url = format!("{}{rota}", membro.url.trim_end_matches('/'));
+        let cliente = match peer_client_for(&membro.node_id) {
+            Some(c) => c,
+            None => continue,
+        };
+        let corpo = body.clone();
+        let id = decode_id.to_string();
+        let quem = membro.node_id.clone();
+        tokio::spawn(async move {
+            let r = cliente
+                .post(&url)
+                .header(TP_DECODE_HEADER, &id)
+                .body(corpo)
+                .send()
+                .await;
+            match r {
+                Ok(resp) if resp.status().is_success() => {}
+                Ok(resp) => note_failure(format!(
+                    "rank {} recusou o decode {id}: HTTP {}",
+                    &quem[..12.min(quem.len())],
+                    resp.status()
+                )),
+                Err(e) => note_failure(format!(
+                    "não deu para pôr o rank {} no decode {id}: {e}",
+                    &quem[..12.min(quem.len())]
+                )),
+            }
+        });
+    }
+}
+
+/// Cliente pinado no membro, ou `None` (com a falha anotada) se não der.
+fn peer_client_for(node_id: &str) -> Option<reqwest::Client> {
+    if !crate::peer_client::tls_ativo() {
+        return Some(reqwest::Client::new());
+    }
+    match crate::tls::client_config(node_id) {
+        Ok(cfg) => reqwest::Client::builder()
+            .use_preconfigured_tls(cfg)
+            .build()
+            .ok()
+            .or_else(|| {
+                note_failure(format!("cliente TLS para {node_id} não subiu"));
+                None
+            }),
+        Err(e) => {
+            note_failure(format!("certificado de {node_id} não pinou: {e}"));
+            None
+        }
     }
 }
 
@@ -208,6 +326,30 @@ async fn post_reduce(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// O `barrier_id` é função do decode, não do relógio de cada processo.
+    ///
+    /// Dois ranks que abrem o **mesmo** decode numeram os reduces igual, então
+    /// as parciais se encontram. Enquanto foi um contador por processo, bastava
+    /// um worker reiniciar para o grupo nunca mais se encontrar - e isso não
+    /// dava erro, só travava.
+    #[test]
+    fn the_barrier_id_comes_from_the_decode_so_every_rank_agrees() {
+        begin_decode("sessao-x:chunk-0");
+        let rank0: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
+
+        // Outro processo, mesmo decode: a numeração recomeça do zero.
+        begin_decode("sessao-x:chunk-0");
+        let rank1: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
+
+        assert_eq!(rank0, rank1, "os ranks têm que concordar nos ids");
+        assert_eq!(rank0[0], "sessao-x:chunk-0#0");
+        assert_eq!(rank0[2], "sessao-x:chunk-0#2");
+
+        // Decode seguinte não reaproveita id do anterior.
+        begin_decode("sessao-x:chunk-1");
+        assert_eq!(next_barrier_id().unwrap(), "sessao-x:chunk-1#0");
+    }
 
     /// A falha da coletiva é guardada, consumida uma vez, e a **primeira**
     /// vence: as seguintes são consequência dela.

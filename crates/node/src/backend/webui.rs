@@ -3271,6 +3271,7 @@ mod tests {
             rank,
             rank0_url: Some("http://127.0.0.1:8181".into()),
             rank0_node_id: Some("primary-id".into()),
+            members: Vec::new(),
         };
 
         let primary = req(Some(ident(0, "primary")));

@@ -104,7 +104,11 @@ inclusive, porque `role` (`primary`/`worker`) endereça a coletiva e não decide
 quem corta. Enquanto essa condição foi `role == "worker"` (`tp_shard_to_extract`,
 17/08), o primary caía no ramo `skip_split` e servia o GGUF inteiro: largura
 cheia de um lado do all-reduce, meia largura do outro, e o `_tp0of2.gguf` nunca
-existia no disco. O nó também anuncia o papel via
+existia no disco. A `TpIdentity` carrega ainda `members` - todos os ranks em
+ordem, com `node_id` e URL de inferência -, porque **o rank 0 precisa pôr os
+workers no mesmo decode**: TP só funciona em lockstep, e o gateway fala só com o
+rank 0. Membro sem porta de inferência anunciada é recusa no plano
+(`tp_members`), não travamento na primeira barreira. O nó também anuncia o papel via
 `Network::set_tp` e registra a coletiva (`register_tp_reduce`). Ver
 `docs/subsystems/fatiamento.md` (seção do shard por tensor) e
 `docs/subsystems/rede-p2p.md`.

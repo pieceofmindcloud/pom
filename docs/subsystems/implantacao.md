@@ -99,8 +99,13 @@ peer quando ele existe e só fala em binário antigo quando o corpo não explica
 nada.
 
 O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
-faz o worker extrair o shard por `plan::extract_tp_shard`, anunciar o papel via
-`Network::set_tp` e registrar a coletiva (`register_tp_reduce`). Ver
+faz **cada rank** extrair o próprio shard por `plan::extract_tp_shard` - o rank 0
+inclusive, porque `role` (`primary`/`worker`) endereça a coletiva e não decide
+quem corta. Enquanto essa condição foi `role == "worker"` (`tp_shard_to_extract`,
+17/08), o primary caía no ramo `skip_split` e servia o GGUF inteiro: largura
+cheia de um lado do all-reduce, meia largura do outro, e o `_tp0of2.gguf` nunca
+existia no disco. O nó também anuncia o papel via
+`Network::set_tp` e registra a coletiva (`register_tp_reduce`). Ver
 `docs/subsystems/fatiamento.md` (seção do shard por tensor) e
 `docs/subsystems/rede-p2p.md`.
 

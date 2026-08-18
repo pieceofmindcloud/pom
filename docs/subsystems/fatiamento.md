@@ -155,9 +155,24 @@ A classificação é por nome (`tp_role`), estilo Megatron:
 - **Coluna** (split por `ne[1]`, a dimensão de saída; fatia contígua, sem
   redução): `attn_q/k/v.weight`, `ffn_gate/up.weight`.
 - **Linha** (split por `ne[0]`, a dimensão de entrada contígua; soma parcial a
-  ser all-reduced): `attn_output.weight`, `ffn_down.weight`, `output.weight`.
+  ser all-reduced): `attn_output.weight`, `ffn_down.weight`. Só vale para
+  tensor cuja **entrada já chega particionada** - estes dois consomem a saída
+  dos "coluna" do mesmo bloco.
 - **Replicado** (igual em todos os ranks): `*_norm.weight`, `token_embd.weight`,
-  rope/pos_embd.
+  rope/pos_embd e a cabeça de saída `output.weight`.
+
+A cabeça esteve em "linha" e era um defeito: a entrada dela é a saída de
+`output_norm.weight`, que é replicado, então o oculto que chega nela tem largura
+cheia (`n_embd`) e nunca é particionado. Cortá-la por `ne[0]` produzia uma
+cabeça esperando `n_embd/size` de entrada - largura que não existe em ponto
+nenhum do grafo - e o llama.cpp recusava o load do shard:
+`check_tensor_dims: tensor 'output.weight' has wrong shape; expected 4096,
+128256, got 2048, 128256` (Llama-3.1-8B-Q4_K_M, 17/08). `validate_tensor_parallel`
+não podia pegar isso: ela só confere se a dimensão **divide**, e 4096/2 divide.
+Cortar a cabeça por vocabulário (`ne[1]`) seria a alternativa clássica, mas
+exigiria um all-gather de logits - a coletiva do fork é um reduce - e reescrever
+o vocabulário por rank, o que quebraria o tokenizer. Replicar custa memória e é
+correto; `token_embd.weight` tem o mesmo formato e já era replicada.
 - **Recusa** (não shardável com segurança, v1): tensores 3D de MoE
   (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
   com `token_embd` (weight tying).

@@ -1182,8 +1182,9 @@ pub struct ApplyRequest {
     #[serde(default)]
     pub primary: bool,
     /// Identidade de tensor parallelism deste nó (caminho C). `None` = nó sem
-    /// TP. Um worker extrai o próprio shard de tensor; um primary anuncia o
-    /// grupo e serve o modelo normalmente.
+    /// TP. Presente, **todo** rank extrai o próprio shard de tensor - o rank 0
+    /// inclusive. O `role` só diz quem hospeda a coletiva (`rank0_url`); ver
+    /// `tp_shard_to_extract`.
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
     /// Set when the source is already a shard (or covers the whole model) and
@@ -1430,9 +1431,21 @@ async fn apply(
     Json(json!({ "job_id": id })).into_response()
 }
 
+/// Qual shard de tensor este apply tem que extrair, se algum.
+///
+/// **Todo** rank de um grupo tensor-parallel extrai o próprio, o rank 0
+/// inclusive. O `role` (`primary`/`worker`) diz quem hospeda a coletiva
+/// (`rank0_url`), **não** quem fatia - e confundir as duas coisas foi o defeito
+/// de 17/08: a condição era `role == "worker"`, então o primary caía no ramo
+/// `skip_split` e servia o GGUF inteiro, rodando atenção e FFN em largura cheia
+/// contra workers em meia largura. O `_tp0of2.gguf` nunca chegava a existir no
+/// disco, e o `_tp1of2.gguf` do worker era a única metade do grupo.
+fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity> {
+    req.tp.as_ref()
+}
+
 async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
-    let model_path = if req.tp.as_ref().is_some_and(|t| t.role == "worker") {
-        let tp = req.tp.as_ref().expect("tp.role == worker");
+    let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
         set_job(
             job_id,
             "running",
@@ -3223,6 +3236,55 @@ mod advertise_addr_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Num grupo tensor-parallel o rank 0 fatia igual aos outros.
+    ///
+    /// Enquanto a decisão foi `role == "worker"`, o primary servia o GGUF
+    /// inteiro: largura cheia de um lado, meia largura do outro, e o
+    /// `_tp0of2.gguf` nunca existia. O `role` endereça a coletiva, não decide
+    /// quem corta.
+    #[test]
+    fn every_rank_of_a_tp_group_extracts_its_own_shard() {
+        let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
+            source_model_path: "/m/whole.gguf".into(),
+            base_name: "whole".into(),
+            model_label: None,
+            start_layer: 0,
+            end_layer: 31,
+            total_layers: 32,
+            peer_count: 1,
+            peer_index: 0,
+            primary: true,
+            tp,
+            skip_split: true,
+            merge: None,
+            params: RuntimeParams::default(),
+        };
+        let ident = |rank: u32, role: &str| crate::network::TpIdentity {
+            role: role.into(),
+            group_id: "g".into(),
+            size: 2,
+            rank,
+            rank0_url: Some("http://127.0.0.1:8181".into()),
+        };
+
+        let primary = req(Some(ident(0, "primary")));
+        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
+        assert_eq!(escolhido.rank, 0);
+        assert_eq!(
+            plan::tp_shard_filename("whole", escolhido.rank, escolhido.size),
+            "whole_tp0of2.gguf",
+            "o arquivo que faltava no disco"
+        );
+
+        let worker = req(Some(ident(1, "worker")));
+        assert_eq!(tp_shard_to_extract(&worker).unwrap().rank, 1);
+
+        assert!(
+            tp_shard_to_extract(&req(None)).is_none(),
+            "nó sem TP não fatia por tensor"
+        );
+    }
 
     /// A rota escolhida tem que chegar a interface: sem ela, "por onde este
     /// salto vai" so se responde com shell na maquina.

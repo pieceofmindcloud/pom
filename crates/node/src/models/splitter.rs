@@ -681,9 +681,33 @@ enum TpRole {
     /// contígua; a saída já nasce particionada, sem redução.
     Column,
     /// Split pela dimensão de entrada (ne[0], a contígua): projeção de saída
-    /// da atenção, MLP down e a cabeça de saída. Soma parcial a ser reduzida.
+    /// da atenção e MLP down. Soma parcial a ser reduzida.
+    ///
+    /// Só vale para tensor cuja **entrada já chega particionada**: estes dois
+    /// consomem a saída dos `Column` (`attn_q/k/v`, `ffn_gate/up`) do mesmo
+    /// bloco. Um tensor que recebe o oculto inteiro não pode ser `Row` - ver a
+    /// nota da cabeça de saída em `Shared`.
     Row,
-    /// Replicado igual em todos os ranks: norms, token_embd, rope.
+    /// Replicado igual em todos os ranks: norms, token_embd, rope e a cabeça
+    /// de saída (`output.weight`).
+    ///
+    /// A cabeça esteve em `Row` e era um defeito: a entrada dela é a saída de
+    /// `output_norm.weight`, que é `Shared`, então o oculto que chega nela é
+    /// **inteiro** (`n_embd`), nunca particionado. Cortá-la por `ne[0]` gerava
+    /// uma cabeça esperando `n_embd/size` de entrada, largura que não existe em
+    /// ponto nenhum do grafo, e o llama.cpp recusava o load:
+    /// `check_tensor_dims: tensor 'output.weight' has wrong shape; expected
+    /// 4096, 128256, got 2048, 128256` (Llama-3.1-8B-Q4_K_M, 17/08).
+    /// `validate_tensor_parallel` não podia pegar isso: ela só confere se a
+    /// dimensão divide, e 4096/2 divide.
+    ///
+    /// A alternativa clássica é cortar a cabeça por **vocabulário** (`ne[1]`) e
+    /// juntar os logits com um all-gather. Não cabe na v1: a coletiva do fork é
+    /// um reduce (soma), não um gather, e o llama.cpp confere `output.weight`
+    /// contra `n_vocab` - cortar ali exigiria reescrever o vocabulário por rank
+    /// e quebraria o tokenizer. Replicar custa memória e é correto;
+    /// `token_embd.weight` tem o mesmo formato e já é replicada pelo mesmo
+    /// motivo.
     Shared,
     /// Não shardável com segurança (MoE 3D, nome não reconhecido).
     Unsupported,
@@ -699,9 +723,10 @@ fn tp_role(name: &str) -> TpRole {
         "attn_q.weight" | "attn_k.weight" | "attn_v.weight" | "ffn_gate.weight" | "ffn_up.weight" => {
             TpRole::Column
         }
-        "attn_output.weight" | "ffn_down.weight" | "output.weight" => TpRole::Row,
+        "attn_output.weight" | "ffn_down.weight" => TpRole::Row,
         "attn_norm.weight" | "attn_norm.bias" | "ffn_norm.weight" | "ffn_norm.bias"
-        | "output_norm.weight" | "output_norm.bias" | "token_embd.weight" => TpRole::Shared,
+        | "output_norm.weight" | "output_norm.bias" | "token_embd.weight"
+        | "output.weight" => TpRole::Shared,
         t if t.contains("rope") || t.contains("pos_embd") || t.contains("_norm.") => TpRole::Shared,
         _ => TpRole::Unsupported,
     }
@@ -1547,6 +1572,15 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
             T_F32,
             f32v(&data),
         ));
+        // Um tensor `Row` de verdade (entrada já particionada pelos Column do
+        // mesmo bloco). Sem ele o fixture não cobre o corte por ne[0]: a cabeça
+        // de saída era o único Row aqui, e ela passou a ser replicada.
+        tensors.push((
+            format!("blk.{i}.ffn_down.weight"),
+            vec![n, n],
+            T_F32,
+            f32v(&data),
+        ));
     }
     tensors.push(("output_norm.weight".into(), vec![n], T_F32, f32v(&[2.0; 4])));
     tensors.push(("output.weight".into(), vec![n, n], T_F32, f32v(&[3.0; 16])));
@@ -1956,9 +1990,13 @@ mod tests {
             vec![
                 "token_embd.weight",
                 "blk.0.attn_q.weight",
+                "blk.0.ffn_down.weight",
                 "blk.1.attn_q.weight",
+                "blk.1.ffn_down.weight",
                 "blk.2.attn_q.weight",
+                "blk.2.ffn_down.weight",
                 "blk.3.attn_q.weight",
+                "blk.3.ffn_down.weight",
                 "output_norm.weight",
                 "output.weight",
             ],
@@ -2259,7 +2297,11 @@ mod tests {
         assert_eq!(tp_role("blk.3.ffn_gate.weight"), TpRole::Column);
         assert_eq!(tp_role("blk.0.attn_output.weight"), TpRole::Row);
         assert_eq!(tp_role("blk.0.ffn_down.weight"), TpRole::Row);
-        assert_eq!(tp_role("output.weight"), TpRole::Row);
+        // A cabeça de saída recebe o oculto **inteiro** (a entrada dela é
+        // `output_norm`, que é Shared), então ela não pode ser Row: cortá-la
+        // por ne[0] fazia o llama.cpp recusar o load com
+        // `'output.weight' has wrong shape; expected 4096, got 2048`.
+        assert_eq!(tp_role("output.weight"), TpRole::Shared);
         assert_eq!(tp_role("token_embd.weight"), TpRole::Shared);
         assert_eq!(tp_role("blk.0.attn_norm.weight"), TpRole::Shared);
         assert_eq!(tp_role("output_norm.weight"), TpRole::Shared);
@@ -2297,10 +2339,12 @@ mod tests {
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (0..8).map(|j| j as f32).collect::<Vec<_>>());
 
-        // Linha: ne[0] 4 -> 2; dados uniformes 3.0.
+        // A cabeça é replicada inteira: o oculto que chega nela vem de
+        // `output_norm` (Shared) e tem largura cheia. Cortar ne[0] aqui fazia o
+        // llama.cpp recusar o load do shard.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
-        assert_eq!(dims, vec![2, 4]);
-        assert_eq!(data, vec![3.0; 8]);
+        assert_eq!(dims, vec![4, 4]);
+        assert_eq!(data, vec![3.0; 16]);
     }
 
     #[test]
@@ -2318,10 +2362,15 @@ mod tests {
         assert_eq!(dims, vec![4, 2]);
         assert_eq!(data, (8..16).map(|j| j as f32).collect::<Vec<_>>());
 
-        // Linha: a segunda metade de ne[0] de cada linha (dados uniformes).
+        // A cabeça é replicada: todo rank calcula os logits a partir do oculto
+        // já reduzido, então ela é idêntica à do rank 0 e à do fonte.
         let (dims, data) = read_shard_tensor(&out, "output.weight");
-        assert_eq!(dims, vec![2, 4]);
-        assert_eq!(data, vec![3.0; 8]);
+        assert_eq!(dims, vec![4, 4]);
+        assert_eq!(data, vec![3.0; 16]);
+
+        // Linha de verdade: entrada já particionada pelos Column do bloco.
+        let (dims, _) = read_shard_tensor(&out, "blk.0.ffn_down.weight");
+        assert_eq!(dims[0], 2, "ffn_down continua cortada por ne[0]");
     }
 
     #[test]

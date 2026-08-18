@@ -15,8 +15,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   teste que roda em qualquer sistema.
 - `infer_tunnel.rs` - protocolo request/response que carrega uma chamada HTTP
   de inferência pelo enxame libp2p, como alternativa quando o HTTP direto não
-  alcança o peer. `serve_loopback` é o lado de dentro: repassa para o próprio
-  servidor de inferência em `127.0.0.1:<inference_port>`.
+  alcança o peer. `TunnelRequest` leva caminho, corpo e cabeçalhos;
+  `serve_loopback` é o lado de dentro e repassa tudo para o próprio servidor
+  de inferência em `127.0.0.1:<inference_port>`.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
@@ -73,7 +74,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   assignment, para que nó configurado pela UI ainda seja visível.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
-  (`None` = nó sem TP). `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
+  túnel libp2p para o fallback entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
   `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
   workers da cadeia.
 

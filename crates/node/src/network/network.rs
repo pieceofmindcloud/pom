@@ -80,6 +80,12 @@ pub struct TpMember {
     pub node_id: String,
     /// Base da URL do servidor de inferência (onde o decode é disparado).
     pub url: String,
+    /// PeerId usado pelo fallback de transporte libp2p.
+    #[serde(default)]
+    pub libp2p_peer_id: Option<String>,
+    /// O membro anunciou que seu swarm atende o túnel de inferência.
+    #[serde(default)]
+    pub supports_tunnel: bool,
 }
 
 /// Message types exchanged between nodes

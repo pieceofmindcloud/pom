@@ -152,6 +152,10 @@ behind an auth extractor.
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
+  O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
+  máquina; `tp_members` transfere esses dados para cada rank, permitindo que
+  `broadcast_to` e o reduce usem o túnel quando o HTTPS direto entre sites não
+  tem rota.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).

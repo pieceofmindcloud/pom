@@ -30,6 +30,10 @@ pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 pub struct TunnelRequest {
     pub path: String,
     pub body: Vec<u8>,
+    /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
+    /// (por exemplo, a barreira do reduce TP).
+    #[serde(default)]
+    pub headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -270,12 +274,14 @@ pub async fn serve_loopback(
     request: TunnelRequest,
 ) -> TunnelResponse {
     let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
-    let sent = http
+    let mut request_builder = http
         .post(&url)
         .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-        .body(request.body)
-        .send()
-        .await;
+        .body(request.body);
+    for (name, value) in request.headers {
+        request_builder = request_builder.header(name, value);
+    }
+    let sent = request_builder.send().await;
 
     match sent {
         Ok(resp) => {
@@ -311,6 +317,7 @@ mod tests {
         let req = TunnelRequest {
             path: "/v1/prefill".to_string(),
             body: vec![1, 2, 3, 4, 5],
+            headers: Vec::new(),
         };
 
         let mut buf = Vec::new();
@@ -364,6 +371,7 @@ mod tests {
         let req = TunnelRequest {
             path: "/health".to_string(),
             body: vec![],
+            headers: Vec::new(),
         };
 
         let mut buf = Vec::new();
@@ -445,6 +453,7 @@ mod tests {
             TunnelRequest {
                 path: "/v1/step".to_string(),
                 body: b"the request body".to_vec(),
+                headers: Vec::new(),
             },
         )
         .await;
@@ -464,6 +473,7 @@ mod tests {
             TunnelRequest {
                 path: "/v1/step".to_string(),
                 body: vec![],
+                headers: Vec::new(),
             },
         )
         .await;
@@ -491,6 +501,7 @@ mod tests {
             TunnelRequest {
                 path: "/v1/step".to_string(),
                 body: vec![],
+                headers: Vec::new(),
             },
         )
         .await;
@@ -555,6 +566,7 @@ mod tests {
             TunnelRequest {
                 path: path.clone(),
                 body: Vec::new(),
+                headers: Vec::new(),
             },
         );
 

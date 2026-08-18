@@ -279,6 +279,10 @@ struct Machine {
     gateway_url: Option<String>,
     /// URL do servidor de inferência do peer (rank 0 de um grupo TP).
     inference_url: Option<String>,
+    /// Identidade e capacidade do transporte alternativo do servidor de
+    /// inferência, preservadas para o grupo TP.
+    libp2p_peer_id: Option<String>,
+    supports_tunnel: bool,
     /// Memory the weights would have to fit in: free VRAM on a machine with a
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
@@ -388,6 +392,11 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                 node_id: peer.node_id.clone(),
                 gateway_url: peer.gateway_url(),
                 inference_url: peer.inference_url(),
+                libp2p_peer_id: peer.libp2p_peer_id.clone(),
+                supports_tunnel: peer
+                    .inference_frame_capabilities
+                    .iter()
+                    .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
                 hostname: if peer.hostname.is_empty() && is_self {
                     body.get("hostname")
                         .and_then(|h| h.as_str())
@@ -1793,6 +1802,8 @@ fn tp_members(
         Ok(crate::network::TpMember {
             node_id: node_id.to_string(),
             url,
+            libp2p_peer_id: m.libp2p_peer_id.clone(),
+            supports_tunnel: m.supports_tunnel,
         })
     };
     let mut out = vec![de(&tp.primary_node_id)?];
@@ -3143,6 +3154,8 @@ mod tests {
                 hostname: s.id.to_string(),
                 gateway_url: None,
                 inference_url: None,
+                libp2p_peer_id: None,
+                supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
                 held: s
@@ -3932,6 +3945,8 @@ mod tests {
             hostname: id.to_string(),
             gateway_url: Some(format!("http://{id}:8080")),
             inference_url: Some(format!("http://{id}:8181")),
+            libp2p_peer_id: None,
+            supports_tunnel: false,
             mem_free_mb,
             disk_free_mb: 500_000,
             held: if has {
@@ -4292,6 +4307,8 @@ mod tests {
             hostname: "ksia".into(),
             gateway_url: Some(format!("http://127.0.0.1:{port}")),
             inference_url: Some(format!("http://127.0.0.1:{port}")),
+            libp2p_peer_id: None,
+            supports_tunnel: false,
             mem_free_mb: 900_000,
             disk_free_mb: 900_000,
             held: vec![HeldShard {

@@ -11,9 +11,9 @@ rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
-(`inference_server.py` de `old/python-inference/` é legado). Nada aqui fala
-com peers: `next_hops` chega pronto do `routing/pipeline.rs` e este diretório
-executa a cadeia que o planejador montou.
+(`inference_server.py` de `old/python-inference/` é legado). Os caminhos
+normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
+controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
 
 ## Arquivos
 
@@ -86,6 +86,13 @@ executa a cadeia que o planejador montou.
   ~5 MB por reduce num prefill de 100 tokens - 64 vezes por decode - e estourava
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
+
+  `relay::send_bytes_or_tunnel` tenta primeiro o HTTPS direto e, em falha de
+  transporte ou timeout, repete o POST pelo `infer_tunnel` quando o membro
+  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. `TpMember` carrega
+  essa identidade e a capability para o `broadcast_to` do decode e para o
+  reduce no primary. O `TunnelRequest` leva também os cabeçalhos, para que a
+  barreira e o rank sejam preservados no salto pela internet.
 
   O ciclo de vida da sessão da réplica é comandado pelo rank 0:
   `/v1/session/release` é repassado aos membros (`replicate_session_call`),

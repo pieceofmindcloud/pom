@@ -1574,10 +1574,13 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     // grupo só num reinício (o estado do tp.rs é OnceLock, por desenho da v1).
     match &req.tp {
         Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
+            let rank0 = tp.members.first();
             crate::tp::register_tp_reduce(
                 tp.rank,
                 tp.rank0_url.clone().unwrap(),
                 tp.rank0_node_id.clone(),
+                rank0.and_then(|m| m.libp2p_peer_id.clone()),
+                rank0.is_some_and(|m| m.supports_tunnel),
             );
         }
         _ => crate::tp::unregister_tp_reduce(),

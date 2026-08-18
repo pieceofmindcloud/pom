@@ -18,12 +18,14 @@ use std::sync::Arc;
 pub const TP_BARRIER_HEADER: &str = "x-pom-tp-barrier";
 pub const TP_RANK_HEADER: &str = "x-pom-tp-rank";
 
-
-
 struct TpState {
     rank: u32,
     /// URL do primary (rank 0) da coletiva. Todo rank POSTa para cá.
     rank0_url: String,
+    /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
+    /// direta entre as máquinas.
+    rank0_peer_id: Option<String>,
+    rank0_supports_tunnel: bool,
     /// Cliente **pinado no `node_id` do primary**, montado uma vez no registro.
     ///
     /// A coletiva usava `reqwest::Client::new()`, que valida o certificado pela
@@ -161,8 +163,13 @@ fn note_failure(motivo: String) {
 /// Liga a coletiva TP deste processo e registra o callback no llama.cpp.
 ///
 /// Chamado pelo apply quando o nó é primary/worker de um grupo (size > 1).
-/// V1: o estado é fixado uma vez por processo; trocar o grupo exige reiniciar.
-pub fn register_tp_reduce(rank: u32, rank0_url: String, rank0_node_id: Option<String>) {
+pub fn register_tp_reduce(
+    rank: u32,
+    rank0_url: String,
+    rank0_node_id: Option<String>,
+    rank0_peer_id: Option<String>,
+    rank0_supports_tunnel: bool,
+) {
     // Cliente da coletiva: pinado quando o cluster está em TLS, simples quando
     // não está. Falhar aqui é melhor que descobrir no meio do primeiro decode.
     let client = match (crate::peer_client::tls_ativo(), rank0_node_id.as_deref()) {
@@ -194,6 +201,8 @@ pub fn register_tp_reduce(rank: u32, rank0_url: String, rank0_node_id: Option<St
     let state = Arc::new(TpState {
         rank,
         rank0_url,
+        rank0_peer_id,
+        rank0_supports_tunnel,
         client,
         counter: AtomicU64::new(0),
     });
@@ -256,7 +265,12 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     }
 
     let sum = tokio::runtime::Handle::current()
-        .block_on(post_reduce(state, &barrier_id, partial));
+        .block_on(post_reduce(
+            state,
+            &barrier_id,
+            partial,
+            crate::infer_tunnel::tunnel_sender(),
+        ));
     match sum {
         Ok(sum) if sum.len() == n => unsafe {
             std::ptr::copy_nonoverlapping(sum.as_ptr(), data as *mut f32, n);
@@ -326,34 +340,34 @@ pub fn broadcast_to(
         let ct = content_type;
         let id = decode_id.to_string();
         let quem = membro.node_id.clone();
+        let peer_id = membro
+            .libp2p_peer_id
+            .as_deref()
+            .and_then(|id| id.parse().ok());
+        let supports_tunnel = membro.supports_tunnel;
+        let tunnel = crate::infer_tunnel::tunnel_sender();
         tokio::spawn(async move {
-            let mut req = cliente.post(&url).header(TP_DECODE_HEADER, &id);
+            let mut headers = vec![(TP_DECODE_HEADER.to_string(), id.clone())];
             if let Some(ct) = ct {
-                req = req.header("content-type", ct);
+                headers.push(("content-type".to_string(), ct.to_string()));
             }
-            let r = req.body(corpo).send().await;
-            match r {
-                Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => {
-                    // O corpo é a explicação do próprio worker ("sessão
-                    // desconhecida", "chunk fora de ordem", ...). Reportar só o
-                    // status obriga quem depura a adivinhar - foi o que custou
-                    // a manhã de 17/08 com a checagem de shard.
-                    let status = resp.status();
-                    let motivo = resp
-                        .text()
-                        .await
-                        .unwrap_or_else(|e| format!("(corpo ilegível: {e})"));
-                    note_failure(format!(
-                        "rank {} recusou o decode {id}: HTTP {status} - {}",
-                        &quem[..12.min(quem.len())],
-                        motivo.trim()
-                    ))
-                }
-                Err(e) => note_failure(format!(
+            let result = crate::relay::send_bytes_or_tunnel(
+                &cliente,
+                &url,
+                "",
+                corpo,
+                headers,
+                tunnel,
+                peer_id,
+                supports_tunnel,
+                &quem,
+            )
+            .await;
+            if let Err(e) = result {
+                note_failure(format!(
                     "não deu para pôr o rank {} no decode {id}: {e}",
                     &quem[..12.min(quem.len())]
-                )),
+                ));
             }
         });
     }
@@ -384,6 +398,7 @@ async fn post_reduce(
     state: &Arc<TpState>,
     barrier_id: &str,
     data: Vec<f32>,
+    tunnel: Option<&crate::infer_tunnel::TunnelOutboundSender>,
 ) -> Result<Vec<f32>, String> {
     // f32 cru, little-endian. JSON custava ~12 bytes por float de 4: um prefill
     // de 100 tokens dava ~5 MB por reduce e estourava o limite de corpo (413),
@@ -394,29 +409,31 @@ async fn post_reduce(
     }
     let esperado = data.len();
 
-    let resp = state
-        .client
-        .post(format!("{}/v1/tp/reduce", state.rank0_url))
-        .header(TP_BARRIER_HEADER, barrier_id)
-        .header(TP_RANK_HEADER, state.rank.to_string())
-        .header("content-type", "application/octet-stream")
-        .body(corpo)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let motivo = resp.text().await.unwrap_or_default();
-        return Err(format!(
-            "POST /v1/tp/reduce respondeu {status}{}",
-            if motivo.trim().is_empty() {
-                String::new()
-            } else {
-                format!(" - {}", motivo.trim())
-            }
-        ));
-    }
-    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    let headers = vec![
+        (TP_BARRIER_HEADER.to_string(), barrier_id.to_string()),
+        (TP_RANK_HEADER.to_string(), state.rank.to_string()),
+        (
+            "content-type".to_string(),
+            "application/octet-stream".to_string(),
+        ),
+    ];
+    let response = crate::relay::send_bytes_or_tunnel(
+        &state.client,
+        &state.rank0_url,
+        "/v1/tp/reduce",
+        corpo,
+        headers,
+        tunnel,
+        state
+            .rank0_peer_id
+            .as_deref()
+            .and_then(|id| id.parse().ok()),
+        state.rank0_supports_tunnel,
+        "primary TP",
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let bytes = response.body;
     if bytes.len() != esperado * 4 {
         return Err(format!(
             "soma veio com {} bytes, esperado {}",
@@ -476,6 +493,8 @@ mod tests {
             1,
             "https://127.0.0.1:9/".into(),
             Some("um-node-id-qualquer".into()),
+            None,
+            false,
         );
         begin_replica_decode("decode-do-grupo");
         let _ = next_barrier_id();
@@ -544,6 +563,7 @@ mod tests {
     }
     use crate::collective::ReduceBarrier;
     use axum::{routing::post, Router};
+    use tokio::sync::mpsc;
 
     /// Trava que serializa os testes que mexem no estado GLOBAL da coletiva
     /// (`TP_STATE`, `DECODE`, `REPLICA`, `TP_FAILURE`).
@@ -587,15 +607,67 @@ mod tests {
                 let state = Arc::new(TpState {
                     rank: rank as u32,
                     rank0_url: url.clone(),
+                    rank0_peer_id: None,
+                    rank0_supports_tunnel: false,
                     client: reqwest::Client::new(),
                     counter: AtomicU64::new(0),
                 });
-                tokio::spawn(async move { post_reduce(&state, "b", data).await })
+                tokio::spawn(async move { post_reduce(&state, "b", data, None).await })
             })
             .collect();
 
         for h in handles {
             assert_eq!(h.await.unwrap().expect("reduce"), esperado);
         }
+    }
+
+    #[tokio::test]
+    async fn reduce_uses_the_tunnel_when_the_primary_http_endpoint_is_unreachable() {
+        let peer_id = libp2p::PeerId::random();
+        let (tunnel, mut received) = mpsc::channel::<crate::infer_tunnel::TunnelOutbound>(1);
+        let receiver = tokio::spawn(async move {
+            let outbound = received.recv().await.expect("tunnel request");
+            assert_eq!(outbound.peer_id, peer_id);
+            assert_eq!(outbound.request.path, "/v1/tp/reduce");
+            assert_eq!(
+                &outbound.request.headers[..2],
+                &[
+                    (TP_BARRIER_HEADER.to_string(), "b".to_string()),
+                    (TP_RANK_HEADER.to_string(), "1".to_string()),
+                ]
+            );
+            let values: Vec<f32> = outbound
+                .request
+                .body
+                .chunks_exact(4)
+                .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                .collect();
+            assert_eq!(values, [1.0, 2.0]);
+            outbound
+                .reply
+                .send(Ok(crate::infer_tunnel::TunnelResponse {
+                    status: 200,
+                    body: [3.0f32, 4.0]
+                        .into_iter()
+                        .flat_map(f32::to_le_bytes)
+                        .collect(),
+                }))
+                .expect("reply");
+        });
+
+        let state = Arc::new(TpState {
+            rank: 1,
+            rank0_url: "http://127.0.0.1:1".into(),
+            rank0_peer_id: Some(peer_id.to_string()),
+            rank0_supports_tunnel: true,
+            client: reqwest::Client::new(),
+            counter: AtomicU64::new(0),
+        });
+        let result = post_reduce(&state, "b", vec![1.0, 2.0], Some(&tunnel))
+            .await
+            .expect("tunnel reduce");
+
+        assert_eq!(result, [3.0, 4.0]);
+        receiver.await.expect("receiver");
     }
 }

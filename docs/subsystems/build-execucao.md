@@ -43,7 +43,11 @@ cargo test               # testes do nó
 - **Features**: `cuda`/`metal` (default vazio) repassadas a `llama-cpp-sys-2`,
   que compila o GGML nativo com CUDA ou Metal. Ex.: `cargo build --release
   --features cuda`. São usadas pelo `Dockerfile` e pelo devupdate
-  (`POM_BUILD_FEATURES`).
+  (`POM_BUILD_FEATURES`). Nos builds CUDA, CUDA Graphs ficam desligados por
+  padrão para evitar a reserva adicional de VRAM que pode falhar no
+  `cudaGraphLaunch` mesmo depois do warmup. Para habilitar esse recurso,
+  somente quando houver VRAM livre comprovada, use
+  `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
 
 ## Identidade do produto (`brand.json`)
 
@@ -228,6 +232,7 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_DEV_AUTO_ACCEPT_TRANSFERS` | `=1` faz o nó **receptor** aceitar toda oferta de transferência sem clique. Só desenvolvimento; lida uma vez no arranque. O remetente não pode pedi-la. |
 | `POM_DEV_UPDATE` | `=1` liga o portão de "Atualizar e reiniciar" no card do peer (`devupdate.rs`). Por processo, nunca na config. |
 | `POM_BUILD_FEATURES` | Features com que a máquina compila no devupdate (`cuda`/`metal`); sem ela a ksia perde a GPU no primeiro clique. |
+| `POM_CUDA_GRAPHS` | `=1`, `true`, `yes` ou `on` habilita CUDA Graphs no build CUDA. O padrão é desligado para reduzir o risco de OOM no lançamento do grafo. É uma opção de compilação, então exige reconstruir o binário. |
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |
 

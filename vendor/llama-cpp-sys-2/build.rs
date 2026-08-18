@@ -8,6 +8,15 @@ use cmake::Config;
 use glob::glob;
 use walkdir::DirEntry;
 
+fn cuda_graphs_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
 enum WindowsVariant {
     Msvc,
     Other,
@@ -987,6 +996,14 @@ fn main() {
     if cfg!(feature = "cuda") {
         config.define("GGML_CUDA", "ON");
         config.define("GGML_CUDA_NCCL", "OFF");
+        // CUDA Graphs reserve extra driver state and can fail at graph launch
+        // after the normal warmup already succeeded. That is fatal in the
+        // fork's CUDA error path and is especially easy to hit when `--fit`
+        // intentionally fills a GPU. Keep the safe path as the default; this
+        // opt-in is for operators who have verified spare VRAM on their GPU.
+        println!("cargo:rerun-if-env-changed=POM_CUDA_GRAPHS");
+        let graphs = cuda_graphs_enabled(env::var("POM_CUDA_GRAPHS").ok().as_deref());
+        config.define("GGML_CUDA_GRAPHS", if graphs { "ON" } else { "OFF" });
 
         if cfg!(feature = "cuda-no-vmm") {
             config.define("GGML_CUDA_NO_VMM", "ON");
@@ -1431,5 +1448,19 @@ fn main() {
                 std::fs::hard_link(asset.clone(), dst).unwrap();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cuda_graphs_enabled;
+
+    #[test]
+    fn cuda_graphs_are_opt_in() {
+        assert!(!cuda_graphs_enabled(None));
+        assert!(!cuda_graphs_enabled(Some("0")));
+        assert!(!cuda_graphs_enabled(Some("off")));
+        assert!(cuda_graphs_enabled(Some("1")));
+        assert!(cuda_graphs_enabled(Some(" On ")));
     }
 }

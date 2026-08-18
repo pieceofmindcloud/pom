@@ -11,7 +11,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - Binário único: `pom` em `src/main.rs`.
 - Features `cuda`/`metal` repassadas a `llama-cpp-sys-2` (compilação do GGML com
   GPU). Usadas por `scripts/build-docker.sh`/`POM_BUILD_FEATURES` no
-  devupdate.
+  devupdate. O build CUDA mantém CUDA Graphs desligado por padrão; habilitar
+  com `POM_CUDA_GRAPHS=1` exige reconstruir o binário e VRAM livre adicional.
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `tokio` full, `clap` 4 (derive),

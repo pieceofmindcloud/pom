@@ -21,7 +21,9 @@ import type { DeployPlan, DeployStep } from "../lib/types";
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
-    get: vi.fn(),
+    get: vi.fn((url: string) =>
+      url === "/api/ui/jobs" ? Promise.resolve({ jobs: [] }) : undefined,
+    ),
     post: (...args: unknown[]) => post(...args),
   },
   getConnectionKey: () => "",
@@ -121,6 +123,7 @@ function planOutOfLayerOrder(): DeployPlan {
       prefill_chunk_tokens: 512,
       n_gpu_layers: 0,
       offload_kqv: true,
+      fit_memory: true,
     } as DeployPlan["params"],
     prompt_tokens: 3840,
     chunk_tokens: 512,
@@ -131,6 +134,7 @@ function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
+  client.setQueryData(keys.jobs, { jobs: [] });
   client.setQueryData(keys.clusterModels, {
     peers: [
       {

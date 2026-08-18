@@ -1711,6 +1711,13 @@ export function DeployModel() {
                             the machines table where the machine is. */}
                         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
                           <Switch
+                            checked={!isTp && (eff.fit_memory ?? true)}
+                            onChange={(v) => setParams({ ...eff, fit_memory: v })}
+                            disabled={isTp}
+                            label={t("deploy.fitMemory")}
+                            hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
+                          />
+                          <Switch
                             checked={eff.no_thinking ?? true}
                             onChange={(v) => setParams({ ...eff, no_thinking: v })}
                             label={t("deploy.noThinking")}

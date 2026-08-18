@@ -730,6 +730,7 @@ async fn main() -> Result<()> {
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             offload_kqv: !args.kv_cache_ram,
+            fit_memory: true,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
             prefill_chunk_tokens: args.prefill_chunk_tokens,

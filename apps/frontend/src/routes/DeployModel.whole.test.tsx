@@ -23,7 +23,9 @@ import type { DeployPlan, RuntimeParams } from "../lib/types";
 const post = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
-    get: vi.fn(),
+    get: vi.fn((url: string) =>
+      url === "/api/ui/jobs" ? Promise.resolve({ jobs: [] }) : undefined,
+    ),
     post: (...args: unknown[]) => post(...args),
   },
   getConnectionKey: () => "",
@@ -106,6 +108,7 @@ function wholePlan(target = "ksia"): DeployPlan {
       prefill_chunk_tokens: 512,
       n_gpu_layers: 0,
       offload_kqv: true,
+      fit_memory: true,
       speculative_decoding_enabled: false,
       speculative_k: 4,
       speculative_lookup_window: 3,
@@ -133,6 +136,7 @@ function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
+  client.setQueryData(keys.jobs, { jobs: [] });
   client.setQueryData(keys.clusterModels, {
     peers: [
       {
@@ -338,6 +342,23 @@ describe("DeployModel · modelo inteiro", () => {
     });
     expect(screen.queryByText("Entra")).toBeTruthy();
   });
+
+  it("permite ligar e desligar o ajuste automático de memória", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    const toggle = await screen.findByRole("checkbox", {
+      name: "Ajustar à memória disponível",
+    });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+
+    fireEvent.click(toggle);
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as { params: RuntimeParams };
+      expect(last.params.fit_memory).toBe(false);
+    });
+  });
 });
 
 describe("DeployModel · MTP", () => {
@@ -358,6 +379,7 @@ describe("DeployModel · MTP", () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, refetchInterval: false } },
     });
+    client.setQueryData(keys.jobs, { jobs: [] });
     client.setQueryData(keys.clusterModels, {
       peers: [
         {
@@ -448,6 +470,7 @@ describe("DeployModel · MTP", () => {
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false, refetchInterval: false } },
     });
+    client.setQueryData(keys.jobs, { jobs: [] });
     client.setQueryData(keys.clusterModels, {
       peers: [
         {

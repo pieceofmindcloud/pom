@@ -156,6 +156,12 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
   - contexto, batch e pedaço decidem o orçamento de prompt que o gateway cobra, e
   a amostragem só roda no último peer.
+- **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
+  padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
+  antes da carga e pode reduzir as camadas GPU para evitar OOM. Um
+  `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
+  Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
+  o fit nativo não suporta `split-mode tensor`.
 - **Uma fatia que não existe em máquina nenhuma** -> `blocked` ("a fatia L{}-{}
   não existe em máquina nenhuma do cluster"). `plan.blocked` e `steps` vazio são
   os dois recusos de 400 do `deploy`.
@@ -311,7 +317,8 @@ ninguém cobre - e o planejador recusa pipeline com buraco, então a tela avisa.
 
 ## 9. O que a tela mostra
 
-- **Ajustes sempre abertos, à direita** - os onze números que governam a
+- **Ajustes sempre abertos, à direita** - os doze números e interruptores que
+  governam a
   implantação ficam visíveis junto da escolha de máquinas; escolher máquinas com
   eles escondidos é escolher às cegas.
 - **Alternativas** - cada faixa mostra toda máquina possível como alvo com o

@@ -14,7 +14,7 @@ cuda = ["llama-cpp-sys-2/cuda"]
 metal = ["llama-cpp-sys-2/metal"]
 
 [dependencies]
-llama-cpp-sys-2 = { version = "0.1.154", default-features = false }
+llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common"] }
 half = "2"
 socket2 = "0.5"
 tokio = { version = "1", features = ["full"] }

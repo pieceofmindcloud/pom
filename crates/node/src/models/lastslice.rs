@@ -302,6 +302,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             n_batch: 512,
             max_sessions: 1,
             prefill_chunk_tokens: 512,

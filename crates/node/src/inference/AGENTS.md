@@ -174,9 +174,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
 `llm.rs`:
 - `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, max_sessions). Se a criação do contexto falha com o KV na GPU,
-  tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de peso
-  na GPU e deixando o KV cache na RAM. O valor efetivo aparece em `/health`.
+  offload_kqv, fit_memory, max_sessions). Com `fit_memory=true` e o padrão de
+  camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
+  carregar os pesos. O plano preserva `tensor_split` e `tensor_buft_overrides`
+  quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
+  GPU, tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de
+  peso na GPU e deixando o KV cache na RAM. `/health` mostra se o fit foi
+  aplicado e as camadas efetivas.
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
   divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
   com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.

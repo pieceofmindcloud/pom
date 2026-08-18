@@ -241,6 +241,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
@@ -653,6 +654,7 @@ pub async fn run(
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
         offload_kqv: cfg.offload_kqv,
+        fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         n_batch: cfg.n_batch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
         n_threads: 0,
@@ -870,6 +872,8 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
+        "fit_memory_applied": s.engine.fit_memory_applied(),
+        "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "inference_frame_capabilities": caps,
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
         // `--ctx-shift` de referência do llama.cpp. Não decide mais se a

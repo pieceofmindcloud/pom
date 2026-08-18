@@ -474,6 +474,7 @@ mod tests {
         let cfg = crate::llm::EngineConfig {
             n_ctx: 4096,
             offload_kqv: true,
+            fit_memory: false,
             n_batch: 512,
             n_gpu_layers: 99,
             n_threads: 0,

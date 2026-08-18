@@ -86,6 +86,7 @@ export interface NodeConfig {
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
+  fit_memory: boolean;
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
@@ -514,6 +515,7 @@ export interface RuntimeParams {
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
+  fit_memory: boolean;
   n_batch: number;
   max_new_tokens: number;
   max_sessions: number;

@@ -48,7 +48,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
-- `DeploySelection`, `DeployStep`, `DeployPlan`, `RuntimeParams`, `DeployCandidate`, `DeployMachine` - deploy screen shapes; `DeployStep.parts` carries merged-slice steps, `primary` marks whoever holds layer 0.
+- `DeploySelection`, `DeployStep`, `DeployPlan`, `RuntimeParams`, `DeployCandidate`, `DeployMachine` - deploy screen shapes; `DeployStep.parts` carries merged-slice steps, `primary` marks whoever holds layer 0. `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `PlannedShard` / `SplitPlan` - size- and budget-driven slicing plans.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.

@@ -1007,6 +1007,11 @@ pub struct RuntimeParams {
     pub n_ctx: u32,
     #[serde(default = "d_true")]
     pub offload_kqv: bool,
+    /// Deixa o `common_fit_params` do llama.cpp ajustar a alocação à memória
+    /// livre. No TP o runtime desliga esta opção, porque o fit nativo não
+    /// suporta `split-mode tensor`.
+    #[serde(default = "d_true")]
+    pub fit_memory: bool,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
@@ -1109,6 +1114,7 @@ impl Default for RuntimeParams {
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
+            fit_memory: d_true(),
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
@@ -1141,6 +1147,7 @@ impl From<&NodeConfig> for RuntimeParams {
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
+            fit_memory: c.fit_memory,
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
@@ -1549,6 +1556,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         n_gpu_layers: req.params.n_gpu_layers,
         n_ctx: req.params.n_ctx,
         offload_kqv: req.params.offload_kqv,
+        fit_memory: req.params.fit_memory && req.tp.is_none(),
         n_batch: req.params.n_batch,
         max_new_tokens: req.params.max_new_tokens,
         max_sessions: req.params.max_sessions,
@@ -3392,16 +3400,20 @@ mod tests {
         assert_eq!(p.n_batch, 512);
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
+        assert!(p.fit_memory);
     }
 
     #[test]
     fn params_accept_partial_overrides() {
         let p: RuntimeParams =
-            serde_json::from_str(r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false}"#)
+            serde_json::from_str(
+                r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false}"#,
+            )
                 .unwrap();
         assert_eq!(p.n_ctx, 250000);
         assert!(!p.no_thinking);
         assert!(!p.offload_kqv);
+        assert!(!p.fit_memory);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
     }
 

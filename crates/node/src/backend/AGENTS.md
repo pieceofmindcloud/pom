@@ -162,6 +162,10 @@ behind an auth extractor.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).
+- `deploy.rs` - `RuntimeParams.fit_memory` fica ligado por padrão em shards e
+  modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
+  `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
+  parallelism, que não suporta o fit automático em `split-mode tensor`.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

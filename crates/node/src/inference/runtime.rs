@@ -55,6 +55,9 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
+    #[serde(default = "default_fit_memory")]
+    pub fit_memory: bool,
     pub n_batch: u32,
     /// Concurrent generations; the context is split between them.
     #[serde(default = "default_max_sessions")]
@@ -114,6 +117,10 @@ fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
 }
 fn default_offload_kqv() -> bool {
+    true
+}
+
+fn default_fit_memory() -> bool {
     true
 }
 fn default_speculative_k() -> u32 {
@@ -971,6 +978,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,

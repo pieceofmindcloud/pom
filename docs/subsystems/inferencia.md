@@ -45,6 +45,16 @@ mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
 pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
 modelo entre máquinas.
 
+Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
+fica ligado por padrão. Antes da carga real, a aplicação chama o
+`common_fit_params` do llama.cpp, que pode reduzir `n_gpu_layers` para caber na
+memória disponível e preserva o `n_ctx` solicitado quando ele foi definido
+explicitamente. O `/health` expõe `fit_memory_applied` e
+`n_gpu_layers_effective`. Um `n_gpu_layers` diferente do padrão `99` é uma
+escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
+suporta tensor parallelism; o planner e o runtime normalizam essa opção para
+desligada no modo TP. O fallback do KV continua ativo depois do fit.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

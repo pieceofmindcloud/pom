@@ -93,7 +93,10 @@ Per-file list:
 - `DeployModel.tsx` — the slice shape: picks a slice set (`group`), edits
   which ranges go to which machine (swaps on collision, merge toggle for
   adjacent ranges on one machine), reorders by swapping machines, tunes the
-  eleven cluster-wide runtime knobs plus per-machine `n_gpu_layers`/`offload_kqv`.
+  twelve cluster-wide runtime knobs plus per-machine `n_gpu_layers`/`offload_kqv`.
+  `fit_memory` is on by default for shards and whole-model deployment, and the
+  screen disables it for tensor parallelism because llama.cpp cannot auto-fit
+  `split-mode tensor`.
   Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
   the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
   a job shown through `useJobs`. Restores the last deploy from localStorage via

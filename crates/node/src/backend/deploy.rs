@@ -250,6 +250,17 @@ pub struct TpLaunch {
     pub worker_node_ids: Vec<String>,
 }
 
+fn effective_params_for_kind(kind: DeployKind, params: &RuntimeParams) -> RuntimeParams {
+    let mut effective = params.clone();
+    if kind == DeployKind::TensorParallel {
+        // llama.cpp's common_fit_params explicitly refuses split-mode tensor.
+        // Keep the plan honest and make the runtime safety belt independent of
+        // whether the caller is a current UI or an older API client.
+        effective.fit_memory = false;
+    }
+    effective
+}
+
 // ── What a machine can tell us about itself ──────────────────────────────────
 
 /// One slice of the chosen set, as it exists on one machine.
@@ -1591,11 +1602,12 @@ async fn plan_endpoint(
     Json(req): Json<DeployRequest>,
 ) -> Response {
     let machines = survey(&state, &req.group, req.kind).await;
+    let params = effective_params_for_kind(req.kind, &req.params);
     let mut p = plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
-        &req.params,
+        &params,
         req.merge,
         req.kind,
         req.tp.clone(),
@@ -1623,11 +1635,12 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let machines = survey(&state, &req.group, req.kind).await;
+    let params = effective_params_for_kind(req.kind, &req.params);
     let mut plan = plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
-        &req.params,
+        &params,
         req.merge,
         req.kind,
         req.tp.clone(),
@@ -1675,7 +1688,7 @@ async fn deploy_endpoint(
 
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, req.params, &id).await {
+        match run(state, plan, params, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -3718,6 +3731,14 @@ mod tests {
         assert_eq!(p.prompt_tokens, 16128);
         // O pedaço nunca passa de n_batch, por mais alto que seja o pedido.
         assert_eq!(p.chunk_tokens, 3072);
+    }
+
+    #[test]
+    fn tensor_parallel_plans_disable_llama_fit() {
+        let params = RuntimeParams::default();
+        assert!(params.fit_memory);
+        assert!(!effective_params_for_kind(DeployKind::TensorParallel, &params).fit_memory);
+        assert!(effective_params_for_kind(DeployKind::Shards, &params).fit_memory);
     }
 
     /// A cluster of unlike machines is the whole point of the per-peer offload:

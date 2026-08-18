@@ -768,10 +768,28 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
     }
 
+    // Os hiperparâmetros que o shard reescreve têm que dividir por `tp_size`,
+    // senão o arquivo sai com cabeçalho impossível. Conferir aqui é o que faz a
+    // tela recusar antes do deploy, em vez de o job morrer no meio do apply -
+    // mesma razão de existir desta função. Espelha `shard_tensor_parallel`.
     for _ in 0..n_kv {
-        let _key = r.string()?;
+        let key = r.string()?;
         let vtype = r.u32()?;
-        r.skip_value(vtype)?;
+        let escalada = key.ends_with(".attention.head_count")
+            || key.ends_with(".attention.head_count_kv")
+            || key.ends_with(".feed_forward_length");
+        if !escalada {
+            r.skip_value(vtype)?;
+            continue;
+        }
+        let full = match vtype {
+            T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
+            T_U64 => r.u64()? as u32,
+            _ => bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}"),
+        };
+        if full % tp_size != 0 {
+            bail!("'{key}' = {full} não divide por {tp_size} ranks");
+        }
     }
 
     let mut tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
@@ -921,15 +939,52 @@ pub fn shard_tensor_parallel(
         bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
     }
 
-    // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo).
-    // block_count e embedding_length não mudam: todas as camadas seguem
-    // presentes, só com tensores menores.
+    // KV: passa tudo como está, menos as chaves pom.* (re-adicionadas abaixo) e
+    // os hiperparâmetros que descrevem uma **largura** particionada.
+    //
+    // `block_count` e `embedding_length` de fato não mudam: todas as camadas
+    // seguem presentes, e o eixo do resíduo (`n_embd`) é o único que atravessa
+    // o all-reduce inteiro. Mas três chaves descrevem exatamente as dimensões
+    // que o shard corta, e deixá-las passar intactas foi o defeito de 17/08: o
+    // tensor saía com metade da largura e o cabeçalho continuava prometendo a
+    // largura cheia, então o llama.cpp recusava o load com
+    // `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got 4096, 2048`.
+    //
+    // - `attention.head_count`    -> colunas de `attn_q`   (n_head * head_dim)
+    // - `attention.head_count_kv` -> colunas de `attn_k/v`  (n_head_kv * head_dim)
+    // - `feed_forward_length`     -> colunas de `ffn_gate/up` e linhas de `ffn_down`
+    //
+    // Dividir a contagem de cabeças (e não `head_dim`) é o que mantém cada
+    // cabeça inteira num rank só: cabeça partida ao meio daria atenção errada
+    // sem nenhum erro de forma para acusar.
+    let tp_scaled_key = |key: &str| -> bool {
+        key.ends_with(".attention.head_count")
+            || key.ends_with(".attention.head_count_kv")
+            || key.ends_with(".feed_forward_length")
+    };
     let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
     let pom_prefix = format!("{}.", crate::brand::slug());
     for _ in 0..n_kv {
         let kv_start = r.pos;
         let key = r.string()?;
         let vtype = r.u32()?;
+        if tp_scaled_key(&key) {
+            let full = match vtype {
+                T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
+                T_U64 => r.u64()? as u32,
+                _ => {
+                    // Tipo inesperado para um hiperparâmetro numérico: recusar é
+                    // a única saída honesta. Passar adiante produziria um shard
+                    // que carrega e responde errado.
+                    bail!("'{key}' não é inteiro no GGUF; não dá para dividir por {tp_size}");
+                }
+            };
+            if full % tp_size != 0 {
+                bail!("'{key}' = {full} não divide por {tp_size} ranks");
+            }
+            kv_out.push(KvOut::Encoded(encode_kv_u32(&key, full / tp_size)));
+            continue;
+        }
         r.skip_value(vtype)?;
         if !key.starts_with(&pom_prefix) {
             kv_out.push(KvOut::Raw(kv_start, r.pos));
@@ -1608,6 +1663,12 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.embedding_length", n as u32),
         u32_kv("llama.block_count", n_blocks),
         u32_kv("llama.vocab_size", n as u32),
+        // As três larguras que um shard de tensor parallelism reescreve. Sem
+        // elas o fixture não cobre a divisão do cabeçalho, que é metade da
+        // correção: tensor cortado com cabeçalho intacto não carrega.
+        u32_kv("llama.attention.head_count", 4),
+        u32_kv("llama.attention.head_count_kv", 2),
+        u32_kv("llama.feed_forward_length", 4),
         u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
     ];
 
@@ -2371,6 +2432,56 @@ mod tests {
         // Linha de verdade: entrada já particionada pelos Column do bloco.
         let (dims, _) = read_shard_tensor(&out, "blk.0.ffn_down.weight");
         assert_eq!(dims[0], 2, "ffn_down continua cortada por ne[0]");
+    }
+
+    /// O cabeçalho do shard tem que descrever o tensor que o shard contém.
+    ///
+    /// Cortar `attn_q` por coluna sem dividir `head_count` deixa o arquivo
+    /// prometendo largura cheia, e o llama.cpp recusa o load:
+    /// `'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got
+    /// 4096, 2048`. `embedding_length` e `block_count` continuam intactos - o
+    /// eixo do resíduo e a contagem de camadas não são particionados.
+    #[test]
+    fn the_shard_header_is_divided_with_the_tensors() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-hdr-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        let out = dir.join("rank0.gguf");
+        shard_tensor_parallel(&whole, &out, 2, 0, |_| {}).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+
+        assert_eq!(kv_u32(&bytes, "llama.attention.head_count"), Some(2), "4/2");
+        assert_eq!(kv_u32(&bytes, "llama.attention.head_count_kv"), Some(1), "2/2");
+        assert_eq!(kv_u32(&bytes, "llama.feed_forward_length"), Some(2), "4/2");
+
+        // Não particionados: o resíduo atravessa o all-reduce inteiro e toda
+        // camada segue presente em todo rank.
+        assert_eq!(kv_u32(&bytes, "llama.embedding_length"), Some(4));
+        assert_eq!(kv_u32(&bytes, "llama.block_count"), Some(2));
+    }
+
+    /// Largura que não divide pelo grupo é recusa nos dois lados, e a recusa
+    /// nomeia a chave - o operador precisa saber qual hiperparâmetro trava o
+    /// modelo, não só que "não deu".
+    #[test]
+    fn a_width_that_does_not_divide_is_refused_by_both_paths() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-odd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        // head_count_kv = 2 no fixture: um grupo de 4 não divide.
+        let erro = validate_tensor_parallel(&whole, 4).unwrap_err().to_string();
+        assert!(
+            erro.contains("head_count_kv") && erro.contains("4"),
+            "a recusa tem que nomear a chave e o tamanho: {erro}"
+        );
+
+        let out = dir.join("rank0.gguf");
+        assert!(shard_tensor_parallel(&whole, &out, 4, 0, |_| {}).is_err());
+        assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
     }
 
     #[test]

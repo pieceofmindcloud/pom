@@ -177,6 +177,30 @@ correto; `token_embd.weight` tem o mesmo formato e já era replicada.
   (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
   com `token_embd` (weight tying).
 
+### O cabeçalho é dividido junto com os tensores
+
+Cortar o tensor não basta: o KV do shard tem que descrever o tensor que o shard
+contém. Três chaves nomeiam exatamente as larguras particionadas e são
+reescritas como `valor / tp_size`:
+
+| Chave | Dimensão que ela descreve |
+|---|---|
+| `{arch}.attention.head_count` | colunas de `attn_q` (`n_head * head_dim`) |
+| `{arch}.attention.head_count_kv` | colunas de `attn_k/v` (`n_head_kv * head_dim`) |
+| `{arch}.feed_forward_length` | colunas de `ffn_gate/up` e linhas de `ffn_down` |
+
+`embedding_length` e `block_count` **não** mudam: o eixo do resíduo atravessa o
+all-reduce inteiro, e toda camada segue presente em todo rank. Deixar as três
+passarem intactas foi o defeito de 17/08 - o tensor saía pela metade e o
+cabeçalho prometia largura cheia, então o llama.cpp recusava com
+`'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got 4096, 2048`.
+
+Divide-se a **contagem de cabeças**, nunca `head_dim`: é isso que mantém cada
+cabeça inteira num rank só. Cabeça partida ao meio daria atenção errada sem
+nenhum erro de forma para acusar. Largura que não divide por `tp_size` é recusa
+nomeando a chave, nos dois caminhos (`validate_tensor_parallel` na tela e
+`shard_tensor_parallel` na escrita).
+
 O split por linha exige que `ne[0]` divida por `tp_size` em limite de bloco
 do tipo ggml (senão o corte parte um bloco de quantização e o tensor fica
 ilegível); a divisão por coluna exige `ne[1]` divisível por `tp_size`. Ambos

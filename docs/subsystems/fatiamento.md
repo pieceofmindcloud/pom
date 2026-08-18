@@ -177,6 +177,24 @@ correto; `token_embd.weight` tem o mesmo formato e já era replicada.
   (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
   com `token_embd` (weight tying).
 
+### A coletiva tem que somar 2 vezes por camada
+
+São dois pontos row-parallel por bloco - a projeção de saída da atenção e o
+`ffn_down` -, então um decode num modelo de 32 camadas dispara **64** reduces.
+O motor conta e avisa quando o número não bate (`llm.rs`, depois do
+`llama_decode`).
+
+Isso é rede de proteção contra o defeito de 18/08: o fork tinha o `tp_reduce`
+numa **única** sobrecarga de `build_attn` (a `attn_no_cache`), e o llama.cpp tem
+sete. Todo modelo com cache KV somava só o FFN - 32 reduces em vez de 64 - e
+cada rank rodava a atenção com metade das cabeças sem nunca receber a outra
+metade.
+
+O sintoma é o disfarce mais perigoso deste subsistema: **a resposta sai
+gramatical e fluente, e só o conteúdo é vazio**. Não parece erro de cálculo,
+parece modelo ruim. Por isso a contagem virou aviso automático em vez de ficar
+na cabeça de quem depura.
+
 ### Carimbo de regra: `pom.tp_format`
 
 Todo shard de tensor grava `pom.tp_format` (`splitter::TP_SHARD_FORMAT`), a

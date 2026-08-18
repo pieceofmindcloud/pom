@@ -663,14 +663,32 @@ impl LlmEngine {
         // entrou no grafo. O rank rodou com meia largura e sem soma nenhuma, e
         // a resposta é falsa - o modo de falha de 18/08, que não tinha sintoma
         // além do texto sem sentido.
-        // Quantos reduces este decode disparou. São 2 por camada (a projeção
-        // de saída da atenção e o ffn_down), então um modelo de 32 camadas tem
-        // que somar 64. Menos que isso significa que **parte** do grafo roda
-        // sem redução - e meia rede reduzida produz texto fluente e sem
-        // sentido, que é indistinguível de um modelo ruim.
-        let reduces = crate::tp::reduces_in_current_decode();
+        // Quantos reduces este decode disparou. São **2 por camada**: a projeção
+        // de saída da atenção e o `ffn_down`, as duas row-parallel. Um modelo de
+        // 32 camadas tem que somar 64.
+        //
+        // Isto é rede de proteção, não curiosidade. O fork tinha o reduce em uma
+        // única sobrecarga de `build_attn` (a `attn_no_cache`), então todo
+        // modelo com cache KV somava só o FFN: 32 em vez de 64. E o sintoma é o
+        // disfarce mais perigoso possível - a resposta sai gramatical e fluente,
+        // só o conteúdo é vazio. Não parece erro de cálculo, parece modelo ruim,
+        // e custou uma tarde inteira de 18/08 para ser identificado.
+        //
+        // Aviso, não erro: arquitetura híbrida pode legitimamente ter camada sem
+        // atenção ou sem FFN, e recusar a resposta nesse caso seria pior que o
+        // aviso. Zero reduces continua sendo erro (logo abaixo).
         if crate::tp::is_active() {
-            tracing::debug!("decode fechou com {reduces} reduces");
+            let reduces = crate::tp::reduces_in_current_decode();
+            let esperado = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
+            if reduces != esperado {
+                tracing::warn!(
+                    "coletiva TP reduziu {reduces} vezes neste decode, esperado {esperado} \
+                     (2 por camada): parte do grafo está rodando sem redução, e a \
+                     resposta sai fluente e sem sentido"
+                );
+            } else {
+                tracing::debug!("decode fechou com {reduces} reduces (2 por camada)");
+            }
         }
         if crate::tp::is_active() && crate::tp::reduce_count() == tp_antes {
             bail!(

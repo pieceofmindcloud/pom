@@ -57,6 +57,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
+        .route("/api/ui/tp/check", post(tp_check))
         .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/ui/unload", post(unload_model))
@@ -1738,6 +1739,33 @@ async fn layout_of(path: &std::path::Path) -> Result<Arc<crate::gguf::GgufLayout
     };
     cache.lock().await.insert(key, layout.clone());
     Ok(layout)
+}
+
+/// Checa, sem escrever nada, se um modelo local dá para partir por tensor
+/// parallelism no caminho C (classificação dos tensores, divisibilidade das
+/// dimensões, weight-tying). O coordenador do deploy chama isto no primary
+/// antes de aceitar o grupo; a resposta é sempre 200, com `ok: false` + `reason`
+/// quando o modelo não serve — a checagem em si é uma resposta válida, não um
+/// erro HTTP.
+#[derive(Debug, Deserialize)]
+pub struct TpCheckRequest {
+    pub model_path: String,
+    pub tp_size: u32,
+}
+
+async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckRequest>) -> Response {
+    let path = std::path::Path::new(&req.model_path);
+    if !path.is_file() {
+        return Json(json!({
+            "ok": false,
+            "reason": format!("modelo não encontrado nesta máquina: {}", req.model_path),
+        }))
+        .into_response();
+    }
+    match crate::splitter::validate_tensor_parallel(path, req.tp_size) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })).into_response(),
+    }
 }
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.

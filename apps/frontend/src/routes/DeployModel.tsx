@@ -474,8 +474,12 @@ export function DeployModel() {
   const [group, setGroup] = useState("");
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
-  /** Tensor parallelism group, when that is the question being asked. */
-  const [tp, setTp] = useState<TpLaunch>({ size: 2, rank0_url: "", worker_node_ids: [] });
+  /** Tensor parallelism group, when that is the question being asked.
+   *  `size` is derived (1 primary + workers), not a field the operator types. */
+  const [tp, setTp] = useState<{ primary_node_id: string; worker_node_ids: string[] }>({
+    primary_node_id: "",
+    worker_node_ids: [],
+  });
   /** `null` until the operator says — see `kind` below for what that means. */
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -519,8 +523,17 @@ export function DeployModel() {
   const chosen = isWhole || isTp
     ? wholeName || wholes[0]?.name || ""
     : group || groups[0] || "";
-  /** The whole model on screen, for the facts the plan does not carry. */
-  const wholeModel = isWhole ? wholes.find((w) => w.name === chosen) : undefined;
+  /** The whole model on screen, for the facts the plan does not carry. TP
+   *  also picks a whole model (each rank holds its own copy), so it reads the
+   *  same facts — architecture, holders — to build the primary/worker selects. */
+  const wholeModel = isWhole || isTp ? wholes.find((w) => w.name === chosen) : undefined;
+  /** The TpLaunch the node expects: `size` is derived from the workers picked,
+   *  never a free number — the select is the single source of truth. */
+  const tpPayload = (): TpLaunch => ({
+    size: tp.worker_node_ids.length + 1,
+    primary_node_id: tp.primary_node_id,
+    worker_node_ids: tp.worker_node_ids,
+  });
   /**
    * Where the last deploy of this is remembered.
    *
@@ -552,6 +565,9 @@ export function DeployModel() {
       settled ? JSON.stringify(settled) : "auto",
       settledParams ? JSON.stringify(settledParams) : "padrão",
       merge == null ? "merge-padrão" : `merge-${merge}`,
+      // TP: o plano revalida quando o primary/workers mudam — a checagem de
+      // shardabilidade roda no nó, então a troca precisa re-disparar a query.
+      isTp ? JSON.stringify(tpPayload()) : "sem-tp",
     ],
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
@@ -559,7 +575,7 @@ export function DeployModel() {
         kind,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
-        ...(isTp ? { tp } : {}),
+        ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
@@ -788,7 +804,7 @@ export function DeployModel() {
         ...(selection ? { selection: rows } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
-        ...(isTp ? { tp } : {}),
+        ...(isTp ? { tp: tpPayload() } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -988,40 +1004,47 @@ export function DeployModel() {
                         </div>
                       </dl>
                     )}
-                    {isTp && (
-                      <div className="grid max-w-2xl gap-3 sm:grid-cols-3">
-                        <Field label={t("deploy.tpSize")}>
-                          <input
-                            type="number"
-                            min={2}
-                            value={tp.size}
-                            onChange={(e) => setTp({ ...tp, size: Number(e.target.value) || 2 })}
-                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
-                          />
-                        </Field>
-                        <Field label={t("deploy.tpRank0Url")} hint={t("deploy.tpRank0UrlHint")}>
-                          <input
-                            value={tp.rank0_url}
-                            onChange={(e) => setTp({ ...tp, rank0_url: e.target.value })}
-                            placeholder="http://192.168.1.10:8181"
-                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
-                          />
+                    {isTp && wholeModel && (
+                      <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+                        <Field label={t("deploy.tpPrimary")} hint={t("deploy.tpPrimaryHint")}>
+                          <Select
+                            aria-label={t("deploy.tpPrimary")}
+                            value={tp.primary_node_id}
+                            onChange={(e) => setTp({ ...tp, primary_node_id: e.target.value })}
+                          >
+                            <option value="">{t("deploy.tpPickPrimary")}</option>
+                            {wholeModel.holders.map((id) => (
+                              <option key={id} value={id}>
+                                {labelOf(id)}
+                              </option>
+                            ))}
+                          </Select>
                         </Field>
                         <Field label={t("deploy.tpWorkers")} hint={t("deploy.tpWorkersHint")}>
-                          <input
-                            value={tp.worker_node_ids.join(", ")}
+                          <Select
+                            aria-label={t("deploy.tpWorkers")}
+                            multiple
+                            value={tp.worker_node_ids}
                             onChange={(e) =>
                               setTp({
                                 ...tp,
-                                worker_node_ids: e.target.value
-                                  .split(",")
-                                  .map((s) => s.trim())
-                                  .filter(Boolean),
+                                worker_node_ids: Array.from(e.target.selectedOptions, (o) => o.value),
                               })
                             }
-                            placeholder="node-id-1, node-id-2"
-                            className="w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-fg"
-                          />
+                          >
+                            {wholeModel.holders
+                              .filter((id) => id !== tp.primary_node_id)
+                              .map((id) => (
+                                <option key={id} value={id}>
+                                  {labelOf(id)}
+                                </option>
+                              ))}
+                          </Select>
+                        </Field>
+                        <Field label={t("deploy.tpSize")}>
+                          <div className="text-sm text-fg">
+                            {t("deploy.tpSizeValue", { size: tp.worker_node_ids.length + 1 })}
+                          </div>
                         </Field>
                       </div>
                     )}

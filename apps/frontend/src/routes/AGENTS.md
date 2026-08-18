@@ -76,16 +76,19 @@ Per-file list:
   `undeployTargets` is the list the confirmation shows (peers on `group` with
   `total_layers > 0`, sorted by start layer); the node re-scans the cluster
   before acting, so the list is just the preview.
-- `DeployModel.tsx` — "Implantar na rede". Two shapes, chosen by the `KindPicker`
-  at the top and carried to the node as `kind`: **a set of shards** (below) or
-  **a whole model**, where the screen shows one model picker (from
-  `../lib/wholeModels`, deduped over the cluster catalog) plus one machine
-  picker, and drops the coverage ribbon, the "included" column and the merge
-  toggle — in a pipeline of one they have a single possible answer. Everything
-  else (plan validation, settings, machines table, button) is shared. A plan
-  with no `kind` is read as `"shards"` (`kindOf`), so an older peer mid-upgrade
-  does not silence the screen. Deploy memory is namespaced `whole:<name>`,
-  because a shard set and a model routinely share a name. Tests:
+- `DeployModel.tsx` — "Implantar na rede". Three shapes, chosen by the
+  `KindPicker` at the top and carried to the node as `kind`: **a set of shards**
+  (below), **a whole model** (one model picker from `../lib/wholeModels`, one
+  machine picker, no coverage ribbon/"included"/merge - a pipeline of one has a
+  single answer), or **tensor parallel** (`tensor_parallel`): one model picker
+  plus a `primary` select and a `workers` multi-select over `wholeModel.holders`;
+  `size` is derived (`workers.length + 1`) via `tpPayload`, never a typed number,
+  and the node derives the reduce URL from the primary's inference port (the
+  operator no longer types `rank0_url`). `tp` is in the plan queryKey so changing
+  primary/workers re-runs the node's shardability check. A plan with no `kind`
+  is read as `"shards"` (`kindOf`), so an older peer mid-upgrade does not
+  silence the screen. Deploy memory is namespaced `whole:<name>`, because a
+  shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
 - `DeployModel.tsx` — the slice shape: picks a slice set (`group`), edits
   which ranges go to which machine (swaps on collision, merge toggle for

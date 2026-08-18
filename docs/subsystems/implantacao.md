@@ -73,11 +73,21 @@ arquivo pela tela de Transferências antes.
 `kind: "tensor_parallel"` (`DeployKind::TensorParallel`) implanta um modelo num
 grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
 pipeline) + K **workers** (cada um extrai o próprio shard de tensor da própria
-cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, rank0_url,
-worker_node_ids}` - a varredura lê o modelo inteiro do primary, e o
+cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, primary_node_id,
+worker_node_ids}` - o operador escolhe o **primary** e os **workers** por
+node_id (a tela oferece selects, não um campo de URL), e o nó deriva a
+`rank0_url` da porta de inferência anunciada pelo próprio primary
+(`Machine.inference_url`). A varredura lê o modelo inteiro do primary, e o
 `launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
-cada worker com rank 1..size-1), todos apontando o mesmo `rank0_url` para a
+cada worker com rank 1..size-1), todos apontando a mesma `rank0_url` para a
 coletiva.
+
+Antes de aceitar, o plano valida em duas camadas: `tp_group_checks` (tamanho,
+primary/workers no cluster e com o modelo inteiro, sem repetição, primary com
+URL de inferência) roda no próprio `plan`; e `tp_shardability_check` pergunta ao
+primary (rota `POST /api/ui/tp/check`) se o GGUF dele dá para partir - MoE/SSM/
+weight-tied ou dimensões que não dividem recusam o plano **na tela**, com um
+motivo que nomeia o tensor, em vez de deixar o job falhar no apply.
 
 O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
 faz o worker extrair o shard por `plan::extract_tp_shard`, anunciar o papel via

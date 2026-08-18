@@ -579,8 +579,8 @@ export type DeployKind = "shards" | "whole" | "tensor_parallel";
 export interface TpLaunch {
   /** Ranks in the group (1 primary + size-1 workers). */
   size: number;
-  /** Primary (rank 0) URL for the all-reduce (POST /v1/tp/reduce). */
-  rank0_url: string;
+  /** node_id of the primary (rank 0); the node derives the reduce URL. */
+  primary_node_id: string;
   /** node_ids of the workers, in rank order (rank 1..size-1). */
   worker_node_ids: string[];
 }

@@ -136,10 +136,17 @@ behind an auth extractor.
   `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
   `tensor_parallel` (caminho C) nomeia o grupo (primary + workers); a v1 da
   varredura lê o modelo do primary, e a descoberta de workers fica junto do
-  fork do llama.cpp. Daí em diante é o mesmo planner, o mesmo `launch_targets`
-  e o mesmo `launch` - não há segundo caminho. Só as recusas mudam de
-  substantivo (`DeployKind::unit`). Ver `docs/subsystems/implantacao.md` §1.1
-  e §1.2.
+  fork do llama.cpp. O pedido carrega `TpLaunch {size, primary_node_id,
+  worker_node_ids}` - o operador escolhe primary/workers por node_id e o nó
+  deriva a `rank0_url` da `Machine.inference_url` (`tp_identity`). Validação em
+  duas camadas antes do deploy: `tp_group_checks` (tamanho, presença no
+  cluster, modelo inteiro, sem repetição) dentro do `plan`, e
+  `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
+  `webui::tp_check` -> `splitter::validate_tensor_parallel`) que recusa MoE/
+  SSM/weight-tied na tela. Daí em diante é o mesmo planner, o mesmo
+  `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
+  mudam de substantivo (`DeployKind::unit`). Ver
+  `docs/subsystems/implantacao.md` §1.1 e §1.2.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).

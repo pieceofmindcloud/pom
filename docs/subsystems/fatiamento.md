@@ -173,6 +173,14 @@ de hoje não o carrega sozinho - ele é a metade que o fork do llama.cpp (caminh
 C) carrega junto com a coletiva all-reduce. Testado com o GGUF sintético
 (`test_gguf_bytes`) para rank 0 e rank 1, incluindo a recusa de grupo inválido.
 
+A mesma decisão tem um dry-run: `splitter::validate_tensor_parallel(src,
+tp_size)` lê a tensor table e devolve `Err` nomeando o tensor que não dá para
+partir, **sem escrever nada**. `shard_tensor_parallel` o chama como porta de
+entrada (a classificação é uma só), e a rota `POST /api/ui/tp/check`
+(`webui::tp_check`) o expõe ao coordenador do deploy, que recusa o grupo
+tensor-parallel **na tela de implantar** (antes do job) em vez de deixar o apply
+falhar na metade. MoE/SSM/weight-tied e dimensões que não dividem caem aqui.
+
 `plan::extract_tp_shard`/`plan::tp_shard_filename` embrulham isso para o caminho
 de `apply` (webui): rodam num `spawn_blocking`, reaproveitam arquivo já completo e
 escrevem `{base}_tp{rank}of{size}.gguf`, que o `parse_shard_name` não confunde

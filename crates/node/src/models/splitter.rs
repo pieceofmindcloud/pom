@@ -707,6 +707,146 @@ fn tp_role(name: &str) -> TpRole {
     }
 }
 
+/// Dry-run da classificação de shard do caminho C.
+///
+/// Lê a tabela de tensores de `src` e responde se `shard_tensor_parallel`
+/// conseguiria partir o modelo em `tp_size` ranks, **sem escrever nada**. É o
+/// que a tela de implantar consulta antes de aceitar o deploy, para recusar
+/// MoE/SSM/weight-tied com um erro que nomeia o tensor — em vez de deixar o
+/// job falhar na metade do apply.
+///
+/// Espelha exatamente as recusas de `shard_tensor_parallel`; o shard chama esta
+/// função como porta de entrada, então manter as duas em sincronia é esta
+/// função ser a fonte da decisão.
+pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
+    if tp_size < 2 {
+        bail!("tp_size precisa ser >= 2");
+    }
+
+    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
+    let src_mm =
+        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
+    let mm: &[u8] = &src_mm;
+
+    let mut r = R { data: mm, pos: 0 };
+    let magic = r.u32()?;
+    if magic != GGUF_MAGIC {
+        bail!("não é um arquivo GGUF (magic={magic:#x})");
+    }
+    let version = r.u32()?;
+    if version != 2 && version != 3 {
+        bail!("versão GGUF {version} não suportada (esperado 2 ou 3)");
+    }
+    let n_tensors = r.u64()? as usize;
+    let n_kv = r.u64()? as usize;
+    if n_tensors > 1_000_000 || n_kv > 100_000 {
+        bail!("cabeçalho GGUF implausível ({n_tensors} tensors, {n_kv} kv)");
+    }
+
+    for _ in 0..n_kv {
+        let _key = r.string()?;
+        let vtype = r.u32()?;
+        r.skip_value(vtype)?;
+    }
+
+    let mut tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
+    for _ in 0..n_tensors {
+        let name = r.string()?;
+        let n_dims = r.u32()? as usize;
+        if n_dims > 8 {
+            bail!("rank {n_dims} implausível para tensor '{name}'");
+        }
+        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
+        let dtype = r.u32()?;
+        let src_offset = r.u64()?;
+        tensors.push(TensorRecord {
+            name,
+            dims,
+            dtype,
+            src_offset,
+            byte_size: 0,
+        });
+    }
+
+    let src_data_start = align_up(r.pos as u64) as usize;
+    {
+        let total_data = (mm.len() - src_data_start) as u64;
+        let mut unique: Vec<u64> = tensors.iter().map(|t| t.src_offset).collect();
+        unique.sort_unstable();
+        unique.dedup();
+        let size_map: HashMap<u64, u64> = unique
+            .iter()
+            .enumerate()
+            .map(|(i, &off)| {
+                let next = unique.get(i + 1).copied().unwrap_or(total_data);
+                (off, next - off)
+            })
+            .collect();
+        for t in &mut tensors {
+            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
+        }
+    }
+
+    // Weight-tied output (output.weight compartilha offset com token_embd)
+    // quebraria o shard: um fica inteiro e o outro partido. Recusa.
+    let embd_offset = tensors
+        .iter()
+        .find(|t| t.name == "token_embd.weight")
+        .map(|t| t.src_offset);
+    if let Some(out) = tensors.iter().find(|t| t.name == "output.weight") {
+        if embd_offset == Some(out.src_offset) {
+            bail!("output.weight empatado com token_embd.weight não é suportado no shard (v1)");
+        }
+    }
+
+    for t in &tensors {
+        if t.byte_size == 0 {
+            bail!(
+                "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
+                t.name,
+                t.dtype
+            );
+        }
+        let role = tp_role(&t.name);
+        match role {
+            TpRole::Unsupported => {
+                bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
+            }
+            TpRole::Shared => {}
+            TpRole::Column | TpRole::Row => {
+                if t.dims.len() < 2 {
+                    bail!("tensor '{}' 1D não pode ser {role:?}", t.name);
+                }
+                let ne0 = t.dims[0];
+                let ne1 = t.dims[1];
+                if t.byte_size % ne1 != 0 {
+                    bail!("tensor '{}' tem tamanho não alinhado a ne[1]={ne1}", t.name);
+                }
+                let row_stride = t.byte_size / ne1;
+                match role {
+                    TpRole::Column => {
+                        if ne1 % tp_size as u64 != 0 {
+                            bail!("ne[1]={ne1} de '{}' não divide por {tp_size}", t.name);
+                        }
+                    }
+                    TpRole::Row => {
+                        if row_stride % tp_size as u64 != 0 {
+                            bail!(
+                                "ne[0]={ne0} de '{}' (tipo ggml {}) não divide por {tp_size} em limite de bloco",
+                                t.name,
+                                t.dtype
+                            );
+                        }
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Shard de um modelo GGUF por tensor parallelism.
 ///
 /// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
@@ -731,6 +871,10 @@ pub fn shard_tensor_parallel(
     if tp_rank >= tp_size {
         bail!("tp_rank {tp_rank} fora de um grupo de {tp_size}");
     }
+    // A decisão "este modelo dá para partir" é uma só: o dry-run acima é a
+    // porta de entrada, e as checagens abaixo (redundantes depois dele) ficam
+    // como rede de segurança do layout.
+    validate_tensor_parallel(src, tp_size)?;
 
     let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
     let src_mm =
@@ -2191,5 +2335,25 @@ mod tests {
         assert!(shard_tensor_parallel(&whole, &out, 1, 0, |_| {}).is_err());
         assert!(shard_tensor_parallel(&whole, &out, 2, 2, |_| {}).is_err());
         assert!(!out.exists(), "recusa não deve deixar arquivo pela metade");
+    }
+
+    #[test]
+    fn validate_tensor_parallel_matches_the_shard_decision() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-validate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        // O modelo denso do fixture dá para partir; o dry-run concorda com o
+        // shard de verdade (que chama esta mesma função como porta de entrada).
+        assert!(validate_tensor_parallel(&whole, 2).is_ok());
+
+        // tp_size < 2 é recusado aqui também.
+        assert!(validate_tensor_parallel(&whole, 1).is_err());
+
+        // Não-GGUF recusa pelo magic.
+        let junk = dir.join("junk.bin");
+        std::fs::write(&junk, b"not a gguf").unwrap();
+        assert!(validate_tensor_parallel(&junk, 2).is_err());
     }
 }

@@ -11,7 +11,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 /// Cabeçalhos da coletiva. O corpo é a parcial em f32 cru; metadado de tamanho
 /// fixo vai em cabeçalho, e não misturado ao vetor.
@@ -36,7 +36,19 @@ struct TpState {
     counter: AtomicU64,
 }
 
-static TP_STATE: OnceLock<Arc<TpState>> = OnceLock::new();
+/// Estado da coletiva deste processo. `None` = este nó não é de um grupo TP.
+///
+/// Era um `OnceLock`, que **não tem como ser limpo**: um processo que um dia
+/// serviu um grupo TP continuava se declarando TP para sempre. Implantar um
+/// modelo inteiro por cima de um grupo herdava esse estado, e a checagem de
+/// "nenhum reduce neste decode" chegava a derrubar requisições legítimas de um
+/// modelo que nunca teve coletiva nenhuma (18/08). Trocar o grupo também
+/// exigia reiniciar o processo, o que era limitação do tipo, não do desenho.
+static TP_STATE: std::sync::RwLock<Option<Arc<TpState>>> = std::sync::RwLock::new(None);
+
+fn tp_state() -> Option<Arc<TpState>> {
+    TP_STATE.read().ok().and_then(|s| s.clone())
+}
 
 /// Última falha da coletiva, para o decode transformar em erro da requisição.
 ///
@@ -121,7 +133,7 @@ fn next_barrier_id() -> Option<String> {
 
 /// A coletiva está ligada neste processo?
 pub fn is_active() -> bool {
-    TP_STATE.get().is_some()
+    tp_state().is_some()
 }
 
 /// Quantos reduces este processo já executou.
@@ -131,8 +143,7 @@ pub fn is_active() -> bool {
 /// resposta é falsa. Foi o estado de 18/08 - 30 tok/s de texto sem sentido -, e
 /// ele não tinha nenhum sintoma além do texto.
 pub fn reduce_count() -> u64 {
-    TP_STATE
-        .get()
+    tp_state()
         .map(|s| s.counter.load(Ordering::Relaxed))
         .unwrap_or(0)
 }
@@ -186,7 +197,9 @@ pub fn register_tp_reduce(rank: u32, rank0_url: String, rank0_node_id: Option<St
         client,
         counter: AtomicU64::new(0),
     });
-    let _ = TP_STATE.set(state);
+    if let Ok(mut slot) = TP_STATE.write() {
+        *slot = Some(state);
+    }
     unsafe {
         llama_cpp_sys_2::llama_set_tp_reduce_callback(Some(tp_reduce_cb), std::ptr::null_mut());
     }
@@ -197,6 +210,18 @@ pub fn unregister_tp_reduce() {
     unsafe {
         llama_cpp_sys_2::llama_set_tp_reduce_callback(None, std::ptr::null_mut());
     }
+    // Limpar o estado é metade do desligamento: sem isto `is_active()` continua
+    // verdadeiro e o nó se comporta como membro de um grupo que não existe mais.
+    if let Ok(mut slot) = TP_STATE.write() {
+        *slot = None;
+    }
+    if let Ok(mut d) = DECODE.lock() {
+        *d = None;
+    }
+    REPLICA.store(false, Ordering::Relaxed);
+    // Falha do grupo antigo não pode derrubar a primeira requisição do modelo
+    // novo, que não tem nada a ver com ela.
+    let _ = take_failure();
 }
 
 /// O callback do op de reduce: lê a parcial (f32), POSTa para o primary e
@@ -205,9 +230,10 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
     if data.is_null() || n_bytes == 0 || n_bytes % 4 != 0 {
         return;
     }
-    let Some(state) = TP_STATE.get() else {
+    let Some(state) = tp_state() else {
         return;
     };
+    let state = &state;
     let n = n_bytes / 4;
     let partial = unsafe { std::slice::from_raw_parts(data as *const f32, n).to_vec() };
     let seq = state.counter.fetch_add(1, Ordering::Relaxed);
@@ -416,6 +442,8 @@ mod tests {
     /// dava erro, só travava.
     #[test]
     fn the_barrier_id_comes_from_the_decode_so_every_rank_agrees() {
+        let _trava = ESTADO_GLOBAL.lock();
+        limpa();
         begin_decode("sessao-x:chunk-0");
         let rank0: Vec<String> = (0..3).map(|_| next_barrier_id().unwrap()).collect();
 
@@ -432,10 +460,49 @@ mod tests {
         assert_eq!(next_barrier_id().unwrap(), "sessao-x:chunk-1#0");
     }
 
+    /// Desligar o grupo desliga o nó: implantar um modelo inteiro por cima de
+    /// um grupo TP não pode deixar resíduo.
+    ///
+    /// `TP_STATE` era um `OnceLock`, que não tem como ser limpo. Um processo que
+    /// um dia serviu TP continuava se declarando TP para sempre: a implantação
+    /// seguinte, de um modelo inteiro sem coletiva nenhuma, avisava "reduziu 1
+    /// vezes, esperado 64" - e a checagem de zero reduces chegava a derrubar a
+    /// requisição (18/08).
+    #[test]
+    fn turning_the_group_off_leaves_no_residue() {
+        let _trava = ESTADO_GLOBAL.lock();
+        limpa();
+        register_tp_reduce(
+            1,
+            "https://127.0.0.1:9/".into(),
+            Some("um-node-id-qualquer".into()),
+        );
+        begin_replica_decode("decode-do-grupo");
+        let _ = next_barrier_id();
+        note_failure("falha do grupo antigo".into());
+        assert!(is_active(), "com grupo ligado, o nó é TP");
+
+        unregister_tp_reduce();
+
+        assert!(!is_active(), "sem grupo, o nó não é TP");
+        assert_eq!(reduce_count(), 0);
+        assert!(!is_replica(), "a marca de réplica não sobrevive");
+        assert!(
+            next_barrier_id().is_none(),
+            "não há decode aberto depois de desligar"
+        );
+        assert!(
+            take_failure().is_none(),
+            "falha do grupo antigo não derruba a requisição do modelo novo"
+        );
+    }
+
     /// Réplica não decide nada; rank 0 decide. E abrir um decode normal tira a
     /// marca, senão o processo carregaria "sou réplica" para sempre.
     #[test]
     fn a_replica_has_no_say_and_the_mark_does_not_leak() {
+        let _trava = ESTADO_GLOBAL.lock();
+        limpa();
         begin_decode("normal");
         assert!(!is_replica(), "rank 0 decide por si");
 
@@ -458,6 +525,8 @@ mod tests {
     /// falsos, e o texto sai plausível e sem sentido.
     #[test]
     fn the_first_failure_wins_and_is_consumed_once() {
+        let _trava = ESTADO_GLOBAL.lock();
+        limpa();
         let _ = take_failure(); // limpa resíduo de outro teste
 
         note_failure("certificado do primary não pinou".into());
@@ -475,6 +544,20 @@ mod tests {
     }
     use crate::collective::ReduceBarrier;
     use axum::{routing::post, Router};
+
+    /// Trava que serializa os testes que mexem no estado GLOBAL da coletiva
+    /// (`TP_STATE`, `DECODE`, `REPLICA`, `TP_FAILURE`).
+    ///
+    /// Sem isto eles se atropelam em paralelo e falham por acaso - o mesmo
+    /// defeito que perseguiu `transfer::offer_latency_tests` o dia 18/08
+    /// inteiro, e que só se explicou depois de horas. Todo teste novo que toque
+    /// nesses estáticos toma esta trava.
+    static ESTADO_GLOBAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Deixa o processo sem grupo, para um teste não herdar o do anterior.
+    fn limpa() {
+        unregister_tp_reduce();
+    }
 
     /// Os dois lados de produção falando entre si: o cliente real
     /// (`post_reduce`) contra o handler real (`infer_server::handle_tp_reduce`).

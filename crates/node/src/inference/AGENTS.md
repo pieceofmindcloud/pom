@@ -72,6 +72,14 @@ executa a cadeia que o planejador montou.
   amostrava um token normal, apagava a sessão, e o step replicado seguinte
   batia em "sessão desconhecida" - HTTP 400 (18/08).
 
+  `register_tp_reduce`/`unregister_tp_reduce` **ligam e desligam** o nó do grupo,
+  e desligar limpa tudo: estado, decode aberto, marca de réplica e falha
+  pendente. `TP_STATE` era um `OnceLock`, que não tem como ser limpo, então um
+  processo que um dia serviu TP se declarava TP para sempre - implantar um
+  modelo inteiro por cima de um grupo herdava o estado, avisava "reduziu 1 vezes,
+  esperado 64", e a checagem de zero reduces chegava a derrubar a requisição
+  (18/08). Trocar o grupo também deixou de exigir reinício.
+
   A parcial viaja como **f32 cru em little-endian**, com `barrier_id` e `rank`
   em cabeçalho (`x-pom-tp-barrier`, `x-pom-tp-rank`), e a rota tem o mesmo
   limite de corpo das de quadro. Era JSON: ~12 bytes por float de 4, o que dava

@@ -189,6 +189,10 @@ fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
     cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS
 }
 
+fn load_mtp_weights(cfg: &EngineConfig) -> bool {
+    cfg.mtp
+}
+
 fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     if !fit_can_adjust_layers(cfg) {
         if cfg.fit_memory && cfg.n_gpu_layers != DEFAULT_GPU_LAYERS {
@@ -222,6 +226,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
 
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
+    mparams.load_mtp = load_mtp_weights(cfg);
 
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
@@ -371,6 +376,7 @@ impl LoadedModel {
 
         let mut mparams = unsafe { sys::llama_model_default_params() };
         mparams.n_gpu_layers = plan.config.n_gpu_layers;
+        mparams.load_mtp = load_mtp_weights(&plan.config);
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
@@ -1163,6 +1169,15 @@ mod pool_tests {
         let mut disabled = cfg();
         disabled.fit_memory = false;
         assert!(!fit_can_adjust_layers(&disabled));
+    }
+
+    #[test]
+    fn mtp_configuration_requests_loading_nextn_weights() {
+        let mut cfg = cfg();
+        assert!(!load_mtp_weights(&cfg));
+
+        cfg.mtp = true;
+        assert!(load_mtp_weights(&cfg));
     }
 
     /// O pool nao pode custar memoria a mais: o cache de cada contexto e o

@@ -54,6 +54,11 @@ explicitamente. O `/health` expõe `fit_memory_applied` e
 escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
 suporta tensor parallelism; o planner e o runtime normalizam essa opção para
 desligada no modo TP. O fallback do KV continua ativo depois do fit.
+Quando o MTP está ligado, o carregamento também passa
+`llama_model_params.load_mtp=true`, para que os pesos `nextn.*` sejam carregados
+antes de criar o contexto de rascunho; deixar essa flag falsa mantém os
+metadados MTP, mas deixa `nextn.eh_proj` nulo e faz o Qwen3.5 abortar na
+construção do grafo.
 
 ## 1. Os três modos de execução
 

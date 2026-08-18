@@ -388,6 +388,9 @@ quatro entradas (`llama_{set,get}_embeddings_nextn`,
 `llama_set_nextn_layer_offset`) estão em `libllama.a` mas não nos bindings,
 porque moram em `llama.cpp/src/llama-ext.h`, fora do `extern "C"` de `llama.h`
 que o `wrapper.h` da crate inclui. Daí `llama_mtp_shim.cpp`.
+Ao carregar um motor com MTP ligado, `llama_model_params.load_mtp` também precisa
+ser verdadeiro: sem isso o llama.cpp mantém `n_layer_nextn` nos metadados, mas
+deixa os pesos `nextn.*` nulos e o grafo Qwen3.5 aborta ao construir `eh_proj`.
 
 Ciclo, por rodada (uma sequência, uma cabeça, memória não compartilhada - o
 caminho qwen35/qwen35moe do upstream):

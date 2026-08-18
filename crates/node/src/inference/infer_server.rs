@@ -874,6 +874,7 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "offload_kqv": s.engine.offload_kqv(),
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
+        "n_ubatch_effective": s.engine.effective_n_ubatch(),
         "inference_frame_capabilities": caps,
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
         // `--ctx-shift` de referência do llama.cpp. Não decide mais se a

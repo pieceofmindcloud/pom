@@ -171,6 +171,11 @@ unsafe impl Sync for LoadedModel {}
 const DEFAULT_GPU_LAYERS: i32 = 99;
 const FIT_MEMORY_MARGIN_BYTES: usize = 1024 * 1024 * 1024;
 const FIT_MIN_CONTEXT: u32 = 4096;
+/// The CUDA graph and kernel workspaces scale with the microbatch, while the
+/// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
+/// ubatch is the safe automatic fallback before llama.cpp reserves those
+/// workspaces on a nearly-full GPU.
+const FIT_MAX_UBATCH: u32 = 128;
 
 /// Parâmetros do modelo já ajustados pelo `common_fit_params`.
 ///
@@ -191,6 +196,15 @@ fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
 
 fn load_mtp_weights(cfg: &EngineConfig) -> bool {
     cfg.mtp
+}
+
+fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
+    let n_batch = cfg.n_batch.max(1);
+    if cfg.fit_memory {
+        n_batch.min(FIT_MAX_UBATCH)
+    } else {
+        n_batch
+    }
 }
 
 fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
@@ -231,7 +245,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
-    cparams.n_ubatch = cfg.n_batch;
+    cparams.n_ubatch = effective_n_ubatch(cfg);
     cparams.n_seq_max = cfg.max_sessions.max(1);
     cparams.offload_kqv = cfg.offload_kqv;
     cparams.embeddings = cfg.need_embeddings;
@@ -306,6 +320,7 @@ pub struct LlmEngine {
     offload_kqv: bool,
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
+    effective_n_ubatch: u32,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
@@ -411,6 +426,7 @@ impl LlmEngine {
             Ok(mut engine) => {
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
                 Ok(engine)
             }
             Err(gpu_kv_error) => {
@@ -430,6 +446,7 @@ impl LlmEngine {
                 })?;
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
                 Ok(engine)
             }
         }
@@ -466,6 +483,7 @@ impl LlmEngine {
                 let mut engine = Self::with_model(loaded.clone(), &por_contexto)?;
                 engine.fit_memory_applied = plan.applied;
                 engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&por_contexto);
                 Ok(engine)
             })
             .collect()
@@ -484,7 +502,7 @@ impl LlmEngine {
         let mut cparams = unsafe { sys::llama_context_default_params() };
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
-        cparams.n_ubatch = cfg.n_batch;
+        cparams.n_ubatch = effective_n_ubatch(cfg);
         cparams.n_seq_max = cfg.max_sessions;
         cparams.offload_kqv = cfg.offload_kqv;
         cparams.embeddings = cfg.need_embeddings;
@@ -575,6 +593,7 @@ impl LlmEngine {
             offload_kqv: cfg.offload_kqv,
             fit_memory_applied: false,
             effective_n_gpu_layers: cfg.n_gpu_layers,
+            effective_n_ubatch: effective_n_ubatch(cfg),
             mtp,
         })
     }
@@ -625,6 +644,10 @@ impl LlmEngine {
 
     pub fn effective_n_gpu_layers(&self) -> i32 {
         self.effective_n_gpu_layers
+    }
+
+    pub fn effective_n_ubatch(&self) -> u32 {
+        self.effective_n_ubatch
     }
 
     pub fn eos_token(&self) -> i32 {
@@ -1169,6 +1192,22 @@ mod pool_tests {
         let mut disabled = cfg();
         disabled.fit_memory = false;
         assert!(!fit_can_adjust_layers(&disabled));
+    }
+
+    #[test]
+    fn fit_mode_caps_compute_microbatch_without_changing_prompt_batch() {
+        let cfg = cfg();
+        assert_eq!(cfg.n_batch, 512);
+        assert_eq!(effective_n_ubatch(&cfg), 128);
+
+        let mut no_fit = cfg;
+        no_fit.fit_memory = false;
+        assert_eq!(effective_n_ubatch(&no_fit), 512);
+
+        let mut small_batch = no_fit;
+        small_batch.n_batch = 64;
+        small_batch.fit_memory = true;
+        assert_eq!(effective_n_ubatch(&small_batch), 64);
     }
 
     #[test]

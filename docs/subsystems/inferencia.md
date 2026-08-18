@@ -54,6 +54,12 @@ explicitamente. O `/health` expõe `fit_memory_applied` e
 escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
 suporta tensor parallelism; o planner e o runtime normalizam essa opção para
 desligada no modo TP. O fallback do KV continua ativo depois do fit.
+Para evitar que a reserva tardia de temporários CUDA derrube o processo quando a
+GPU já está quase cheia, `fit_memory=true` mantém `n_batch` como limite do
+chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua
+aceitando chunks de até `n_batch`; o custo é mais etapas internas de cálculo em
+troca de uma reserva menor. `/health` expõe esse valor como
+`n_ubatch_effective`. Com `fit_memory=false`, `n_ubatch` acompanha `n_batch`.
 Quando o MTP está ligado, o carregamento também passa
 `llama_model_params.load_mtp=true`, para que os pesos `nextn.*` sejam carregados
 antes de criar o contexto de rascunho; deixar essa flag falsa mantém os

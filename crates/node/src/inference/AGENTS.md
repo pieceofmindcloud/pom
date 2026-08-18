@@ -180,7 +180,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
   GPU, tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de
   peso na GPU e deixando o KV cache na RAM. `/health` mostra se o fit foi
-  aplicado e as camadas efetivas.
+  aplicado, as camadas efetivas e `n_ubatch_effective`. O `n_batch` público
+  continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
+  microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
+  reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
   divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
   com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.

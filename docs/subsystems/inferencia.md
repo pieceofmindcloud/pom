@@ -34,6 +34,17 @@ isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
 camadas completas por nó troca um frame de hidden state entre blocos e evita
 essas coletivas TP.
 
+### Cache KV e fallback de VRAM
+
+`n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta
+primeiro respeitar `offload_kqv=true`, colocando o KV cache na GPU. Se o
+`cudaMalloc` do KV cache falhar, `LlmEngine::load` repete a criação do contexto
+com `offload_kqv=false`: os pesos permanecem nas mesmas camadas da GPU e o KV
+cache passa para a memória RAM. A aplicação registra o fallback e `/health`
+mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
+pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
+modelo entre máquinas.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

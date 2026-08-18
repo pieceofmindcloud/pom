@@ -174,10 +174,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
 `llm.rs`:
 - `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, max_sessions). `LlmEngine::pool` (N contextos sobre um modelo
-  só, `pool_tests` cobre a divisão de n_ctx) ainda **não tem chamador**: o
-  servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no `pool`
-  é a marca disso.
+  offload_kqv, max_sessions). Se a criação do contexto falha com o KV na GPU,
+  tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de peso
+  na GPU e deixando o KV cache na RAM. O valor efetivo aparece em `/health`.
+  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
+  divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
+  com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).

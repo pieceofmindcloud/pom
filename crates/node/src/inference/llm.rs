@@ -282,7 +282,32 @@ impl LlmEngine {
     /// Load a GGUF model slice and create a llama context.
     pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
         let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
-        Self::with_model(loaded, cfg)
+        match Self::with_model(loaded.clone(), cfg) {
+            Ok(engine) => Ok(engine),
+            Err(gpu_kv_error) => {
+                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(cfg) else {
+                    return Err(gpu_kv_error);
+                };
+
+                warn!(
+                    "llama context failed with KV cache on GPU: {gpu_kv_error}; retrying with KV cache in host RAM while keeping {} GPU layers",
+                    cfg.n_gpu_layers
+                );
+                Self::with_model(loaded, &cpu_kv_cfg).with_context(|| {
+                    format!(
+                        "llama context failed with GPU KV and host-RAM KV fallback; requested {} GPU layers",
+                        cfg.n_gpu_layers
+                    )
+                })
+            }
+        }
+    }
+
+    fn cpu_kv_fallback(cfg: &EngineConfig) -> Option<EngineConfig> {
+        cfg.offload_kqv.then(|| EngineConfig {
+            offload_kqv: false,
+            ..cfg.clone()
+        })
     }
 
     /// N contextos sobre um modelo só, um por sessão simultânea.
@@ -355,7 +380,6 @@ impl LlmEngine {
         // ── Create context ───────────────────────────────────────────────────
         let ctx = unsafe { sys::llama_new_context_with_model(model, cparams) };
         if ctx.is_null() {
-            unsafe { sys::llama_model_free(model) };
             bail!(
                 "llama_new_context_with_model failed (n_seq_max={})",
                 cfg.max_sessions
@@ -965,6 +989,24 @@ mod pool_tests {
             mtp: false,
             rs_seq_window: 0,
         }
+    }
+
+    #[test]
+    fn gpu_kv_failure_fallback_keeps_the_requested_gpu_layers() {
+        let cfg = cfg();
+        let fallback = LlmEngine::cpu_kv_fallback(&cfg).expect("GPU KV was enabled");
+
+        assert!(!fallback.offload_kqv);
+        assert_eq!(fallback.n_gpu_layers, cfg.n_gpu_layers);
+        assert_eq!(fallback.n_ctx, cfg.n_ctx);
+    }
+
+    #[test]
+    fn cpu_kv_configuration_does_not_retry() {
+        let mut cfg = cfg();
+        cfg.offload_kqv = false;
+
+        assert!(LlmEngine::cpu_kv_fallback(&cfg).is_none());
     }
 
     /// O pool nao pode custar memoria a mais: o cache de cada contexto e o

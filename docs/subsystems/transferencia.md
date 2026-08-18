@@ -93,6 +93,27 @@ leitura completa do arquivo na máquina de origem; fazer isso no aceite faria o
 clique esperar minutos. Em troca, o operador ganha o job já na lista, em `done`
 ou `failed` com o motivo no lugar onde ele procuraria.
 
+## 5.1 O esquema de quem disca é o local, não o da oferta
+
+A oferta traz `from_gateway`, montado pelo **remetente**. Ele gravava
+`http://` fixo: com o cluster em TLS, quem aceitava discava em claro e o gateway
+do outro lado respondia **403 em texto puro** - literalmente "este cluster exige
+TLS entre nós; refaça a chamada em https". O `.json()` caía em cima dessa frase
+e o operador via `manifesto inválido de ksia: error decoding response body`, que
+não aponta para nada (18/08).
+
+Duas defesas, porque as duas são necessárias:
+
+- o remetente monta a URL com `peer_client::peer_base_url(.., tls_ativo())`, e
+  não com um literal;
+- quem aceita passa a URL por `normaliza_esquema`, que impõe a **política
+  local** - um nó de versão anterior continua oferecendo `http://`, e o
+  download funciona mesmo assim.
+
+E `fetch_manifest` confere o status **antes** de tentar ler JSON, repetindo a
+frase do outro lado. Erro de gateway costuma vir em texto puro; ler JSON em
+cima dele troca a explicação de quem sabe por uma mensagem que não ajuda.
+
 ## 6. Cancelamento simétrico
 
 `POST /api/transfer/jobs/:id/cancel` é um verbo só, com a mesma semântica nas

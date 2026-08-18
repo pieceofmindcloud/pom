@@ -696,7 +696,11 @@ pub async fn run(
         // Estado próprio, de propósito: ver a nota em `handle_tp_reduce`.
         .merge(
             Router::new()
-                .route("/v1/tp/reduce", post(handle_tp_reduce))
+                .route(
+                    "/v1/tp/reduce",
+                    post(handle_tp_reduce)
+                        .layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+                )
                 .with_state((tp_barrier, tp_size)),
         );
 
@@ -879,13 +883,6 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
 /// Uma parcial de um reduce de tensor parallelism (caminho C). Cada rank do
 /// grupo faz um POST desta com a própria parcial e o mesmo `barrier_id`; o
 /// endpoint (no primary/rank 0) acumula e devolve a soma quando todos chegam.
-#[derive(Deserialize)]
-struct TpReduceRequest {
-    barrier_id: String,
-    rank: u32,
-    data: Vec<f32>,
-}
-
 /// **Nunca** toca no mutex do `InferState`, e isso é a correção, não estilo.
 ///
 /// `handle_prefill` segura esse mutex durante o decode inteiro, e é de dentro
@@ -898,13 +895,53 @@ struct TpReduceRequest {
 ///
 /// A barreira vive fora do mutex (`ReduceBarrier` já é `Clone` e sincronizada
 /// por dentro), então o caminho da coletiva nunca disputa com o decode.
-async fn handle_tp_reduce(
+///
+/// A parcial viaja como **f32 cru em little-endian**, não como JSON. Um float
+/// de 4 bytes vira ~12 caracteres em JSON, e a parcial de um prefill de 100
+/// tokens tem 410 mil floats: ~5 MB de texto por reduce, 64 vezes por decode.
+/// Isso estourava o limite de corpo do axum (413) e, quando cabia, gastava mais
+/// tempo formatando número que somando. Cru é 4x menor e sem parse.
+///
+/// `barrier_id` e `rank` vão em cabeçalho, que é onde metadado de tamanho fixo
+/// pertence.
+pub(crate) async fn handle_tp_reduce(
     State((barrier, size)): State<(crate::collective::ReduceBarrier, u32)>,
-    Json(req): Json<TpReduceRequest>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
 ) -> Response {
-    match barrier.contribute(&req.barrier_id, req.rank, size, req.data) {
+    let barrier_id = match headers.get(crate::tp::TP_BARRIER_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(v) => v.to_string(),
+        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_BARRIER_HEADER)),
+    };
+    let rank: u32 = match headers
+        .get(crate::tp::TP_RANK_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+    {
+        Some(v) => v,
+        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_RANK_HEADER)),
+    };
+    if body.len() % 4 != 0 {
+        return err400(format!("parcial de {} bytes não é múltiplo de 4", body.len()));
+    }
+    let data: Vec<f32> = body
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    match barrier.contribute(&barrier_id, rank, size, data) {
         Ok(rx) => match rx.await {
-            Ok(sum) => Json(json!({ "sum": sum })).into_response(),
+            Ok(sum) => {
+                let mut out = Vec::with_capacity(sum.len() * 4);
+                for v in &sum {
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    out,
+                )
+                    .into_response()
+            }
             Err(e) => err500(format!("barreira abandonada: {e}")),
         },
         Err(e) => err400(e),

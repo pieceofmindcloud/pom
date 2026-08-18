@@ -72,6 +72,13 @@ executa a cadeia que o planejador montou.
   amostrava um token normal, apagava a sessão, e o step replicado seguinte
   batia em "sessão desconhecida" - HTTP 400 (18/08).
 
+  A parcial viaja como **f32 cru em little-endian**, com `barrier_id` e `rank`
+  em cabeçalho (`x-pom-tp-barrier`, `x-pom-tp-rank`), e a rota tem o mesmo
+  limite de corpo das de quadro. Era JSON: ~12 bytes por float de 4, o que dava
+  ~5 MB por reduce num prefill de 100 tokens - 64 vezes por decode - e estourava
+  o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
+  requisição (18/08). Cru é 4x menor e não passa por parse.
+
   O ciclo de vida da sessão da réplica é comandado pelo rank 0:
   `/v1/session/release` é repassado aos membros (`replicate_session_call`),
   porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.

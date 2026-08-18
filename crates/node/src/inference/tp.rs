@@ -13,17 +13,12 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
-#[derive(serde::Serialize)]
-struct TpReduceRequest {
-    barrier_id: String,
-    rank: u32,
-    data: Vec<f32>,
-}
+/// Cabeçalhos da coletiva. O corpo é a parcial em f32 cru; metadado de tamanho
+/// fixo vai em cabeçalho, e não misturado ao vetor.
+pub const TP_BARRIER_HEADER: &str = "x-pom-tp-barrier";
+pub const TP_RANK_HEADER: &str = "x-pom-tp-rank";
 
-#[derive(serde::Deserialize)]
-struct TpReduceResponse {
-    sum: Vec<f32>,
-}
+
 
 struct TpState {
     rank: u32,
@@ -364,22 +359,49 @@ async fn post_reduce(
     barrier_id: &str,
     data: Vec<f32>,
 ) -> Result<Vec<f32>, String> {
+    // f32 cru, little-endian. JSON custava ~12 bytes por float de 4: um prefill
+    // de 100 tokens dava ~5 MB por reduce e estourava o limite de corpo (413),
+    // 64 vezes por decode.
+    let mut corpo = Vec::with_capacity(data.len() * 4);
+    for v in &data {
+        corpo.extend_from_slice(&v.to_le_bytes());
+    }
+    let esperado = data.len();
+
     let resp = state
         .client
         .post(format!("{}/v1/tp/reduce", state.rank0_url))
-        .json(&TpReduceRequest {
-            barrier_id: barrier_id.to_string(),
-            rank: state.rank,
-            data,
-        })
+        .header(TP_BARRIER_HEADER, barrier_id)
+        .header(TP_RANK_HEADER, state.rank.to_string())
+        .header("content-type", "application/octet-stream")
+        .body(corpo)
         .send()
         .await
         .map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("POST /v1/tp/reduce respondeu {}", resp.status()));
+        let status = resp.status();
+        let motivo = resp.text().await.unwrap_or_default();
+        return Err(format!(
+            "POST /v1/tp/reduce respondeu {status}{}",
+            if motivo.trim().is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", motivo.trim())
+            }
+        ));
     }
-    let body: TpReduceResponse = resp.json().await.map_err(|e| e.to_string())?;
-    Ok(body.sum)
+    let bytes = resp.bytes().await.map_err(|e| e.to_string())?;
+    if bytes.len() != esperado * 4 {
+        return Err(format!(
+            "soma veio com {} bytes, esperado {}",
+            bytes.len(),
+            esperado * 4
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect())
 }
 
 #[cfg(test)]
@@ -452,75 +474,45 @@ mod tests {
         );
     }
     use crate::collective::ReduceBarrier;
-    use axum::{extract::State, routing::post, Json, Router};
-    use serde_json::json;
+    use axum::{routing::post, Router};
 
-    #[derive(Clone)]
-    struct TestState {
-        barrier: ReduceBarrier,
-        size: u32,
-    }
-
-    async fn handle(State(s): State<TestState>, Json(req): Json<serde_json::Value>) -> axum::Json<serde_json::Value> {
-        let barrier_id = req["barrier_id"].as_str().unwrap().to_string();
-        let rank = req["rank"].as_u64().unwrap() as u32;
-        let data: Vec<f32> = req["data"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_f64().unwrap() as f32)
-            .collect();
-        let rx = s.barrier.contribute(&barrier_id, rank, s.size, data).unwrap();
-        let sum = rx.await.unwrap();
-        axum::Json(json!({ "sum": sum }))
-    }
-
-    /// A coletiva distribuída soma as parciais de 3 ranks concorrentes por
-    /// HTTP - o mesmo contrato do POST /v1/tp/reduce do primary.
+    /// Os dois lados de produção falando entre si: o cliente real
+    /// (`post_reduce`) contra o handler real (`infer_server::handle_tp_reduce`).
+    ///
+    /// A versão anterior deste teste montava um servidor JSON próprio e um
+    /// cliente JSON próprio - não exercitava nenhum dos dois lados reais, e
+    /// continuou passando verde depois que a produção trocou o corpo para f32
+    /// cru. Um teste que não pode falhar quando o contrato muda não é rede de
+    /// proteção, é enfeite.
     #[tokio::test]
-    async fn three_ranks_reduce_over_http() {
+    async fn three_ranks_reduce_over_the_real_wire() {
         let app = Router::new()
-            .route("/v1/tp/reduce", post(handle))
-            .with_state(TestState {
-                barrier: ReduceBarrier::new(),
-                size: 3,
-            });
+            .route("/v1/tp/reduce", post(crate::infer_server::handle_tp_reduce))
+            .with_state((ReduceBarrier::new(), 3u32));
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
 
         let url = format!("http://{addr}");
-        let partials = vec![vec![1.0, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
-        let expected = vec![9.0, 12.0];
-        let client = reqwest::Client::new();
+        let partials = vec![vec![1.0f32, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]];
+        let esperado = vec![9.0f32, 12.0];
 
         let handles: Vec<_> = partials
             .into_iter()
             .enumerate()
             .map(|(rank, data)| {
-                let client = client.clone();
-                let url = url.clone();
-                tokio::spawn(async move {
-                    let resp = client
-                        .post(format!("{url}/v1/tp/reduce"))
-                        .json(&json!({ "barrier_id": "b", "rank": rank, "data": data }))
-                        .send()
-                        .await
-                        .unwrap();
-                    let body: serde_json::Value = resp.json().await.unwrap();
-                    let sum: Vec<f32> = body["sum"]
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .map(|v| v.as_f64().unwrap() as f32)
-                        .collect();
-                    sum
-                })
+                let state = Arc::new(TpState {
+                    rank: rank as u32,
+                    rank0_url: url.clone(),
+                    client: reqwest::Client::new(),
+                    counter: AtomicU64::new(0),
+                });
+                tokio::spawn(async move { post_reduce(&state, "b", data).await })
             })
             .collect();
 
         for h in handles {
-            assert_eq!(h.await.unwrap(), expected);
+            assert_eq!(h.await.unwrap().expect("reduce"), esperado);
         }
     }
 }

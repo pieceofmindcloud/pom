@@ -674,6 +674,17 @@ pub fn split(
 
 // ── Tensor parallelism: shard por tensor ─────────────────────────────────────
 
+/// Versão da regra de fatiamento por tensor, gravada em `pom.tp_format`.
+///
+/// **Suba este número sempre que mudar o que o shard contém** - eixo de corte,
+/// hiperparâmetro reescrito, tensor que passa a ser replicado. É o que faz um
+/// shard antigo ser regenerado em vez de reaproveitado em silêncio.
+///
+/// 1 = cabeça de saída replicada, `head_count`/`head_count_kv`/
+/// `feed_forward_length` divididos por `tp_size`. Arquivos escritos antes deste
+/// carimbo não têm a chave, e a ausência já significa "regra desconhecida".
+pub const TP_SHARD_FORMAT: u32 = 1;
+
 /// Papel de um tensor num shard de tensor parallelism (estilo Megatron).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TpRole {
@@ -993,6 +1004,15 @@ pub fn shard_tensor_parallel(
     kv_out.push(KvOut::Encoded(encode_kv_u32(
         &crate::brand::gguf_key("tp_shard"),
         1,
+    )));
+    // Qual **regra** escreveu este arquivo. Sem isto o reaproveitamento em
+    // `plan::extract_tp_shard` era "existe e tem mais de 1 KB", que não sabe
+    // distinguir um shard atual de um escrito por uma versão com defeito: em
+    // 17/08 a ksia continuou carregando um shard de cabeçalho não dividido
+    // durante três correções seguidas, e o log dizia "reaproveitando".
+    kv_out.push(KvOut::Encoded(encode_kv_u32(
+        &crate::brand::gguf_key("tp_format"),
+        TP_SHARD_FORMAT,
     )));
     kv_out.push(KvOut::Encoded(encode_kv_u32(
         &crate::brand::gguf_key("tp_size"),

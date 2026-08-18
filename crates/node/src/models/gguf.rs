@@ -58,6 +58,23 @@ pub struct GgufInfo {
     pub embedding_length: Option<u32>,
     /// `general.size_label`, e.g. "35B".
     pub size_label: Option<String>,
+    /// `pom.tp_format`/`pom.tp_size`/`pom.tp_rank` de um shard de tensor
+    /// parallelism: qual versão da regra de fatiamento escreveu este arquivo, e
+    /// que posição do grupo ele é.
+    ///
+    /// `None` em qualquer arquivo que não seja shard de TP - **e também** nos
+    /// shards escritos antes de `tp_format` existir, que é o ponto: um shard
+    /// sem carimbo é um shard de regra desconhecida, e regra desconhecida se
+    /// regenera. Ver `splitter::TP_SHARD_FORMAT`.
+    pub tp_stamp: Option<TpStamp>,
+}
+
+/// Carimbo de origem de um shard de tensor parallelism.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TpStamp {
+    pub format: u32,
+    pub size: u32,
+    pub rank: u32,
 }
 
 impl GgufInfo {
@@ -174,6 +191,9 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
     let mut info = GgufInfo::default();
     let mut start_layer: Option<u32> = None;
     let mut end_layer: Option<u32> = None;
+    let mut tp_format: Option<u32> = None;
+    let mut tp_size: Option<u32> = None;
+    let mut tp_rank: Option<u32> = None;
 
     for _ in 0..n_kv {
         let key = r.string()?;
@@ -189,6 +209,9 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k == crate::brand::gguf_key("original_block_count") => {
                 info.original_block_count = r.value_as_u32(vtype)?
             }
+            k if k == crate::brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
+            k if k == crate::brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
+            k if k == crate::brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("start_layer") => start_layer = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
             // `<arch>.block_count` / `<arch>.embedding_length` — the arch prefix
@@ -203,6 +226,12 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
 
     if let (Some(s), Some(e)) = (start_layer, end_layer) {
         info.shard_range = Some((s, e));
+    }
+    // Sem os tres, nao ha carimbo: um shard antigo trazia `tp_size`/`tp_rank`
+    // mas nenhum `tp_format`, e e exatamente esse arquivo que nao pode passar
+    // por atual.
+    if let (Some(f), Some(sz), Some(rk)) = (tp_format, tp_size, tp_rank) {
+        info.tp_stamp = Some(TpStamp { format: f, size: sz, rank: rk });
     }
 
     Ok(info)

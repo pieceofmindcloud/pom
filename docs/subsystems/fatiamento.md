@@ -177,6 +177,23 @@ correto; `token_embd.weight` tem o mesmo formato e já era replicada.
   (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
   com `token_embd` (weight tying).
 
+### Carimbo de regra: `pom.tp_format`
+
+Todo shard de tensor grava `pom.tp_format` (`splitter::TP_SHARD_FORMAT`), a
+versão da regra que o escreveu, ao lado de `pom.tp_size`/`pom.tp_rank`.
+`extract_tp_shard` só reaproveita um arquivo existente quando os três conferem;
+carimbo ausente ou diferente é regeneração, com o motivo no log.
+
+**Quem mudar o que o shard contém sobe esse número** - eixo de corte,
+hiperparâmetro reescrito, tensor que passa a ser replicado.
+
+Existe por um dia inteiro perdido: o critério de reuso era "existe e tem mais de
+1 KB", que não distingue um shard atual de um escrito por uma versão com
+defeito. Em 17/08 a ksia carregou o mesmo `_tp0of2.gguf` de cabeçalho não
+dividido durante três correções seguidas, e o log anunciava "reaproveitando" a
+cada tentativa - o sintoma era idêntico ao do defeito já corrigido, o que fez
+procurar o problema no código que já estava certo.
+
 ### O cabeçalho é dividido junto com os tensores
 
 Cortar o tensor não basta: o KV do shard tem que descrever o tensor que o shard

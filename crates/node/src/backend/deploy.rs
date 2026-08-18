@@ -1518,9 +1518,16 @@ async fn tp_shardability_check(
         return Some(format!("não foi possível falar com o primary {}", primary.label()));
     };
 
+    // `/api/ui/tp/check` é autenticada como todo `/api/ui/*` de operador: sem a
+    // chave, o primary responde 401 e a checagem nunca passa - em nenhuma
+    // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
+    // só o TLS (cliente pinado por node_id); credencial é por requisição, como
+    // no resto do arquivo.
+    let key = state.auth.read().await.connection_key.clone();
     let resp = match http
         .post(format!("{base}/api/ui/tp/check"))
         .timeout(PEER_TIMEOUT * 4)
+        .bearer_auth(&key)
         .json(&json!({ "model_path": path, "tp_size": tp.size }))
         .send()
         .await
@@ -1539,6 +1546,21 @@ async fn tp_shardability_check(
             return Some(format!("{} respondeu mal à checagem de shard", primary.label()))
         }
     };
+    tp_check_verdict(&body, &primary.label())
+}
+
+/// Como se lê a resposta de `/api/ui/tp/check`.
+///
+/// Separado da chamada para ser testável sem peer vivo - e porque o ramo sem
+/// `ok` já mentiu uma vez. `/api/ui/tp/check` é rota autenticada
+/// (`webui::tp_check` recebe `ConnectionAuth`), e um peer que recusa devolve
+/// `{"error":"missing Authorization header"}`: JSON válido, sem `ok`. Chamar
+/// isso de "binário antigo" mandou o operador conferir a versão do binário nas
+/// duas máquinas enquanto o defeito real era a credencial que
+/// `tp_shardability_check` nem enviava (17/08, com Mac e ksia no mesmo commit).
+/// Quem recusa costuma dizer por quê; repetir a razão dele é sempre melhor que
+/// adivinhar a nossa.
+fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<String> {
     match body.get("ok").and_then(|v| v.as_bool()) {
         Some(true) => None,
         Some(false) => Some(
@@ -1547,10 +1569,10 @@ async fn tp_shardability_check(
                 .unwrap_or("o modelo não é shardável no caminho C")
                 .to_string(),
         ),
-        None => Some(format!(
-            "{} não tem a checagem de shard (binário antigo?)",
-            primary.label()
-        )),
+        None => Some(match body.get("error").and_then(|v| v.as_str()) {
+            Some(err) => format!("{label} recusou a checagem de shard: {err}"),
+            None => format!("{label} não tem a checagem de shard (binário antigo?)"),
+        }),
     }
 }
 
@@ -4155,6 +4177,101 @@ mod tests {
             worker_node_ids: vec!["a".into()],
         };
         assert!(tp_group_checks(&self_worker, &ms, "qwen3.5-9b").unwrap().contains("próprio primary"));
+    }
+
+    /// A recusa do peer é repetida ao operador, em vez de virar palpite sobre a
+    /// versão do binário dele. O caso que motivou: `/api/ui/tp/check` é
+    /// autenticada, a chamada ia sem a chave, e o `{"error":...}` que voltava
+    /// era anunciado como "binário antigo" - com as duas máquinas no mesmo
+    /// commit.
+    #[test]
+    fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
+        assert_eq!(tp_check_verdict(&json!({ "ok": true }), "ksia"), None);
+
+        assert_eq!(
+            tp_check_verdict(&json!({ "ok": false, "reason": "cabeças não dividem" }), "ksia"),
+            Some("cabeças não dividem".to_string())
+        );
+
+        let recusa = tp_check_verdict(
+            &json!({ "error": "missing Authorization header" }),
+            "ksia",
+        )
+        .unwrap();
+        assert!(
+            recusa.contains("missing Authorization header"),
+            "a razão do peer tem que aparecer: {recusa}"
+        );
+        assert!(
+            !recusa.contains("binário antigo"),
+            "peer que recusou não é peer desatualizado: {recusa}"
+        );
+
+        // Só um corpo que não explica nada continua valendo como binário velho.
+        assert!(tp_check_verdict(&json!({ "outra": 1 }), "ksia")
+            .unwrap()
+            .contains("binário antigo"));
+    }
+
+    /// A checagem tem que chegar autenticada no primary. Sem isto ela é 401 em
+    /// qualquer máquina, e nenhuma implantação TP passa.
+    #[tokio::test]
+    async fn the_shardability_check_carries_the_operator_key() {
+        use crate::gateway::testkit::state_with;
+        use axum::routing::post as axum_post;
+        use std::sync::{Arc, Mutex};
+
+        let visto: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let capturado = visto.clone();
+        let app = Router::new().route(
+            "/api/ui/tp/check",
+            axum_post(move |headers: axum::http::HeaderMap| {
+                let capturado = capturado.clone();
+                async move {
+                    *capturado.lock().unwrap() = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    Json(json!({ "ok": true }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let state = state_with("eu", vec![]).await;
+        let machines = vec![Machine {
+            node_id: "primary".into(),
+            hostname: "ksia".into(),
+            gateway_url: Some(format!("http://127.0.0.1:{port}")),
+            inference_url: Some(format!("http://127.0.0.1:{port}")),
+            mem_free_mb: 900_000,
+            disk_free_mb: 900_000,
+            held: vec![HeldShard {
+                start_layer: 0,
+                end_layer: 31,
+                total_layers: Some(32),
+                name: "qwen3.5-9b.gguf".into(),
+                path: "/modelos/qwen3.5-9b.gguf".into(),
+                size_bytes: 1,
+            }],
+        }];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "primary".into(),
+            worker_node_ids: vec!["w".into()],
+        };
+
+        assert_eq!(tp_shardability_check(&state, &machines, &tp).await, None);
+        let header = visto.lock().unwrap().clone();
+        assert_eq!(
+            header,
+            Some("Bearer chave".to_string()),
+            "a checagem chegou sem a chave de operador: {header:?}"
+        );
     }
 
     /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o

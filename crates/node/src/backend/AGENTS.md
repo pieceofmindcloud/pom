@@ -143,7 +143,12 @@ behind an auth extractor.
   cluster, modelo inteiro, sem repetição) dentro do `plan`, e
   `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
   `webui::tp_check` -> `splitter::validate_tensor_parallel`) que recusa MoE/
-  SSM/weight-tied na tela. Daí em diante é o mesmo planner, o mesmo
+  SSM/weight-tied na tela. Essa rota é **autenticada** (`ConnectionAuth`), então
+  a chamada leva `bearer_auth(connection_key)`: `peer_http.for_peer` resolve só
+  o TLS, credencial é por requisição. Sem ela o primary responde 401 e nenhuma
+  implantação TP passa, em máquina nenhuma. A leitura da resposta vive em
+  `tp_check_verdict`, separada para ser testável e para repetir o `error` do
+  peer em vez de chamar toda resposta sem `ok` de binário velho. Daí em diante é o mesmo planner, o mesmo
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
   `docs/subsystems/implantacao.md` §1.1 e §1.2.

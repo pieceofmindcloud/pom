@@ -89,6 +89,15 @@ primary (rota `POST /api/ui/tp/check`) se o GGUF dele dá para partir - MoE/SSM/
 weight-tied ou dimensões que não dividem recusam o plano **na tela**, com um
 motivo que nomeia o tensor, em vez de deixar o job falhar no apply.
 
+`POST /api/ui/tp/check` é rota de operador como o resto de `/api/ui/*`: a
+chamada tem que levar a chave de conexão (`bearer_auth`). Ir sem ela rendia
+`{"error":"missing Authorization header"}`, que é JSON válido sem `ok`, e o
+código anunciava isso como "não tem a checagem de shard (binário antigo?)" -
+mandando o operador conferir versões com as duas máquinas no mesmo commit
+(17/08). Hoje a resposta é lida por `tp_check_verdict`, que repete o `error` do
+peer quando ele existe e só fala em binário antigo quando o corpo não explica
+nada.
+
 O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
 faz o worker extrair o shard por `plan::extract_tp_shard`, anunciar o papel via
 `Network::set_tp` e registrar a coletiva (`register_tp_reduce`). Ver

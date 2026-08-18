@@ -502,13 +502,6 @@ struct InferState {
     /// o tempo é exato. Sai daqui para o `meta` da resposta, e de lá para a
     /// telemetria por salto do gateway. `None` quando o nó não tem TLS.
     tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
-    /// Coletiva de tensor parallelism (caminho C). Usada só quando o nó é o
-    /// primary (rank 0) do grupo: acumula as parciais que chegam por
-    /// `POST /v1/tp/reduce` e devolve a soma a todos. `Clone` porque o
-    /// handler a copia para fora do mutex antes do `await`.
-    tp_barrier: crate::collective::ReduceBarrier,
-    /// Quantos ranks há no grupo TP (1 = sem TP).
-    tp_size: u32,
     /// Identidade TP deste nó. O rank 0 precisa da lista de membros para pôr
     /// os workers no mesmo decode; sem isso a barreira nunca fecha.
     tp: Option<crate::network::TpIdentity>,
@@ -539,8 +532,6 @@ impl InferState {
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
             mtp_min_probability: cfg.mtp_min_probability,
-            tp_barrier: crate::collective::ReduceBarrier::new(),
-            tp_size: cfg.tp.as_ref().map(|t| t.size).unwrap_or(1),
             tp: cfg.tp.clone(),
         }
     }
@@ -682,6 +673,11 @@ pub async fn run(
             .ok()
             .and_then(|info| info.original_block_count);
 
+    // Fora do mutex do estado: o decode segura aquele lock e é de dentro dele
+    // que o reduce espera a soma. Ver `handle_tp_reduce`.
+    let tp_barrier = crate::collective::ReduceBarrier::new();
+    let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
+
     let state: SharedState = Arc::new(Mutex::new(state_inner));
 
     let router = Router::new()
@@ -695,9 +691,14 @@ pub async fn run(
         )
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rollback", post(handle_rollback))
-        .route("/v1/tp/reduce", post(handle_tp_reduce))
         .route("/health", get(handle_health))
-        .with_state(state);
+        .with_state(state)
+        // Estado próprio, de propósito: ver a nota em `handle_tp_reduce`.
+        .merge(
+            Router::new()
+                .route("/v1/tp/reduce", post(handle_tp_reduce))
+                .with_state((tp_barrier, tp_size)),
+        );
 
     info!("inference server pronto em [::]:{port}");
 
@@ -885,14 +886,22 @@ struct TpReduceRequest {
     data: Vec<f32>,
 }
 
+/// **Nunca** toca no mutex do `InferState`, e isso é a correção, não estilo.
+///
+/// `handle_prefill` segura esse mutex durante o decode inteiro, e é de dentro
+/// desse decode que o callback do reduce bloqueia esperando a soma. Enquanto
+/// este handler pegava o mesmo mutex para ler a barreira, a parcial que chegava
+/// - do próprio rank 0 ou do worker - ficava presa esperando um lock que só
+/// seria liberado quando o decode terminasse; e o decode só terminaria com a
+/// soma que estava presa na porta. Deadlock exato de 18/08: os dois ranks
+/// logavam o primeiro reduce, com 0,2 ms de diferença, e o pipeline parava ali.
+///
+/// A barreira vive fora do mutex (`ReduceBarrier` já é `Clone` e sincronizada
+/// por dentro), então o caminho da coletiva nunca disputa com o decode.
 async fn handle_tp_reduce(
-    State(state): State<SharedState>,
+    State((barrier, size)): State<(crate::collective::ReduceBarrier, u32)>,
     Json(req): Json<TpReduceRequest>,
 ) -> Response {
-    let (barrier, size) = {
-        let s = state.lock().unwrap();
-        (s.tp_barrier.clone(), s.tp_size)
-    };
     match barrier.contribute(&req.barrier_id, req.rank, size, req.data) {
         Ok(rx) => match rx.await {
             Ok(sum) => Json(json!({ "sum": sum })).into_response(),

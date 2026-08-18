@@ -73,11 +73,38 @@ pub fn take_failure() -> Option<String> {
 /// atrás de um mutex: há no máximo um decode por processo de cada vez.
 static DECODE: std::sync::Mutex<Option<(String, u64)>> = std::sync::Mutex::new(None);
 
+/// Este processo está executando um decode como **réplica** (rank != 0)?
+///
+/// Uma réplica não tem opinião: ela existe para contribuir com a metade dela em
+/// cada reduce. Quem amostra o token, decide se a geração acabou e comanda o
+/// ciclo de vida da sessão é o rank 0 - a réplica segue.
+///
+/// Ignorar isso custou o 400 de 18/08: a amostragem é estocástica (temperatura,
+/// top_p, top_k, com RNG independente em cada processo), o worker amostrou EOS
+/// enquanto o rank 0 amostrava um token normal, deu a sessão por encerrada e
+/// apagou. O step seguinte chegou nele e recebeu "sessão desconhecida".
+pub fn is_replica() -> bool {
+    REPLICA.load(Ordering::Relaxed)
+}
+
+static REPLICA: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Abre um decode como réplica: mesmo id do rank 0, e sem direito a decisão.
+pub fn begin_replica_decode(id: &str) {
+    REPLICA.store(true, Ordering::Relaxed);
+    begin_decode_inner(id);
+}
+
 /// Abre um decode: os reduces seguintes pertencem a `id` e recomeçam do zero.
 ///
 /// Chamado pelos handlers de `/v1/prefill` e `/v1/step` nos **dois** lados - o
 /// rank 0 com o id que ele sorteou, o worker com o id que recebeu no cabeçalho.
 pub fn begin_decode(id: &str) {
+    REPLICA.store(false, Ordering::Relaxed);
+    begin_decode_inner(id);
+}
+
+fn begin_decode_inner(id: &str) {
     if let Ok(mut d) = DECODE.lock() {
         *d = Some((id.to_string(), 0));
     }
@@ -265,11 +292,22 @@ pub fn broadcast_decode(
                 .await;
             match r {
                 Ok(resp) if resp.status().is_success() => {}
-                Ok(resp) => note_failure(format!(
-                    "rank {} recusou o decode {id}: HTTP {}",
-                    &quem[..12.min(quem.len())],
-                    resp.status()
-                )),
+                Ok(resp) => {
+                    // O corpo é a explicação do próprio worker ("sessão
+                    // desconhecida", "chunk fora de ordem", ...). Reportar só o
+                    // status obriga quem depura a adivinhar - foi o que custou
+                    // a manhã de 17/08 com a checagem de shard.
+                    let status = resp.status();
+                    let motivo = resp
+                        .text()
+                        .await
+                        .unwrap_or_else(|e| format!("(corpo ilegível: {e})"));
+                    note_failure(format!(
+                        "rank {} recusou o decode {id}: HTTP {status} - {}",
+                        &quem[..12.min(quem.len())],
+                        motivo.trim()
+                    ))
+                }
                 Err(e) => note_failure(format!(
                     "não deu para pôr o rank {} no decode {id}: {e}",
                     &quem[..12.min(quem.len())]
@@ -349,6 +387,24 @@ mod tests {
         // Decode seguinte não reaproveita id do anterior.
         begin_decode("sessao-x:chunk-1");
         assert_eq!(next_barrier_id().unwrap(), "sessao-x:chunk-1#0");
+    }
+
+    /// Réplica não decide nada; rank 0 decide. E abrir um decode normal tira a
+    /// marca, senão o processo carregaria "sou réplica" para sempre.
+    #[test]
+    fn a_replica_has_no_say_and_the_mark_does_not_leak() {
+        begin_decode("normal");
+        assert!(!is_replica(), "rank 0 decide por si");
+
+        begin_replica_decode("do-rank-0");
+        assert!(is_replica(), "quem recebeu o id do rank 0 é réplica");
+        assert_eq!(next_barrier_id().unwrap(), "do-rank-0#0");
+
+        begin_decode("outro");
+        assert!(
+            !is_replica(),
+            "um decode próprio depois de uma réplica volta a ser próprio"
+        );
     }
 
     /// A falha da coletiva é guardada, consumida uma vez, e a **primeira**

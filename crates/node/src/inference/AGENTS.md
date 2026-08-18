@@ -65,6 +65,13 @@ executa a cadeia que o planejador montou.
   de wo/ffn_down e chama esse callback durante o decode - confirmado em campo:
   `graph splits = 66` (2 por camada) e o log do primeiro reduce.
 
+  Uma **réplica não tem opinião** (`tp::is_replica`): ela contribui com a metade
+  dela em cada reduce e nada mais. Quem amostra o token, decide o fim da geração
+  e encerra a sessão é o rank 0. A amostragem é estocástica e o RNG de cada
+  processo é independente, então o worker amostrava EOS enquanto o rank 0
+  amostrava um token normal, apagava a sessão, e o step replicado seguinte
+  batia em "sessão desconhecida" - HTTP 400 (18/08).
+
   Falha da coletiva **não pode ser silenciosa**: ela não degrada a resposta, ela
   a torna falsa. `note_failure`/`take_failure` levam o motivo até o decode, que
   derruba a requisição; e `decode_tokens` ainda compara `reduce_count()` antes e

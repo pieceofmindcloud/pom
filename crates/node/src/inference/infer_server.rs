@@ -1011,7 +1011,7 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
         .get(crate::tp::TP_DECODE_HEADER)
         .and_then(|v| v.to_str().ok())
     {
-        crate::tp::begin_decode(id);
+        crate::tp::begin_replica_decode(id);
         return;
     }
     if tp.rank != 0 {
@@ -1514,7 +1514,9 @@ fn prefill_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        if done {
+        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
+        // geração é o rank 0. Ver `tp::is_replica`.
+        if done && !crate::tp::is_replica() {
             s.finish(&sid_key);
         }
         timings.sampling_us += logits_access_us
@@ -2601,7 +2603,8 @@ fn step_blocking(
                 .unwrap()
                 .recent_tokens
                 .extend_from_slice(accepted_ids);
-            if done {
+            // Ver a nota gêmea abaixo: réplica não encerra sessão.
+            if done && !crate::tp::is_replica() {
                 s.finish(&sid_key);
             }
 
@@ -2640,7 +2643,9 @@ fn step_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        if done {
+        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
+        // geração é o rank 0. Ver `tp::is_replica`.
+        if done && !crate::tp::is_replica() {
             s.finish(&sid_key);
         }
         timings.sampling_us += logits_access_us

@@ -911,6 +911,31 @@ async fn handle_tp_reduce(
     }
 }
 
+
+/// Repassa uma chamada de ciclo de vida de sessão aos demais ranks do grupo.
+///
+/// O corpo é remontado (não é um quadro binário como o decode), e o cabeçalho
+/// de réplica evita fan-out infinito: quem recebe marcado não repassa.
+fn replicate_session_call(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    rota: &str,
+    session_id: &str,
+) {
+    if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
+        return; // já é a réplica
+    }
+    let tp = {
+        let s = state.lock().unwrap();
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
+        return;
+    };
+    let corpo = json!({ "session_id": session_id }).to_string().into_bytes();
+    crate::tp::broadcast_to(&tp.members, rota, "session", corpo, Some("application/json"));
+}
+
 // ── /v1/session/release ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -920,8 +945,15 @@ struct ReleaseRequest {
 
 async fn handle_release(
     State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
 ) -> impl IntoResponse {
+    // A réplica não encerra sessão por conta própria (ver `tp::is_replica`),
+    // então quem a libera é este release - que o gateway manda **só ao rank 0**,
+    // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
+    // fica segurando o slot para sempre e a requisição seguinte morre com
+    // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
+    replicate_session_call(&state, &headers, "/v1/session/release", &req.session_id);
     let mut s = state.lock().unwrap();
     let existed = s.sessions.contains_key(&req.session_id);
     s.finish(&req.session_id);

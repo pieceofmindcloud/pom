@@ -72,6 +72,17 @@ executa a cadeia que o planejador montou.
   amostrava um token normal, apagava a sessão, e o step replicado seguinte
   batia em "sessão desconhecida" - HTTP 400 (18/08).
 
+  O ciclo de vida da sessão da réplica é comandado pelo rank 0:
+  `/v1/session/release` é repassado aos membros (`replicate_session_call`),
+  porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.
+  Sem o repasse a sessão do worker segurava o único slot e a **segunda**
+  requisição morria com "seq pool esgotado" (18/08).
+
+  **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
+  Ele só é usado pela decodificação especulativa, que está desligada nas configs
+  de TP hoje; ligar especulação num grupo TP deixaria o KV do worker à frente do
+  rank 0 depois de um rascunho recusado.
+
   Falha da coletiva **não pode ser silenciosa**: ela não degrada a resposta, ela
   a torna falsa. `note_failure`/`take_failure` levam o motivo até o decode, que
   derruba a requisição; e `decode_tokens` ainda compara `reduce_count()` antes e

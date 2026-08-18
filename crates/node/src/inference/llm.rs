@@ -663,6 +663,15 @@ impl LlmEngine {
         // entrou no grafo. O rank rodou com meia largura e sem soma nenhuma, e
         // a resposta é falsa - o modo de falha de 18/08, que não tinha sintoma
         // além do texto sem sentido.
+        // Quantos reduces este decode disparou. São 2 por camada (a projeção
+        // de saída da atenção e o ffn_down), então um modelo de 32 camadas tem
+        // que somar 64. Menos que isso significa que **parte** do grafo roda
+        // sem redução - e meia rede reduzida produz texto fluente e sem
+        // sentido, que é indistinguível de um modelo ruim.
+        let reduces = crate::tp::reduces_in_current_decode();
+        if crate::tp::is_active() {
+            tracing::debug!("decode fechou com {reduces} reduces");
+        }
         if crate::tp::is_active() && crate::tp::reduce_count() == tp_antes {
             bail!(
                 "coletiva de tensor parallelism ligada mas nenhum reduce rodou \

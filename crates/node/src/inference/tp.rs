@@ -110,6 +110,11 @@ fn begin_decode_inner(id: &str) {
     }
 }
 
+/// Quantos reduces o decode em curso já fez. Zero = o op não entrou no grafo.
+pub fn reduces_in_current_decode() -> u64 {
+    DECODE.lock().ok().and_then(|d| d.as_ref().map(|(_, n)| *n)).unwrap_or(0)
+}
+
 /// Consome o próximo `barrier_id` deste decode.
 fn next_barrier_id() -> Option<String> {
     let mut d = DECODE.lock().ok()?;
@@ -274,6 +279,22 @@ pub fn broadcast_decode(
     decode_id: &str,
     body: Vec<u8>,
 ) {
+    broadcast_to(members, rota, decode_id, body, None)
+}
+
+/// O mesmo, dizendo o `content-type` quando o corpo não é um quadro binário.
+///
+/// O extrator `Json` do axum **exige** o cabeçalho: sem ele a réplica devolve
+/// 415 e a chamada some, que é o pior tipo de falha para uma rota de ciclo de
+/// vida - a sessão ficaria pendurada e o defeito só apareceria na requisição
+/// seguinte, longe da causa.
+pub fn broadcast_to(
+    members: &[crate::network::TpMember],
+    rota: &str,
+    decode_id: &str,
+    body: Vec<u8>,
+    content_type: Option<&'static str>,
+) {
     for membro in members.iter().skip(1) {
         let url = format!("{}{rota}", membro.url.trim_end_matches('/'));
         let cliente = match peer_client_for(&membro.node_id) {
@@ -281,15 +302,15 @@ pub fn broadcast_decode(
             None => continue,
         };
         let corpo = body.clone();
+        let ct = content_type;
         let id = decode_id.to_string();
         let quem = membro.node_id.clone();
         tokio::spawn(async move {
-            let r = cliente
-                .post(&url)
-                .header(TP_DECODE_HEADER, &id)
-                .body(corpo)
-                .send()
-                .await;
+            let mut req = cliente.post(&url).header(TP_DECODE_HEADER, &id);
+            if let Some(ct) = ct {
+                req = req.header("content-type", ct);
+            }
+            let r = req.body(corpo).send().await;
             match r {
                 Ok(resp) if resp.status().is_success() => {}
                 Ok(resp) => {

@@ -94,6 +94,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   reduce no primary. O `TunnelRequest` leva também os cabeçalhos, para que a
   barreira e o rank sejam preservados no salto pela internet.
 
+  O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
+  reduces esperados e observados, espera total, p50/p95, bytes de
+  request/response, broadcasts e chamadas diretas, pelo túnel ou por fallback.
+  Ele mede a espera da barreira síncrona, não uma latência pura de pacote. Em
+  um modelo de 32 camadas, a arquitetura atual tem dois pontos de coletiva por
+  camada, ou 64 esperas síncronas por `llama_decode` de um token; isso é TP e
+  não deve ser confundido com os frames de estado oculto do pipeline.
+
   O ciclo de vida da sessão da réplica é comandado pelo rank 0:
   `/v1/session/release` é repassado aos membros (`replicate_session_call`),
   porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.

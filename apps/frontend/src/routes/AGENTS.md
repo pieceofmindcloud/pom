@@ -157,10 +157,13 @@ Key logic carriers:
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
-- `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` — the
+- `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
   closed-by-default telemetry table: per-hop prefill/decode phases, gateway vs
   backend vs residual vs transport timing, bytes per hop; renders the legacy
-  (pre-phase-split) hop shape separately.
+  (pre-phase-split) hop shape separately, an optional TP collective table and
+  a pure diagnosis card. The AI action sends both tables as private request
+  content, while the initial model is shown as a non-turn mark before chat
+  messages.
 - `DeployModel.rowsOf`/`sameRows`/`stepOf`/`assign`/`move` (DeployModel.tsx) —
   the selection model: merged steps expand back into per-slice rows, edits are
   sent back to the plan for validation, machine collision swaps ranges, and

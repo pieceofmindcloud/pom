@@ -24,6 +24,16 @@ túnel libp2p quando o transporte falha ou expira; `TunnelRequest` preserva os
 cabeçalhos da barreira e do rank nesse caminho alternativo. Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
+Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
+reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
+request/response, broadcasts e o caminho direto ou túnel. A espera inclui a
+barreira síncrona e não é latência pura de pacote. Os bytes e waits TP ficam
+separados dos frames de hidden state do pipeline. Com 32 camadas e dois pontos
+row-parallel por camada, um decode de um token pode fazer 64 esperas coletivas;
+isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
+camadas completas por nó troca um frame de hidden state entre blocos e evita
+essas coletivas TP.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

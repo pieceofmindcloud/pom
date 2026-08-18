@@ -62,9 +62,9 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## src/ subfolders
 
-- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
-- `src/i18n/` - en + pt-BR message table and provider. See `src/i18n/AGENTS.md`.
-- `src/routes/` - one screen per route (Chat, Dashboard, DeployModel, Shards, SliceModels, WholeModels, Transfers, SendFile, SlicingJobs, LogsByToken, LogsLive, NetworkSettings, Keys, ModelPaths, Documentation, Setup, NotFound).
+- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, telemetry diagnosis, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
+- `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
+- `src/routes/` - one screen per route, including the chat telemetry tables, diagnosis card, AI analysis action and initial-model mark. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.

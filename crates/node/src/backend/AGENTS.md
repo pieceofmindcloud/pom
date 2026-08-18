@@ -156,6 +156,9 @@ behind an auth extractor.
   máquina; `tp_members` transfere esses dados para cada rank, permitindo que
   `broadcast_to` e o reduce usem o túnel quando o HTTPS direto entre sites não
   tem rota.
+  O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
+  tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
+  bytes ou esperas TP com a telemetria de pipeline.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).

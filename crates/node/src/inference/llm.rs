@@ -659,6 +659,9 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
         }
+        crate::tp::set_expected_reduces(
+            2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
+        );
         // Coletiva ligada e nenhum reduce no decode inteiro: o op do fork não
         // entrou no grafo. O rank rodou com meia largura e sem soma nenhuma, e
         // a resposta é falsa - o modo de falha de 18/08, que não tinha sintoma
@@ -790,6 +793,9 @@ impl LlmEngine {
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
         }
+        crate::tp::set_expected_reduces(
+            2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
+        );
         // Ver a nota gêmea em `decode_tokens`: a coletiva falha por callback e
         // só pode virar erro aqui fora.
         if let Some(motivo) = crate::tp::take_failure() {

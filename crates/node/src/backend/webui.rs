@@ -1577,6 +1577,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
             let rank0 = tp.members.first();
             crate::tp::register_tp_reduce(
                 tp.rank,
+                tp.size,
                 tp.rank0_url.clone().unwrap(),
                 tp.rank0_node_id.clone(),
                 rank0.and_then(|m| m.libp2p_peer_id.clone()),

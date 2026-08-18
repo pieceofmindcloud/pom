@@ -13,6 +13,8 @@ use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::relay::ByteTransport;
+
 /// Cabeçalhos da coletiva. O corpo é a parcial em f32 cru; metadado de tamanho
 /// fixo vai em cabeçalho, e não misturado ao vetor.
 pub const TP_BARRIER_HEADER: &str = "x-pom-tp-barrier";
@@ -20,6 +22,7 @@ pub const TP_RANK_HEADER: &str = "x-pom-tp-rank";
 
 struct TpState {
     rank: u32,
+    size: u32,
     /// URL do primary (rank 0) da coletiva. Todo rank POSTa para cá.
     rank0_url: String,
     /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
@@ -82,6 +85,47 @@ pub fn take_failure() -> Option<String> {
 /// atrás de um mutex: há no máximo um decode por processo de cada vez.
 static DECODE: std::sync::Mutex<Option<(String, u64)>> = std::sync::Mutex::new(None);
 
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct TpDecodeTelemetry {
+    pub enabled: bool,
+    pub rank: u32,
+    pub size: u32,
+    pub expected_reduces: u64,
+    pub reduces: u64,
+    pub wait_ms: u64,
+    pub reduce_p50_ms: u64,
+    pub reduce_p95_ms: u64,
+    pub request_bytes: u64,
+    pub response_bytes: u64,
+    pub direct_calls: u64,
+    pub tunnel_calls: u64,
+    pub fallback_calls: u64,
+    pub broadcast_calls: u64,
+    pub broadcast_bytes: u64,
+    #[serde(skip)]
+    samples_ms: Vec<u64>,
+}
+
+static DECODE_TELEMETRY: std::sync::Mutex<Option<TpDecodeTelemetry>> = std::sync::Mutex::new(None);
+
+fn percentile(samples: &[u64], percent: usize) -> u64 {
+    if samples.is_empty() {
+        return 0;
+    }
+    let mut sorted = samples.to_vec();
+    sorted.sort_unstable();
+    let index = ((sorted.len() - 1) * percent + 50) / 100;
+    sorted[index]
+}
+
+fn telemetry_snapshot(current: &TpDecodeTelemetry) -> TpDecodeTelemetry {
+    let mut snapshot = current.clone();
+    snapshot.reduce_p50_ms = percentile(&snapshot.samples_ms, 50);
+    snapshot.reduce_p95_ms = percentile(&snapshot.samples_ms, 95);
+    snapshot.samples_ms.clear();
+    snapshot
+}
+
 /// Este processo está executando um decode como **réplica** (rank != 0)?
 ///
 /// Uma réplica não tem opinião: ela existe para contribuir com a metade dela em
@@ -117,11 +161,87 @@ fn begin_decode_inner(id: &str) {
     if let Ok(mut d) = DECODE.lock() {
         *d = Some((id.to_string(), 0));
     }
+    if let Ok(mut telemetry) = DECODE_TELEMETRY.lock() {
+        *telemetry = tp_state().map(|state| TpDecodeTelemetry {
+            enabled: true,
+            rank: state.rank,
+            size: state.size,
+            expected_reduces: 0,
+            reduces: 0,
+            wait_ms: 0,
+            reduce_p50_ms: 0,
+            reduce_p95_ms: 0,
+            request_bytes: 0,
+            response_bytes: 0,
+            direct_calls: 0,
+            tunnel_calls: 0,
+            fallback_calls: 0,
+            broadcast_calls: 0,
+            broadcast_bytes: 0,
+            samples_ms: Vec::new(),
+        });
+    }
+}
+
+pub fn set_expected_reduces(expected: u64) {
+    if let Ok(mut telemetry) = DECODE_TELEMETRY.lock() {
+        if let Some(current) = telemetry.as_mut() {
+            current.expected_reduces = expected;
+        }
+    }
+}
+
+pub fn record_broadcast_scheduled(calls: u64, bytes: u64) {
+    if let Ok(mut telemetry) = DECODE_TELEMETRY.lock() {
+        if let Some(current) = telemetry.as_mut() {
+            current.broadcast_calls += calls;
+            current.broadcast_bytes += calls * bytes;
+        }
+    }
+}
+
+pub fn record_reduce(
+    _elements: usize,
+    request_bytes: u64,
+    response_bytes: u64,
+    elapsed: std::time::Duration,
+    transport: ByteTransport,
+    fallback: bool,
+) {
+    if let Ok(mut telemetry) = DECODE_TELEMETRY.lock() {
+        if let Some(current) = telemetry.as_mut() {
+            let elapsed_ms = elapsed.as_millis() as u64;
+            current.reduces += 1;
+            current.wait_ms += elapsed_ms;
+            current.request_bytes += request_bytes;
+            current.response_bytes += response_bytes;
+            current.samples_ms.push(elapsed_ms);
+            match transport {
+                ByteTransport::Direct => current.direct_calls += 1,
+                ByteTransport::Tunnel => current.tunnel_calls += 1,
+            }
+            if fallback {
+                current.fallback_calls += 1;
+            }
+        }
+    }
+}
+
+pub fn take_decode_telemetry() -> Option<TpDecodeTelemetry> {
+    DECODE_TELEMETRY.lock().ok().and_then(|mut telemetry| {
+        let snapshot = telemetry.as_ref().map(telemetry_snapshot);
+        *telemetry = None;
+        snapshot
+    })
 }
 
 /// Quantos reduces o decode em curso já fez. Zero = o op não entrou no grafo.
 pub fn reduces_in_current_decode() -> u64 {
-    DECODE.lock().ok().and_then(|d| d.as_ref().map(|(_, n)| *n)).unwrap_or(0)
+    DECODE
+        .lock()
+        .ok()
+        .and_then(|d| d.as_ref().map(|(_, n)| *n))
+        .unwrap_or(0)
 }
 
 /// Consome o próximo `barrier_id` deste decode.
@@ -165,6 +285,7 @@ fn note_failure(motivo: String) {
 /// Chamado pelo apply quando o nó é primary/worker de um grupo (size > 1).
 pub fn register_tp_reduce(
     rank: u32,
+    size: u32,
     rank0_url: String,
     rank0_node_id: Option<String>,
     rank0_peer_id: Option<String>,
@@ -200,6 +321,7 @@ pub fn register_tp_reduce(
     };
     let state = Arc::new(TpState {
         rank,
+        size,
         rank0_url,
         rank0_peer_id,
         rank0_supports_tunnel,
@@ -226,6 +348,9 @@ pub fn unregister_tp_reduce() {
     }
     if let Ok(mut d) = DECODE.lock() {
         *d = None;
+    }
+    if let Ok(mut telemetry) = DECODE_TELEMETRY.lock() {
+        *telemetry = None;
     }
     REPLICA.store(false, Ordering::Relaxed);
     // Falha do grupo antigo não pode derrubar a primeira requisição do modelo
@@ -264,13 +389,12 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         );
     }
 
-    let sum = tokio::runtime::Handle::current()
-        .block_on(post_reduce(
-            state,
-            &barrier_id,
-            partial,
-            crate::infer_tunnel::tunnel_sender(),
-        ));
+    let sum = tokio::runtime::Handle::current().block_on(post_reduce(
+        state,
+        &barrier_id,
+        partial,
+        crate::infer_tunnel::tunnel_sender(),
+    ));
     match sum {
         Ok(sum) if sum.len() == n => unsafe {
             std::ptr::copy_nonoverlapping(sum.as_ptr(), data as *mut f32, n);
@@ -330,6 +454,8 @@ pub fn broadcast_to(
     body: Vec<u8>,
     content_type: Option<&'static str>,
 ) {
+    let replicas = members.len().saturating_sub(1) as u64;
+    record_broadcast_scheduled(replicas, body.len() as u64);
     for membro in members.iter().skip(1) {
         let url = format!("{}{rota}", membro.url.trim_end_matches('/'));
         let cliente = match peer_client_for(&membro.node_id) {
@@ -408,6 +534,8 @@ async fn post_reduce(
         corpo.extend_from_slice(&v.to_le_bytes());
     }
     let esperado = data.len();
+    let request_bytes = corpo.len() as u64;
+    let started = std::time::Instant::now();
 
     let headers = vec![
         (TP_BARRIER_HEADER.to_string(), barrier_id.to_string()),
@@ -433,6 +561,14 @@ async fn post_reduce(
     )
     .await
     .map_err(|e| e.to_string())?;
+    record_reduce(
+        esperado,
+        request_bytes,
+        response.body.len() as u64,
+        started.elapsed(),
+        response.transport,
+        response.fallback,
+    );
     let bytes = response.body;
     if bytes.len() != esperado * 4 {
         return Err(format!(
@@ -491,6 +627,7 @@ mod tests {
         limpa();
         register_tp_reduce(
             1,
+            2,
             "https://127.0.0.1:9/".into(),
             Some("um-node-id-qualquer".into()),
             None,
@@ -561,6 +698,47 @@ mod tests {
             "consumida uma vez: a requisição seguinte não herda a falha da anterior"
         );
     }
+
+    #[test]
+    fn telemetry_keeps_collective_counts_and_bytes_separate() {
+        let _trava = ESTADO_GLOBAL.lock().unwrap();
+        limpa();
+        register_tp_reduce(0, 2, "https://127.0.0.1:9/".into(), None, None, false);
+        begin_decode("telemetry");
+        set_expected_reduces(64);
+        record_broadcast_scheduled(2, 128);
+        record_reduce(
+            64,
+            128,
+            256,
+            std::time::Duration::from_millis(20),
+            ByteTransport::Direct,
+            false,
+        );
+        record_reduce(
+            64,
+            128,
+            256,
+            std::time::Duration::from_millis(30),
+            ByteTransport::Tunnel,
+            true,
+        );
+
+        let telemetry = take_decode_telemetry().expect("TP telemetry");
+
+        assert_eq!(telemetry.reduces, 2);
+        assert_eq!(telemetry.expected_reduces, 64);
+        assert_eq!(telemetry.request_bytes, 256);
+        assert_eq!(telemetry.response_bytes, 512);
+        assert_eq!(telemetry.direct_calls, 1);
+        assert_eq!(telemetry.tunnel_calls, 1);
+        assert_eq!(telemetry.fallback_calls, 1);
+        assert_eq!(telemetry.broadcast_calls, 2);
+        assert_eq!(telemetry.broadcast_bytes, 256);
+        assert_eq!(telemetry.reduce_p50_ms, 30);
+        assert_eq!(telemetry.reduce_p95_ms, 30);
+    }
+
     use crate::collective::ReduceBarrier;
     use axum::{routing::post, Router};
     use tokio::sync::mpsc;
@@ -606,6 +784,7 @@ mod tests {
             .map(|(rank, data)| {
                 let state = Arc::new(TpState {
                     rank: rank as u32,
+                    size: 3,
                     rank0_url: url.clone(),
                     rank0_peer_id: None,
                     rank0_supports_tunnel: false,
@@ -657,6 +836,7 @@ mod tests {
 
         let state = Arc::new(TpState {
             rank: 1,
+            size: 2,
             rank0_url: "http://127.0.0.1:1".into(),
             rank0_peer_id: Some(peer_id.to_string()),
             rank0_supports_tunnel: true,

@@ -279,8 +279,16 @@ pub async fn send_frame(
 
 /// Resposta crua de uma chamada HTTP encaminhada sem o enquadramento de uma
 /// mensagem de inferência.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteTransport {
+    Direct,
+    Tunnel,
+}
+
 pub struct RawPeerResponse {
     pub body: Vec<u8>,
+    pub transport: ByteTransport,
+    pub fallback: bool,
 }
 
 /// Envia bytes para um peer por HTTPS e, se o transporte direto falhar, tenta
@@ -310,6 +318,8 @@ pub async fn send_bytes_or_tunnel(
     match request.send().await {
         Ok(response) if response.status().is_success() => Ok(RawPeerResponse {
             body: response.bytes().await?.to_vec(),
+            transport: ByteTransport::Direct,
+            fallback: false,
         }),
         Ok(response) => {
             let status = response.status();
@@ -334,7 +344,10 @@ pub async fn send_bytes_or_tunnel(
             };
 
             warn!("{peer_label}: HTTP falhou ({error}), tentando via túnel libp2p");
-            send_bytes_via_tunnel(tunnel, peer_id, path, body, headers, peer_label).await
+            let mut response =
+                send_bytes_via_tunnel(tunnel, peer_id, path, body, headers, peer_label).await?;
+            response.fallback = true;
+            Ok(response)
         }
     }
 }
@@ -375,7 +388,11 @@ async fn send_bytes_via_tunnel(
             peer_label: peer_label.to_string(),
         }));
     }
-    Ok(RawPeerResponse { body: response.body })
+    Ok(RawPeerResponse {
+        body: response.body,
+        transport: ByteTransport::Tunnel,
+        fallback: false,
+    })
 }
 
 /// `send_frame`, with one retry over the libp2p NAT-tunnel when it exhausts

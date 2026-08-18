@@ -13,8 +13,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 - `api.ts` - fetch wrapper over relative paths with connection-key auth; also the SSE reader.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
-- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types.
+- `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including optional TP telemetry.
+- `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; serializes the two telemetry tables for the AI analysis action.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
@@ -64,6 +65,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### chatStore.ts
 - `useChatSessions()` - `localStorage` list (`codai.chat.sessions`) capped at `MAX_SESSIONS` 50, kept in sync across tabs via the `storage` event; returns `{sessions, upsert, remove, clear}`.
 - `turnsOnly(messages)` - drops `role: "event"` entries (model-change marks) before the transcript travels in a request.
+- `turnsOnly(messages)` - drops event marks and substitutes `requestContent` when a visible chat message carries private telemetry-analysis content.
 - `titleFrom(text)` / `emptySession(model)` / `newId()` - defaults and ids; `titleFrom` stops the first message from overwriting a `titled` session's chosen name.
 
 ### chatStream.ts
@@ -138,4 +140,3 @@ would go.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
-

@@ -76,6 +76,7 @@ struct NodeTimings {
     token_text_us: u64,
     sampling_us: u64,
     encode_us: u64,
+    tp: Option<crate::tp::TpDecodeTelemetry>,
 }
 
 impl NodeTimings {
@@ -105,6 +106,10 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "tp": self
+                .tp
+                .as_ref()
+                .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
         })
     }
 }
@@ -1533,6 +1538,7 @@ fn prefill_blocking(
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
     timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;

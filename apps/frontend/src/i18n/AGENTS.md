@@ -29,6 +29,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - `isLocale(value)` - type guard.
 - `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language.
 
+The chat telemetry additions live in both locale blocks: the execution
+diagnosis, TP collective table, AI-analysis action and initial-model mark must
+remain available in English and Brazilian Portuguese.
+
 ### provider.tsx
 - `LocaleProvider({ children, initialLocale })` - initial state from `initialLocale` or from `localStorage` `codai.locale` + `navigator.languages`; writes `<html lang>` on change; persists the choice.
 - `useI18n()` - `{ locale, setLocale, t }`.

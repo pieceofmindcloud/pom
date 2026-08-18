@@ -120,6 +120,7 @@ unsafe extern "C" fn capture_callback(
 pub struct EngineConfig {
     pub n_ctx: u32,
     pub offload_kqv: bool,
+    pub fit_memory: bool,
     pub n_batch: u32,
     pub n_gpu_layers: i32,
     pub n_threads: i32,
@@ -167,6 +168,134 @@ pub struct LoadedModel {
 unsafe impl Send for LoadedModel {}
 unsafe impl Sync for LoadedModel {}
 
+const DEFAULT_GPU_LAYERS: i32 = 99;
+const FIT_MEMORY_MARGIN_BYTES: usize = 1024 * 1024 * 1024;
+const FIT_MIN_CONTEXT: u32 = 4096;
+/// The CUDA graph and kernel workspaces scale with the microbatch, while the
+/// public `n_batch` can stay large enough to accept a prompt chunk. A smaller
+/// ubatch is the safe automatic fallback before llama.cpp reserves those
+/// workspaces on a nearly-full GPU.
+const FIT_MAX_UBATCH: u32 = 128;
+
+/// Parâmetros do modelo já ajustados pelo `common_fit_params`.
+///
+/// Os vetores ficam vivos até `llama_model_load_from_file` consumir os
+/// ponteiros guardados em `llama_model_params`. Isso é necessário no caso de
+/// mais de uma GPU local, em que o fit também escreve `tensor_split` e
+/// `tensor_buft_overrides`.
+struct FitPlan {
+    config: EngineConfig,
+    tensor_split: Vec<f32>,
+    tensor_buft_overrides: Vec<sys::llama_model_tensor_buft_override>,
+    applied: bool,
+}
+
+fn fit_can_adjust_layers(cfg: &EngineConfig) -> bool {
+    cfg.fit_memory && cfg.n_gpu_layers == DEFAULT_GPU_LAYERS
+}
+
+fn load_mtp_weights(cfg: &EngineConfig) -> bool {
+    cfg.mtp
+}
+
+fn effective_n_ubatch(cfg: &EngineConfig) -> u32 {
+    let n_batch = cfg.n_batch.max(1);
+    if cfg.fit_memory {
+        n_batch.min(FIT_MAX_UBATCH)
+    } else {
+        n_batch
+    }
+}
+
+fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
+    if !fit_can_adjust_layers(cfg) {
+        if cfg.fit_memory && cfg.n_gpu_layers != DEFAULT_GPU_LAYERS {
+            warn!(
+                "llama.cpp fit ignorado porque n_gpu_layers foi definido explicitamente como {}",
+                cfg.n_gpu_layers
+            );
+        }
+        return Ok(FitPlan {
+            config: cfg.clone(),
+            tensor_split: Vec::new(),
+            tensor_buft_overrides: Vec::new(),
+            applied: false,
+        });
+    }
+
+    let path = CString::new(model_path)
+        .with_context(|| format!("invalid model path for llama.cpp fit: {model_path}"))?;
+    // `common_fit_params` queries the backend devices and their free memory.
+    // The call is idempotent and mirrors `LoadedModel::load`, which also keeps
+    // the initialization close to every possible model-loading entry point.
+    unsafe { sys::llama_backend_init() };
+    let n_devices = unsafe { sys::llama_max_devices() }.max(1);
+    let n_overrides = unsafe { sys::llama_max_tensor_buft_overrides() }.max(1);
+    let mut tensor_split = vec![0.0_f32; n_devices];
+    let mut tensor_buft_overrides = vec![sys::llama_model_tensor_buft_override {
+        pattern: ptr::null(),
+        buft: ptr::null_mut(),
+    }; n_overrides];
+    let mut margins = vec![FIT_MEMORY_MARGIN_BYTES; n_devices];
+
+    let mut mparams = unsafe { sys::llama_model_default_params() };
+    mparams.n_gpu_layers = -1;
+    mparams.load_mtp = load_mtp_weights(cfg);
+
+    let mut cparams = unsafe { sys::llama_context_default_params() };
+    cparams.n_ctx = cfg.n_ctx;
+    cparams.n_batch = cfg.n_batch;
+    cparams.n_ubatch = effective_n_ubatch(cfg);
+    cparams.n_seq_max = cfg.max_sessions.max(1);
+    cparams.offload_kqv = cfg.offload_kqv;
+    cparams.embeddings = cfg.need_embeddings;
+    cparams.n_rs_seq = cfg.rs_seq_window;
+
+    let status = unsafe {
+        sys::llama_rs_fit_params(
+            path.as_ptr(),
+            &mut mparams,
+            &mut cparams,
+            tensor_split.as_mut_ptr(),
+            tensor_buft_overrides.as_mut_ptr(),
+            margins.as_mut_ptr(),
+            FIT_MIN_CONTEXT,
+            sys::GGML_LOG_LEVEL_WARN,
+        )
+    };
+
+    if status != 0 {
+        warn!(
+            "llama.cpp fit não encontrou uma configuração automática (status {status}); usando os parâmetros solicitados"
+        );
+        return Ok(FitPlan {
+            config: cfg.clone(),
+            tensor_split: Vec::new(),
+            tensor_buft_overrides: Vec::new(),
+            applied: false,
+        });
+    }
+
+    let mut effective = cfg.clone();
+    effective.n_gpu_layers = mparams.n_gpu_layers;
+    effective.n_ctx = cparams.n_ctx;
+
+    tracing::info!(
+        requested_gpu_layers = cfg.n_gpu_layers,
+        effective_gpu_layers = effective.n_gpu_layers,
+        requested_context = cfg.n_ctx,
+        effective_context = effective.n_ctx,
+        "llama.cpp fit ajustou os parâmetros de memória"
+    );
+
+    Ok(FitPlan {
+        config: effective,
+        tensor_split,
+        tensor_buft_overrides,
+        applied: true,
+    })
+}
+
 impl Drop for LoadedModel {
     fn drop(&mut self) {
         unsafe {
@@ -189,6 +318,9 @@ pub struct LlmEngine {
     /// registrado no llama.cpp em `cb_eval_user_data` e não pode mudar.
     capture: Box<Mutex<CaptureSlot>>,
     offload_kqv: bool,
+    fit_memory_applied: bool,
+    effective_n_gpu_layers: i32,
+    effective_n_ubatch: u32,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
@@ -250,7 +382,7 @@ impl Drop for LlmEngine {
 
 impl LoadedModel {
     /// Lê os pesos do disco. Uma vez por arquivo, não por contexto.
-    pub fn load(model_path: &str, n_gpu_layers: i32) -> Result<Arc<Self>> {
+    fn load(model_path: &str, plan: &FitPlan) -> Result<Arc<Self>> {
         // llama_backend_init is idempotent; call it on every load.
         unsafe { sys::llama_backend_init() };
 
@@ -258,7 +390,14 @@ impl LoadedModel {
             .with_context(|| format!("invalid model path: {model_path}"))?;
 
         let mut mparams = unsafe { sys::llama_model_default_params() };
-        mparams.n_gpu_layers = n_gpu_layers;
+        mparams.n_gpu_layers = plan.config.n_gpu_layers;
+        mparams.load_mtp = load_mtp_weights(&plan.config);
+        if !plan.tensor_split.is_empty() {
+            mparams.tensor_split = plan.tensor_split.as_ptr();
+        }
+        if !plan.tensor_buft_overrides.is_empty() {
+            mparams.tensor_buft_overrides = plan.tensor_buft_overrides.as_ptr();
+        }
 
         let model = unsafe { sys::llama_model_load_from_file(path.as_ptr(), mparams) };
         if model.is_null() {
@@ -281,8 +420,43 @@ impl LoadedModel {
 impl LlmEngine {
     /// Load a GGUF model slice and create a llama context.
     pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
-        let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
-        Self::with_model(loaded, cfg)
+        let plan = fit_plan(model_path, cfg)?;
+        let loaded = LoadedModel::load(model_path, &plan)?;
+        match Self::with_model(loaded.clone(), &plan.config) {
+            Ok(mut engine) => {
+                engine.fit_memory_applied = plan.applied;
+                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                Ok(engine)
+            }
+            Err(gpu_kv_error) => {
+                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(&plan.config) else {
+                    return Err(gpu_kv_error);
+                };
+
+                warn!(
+                    "llama context failed with KV cache on GPU: {gpu_kv_error}; retrying with KV cache in host RAM while keeping {} GPU layers",
+                    plan.config.n_gpu_layers
+                );
+                let mut engine = Self::with_model(loaded, &cpu_kv_cfg).with_context(|| {
+                    format!(
+                        "llama context failed with GPU KV and host-RAM KV fallback; requested {} GPU layers",
+                        plan.config.n_gpu_layers
+                    )
+                })?;
+                engine.fit_memory_applied = plan.applied;
+                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                Ok(engine)
+            }
+        }
+    }
+
+    fn cpu_kv_fallback(cfg: &EngineConfig) -> Option<EngineConfig> {
+        cfg.offload_kqv.then(|| EngineConfig {
+            offload_kqv: false,
+            ..cfg.clone()
+        })
     }
 
     /// N contextos sobre um modelo só, um por sessão simultânea.
@@ -301,10 +475,17 @@ impl LlmEngine {
     #[allow(dead_code)]
     pub fn pool(model_path: &str, cfg: &EngineConfig, n: usize) -> Result<Vec<Self>> {
         let n = n.max(1);
-        let loaded = LoadedModel::load(model_path, cfg.n_gpu_layers)?;
-        let por_contexto = per_context_config(cfg, n);
+        let plan = fit_plan(model_path, cfg)?;
+        let loaded = LoadedModel::load(model_path, &plan)?;
+        let por_contexto = per_context_config(&plan.config, n);
         (0..n)
-            .map(|_| Self::with_model(loaded.clone(), &por_contexto))
+            .map(|_| {
+                let mut engine = Self::with_model(loaded.clone(), &por_contexto)?;
+                engine.fit_memory_applied = plan.applied;
+                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&por_contexto);
+                Ok(engine)
+            })
             .collect()
     }
 
@@ -321,7 +502,7 @@ impl LlmEngine {
         let mut cparams = unsafe { sys::llama_context_default_params() };
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
-        cparams.n_ubatch = cfg.n_batch;
+        cparams.n_ubatch = effective_n_ubatch(cfg);
         cparams.n_seq_max = cfg.max_sessions;
         cparams.offload_kqv = cfg.offload_kqv;
         cparams.embeddings = cfg.need_embeddings;
@@ -355,7 +536,6 @@ impl LlmEngine {
         // ── Create context ───────────────────────────────────────────────────
         let ctx = unsafe { sys::llama_new_context_with_model(model, cparams) };
         if ctx.is_null() {
-            unsafe { sys::llama_model_free(model) };
             bail!(
                 "llama_new_context_with_model failed (n_seq_max={})",
                 cfg.max_sessions
@@ -411,6 +591,9 @@ impl LlmEngine {
             capture_ok,
             capture,
             offload_kqv: cfg.offload_kqv,
+            fit_memory_applied: false,
+            effective_n_gpu_layers: cfg.n_gpu_layers,
+            effective_n_ubatch: effective_n_ubatch(cfg),
             mtp,
         })
     }
@@ -453,6 +636,18 @@ impl LlmEngine {
         // configuration only during construction. Keep a copy visible through
         // `/health` rather than guessing from GPU utilisation.
         self.offload_kqv
+    }
+
+    pub fn fit_memory_applied(&self) -> bool {
+        self.fit_memory_applied
+    }
+
+    pub fn effective_n_gpu_layers(&self) -> i32 {
+        self.effective_n_gpu_layers
+    }
+
+    pub fn effective_n_ubatch(&self) -> u32 {
+        self.effective_n_ubatch
     }
 
     pub fn eos_token(&self) -> i32 {
@@ -653,10 +848,62 @@ impl LlmEngine {
             }
         }
 
+        let tp_antes = crate::tp::reduce_count();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode failed rc={rc}");
+        }
+        crate::tp::set_expected_reduces(
+            2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
+        );
+        // Coletiva ligada e nenhum reduce no decode inteiro: o op do fork não
+        // entrou no grafo. O rank rodou com meia largura e sem soma nenhuma, e
+        // a resposta é falsa - o modo de falha de 18/08, que não tinha sintoma
+        // além do texto sem sentido.
+        // Quantos reduces este decode disparou. São **2 por camada**: a projeção
+        // de saída da atenção e o `ffn_down`, as duas row-parallel. Um modelo de
+        // 32 camadas tem que somar 64.
+        //
+        // Isto é rede de proteção, não curiosidade. O fork tinha o reduce em uma
+        // única sobrecarga de `build_attn` (a `attn_no_cache`), então todo
+        // modelo com cache KV somava só o FFN: 32 em vez de 64. E o sintoma é o
+        // disfarce mais perigoso possível - a resposta sai gramatical e fluente,
+        // só o conteúdo é vazio. Não parece erro de cálculo, parece modelo ruim,
+        // e custou uma tarde inteira de 18/08 para ser identificado.
+        //
+        // Aviso, não erro: arquitetura híbrida pode legitimamente ter camada sem
+        // atenção ou sem FFN, e recusar a resposta nesse caso seria pior que o
+        // aviso. Zero reduces continua sendo erro (logo abaixo).
+        if crate::tp::is_active() {
+            let reduces = crate::tp::reduces_in_current_decode();
+            let esperado = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
+            if reduces != esperado {
+                tracing::warn!(
+                    "coletiva TP reduziu {reduces} vezes neste decode, esperado {esperado} \
+                     (2 por camada): parte do grafo está rodando sem redução, e a \
+                     resposta sai fluente e sem sentido"
+                );
+            } else {
+                tracing::debug!("decode fechou com {reduces} reduces (2 por camada)");
+            }
+        }
+        if crate::tp::is_active() && crate::tp::reduce_count() == tp_antes {
+            bail!(
+                "coletiva de tensor parallelism ligada mas nenhum reduce rodou \
+                 neste decode: o op do llama.cpp não entrou no grafo"
+            );
+        }
+        // Coletiva de tensor parallelism: o op roda **dentro** do decode, num
+        // callback `extern "C"` que não tem como devolver erro. Quem falhou
+        // anotou o motivo, e é aqui que ele vira erro da requisição.
+        //
+        // Isto não é zelo: um all-reduce que falha não piora a resposta, ele a
+        // torna falsa. O rank fica com a própria parcial - metade das cabeças e
+        // metade do FFN - e a geração sai plausível e sem sentido, sem nenhum
+        // sinal de erro (18/08). Responder errado é pior que não responder.
+        if let Some(motivo) = crate::tp::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica -
@@ -740,6 +987,14 @@ impl LlmEngine {
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
             bail!("llama_decode (hidden) failed rc={rc}");
+        }
+        crate::tp::set_expected_reduces(
+            2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
+        );
+        // Ver a nota gêmea em `decode_tokens`: a coletiva falha por callback e
+        // só pode virar erro aqui fora.
+        if let Some(motivo) = crate::tp::take_failure() {
+            bail!("coletiva de tensor parallelism falhou: {motivo}");
         }
 
         // A cabeça `nextn` tem que ver **todo** lote que o alvo decodifica,
@@ -882,8 +1137,8 @@ impl LlmEngine {
 /// exatamente o que uma sessão já tinha quando as N dividiam um contexto só, e
 /// `max_sessions = 1` porque agora cada contexto atende uma sessão.
 fn per_context_config(cfg: &EngineConfig, n: usize) -> EngineConfig {
-    EngineConfig {
-        n_ctx: cfg.n_ctx / n.max(1) as u32,
+        EngineConfig {
+            n_ctx: cfg.n_ctx / n.max(1) as u32,
         max_sessions: 1,
         ..cfg.clone()
     }
@@ -897,6 +1152,7 @@ mod pool_tests {
         EngineConfig {
             n_ctx: 120_320,
             offload_kqv: true,
+            fit_memory: true,
             n_batch: 512,
             n_gpu_layers: 99,
             n_threads: 0,
@@ -905,6 +1161,62 @@ mod pool_tests {
             mtp: false,
             rs_seq_window: 0,
         }
+    }
+
+    #[test]
+    fn gpu_kv_failure_fallback_keeps_the_requested_gpu_layers() {
+        let cfg = cfg();
+        let fallback = LlmEngine::cpu_kv_fallback(&cfg).expect("GPU KV was enabled");
+
+        assert!(!fallback.offload_kqv);
+        assert_eq!(fallback.n_gpu_layers, cfg.n_gpu_layers);
+        assert_eq!(fallback.n_ctx, cfg.n_ctx);
+    }
+
+    #[test]
+    fn cpu_kv_configuration_does_not_retry() {
+        let mut cfg = cfg();
+        cfg.offload_kqv = false;
+
+        assert!(LlmEngine::cpu_kv_fallback(&cfg).is_none());
+    }
+
+    #[test]
+    fn fit_only_auto_adjusts_the_default_gpu_layer_setting() {
+        assert!(fit_can_adjust_layers(&cfg()));
+
+        let mut explicit_layers = cfg();
+        explicit_layers.n_gpu_layers = 20;
+        assert!(!fit_can_adjust_layers(&explicit_layers));
+
+        let mut disabled = cfg();
+        disabled.fit_memory = false;
+        assert!(!fit_can_adjust_layers(&disabled));
+    }
+
+    #[test]
+    fn fit_mode_caps_compute_microbatch_without_changing_prompt_batch() {
+        let cfg = cfg();
+        assert_eq!(cfg.n_batch, 512);
+        assert_eq!(effective_n_ubatch(&cfg), 128);
+
+        let mut no_fit = cfg;
+        no_fit.fit_memory = false;
+        assert_eq!(effective_n_ubatch(&no_fit), 512);
+
+        let mut small_batch = no_fit;
+        small_batch.n_batch = 64;
+        small_batch.fit_memory = true;
+        assert_eq!(effective_n_ubatch(&small_batch), 64);
+    }
+
+    #[test]
+    fn mtp_configuration_requests_loading_nextn_weights() {
+        let mut cfg = cfg();
+        assert!(!load_mtp_weights(&cfg));
+
+        cfg.mtp = true;
+        assert!(load_mtp_weights(&cfg));
     }
 
     /// O pool nao pode custar memoria a mais: o cache de cada contexto e o
@@ -1332,6 +1644,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -1372,6 +1685,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 2,
@@ -1423,6 +1737,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
             n_threads: 0,
@@ -1484,6 +1799,7 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            fit_memory: false,
             n_batch: 512,
             n_gpu_layers: 0,
             n_threads: 2,

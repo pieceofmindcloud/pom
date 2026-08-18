@@ -76,21 +76,27 @@ Per-file list:
   `undeployTargets` is the list the confirmation shows (peers on `group` with
   `total_layers > 0`, sorted by start layer); the node re-scans the cluster
   before acting, so the list is just the preview.
-- `DeployModel.tsx` — "Implantar na rede". Two shapes, chosen by the `KindPicker`
-  at the top and carried to the node as `kind`: **a set of shards** (below) or
-  **a whole model**, where the screen shows one model picker (from
-  `../lib/wholeModels`, deduped over the cluster catalog) plus one machine
-  picker, and drops the coverage ribbon, the "included" column and the merge
-  toggle — in a pipeline of one they have a single possible answer. Everything
-  else (plan validation, settings, machines table, button) is shared. A plan
-  with no `kind` is read as `"shards"` (`kindOf`), so an older peer mid-upgrade
-  does not silence the screen. Deploy memory is namespaced `whole:<name>`,
-  because a shard set and a model routinely share a name. Tests:
+- `DeployModel.tsx` — "Implantar na rede". Three shapes, chosen by the
+  `KindPicker` at the top and carried to the node as `kind`: **a set of shards**
+  (below), **a whole model** (one model picker from `../lib/wholeModels`, one
+  machine picker, no coverage ribbon/"included"/merge - a pipeline of one has a
+  single answer), or **tensor parallel** (`tensor_parallel`): one model picker
+  plus a `primary` select and a `workers` multi-select over `wholeModel.holders`;
+  `size` is derived (`workers.length + 1`) via `tpPayload`, never a typed number,
+  and the node derives the reduce URL from the primary's inference port (the
+  operator no longer types `rank0_url`). `tp` is in the plan queryKey so changing
+  primary/workers re-runs the node's shardability check. A plan with no `kind`
+  is read as `"shards"` (`kindOf`), so an older peer mid-upgrade does not
+  silence the screen. Deploy memory is namespaced `whole:<name>`, because a
+  shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
 - `DeployModel.tsx` — the slice shape: picks a slice set (`group`), edits
   which ranges go to which machine (swaps on collision, merge toggle for
   adjacent ranges on one machine), reorders by swapping machines, tunes the
-  eleven cluster-wide runtime knobs plus per-machine `n_gpu_layers`/`offload_kqv`.
+  twelve cluster-wide runtime knobs plus per-machine `n_gpu_layers`/`offload_kqv`.
+  `fit_memory` is on by default for shards and whole-model deployment, and the
+  screen disables it for tensor parallelism because llama.cpp cannot auto-fit
+  `split-mode tensor`.
   Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
   the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
   a job shown through `useJobs`. Restores the last deploy from localStorage via
@@ -154,10 +160,13 @@ Key logic carriers:
   reasoning/content split), merges `x_pom` metrics via `finishChatStream`,
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
-- `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` — the
+- `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
   closed-by-default telemetry table: per-hop prefill/decode phases, gateway vs
   backend vs residual vs transport timing, bytes per hop; renders the legacy
-  (pre-phase-split) hop shape separately.
+  (pre-phase-split) hop shape separately, an optional TP collective table and
+  a pure diagnosis card. The AI action sends both tables as private request
+  content, while the initial model is shown as a non-turn mark before chat
+  messages.
 - `DeployModel.rowsOf`/`sameRows`/`stepOf`/`assign`/`move` (DeployModel.tsx) —
   the selection model: merged steps expand back into per-slice rows, edits are
   sent back to the plan for validation, machine collision swaps ranges, and

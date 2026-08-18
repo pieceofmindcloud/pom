@@ -16,6 +16,7 @@ import {
   Pencil,
   Plus,
   Square,
+  Sparkles,
   Trash2,
   TriangleAlert,
 } from "lucide-react";
@@ -25,6 +26,7 @@ import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
+import { analyzeTelemetry, buildTelemetryAnalysisPrompt } from "../lib/telemetryAnalysis";
 import {
   emptySession,
   newId,
@@ -68,7 +70,22 @@ function EventMark({ message }: { message: ChatMessage }) {
   );
 }
 
-function Bubble({ message, streaming }: { message: ChatMessage; streaming: boolean }) {
+function ModelIntroMark({ model }: { model: string }) {
+  const { t } = useI18n();
+  return <EventMark message={{ id: "model-at-start", role: "event", content: t("chat.modelAtStart", { model }), at: "" }} />;
+}
+
+function Bubble({
+  message,
+  streaming,
+  onAnalyze,
+  analysisDisabled = false,
+}: {
+  message: ChatMessage;
+  streaming: boolean;
+  onAnalyze?: (trace: RequestTrace) => void;
+  analysisDisabled?: boolean;
+}) {
   const { t, locale } = useI18n();
   if (message.role === "event") return <EventMark message={message} />;
   const isUser = message.role === "user";
@@ -108,7 +125,14 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
           {message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
               <span>{message.tokensPerSecond.toFixed(1)} {t("chat.speedUnit")}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${t("chat.timeUnit")}`}</span>
-              {message.trace && <ExecutionTelemetry trace={message.trace} source={message.source} />}
+              {message.trace && (
+                <ExecutionTelemetry
+                  trace={message.trace}
+                  source={message.source}
+                  onAnalyze={onAnalyze}
+                  analyzeDisabled={analysisDisabled || streaming}
+                />
+              )}
             </div>
           )}
         </div>
@@ -122,11 +146,52 @@ function Bubble({ message, streaming }: { message: ChatMessage; streaming: boole
  * it is what the operator came for. Opening it is one click; scrolling past it
  * on every single turn was not.
  */
-export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; source?: string }) {
+export function ExecutionTelemetry({
+  trace,
+  source,
+  onAnalyze,
+  analyzeDisabled = false,
+}: {
+  trace: RequestTrace;
+  source?: string;
+  onAnalyze?: (trace: RequestTrace) => void;
+  analyzeDisabled?: boolean;
+}) {
   const { t } = useI18n();
+  const analysis = analyzeTelemetry(trace);
+  const tpRows = trace.hops.flatMap((hop) => {
+    if (!isPhasedHop(hop)) return [];
+    return [
+      { hop, label: t("chat.telemetry.prefill"), phase: hop.prefill },
+      { hop, label: t("chat.telemetry.decode"), phase: hop.decode },
+    ].filter((row) => row.phase.tp?.enabled);
+  });
+
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span><span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-faint">{t("chat.telemetry.analysis.label")}</p>
+          <p className="mt-1 font-medium text-fg">{t(analysis.titleKey)}</p>
+          <p className="mt-1 max-w-prose leading-relaxed text-muted">{t(analysis.detailKey)}</p>
+          <p className="mt-1 font-mono text-[0.68rem] text-faint">{analysis.evidence}</p>
+          <p className="mt-1 text-[0.68rem] text-faint">{t(analysis.nextStepKey)}</p>
+        </div>
+        {onAnalyze && (
+          <Button
+            size="sm"
+            variant="outline"
+            icon={<Sparkles className="h-3.5 w-3.5" />}
+            disabled={analyzeDisabled}
+            onClick={() => onAnalyze(trace)}
+          >
+            {t("chat.telemetry.analyze")}
+          </Button>
+        )}
+      </div>
+    </div>
     <div className="mt-2 overflow-x-auto">
       <table className="w-full min-w-[46rem] border-collapse font-mono text-[0.66rem] leading-relaxed">
         <thead className="text-faint">
@@ -154,8 +219,43 @@ export function ExecutionTelemetry({ trace, source }: { trace: RequestTrace; sou
         </tbody>
       </table>
     </div>
+    {tpRows.length > 0 && <TpTable rows={tpRows} />}
     <p className="mt-2 text-faint">{t("chat.telemetry.footnote")}</p>
   </details>;
+}
+
+function TpTable({ rows }: { rows: Array<{ hop: PhasedHopTrace; label: string; phase: PhaseTrace }> }) {
+  const { t } = useI18n();
+  return <div className="mt-3 overflow-x-auto rounded-lg border border-line/60 bg-surface/30 px-2.5 py-2">
+    <p className="mb-1.5 font-medium text-fg">{t("chat.telemetry.tpTitle")}</p>
+    <table className="w-full min-w-[54rem] border-collapse font-mono text-[0.66rem] leading-relaxed">
+      <thead className="text-faint"><tr className="border-b border-line/70 text-left">
+        <th className="py-1 pr-3 font-normal">{t("chat.telemetry.hop")}</th>
+        <th className="py-1 pr-3 font-normal">{t("chat.telemetry.phase")}</th>
+        <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.tpReduces")}</th>
+        <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.tpWait")}</th>
+        <th className="py-1 pr-3 text-right font-normal">p50 / p95</th>
+        <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.tpBytes")}</th>
+        <th className="py-1 text-right font-normal">{t("chat.telemetry.tpChannel")}</th>
+      </tr></thead>
+      <tbody>{rows.map(({ hop, label, phase }) => {
+        const tp = phase.tp;
+        if (!tp) return null;
+        const channel = tp.tunnel_calls > 0
+          ? t("chat.telemetry.tpTunnel", { calls: tp.tunnel_calls, fallback: tp.fallback_calls })
+          : t("chat.telemetry.tpDirect", { calls: tp.direct_calls });
+        return <tr key={`${hop.node_id}:${hop.start_layer}:${label}`} className="border-t border-line/40">
+          <td className="py-1 pr-3 text-fg">L{hop.start_layer}-L{hop.end_layer}</td>
+          <td className="py-1 pr-3">{label}</td>
+          <td className="py-1 pr-3 text-right">{tp.reduces} / {tp.expected_reduces}</td>
+          <td className="py-1 pr-3 text-right">{tp.wait_ms} ms</td>
+          <td className="py-1 pr-3 text-right">{tp.reduce_p50_ms} / {tp.reduce_p95_ms} ms</td>
+          <td className="py-1 pr-3 text-right">{bytes(tp.request_bytes + tp.response_bytes)} + {bytes(tp.broadcast_bytes)} {t("chat.telemetry.tpBroadcastShort")}</td>
+          <td className="py-1 text-right">{channel}</td>
+        </tr>;
+      })}</tbody>
+    </table>
+  </div>;
 }
 
 /**
@@ -463,7 +563,7 @@ function SessionList({
 }
 
 export function Chat() {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { sessions, upsert, remove } = useChatSessions();
   const models = useServableModels();
   const cluster = useCluster();
@@ -500,14 +600,15 @@ export function Chat() {
     el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
   }, []);
 
-  async function send() {
-    const text = draft.trim();
-    if (!text || streaming) return;
+  async function send(options?: { visibleText?: string; requestContent?: string }) {
+    const text = options?.visibleText ?? draft.trim();
+    if (!text || streaming || !model) return;
 
     const user: ChatMessage = {
       id: newId(),
       role: "user",
       content: text,
+      requestContent: options?.requestContent,
       at: new Date().toISOString(),
     };
     const reply: ChatMessage = {
@@ -523,6 +624,7 @@ export function Chat() {
     let live: ChatSession = {
       ...session,
       model,
+      modelAtStart: session.modelAtStart ?? model,
       // A name the operator typed outranks the one we would guess from the
       // first thing they said.
       title:
@@ -621,6 +723,13 @@ export function Chat() {
     }
   }
 
+  function analyzeTrace(trace: RequestTrace) {
+    void send({
+      visibleText: t("chat.telemetry.analysisPrompt"),
+      requestContent: buildTelemetryAnalysisPrompt(trace, locale === "pt-BR"),
+    });
+  }
+
   /**
    * Switch the model, and say so in the transcript.
    *
@@ -635,6 +744,7 @@ export function Chat() {
     const updated: ChatSession = {
       ...session,
       model: next,
+      modelAtStart: changed ? session.modelAtStart : next,
       messages: changed
         ? [
             ...session.messages,
@@ -672,6 +782,8 @@ export function Chat() {
   }
 
   const noModel = available.length === 0 && !cluster.data?.active_model;
+  const firstTraceModel = session.messages.find((message) => message.trace?.model)?.trace?.model;
+  const modelAtStart = session.modelAtStart ?? firstTraceModel ?? session.model ?? model;
 
   return (
     <div className="flex h-full min-h-0">
@@ -732,8 +844,15 @@ export function Chat() {
             ) : (
               <div className="space-y-6">
                 <AnimatePresence initial={false}>
+                  {modelAtStart && <ModelIntroMark model={modelAtStart} />}
                   {session.messages.map((m) => (
-                    <Bubble key={m.id} message={m} streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id} />
+                    <Bubble
+                      key={m.id}
+                      message={m}
+                      streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
+                      onAnalyze={analyzeTrace}
+                      analysisDisabled={streaming || !model}
+                    />
                   ))}
                 </AnimatePresence>
                 {streaming &&

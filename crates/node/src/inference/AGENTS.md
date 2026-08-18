@@ -11,12 +11,18 @@ rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
-(`inference_server.py` de `old/python-inference/` é legado). Nada aqui fala
-com peers: `next_hops` chega pronto do `routing/pipeline.rs` e este diretório
-executa a cadeia que o planejador montou.
+(`inference_server.py` de `old/python-inference/` é legado). Os caminhos
+normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção
+controlada, pois coordena seus ranks e seu túnel de transporte neste diretório.
 
 ## Arquivos
 
+- `collective.rs` (novo) - núcleo das coletivas de tensor parallelism (caminho
+  C): `reduce_sum` (a soma matemática) e `ReduceBarrier` (barreira que
+  acumula os parciais de cada rank e devolve a soma a todos via `oneshot`,
+  modelada no `ReplyInbox` de `direct.rs`). O transporte HTTP
+  (`POST /v1/tp/reduce`) é uma camada fina, ligada junto com o fork do
+  llama.cpp.
 - `direct.rs` (474) - a resposta direta: a cauda entrega o resultado ao gateway
   por `/v1/relay-result` em vez de borbulhar pela pilha aninhada; inbox de
   tickets, `reply_to`, telemetria acumulada na ida.
@@ -49,6 +55,69 @@ executa a cadeia que o planejador montou.
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão.
+- `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
+  (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
+  lê a parcial (f32), POSTa para o `/v1/tp/reduce` do primary (que soma na
+  `ReduceBarrier` do `infer_server`) e devolve a soma no buffer. O cliente é
+  **pinado no `node_id` do primary** (`TpIdentity.rank0_node_id`): um
+  `reqwest::Client` padrão recusa o certificado autoassinado do cluster e todo
+  POST morria em 13 ms. O fork insere o op de reduce (`GGML_OP_CUSTOM`) depois
+  de wo/ffn_down e chama esse callback durante o decode - confirmado em campo:
+  `graph splits = 66` (2 por camada) e o log do primeiro reduce.
+
+  Uma **réplica não tem opinião** (`tp::is_replica`): ela contribui com a metade
+  dela em cada reduce e nada mais. Quem amostra o token, decide o fim da geração
+  e encerra a sessão é o rank 0. A amostragem é estocástica e o RNG de cada
+  processo é independente, então o worker amostrava EOS enquanto o rank 0
+  amostrava um token normal, apagava a sessão, e o step replicado seguinte
+  batia em "sessão desconhecida" - HTTP 400 (18/08).
+
+  `register_tp_reduce`/`unregister_tp_reduce` **ligam e desligam** o nó do grupo,
+  e desligar limpa tudo: estado, decode aberto, marca de réplica e falha
+  pendente. `TP_STATE` era um `OnceLock`, que não tem como ser limpo, então um
+  processo que um dia serviu TP se declarava TP para sempre - implantar um
+  modelo inteiro por cima de um grupo herdava o estado, avisava "reduziu 1 vezes,
+  esperado 64", e a checagem de zero reduces chegava a derrubar a requisição
+  (18/08). Trocar o grupo também deixou de exigir reinício.
+
+  A parcial viaja como **f32 cru em little-endian**, com `barrier_id` e `rank`
+  em cabeçalho (`x-pom-tp-barrier`, `x-pom-tp-rank`), e a rota tem o mesmo
+  limite de corpo das de quadro. Era JSON: ~12 bytes por float de 4, o que dava
+  ~5 MB por reduce num prefill de 100 tokens - 64 vezes por decode - e estourava
+  o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
+  requisição (18/08). Cru é 4x menor e não passa por parse.
+
+  `relay::send_bytes_or_tunnel` tenta primeiro o HTTPS direto e, em falha de
+  transporte ou timeout, repete o POST pelo `infer_tunnel` quando o membro
+  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. `TpMember` carrega
+  essa identidade e a capability para o `broadcast_to` do decode e para o
+  reduce no primary. O `TunnelRequest` leva também os cabeçalhos, para que a
+  barreira e o rank sejam preservados no salto pela internet.
+
+  O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
+  reduces esperados e observados, espera total, p50/p95, bytes de
+  request/response, broadcasts e chamadas diretas, pelo túnel ou por fallback.
+  Ele mede a espera da barreira síncrona, não uma latência pura de pacote. Em
+  um modelo de 32 camadas, a arquitetura atual tem dois pontos de coletiva por
+  camada, ou 64 esperas síncronas por `llama_decode` de um token; isso é TP e
+  não deve ser confundido com os frames de estado oculto do pipeline.
+
+  O ciclo de vida da sessão da réplica é comandado pelo rank 0:
+  `/v1/session/release` é repassado aos membros (`replicate_session_call`),
+  porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.
+  Sem o repasse a sessão do worker segurava o único slot e a **segunda**
+  requisição morria com "seq pool esgotado" (18/08).
+
+  **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
+  Ele só é usado pela decodificação especulativa, que está desligada nas configs
+  de TP hoje; ligar especulação num grupo TP deixaria o KV do worker à frente do
+  rank 0 depois de um rascunho recusado.
+
+  Falha da coletiva **não pode ser silenciosa**: ela não degrada a resposta, ela
+  a torna falsa. `note_failure`/`take_failure` levam o motivo até o decode, que
+  derruba a requisição; e `decode_tokens` ainda compara `reduce_count()` antes e
+  depois, porque "o callback nunca foi chamado" não tinha sintoma nenhum além do
+  texto sem sentido (18/08).
 - `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
   em trânsito.
 
@@ -105,10 +174,19 @@ executa a cadeia que o planejador montou.
 
 `llm.rs`:
 - `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, max_sessions). `LlmEngine::pool` (N contextos sobre um modelo
-  só, `pool_tests` cobre a divisão de n_ctx) ainda **não tem chamador**: o
-  servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no `pool`
-  é a marca disso.
+  offload_kqv, fit_memory, max_sessions). Com `fit_memory=true` e o padrão de
+  camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
+  carregar os pesos. O plano preserva `tensor_split` e `tensor_buft_overrides`
+  quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
+  GPU, tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de
+  peso na GPU e deixando o KV cache na RAM. `/health` mostra se o fit foi
+  aplicado, as camadas efetivas e `n_ubatch_effective`. O `n_batch` público
+  continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
+  microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
+  reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
+  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
+  divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
+  com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).
@@ -313,6 +391,9 @@ quatro entradas (`llama_{set,get}_embeddings_nextn`,
 `llama_set_nextn_layer_offset`) estão em `libllama.a` mas não nos bindings,
 porque moram em `llama.cpp/src/llama-ext.h`, fora do `extern "C"` de `llama.h`
 que o `wrapper.h` da crate inclui. Daí `llama_mtp_shim.cpp`.
+Ao carregar um motor com MTP ligado, `llama_model_params.load_mtp` também precisa
+ser verdadeiro: sem isso o llama.cpp mantém `n_layer_nextn` nos metadados, mas
+deixa os pesos `nextn.*` nulos e o grafo Qwen3.5 aborta ao construir `eh_proj`.
 
 Ciclo, por rodada (uma sequência, uma cabeça, memória não compartilhada - o
 caminho qwen35/qwen35moe do upstream):

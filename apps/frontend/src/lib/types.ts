@@ -86,6 +86,7 @@ export interface NodeConfig {
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
+  fit_memory: boolean;
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
@@ -514,6 +515,7 @@ export interface RuntimeParams {
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
+  fit_memory: boolean;
   n_batch: number;
   max_new_tokens: number;
   max_sessions: number;
@@ -569,7 +571,21 @@ export interface DeploySelection {
  * that only have one answer — the order of a pipeline of one, and which layers
  * of all of them to include.
  */
-export type DeployKind = "shards" | "whole";
+export type DeployKind = "shards" | "whole" | "tensor_parallel";
+
+/**
+ * Tensor parallelism group (caminho C), from src/backend/deploy.rs TpLaunch.
+ * Present only with kind "tensor_parallel": the primary serves the whole
+ * model and each worker extracts its own tensor shard.
+ */
+export interface TpLaunch {
+  /** Ranks in the group (1 primary + size-1 workers). */
+  size: number;
+  /** node_id of the primary (rank 0); the node derives the reduce URL. */
+  primary_node_id: string;
+  /** node_ids of the workers, in rank order (rank 1..size-1). */
+  worker_node_ids: string[];
+}
 
 export interface DeployPlan {
   group: string;

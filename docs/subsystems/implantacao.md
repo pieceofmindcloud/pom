@@ -15,7 +15,8 @@ Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
 chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
 cluster). O pedido carrega `group` (o conjunto de fatias, pelo `shard_group` do
 catálogo - ou o **nome** do modelo no catálogo, com `kind: "whole"`), `kind`
-(`"shards"`, o padrão, ou `"whole"` - ver a seção 1.1), `params` (o
+(`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
+`"tensor_parallel"` - ver a seção 1.2), `params` (o
 `RuntimeParams` do pipeline inteiro), `selection` (a escolha explícita do
 operador - `None` = o nó decide) e `merge` (junção das fatias adjacentes de uma
 máquina). O `selection` viaja na requisição porque o
@@ -67,6 +68,56 @@ quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
 
+## 1.2 Tensor parallel (caminho C): o grupo
+
+`kind: "tensor_parallel"` (`DeployKind::TensorParallel`) implanta um modelo num
+grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
+pipeline) + K **workers** (cada um extrai o próprio shard de tensor da própria
+cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, primary_node_id,
+worker_node_ids}` - o operador escolhe o **primary** e os **workers** por
+node_id (a tela oferece selects, não um campo de URL), e o nó deriva a
+`rank0_url` da porta de inferência anunciada pelo próprio primary
+(`Machine.inference_url`). A varredura lê o modelo inteiro do primary, e o
+`launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
+cada worker com rank 1..size-1), todos apontando a mesma `rank0_url` para a
+coletiva.
+
+Antes de aceitar, o plano valida em duas camadas: `tp_group_checks` (tamanho,
+primary/workers no cluster e com o modelo inteiro, sem repetição, primary com
+URL de inferência) roda no próprio `plan`; e `tp_shardability_check` pergunta ao
+primary (rota `POST /api/ui/tp/check`) se o GGUF dele dá para partir - MoE/SSM/
+weight-tied ou dimensões que não dividem recusam o plano **na tela**, com um
+motivo que nomeia o tensor, em vez de deixar o job falhar no apply.
+
+`POST /api/ui/tp/check` é rota de operador como o resto de `/api/ui/*`: a
+chamada tem que levar a chave de conexão (`bearer_auth`). Ir sem ela rendia
+`{"error":"missing Authorization header"}`, que é JSON válido sem `ok`, e o
+código anunciava isso como "não tem a checagem de shard (binário antigo?)" -
+mandando o operador conferir versões com as duas máquinas no mesmo commit
+(17/08). Hoje a resposta é lida por `tp_check_verdict`, que repete o `error` do
+peer quando ele existe e só fala em binário antigo quando o corpo não explica
+nada.
+
+O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
+faz **cada rank** extrair o próprio shard por `plan::extract_tp_shard` - o rank 0
+inclusive, porque `role` (`primary`/`worker`) endereça a coletiva e não decide
+quem corta. Enquanto essa condição foi `role == "worker"` (`tp_shard_to_extract`,
+17/08), o primary caía no ramo `skip_split` e servia o GGUF inteiro: largura
+cheia de um lado do all-reduce, meia largura do outro, e o `_tp0of2.gguf` nunca
+existia no disco. A `TpIdentity` carrega ainda `members` - todos os ranks em
+ordem, com `node_id` e URL de inferência -, porque **o rank 0 precisa pôr os
+workers no mesmo decode**: TP só funciona em lockstep, e o gateway fala só com o
+rank 0. Membro sem porta de inferência anunciada é recusa no plano
+(`tp_members`), não travamento na primeira barreira. O nó também anuncia o papel via
+`Network::set_tp` e registra a coletiva (`register_tp_reduce`). Ver
+`docs/subsystems/fatiamento.md` (seção do shard por tensor) e
+`docs/subsystems/rede-p2p.md`.
+
+Cada membro também carrega o `PeerId` libp2p e a capability do túnel anunciada
+pelo servidor. Assim, o `broadcast_to` do rank 0 e o reduce da coletiva podem
+repetir a chamada pelo swarm quando as máquinas estão em redes sem rota HTTPS
+direta entre si.
+
 `AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
 inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.
 
@@ -105,6 +156,12 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
   - contexto, batch e pedaço decidem o orçamento de prompt que o gateway cobra, e
   a amostragem só roda no último peer.
+- **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
+  padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
+  antes da carga e pode reduzir as camadas GPU para evitar OOM. Um
+  `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
+  Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
+  o fit nativo não suporta `split-mode tensor`.
 - **Uma fatia que não existe em máquina nenhuma** -> `blocked` ("a fatia L{}-{}
   não existe em máquina nenhuma do cluster"). `plan.blocked` e `steps` vazio são
   os dois recusos de 400 do `deploy`.
@@ -260,7 +317,8 @@ ninguém cobre - e o planejador recusa pipeline com buraco, então a tela avisa.
 
 ## 9. O que a tela mostra
 
-- **Ajustes sempre abertos, à direita** - os onze números que governam a
+- **Ajustes sempre abertos, à direita** - os doze números e interruptores que
+  governam a
   implantação ficam visíveis junto da escolha de máquinas; escolher máquinas com
   eles escondidos é escolher às cegas.
 - **Alternativas** - cada faixa mostra toda máquina possível como alvo com o

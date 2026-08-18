@@ -37,6 +37,57 @@ pub const DISCOVERY_SWEEP_TICKS: u64 = 6;
 /// nenhuma das duas provoca outro `PeerRequest`.
 pub const SWEEP_FANOUT: usize = 3;
 
+/// Identidade de um nó num grupo de tensor parallelism (caminho C).
+///
+/// `role` é `"primary"` (dono do GGUF e hop do pipeline) ou `"worker"`
+/// (compartilha o compute daquele estágio). `group_id` identifica o grupo;
+/// `size`/`rank` dizem quantos somos e qual é a minha posição. Um nó sem
+/// TP anuncia `None`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TpIdentity {
+    pub role: String,
+    pub group_id: String,
+    pub size: u32,
+    pub rank: u32,
+    /// URL do primary (rank 0) da coletiva, por onde todos os ranks fazem o
+    /// POST /v1/tp/reduce. O deploy preenche para todos os membros do grupo.
+    #[serde(default)]
+    pub rank0_url: Option<String>,
+    /// `node_id` do primary, que é **o que pina o certificado** do cliente da
+    /// coletiva (`SHA256(pubkey) == node_id`).
+    ///
+    /// Sem isto o `tp.rs` usava um `reqwest::Client::new()` padrão contra um
+    /// `rank0_url` https com certificado autoassinado: todo POST da coletiva
+    /// morria em 13 ms por certificado inválido, o erro era engolido, e a
+    /// parcial seguia como se fosse a soma (18/08).
+    #[serde(default)]
+    pub rank0_node_id: Option<String>,
+    /// Todos os membros do grupo, **indexados pelo rank** (0 = primary).
+    ///
+    /// É o que permite o rank 0 pôr os workers para rodar o mesmo decode: TP
+    /// exige que todos os ranks executem o mesmo grafo sobre os mesmos tokens
+    /// ao mesmo tempo, e sem esta lista o rank 0 não tem para quem transmitir.
+    /// Sem lockstep as parciais nunca se encontram na barreira e o decode
+    /// trava - o estado de 18/08.
+    #[serde(default)]
+    pub members: Vec<TpMember>,
+}
+
+/// Um membro de um grupo de tensor parallelism.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TpMember {
+    /// Pina o certificado deste membro (`SHA256(pubkey) == node_id`).
+    pub node_id: String,
+    /// Base da URL do servidor de inferência (onde o decode é disparado).
+    pub url: String,
+    /// PeerId usado pelo fallback de transporte libp2p.
+    #[serde(default)]
+    pub libp2p_peer_id: Option<String>,
+    /// O membro anunciou que seu swarm atende o túnel de inferência.
+    #[serde(default)]
+    pub supports_tunnel: bool,
+}
+
 /// Message types exchanged between nodes
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -95,6 +146,10 @@ pub enum P2PMessage {
         /// libp2p NAT-tunnel fallback (`transport/libp2p-tunnel-v1`).
         #[serde(default)]
         libp2p_peer_id: Option<String>,
+        /// Identidade de tensor parallelism, quando este nó é primary/worker de
+        /// um grupo. Ausente = nó sem TP (o caso de hoje).
+        #[serde(default)]
+        tp: Option<TpIdentity>,
     },
     /// Request peer list from a known node
     PeerRequest { from: String },
@@ -159,6 +214,9 @@ pub struct PeerInfo {
     /// See `P2PMessage::Announce::libp2p_peer_id`.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
+    /// Ver `P2PMessage::Announce::tp`.
+    #[serde(default)]
+    pub tp: Option<TpIdentity>,
 }
 
 /// Extract the host part of an addr string for use in HTTP URLs.
@@ -182,6 +240,13 @@ impl PeerInfo {
 
     pub fn layers_count(&self) -> u32 {
         self.end_layer - self.start_layer + 1
+    }
+
+    /// Este peer é um worker de tensor parallelism (não é hop do pipeline)?
+    /// O planejador exclui workers dos candidatos: só o primary de um grupo
+    /// entra na cadeia.
+    pub fn is_tp_worker(&self) -> bool {
+        self.tp.as_ref().is_some_and(|t| t.role == "worker")
     }
 
     pub fn is_alive(&self) -> bool {
@@ -295,6 +360,10 @@ pub struct Network {
     /// change this live, via `POST /api/ui/network/advertise-addr`, without a
     /// process restart.
     advertise_addr: std::sync::RwLock<Option<String>>,
+    /// Identidade de tensor parallelism deste nó (caminho C). `None` fora de
+    /// um grupo TP. Mutável como `advertise_addr`: o `apply` pode ligar o
+    /// nó como primary/worker sem reiniciar o processo.
+    tp: std::sync::RwLock<Option<TpIdentity>>,
     socket: Arc<UdpSocket>,
     /// Set while the operator has taken this node off the network.
     ///
@@ -524,6 +593,7 @@ impl Network {
             role: String::new(),
             hostname: String::new(),
             advertise_addr: std::sync::RwLock::new(None),
+            tp: std::sync::RwLock::new(None),
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
@@ -570,6 +640,18 @@ impl Network {
             info!("Anunciando o endereço fixo {a} (em vez do endereço de origem)");
         }
         *self.advertise_addr.write().expect("advertise_addr lock") = normalized;
+    }
+
+    /// Liga (ou desliga, com `None`) a identidade de tensor parallelism deste
+    /// nó. O `apply` chama isto quando implanta o nó como primary/worker de
+    /// um grupo TP, sem reiniciar o processo.
+    pub fn set_tp(&self, tp: Option<TpIdentity>) {
+        *self.tp.write().expect("tp lock") = tp;
+    }
+
+    /// Identidade de tensor parallelism anunciada por este nó, se houver.
+    pub fn tp_identity(&self) -> Option<TpIdentity> {
+        self.tp.read().expect("tp lock").clone()
     }
 
     /// Host part of the advertised address, ready to interpolate into a URL
@@ -777,6 +859,7 @@ impl Network {
             disk_total_mb: 0,
             disk_free_mb: 0,
             libp2p_peer_id: self.libp2p_peer_id.clone(),
+            tp: self.tp.read().expect("tp lock").clone(),
         }
     }
 
@@ -1080,6 +1163,7 @@ impl Network {
                 disk_total_mb,
                 disk_free_mb,
                 libp2p_peer_id,
+                tp,
             } => {
                 if node_id == self.node_id {
                     return; // ignore ourselves
@@ -1119,6 +1203,7 @@ impl Network {
                     disk_free_mb,
                     api_keys_active: 0,
                     libp2p_peer_id,
+                    tp,
                 };
 
                 let is_new = {
@@ -1557,6 +1642,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         };
         assert_eq!(
             peer.inference_url().as_deref(),
@@ -1596,6 +1682,7 @@ mod tests {
             disk_free_mb: 200000,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         };
 
         for count in [0usize, 1, 2, 3, 5, 12] {
@@ -1642,6 +1729,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 
@@ -1842,6 +1930,7 @@ mod tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 

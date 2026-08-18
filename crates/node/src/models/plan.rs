@@ -305,6 +305,88 @@ pub async fn extract_shard(
     })
 }
 
+/// Nome de um shard de tensor parallelism: `{base}_tp{rank}of{size}.gguf`.
+///
+/// Distinto da convenção de faixa `{base}_{start}_{end}.gguf` de propósito:
+/// o `parse_shard_name` do catálogo não confunde os dois, e o sufixo `_tp`
+/// deixa claro que o arquivo é a metade de um grupo, não um modelo autônomo.
+pub fn tp_shard_filename(base: &str, rank: u32, size: u32) -> String {
+    format!("{base}_tp{rank}of{size}.gguf")
+}
+
+/// Extrai o shard de tensor de um rank de tensor parallelism (caminho C).
+///
+/// Espelho de `extract_shard`: roda `splitter::shard_tensor_parallel` num
+/// `spawn_blocking`, reaproveita arquivo já completo e apaga o parcial no
+/// erro. O shard NÃO é carregável pelo llama.cpp de hoje; é a metade que o
+/// fork do caminho C carrega junto com a coletiva all-reduce.
+pub async fn extract_tp_shard(
+    source_model: &str,
+    output_dir: &Path,
+    base_name: &str,
+    tp_size: u32,
+    tp_rank: u32,
+    on_progress: impl Fn(f64) + Send + Sync + 'static,
+) -> Result<SliceOutcome> {
+    let output = output_dir.join(tp_shard_filename(base_name, tp_rank, tp_size));
+
+    // Reaproveitar exige que o arquivo tenha sido escrito pela **regra atual**,
+    // não só que ele exista. "Existe e tem mais de 1 KB" foi o critério até
+    // 17/08, e ele não distingue um shard atual de um escrito por uma versão
+    // com defeito: a ksia carregou o mesmo shard de cabeçalho não dividido
+    // durante três correções seguidas, com o log anunciando "reaproveitando" a
+    // cada tentativa. O carimbo é `pom.tp_format` (ver
+    // `splitter::TP_SHARD_FORMAT`); shard velho não tem a chave, e a ausência
+    // já basta para regenerar.
+    if let Ok(meta) = std::fs::metadata(&output) {
+        if meta.len() > 1024 {
+            let carimbo = crate::gguf::read_info(&output).ok().and_then(|i| i.tp_stamp);
+            let atual = carimbo.is_some_and(|c| {
+                c.format == crate::splitter::TP_SHARD_FORMAT && c.size == tp_size && c.rank == tp_rank
+            });
+            if atual {
+                info!("shard de tensor já existe, reaproveitando: {}", output.display());
+                return Ok(SliceOutcome {
+                    output_path: output.to_string_lossy().into_owned(),
+                    bytes: meta.len(),
+                    reused: true,
+                });
+            }
+            // Dizer **por que** está reescrevendo: um rebuild que reescreve
+            // 2,8 GB sem explicação parece defeito.
+            info!(
+                "shard de tensor obsoleto ({}), regerando: carimbo {:?}, esperado formato {} {}of{}",
+                output.display(),
+                carimbo,
+                crate::splitter::TP_SHARD_FORMAT,
+                tp_rank,
+                tp_size,
+            );
+        }
+    }
+
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("criar {}", output_dir.display()))?;
+
+    let src = std::path::PathBuf::from(source_model);
+    let dst = output.clone();
+
+    let bytes = tokio::task::spawn_blocking(move || {
+        crate::splitter::shard_tensor_parallel(&src, &dst, tp_size, tp_rank, on_progress)
+    })
+    .await
+    .context("spawn_blocking para shard_tensor_parallel")?
+    .inspect_err(|_| {
+        let _ = std::fs::remove_file(&output);
+    })?;
+
+    Ok(SliceOutcome {
+        output_path: output.to_string_lossy().into_owned(),
+        bytes,
+        reused: false,
+    })
+}
+
 /// Where slices go: `<pasta de fatias>/<base>/`.
 pub fn shard_output_dir(shard_dir: &Path, base_name: &str) -> PathBuf {
     shard_dir.join(sanitize(base_name))
@@ -806,6 +888,74 @@ mod tests {
     #[test]
     fn shard_filename_matches_the_parsed_convention() {
         assert_eq!(shard_filename("qwen", 0, 15), "qwen_0_15.gguf");
+    }
+
+    #[test]
+    fn tp_shard_filename_does_not_collide_with_the_range_convention() {
+        assert_eq!(tp_shard_filename("qwen", 0, 2), "qwen_tp0of2.gguf");
+        assert_eq!(tp_shard_filename("qwen", 1, 4), "qwen_tp1of4.gguf");
+    }
+
+    #[tokio::test]
+    async fn extract_tp_shard_writes_and_reuses_a_tensor_shard() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-extract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
+
+        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(!outcome.reused);
+        assert!(outcome.output_path.ends_with("whole_tp0of2.gguf"));
+        assert!(std::path::Path::new(&outcome.output_path).exists());
+
+        let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(again.reused, "arquivo já completo é reaproveitado, não reescrito");
+    }
+
+    /// Shard escrito por uma regra antiga **não** é reaproveitado.
+    ///
+    /// Este é o teste que impede a repetição de 17/08: três correções seguidas
+    /// no fatiamento por tensor, e a ksia carregando o mesmo shard obsoleto em
+    /// todas, porque o critério de reuso era "existe e tem mais de 1 KB". Um
+    /// arquivo grande sem o carimbo `pom.tp_format` é regra desconhecida, e
+    /// regra desconhecida se regenera.
+    #[tokio::test]
+    async fn a_shard_from_an_older_rule_is_rewritten_not_reused() {
+        let dir = std::env::temp_dir().join(format!("pom-tp-stale-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
+
+        // Um "shard" grande que nunca passou pelo fatiador: sem carimbo, como
+        // todo arquivo escrito antes de `tp_format` existir.
+        let velho = dir.join(tp_shard_filename("whole", 0, 2));
+        std::fs::write(&velho, vec![0u8; 4096]).unwrap();
+
+        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(
+            !outcome.reused,
+            "shard sem carimbo tem que ser reescrito, não reaproveitado"
+        );
+
+        // E o que saiu tem o carimbo da regra atual.
+        let info = crate::gguf::read_info(std::path::Path::new(&outcome.output_path)).unwrap();
+        let stamp = info.tp_stamp.expect("o shard novo carimba a regra que o escreveu");
+        assert_eq!(stamp.format, crate::splitter::TP_SHARD_FORMAT);
+        assert_eq!((stamp.size, stamp.rank), (2, 0));
+
+        // Agora sim reaproveita: mesmo formato, mesmo rank, mesmo tamanho.
+        let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+            .await
+            .unwrap();
+        assert!(again.reused);
     }
 
     // ── Fatias de tamanhos diferentes ────────────────────────────────────────

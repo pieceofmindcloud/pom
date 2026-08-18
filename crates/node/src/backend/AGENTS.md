@@ -131,15 +131,41 @@ behind an auth extractor.
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be
   authenticated and would rotate the connection key on a configured node).
-- `deploy.rs` - `DeployKind` (`shards` | `whole`) escolhe qual inventário o
-  `survey` lê: `shard_sets`, ou os modelos inteiros via `parse_whole`, que lê um
-  GGUF não fatiado como a faixa `0..total-1`. Daí em diante é o mesmo planner,
-  o mesmo `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as
-  recusas mudam de substantivo (`DeployKind::unit`). Ver
-  `docs/subsystems/implantacao.md` §1.1.
+- `deploy.rs` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
+  qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
+  `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
+  `tensor_parallel` (caminho C) nomeia o grupo (primary + workers); a v1 da
+  varredura lê o modelo do primary, e a descoberta de workers fica junto do
+  fork do llama.cpp. O pedido carrega `TpLaunch {size, primary_node_id,
+  worker_node_ids}` - o operador escolhe primary/workers por node_id e o nó
+  deriva a `rank0_url` da `Machine.inference_url` (`tp_identity`). Validação em
+  duas camadas antes do deploy: `tp_group_checks` (tamanho, presença no
+  cluster, modelo inteiro, sem repetição) dentro do `plan`, e
+  `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
+  `webui::tp_check` -> `splitter::validate_tensor_parallel`) que recusa MoE/
+  SSM/weight-tied na tela. Essa rota é **autenticada** (`ConnectionAuth`), então
+  a chamada leva `bearer_auth(connection_key)`: `peer_http.for_peer` resolve só
+  o TLS, credencial é por requisição. Sem ela o primary responde 401 e nenhuma
+  implantação TP passa, em máquina nenhuma. A leitura da resposta vive em
+  `tp_check_verdict`, separada para ser testável e para repetir o `error` do
+  peer em vez de chamar toda resposta sem `ok` de binário velho. Daí em diante é o mesmo planner, o mesmo
+  `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
+  mudam de substantivo (`DeployKind::unit`). Ver
+  `docs/subsystems/implantacao.md` §1.1 e §1.2.
+  O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
+  máquina; `tp_members` transfere esses dados para cada rank, permitindo que
+  `broadcast_to` e o reduce usem o túnel quando o HTTPS direto entre sites não
+  tem rota.
+  O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
+  tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
+  bytes ou esperas TP com a telemetria de pipeline.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).
+- `deploy.rs` - `RuntimeParams.fit_memory` fica ligado por padrão em shards e
+  modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
+  `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
+  parallelism, que não suporta o fit automático em `split-mode tensor`.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

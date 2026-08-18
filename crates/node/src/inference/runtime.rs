@@ -43,6 +43,10 @@ pub struct NodeConfig {
     pub peer_index: u32,
     /// This peer is the entry point clients talk to.
     pub primary: bool,
+    /// Identidade de tensor parallelism deste nó (caminho C), quando ele é
+    /// primary/worker de um grupo. `None` = nó sem TP (o caso de hoje).
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -51,6 +55,9 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
+    #[serde(default = "default_fit_memory")]
+    pub fit_memory: bool,
     pub n_batch: u32,
     /// Concurrent generations; the context is split between them.
     #[serde(default = "default_max_sessions")]
@@ -110,6 +117,10 @@ fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
 }
 fn default_offload_kqv() -> bool {
+    true
+}
+
+fn default_fit_memory() -> bool {
     true
 }
 fn default_speculative_k() -> u32 {
@@ -967,6 +978,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
@@ -985,6 +997,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
         }
     }
 

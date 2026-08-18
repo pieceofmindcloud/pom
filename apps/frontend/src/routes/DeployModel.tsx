@@ -93,6 +93,7 @@ import type {
   DeploySelection,
   DeployStep,
   RuntimeParams,
+  TpLaunch,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -440,8 +441,8 @@ function KindPicker({
   labels: Record<DeployKind, { label: string; hint: string }>;
 }) {
   return (
-    <div className="grid gap-2 sm:grid-cols-2">
-      {(["shards", "whole"] as DeployKind[]).map((k) => {
+    <div className="grid gap-2 sm:grid-cols-3">
+      {(["shards", "whole", "tensor_parallel"] as DeployKind[]).map((k) => {
         const on = value === k;
         return (
           <button
@@ -473,6 +474,12 @@ export function DeployModel() {
   const [group, setGroup] = useState("");
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
+  /** Tensor parallelism group, when that is the question being asked.
+   *  `size` is derived (1 primary + workers), not a field the operator types. */
+  const [tp, setTp] = useState<{ primary_node_id: string; worker_node_ids: string[] }>({
+    primary_node_id: "",
+    worker_node_ids: [],
+  });
   /** `null` until the operator says — see `kind` below for what that means. */
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -511,12 +518,22 @@ export function DeployModel() {
   const kind: DeployKind =
     pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
   const isWhole = kind === "whole";
+  const isTp = kind === "tensor_parallel";
 
-  const chosen = isWhole
+  const chosen = isWhole || isTp
     ? wholeName || wholes[0]?.name || ""
     : group || groups[0] || "";
-  /** The whole model on screen, for the facts the plan does not carry. */
-  const wholeModel = isWhole ? wholes.find((w) => w.name === chosen) : undefined;
+  /** The whole model on screen, for the facts the plan does not carry. TP
+   *  also picks a whole model (each rank holds its own copy), so it reads the
+   *  same facts — architecture, holders — to build the primary/worker selects. */
+  const wholeModel = isWhole || isTp ? wholes.find((w) => w.name === chosen) : undefined;
+  /** The TpLaunch the node expects: `size` is derived from the workers picked,
+   *  never a free number — the select is the single source of truth. */
+  const tpPayload = (): TpLaunch => ({
+    size: tp.worker_node_ids.length + 1,
+    primary_node_id: tp.primary_node_id,
+    worker_node_ids: tp.worker_node_ids,
+  });
   /**
    * Where the last deploy of this is remembered.
    *
@@ -548,6 +565,9 @@ export function DeployModel() {
       settled ? JSON.stringify(settled) : "auto",
       settledParams ? JSON.stringify(settledParams) : "padrão",
       merge == null ? "merge-padrão" : `merge-${merge}`,
+      // TP: o plano revalida quando o primary/workers mudam — a checagem de
+      // shardabilidade roda no nó, então a troca precisa re-disparar a query.
+      isTp ? JSON.stringify(tpPayload()) : "sem-tp",
     ],
     queryFn: () =>
       api.post<DeployPlan>("/api/ui/deploy/plan", {
@@ -555,6 +575,7 @@ export function DeployModel() {
         kind,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
+        ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
         // the operator was never shown.
@@ -783,6 +804,7 @@ export function DeployModel() {
         ...(selection ? { selection: rows } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
+        ...(isTp ? { tp: tpPayload() } : {}),
       });
       setJobId(started.job_id);
       // Written from `rows` and `eff`, not from the possibly-null edit state:
@@ -915,11 +937,12 @@ export function DeployModel() {
                   labels={{
                     shards: { label: t("deploy.kindShards"), hint: t("deploy.kindShardsHint") },
                     whole: { label: t("deploy.kindWhole"), hint: t("deploy.kindWholeHint") },
+                    tensor_parallel: { label: t("deploy.kindTp"), hint: t("deploy.kindTpHint") },
                   }}
                 />
               </div>
 
-              {isWhole ? (
+              {isWhole || isTp ? (
                 wholes.length === 0 ? (
                   <Empty icon={<Boxes className="h-5 w-5" />} title={t("deploy.wholeEmpty")}>
                     {t("deploy.wholeEmptyDetail")}
@@ -980,6 +1003,50 @@ export function DeployModel() {
                           </dd>
                         </div>
                       </dl>
+                    )}
+                    {isTp && wholeModel && (
+                      <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+                        <Field label={t("deploy.tpPrimary")} hint={t("deploy.tpPrimaryHint")}>
+                          <Select
+                            aria-label={t("deploy.tpPrimary")}
+                            value={tp.primary_node_id}
+                            onChange={(e) => setTp({ ...tp, primary_node_id: e.target.value })}
+                          >
+                            <option value="">{t("deploy.tpPickPrimary")}</option>
+                            {wholeModel.holders.map((id) => (
+                              <option key={id} value={id}>
+                                {labelOf(id)}
+                              </option>
+                            ))}
+                          </Select>
+                        </Field>
+                        <Field label={t("deploy.tpWorkers")} hint={t("deploy.tpWorkersHint")}>
+                          <Select
+                            aria-label={t("deploy.tpWorkers")}
+                            multiple
+                            value={tp.worker_node_ids}
+                            onChange={(e) =>
+                              setTp({
+                                ...tp,
+                                worker_node_ids: Array.from(e.target.selectedOptions, (o) => o.value),
+                              })
+                            }
+                          >
+                            {wholeModel.holders
+                              .filter((id) => id !== tp.primary_node_id)
+                              .map((id) => (
+                                <option key={id} value={id}>
+                                  {labelOf(id)}
+                                </option>
+                              ))}
+                          </Select>
+                        </Field>
+                        <Field label={t("deploy.tpSize")}>
+                          <div className="text-sm text-fg">
+                            {t("deploy.tpSizeValue", { size: tp.worker_node_ids.length + 1 })}
+                          </div>
+                        </Field>
+                      </div>
                     )}
                   </div>
                 )
@@ -1643,6 +1710,13 @@ export function DeployModel() {
                             machine's memory, not of the pipeline, so it moved to
                             the machines table where the machine is. */}
                         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
+                          <Switch
+                            checked={!isTp && (eff.fit_memory ?? true)}
+                            onChange={(v) => setParams({ ...eff, fit_memory: v })}
+                            disabled={isTp}
+                            label={t("deploy.fitMemory")}
+                            hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
+                          />
                           <Switch
                             checked={eff.no_thinking ?? true}
                             onChange={(v) => setParams({ ...eff, no_thinking: v })}

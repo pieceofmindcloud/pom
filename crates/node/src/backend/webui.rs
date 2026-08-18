@@ -57,6 +57,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
+        .route("/api/ui/tp/check", post(tp_check))
         .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/ui/unload", post(unload_model))
@@ -1006,6 +1007,11 @@ pub struct RuntimeParams {
     pub n_ctx: u32,
     #[serde(default = "d_true")]
     pub offload_kqv: bool,
+    /// Deixa o `common_fit_params` do llama.cpp ajustar a alocação à memória
+    /// livre. No TP o runtime desliga esta opção, porque o fit nativo não
+    /// suporta `split-mode tensor`.
+    #[serde(default = "d_true")]
+    pub fit_memory: bool,
     #[serde(default = "d_n_batch")]
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
@@ -1108,6 +1114,7 @@ impl Default for RuntimeParams {
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
+            fit_memory: d_true(),
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
@@ -1140,6 +1147,7 @@ impl From<&NodeConfig> for RuntimeParams {
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
+            fit_memory: c.fit_memory,
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
@@ -1180,6 +1188,12 @@ pub struct ApplyRequest {
     pub peer_index: u32,
     #[serde(default)]
     pub primary: bool,
+    /// Identidade de tensor parallelism deste nó (caminho C). `None` = nó sem
+    /// TP. Presente, **todo** rank extrai o próprio shard de tensor - o rank 0
+    /// inclusive. O `role` só diz quem hospeda a coletiva (`rank0_url`); ver
+    /// `tp_shard_to_extract`.
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
     /// Set when the source is already a shard (or covers the whole model) and
     /// no slicing is needed.
     #[serde(default)]
@@ -1424,8 +1438,45 @@ async fn apply(
     Json(json!({ "job_id": id })).into_response()
 }
 
+/// Qual shard de tensor este apply tem que extrair, se algum.
+///
+/// **Todo** rank de um grupo tensor-parallel extrai o próprio, o rank 0
+/// inclusive. O `role` (`primary`/`worker`) diz quem hospeda a coletiva
+/// (`rank0_url`), **não** quem fatia - e confundir as duas coisas foi o defeito
+/// de 17/08: a condição era `role == "worker"`, então o primary caía no ramo
+/// `skip_split` e servia o GGUF inteiro, rodando atenção e FFN em largura cheia
+/// contra workers em meia largura. O `_tp0of2.gguf` nunca chegava a existir no
+/// disco, e o `_tp1of2.gguf` do worker era a única metade do grupo.
+fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity> {
+    req.tp.as_ref()
+}
+
 async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
-    let model_path = if let Some(parts) = req.merge.clone() {
+    let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
+        set_job(
+            job_id,
+            "running",
+            "fatiando",
+            &format!("extraindo shard de tensor rank {}/{}", tp.rank, tp.size),
+        )
+        .await;
+        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
+        let progress_job = job_id.to_string();
+        let outcome = plan::extract_tp_shard(
+            &req.source_model_path,
+            &out_dir,
+            &req.base_name,
+            tp.size,
+            tp.rank,
+            move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            },
+        )
+        .await?;
+        invalidate_catalog().await;
+        outcome.output_path
+    } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
         merge_parts(shard_dir, &req, &parts, job_id).await?
     } else if req.skip_split || (req.is_first() && req.is_last() && req.peer_count <= 1) {
@@ -1500,10 +1551,12 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_count: req.peer_count.max(1),
         peer_index: req.peer_index,
         primary: req.primary,
+        tp: req.tp.clone(),
         inference_port,
         n_gpu_layers: req.params.n_gpu_layers,
         n_ctx: req.params.n_ctx,
         offload_kqv: req.params.offload_kqv,
+        fit_memory: req.params.fit_memory && req.tp.is_none(),
         n_batch: req.params.n_batch,
         max_new_tokens: req.params.max_new_tokens,
         max_sessions: req.params.max_sessions,
@@ -1524,7 +1577,26 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         mtp_min_probability: req.params.mtp_min_probability,
     };
 
+    // Liga/desliga a coletiva TP antes de subir o servidor: o callback tem que
+    // estar registrado no llama.cpp antes do primeiro decode. Reaplicar muda o
+    // grupo só num reinício (o estado do tp.rs é OnceLock, por desenho da v1).
+    match &req.tp {
+        Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
+            let rank0 = tp.members.first();
+            crate::tp::register_tp_reduce(
+                tp.rank,
+                tp.size,
+                tp.rank0_url.clone().unwrap(),
+                tp.rank0_node_id.clone(),
+                rank0.and_then(|m| m.libp2p_peer_id.clone()),
+                rank0.is_some_and(|m| m.supports_tunnel),
+            );
+        }
+        _ => crate::tp::unregister_tp_reduce(),
+    }
+
     state.runtime.apply(cfg).await?;
+    state.network.set_tp(req.tp.clone());
     Ok(model_path)
 }
 
@@ -1696,6 +1768,33 @@ async fn layout_of(path: &std::path::Path) -> Result<Arc<crate::gguf::GgufLayout
     };
     cache.lock().await.insert(key, layout.clone());
     Ok(layout)
+}
+
+/// Checa, sem escrever nada, se um modelo local dá para partir por tensor
+/// parallelism no caminho C (classificação dos tensores, divisibilidade das
+/// dimensões, weight-tying). O coordenador do deploy chama isto no primary
+/// antes de aceitar o grupo; a resposta é sempre 200, com `ok: false` + `reason`
+/// quando o modelo não serve — a checagem em si é uma resposta válida, não um
+/// erro HTTP.
+#[derive(Debug, Deserialize)]
+pub struct TpCheckRequest {
+    pub model_path: String,
+    pub tp_size: u32,
+}
+
+async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckRequest>) -> Response {
+    let path = std::path::Path::new(&req.model_path);
+    if !path.is_file() {
+        return Json(json!({
+            "ok": false,
+            "reason": format!("modelo não encontrado nesta máquina: {}", req.model_path),
+        }))
+        .into_response();
+    }
+    match crate::splitter::validate_tensor_parallel(path, req.tp_size) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => Json(json!({ "ok": false, "reason": e.to_string() })).into_response(),
+    }
 }
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.
@@ -2234,6 +2333,7 @@ async fn release_slice(
         peer_count: cfg.peer_count,
         peer_index: cfg.peer_index,
         primary: cfg.primary,
+        tp: cfg.tp.clone(),
         skip_split: true,
         merge: None,
         params: RuntimeParams::from(&cfg),
@@ -2351,6 +2451,11 @@ pub struct LaunchTarget {
     pub peer_index: Option<u32>,
     #[serde(default)]
     pub peer_count: Option<u32>,
+    /// Identidade de tensor parallelism deste alvo (caminho C). Quando presente
+    /// (primary ou worker de um grupo), o apply extrai o shard/registra a
+    /// coletiva em vez de só fatiar por camadas.
+    #[serde(default)]
+    pub tp: Option<crate::network::TpIdentity>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2483,6 +2588,7 @@ pub(crate) async fn launch(
             peer_count: target.peer_count.unwrap_or(peer_count),
             peer_index: target.peer_index.unwrap_or(index as u32),
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
+            tp: target.tp.clone(),
             skip_split: target.skip_split,
             merge: target.merge.clone(),
             params,
@@ -3147,6 +3253,57 @@ mod advertise_addr_tests {
 mod tests {
     use super::*;
 
+    /// Num grupo tensor-parallel o rank 0 fatia igual aos outros.
+    ///
+    /// Enquanto a decisão foi `role == "worker"`, o primary servia o GGUF
+    /// inteiro: largura cheia de um lado, meia largura do outro, e o
+    /// `_tp0of2.gguf` nunca existia. O `role` endereça a coletiva, não decide
+    /// quem corta.
+    #[test]
+    fn every_rank_of_a_tp_group_extracts_its_own_shard() {
+        let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
+            source_model_path: "/m/whole.gguf".into(),
+            base_name: "whole".into(),
+            model_label: None,
+            start_layer: 0,
+            end_layer: 31,
+            total_layers: 32,
+            peer_count: 1,
+            peer_index: 0,
+            primary: true,
+            tp,
+            skip_split: true,
+            merge: None,
+            params: RuntimeParams::default(),
+        };
+        let ident = |rank: u32, role: &str| crate::network::TpIdentity {
+            role: role.into(),
+            group_id: "g".into(),
+            size: 2,
+            rank,
+            rank0_url: Some("http://127.0.0.1:8181".into()),
+            rank0_node_id: Some("primary-id".into()),
+            members: Vec::new(),
+        };
+
+        let primary = req(Some(ident(0, "primary")));
+        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
+        assert_eq!(escolhido.rank, 0);
+        assert_eq!(
+            plan::tp_shard_filename("whole", escolhido.rank, escolhido.size),
+            "whole_tp0of2.gguf",
+            "o arquivo que faltava no disco"
+        );
+
+        let worker = req(Some(ident(1, "worker")));
+        assert_eq!(tp_shard_to_extract(&worker).unwrap().rank, 1);
+
+        assert!(
+            tp_shard_to_extract(&req(None)).is_none(),
+            "nó sem TP não fatia por tensor"
+        );
+    }
+
     /// A rota escolhida tem que chegar a interface: sem ela, "por onde este
     /// salto vai" so se responde com shell na maquina.
     #[test]
@@ -3179,6 +3336,7 @@ mod tests {
             offload_kqv: kqv,
             peer_index: None,
             peer_count: None,
+            tp: None,
         };
 
         let cpu_only = params_for(&base, &target(Some(0), Some(false)));
@@ -3209,6 +3367,7 @@ mod tests {
             peer_count: peers,
             peer_index: 0,
             primary: true,
+            tp: None,
             skip_split: false,
             merge: None,
             params: RuntimeParams::default(),
@@ -3241,16 +3400,20 @@ mod tests {
         assert_eq!(p.n_batch, 512);
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
+        assert!(p.fit_memory);
     }
 
     #[test]
     fn params_accept_partial_overrides() {
         let p: RuntimeParams =
-            serde_json::from_str(r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false}"#)
+            serde_json::from_str(
+                r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false}"#,
+            )
                 .unwrap();
         assert_eq!(p.n_ctx, 250000);
         assert!(!p.no_thinking);
         assert!(!p.offload_kqv);
+        assert!(!p.fit_memory);
         assert_eq!(p.top_k, 40, "campos ausentes mantêm o padrão");
     }
 

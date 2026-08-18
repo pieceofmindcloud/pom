@@ -262,6 +262,7 @@ impl GatewayState {
                 disk_free_mb: 0,
                 api_keys_active: 0,
                 libp2p_peer_id: self.network.libp2p_peer_id.clone(),
+                tp: self.network.tp_identity(),
             });
         }
         peers
@@ -1485,6 +1486,7 @@ mod budget_tests {
             n_gpu_layers: 99,
             n_ctx,
             offload_kqv: true,
+            fit_memory: true,
             n_batch,
             max_sessions,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
@@ -1501,6 +1503,7 @@ mod budget_tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }
@@ -1580,6 +1583,7 @@ mod peer_visibility_tests {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 
@@ -1664,6 +1668,7 @@ pub(crate) mod testkit {
             disk_free_mb: 0,
             api_keys_active: 0,
             libp2p_peer_id: None,
+            tp: None,
         }
     }
 
@@ -1730,6 +1735,7 @@ pub(crate) mod testkit {
             n_gpu_layers: 0,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             n_batch: 512,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
@@ -1746,6 +1752,7 @@ pub(crate) mod testkit {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
             speculative_k: 4,
             speculative_lookup_window: 3,
         }

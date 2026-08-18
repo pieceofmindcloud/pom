@@ -176,6 +176,10 @@ pub enum DeployKind {
     Shards,
     /// One un-sliced GGUF, served whole by a single machine.
     Whole,
+    /// One model split across a group of machines by tensor parallelism
+    /// (caminho C): um primary + K workers. O primary segura o modelo inteiro;
+    /// cada worker extrai o próprio shard de tensor da própria cópia local.
+    TensorParallel,
 }
 
 impl DeployKind {
@@ -192,6 +196,7 @@ impl DeployKind {
         match self {
             DeployKind::Shards => format!("a fatia L{start}-{end}"),
             DeployKind::Whole => format!("o modelo {group}"),
+            DeployKind::TensorParallel => format!("o grupo tensor-parallel {group}"),
         }
     }
 
@@ -200,6 +205,7 @@ impl DeployKind {
         match self {
             DeployKind::Shards => "uma fatia",
             DeployKind::Whole => "um modelo",
+            DeployKind::TensorParallel => "um grupo tensor-parallel",
         }
     }
 }
@@ -224,6 +230,35 @@ pub struct DeployRequest {
     /// that a node serves one range.
     #[serde(default)]
     pub merge: bool,
+    /// Grupo de tensor parallelism (caminho C). Presente só com
+    /// `kind: "tensor_parallel"`: o primary serve o modelo inteiro e os
+    /// workers extraem o próprio shard de tensor.
+    #[serde(default)]
+    pub tp: Option<TpLaunch>,
+}
+
+/// Especificação de um grupo de tensor parallelism para o deploy.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct TpLaunch {
+    /// Quantos ranks no grupo (1 primary + size-1 workers).
+    pub size: u32,
+    /// node_id do primary (rank 0). A URL da coletiva (POST /v1/tp/reduce) é
+    /// derivada daqui — da porta de inferência anunciada pelo próprio nó —, não
+    /// digitada pelo operador.
+    pub primary_node_id: String,
+    /// node_ids dos workers (rank 1..size-1), na ordem dos ranks.
+    pub worker_node_ids: Vec<String>,
+}
+
+fn effective_params_for_kind(kind: DeployKind, params: &RuntimeParams) -> RuntimeParams {
+    let mut effective = params.clone();
+    if kind == DeployKind::TensorParallel {
+        // llama.cpp's common_fit_params explicitly refuses split-mode tensor.
+        // Keep the plan honest and make the runtime safety belt independent of
+        // whether the caller is a current UI or an older API client.
+        effective.fit_memory = false;
+    }
+    effective
 }
 
 // ── What a machine can tell us about itself ──────────────────────────────────
@@ -251,6 +286,14 @@ struct HeldShard {
 struct Machine {
     node_id: String,
     hostname: String,
+    /// URL do gateway HTTP do peer (para o coordenador falar com ele).
+    gateway_url: Option<String>,
+    /// URL do servidor de inferência do peer (rank 0 de um grupo TP).
+    inference_url: Option<String>,
+    /// Identidade e capacidade do transporte alternativo do servidor de
+    /// inferência, preservadas para o grupo TP.
+    libp2p_peer_id: Option<String>,
+    supports_tunnel: bool,
     /// Memory the weights would have to fit in: free VRAM on a machine with a
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
@@ -336,7 +379,9 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                     })
                     .filter_map(parse_shard)
                     .collect(),
-                DeployKind::Whole => body
+                // TP v1 lê o modelo inteiro do primary; a descoberta de workers
+                // (que seguram shards de tensor, não modelos) é o passo seguinte.
+                DeployKind::Whole | DeployKind::TensorParallel => body
                     .get("models")
                     .and_then(|v| v.as_array())
                     .into_iter()
@@ -356,6 +401,13 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
 
             Some(Machine {
                 node_id: peer.node_id.clone(),
+                gateway_url: peer.gateway_url(),
+                inference_url: peer.inference_url(),
+                libp2p_peer_id: peer.libp2p_peer_id.clone(),
+                supports_tunnel: peer
+                    .inference_frame_capabilities
+                    .iter()
+                    .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
                 hostname: if peer.hostname.is_empty() && is_self {
                     body.get("hostname")
                         .and_then(|h| h.as_str())
@@ -587,6 +639,9 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
+    /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
+    /// usa isto para gerar os alvos dos workers.
+    tp: Option<TpLaunch>,
     /// How many layers the original model has. `None` means nobody could say —
     /// which is a refusal (`blocked`), never a zero passed down the line.
     total_layers: Option<u32>,
@@ -829,6 +884,7 @@ fn plan(
     params: &RuntimeParams,
     merge: bool,
     kind: DeployKind,
+    tp: Option<TpLaunch>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -881,6 +937,24 @@ fn plan(
                 ));
             }
             chosen.sort_by_key(|(i, ..)| (available[*i].start_layer, available[*i].end_layer));
+        }
+    }
+
+    // ── Tensor parallelism: o primary é quem o operador escolheu ─────────────
+    //
+    // O modelo inteiro é um candidato só; o alvo dele é o primary (rank 0), não
+    // a máquina que o planejador automático sugeriria. As checagens do grupo
+    // (tamanho, workers no cluster, modelo inteiro presente) recusam o plano
+    // antes da checagem de shardabilidade, que lê o GGUF e roda no endpoint
+    // `/api/ui/tp/check`.
+    if kind == DeployKind::TensorParallel {
+        if let Some(tp) = &tp {
+            if let Some(reason) = tp_group_checks(tp, machines, group) {
+                blocked.get_or_insert(reason);
+            }
+            if let Some(entry) = chosen.first_mut() {
+                entry.1 = tp.primary_node_id.clone();
+            }
         }
     }
 
@@ -1339,6 +1413,7 @@ fn plan(
     Plan {
         group: group.to_string(),
         kind,
+        tp,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -1440,21 +1515,111 @@ fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternat
         .collect()
 }
 
+/// Checagem remota de shardabilidade: pergunta ao primary (o dono do modelo
+/// inteiro) se o GGUF dele dá para partir em `tp_size` ranks, sem escrever nada.
+///
+/// `Some(motivo)` = o plano deve ser recusado. A checagem falha fechada: se o
+/// primary não responder (ou for um binário antigo sem a rota), o plano é
+/// recusado com um motivo honesto, em vez de deixar o job falhar na metade do
+/// apply.
+async fn tp_shardability_check(
+    state: &GatewayState,
+    machines: &[Machine],
+    tp: &TpLaunch,
+) -> Option<String> {
+    let primary = machines.iter().find(|m| m.node_id == tp.primary_node_id)?;
+    let Some(path) = primary.held.first().map(|s| s.path.clone()) else {
+        return Some(format!("o primary {} não tem o modelo inteiro", primary.label()));
+    };
+    let Some(base) = primary.gateway_url.clone() else {
+        return Some(format!("não foi possível falar com o primary {}", primary.label()));
+    };
+    let Ok(http) = state.peer_http.for_peer(&primary.node_id) else {
+        return Some(format!("não foi possível falar com o primary {}", primary.label()));
+    };
+
+    // `/api/ui/tp/check` é autenticada como todo `/api/ui/*` de operador: sem a
+    // chave, o primary responde 401 e a checagem nunca passa - em nenhuma
+    // máquina, porque isto não depende de quem é o primary. `for_peer` resolve
+    // só o TLS (cliente pinado por node_id); credencial é por requisição, como
+    // no resto do arquivo.
+    let key = state.auth.read().await.connection_key.clone();
+    let resp = match http
+        .post(format!("{base}/api/ui/tp/check"))
+        .timeout(PEER_TIMEOUT * 4)
+        .bearer_auth(&key)
+        .json(&json!({ "model_path": path, "tp_size": tp.size }))
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            return Some(format!(
+                "não foi possível validar o shard em {}: {e}",
+                primary.label()
+            ))
+        }
+    };
+    let body: serde_json::Value = match resp.json().await {
+        Ok(v) => v,
+        Err(_) => {
+            return Some(format!("{} respondeu mal à checagem de shard", primary.label()))
+        }
+    };
+    tp_check_verdict(&body, &primary.label())
+}
+
+/// Como se lê a resposta de `/api/ui/tp/check`.
+///
+/// Separado da chamada para ser testável sem peer vivo - e porque o ramo sem
+/// `ok` já mentiu uma vez. `/api/ui/tp/check` é rota autenticada
+/// (`webui::tp_check` recebe `ConnectionAuth`), e um peer que recusa devolve
+/// `{"error":"missing Authorization header"}`: JSON válido, sem `ok`. Chamar
+/// isso de "binário antigo" mandou o operador conferir a versão do binário nas
+/// duas máquinas enquanto o defeito real era a credencial que
+/// `tp_shardability_check` nem enviava (17/08, com Mac e ksia no mesmo commit).
+/// Quem recusa costuma dizer por quê; repetir a razão dele é sempre melhor que
+/// adivinhar a nossa.
+fn tp_check_verdict(body: &serde_json::Value, label: &str) -> Option<String> {
+    match body.get("ok").and_then(|v| v.as_bool()) {
+        Some(true) => None,
+        Some(false) => Some(
+            body.get("reason")
+                .and_then(|v| v.as_str())
+                .unwrap_or("o modelo não é shardável no caminho C")
+                .to_string(),
+        ),
+        None => Some(match body.get("error").and_then(|v| v.as_str()) {
+            Some(err) => format!("{label} recusou a checagem de shard: {err}"),
+            None => format!("{label} não tem a checagem de shard (binário antigo?)"),
+        }),
+    }
+}
+
 async fn plan_endpoint(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     Json(req): Json<DeployRequest>,
 ) -> Response {
     let machines = survey(&state, &req.group, req.kind).await;
-    Json(plan(
+    let params = effective_params_for_kind(req.kind, &req.params);
+    let mut p = plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
-        &req.params,
+        &params,
         req.merge,
         req.kind,
-    ))
-    .into_response()
+        req.tp.clone(),
+    );
+    if req.kind == DeployKind::TensorParallel && p.blocked.is_none() {
+        if let Some(tp) = &req.tp {
+            if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {
+                p.blocked = Some(reason);
+            }
+        }
+    }
+    Json(p).into_response()
 }
 
 // ── Carrying it out ──────────────────────────────────────────────────────────
@@ -1470,14 +1635,27 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let machines = survey(&state, &req.group, req.kind).await;
-    let plan = plan(
+    let params = effective_params_for_kind(req.kind, &req.params);
+    let mut plan = plan(
         &req.group,
         &machines,
         req.selection.as_deref(),
-        &req.params,
+        &params,
         req.merge,
         req.kind,
+        req.tp.clone(),
     );
+
+    // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
+    // sobre a varredura fresca, então também re-valida aqui — não confia no
+    // preview que a tela mostrou.
+    if req.kind == DeployKind::TensorParallel && plan.blocked.is_none() {
+        if let Some(tp) = &req.tp {
+            if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {
+                plan.blocked = Some(reason);
+            }
+        }
+    }
 
     if let Some(reason) = plan.blocked {
         return (
@@ -1510,7 +1688,7 @@ async fn deploy_endpoint(
 
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, req.params, &id).await {
+        match run(state, plan, params, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -1534,11 +1712,148 @@ async fn deploy_endpoint(
 /// whose range happens to be the entire model, so it comes out as a plain
 /// target with `skip_split` — which is also what makes the receiving peer a
 /// `single_peer`, running without hidden-state extraction.
+/// Validações estáticas de um grupo de tensor parallelism, antes da checagem
+/// de shardabilidade (que lê o GGUF). Devolve `Some(motivo)` quando o deploy não
+/// pode nem começar: tamanho inválido, primary/workers fora do cluster, alguém
+/// sem o modelo inteiro, ou primary sem URL de inferência derivável.
+fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<String> {
+    if tp.size < 2 {
+        return Some("um grupo tensor-parallel precisa de pelo menos 2 ranks".to_string());
+    }
+    let Some(primary) = machines.iter().find(|m| m.node_id == tp.primary_node_id) else {
+        return Some(format!("o primary {} não está no cluster", tp.primary_node_id));
+    };
+    if !primary.held.iter().any(|s| s.start_layer == 0) {
+        return Some(format!(
+            "o primary {} não tem o modelo inteiro {group}",
+            primary.label()
+        ));
+    }
+    if primary.inference_url.is_none() {
+        return Some(format!(
+            "não foi possível descobrir a URL de inferência do primary {} (ele precisa anunciar a porta de inferência)",
+            primary.label()
+        ));
+    }
+
+    let expected_workers = (tp.size - 1) as usize;
+    if tp.worker_node_ids.len() != expected_workers {
+        return Some(format!(
+            "são {} ranks, então o grupo precisa de {} worker{} (você marcou {})",
+            tp.size,
+            expected_workers,
+            if expected_workers == 1 { "" } else { "s" },
+            tp.worker_node_ids.len(),
+        ));
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    for worker_id in &tp.worker_node_ids {
+        if worker_id == &tp.primary_node_id {
+            return Some("um worker não pode ser o próprio primary".to_string());
+        }
+        if !seen.insert(worker_id.clone()) {
+            return Some(format!("o worker {worker_id} foi marcado duas vezes"));
+        }
+        let Some(worker) = machines.iter().find(|m| &m.node_id == worker_id) else {
+            return Some(format!("o worker {worker_id} não está no cluster"));
+        };
+        if !worker.held.iter().any(|s| s.start_layer == 0) {
+            return Some(format!(
+                "o worker {} não tem o modelo inteiro {group} para extrair o shard",
+                worker.label()
+            ));
+        }
+    }
+    None
+}
+
+fn tp_identity(
+    size: u32,
+    group_id: &str,
+    rank: u32,
+    role: &str,
+    members: &[crate::network::TpMember],
+) -> crate::network::TpIdentity {
+    let rank0 = members.first();
+    crate::network::TpIdentity {
+        role: role.into(),
+        group_id: group_id.into(),
+        size,
+        rank,
+        rank0_url: rank0.map(|m| m.url.clone()),
+        // O certificado da coletiva é pinado por este id; sem ele o cliente
+        // padrão recusa o autoassinado do cluster e o all-reduce falha calado.
+        rank0_node_id: rank0.map(|m| m.node_id.clone()),
+        // Todo membro recebe a lista inteira: o rank 0 usa para transmitir o
+        // decode, e os demais para saber quem são.
+        members: members.to_vec(),
+    }
+}
+
+/// Os membros do grupo TP em ordem de rank (0 = primary), com a URL de
+/// inferência de cada um.
+///
+/// Recusa cedo quem não anuncia porta de inferência: sem ela o rank 0 não teria
+/// como disparar o decode daquele rank, e o grupo travaria na primeira barreira
+/// em vez de falhar aqui.
+fn tp_members(
+    tp: &TpLaunch,
+    machines: &[Machine],
+) -> Result<Vec<crate::network::TpMember>, String> {
+    let de = |node_id: &str| -> Result<crate::network::TpMember, String> {
+        let m = machines
+            .iter()
+            .find(|m| m.node_id == node_id)
+            .ok_or_else(|| format!("{node_id} não está no cluster"))?;
+        let url = m.inference_url.clone().ok_or_else(|| {
+            format!(
+                "não foi possível descobrir a URL de inferência de {} (ele precisa anunciar a porta de inferência)",
+                m.label()
+            )
+        })?;
+        Ok(crate::network::TpMember {
+            node_id: node_id.to_string(),
+            url,
+            libp2p_peer_id: m.libp2p_peer_id.clone(),
+            supports_tunnel: m.supports_tunnel,
+        })
+    };
+    let mut out = vec![de(&tp.primary_node_id)?];
+    for w in &tp.worker_node_ids {
+        out.push(de(w)?);
+    }
+    Ok(out)
+}
+
 fn launch_targets(
     steps: &[Step],
     machines: &[Machine],
     kind: DeployKind,
+    tp: Option<&TpLaunch>,
 ) -> Result<Vec<LaunchTarget>, String> {
+    // A URL da coletiva (rank 0) é derivada do primary, não digitada: é a porta
+    // de inferência que o próprio nó anuncia. `tp.is_some()` ⟺ `rank0_url.is_some()`.
+    let rank0_url = tp
+        .map(|t| {
+            machines
+                .iter()
+                .find(|m| m.node_id == t.primary_node_id)
+                .and_then(|m| m.inference_url.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "não foi possível descobrir a URL de inferência do primary {}",
+                        t.primary_node_id
+                    )
+                })
+        })
+        .transpose()?;
+    let _ = rank0_url;
+    let membros = match tp {
+        Some(t) => tp_members(t, machines)?,
+        None => Vec::new(),
+    };
+
     let mut targets = Vec::new();
     for step in steps {
         let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
@@ -1585,6 +1900,7 @@ fn launch_targets(
                 // posição na lista de alvos é a posição real.
                 peer_index: None,
                 peer_count: None,
+                tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
             });
             continue;
         }
@@ -1613,8 +1929,45 @@ fn launch_targets(
             offload_kqv: step.offload_kqv,
             peer_index: None,
             peer_count: None,
+            tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
         });
     }
+
+    // Grupo de tensor parallelism: além do primary (o step do modelo inteiro),
+    // cada worker vira um alvo que extrai o próprio shard de tensor.
+    if let Some(tp) = tp {
+        let head = steps.first().ok_or("plano TP sem step")?;
+        for (i, worker_id) in tp.worker_node_ids.iter().enumerate() {
+            let rank = (i + 1) as u32;
+            let worker_machine = machines
+                .iter()
+                .find(|m| m.node_id == *worker_id)
+                .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
+            let path = worker_machine
+                .holds(head.start_layer, head.end_layer)
+                .map(|s| s.path.clone())
+                .ok_or_else(|| {
+                    format!(
+                        "{} não tem o modelo para extrair o shard de tensor",
+                        worker_machine.hostname
+                    )
+                })?;
+            targets.push(LaunchTarget {
+                node_id: worker_id.clone(),
+                source_model_path: path,
+                start_layer: head.start_layer,
+                end_layer: head.end_layer,
+                skip_split: true,
+                merge: None,
+                n_gpu_layers: head.n_gpu_layers,
+                offload_kqv: head.offload_kqv,
+                peer_index: None,
+                peer_count: None,
+                tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
+            });
+        }
+    }
+
     Ok(targets)
 }
 
@@ -1758,7 +2111,7 @@ async fn run(
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
     let machines = survey(&state, &plan.group, plan.kind).await;
-    let targets = launch_targets(&plan.steps, &machines, plan.kind)?;
+    let targets = launch_targets(&plan.steps, &machines, plan.kind, plan.tp.as_ref())?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -1912,6 +2265,7 @@ async fn add_node_endpoint(
                 // isto o nó somado se diz o último da divisão.
                 peer_index: Some(peer_index),
                 peer_count: Some(peer_count),
+                tp: None,
             }],
             // Quem e a entrada do pipeline nao muda por isto: so quem fica com
             // a camada 0 recebe o prompt, e o `launch` so marca `primary` no
@@ -2677,6 +3031,22 @@ mod undeploy_tests {
 
 #[cfg(test)]
 mod tests {
+    /// O tipo tensor-parallel nomeia o grupo, não uma fatia nem um modelo: a
+    /// tela oferece o formato, e a recusa tem que falar a língua do formato.
+    #[test]
+    fn tensor_parallel_kind_names_the_group() {
+        use super::DeployKind;
+        assert_eq!(
+            DeployKind::TensorParallel.unit("qwen", 0, 31),
+            "o grupo tensor-parallel qwen"
+        );
+        assert_eq!(
+            DeployKind::TensorParallel.indefinite(),
+            "um grupo tensor-parallel"
+        );
+        assert!(!DeployKind::TensorParallel.whole(), "TP não é whole");
+    }
+
     /// Um no somado no meio do pipeline NAO e o ultimo da divisao.
     ///
     /// `peer_index`/`peer_count` respondem a uma pergunta so - "sou o ultimo?" -
@@ -2795,6 +3165,10 @@ mod tests {
             .map(|s| Machine {
                 node_id: s.id.to_string(),
                 hostname: s.id.to_string(),
+                gateway_url: None,
+                inference_url: None,
+                libp2p_peer_id: None,
+                supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
                 held: s
@@ -2833,6 +3207,7 @@ mod tests {
             &RuntimeParams::default(),
             false,
             DeployKind::Shards,
+            None,
         )
     }
 
@@ -2845,6 +3220,7 @@ mod tests {
             &RuntimeParams::default(),
             true,
             DeployKind::Shards,
+            None,
         )
     }
 
@@ -2857,6 +3233,7 @@ mod tests {
             &RuntimeParams::default(),
             false,
             DeployKind::Whole,
+            None,
         )
     }
 
@@ -3347,13 +3724,21 @@ mod tests {
             prefill_chunk_tokens: 4096,
             ..RuntimeParams::default()
         };
-        let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards);
+        let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards, None);
 
         assert_eq!(p.params.n_ctx, 32768);
         // 32768 / 2 sessões − 256 gerados.
         assert_eq!(p.prompt_tokens, 16128);
         // O pedaço nunca passa de n_batch, por mais alto que seja o pedido.
         assert_eq!(p.chunk_tokens, 3072);
+    }
+
+    #[test]
+    fn tensor_parallel_plans_disable_llama_fit() {
+        let params = RuntimeParams::default();
+        assert!(params.fit_memory);
+        assert!(!effective_params_for_kind(DeployKind::TensorParallel, &params).fit_memory);
+        assert!(effective_params_for_kind(DeployKind::Shards, &params).fit_memory);
     }
 
     /// A cluster of unlike machines is the whole point of the per-peer offload:
@@ -3579,6 +3964,10 @@ mod tests {
         Machine {
             node_id: id.to_string(),
             hostname: id.to_string(),
+            gateway_url: Some(format!("http://{id}:8080")),
+            inference_url: Some(format!("http://{id}:8181")),
+            libp2p_peer_id: None,
+            supports_tunnel: false,
             mem_free_mb,
             disk_free_mb: 500_000,
             held: if has {
@@ -3770,7 +4159,7 @@ mod tests {
     fn a_whole_model_is_launched_as_one_plain_target() {
         let ms = vec![whole_machine("a", 900_000, true)];
         let p = whole("qwen3.5-9b", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole).expect("um alvo");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole, None).expect("um alvo");
 
         assert_eq!(alvos.len(), 1);
         let alvo = &alvos[0];
@@ -3787,6 +4176,224 @@ mod tests {
         );
     }
 
+    /// Um grupo de tensor parallelism vira um alvo por rank: o primary (rank 0)
+    /// e cada worker, todos apontando o mesmo rank0_url para a coletiva.
+    #[test]
+    fn a_tensor_parallel_group_launches_one_target_per_rank() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let p = whole("qwen3.5-9b", &ms, None);
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        let alvos =
+            launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp)).expect("dois alvos");
+
+        assert_eq!(alvos.len(), 2);
+
+        let primary = &alvos[0];
+        assert_eq!(primary.node_id, "a");
+        assert_eq!(primary.tp.as_ref().unwrap().role, "primary");
+        assert_eq!(primary.tp.as_ref().unwrap().rank, 0);
+        // A URL da coletiva é derivada da porta de inferência anunciada pelo
+        // primary - o operador só escolhe a máquina, não digita a URL.
+        assert_eq!(
+            primary.tp.as_ref().unwrap().rank0_url.as_deref(),
+            Some("http://a:8181")
+        );
+
+        let worker = &alvos[1];
+        assert_eq!(worker.node_id, "b");
+        assert_eq!(worker.tp.as_ref().unwrap().role, "worker");
+        assert_eq!(worker.tp.as_ref().unwrap().rank, 1);
+        assert_eq!(
+            worker.tp.as_ref().unwrap().rank0_url.as_deref(),
+            Some("http://a:8181")
+        );
+    }
+
+    /// As validações estáticas do grupo TP recusam o plano antes de qualquer
+    /// checagem remota: tamanho, presença no cluster, modelo inteiro e contagem
+    /// de workers.
+    #[test]
+    fn tp_group_checks_rejects_bad_groups() {
+        let ms = vec![whole_machine("a", 900_000, true), whole_machine("b", 900_000, true)];
+
+        let ok = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        assert!(tp_group_checks(&ok, &ms, "qwen3.5-9b").is_none());
+
+        let small = TpLaunch {
+            size: 1,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec![],
+        };
+        assert!(tp_group_checks(&small, &ms, "qwen3.5-9b").unwrap().contains("2 ranks"));
+
+        let ghost = TpLaunch {
+            size: 2,
+            primary_node_id: "zzz".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        assert!(tp_group_checks(&ghost, &ms, "qwen3.5-9b").unwrap().contains("não está no cluster"));
+
+        let count = TpLaunch {
+            size: 3,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        assert!(tp_group_checks(&count, &ms, "qwen3.5-9b").unwrap().contains("precisa de 2 workers"));
+
+        let self_worker = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["a".into()],
+        };
+        assert!(tp_group_checks(&self_worker, &ms, "qwen3.5-9b").unwrap().contains("próprio primary"));
+    }
+
+    /// A recusa do peer é repetida ao operador, em vez de virar palpite sobre a
+    /// versão do binário dele. O caso que motivou: `/api/ui/tp/check` é
+    /// autenticada, a chamada ia sem a chave, e o `{"error":...}` que voltava
+    /// era anunciado como "binário antigo" - com as duas máquinas no mesmo
+    /// commit.
+    #[test]
+    fn a_refusal_is_quoted_not_guessed_as_an_old_binary() {
+        assert_eq!(tp_check_verdict(&json!({ "ok": true }), "ksia"), None);
+
+        assert_eq!(
+            tp_check_verdict(&json!({ "ok": false, "reason": "cabeças não dividem" }), "ksia"),
+            Some("cabeças não dividem".to_string())
+        );
+
+        let recusa = tp_check_verdict(
+            &json!({ "error": "missing Authorization header" }),
+            "ksia",
+        )
+        .unwrap();
+        assert!(
+            recusa.contains("missing Authorization header"),
+            "a razão do peer tem que aparecer: {recusa}"
+        );
+        assert!(
+            !recusa.contains("binário antigo"),
+            "peer que recusou não é peer desatualizado: {recusa}"
+        );
+
+        // Só um corpo que não explica nada continua valendo como binário velho.
+        assert!(tp_check_verdict(&json!({ "outra": 1 }), "ksia")
+            .unwrap()
+            .contains("binário antigo"));
+    }
+
+    /// A checagem tem que chegar autenticada no primary. Sem isto ela é 401 em
+    /// qualquer máquina, e nenhuma implantação TP passa.
+    #[tokio::test]
+    async fn the_shardability_check_carries_the_operator_key() {
+        use crate::gateway::testkit::state_with;
+        use axum::routing::post as axum_post;
+        use std::sync::{Arc, Mutex};
+
+        let visto: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let capturado = visto.clone();
+        let app = Router::new().route(
+            "/api/ui/tp/check",
+            axum_post(move |headers: axum::http::HeaderMap| {
+                let capturado = capturado.clone();
+                async move {
+                    *capturado.lock().unwrap() = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    Json(json!({ "ok": true }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let state = state_with("eu", vec![]).await;
+        let machines = vec![Machine {
+            node_id: "primary".into(),
+            hostname: "ksia".into(),
+            gateway_url: Some(format!("http://127.0.0.1:{port}")),
+            inference_url: Some(format!("http://127.0.0.1:{port}")),
+            libp2p_peer_id: None,
+            supports_tunnel: false,
+            mem_free_mb: 900_000,
+            disk_free_mb: 900_000,
+            held: vec![HeldShard {
+                start_layer: 0,
+                end_layer: 31,
+                total_layers: Some(32),
+                name: "qwen3.5-9b.gguf".into(),
+                path: "/modelos/qwen3.5-9b.gguf".into(),
+                size_bytes: 1,
+            }],
+        }];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "primary".into(),
+            worker_node_ids: vec!["w".into()],
+        };
+
+        assert_eq!(tp_shardability_check(&state, &machines, &tp).await, None);
+        let header = visto.lock().unwrap().clone();
+        assert_eq!(
+            header,
+            Some("Bearer chave".to_string()),
+            "a checagem chegou sem a chave de operador: {header:?}"
+        );
+    }
+
+    /// Os membros saem em ordem de rank, e quem não anuncia porta de inferência
+    /// é recusado **aqui**.
+    ///
+    /// O rank 0 dispara o decode de cada membro por essa URL; um membro sem ela
+    /// travaria o grupo na primeira barreira, que é o pior lugar para descobrir
+    /// o problema.
+    #[test]
+    fn tp_members_are_rank_ordered_and_a_memberless_url_is_refused() {
+        let mut a = whole_machine("a", 900_000, true);
+        a.inference_url = Some("https://a:8181".into());
+        let mut b = whole_machine("b", 900_000, true);
+        b.inference_url = Some("https://b:8181".into());
+        let mut mudo = whole_machine("c", 900_000, true);
+        mudo.inference_url = None;
+
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        // A ordem no cluster não é a ordem dos ranks: o teste embaralha de
+        // propósito, porque quem manda é `worker_node_ids`.
+        let membros = tp_members(&tp, &[b, a]).unwrap();
+        assert_eq!(membros.len(), 2);
+        assert_eq!(membros[0].node_id, "a", "rank 0 é o primary");
+        assert_eq!(membros[1].url, "https://b:8181");
+
+        let com_mudo = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["c".into()],
+        };
+        let mut a2 = whole_machine("a", 900_000, true);
+        a2.inference_url = Some("https://a:8181".into());
+        let erro = tp_members(&com_mudo, &[a2, mudo]).unwrap_err();
+        assert!(erro.contains("URL de inferência"), "{erro}");
+    }
+
     /// Uma máquina que não achou o arquivo depois da cópia é erro nomeando o
     /// modelo, não uma implantação que sobe apontando para lugar nenhum.
     #[test]
@@ -3796,7 +4403,7 @@ mod tests {
             whole_machine("nao-tem", 900_000, false),
         ];
         let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
-        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole)
+        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None)
             .expect_err("o destino não tem o arquivo");
         assert!(erro.contains("nao-tem") && erro.contains("o modelo"), "{erro}");
     }
@@ -3810,7 +4417,7 @@ mod tests {
             m("b", 200_000, &[(16, 31)]),
         ]);
         let p = plan("m", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards).expect("dois alvos");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("dois alvos");
         assert_eq!(alvos.len(), 2);
         assert_eq!(alvos[0].source_model_path, "/models/m_0_15.gguf");
         assert_eq!((alvos[0].start_layer, alvos[0].end_layer), (0, 15));

@@ -24,6 +24,8 @@ export interface ChatMessage {
    */
   role: "user" | "assistant" | "event";
   content: string;
+  /** Content sent to the model when the visible bubble is a compact summary. */
+  requestContent?: string;
   /** Set when the answer failed; the turn stays visible with its reason. */
   error?: string;
   /** `x_pom.source`-style hop chain, when the node reported one. */
@@ -51,13 +53,17 @@ export interface ChatSession {
    */
   titled?: boolean;
   model: string | null;
+  /** Model selected before the first visible turn of this conversation. */
+  modelAtStart?: string | null;
   messages: ChatMessage[];
   updatedAt: string;
 }
 
 /** What the model is allowed to see: the turns, without the marks around them. */
 export const turnsOnly = (messages: ChatMessage[]) =>
-  messages.filter((m) => m.role === "user" || m.role === "assistant");
+  messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ ...m, content: m.requestContent ?? m.content }));
 
 const STORAGE = storageKey("chat.sessions");
 /** Sessions kept before the oldest is dropped, so storage cannot grow forever. */
@@ -97,6 +103,7 @@ export function emptySession(model: string | null): ChatSession {
     id: newId(),
     title: getActiveLocale() === "pt-BR" ? "Conversa nova" : "New chat",
     model,
+    modelAtStart: model,
     messages: [],
     updatedAt: new Date().toISOString(),
   };

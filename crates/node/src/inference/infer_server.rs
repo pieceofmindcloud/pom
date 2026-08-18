@@ -76,6 +76,7 @@ struct NodeTimings {
     token_text_us: u64,
     sampling_us: u64,
     encode_us: u64,
+    tp: Option<crate::tp::TpDecodeTelemetry>,
 }
 
 impl NodeTimings {
@@ -105,6 +106,10 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "tp": self
+                .tp
+                .as_ref()
+                .map(|tp| serde_json::to_value(tp).unwrap_or(Value::Null)),
         })
     }
 }
@@ -236,6 +241,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            fit_memory: true,
             max_sessions: 1,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
@@ -254,6 +260,7 @@ mod tests {
             mtp_enabled: false,
             mtp_draft_tokens: 3,
             mtp_min_probability: 0.0,
+            tp: None,
         };
         cfg.inference_port = port;
         let (_tx, rx) = tokio::sync::watch::channel(0u64);
@@ -501,6 +508,9 @@ struct InferState {
     /// o tempo é exato. Sai daqui para o `meta` da resposta, e de lá para a
     /// telemetria por salto do gateway. `None` quando o nó não tem TLS.
     tls_handshake_ms: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
+    /// Identidade TP deste nó. O rank 0 precisa da lista de membros para pôr
+    /// os workers no mesmo decode; sem isso a barreira nunca fecha.
+    tp: Option<crate::network::TpIdentity>,
 }
 
 type SharedState = Arc<Mutex<InferState>>;
@@ -528,6 +538,7 @@ impl InferState {
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
             mtp_min_probability: cfg.mtp_min_probability,
+            tp: cfg.tp.clone(),
         }
     }
 
@@ -643,6 +654,7 @@ pub async fn run(
     let engine_cfg = EngineConfig {
         n_ctx: cfg.n_ctx,
         offload_kqv: cfg.offload_kqv,
+        fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         n_batch: cfg.n_batch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
         n_threads: 0,
@@ -668,6 +680,11 @@ pub async fn run(
             .ok()
             .and_then(|info| info.original_block_count);
 
+    // Fora do mutex do estado: o decode segura aquele lock e é de dentro dele
+    // que o reduce espera a soma. Ver `handle_tp_reduce`.
+    let tp_barrier = crate::collective::ReduceBarrier::new();
+    let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
+
     let state: SharedState = Arc::new(Mutex::new(state_inner));
 
     let router = Router::new()
@@ -682,7 +699,17 @@ pub async fn run(
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rollback", post(handle_rollback))
         .route("/health", get(handle_health))
-        .with_state(state);
+        .with_state(state)
+        // Estado próprio, de propósito: ver a nota em `handle_tp_reduce`.
+        .merge(
+            Router::new()
+                .route(
+                    "/v1/tp/reduce",
+                    post(handle_tp_reduce)
+                        .layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+                )
+                .with_state((tp_barrier, tp_size)),
+        );
 
     info!("inference server pronto em [::]:{port}");
 
@@ -845,6 +872,9 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
+        "fit_memory_applied": s.engine.fit_memory_applied(),
+        "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
+        "n_ubatch_effective": s.engine.effective_n_ubatch(),
         "inference_frame_capabilities": caps,
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
         // `--ctx-shift` de referência do llama.cpp. Não decide mais se a
@@ -858,6 +888,101 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
     }))
 }
 
+// ── /v1/tp/reduce ────────────────────────────────────────────────────────────
+
+/// Uma parcial de um reduce de tensor parallelism (caminho C). Cada rank do
+/// grupo faz um POST desta com a própria parcial e o mesmo `barrier_id`; o
+/// endpoint (no primary/rank 0) acumula e devolve a soma quando todos chegam.
+/// **Nunca** toca no mutex do `InferState`, e isso é a correção, não estilo.
+///
+/// `handle_prefill` segura esse mutex durante o decode inteiro, e é de dentro
+/// desse decode que o callback do reduce bloqueia esperando a soma. Enquanto
+/// este handler pegava o mesmo mutex para ler a barreira, a parcial que chegava
+/// - do próprio rank 0 ou do worker - ficava presa esperando um lock que só
+/// seria liberado quando o decode terminasse; e o decode só terminaria com a
+/// soma que estava presa na porta. Deadlock exato de 18/08: os dois ranks
+/// logavam o primeiro reduce, com 0,2 ms de diferença, e o pipeline parava ali.
+///
+/// A barreira vive fora do mutex (`ReduceBarrier` já é `Clone` e sincronizada
+/// por dentro), então o caminho da coletiva nunca disputa com o decode.
+///
+/// A parcial viaja como **f32 cru em little-endian**, não como JSON. Um float
+/// de 4 bytes vira ~12 caracteres em JSON, e a parcial de um prefill de 100
+/// tokens tem 410 mil floats: ~5 MB de texto por reduce, 64 vezes por decode.
+/// Isso estourava o limite de corpo do axum (413) e, quando cabia, gastava mais
+/// tempo formatando número que somando. Cru é 4x menor e sem parse.
+///
+/// `barrier_id` e `rank` vão em cabeçalho, que é onde metadado de tamanho fixo
+/// pertence.
+pub(crate) async fn handle_tp_reduce(
+    State((barrier, size)): State<(crate::collective::ReduceBarrier, u32)>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    let barrier_id = match headers.get(crate::tp::TP_BARRIER_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(v) => v.to_string(),
+        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_BARRIER_HEADER)),
+    };
+    let rank: u32 = match headers
+        .get(crate::tp::TP_RANK_HEADER)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+    {
+        Some(v) => v,
+        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_RANK_HEADER)),
+    };
+    if body.len() % 4 != 0 {
+        return err400(format!("parcial de {} bytes não é múltiplo de 4", body.len()));
+    }
+    let data: Vec<f32> = body
+        .chunks_exact(4)
+        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+        .collect();
+
+    match barrier.contribute(&barrier_id, rank, size, data) {
+        Ok(rx) => match rx.await {
+            Ok(sum) => {
+                let mut out = Vec::with_capacity(sum.len() * 4);
+                for v in &sum {
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                (
+                    [(axum::http::header::CONTENT_TYPE, "application/octet-stream")],
+                    out,
+                )
+                    .into_response()
+            }
+            Err(e) => err500(format!("barreira abandonada: {e}")),
+        },
+        Err(e) => err400(e),
+    }
+}
+
+
+/// Repassa uma chamada de ciclo de vida de sessão aos demais ranks do grupo.
+///
+/// O corpo é remontado (não é um quadro binário como o decode), e o cabeçalho
+/// de réplica evita fan-out infinito: quem recebe marcado não repassa.
+fn replicate_session_call(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    rota: &str,
+    session_id: &str,
+) {
+    if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
+        return; // já é a réplica
+    }
+    let tp = {
+        let s = state.lock().unwrap();
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
+        return;
+    };
+    let corpo = json!({ "session_id": session_id }).to_string().into_bytes();
+    crate::tp::broadcast_to(&tp.members, rota, "session", corpo, Some("application/json"));
+}
+
 // ── /v1/session/release ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -867,8 +992,15 @@ struct ReleaseRequest {
 
 async fn handle_release(
     State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
 ) -> impl IntoResponse {
+    // A réplica não encerra sessão por conta própria (ver `tp::is_replica`),
+    // então quem a libera é este release - que o gateway manda **só ao rank 0**,
+    // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
+    // fica segurando o slot para sempre e a requisição seguinte morre com
+    // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
+    replicate_session_call(&state, &headers, "/v1/session/release", &req.session_id);
     let mut s = state.lock().unwrap();
     let existed = s.sessions.contains_key(&req.session_id);
     s.finish(&req.session_id);
@@ -933,8 +1065,51 @@ async fn handle_rollback(
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
-async fn handle_prefill(State(state): State<SharedState>, body: Bytes) -> Response {
+
+/// Abre o decode nos **dois** papéis e, no rank 0, põe os workers para rodar o
+/// mesmo lote.
+///
+/// TP só funciona em lockstep: todo rank percorre o mesmo grafo sobre os mesmos
+/// tokens, e as parciais se encontram na barreira. O gateway só fala com o rank
+/// 0 (o worker é excluído do pipeline de propósito), então é aqui que os outros
+/// ranks entram no decode. Sem isto o rank 0 postava a parcial e esperava para
+/// sempre - o travamento de 18/08.
+///
+/// O quadro é repassado byte a byte, com o id do decode no cabeçalho. Quem
+/// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
+/// retransmite, senão o grupo se multiplicaria a cada salto.
+fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &str, body: &Bytes) {
+    let tp = {
+        let s = state.lock().unwrap();
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1) else {
+        return;
+    };
+    if let Some(id) = headers
+        .get(crate::tp::TP_DECODE_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
+        crate::tp::begin_replica_decode(id);
+        return;
+    }
+    if tp.rank != 0 {
+        // Worker recebendo quadro sem cabeçalho: veio de fora do grupo. Abrir
+        // um decode aqui produziria reduces com id que ninguém mais conhece.
+        return;
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    crate::tp::begin_decode(&id);
+    crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
+}
+
+async fn handle_prefill(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
     let processing_started = Instant::now();
+    open_tp_decode(&state, &headers, "/v1/prefill", &body);
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
     // mesmo em qualquer ponto do handler.
     let tls_handshake_ms = last_handshake_ms(&state);
@@ -1368,6 +1543,7 @@ fn prefill_blocking(
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
+    timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
     timings.residual_capture_d2h_sync_us += engine_timing.residual_capture_d2h_sync_us;
@@ -1418,7 +1594,9 @@ fn prefill_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        if done {
+        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
+        // geração é o rank 0. Ver `tp::is_replica`.
+        if done && !crate::tp::is_replica() {
             s.finish(&sid_key);
         }
         timings.sampling_us += logits_access_us
@@ -1485,7 +1663,12 @@ fn prefill_blocking(
 
 // ── /v1/step ─────────────────────────────────────────────────────────────────
 
-async fn handle_step(State(state): State<SharedState>, body: Bytes) -> Response {
+async fn handle_step(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    body: Bytes,
+) -> Response {
+    open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
     // mesmo em qualquer ponto do handler.
@@ -2500,7 +2683,8 @@ fn step_blocking(
                 .unwrap()
                 .recent_tokens
                 .extend_from_slice(accepted_ids);
-            if done {
+            // Ver a nota gêmea abaixo: réplica não encerra sessão.
+            if done && !crate::tp::is_replica() {
                 s.finish(&sid_key);
             }
 
@@ -2539,7 +2723,9 @@ fn step_blocking(
             .unwrap()
             .recent_tokens
             .push(next_id);
-        if done {
+        // A réplica de um grupo TP não encerra sessão: quem decide o fim da
+        // geração é o rank 0. Ver `tp::is_replica`.
+        if done && !crate::tp::is_replica() {
             s.finish(&sid_key);
         }
         timings.sampling_us += logits_access_us

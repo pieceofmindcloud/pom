@@ -15,6 +15,24 @@ export interface RequestTrace {
   hops: HopTrace[];
 }
 
+export interface TpTelemetry {
+  enabled: boolean;
+  rank: number;
+  size: number;
+  expected_reduces: number;
+  reduces: number;
+  wait_ms: number;
+  reduce_p50_ms: number;
+  reduce_p95_ms: number;
+  request_bytes: number;
+  response_bytes: number;
+  direct_calls: number;
+  tunnel_calls: number;
+  fallback_calls: number;
+  broadcast_calls: number;
+  broadcast_bytes: number;
+}
+
 /** One hop's totals inside a single phase. Prefill and decode never mix. */
 export interface PhaseTrace {
   processing_ms: number;
@@ -63,6 +81,7 @@ export interface PhaseTrace {
   node_encode_ms: number;
   node_p50_ms: number;
   node_p95_ms: number;
+  tp?: TpTelemetry | null;
 }
 
 export interface PhasedHopTrace {

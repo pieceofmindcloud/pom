@@ -997,13 +997,18 @@ async fn send_to_peer(
         // A pinned address beats one read off the routing table: with privacy
         // extensions the outbound source is a temporary IPv6 that rotates, and a
         // multi-gigabyte download outlives it.
-        "from_gateway": format!(
-            "http://{}:{}",
-            state
+        // O ESQUEMA em vigor, nunca "http" fixo. Com o cluster em TLS, quem
+        // aceitava discava http e o gateway respondia 403 em texto puro
+        // ("este cluster exige TLS entre nós; refaça a chamada em https"); o
+        // `.json()` do outro lado caía nessa frase e o operador via
+        // "manifesto inválido: error decoding response body" (18/08).
+        "from_gateway": crate::peer_client::peer_base_url(
+            &state
                 .network
                 .advertised_host()
                 .unwrap_or_else(|| local_ip_for(&peer_base)),
-            state.gateway_port
+            state.gateway_port,
+            crate::peer_client::tls_ativo(),
         ),
         "grant": grant,
         "remote_path": path.to_string_lossy(),
@@ -1132,6 +1137,22 @@ const MANIFEST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 /// `peer_id` é o node_id de quem serve os bytes: é o que fixa o certificado do
 /// outro lado quando o cluster está em TLS. Vem da oferta (`from_node_id`) ou
 /// do `PeerInfo` que o operador escolheu.
+/// O esquema que **esta** máquina vai discar, seja qual for o que a oferta traz.
+///
+/// A oferta é escrita pelo remetente, e um nó de versão anterior grava `http://`
+/// fixo. Confiar nisso com o cluster em TLS rende 403 em texto puro
+/// ("este cluster exige TLS entre nós"), que o `.json()` transforma em
+/// "manifesto inválido: error decoding response body" - uma mensagem que não
+/// aponta para lugar nenhum. A política local é a que vale para discar, então é
+/// ela que decide.
+fn normaliza_esquema(url: &str) -> String {
+    let scheme = crate::peer_client::peer_scheme();
+    match url.split_once("://") {
+        Some((atual, resto)) if atual != scheme => format!("{scheme}://{resto}"),
+        _ => url.to_string(),
+    }
+}
+
 async fn spawn_download(
     state: GatewayState,
     peer_id: String,
@@ -1141,6 +1162,9 @@ async fn spawn_download(
     name: String,
     from_host: String,
 ) -> Result<String, String> {
+    // A oferta traz o esquema que o REMETENTE gravou; quem disca é esta
+    // máquina, então a política local é a que vale. Ver `normaliza_esquema`.
+    let base_url = normaliza_esquema(&base_url);
     let key = state.auth.read().await.connection_key.clone();
 
     // O id nasce aqui e viaja no pedido: o outro lado registra o mesmo id, e é
@@ -1258,7 +1282,7 @@ async fn fetch_manifest(
     from_host: &str,
     name: &str,
 ) -> Result<(u64, String), String> {
-    let manifest: serde_json::Value = state
+    let resp = state
         .peer_http
         .for_peer(peer_id)
         .map_err(|e| e.to_string())?
@@ -1268,7 +1292,26 @@ async fn fetch_manifest(
         .timeout(MANIFEST_TIMEOUT)
         .send()
         .await
-        .map_err(|e| format!("não deu para falar com {from_host}: {e}"))?
+        .map_err(|e| format!("não deu para falar com {from_host}: {e}"))?;
+
+    // Conferir o status ANTES de tentar ler JSON. Um erro do gateway costuma
+    // vir em texto puro - o 403 da catraca de TLS é literalmente a frase "este
+    // cluster exige TLS entre nós; refaça a chamada em https" -, e o `.json()`
+    // em cima dele produzia "manifesto inválido: error decoding response body",
+    // que não aponta para lugar nenhum. A explicação do outro lado é a melhor
+    // que existe: repetir ela.
+    let status = resp.status();
+    if !status.is_success() {
+        let corpo = resp.text().await.unwrap_or_default();
+        let corpo = corpo.trim();
+        return Err(if corpo.is_empty() {
+            format!("{from_host} recusou o manifesto: HTTP {status}")
+        } else {
+            format!("{from_host} recusou o manifesto (HTTP {status}): {corpo}")
+        });
+    }
+
+    let manifest: serde_json::Value = resp
         .json()
         .await
         .map_err(|e| format!("manifesto inválido de {from_host}: {e}"))?;
@@ -1328,7 +1371,16 @@ async fn run_download(
 
     let resp = req.send().await.map_err(|e| e.to_string())?;
     if !resp.status().is_success() {
-        return Err(format!("peer respondeu {}", resp.status()));
+        // Junto com o status vai a frase do outro lado: ver a nota gêmea em
+        // `fetch_manifest`.
+        let status = resp.status();
+        let corpo = resp.text().await.unwrap_or_default();
+        let corpo = corpo.trim();
+        return Err(if corpo.is_empty() {
+            format!("peer respondeu {status}")
+        } else {
+            format!("peer respondeu {status}: {corpo}")
+        });
     }
 
     let mut file = tokio::fs::OpenOptions::new()
@@ -1674,11 +1726,53 @@ mod offer_latency_tests {
 
     /// A oferta é um convite, não a transferência: ela só precisa dizer o que é
     /// o arquivo e onde buscá-lo. O MD5 quem confere é o receptor, depois de
+    /// Quem disca decide o esquema, não a oferta.
+    ///
+    /// A oferta é escrita pelo remetente e um nó de versão anterior grava
+    /// `http://` fixo. Com o cluster em TLS isso rendia 403 em texto puro, e o
+    /// `.json()` em cima dessa frase virava "manifesto inválido: error decoding
+    /// response body" - erro que não aponta para nada (18/08).
+    #[test]
+    fn the_dialled_scheme_comes_from_local_policy_not_from_the_offer() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+
+        crate::peer_client::set_tls_ativo(true);
+        assert_eq!(
+            normaliza_esquema("http://ksia:8080"),
+            "https://ksia:8080",
+            "oferta antiga em http tem que ser promovida"
+        );
+        assert_eq!(normaliza_esquema("https://ksia:8080"), "https://ksia:8080");
+        assert_eq!(
+            normaliza_esquema("http://[2804:d55::1]:8080"),
+            "https://[2804:d55::1]:8080",
+            "IPv6 entre colchetes sobrevive"
+        );
+
+        crate::peer_client::set_tls_ativo(false);
+        assert_eq!(
+            normaliza_esquema("https://ksia:8080"),
+            "http://ksia:8080",
+            "cluster em claro rebaixa a oferta"
+        );
+
+        crate::peer_client::set_tls_ativo(false);
+    }
+
     /// aceitar, com o número que ele mesmo pede em `/api/transfer/manifest` -
     /// hashear aqui era trabalho que ninguém consumia e que segurava o sino do
     /// outro lado pelo tempo de ler o arquivo inteiro.
     #[tokio::test]
     async fn an_offer_leaves_without_reading_the_whole_file() {
+        // Serializa com os testes que mexem na política de TLS, e fixa "em
+        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
+        // teste paralelo que liga a política fazia o cliente tentar TLS contra
+        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
+        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
+        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
         let dir = std::env::temp_dir().join(format!("pom-offer-fast-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("fatia_0_15.gguf");
@@ -1731,6 +1825,15 @@ mod offer_latency_tests {
     /// na notificação antes de decidir aceitar gigabytes.
     #[tokio::test]
     async fn the_offer_carries_the_real_size_without_a_digest() {
+        // Serializa com os testes que mexem na política de TLS, e fixa "em
+        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
+        // teste paralelo que liga a política fazia o cliente tentar TLS contra
+        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
+        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
+        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
         let dir = std::env::temp_dir().join(format!("pom-offer-size-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("solto.gguf");
@@ -1763,6 +1866,15 @@ mod offer_latency_tests {
     /// esperasse por ele, o operador teria trocado uma espera por outra.
     #[tokio::test]
     async fn accepting_returns_before_the_other_side_answers() {
+        // Serializa com os testes que mexem na política de TLS, e fixa "em
+        // claro": este teste disca um peer falso em HTTP puro. Sem isto, um
+        // teste paralelo que liga a política fazia o cliente tentar TLS contra
+        // o servidor falso, a oferta não era entregue, o `let _ =` engolia o
+        // erro e a asserção estourava em `offers[0]` com a lista vazia - a
+        // intermitência que perseguiu a suíte o dia 18/08 inteiro.
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
         let slow_hits = Arc::new(AtomicU64::new(0));
         let hits = slow_hits.clone();
         let app = Router::new().route(

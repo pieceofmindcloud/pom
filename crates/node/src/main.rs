@@ -11,6 +11,8 @@ mod bitswap;
 mod brand;
 #[path = "models/catalog.rs"]
 mod catalog;
+#[path = "inference/collective.rs"]
+mod collective;
 #[path = "utils/config.rs"]
 mod config;
 #[path = "backend/deploy.rs"]
@@ -81,6 +83,8 @@ mod reqlog;
 mod respawn;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "inference/tp.rs"]
+mod tp;
 #[path = "backend/serve.rs"]
 mod serve;
 #[path = "backend/session.rs"]
@@ -721,10 +725,12 @@ async fn main() -> Result<()> {
             peer_count: if args.single_peer { 1 } else { 2 },
             peer_index: 0,
             primary: args.gateway,
+            tp: None,
             inference_port: port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             offload_kqv: !args.kv_cache_ram,
+            fit_memory: true,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
             prefill_chunk_tokens: args.prefill_chunk_tokens,

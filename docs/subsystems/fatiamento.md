@@ -142,6 +142,124 @@ O arquivo de saída é `{base}_{start}_{end}.gguf` em `<shard_dir>/<base>/`
 Arquivo já existente é reaproveitado sem reescrever: o `SliceOutcome { output_path,
 bytes, reused }` distingue "gerado" de "reusado", e a UI mostra isso.
 
+### Shard por tensor (tensor parallelism, caminho C)
+
+`splitter::shard_tensor_parallel(src, dst, tp_size, tp_rank, on_progress)`
+produz um GGUF com os tensores do rank `tp_rank` de um grupo de `tp_size`. É a
+dimensão ortogonal ao fatiamento por faixa de camadas: todas as camadas
+continuam presentes, só com tensores menores. Não há remapeamento de nome nem
+mudança de `block_count`.
+
+A classificação é por nome (`tp_role`), estilo Megatron:
+
+- **Coluna** (split por `ne[1]`, a dimensão de saída; fatia contígua, sem
+  redução): `attn_q/k/v.weight`, `ffn_gate/up.weight`.
+- **Linha** (split por `ne[0]`, a dimensão de entrada contígua; soma parcial a
+  ser all-reduced): `attn_output.weight`, `ffn_down.weight`. Só vale para
+  tensor cuja **entrada já chega particionada** - estes dois consomem a saída
+  dos "coluna" do mesmo bloco.
+- **Replicado** (igual em todos os ranks): `*_norm.weight`, `token_embd.weight`,
+  rope/pos_embd e a cabeça de saída `output.weight`.
+
+A cabeça esteve em "linha" e era um defeito: a entrada dela é a saída de
+`output_norm.weight`, que é replicado, então o oculto que chega nela tem largura
+cheia (`n_embd`) e nunca é particionado. Cortá-la por `ne[0]` produzia uma
+cabeça esperando `n_embd/size` de entrada - largura que não existe em ponto
+nenhum do grafo - e o llama.cpp recusava o load do shard:
+`check_tensor_dims: tensor 'output.weight' has wrong shape; expected 4096,
+128256, got 2048, 128256` (Llama-3.1-8B-Q4_K_M, 17/08). `validate_tensor_parallel`
+não podia pegar isso: ela só confere se a dimensão **divide**, e 4096/2 divide.
+Cortar a cabeça por vocabulário (`ne[1]`) seria a alternativa clássica, mas
+exigiria um all-gather de logits - a coletiva do fork é um reduce - e reescrever
+o vocabulário por rank, o que quebraria o tokenizer. Replicar custa memória e é
+correto; `token_embd.weight` tem o mesmo formato e já era replicada.
+- **Recusa** (não shardável com segurança, v1): tensores 3D de MoE
+  (`ffn_gate_exps` etc.), nomes não reconhecidos, e `output.weight` empatado
+  com `token_embd` (weight tying).
+
+### A coletiva tem que somar 2 vezes por camada
+
+São dois pontos row-parallel por bloco - a projeção de saída da atenção e o
+`ffn_down` -, então um decode num modelo de 32 camadas dispara **64** reduces.
+O motor conta e avisa quando o número não bate (`llm.rs`, depois do
+`llama_decode`).
+
+Isso é rede de proteção contra o defeito de 18/08: o fork tinha o `tp_reduce`
+numa **única** sobrecarga de `build_attn` (a `attn_no_cache`), e o llama.cpp tem
+sete. Todo modelo com cache KV somava só o FFN - 32 reduces em vez de 64 - e
+cada rank rodava a atenção com metade das cabeças sem nunca receber a outra
+metade.
+
+O sintoma é o disfarce mais perigoso deste subsistema: **a resposta sai
+gramatical e fluente, e só o conteúdo é vazio**. Não parece erro de cálculo,
+parece modelo ruim. Por isso a contagem virou aviso automático em vez de ficar
+na cabeça de quem depura.
+
+### Carimbo de regra: `pom.tp_format`
+
+Todo shard de tensor grava `pom.tp_format` (`splitter::TP_SHARD_FORMAT`), a
+versão da regra que o escreveu, ao lado de `pom.tp_size`/`pom.tp_rank`.
+`extract_tp_shard` só reaproveita um arquivo existente quando os três conferem;
+carimbo ausente ou diferente é regeneração, com o motivo no log.
+
+**Quem mudar o que o shard contém sobe esse número** - eixo de corte,
+hiperparâmetro reescrito, tensor que passa a ser replicado.
+
+Existe por um dia inteiro perdido: o critério de reuso era "existe e tem mais de
+1 KB", que não distingue um shard atual de um escrito por uma versão com
+defeito. Em 17/08 a ksia carregou o mesmo `_tp0of2.gguf` de cabeçalho não
+dividido durante três correções seguidas, e o log anunciava "reaproveitando" a
+cada tentativa - o sintoma era idêntico ao do defeito já corrigido, o que fez
+procurar o problema no código que já estava certo.
+
+### O cabeçalho é dividido junto com os tensores
+
+Cortar o tensor não basta: o KV do shard tem que descrever o tensor que o shard
+contém. Três chaves nomeiam exatamente as larguras particionadas e são
+reescritas como `valor / tp_size`:
+
+| Chave | Dimensão que ela descreve |
+|---|---|
+| `{arch}.attention.head_count` | colunas de `attn_q` (`n_head * head_dim`) |
+| `{arch}.attention.head_count_kv` | colunas de `attn_k/v` (`n_head_kv * head_dim`) |
+| `{arch}.feed_forward_length` | colunas de `ffn_gate/up` e linhas de `ffn_down` |
+
+`embedding_length` e `block_count` **não** mudam: o eixo do resíduo atravessa o
+all-reduce inteiro, e toda camada segue presente em todo rank. Deixar as três
+passarem intactas foi o defeito de 17/08 - o tensor saía pela metade e o
+cabeçalho prometia largura cheia, então o llama.cpp recusava com
+`'blk.0.attn_q.weight' has wrong shape; expected 4096, 4096, got 4096, 2048`.
+
+Divide-se a **contagem de cabeças**, nunca `head_dim`: é isso que mantém cada
+cabeça inteira num rank só. Cabeça partida ao meio daria atenção errada sem
+nenhum erro de forma para acusar. Largura que não divide por `tp_size` é recusa
+nomeando a chave, nos dois caminhos (`validate_tensor_parallel` na tela e
+`shard_tensor_parallel` na escrita).
+
+O split por linha exige que `ne[0]` divida por `tp_size` em limite de bloco
+do tipo ggml (senão o corte parte um bloco de quantização e o tensor fica
+ilegível); a divisão por coluna exige `ne[1]` divisível por `tp_size`. Ambos
+recusam em vez de estimar, na mesma regra do resto do fatiador.
+
+A metadata de saída é `pom.tp_shard=1`, `pom.tp_size`, `pom.tp_rank`
+(via `brand::gguf_key`). Um shard NÃO é um modelo autossuficiente: o llama.cpp
+de hoje não o carrega sozinho - ele é a metade que o fork do llama.cpp (caminho
+C) carrega junto com a coletiva all-reduce. Testado com o GGUF sintético
+(`test_gguf_bytes`) para rank 0 e rank 1, incluindo a recusa de grupo inválido.
+
+A mesma decisão tem um dry-run: `splitter::validate_tensor_parallel(src,
+tp_size)` lê a tensor table e devolve `Err` nomeando o tensor que não dá para
+partir, **sem escrever nada**. `shard_tensor_parallel` o chama como porta de
+entrada (a classificação é uma só), e a rota `POST /api/ui/tp/check`
+(`webui::tp_check`) o expõe ao coordenador do deploy, que recusa o grupo
+tensor-parallel **na tela de implantar** (antes do job) em vez de deixar o apply
+falhar na metade. MoE/SSM/weight-tied e dimensões que não dividem caem aqui.
+
+`plan::extract_tp_shard`/`plan::tp_shard_filename` embrulham isso para o caminho
+de `apply` (webui): rodam num `spawn_blocking`, reaproveitam arquivo já completo e
+escrevem `{base}_tp{rank}of{size}.gguf`, que o `parse_shard_name` não confunde
+com a convenção de faixa `{base}_{start}_{end}.gguf`.
+
 ## 5. Junção (merge)
 
 `splitter::merge` junta fatias adjacentes num arquivo único (`MergePart { path,

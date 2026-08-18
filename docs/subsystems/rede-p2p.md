@@ -34,8 +34,13 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
   `model`, `start_layer`, `end_layer`, `total_layers`, `memory_mb`, `timestamp`,
   `ollama_port`, `inference_port`, `inference_frame_capabilities`, `gateway_port`,
   `role`, `hostname`, `capabilities` (catálogo completo de `ModelCapability`),
-  `disk_total_mb`, `disk_free_mb`. Campos novos têm `serde(default)` para um nó
-  antigo continuar parseável em cluster de versões misturadas.
+  `disk_total_mb`, `disk_free_mb`, e `tp` (a `TpIdentity` de tensor parallelism:
+  `{role, group_id, size, rank, rank0_url, members}`, `None` = nó sem TP - ver
+  `network.rs`). `rank0_url` é a URL do primary onde os ranks fazem o
+  `POST /v1/tp/reduce` da coletiva. Cada `members` traz URL, `node_id`, `PeerId`
+  libp2p e a capacidade do túnel. Campos novos têm `serde(default)` para um nó
+  antigo continuar parseável em cluster de
+  versões misturadas.
 - **`PeerRequest`** - pede a lista de peers de um nó conhecido.
 - **`PeerList`** - resposta com `Vec<PeerInfo>`, fatiada por MTU (ver abaixo).
 - **`Heartbeat`** - liveness; atualiza `last_seen`. Definido e tratado no recebimento,
@@ -210,6 +215,9 @@ Comportamento atual do código:
    em 2026-08-16 (ver `operacao.md`). O custo é o tempo até desistir do HTTP
    direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
    requisição e quem decide acaba sendo o `connect` do sistema.
+   No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra: o
+   `TpMember` fornece `PeerId` e capability para o fallback, e os cabeçalhos do
+   decode, da barreira e do rank viajam no `TunnelRequest`.
 3. **Sem autenticação na porta de inferência (`/v1/prefill`, `/v1/step`).**
    TLS deixou de ser uma limitação - ver a seção 5 -, mas quem alcança a porta
    ainda não precisa provar quem é para mandar um quadro. O que o TLS

@@ -277,6 +277,124 @@ pub async fn send_frame(
     ))
 }
 
+/// Resposta crua de uma chamada HTTP encaminhada sem o enquadramento de uma
+/// mensagem de inferência.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ByteTransport {
+    Direct,
+    Tunnel,
+}
+
+pub struct RawPeerResponse {
+    pub body: Vec<u8>,
+    pub transport: ByteTransport,
+    pub fallback: bool,
+}
+
+/// Envia bytes para um peer por HTTPS e, se o transporte direto falhar, tenta
+/// o mesmo POST pelo túnel libp2p. O túnel preserva caminho, corpo e
+/// cabeçalhos, pois o reduce TP carrega a barreira e o rank fora do corpo.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_bytes_or_tunnel(
+    client: &reqwest::Client,
+    base_url: &str,
+    path: &str,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    tunnel: Option<&TunnelOutboundSender>,
+    peer_id: Option<PeerId>,
+    supports_tunnel: bool,
+    peer_label: &str,
+) -> Result<RawPeerResponse> {
+    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
+    let mut request = client
+        .post(&url)
+        .timeout(Duration::from_secs(600))
+        .body(body.clone());
+    for (name, value) in &headers {
+        request = request.header(name, value);
+    }
+
+    match request.send().await {
+        Ok(response) if response.status().is_success() => Ok(RawPeerResponse {
+            body: response.bytes().await?.to_vec(),
+            transport: ByteTransport::Direct,
+            fallback: false,
+        }),
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            Err(anyhow::Error::new(HttpRefusal {
+                status: status.as_u16(),
+                body,
+                peer_label: peer_label.to_string(),
+            }))
+        }
+        Err(error) => {
+            let kind = if error.is_timeout() {
+                SendIssueKind::Timeout
+            } else {
+                SendIssueKind::Transport
+            };
+            let (Some(tunnel), Some(peer_id)) = (
+                tunnel.filter(|_| should_attempt_tunnel_fallback(kind, supports_tunnel, peer_id.is_some(), true)),
+                peer_id,
+            ) else {
+                return Err(error.into());
+            };
+
+            warn!("{peer_label}: HTTP falhou ({error}), tentando via túnel libp2p");
+            let mut response =
+                send_bytes_via_tunnel(tunnel, peer_id, path, body, headers, peer_label).await?;
+            response.fallback = true;
+            Ok(response)
+        }
+    }
+}
+
+async fn send_bytes_via_tunnel(
+    tunnel: &TunnelOutboundSender,
+    peer_id: PeerId,
+    path: &str,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    peer_label: &str,
+) -> Result<RawPeerResponse> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    tunnel
+        .send(TunnelOutbound {
+            peer_id,
+            request: TunnelRequest {
+                path: path.to_string(),
+                body,
+                headers,
+            },
+            reply: reply_tx,
+        })
+        .await
+        .map_err(|_| anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"))?;
+
+    let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
+        Ok(Ok(Ok(response))) => response,
+        Ok(Ok(Err(error))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {error}")),
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
+        Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
+    };
+
+    if !(200..300).contains(&response.status) {
+        return Err(anyhow::Error::new(HttpRefusal {
+            status: response.status,
+            body: String::from_utf8_lossy(&response.body).into_owned(),
+            peer_label: peer_label.to_string(),
+        }));
+    }
+    Ok(RawPeerResponse {
+        body: response.body,
+        transport: ByteTransport::Tunnel,
+        fallback: false,
+    })
+}
+
 /// `send_frame`, with one retry over the libp2p NAT-tunnel when it exhausts
 /// its own attempts on a `Timeout`/`Transport` issue against a hop that
 /// advertises [`crate::pipeline::CAP_LIBP2P_TUNNEL`] and has a known
@@ -412,6 +530,7 @@ pub async fn send_frame_via_tunnel(
         request: TunnelRequest {
             path: path.to_string(),
             body: body.clone(),
+            headers: Vec::new(),
         },
         reply: reply_tx,
     };
@@ -467,6 +586,53 @@ pub async fn send_frame_via_tunnel(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infer_tunnel::TunnelResponse;
+
+    #[tokio::test]
+    async fn raw_peer_call_falls_back_to_tunnel_and_preserves_headers() {
+        let peer_id = PeerId::random();
+        let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
+        let expected_body = b"partial-reduce".to_vec();
+        let expected_headers = vec![
+            ("x-pom-tp-barrier".to_string(), "decode#0".to_string()),
+            ("x-pom-tp-rank".to_string(), "1".to_string()),
+        ];
+        let receiver = tokio::spawn({
+            let expected_body = expected_body.clone();
+            let expected_headers = expected_headers.clone();
+            async move {
+                let outbound = received.recv().await.expect("tunnel request");
+                assert_eq!(outbound.peer_id, peer_id);
+                assert_eq!(outbound.request.path, "/v1/tp/reduce");
+                assert_eq!(outbound.request.body, expected_body);
+                assert_eq!(outbound.request.headers, expected_headers);
+                outbound
+                    .reply
+                    .send(Ok(TunnelResponse {
+                        status: 200,
+                        body: b"reduced-by-tunnel".to_vec(),
+                    }))
+                    .expect("reply");
+            }
+        });
+
+        let response = send_bytes_or_tunnel(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            "/v1/tp/reduce",
+            expected_body,
+            expected_headers,
+            Some(&tunnel),
+            Some(peer_id),
+            true,
+            "tp-primary",
+        )
+        .await
+        .expect("tunnel fallback");
+
+        assert_eq!(response.body, b"reduced-by-tunnel");
+        receiver.await.expect("receiver");
+    }
 
     fn frame(tls: bool, handshake: u64) -> SentFrame {
         SentFrame {

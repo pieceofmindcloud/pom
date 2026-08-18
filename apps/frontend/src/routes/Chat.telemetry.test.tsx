@@ -5,7 +5,7 @@
  * hid which of the two phases was slow.
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExecutionTelemetry } from "./Chat";
 import { LocaleProvider } from "../i18n/provider";
 import type { PhaseTrace, RequestTrace } from "../lib/chatStream";
@@ -201,5 +201,61 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
     mount(<ExecutionTelemetry trace={traceCom({ calls: 4, tls_calls: 3, tls_handshake_ms: 6 })} />);
     expect(screen.getByText(/TLS em 3\/4 chamadas/)).toBeTruthy();
     expect(screen.getByText(/as demais foram em claro/)).toBeTruthy();
+  });
+});
+
+describe("ExecutionTelemetry: tensor parallelism", () => {
+  afterEach(cleanup);
+
+  it("shows TP telemetry without hiding pipeline rows", () => {
+    const traceWithTp: RequestTrace = {
+      ...trace,
+      hops: [{
+        ...trace.hops[0],
+        decode: phase({
+          calls: 14,
+          node_decode_ms: 25_114,
+          processing_ms: 25_114,
+          tp: {
+            enabled: true,
+            rank: 0,
+            size: 2,
+            expected_reduces: 64,
+            reduces: 64,
+            wait_ms: 25_100,
+            reduce_p50_ms: 1_789,
+            reduce_p95_ms: 1_838,
+            request_bytes: 4_000,
+            response_bytes: 8_000,
+            direct_calls: 14,
+            tunnel_calls: 0,
+            fallback_calls: 0,
+            broadcast_calls: 14,
+            broadcast_bytes: 2_000,
+          },
+        }),
+      }],
+    };
+    const onAnalyze = vi.fn();
+
+    mount(<ExecutionTelemetry trace={traceWithTp} onAnalyze={onAnalyze} />);
+
+    expect(screen.getByText(/tensor parallelism/i)).toBeTruthy();
+    expect(screen.getByText(/reduções \/ esperado/)).toBeTruthy();
+    expect(screen.getAllByText(/25100 ms/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /analisar com ia/i })).toBeTruthy();
+    expect(screen.getAllByText("prefill").length).toBeGreaterThan(0);
+
+    screen.getByRole("button", { name: /analisar com ia/i }).click();
+    expect(onAnalyze).toHaveBeenCalledWith(traceWithTp);
+  });
+
+  it("disables the AI action while another response is streaming", () => {
+    const onAnalyze = vi.fn();
+
+    mount(<ExecutionTelemetry trace={trace} onAnalyze={onAnalyze} analyzeDisabled />);
+
+    const button = screen.getByRole("button", { name: /analisar com ia/i }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
   });
 });

@@ -10,6 +10,62 @@ descreve os três modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+## 0. Coletiva de tensor parallelism (`collective.rs`)
+
+Para o caminho C (tensor parallelism sem transferir peso), o núcleo de troca é a
+coletiva all-reduce: cada rank produz uma soma parcial da projeção por linhas e
+o resultado é a soma das parciais. `inference/collective.rs` tem `reduce_sum` (a
+soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
+rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
+`direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
+cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
+forward pass. `broadcast_to` e o reduce tentam HTTPS direto primeiro e usam o
+túnel libp2p quando o transporte falha ou expira; `TunnelRequest` preserva os
+cabeçalhos da barreira e do rank nesse caminho alternativo. Ver
+`docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
+Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
+reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
+request/response, broadcasts e o caminho direto ou túnel. A espera inclui a
+barreira síncrona e não é latência pura de pacote. Os bytes e waits TP ficam
+separados dos frames de hidden state do pipeline. Com 32 camadas e dois pontos
+row-parallel por camada, um decode de um token pode fazer 64 esperas coletivas;
+isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
+camadas completas por nó troca um frame de hidden state entre blocos e evita
+essas coletivas TP.
+
+### Cache KV e fallback de VRAM
+
+`n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta
+primeiro respeitar `offload_kqv=true`, colocando o KV cache na GPU. Se o
+`cudaMalloc` do KV cache falhar, `LlmEngine::load` repete a criação do contexto
+com `offload_kqv=false`: os pesos permanecem nas mesmas camadas da GPU e o KV
+cache passa para a memória RAM. A aplicação registra o fallback e `/health`
+mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
+pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
+modelo entre máquinas.
+
+Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
+fica ligado por padrão. Antes da carga real, a aplicação chama o
+`common_fit_params` do llama.cpp, que pode reduzir `n_gpu_layers` para caber na
+memória disponível e preserva o `n_ctx` solicitado quando ele foi definido
+explicitamente. O `/health` expõe `fit_memory_applied` e
+`n_gpu_layers_effective`. Um `n_gpu_layers` diferente do padrão `99` é uma
+escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
+suporta tensor parallelism; o planner e o runtime normalizam essa opção para
+desligada no modo TP. O fallback do KV continua ativo depois do fit.
+Para evitar que a reserva tardia de temporários CUDA derrube o processo quando a
+GPU já está quase cheia, `fit_memory=true` mantém `n_batch` como limite do
+chunk, mas usa `n_ubatch=min(n_batch, 128)` no contexto. O prompt continua
+aceitando chunks de até `n_batch`; o custo é mais etapas internas de cálculo em
+troca de uma reserva menor. `/health` expõe esse valor como
+`n_ubatch_effective`. Com `fit_memory=false`, `n_ubatch` acompanha `n_batch`.
+Quando o MTP está ligado, o carregamento também passa
+`llama_model_params.load_mtp=true`, para que os pesos `nextn.*` sejam carregados
+antes de criar o contexto de rascunho; deixar essa flag falsa mantém os
+metadados MTP, mas deixa `nextn.eh_proj` nulo e faz o Qwen3.5 abortar na
+construção do grafo.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

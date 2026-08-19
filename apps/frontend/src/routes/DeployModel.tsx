@@ -397,7 +397,10 @@ export function DeployModel() {
    *  never a free number — the select is the single source of truth. */
   const tpPayload = (): TpLaunch => ({
     size: tp.worker_node_ids.length + 1,
-    primary_node_id: tp.primary_node_id,
+    // The first TP request must be able to produce the map that lets the
+    // operator choose workers. Without a primary yet, use the first holder as
+    // the provisional rank 0; workers still remain opt-in map members.
+    primary_node_id: tp.primary_node_id || wholeModel?.holders[0] || "",
     worker_node_ids: tp.worker_node_ids,
   });
   /**

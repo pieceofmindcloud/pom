@@ -34,6 +34,8 @@ behind an auth extractor.
   capacidade, estratégias simples/completa, cobertura, RTT, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  `route_options` liga somente máquinas selecionadas em estágios consecutivos;
+  réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
   `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes

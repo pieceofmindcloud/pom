@@ -205,9 +205,10 @@ Key logic carriers:
   ponteiro, zoom, Fit, Organizar e Redefinir. Cards já presentes no mapa não
   repetem a faixa inferior; arrastar ou dar duplo clique num peer disponível
   adiciona-o ao conjunto preferido e faz o card aparecer no mapa. O plano ainda é a fonte de
-  verdade: `route_options` desenha os caminhos principal/paralelo/inativo com
-  RTT, e a faixa inferior continua aceitando peers arrastados para recalcular
-  a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
+  verdade: `route_options` desenha somente pontes entre estágios consecutivos,
+  com caminhos principal/paralelo/inativo e RTT; o canvas também filtra
+  respostas antigas que tentem saltar um estágio. A faixa inferior continua
+  aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
   e o devolve à faixa inferior. Réplicas exatas podem aparecer empilhadas na
   mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
   explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.

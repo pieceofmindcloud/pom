@@ -218,12 +218,13 @@ quando a máquina já tem a fatia, e `merged` quando é unidade fundida com `par
 os dois números de engenharia que derivam de `params` (`prompt_tokens` e
 `chunk_tokens`, das mesmas fórmulas do gateway - `prompt_budget_of` e
 `prompt_chunk_of`), `deployment_name`, `strategy`, `route_options` e
-`load_distribution`. `route_options` mostra o RTT conhecido para a próxima
-máquina e alternativas elegíveis; não inventa latência quando a rota ainda não
-foi medida. Réplicas exatas não criam um hop extra: pertencem ao mesmo estágio
-e o roteador de inferência escolhe a cópia com menor RTT medido, equilibrando
-também a carga em voo. `load_distribution` separa carga atual de carga
-projetada pelo plano, sem abrir uma segunda execução concorrente.
+`load_distribution`. `route_options` mostra somente a ponte entre máquinas
+selecionadas em estágios consecutivos, com o RTT conhecido para o próximo
+estágio; não inventa latência quando a rota ainda não foi medida. Réplicas
+exatas não criam um hop extra: pertencem ao mesmo estágio e o roteador de
+inferência escolhe a cópia com menor RTT medido, equilibrando também a carga em
+voo. `load_distribution` separa carga atual de carga projetada pelo plano, sem
+abrir uma segunda execução concorrente.
 
 ### O modelo e seu tamanho
 

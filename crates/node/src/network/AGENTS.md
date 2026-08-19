@@ -52,7 +52,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `0.0.0.0`.
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
-  de rotas (30 s, sonda lenta não segura o gossip).
+  de rotas (30 s, sonda lenta não segura o gossip). A política TLS inicial é
+  aplicada antes de `start`; a task também sincroniza o cliente da sonda com a
+  política atual antes de medir, para que peers HTTPS não desapareçam da tabela
+  de RTT.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. Nó destacado
@@ -136,9 +139,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
   passar de 25% relativo **e** 2 ms absolutos (medido 9,6 vs 7,2 ms
   MacBook↔ksia não pode trocar a cada ciclo).
-- `RouteTable::measure_peer` - sonda `GET /health` na porta de inferência (o
-  caminho que a inferência usa de verdade, com firewall no meio), timeout 3 s,
-  intervalo 5 min.
+- `RouteTable::measure_peer` - sonda `GET /health` num endpoint real do peer,
+  preferindo a porta de gateway porque ela continua disponível sem modelo ou
+  quando a porta de inferência está restrita. A escolha gravada continua sendo
+  a URL de inferência correspondente. A sonda aceita o certificado autoassinado
+  e o hostname do peer; isso não altera o cliente pinado usado pela inferência.
+  Timeout de 3 s e intervalo de 5 min.
 - `RouteTable::mark_failure` - tira a rota de uso na hora quando uma requisição
   real falhou naquele endereço, sem esperar o ciclo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =

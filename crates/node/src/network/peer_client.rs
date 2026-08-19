@@ -125,6 +125,25 @@ impl PeerClients {
         self.plain.clone()
     }
 
+    /// Cliente exclusivo para sondas de latência.
+    ///
+    /// A sonda só precisa saber se o peer respondeu. Ela não autentica uma
+    /// sessão de inferência e, portanto, não deve depender do certificado
+    /// autoassinado nem do nome presente no certificado do peer. O cliente
+    /// pinado de `for_peer` continua sendo o único caminho para dados de
+    /// inferência.
+    pub fn probe(&self) -> Result<reqwest::Client> {
+        if !self.tls_enabled() {
+            return Ok(self.plain.clone());
+        }
+        reqwest::Client::builder()
+            .timeout(self.timeout)
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .context("não deu para construir o cliente TLS da sonda")
+    }
+
     /// Cliente para falar com `node_id`, construído sob demanda.
     ///
     /// Sem TLS devolve o cliente compartilhado, que é exatamente o

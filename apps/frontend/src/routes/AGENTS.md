@@ -94,6 +94,8 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
+  On the first tensor request, `tpPayload` uses the first whole-model holder as
+  a provisional primary so the map can load; workers remain opt-in map members.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
@@ -118,8 +120,8 @@ Per-file list:
   off-map peer implicitly;
   assigning a range is what validates a new selection. Removing a card deletes
   that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
-  canvas do Painel, desenha nós por faixa, rotas selecionadas e alternativas
-  com RTT, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
+  canvas do Painel, desenha nós por faixa, pontes somente entre estágios
+  consecutivos e alternativas com RTT, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
   repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
   um peer disponível ao plano; a atribuição de uma faixa disponível edita
   somente aquela seleção e volta ao backend para validação.

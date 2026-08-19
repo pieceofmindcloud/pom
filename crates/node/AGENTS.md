@@ -70,8 +70,10 @@ como `primary` na config de inferência montada pela linha de comando),
    (relativa ao cwd - ver Defeitos).
 8. Bootstrap = config + `--bootstrap`, ambos passando por
    `config::normalize_peer_addr`. `--advertise-addr` vence a config.
-9. `Network::new` + `start` (receive, gossip 5 s, medição de rotas 30 s) +
-   `bootstrap_discovery`. `--no-discovery` → `detach`.
+9. `Network::new` recebe a política TLS inicial antes de `start` (receive,
+   gossip 5 s, medição de rotas 30 s) e `bootstrap_discovery`. Isso garante que
+   a primeira sonda use o mesmo esquema anunciado pela UI; `--no-discovery` →
+   `detach`.
 10. Faixa de camadas, por precedência: `--start-layer/--end-layer` → nome do
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
@@ -125,4 +127,3 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
 ## Defeitos anotados
 
 Nenhum em aberto nesta pasta.
-

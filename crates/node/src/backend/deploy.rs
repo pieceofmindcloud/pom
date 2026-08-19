@@ -1864,11 +1864,13 @@ fn plan_with_options(
         })
         .collect();
 
-    // Build edges between logical layer stages, not between adjacent rows.
-    // Two exact copies of L0-14 are one stage with two source choices; treating
-    // them as L0-14 -> L0-14 would invent a backward pipeline hop. The target
-    // stage includes every live inference peer as an alternative because a
-    // peer can receive the slice first when its capacity is sufficient.
+    // Build edges between consecutive logical layer stages, not between every
+    // pair of machines in the plan. Two exact copies of L0-14 are one stage
+    // with two source choices; treating them as L0-14 -> L0-14 would invent a
+    // backward pipeline hop. A route option is only useful when its target is
+    // one of the selected machines serving the immediately next stage. A peer
+    // that merely has an inference endpoint, or serves a later stage, is not a
+    // bridge for this handoff.
     let mut stage_ranges: Vec<(u32, u32)> = Vec::new();
     for step in &steps {
         let range = (step.start_layer, step.end_layer);
@@ -1876,51 +1878,55 @@ fn plan_with_options(
             stage_ranges.push(range);
         }
     }
-    let route_options = stage_ranges
-        .windows(2)
-        .flat_map(|pair| {
-            let from_range = pair[0];
-            let to_range = pair[1];
-            let from_nodes: Vec<String> = steps
-                .iter()
-                .filter(|step| (step.start_layer, step.end_layer) == from_range)
-                .map(|step| step.target_node_id.clone())
-                .collect();
-            let selected_from = from_nodes.first().cloned();
-            let selected_to = steps
-                .iter()
-                .find(|step| (step.start_layer, step.end_layer) == to_range)
-                .map(|step| step.target_node_id.clone());
-            let from_stage_nodes = from_nodes.clone();
-            from_nodes.into_iter().flat_map(move |from| {
-                let selected_from = selected_from.clone();
-                let selected_to = selected_to.clone();
-                let from_stage_nodes = from_stage_nodes.clone();
-                machines.iter().filter_map(move |machine| {
-                    if from_stage_nodes.contains(&machine.node_id)
-                        || machine.inference_url.is_none()
-                    {
-                        return None;
-                    }
-                    let selected = selected_from.as_deref() == Some(from.as_str())
-                        && selected_to.as_deref() == Some(machine.node_id.as_str());
-                    Some(RouteOption {
-                        from_node_id: from.clone(),
-                        to_node_id: machine.node_id.clone(),
-                        rtt_ms: machine.rtt_ms,
-                        selected,
-                        note: if selected {
-                            "rota escolhida".to_string()
-                        } else if machine.rtt_ms.is_some() {
-                            "rota alternativa medida pelo gateway".to_string()
-                        } else {
-                            "rota alternativa sem medição de RTT".to_string()
-                        },
-                    })
-                })
+    let mut route_options = Vec::new();
+    for pair in stage_ranges.windows(2) {
+        let from_range = pair[0];
+        let to_range = pair[1];
+        let from_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == from_range && !step.target_node_id.is_empty()
             })
-        })
-        .collect();
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let to_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == to_range && !step.target_node_id.is_empty()
+            })
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let selected_from = from_nodes.first();
+        let selected_to = to_nodes.first();
+
+        for from in &from_nodes {
+            for to in &to_nodes {
+                if from == to {
+                    continue;
+                }
+                let Some(machine) = machines.iter().find(|machine| &machine.node_id == to) else {
+                    continue;
+                };
+                if machine.inference_url.is_none() {
+                    continue;
+                }
+                let selected = selected_from == Some(from) && selected_to == Some(to);
+                route_options.push(RouteOption {
+                    from_node_id: from.clone(),
+                    to_node_id: to.clone(),
+                    rtt_ms: machine.rtt_ms,
+                    selected,
+                    note: if selected {
+                        "rota escolhida".to_string()
+                    } else if machine.rtt_ms.is_some() {
+                        "rota alternativa medida pelo gateway".to_string()
+                    } else {
+                        "rota alternativa sem medição de RTT".to_string()
+                    },
+                });
+            }
+        }
+    }
 
     Plan {
         group: group.to_string(),
@@ -5234,6 +5240,34 @@ mod tests {
         assert!(a.has && a.ok);
         let c = first.options.iter().find(|o| o.node_id == "c").unwrap();
         assert!(!c.has && c.ok, "c não tem a fatia mas pode receber");
+    }
+
+    #[test]
+    fn route_options_only_bridge_consecutive_selected_stages() {
+        let mut ms = build(vec![
+            m("p0", 100_000, &[(0, 1)]),
+            m("p1", 100_000, &[(2, 4)]),
+            m("p2", 100_000, &[(5, 6)]),
+            m("p3", 100_000, &[(7, 10)]),
+        ]);
+        for machine in &mut ms {
+            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
+        }
+
+        let selection = [
+            pick(0, 1, "p0"),
+            pick(2, 4, "p1"),
+            pick(5, 6, "p2"),
+            pick(7, 10, "p3"),
+        ];
+        let p = plan("qwen", &ms, Some(&selection));
+        let pairs: Vec<_> = p
+            .route_options
+            .iter()
+            .map(|route| (route.from_node_id.as_str(), route.to_node_id.as_str()))
+            .collect();
+
+        assert_eq!(pairs, vec![("p0", "p1"), ("p1", "p2"), ("p2", "p3")]);
     }
 
     /// The machine list carries what the screen needs to explain a refusal.

@@ -568,6 +568,7 @@ async fn main() -> Result<()> {
         role: app_config.role.to_string(),
         node_display_name,
         advertise_addr,
+        tls_required: app_config.tls_required,
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
@@ -1039,6 +1040,10 @@ struct P2pStackArgs {
     role: String,
     node_display_name: String,
     advertise_addr: Option<String>,
+    /// Política inicial, aplicada antes da task de sondagem da `Network`.
+    /// Sem isso a URL já nascia em HTTPS pelo cliente global, mas a sonda
+    /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
+    tls_required: bool,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1147,6 +1152,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_advertise_addr(args.advertise_addr)
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
     );
+    net.set_tls(args.tls_required);
 
     if args.no_discovery {
         net.detach().await;
@@ -1253,6 +1259,7 @@ async fn start_gateway_only(
         role: app_config.role.to_string(),
         node_display_name,
         advertise_addr,
+        tls_required: app_config.tls_required,
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],

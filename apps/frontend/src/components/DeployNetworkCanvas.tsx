@@ -267,21 +267,31 @@ export function DeployNetworkCanvas({
     });
   }
 
-  const stagesByNode = new Map<string, Set<string>>();
+  const stageNodes = new Map<string, string[]>();
+  const stageOrder: string[] = [];
   for (const step of plan.steps) {
     const range = `${step.start_layer}-${step.end_layer}`;
-    const ranges = stagesByNode.get(step.target_node_id) ?? new Set<string>();
-    ranges.add(range);
-    stagesByNode.set(step.target_node_id, ranges);
+    if (!step.target_node_id) continue;
+    if (!stageNodes.has(range)) {
+      stageNodes.set(range, []);
+      stageOrder.push(range);
+    }
+    const nodes = stageNodes.get(range)!;
+    if (!nodes.includes(step.target_node_id)) nodes.push(step.target_node_id);
   }
-  const sameLogicalStage = (fromNodeId: string, toNodeId: string) => {
-    const fromRanges = stagesByNode.get(fromNodeId);
-    const toRanges = stagesByNode.get(toNodeId);
-    if (!fromRanges || !toRanges) return false;
-    return [...fromRanges].some((range) => toRanges.has(range));
-  };
+  const bridgeIds = new Set<string>();
+  for (let index = 1; index < stageOrder.length; index += 1) {
+    const fromNodes = stageNodes.get(stageOrder[index - 1]) ?? [];
+    const toNodes = stageNodes.get(stageOrder[index]) ?? [];
+    for (const from of fromNodes) {
+      for (const to of toNodes) bridgeIds.add(edgeId(from, to));
+    }
+  }
+  // O backend já limita as opções ao próximo estágio. Esta guarda no canvas
+  // mantém a regra visual mesmo enquanto um peer antigo ainda responde com a
+  // lista ampla anterior: nenhum salto por cima de uma camada aparece no mapa.
   const visibleRouteOptions = (plan.route_options ?? []).filter(
-    (route) => !sameLogicalStage(route.from_node_id, route.to_node_id),
+    (route) => bridgeIds.has(edgeId(route.from_node_id, route.to_node_id)),
   );
   const selectedEdges = new Set(visibleRouteOptions.filter((route) => route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const candidateEdges = new Set(visibleRouteOptions.filter((route) => !route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));

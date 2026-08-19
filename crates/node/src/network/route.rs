@@ -164,27 +164,48 @@ impl RouteTable {
 
     /// Mede todos os candidatos e grava a escolha.
     ///
-    /// A sonda e `GET /health` por HTTP na porta de inferencia, nao ICMP: mede
-    /// o caminho que a inferencia usa de verdade, com firewall e proxy no meio.
-    /// ICMP liberado onde o TCP nao esta mediria um caminho que ninguem percorre.
-    /// O cliente vem do cache por peer porque a sonda fala com o mesmo servidor
-    /// que a inferência vai falar: se o cluster está em TLS, medir em texto
-    /// claro mediria um caminho que a inferência não percorre - e, no modo
-    /// estrito, um caminho que o outro lado recusa.
+    /// A sonda e `GET /health` por HTTP(S), nao ICMP: mede um endpoint real do
+    /// peer, com firewall e proxy no meio. Quando há gateway anunciado, ele é
+    /// usado como alvo porque continua disponível mesmo sem um modelo carregado
+    /// ou com a porta de inferência restrita. A rota gravada ainda é a URL de
+    /// inferência correspondente, nunca a URL do gateway.
+    ///
+    /// O cliente da sonda aceita o certificado autoassinado do nó. Isso só vale
+    /// para medir latência: os clientes que transportam inferência continuam
+    /// usando pinning por `node_id`.
     pub async fn measure_peer(
         &self,
         clientes: &crate::peer_client::PeerClients,
         node_id: &str,
         candidatos: &[String],
     ) {
-        let Ok(http) = clientes.for_peer(node_id) else {
+        let pares: Vec<(String, String)> = candidatos
+            .iter()
+            .cloned()
+            .map(|endereco| (endereco.clone(), endereco))
+            .collect();
+        self.measure_peer_with_probes(clientes, node_id, &pares)
+            .await;
+    }
+
+    /// Mede endpoints de sondagem, mas grava a rota correspondente usada pela
+    /// inferência. O gateway é um bom alvo de health quando o servidor de
+    /// inferência ainda não subiu ou sua porta não está exposta, e não pode
+    /// substituir o endereço que o pipeline precisa discar.
+    pub async fn measure_peer_with_probes(
+        &self,
+        clientes: &crate::peer_client::PeerClients,
+        node_id: &str,
+        pares: &[(String, String)],
+    ) {
+        let Ok(http) = clientes.probe() else {
             return;
         };
-        let mut medidas = Vec::with_capacity(candidatos.len());
-        for base in candidatos {
+        let mut medidas = Vec::with_capacity(pares.len());
+        for (rota, sonda) in pares {
             let inicio = Instant::now();
             let resposta =
-                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{base}/health")).send())
+                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{sonda}/health")).send())
                     .await;
             let rtt = match resposta {
                 Ok(Ok(r)) if r.status().is_success() => {
@@ -193,7 +214,7 @@ impl RouteTable {
                 _ => None,
             };
             medidas.push(Measurement {
-                addr: base.clone(),
+                addr: rota.clone(),
                 rtt_ms: rtt,
             });
         }

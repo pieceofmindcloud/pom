@@ -337,6 +337,32 @@ impl PeerInfo {
             )
         })
     }
+
+    /// URLs do gateway, uma por endereço anunciado, para sondas de RTT.
+    ///
+    /// A tabela de rotas continua guardando URLs de inferência, mas o health
+    /// do gateway é um alvo mais confiável: ele existe mesmo quando o modelo
+    /// ainda não subiu e a porta de inferência fica restrita à rede local.
+    pub fn gateway_candidates(&self) -> Vec<String> {
+        let Some(porta) = self.gateway_port else {
+            return Vec::new();
+        };
+        let base: Vec<&String> = if self.addr_candidates.is_empty() {
+            vec![&self.addr]
+        } else {
+            self.addr_candidates.iter().collect()
+        };
+        base.iter()
+            .map(|a| {
+                format!(
+                    "{}://{}:{}",
+                    crate::peer_client::peer_scheme(),
+                    ip_host(a),
+                    porta
+                )
+            })
+            .collect()
+    }
 }
 
 pub struct Network {
@@ -1109,6 +1135,12 @@ impl Network {
                 if net_routes.is_detached() {
                     continue;
                 }
+                // A sonda nova começa sem política própria. Sem sincronizar o
+                // cliente com o estado atual do cluster, os candidatos HTTPS
+                // falham silenciosamente no TLS e o painel fica sem RTT dos
+                // peers remotos. Atualizar só o cliente mantém o esquema das
+                // URLs sob responsabilidade da política global já confirmada.
+                clientes.set_tls(net_routes.tls_enabled());
                 for peer in net_routes.alive_peers().await {
                     if !net_routes.routes.precisa_medir(&peer.node_id) {
                         continue;
@@ -1117,9 +1149,21 @@ impl Network {
                     if candidatos.is_empty() {
                         continue;
                     }
+                    let sondas = peer.gateway_candidates();
+                    let pares: Vec<(String, String)> = candidatos
+                        .into_iter()
+                        .enumerate()
+                        .map(|(index, inferencia)| {
+                            let sonda = sondas
+                                .get(index)
+                                .cloned()
+                                .unwrap_or_else(|| inferencia.clone());
+                            (inferencia, sonda)
+                        })
+                        .collect();
                     net_routes
                         .routes
-                        .measure_peer(&clientes, &peer.node_id, &candidatos)
+                        .measure_peer_with_probes(&clientes, &peer.node_id, &pares)
                         .await;
                 }
             }

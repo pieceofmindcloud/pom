@@ -129,13 +129,17 @@ limpar o campo volta para o observado pelo `identify`; e o endereço da Tailscal
 ### Rotas dinâmicas (`route.rs`)
 
 Um nó pode ter vários endereços válidos e qual serve depende de quem pergunta.
-`RouteTable` guarda a medição por candidato: sonda `GET /health` na porta de
-inferência (o caminho que a inferência usa de verdade, com firewall no meio),
-timeout 3 s, re-medida a cada 5 min. `choose_route` só troca de rota atual se o
-ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms MacBook↔ksia
-não pode trocar a cada ciclo); `mark_failure` tira a rota na hora quando uma
-requisição real falhou naquele endereço. `resolve` devolve `None` = "ainda não
-medido", e o chamador cai no `inference_url` do plano.
+`RouteTable` guarda a medição por candidato: sonda `GET /health` num endpoint
+real do peer, preferindo a porta de gateway, com timeout 3 s e re-medida a cada
+5 min. O gateway continua disponível quando o modelo ainda não subiu ou a porta
+de inferência está restrita, mas a rota gravada continua sendo a URL de
+inferência correspondente. O cliente da sonda aceita o certificado autoassinado
+e o hostname do peer; os clientes de inferência continuam com pinning. A task
+que mede reaplica ao cliente a política TLS atual antes da sonda. `choose_route` só troca de rota
+atual se o ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms
+MacBook↔ksia não pode trocar a cada ciclo); `mark_failure` tira a rota na hora
+quando uma requisição real falhou naquele endereço. `resolve` devolve `None` =
+"ainda não medido", e o chamador cai no `inference_url` do plano.
 
 ## 3. Caminho libp2p (internet)
 

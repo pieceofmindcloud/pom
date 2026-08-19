@@ -45,6 +45,10 @@ pub struct NodeConfig {
     /// o que um peer de versão anterior anuncia.
     #[serde(default)]
     pub deploy_id: String,
+    /// Nome operacional desta implantação, separado do rótulo técnico do
+    /// modelo usado pelo roteamento.
+    #[serde(default)]
+    pub deployment_name: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -137,6 +141,7 @@ impl NodeConfig {
     pub fn from_params(p: &crate::webui::RuntimeParams, allow_fit_memory: bool) -> Self {
         Self {
             deploy_id: String::new(),
+            deployment_name: String::new(),
             model_path: String::new(),
             model_label: String::new(),
             start_layer: 0,
@@ -187,6 +192,7 @@ impl NodeConfig {
     pub fn with_params(&self, p: &crate::webui::RuntimeParams) -> Self {
         Self {
             deploy_id: self.deploy_id.clone(),
+            deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
             model_label: self.model_label.clone(),
             start_layer: self.start_layer,
@@ -1132,6 +1138,7 @@ mod tests {
             deploy_id: String::new(),
             model_path: "/nonexistent/model.gguf".into(),
             model_label: "qwen35".into(),
+            deployment_name: "qwen35".into(),
             start_layer: 0,
             end_layer: 15,
             total_layers: 32,

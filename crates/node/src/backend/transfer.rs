@@ -2621,11 +2621,7 @@ mod part_fetch_tests {
             // catálogo desta máquina - caminho não vem mais do navegador.
             Json(SendRequest {
                 to_node_id: "outro".into(),
-                filename: caminho
-                    .file_name()
-                    .unwrap()
-                    .to_string_lossy()
-                    .into_owned(),
+                filename: caminho.file_name().unwrap().to_string_lossy().into_owned(),
             }),
         )
         .await;

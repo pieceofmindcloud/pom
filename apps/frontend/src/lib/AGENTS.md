@@ -11,13 +11,15 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ## Per-file
 
-- `api.ts` - fetch wrapper over relative paths with connection-key auth; also the SSE reader.
+- `api.ts` - fetch wrapper over relative paths with connection-key auth; also
+  the SSE reader and the deployment registry actions (`listDeployments`,
+  `redeployDeployment`, `activateDeployment`).
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including optional TP telemetry.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; serializes the two telemetry tables for the AI analysis action.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
-- `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
+- `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
@@ -48,7 +50,15 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
-- `DeploySelection`, `DeployStep`, `DeployPlan`, `RuntimeParams`, `DeployCandidate`, `DeployMachine` - deploy screen shapes; `DeployStep.parts` carries merged-slice steps, `primary` marks whoever holds layer 0. `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized off for tensor parallel deployment.
+- `ShardSet` identifies a slicing round with the technical `group`, readable
+  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployPlan`,
+  `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
+  shapes. `DeployPlan` also carries the operational name, strategy, RTT route
+  alternatives and projected load, while `DeployMachine` carries GPU/RAM
+  capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
+  carries merged-slice steps, `primary` marks whoever holds layer 0.
+  `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
+  off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `PlannedShard` / `SplitPlan` - size- and budget-driven slicing plans.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
@@ -119,6 +129,7 @@ would go.
 ### networkLayout.ts
 - `deploymentLayoutKey(model, peers)` - per-deployment fingerprint key (node id + range + `changed_at`), so hand-arranged layouts do not leak into a new deploy.
 - `fallbackPosition(index)` / `readPositions` / `writePositions` / `clearPositions` - canvas persistence in `localStorage`.
+- `mergePositions(current, persisted, arrangement, nodeIds)` - keeps positions already visible when a new peer is added and uses the automatic arrangement only for nodes without a position.
 
 ### transferStatus.ts
 - `isFinishedTransfer` / `isActiveTransfer` / `canCancel` - state predicates; only `running`/`verifying` can be cancelled.

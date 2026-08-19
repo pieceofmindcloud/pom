@@ -71,6 +71,8 @@ conteúdo `immutable` por 1 ano.
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
+- `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
+  reconfiguração de parâmetros e desimplantação por `deploy_id`)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
@@ -293,13 +295,38 @@ impressão digital é só modelo + conjunto de faixas.
   para `/fatias/andamento`. `asPlan` valida o corpo do POST para um build
   velho não derrubar a tela. Só modelos inteiros (`isWholeModel`) podem ser
   fatiados.
-- **Implantar** (`DeployModel`): escolhe um conjunto de fatias, edita quais
-  faixas vão para qual máquina (troca em colisão, `merge` para faixas
-  adjacentes numa máquina), reordena trocando máquinas, e afina os onze knobs
-  de runtime do cluster mais `n_gpu_layers`/`offload_kqv` por máquina
-  (propriedade do hardware). Cada edição volta ao nó para validação; o deploy
+- **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
+  Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
+  estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
+  Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
+  o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
+  carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
+  exibe hops, capacidade e latência conhecida, além de rotas alternativas e
+  distribuição projetada de carga. O Tensor usa o modelo inteiro em todos os
+  ranks e não apresenta a seleção antiga de fatias. As propriedades globais
+  (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
+  máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
+  inspetor também mostra as camadas que ela executará. Não existe uma segunda
+  tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
+  topologia, os RTTs e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
-  e o progresso vem de `GET /api/ui/jobs`. A última implantação de cada modelo
+  e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
+  canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
+  Redefinir, com posições persistidas por implantação. O inspetor tem 19rem,
+  pode ser recolhido pela borda esquerda, separa visualmente propriedades
+  globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
+  ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
+  peers é uma rota paralela válida, não uma troca. Peers que já estão no mapa
+  deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
+  disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
+  atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita
+  da faixa completa; a mesma faixa em peers diferentes é aceita pelo planner e
+  pode ser escolhida pelo roteador por RTT/carga. No Tensor, somente peers que
+  estão no mapa entram como primary/worker, mesmo que outros tenham o modelo.
+  GPU, RAM, carga e RTT são atualizados pela visão do cluster a cada 5 segundos;
+  uma GPU ausente aparece como `sem GPU`, sem barra indeterminada. Em Completa, todos os peers entram no canvas e na lista de candidatos. A
+  cobertura fica reduzida no rodapé junto da barra de peers.
+  A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as

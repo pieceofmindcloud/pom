@@ -78,6 +78,8 @@ export interface NodeConfig {
   model_label: string;
   /** A implantação de que este nó faz parte; vazio se ele não veio de uma. */
   deploy_id: string;
+  /** Nome operacional da implantação, quando informado pelo operador. */
+  deployment_name: string;
   start_layer: number;
   end_layer: number;
   total_layers: number;
@@ -124,6 +126,7 @@ export interface NodeInfo {
   peer_count: number;
   load: number;
   active_model: string;
+  active_deployment?: string;
   /** True while the operator has taken this node off the network. */
   detached?: boolean;
   /** Commit de que o binário foi construído. */
@@ -562,9 +565,33 @@ export interface DeployMachine {
   node_id: string;
   label: string;
   mem_free_mb: number;
+  gpu_free_mb: number;
+  ram_free_mb: number;
+  /** Métricas live da visão do cluster, ausentes em respostas antigas. */
+  gpu_used_pct?: number | null;
+  ram_used_pct?: number | null;
   disk_free_mb: number;
+  rtt_ms: number | null;
+  load: number;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
+}
+
+export type DeployStrategy = "simple" | "complete";
+
+export interface DeployRouteOption {
+  from_node_id: string;
+  to_node_id: string;
+  rtt_ms: number | null;
+  selected: boolean;
+  note: string;
+}
+
+export interface DeployLoadDistribution {
+  node_id: string;
+  current: number;
+  projected: number;
+  selected: boolean;
 }
 
 /**
@@ -652,6 +679,8 @@ export interface TpLaunch {
 
 export interface DeployPlan {
   group: string;
+  deployment_name: string;
+  strategy: DeployStrategy;
   /**
    * Echoed by the node, so the screen never guesses which question it asked.
    *
@@ -687,4 +716,6 @@ export interface DeployPlan {
   prompt_tokens: number;
   /** Prompt tokens per round trip through the pipeline, under `params`. */
   chunk_tokens: number;
+  route_options: DeployRouteOption[];
+  load_distribution: DeployLoadDistribution[];
 }

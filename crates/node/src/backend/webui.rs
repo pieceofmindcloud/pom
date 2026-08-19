@@ -13,6 +13,7 @@
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
 use crate::config::Role;
+use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
@@ -107,6 +108,7 @@ pub struct NodeInfo {
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
+    pub active_deployment: String,
     /// True while the operator has taken this node off the network.
     pub detached: bool,
     /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
@@ -128,6 +130,11 @@ pub struct NodeInfo {
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     let system = sysmon::sample().await;
+    let config = state.runtime.config().await;
+    let active_deployment = config
+        .as_ref()
+        .map(|cfg| cfg.deployment_name.clone())
+        .unwrap_or_default();
     let (role, conn_key, advertise_addr, tls_required, tls_authority) = {
         let cfg = state.auth.read().await;
         (
@@ -153,11 +160,12 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         p2p_port: state.network.bind_addr.port(),
         gateway_port: state.gateway_port,
         inference_port: state.network.inference_port,
-        config: state.runtime.config().await,
+        config,
         status: state.runtime.status().await,
         peer_count: state.network.alive_peers().await.len(),
         load: state.loads.load(&state.network.node_id).await,
         active_model: state.active_model().await,
+        active_deployment,
         detached: state.network.is_detached(),
         advertise_addr,
         effective_address: state.network.announce_addr(),
@@ -1238,6 +1246,10 @@ pub struct ApplyRequest {
     /// preserved exactly instead of collapsing model families into profiles.
     #[serde(default)]
     pub model_label: Option<String>,
+    /// Nome operacional da implantação, separado da identidade técnica do
+    /// modelo. Vazio mantém compatibilidade com chamadas antigas.
+    #[serde(default)]
+    pub deployment_name: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -1308,6 +1320,11 @@ fn model_label(req: &ApplyRequest) -> String {
         .filter(|label| !label.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| crate::model::ModelProfile::guess_from_name(&req.base_name).name)
+}
+
+fn deployment_name(req: &ApplyRequest) -> String {
+    normalize_deployment_name(Some(&req.deployment_name), &req.base_name)
+        .unwrap_or_else(|_| req.base_name.clone())
 }
 
 // ── Job tracking ─────────────────────────────────────────────────────────────
@@ -1698,6 +1715,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     // The selected deployment label is shared by every peer. Old callers that
     // do not send it retain the profile-derived compatibility fallback.
     let label = model_label(&req);
+    let deployment = deployment_name(&req);
 
     let inference_port = state
         .network
@@ -1708,6 +1726,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
         model_label: label,
+        deployment_name: deployment,
         start_layer: req.start_layer,
         end_layer: req.end_layer,
         total_layers: req.total_layers,
@@ -2668,6 +2687,7 @@ async fn release_slice(
             .map(|s| s.to_string()),
         base_name: cfg.model_label.clone(),
         model_label: Some(cfg.model_label.clone()),
+        deployment_name: cfg.deployment_name.clone(),
         start_layer: cfg.start_layer,
         end_layer: cfg.end_layer,
         total_layers: cfg.total_layers,
@@ -2815,6 +2835,9 @@ pub struct LaunchRequest {
     /// to every apply request. Missing values keep older callers compatible.
     #[serde(default)]
     pub model_label: Option<String>,
+    /// Nome operacional exibido em jobs, status e telemetria.
+    #[serde(default)]
+    pub deployment_name: String,
     pub total_layers: u32,
     pub targets: Vec<LaunchTarget>,
     /// Node that should act as the entry point.
@@ -2861,6 +2884,10 @@ pub(crate) async fn launch(
              as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
         );
     }
+    let deployment = match normalize_deployment_name(Some(&req.deployment_name), &req.base_name) {
+        Ok(name) => name,
+        Err(error) => return bad_request(error),
+    };
     if let Some(t) = req.targets.iter().find(|t| t.end_layer >= req.total_layers) {
         return bad_request(format!(
             "a fatia L{}-{} passa do fim de um modelo de {} camadas",
@@ -2932,6 +2959,7 @@ pub(crate) async fn launch(
             source_model_path: target.source_model_path.clone(),
             base_name: req.base_name.clone(),
             model_label: req.model_label.clone(),
+            deployment_name: deployment.clone(),
             start_layer: target.start_layer,
             end_layer: target.end_layer,
             total_layers: req.total_layers,
@@ -3642,6 +3670,7 @@ mod tests {
             source_model_path: "/m/whole.gguf".into(),
             base_name: "whole".into(),
             model_label: None,
+            deployment_name: "whole".into(),
             start_layer: 0,
             end_layer: 31,
             total_layers: 32,
@@ -3741,6 +3770,7 @@ mod tests {
             source_model_path: "/m.gguf".into(),
             base_name: "m".into(),
             model_label: None,
+            deployment_name: "m".into(),
             start_layer: start,
             end_layer: end,
             total_layers: total,

@@ -14,7 +14,7 @@
  * explicação deixou de depender da comparação.
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DeployPlan, DeployStep } from "../lib/types";
 
@@ -22,7 +22,11 @@ const post = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
-      url === "/api/ui/jobs" ? Promise.resolve({ jobs: [] }) : undefined,
+      url === "/api/ui/jobs"
+        ? Promise.resolve({ jobs: [] })
+        : url === "/api/ui/cluster"
+          ? Promise.resolve({ peers: [] })
+          : undefined,
     ),
     post: (...args: unknown[]) => post(...args),
   },
@@ -172,7 +176,7 @@ describe("DeployModel", () => {
     });
     expect(screen.getByText(/ksia ficou com duas faixas/)).toBeTruthy();
 
-    const button = screen.getByRole("button", { name: /Implantar assim/ });
+    const button = screen.getByRole("button", { name: /Implantar/ });
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -189,7 +193,7 @@ describe("DeployModel", () => {
     mount();
 
     await waitFor(() => {
-      const button = screen.getByRole("button", { name: /Implantar assim/ });
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
       expect((button as HTMLButtonElement).disabled).toBe(false);
     });
   });
@@ -214,5 +218,211 @@ describe("DeployModel", () => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
     expect(screen.getAllByText(/está sem máquina/).length).toBeGreaterThan(0);
+  });
+
+  it("desenha RTT entre os hops e mostra as camadas da máquina no inspetor", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.route_options = [
+      { from_node_id: "ksia", to_node_id: "salem", rtt_ms: 1.2, selected: true, note: "rota direta" },
+      { from_node_id: "salem", to_node_id: "mac", rtt_ms: 2.8, selected: true, note: "rota direta" },
+    ];
+    p.machines = p.machines.map((machine, index) => ({
+      ...machine,
+      rtt_ms: index === 0 ? 1.2 : 2.8,
+      gpu_free_mb: 12_000,
+      ram_free_mb: 32_000,
+      load: 0,
+    }));
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    expect(screen.getAllByText("1.2 ms").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2.8 ms").length).toBeGreaterThan(0);
+    expect(screen.getByText("Camadas nesta máquina")).toBeTruthy();
+    expect(screen.getAllByText("L0–7").length).toBeGreaterThan(0);
+  });
+
+  it("usa o RTT da máquina quando o plano não traz opções de rota", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.route_options = [];
+    p.machines = p.machines.map((machine, index) => ({
+      ...machine,
+      rtt_ms: [1.2, 2.8, 4.4][index],
+      load: 0,
+    }));
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    const canvas = screen.getAllByText("Mapa da implantação")[0].closest("section");
+    expect(canvas).not.toBeNull();
+    expect(within(canvas!).getByText("RTT 2.8 ms")).toBeTruthy();
+    expect(within(canvas!).getByText("RTT 4.4 ms")).toBeTruthy();
+  });
+
+  it("não renderiza novamente os painéis legados abaixo do canvas", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    expect(screen.queryByText("Quais fatias entram, e em qual máquina")).toBeNull();
+    expect(screen.queryByText("O que cada uma tem e quanto lhe sobra")).toBeNull();
+  });
+
+  it("reaproveita os controles do canvas e permite atribuir uma camada à máquina selecionada", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Diminuir zoom" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Aumentar zoom" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ajustar ao canvas" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Organizar máquinas" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ocultar inspetor" }));
+    expect(screen.queryByText("Camadas nesta máquina")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Mostrar inspetor" }));
+
+    const assign = screen.getByRole("button", { name: "Atribuir L8–15 a ksia" });
+    fireEvent.click(assign);
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(([url, body]) =>
+          url === "/api/ui/deploy/plan" &&
+          JSON.stringify(body).includes('"start_layer":8') &&
+          JSON.stringify(body).includes('"target_node_id":"ksia"'),
+        ),
+      ).toBe(true);
+    });
+  });
+
+  it("não troca silenciosamente a faixa de outra máquina ao atribuir uma camada", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Atribuir L8–15 a ksia" }));
+
+    await waitFor(() => {
+      const selectionBody = post.mock.calls
+        .map(([, body]) => body as { selection?: Array<{ start_layer: number; target_node_id: string }> })
+        .find((body) => body.selection?.some((row) => row.start_layer === 8 && row.target_node_id === "ksia"));
+      expect(selectionBody?.selection?.find((row) => row.start_layer === 8)?.target_node_id).toBe("salem");
+      expect(selectionBody?.selection?.find((row) => row.start_layer === 0)?.target_node_id).toBe("ksia");
+      expect(selectionBody?.selection?.filter((row) => row.start_layer === 8)).toHaveLength(2);
+      expect(selectionBody?.selection?.find((row) => row.start_layer === 8 && row.target_node_id === "salem")).toBeTruthy();
+    });
+  });
+
+  it("inclui no canvas um peer adicionado por duplo clique", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.steps = p.steps.filter((item) => item.target_node_id !== "mac");
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    const availablePeer = screen.getByRole("button", { name: /mac RTT/ });
+    fireEvent.doubleClick(availablePeer);
+    await waitFor(() => {
+      expect(post.mock.calls.some(([, body]) => (body as { preferred_node_ids?: string[] }).preferred_node_ids?.includes("mac"))).toBe(true);
+      expect(screen.getByRole("button", { name: /mac.*disponível para o plano/ })).toBeTruthy();
+    });
+  });
+
+  it("inclui no canvas um peer arrastado da barra inferior", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.steps = p.steps.filter((item) => item.target_node_id !== "mac");
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    const canvas = screen.getAllByText("Mapa da implantação")[0].closest("section");
+    expect(canvas).not.toBeNull();
+    fireEvent.drop(canvas!, { dataTransfer: { getData: () => "mac" } });
+
+    await waitFor(() => {
+      expect(post.mock.calls.some(([, body]) => (body as { preferred_node_ids?: string[] }).preferred_node_ids?.includes("mac"))).toBe(true);
+      expect(screen.getByRole("button", { name: /mac.*disponível para o plano/ })).toBeTruthy();
+    });
+  });
+
+  it("manda todos os peers como candidatos quando a estratégia é completa", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Completa" }));
+
+    await waitFor(() => {
+      expect(post.mock.calls.some(([, body]) => {
+        const request = body as { strategy?: string; preferred_node_ids?: string[] };
+        return request.strategy === "complete" && MACHINES.every((nodeId) => request.preferred_node_ids?.includes(nodeId));
+      })).toBe(true);
+    });
+  });
+
+  it("separa configurações globais e da máquina em tabs", async () => {
+    post.mockResolvedValue(planOutOfLayerOrder());
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    expect(screen.getByText("Configurações globais")).toBeTruthy();
+    expect(screen.queryByText("Camadas nesta máquina")).toBeNull();
+
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina:/ }));
+    expect(screen.getByText("Camadas nesta máquina")).toBeTruthy();
+  });
+
+  it("remove uma máquina do canvas e devolve o peer ao rodapé", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockImplementation((_url: string, body?: { selection?: Array<{ target_node_id: string }> }) => {
+      if (body?.selection) {
+        return Promise.resolve({
+          ...p,
+          steps: p.steps.filter((step) => body.selection?.some((row) => row.target_node_id === step.target_node_id)),
+        });
+      }
+      return Promise.resolve(p);
+    });
+    mount();
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Remover ksia da implantação" })).toBeTruthy());
+    const remove = screen.getByRole("button", { name: "Remover ksia da implantação" });
+    fireEvent.pointerDown(remove);
+    fireEvent.pointerUp(remove);
+    fireEvent.click(remove);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /ksia.*RTT/ })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Remover ksia da implantação" })).toBeNull();
+    });
+  });
+
+  it("não anima GPU de uma máquina sem GPU", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    p.machines = p.machines.map((machine) => ({ ...machine, gpu_used_pct: null }));
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    const card = screen.getByRole("button", { name: /ksia na implantação/ });
+    expect(within(card).getByText("sem GPU")).toBeTruthy();
+    expect(within(card).queryAllByRole("progressbar")).toHaveLength(1);
   });
 });

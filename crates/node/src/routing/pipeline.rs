@@ -285,6 +285,29 @@ pub async fn plan_pipeline(
     total_layers: u32,
     tracker: &LoadTracker,
 ) -> Option<PipelinePlan> {
+    plan_pipeline_with_rtt(
+        peers,
+        model_name,
+        deploy_id,
+        total_layers,
+        tracker,
+        &HashMap::new(),
+    )
+    .await
+}
+
+/// Same planner, with RTTs measured by the gateway that is about to originate
+/// the request. Exact range replicas are the same logical stage, so the lowest
+/// measured RTT wins before load is considered. A caller without measurements
+/// can keep using `plan_pipeline` and retains the stable legacy ordering.
+pub async fn plan_pipeline_with_rtt(
+    peers: &[PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    tracker: &LoadTracker,
+    rtts: &HashMap<String, f64>,
+) -> Option<PipelinePlan> {
     // Only peers that expose an inference server AND match the model name
     let servindo: Vec<&PeerInfo> = peers
         .iter()
@@ -376,7 +399,14 @@ pub async fn plan_pipeline(
         for peer in reachable {
             let load = tracker.load(&peer.node_id).await as i64;
             let layers = (peer.end_layer - peer.start_layer + 1) as i64;
-            let score = layers * 100 - load * 10;
+            // Layer coverage remains the dominant factor. For peers covering
+            // the same range, lower RTT wins, followed by lower in-flight
+            // load. Unknown RTT is a stable last resort.
+            let rtt_penalty = rtts
+                .get(&peer.node_id)
+                .map(|rtt| (*rtt * 100.0).max(0.0) as i64)
+                .unwrap_or(100_000);
+            let score = layers * 100_000 - rtt_penalty.min(99_999) - load * 10;
             if best.map(|(_, s)| score > s).unwrap_or(true) {
                 best = Some((peer, score));
             }
@@ -883,6 +913,28 @@ mod ipv6_tests {
             .await
             .expect("plano");
         assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
+    }
+
+    #[tokio::test]
+    async fn an_exact_replica_prefers_the_lower_rtt() {
+        let mut slow = peer("192.168.1.10:42777", 0, 31);
+        slow.node_id = "slow".into();
+        let mut fast = peer("192.168.1.11:42777", 0, 31);
+        fast.node_id = "fast".into();
+        let rtts = HashMap::from([(String::from("slow"), 80.0), (String::from("fast"), 12.0)]);
+
+        let plan = plan_pipeline_with_rtt(
+            &[slow, fast],
+            "qwen35",
+            None,
+            32,
+            &LoadTracker::new(),
+            &rtts,
+        )
+        .await
+        .expect("plano");
+
+        assert_eq!(plan.steps[0].node_id, "fast");
     }
 
     #[tokio::test]

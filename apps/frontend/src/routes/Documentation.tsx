@@ -39,7 +39,11 @@ import { guidesFor } from "../guides/content";
 import { useI18n } from "../i18n/provider";
 import manifest from "../docs/manifest.json";
 
-const CONTENT = import.meta.glob("../docs/**/*.md", { as: "raw", eager: true });
+const CONTENT = import.meta.glob<string>("../docs/**/*.md", {
+  query: "?raw",
+  import: "default",
+  eager: true,
+});
 
 type DocEntry = (typeof manifest)["entries"][number];
 

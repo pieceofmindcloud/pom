@@ -30,9 +30,11 @@ behind an auth extractor.
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention.
   (local or forwarded to a peer).
-- `deploy.rs` (3023) - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: choosing
-  which machine serves which slice and sequencing the copies; re-surveys the
-  cluster on deploy; undeploy takes a whole pipeline out of the air.
+- `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
+  capacidade, estratégias simples/completa, cobertura, RTT, carga projetada,
+  escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
+  deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
@@ -176,8 +178,11 @@ behind an auth extractor.
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
-  every prompt); one range per node unless `merge` (adjacent ranges joined via
-  `splitter::merge`); overlap is refused, a gap only warns.
+  every prompt); one distinct range per node unless `merge` (adjacent ranges
+  joined via `splitter::merge`); the exact same range on different nodes is a
+  replica and a valid parallel route; the same whole model may likewise be
+  selected on multiple nodes for balancing; distinct overlapping cuts are refused,
+  and a gap only warns.
   **`steps` always comes back in layer order**, blocked plans included:
   `position` only means "place in the pipeline" in that order, `run` reads the
   launch order straight off the list, and the screen lines the plan up against

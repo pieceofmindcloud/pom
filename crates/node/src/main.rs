@@ -695,6 +695,7 @@ async fn main() -> Result<()> {
             // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
             model_label: profile.name.clone(),
+            deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,
             end_layer: assignment.end_layer,
             total_layers: assignment.total_layers,

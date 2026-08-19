@@ -53,7 +53,8 @@ export default function App() {
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
-  const isFullBleed = isDashboard || location.pathname === "/documentacao";
+  const isFullBleed =
+    isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar";
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.

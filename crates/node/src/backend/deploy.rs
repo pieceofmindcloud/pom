@@ -35,10 +35,12 @@
 //!   ranges on the same machine become one *merged unit*: the machine joins
 //!   the slices into a single file (`splitter::merge`) and serves the union.
 //!   A merged step carries `parts`, one per slice, each with its own source.
-//! * **Overlap is not a preference.** Two selected ranges covering the same
-//!   layer would run those layers twice and corrupt the answer, so a set that
-//!   overlaps is refused. A *gap* is different: it is a legitimate half-deploy
-//!   and only stops the pipeline from planning, so it warns.
+//!   The same exact range on different machines is an allowed replica.
+//! * **Overlap is not a preference.** Two different cuts covering the same
+//!   layer would make the pipeline ambiguous, so that overlap is refused. The
+//!   same exact range on different machines is an explicit parallel route. A
+//!   *gap* is different: it is a legitimate half-deploy and only stops the
+//!   pipeline from planning, so it warns.
 //!
 //! ## A whole model is the degenerate case, not a second path
 //!
@@ -284,11 +286,13 @@ pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u3
 /// vez precisa dizer isso explicitamente, senao o unico alvo da requisicao
 /// vira "peer 1 de 1" e todo no somado se declara o ultimo da divisao.
 ///
-/// Uma faixa identica a uma existente e substituicao, nao um peer a mais.
+/// Réplicas da mesma faixa ocupam o mesmo estágio lógico, mesmo quando entram
+/// pelo endpoint incremental de adicionar uma máquina.
 pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32) {
-    let mut faixas: Vec<(u32, u32)> = existentes.iter().copied().filter(|f| *f != nova).collect();
+    let mut faixas: Vec<(u32, u32)> = existentes.to_vec();
     faixas.push(nova);
     faixas.sort();
+    faixas.dedup();
     let index = faixas.iter().position(|f| *f == nova).unwrap_or(0) as u32;
     (index, faixas.len() as u32)
 }
@@ -364,6 +368,38 @@ pub enum DeployKind {
     TensorParallel,
 }
 
+/// How much of the available cluster the planner should use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployStrategy {
+    /// Pick the smallest set of peers that can serve the selected model.
+    #[default]
+    Simple,
+    /// Consider every eligible peer to maximize GPU use and spread load.
+    Complete,
+}
+
+const MAX_DEPLOYMENT_NAME_CHARS: usize = 128;
+
+pub(crate) fn normalize_deployment_name(
+    requested: Option<&str>,
+    fallback: &str,
+) -> Result<String, String> {
+    let name = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback.trim());
+    if name.is_empty() {
+        return Err("o nome da implantação não pode ficar vazio".to_string());
+    }
+    if name.chars().count() > MAX_DEPLOYMENT_NAME_CHARS {
+        return Err(format!(
+            "o nome da implantação pode ter no máximo {MAX_DEPLOYMENT_NAME_CHARS} caracteres"
+        ));
+    }
+    Ok(name.to_string())
+}
+
 impl DeployKind {
     fn whole(self) -> bool {
         matches!(self, DeployKind::Whole)
@@ -397,6 +433,14 @@ pub struct DeployRequest {
     /// The shard set, named the way the catalog groups it — or, with
     /// `kind: "whole"`, the model's own name in the catalog.
     pub group: String,
+    /// Nome operacional da implantação. `group` continua sendo a identidade
+    /// técnica do modelo usada pelo catálogo e pelo roteamento.
+    #[serde(default)]
+    pub deployment_name: Option<String>,
+    #[serde(default)]
+    pub strategy: DeployStrategy,
+    #[serde(default)]
+    pub preferred_node_ids: Vec<String>,
     /// Slices or a whole model. Absent means slices, which is what every
     /// caller written before whole-model deploys existed means.
     #[serde(default)]
@@ -488,9 +532,13 @@ struct Machine {
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
     mem_free_mb: u64,
+    gpu_free_mb: u64,
+    ram_free_mb: u64,
     /// Room for the file itself, which is what a copy needs and what
     /// `transfer.rs` checks before it writes a byte.
     disk_free_mb: u64,
+    rtt_ms: Option<f64>,
+    load: u32,
     held: Vec<HeldShard>,
 }
 
@@ -526,6 +574,14 @@ pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize
 async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Machine> {
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
+    let route_rtt: std::collections::HashMap<String, f64> = state
+        .network
+        .routes
+        .snapshot()
+        .into_iter()
+        .map(|(node_id, route)| (node_id, route.rtt_ms))
+        .collect();
+    let loads = state.loads.clone();
 
     let futures = peers.into_iter().map(|peer| {
         // Pinado no node_id do destino: sem isto, com o cluster em TLS o
@@ -533,6 +589,12 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
         // "nenhuma máquina do cluster tem fatias de <modelo>".
         let http = state.peer_http.for_peer(&peer.node_id);
         let is_self = peer.node_id == self_id;
+        let rtt_ms = if is_self {
+            Some(0.0)
+        } else {
+            route_rtt.get(&peer.node_id).copied()
+        };
+        let loads = loads.clone();
         let group = group.to_string();
         async move {
             let base = peer.gateway_url()?;
@@ -553,6 +615,7 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
             };
+            let (gpu_free_mb, ram_free_mb) = memory_capacity(node.get("system"));
 
             let mut held: Vec<HeldShard> = match kind {
                 DeployKind::Shards => body
@@ -607,6 +670,8 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                     peer.hostname.clone()
                 },
                 mem_free_mb: free_memory_mb(node.get("system")),
+                gpu_free_mb,
+                ram_free_mb,
                 // The peer's own reading beats the one it gossiped minutes ago,
                 // but the gossip is still there when it did not answer.
                 disk_free_mb: node
@@ -614,6 +679,8 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                     .and_then(|v| v.as_f64())
                     .map(|v| v as u64)
                     .unwrap_or(peer.disk_free_mb),
+                rtt_ms,
+                load: loads.load(&peer.node_id).await,
                 held,
             })
         }
@@ -632,31 +699,36 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
 /// its RAM figure says nothing useful. Unified memory has no separate pool to
 /// report, so RAM *is* the answer there — see the note `sysmon` puts on screen.
 fn free_memory_mb(system: Option<&serde_json::Value>) -> u64 {
-    let Some(system) = system else { return 0 };
-    if system.get("gpu_kind").and_then(|k| k.as_str()) == Some("nvidia") {
-        let free: f64 = system
-            .get("gpus")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|g| {
-                let total = g.get("vram_total_mb")?.as_f64()?;
-                let used = g
-                    .get("vram_used_mb")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                Some((total - used).max(0.0))
-            })
-            .sum();
-        if free > 0.0 {
-            return free as u64;
-        }
+    let (gpu, ram) = memory_capacity(system);
+    if gpu > 0 {
+        gpu
+    } else {
+        ram
     }
-    system
+}
+
+fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
+    let Some(system) = system else { return (0, 0) };
+    let gpu = system
+        .get("gpus")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let total = g.get("vram_total_mb")?.as_f64()?;
+            let used = g
+                .get("vram_used_mb")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            Some((total - used).max(0.0))
+        })
+        .sum::<f64>() as u64;
+    let ram = system
         .pointer("/ram/available_mb")
         .and_then(|v| v.as_f64())
         .map(|v| v as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    (gpu, ram)
 }
 
 fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
@@ -749,7 +821,11 @@ pub struct MachineView {
     node_id: String,
     label: String,
     mem_free_mb: u64,
+    gpu_free_mb: u64,
+    ram_free_mb: u64,
     disk_free_mb: u64,
+    rtt_ms: Option<f64>,
+    load: u32,
     /// Ranges of this set it already holds.
     holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
@@ -841,6 +917,8 @@ pub struct Step {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     group: String,
+    deployment_name: String,
+    strategy: DeployStrategy,
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
@@ -888,6 +966,27 @@ pub struct Plan {
     prompt_tokens: u32,
     /// Prompt tokens per round trip through the pipeline, under `params`.
     chunk_tokens: u32,
+    /// Rotas candidatas entre os hops escolhidos. A latência pode ser nula
+    /// quando o gateway ainda não mediu o peer.
+    route_options: Vec<RouteOption>,
+    load_distribution: Vec<LoadDistribution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteOption {
+    from_node_id: String,
+    to_node_id: String,
+    rtt_ms: Option<f64>,
+    selected: bool,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LoadDistribution {
+    node_id: String,
+    current: u32,
+    projected: u32,
+    selected: bool,
 }
 
 /// Every distinct range anyone holds, in layer order.
@@ -1029,42 +1128,113 @@ fn auto_chain(candidates: &[Candidate], total: Option<u32>) -> Vec<usize> {
     chain
 }
 
+/// Complete mode favors the finest existing cut so more eligible peers can
+/// participate. It never invents a new boundary and still refuses overlap in
+/// the common coverage pass below.
+fn auto_chain_complete(candidates: &[Candidate], total: Option<u32>) -> Vec<usize> {
+    let total = total.unwrap_or(0);
+    let mut chain = Vec::new();
+    let mut next = 0u32;
+    loop {
+        let pick = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.start_layer == next)
+            .min_by_key(|(_, c)| (c.end_layer, std::cmp::Reverse(c.holders.len())))
+            .map(|(i, _)| i)
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.start_layer > next)
+                    .min_by_key(|(_, c)| (c.start_layer, c.end_layer))
+                    .map(|(i, _)| i)
+            });
+        let Some(i) = pick else { break };
+        chain.push(i);
+        next = candidates[i].end_layer.saturating_add(1);
+        if total > 0 && next >= total {
+            break;
+        }
+    }
+    chain
+}
+
 /// Hand each range in the chain to a machine.
 ///
-/// A machine that already holds a slice is preferred for it: a 10 GB slice takes
-/// ~17 minutes on the real link, so every avoided copy is the difference between
-/// a deploy that finishes now and one that finishes after lunch. Within that,
-/// roomiest first — and because the chain starts at layer 0, the roomiest
-/// machine gets the range that runs the whole prompt of every request.
-fn auto_assign(chain: &[usize], candidates: &[Candidate], machines: &[Machine]) -> Vec<String> {
+/// A machine that already holds a slice is preferred because a copy is costly,
+/// but a peer without that file is still a valid target when its disk and
+/// combined GPU/RAM capacity can receive it. Complete mode then breaks ties by
+/// the measured RTT, current in-flight load and available capacity. This keeps
+/// the planner data-driven: node ids are only values from the live survey.
+fn target_capacity_mb(machine: &Machine) -> u64 {
+    machine
+        .mem_free_mb
+        .max(machine.gpu_free_mb.saturating_add(machine.ram_free_mb))
+}
+
+fn target_capacity_class(candidate: &Candidate, machine: &Machine) -> u8 {
+    if machine
+        .holds(candidate.start_layer, candidate.end_layer)
+        .is_some()
+    {
+        return 0;
+    }
+    let need = needed_mb(candidate.size_bytes);
+    let capacity = target_capacity_mb(machine);
+    if capacity == 0 {
+        return 3;
+    }
+    if capacity >= need {
+        if machine.gpu_free_mb >= need {
+            1
+        } else {
+            2
+        }
+    } else {
+        4
+    }
+}
+
+fn auto_assign(
+    chain: &[usize],
+    candidates: &[Candidate],
+    machines: &[Machine],
+    strategy: DeployStrategy,
+    preferred_node_ids: &[String],
+) -> Vec<String> {
     let mut taken: Vec<String> = Vec::new();
     let mut targets = vec![String::new(); chain.len()];
 
     for (slot, &ci) in chain.iter().enumerate() {
         let c = &candidates[ci];
-        let mut holders: Vec<&Machine> = machines
-            .iter()
-            .filter(|m| !taken.contains(&m.node_id) && c.holders.contains(&m.node_id))
-            .collect();
-        holders.sort_by_key(|m| std::cmp::Reverse(m.mem_free_mb));
-        if let Some(m) = holders.first() {
-            taken.push(m.node_id.clone());
-            targets[slot] = m.node_id.clone();
-        }
-    }
-
-    for target in targets.iter_mut() {
-        if !target.is_empty() {
-            continue;
-        }
-        let mut free: Vec<&Machine> = machines
+        let mut possible: Vec<&Machine> = machines
             .iter()
             .filter(|m| !taken.contains(&m.node_id))
             .collect();
-        free.sort_by_key(|m| std::cmp::Reverse(m.mem_free_mb));
-        if let Some(m) = free.first() {
+        possible.sort_by_key(|m| {
+            (
+                target_capacity_class(c, m),
+                !c.holders.contains(&m.node_id),
+                !preferred_node_ids.iter().any(|id| id == &m.node_id),
+                if strategy == DeployStrategy::Complete {
+                    m.rtt_ms
+                        .map(|rtt| (rtt.max(0.0) * 1000.0) as u64)
+                        .unwrap_or(u64::MAX)
+                } else {
+                    0
+                },
+                if strategy == DeployStrategy::Complete {
+                    m.load
+                } else {
+                    0
+                },
+                std::cmp::Reverse(m.mem_free_mb),
+            )
+        });
+        if let Some(m) = possible.first() {
             taken.push(m.node_id.clone());
-            *target = m.node_id.clone();
+            targets[slot] = m.node_id.clone();
         }
     }
 
@@ -1082,6 +1252,7 @@ fn usable_mb(free_mb: u64) -> u64 {
 }
 
 /// Decide who serves what — or check what the operator decided.
+#[cfg(test)]
 fn plan(
     group: &str,
     machines: &[Machine],
@@ -1090,6 +1261,32 @@ fn plan(
     merge: bool,
     kind: DeployKind,
     tp: Option<TpLaunch>,
+) -> Plan {
+    plan_with_options(
+        group,
+        machines,
+        selection,
+        params,
+        merge,
+        kind,
+        tp,
+        DeployStrategy::Simple,
+        group,
+        &[],
+    )
+}
+
+fn plan_with_options(
+    group: &str,
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    params: &RuntimeParams,
+    merge: bool,
+    kind: DeployKind,
+    tp: Option<TpLaunch>,
+    strategy: DeployStrategy,
+    deployment_name: &str,
+    preferred_node_ids: &[String],
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -1104,8 +1301,11 @@ fn plan(
 
     match selection {
         None => {
-            let chain = auto_chain(&available, total_layers);
-            let targets = auto_assign(&chain, &available, machines);
+            let chain = match strategy {
+                DeployStrategy::Simple => auto_chain(&available, total_layers),
+                DeployStrategy::Complete => auto_chain_complete(&available, total_layers),
+            };
+            let targets = auto_assign(&chain, &available, machines, strategy, preferred_node_ids);
             chosen = chain
                 .into_iter()
                 .zip(targets)
@@ -1124,12 +1324,16 @@ fn plan(
                     ));
                     continue;
                 };
-                if chosen.iter().any(|(j, ..)| *j == i) {
-                    blocked.get_or_insert(format!(
-                        "{} foi escolhid{} duas vezes",
-                        kind.unit(group, s.start_layer, s.end_layer),
-                        if kind.whole() { "o" } else { "a" }
-                    ));
+                if chosen.iter().any(|(j, target, ..)| {
+                    let existing = &available[*j];
+                    existing.start_layer == s.start_layer
+                        && existing.end_layer == s.end_layer
+                        && target == &s.target_node_id
+                }) {
+                    // Repeating the exact same row is an idempotent UI action.
+                    // It must not turn a valid replica on another peer into a
+                    // refusal, and it must not create two launch steps on one
+                    // peer for the same file.
                     continue;
                 }
                 chosen.push((
@@ -1225,8 +1429,13 @@ fn plan(
     let mut missing: Vec<[u32; 2]> = Vec::new();
     let mut overlap: Vec<[u32; 2]> = Vec::new();
     let mut next = 0u32;
+    let mut covered_exact: Option<(u32, u32)> = None;
     for (i, ..) in &chosen {
         let c = &available[*i];
+        if covered_exact == Some((c.start_layer, c.end_layer)) {
+            continue;
+        }
+        covered_exact = Some((c.start_layer, c.end_layer));
         if c.start_layer > next {
             missing.push([next, c.start_layer - 1]);
         } else if c.start_layer < next {
@@ -1409,7 +1618,7 @@ fn plan(
                         gb(t.disk_free_mb),
                         gb(disk_need)
                     ));
-                } else if t.mem_free_mb > 0 && mem_need > usable_mb(t.mem_free_mb) {
+                } else if target_capacity_mb(t) > 0 && mem_need > usable_mb(target_capacity_mb(t)) {
                     note = Some(format!(
                         "{} tem {} GB de memória livre para o modelo junto de {} GB",
                         t.label(),
@@ -1501,7 +1710,7 @@ fn plan(
                             gb(t.disk_free_mb),
                             gb(need)
                         ));
-                    } else if t.mem_free_mb > 0 && need > usable_mb(t.mem_free_mb) {
+                    } else if target_capacity_mb(t) > 0 && need > usable_mb(target_capacity_mb(t)) {
                         note = Some(format!(
                             "{} tem {} GB de memória livre para {} de {} GB",
                             t.label(),
@@ -1610,7 +1819,11 @@ fn plan(
             node_id: m.node_id.clone(),
             label: m.label(),
             mem_free_mb: m.mem_free_mb,
+            gpu_free_mb: m.gpu_free_mb,
+            ram_free_mb: m.ram_free_mb,
             disk_free_mb: m.disk_free_mb,
+            rtt_ms: m.rtt_ms,
+            load: m.load,
             holds: m
                 .held
                 .iter()
@@ -1625,8 +1838,94 @@ fn plan(
         })
         .collect();
 
+    let selected_ids: std::collections::HashSet<&str> = steps
+        .iter()
+        .map(|step| step.target_node_id.as_str())
+        .collect();
+    let mut projected: std::collections::HashMap<&str, u32> = machines
+        .iter()
+        .map(|m| (m.node_id.as_str(), m.load))
+        .collect();
+    for step in &steps {
+        if let Some(value) = projected.get_mut(step.target_node_id.as_str()) {
+            *value = value.saturating_add(1);
+        }
+    }
+    let load_distribution = machines
+        .iter()
+        .map(|machine| LoadDistribution {
+            node_id: machine.node_id.clone(),
+            current: machine.load,
+            projected: projected
+                .get(machine.node_id.as_str())
+                .copied()
+                .unwrap_or(machine.load),
+            selected: selected_ids.contains(machine.node_id.as_str()),
+        })
+        .collect();
+
+    // Build edges between logical layer stages, not between adjacent rows.
+    // Two exact copies of L0-14 are one stage with two source choices; treating
+    // them as L0-14 -> L0-14 would invent a backward pipeline hop. The target
+    // stage includes every live inference peer as an alternative because a
+    // peer can receive the slice first when its capacity is sufficient.
+    let mut stage_ranges: Vec<(u32, u32)> = Vec::new();
+    for step in &steps {
+        let range = (step.start_layer, step.end_layer);
+        if !stage_ranges.contains(&range) {
+            stage_ranges.push(range);
+        }
+    }
+    let route_options = stage_ranges
+        .windows(2)
+        .flat_map(|pair| {
+            let from_range = pair[0];
+            let to_range = pair[1];
+            let from_nodes: Vec<String> = steps
+                .iter()
+                .filter(|step| (step.start_layer, step.end_layer) == from_range)
+                .map(|step| step.target_node_id.clone())
+                .collect();
+            let selected_from = from_nodes.first().cloned();
+            let selected_to = steps
+                .iter()
+                .find(|step| (step.start_layer, step.end_layer) == to_range)
+                .map(|step| step.target_node_id.clone());
+            let from_stage_nodes = from_nodes.clone();
+            from_nodes.into_iter().flat_map(move |from| {
+                let selected_from = selected_from.clone();
+                let selected_to = selected_to.clone();
+                let from_stage_nodes = from_stage_nodes.clone();
+                machines.iter().filter_map(move |machine| {
+                    if from_stage_nodes.contains(&machine.node_id)
+                        || machine.inference_url.is_none()
+                    {
+                        return None;
+                    }
+                    let selected = selected_from.as_deref() == Some(from.as_str())
+                        && selected_to.as_deref() == Some(machine.node_id.as_str());
+                    Some(RouteOption {
+                        from_node_id: from.clone(),
+                        to_node_id: machine.node_id.clone(),
+                        rtt_ms: machine.rtt_ms,
+                        selected,
+                        note: if selected {
+                            "rota escolhida".to_string()
+                        } else if machine.rtt_ms.is_some() {
+                            "rota alternativa medida pelo gateway".to_string()
+                        } else {
+                            "rota alternativa sem medição de RTT".to_string()
+                        },
+                    })
+                })
+            })
+        })
+        .collect();
+
     Plan {
         group: group.to_string(),
+        deployment_name: deployment_name.to_string(),
+        strategy,
         kind,
         tp,
         total_layers,
@@ -1649,6 +1948,8 @@ fn plan(
         ),
         chunk_tokens: crate::gateway::prompt_chunk_of(params.prefill_chunk_tokens, params.n_batch),
         params: params.clone(),
+        route_options,
+        load_distribution,
     }
 }
 
@@ -1669,7 +1970,7 @@ fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Al
         .map(|m| {
             let has = m.holds(c.start_layer, c.end_layer).is_some();
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
-            let tight = m.mem_free_mb > 0 && need > usable_mb(m.mem_free_mb);
+            let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
                 node_id: m.node_id.clone(),
                 label: m.label(),
@@ -1710,7 +2011,7 @@ fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternat
                 .iter()
                 .all(|p| m.holds(p.start_layer, p.end_layer).is_some());
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
-            let tight = m.mem_free_mb > 0 && need > usable_mb(m.mem_free_mb);
+            let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
                 node_id: m.node_id.clone(),
                 label: m.label(),
@@ -1828,9 +2129,14 @@ async fn plan_endpoint(
     State(state): State<GatewayState>,
     Json(req): Json<DeployRequest>,
 ) -> Response {
+    let deployment_name =
+        match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
+            Ok(name) => name,
+            Err(error) => return bad(json!({ "error": error })),
+        };
     let machines = survey(&state, &req.group, req.kind).await;
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut p = plan(
+    let mut p = plan_with_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -1838,6 +2144,9 @@ async fn plan_endpoint(
         req.merge,
         req.kind,
         req.tp.clone(),
+        req.strategy,
+        &deployment_name,
+        &req.preferred_node_ids,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() {
         if let Some(tp) = &req.tp {
@@ -1862,8 +2171,13 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let machines = survey(&state, &req.group, req.kind).await;
+    let deployment_name =
+        match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
+            Ok(name) => name,
+            Err(error) => return bad(json!({ "error": error })),
+        };
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut plan = plan(
+    let mut plan = plan_with_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -1871,6 +2185,9 @@ async fn deploy_endpoint(
         req.merge,
         req.kind,
         req.tp.clone(),
+        req.strategy,
+        &deployment_name,
+        &req.preferred_node_ids,
     );
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
@@ -1904,7 +2221,7 @@ async fn deploy_endpoint(
     // makes an operator wonder what else was written for the other case.
     let title = format!(
         "Implantar {} em {} {}",
-        req.group,
+        deployment_name,
         plan.steps.len(),
         if plan.steps.len() == 1 { "nó" } else { "nós" }
     );
@@ -2087,6 +2404,28 @@ fn launch_targets(
         None => Vec::new(),
     };
 
+    // Réplicas da mesma faixa ocupam o mesmo estágio lógico do pipeline. Cada
+    // cópia precisa receber o mesmo peer_index/peer_count para exportar o
+    // residual exatamente como a rota principal daquele estágio.
+    let mut pipeline_ranges: Vec<(u32, u32)> = Vec::new();
+    for step in steps {
+        let range = (step.start_layer, step.end_layer);
+        if !pipeline_ranges.contains(&range) {
+            pipeline_ranges.push(range);
+        }
+    }
+    let pipeline_peer_count = pipeline_ranges.len() as u32;
+    let pipeline_fields = |step: &Step| {
+        if kind != DeployKind::Shards {
+            return (None, None);
+        }
+        let index = pipeline_ranges
+            .iter()
+            .position(|range| *range == (step.start_layer, step.end_layer))
+            .unwrap_or(0) as u32;
+        (Some(index), Some(pipeline_peer_count))
+    };
+
     let mut targets = Vec::new();
     for step in steps {
         let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
@@ -2115,6 +2454,7 @@ fn launch_targets(
                 .first()
                 .map(|m| m.source_model_path.clone())
                 .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+            let (peer_index, peer_count) = pipeline_fields(step);
 
             targets.push(LaunchTarget {
                 node_id: step.target_node_id.clone(),
@@ -2132,10 +2472,8 @@ fn launch_targets(
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
-                // A implantação completa descreve o pipeline inteiro, então a
-                // posição na lista de alvos é a posição real.
-                peer_index: None,
-                peer_count: None,
+                peer_index,
+                peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
             });
             continue;
@@ -2150,6 +2488,7 @@ fn launch_targets(
                     kind.unit(&step.name, step.start_layer, step.end_layer)
                 )
             })?;
+        let (peer_index, peer_count) = pipeline_fields(step);
 
         targets.push(LaunchTarget {
             node_id: step.target_node_id.clone(),
@@ -2163,8 +2502,8 @@ fn launch_targets(
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
-            peer_index: None,
-            peer_count: None,
+            peer_index,
+            peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
         });
     }
@@ -2402,6 +2741,7 @@ async fn run(
             // `group` is the selected value from the deployment model picker.
             // Its name is the cluster identity, not a heuristic profile name.
             model_label: Some(plan.group.clone()),
+            deployment_name: plan.deployment_name.clone(),
             total_layers,
             targets,
             primary_node_id: primary,
@@ -3122,6 +3462,7 @@ async fn add_node_endpoint(
             deploy_id: req.deploy_id.clone(),
             base_name: req.group.clone(),
             model_label: Some(req.group.clone()),
+            deployment_name: req.group.clone(),
             total_layers,
             // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
             // esta lista tem exatamente a maquina que esta entrando.
@@ -4076,6 +4417,30 @@ mod undeploy_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deployment_request_defaults_to_simple_and_normalizes_name() {
+        let req: super::DeployRequest = serde_json::from_value(serde_json::json!({
+            "group": "qwen35"
+        }))
+        .expect("request válida");
+
+        assert_eq!(req.strategy, super::DeployStrategy::Simple);
+        assert_eq!(
+            super::normalize_deployment_name(req.deployment_name.as_deref(), &req.group)
+                .expect("nome padrão"),
+            "qwen35"
+        );
+    }
+
+    #[test]
+    fn deployment_name_rejects_blank_and_overlong_values() {
+        assert_eq!(
+            super::normalize_deployment_name(Some("  "), "qwen35").expect("fallback"),
+            "qwen35"
+        );
+        assert!(super::normalize_deployment_name(Some(&"x".repeat(129)), "qwen35").is_err());
+    }
+
     /// O tipo tensor-parallel nomeia o grupo, não uma fatia nem um modelo: a
     /// tela oferece o formato, e a recusa tem que falar a língua do formato.
     #[test]
@@ -4215,7 +4580,11 @@ mod tests {
                 libp2p_peer_id: None,
                 supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
+                gpu_free_mb: s.mem_free_mb,
+                ram_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
+                rtt_ms: None,
+                load: 0,
                 held: s
                     .held
                     .iter()
@@ -4299,6 +4668,36 @@ mod tests {
         assert_eq!(p.transfer_bytes, 0);
         assert!(p.steps.iter().all(|s| s.ready));
         assert!(p.auto);
+    }
+
+    #[test]
+    fn complete_strategy_prefers_existing_finer_cuts() {
+        let ms = build(vec![
+            m("whole", 900_000, &[(0, 31)]),
+            m("left", 500_000, &[(0, 15)]),
+            m("right", 500_000, &[(16, 31)]),
+        ]);
+        let p = super::plan_with_options(
+            "m",
+            &ms,
+            None,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Complete,
+            "chat-prod",
+            &[],
+        );
+        assert_eq!(p.strategy, DeployStrategy::Complete);
+        assert_eq!(p.deployment_name, "chat-prod");
+        assert_eq!(
+            p.steps
+                .iter()
+                .map(|step| (step.start_layer, step.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 15), (16, 31)]
+        );
     }
 
     /// One machine holds both slices: the other has to be given one, and the
@@ -4523,6 +4922,36 @@ mod tests {
         assert_eq!(p.steps[1].target_node_id, "grande");
     }
 
+    #[test]
+    fn complete_mode_can_transfer_a_range_to_a_peer_with_capacity() {
+        let ms = build(vec![
+            m("holder", 100_000, &[(0, 15), (16, 31)]),
+            m("capacity", 900_000, &[]),
+        ]);
+        let p = super::plan_with_options(
+            "m",
+            &ms,
+            None,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Complete,
+            "m",
+            &[],
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "capacidade suficiente não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].target_node_id, "holder");
+        assert_eq!(p.steps[1].target_node_id, "capacity");
+        assert_eq!(p.transfer_bytes, GIB);
+    }
+
     /// Mixing two slicings is exactly the thing that has to be refused: layers
     /// 5-10 would run twice and the answer would be quietly wrong.
     #[test]
@@ -4536,6 +4965,56 @@ mod tests {
         let blocked = p.blocked.expect("sobreposição tem que barrar");
         assert!(blocked.contains("L5-10"), "{blocked}");
         assert!(!p.complete);
+    }
+
+    /// A mesma faixa em máquinas diferentes é uma réplica deliberada da rota,
+    /// não uma sobreposição de cortes incompatíveis. O pipeline escolhe uma
+    /// das cópias quando chega à camada.
+    #[test]
+    fn an_exact_range_on_two_machines_is_a_parallel_route() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 15)]),
+            m("b", 100_000, &[(0, 15)]),
+            m("c", 100_000, &[(16, 31)]),
+        ]);
+        let p = plan(
+            "m",
+            &ms,
+            Some(&[pick(0, 15, "a"), pick(0, 15, "b"), pick(16, 31, "c")]),
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "réplica exata não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert!(p.complete);
+        assert_eq!(p.overlap, Vec::<[u32; 2]>::new());
+        assert_eq!(p.steps.len(), 3);
+        assert_eq!(
+            p.steps
+                .iter()
+                .take(2)
+                .map(|step| step.target_node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+        );
+        let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("targets");
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| (
+                    target.node_id.as_str(),
+                    target.peer_index,
+                    target.peer_count
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a", Some(0), Some(2)),
+                ("b", Some(0), Some(2)),
+                ("c", Some(1), Some(2))
+            ],
+        );
     }
 
     /// A hole the operator left on purpose warns loudly but still deploys —
@@ -5035,7 +5514,11 @@ mod tests {
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb,
+            gpu_free_mb: mem_free_mb,
+            ram_free_mb: mem_free_mb,
             disk_free_mb: 500_000,
+            rtt_ms: Some(0.0),
+            load: 0,
             held: if has {
                 vec![HeldShard {
                     sha256: None,
@@ -5096,6 +5579,32 @@ mod tests {
         assert_eq!(p.steps.len(), 1);
         assert_eq!(p.steps[0].target_node_id, "b");
         assert!(p.steps[0].ready);
+    }
+
+    /// Duas cópias do modelo inteiro são duas rotas válidas para a mesma
+    /// faixa. O erro de modelo escolhido duas vezes só vale quando o mesmo
+    /// destino aparece duas vezes na seleção.
+    #[test]
+    fn a_whole_model_on_two_machines_is_a_parallel_route() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let p = whole(
+            "qwen3.5-9b",
+            &ms,
+            Some(&[pick(0, 31, "a"), pick(0, 31, "b")]),
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "réplica exata não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].target_node_id, "a");
+        assert_eq!(p.steps[1].target_node_id, "b");
     }
 
     /// Uma máquina que não tem o arquivo recebe uma cópia, exatamente como uma
@@ -5412,7 +5921,11 @@ mod tests {
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb: 900_000,
+            gpu_free_mb: 900_000,
+            ram_free_mb: 900_000,
             disk_free_mb: 900_000,
+            rtt_ms: Some(0.0),
+            load: 0,
             held: vec![HeldShard {
                 sha256: None,
                 start_layer: 0,

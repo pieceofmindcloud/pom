@@ -45,7 +45,9 @@ dev proxy setup, routing on the axum side).
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
 - `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels
 - `/fatias` -> Shards; `/fatias/andamento` -> SlicingJobs; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
-- `/implantar` -> DeployModel (first-level entry for putting slices in service)
+- `/implantar` -> DeployModel (first-level entry for putting models in service,
+  full-bleed Deploy Studio with central cluster map, property inspector and
+  draggable peer strip)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)

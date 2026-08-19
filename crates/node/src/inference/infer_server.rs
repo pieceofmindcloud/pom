@@ -232,6 +232,7 @@ mod tests {
             deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),
             model_label: "qwen35".into(),
+            deployment_name: "qwen35".into(),
             start_layer: 0,
             end_layer: 15,
             total_layers: 32,

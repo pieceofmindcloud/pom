@@ -29,7 +29,7 @@ function mount() {
   return render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
-        <MemoryRouter>
+        <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
           <TlsChip />
         </MemoryRouter>
       </LocaleProvider>

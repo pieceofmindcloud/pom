@@ -2,7 +2,7 @@ use crate::auth::AuthState;
 use crate::model::LayerAssignment;
 use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
-use crate::pipeline::{plan_pipeline, LoadTracker, PipelinePlan};
+use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
 use crate::{admin, session};
 use anyhow::Result;
@@ -466,7 +466,22 @@ pub async fn generate_stream(
     // call, so parallel requests keep isolated KV cache state.
     let session_id = Uuid::new_v4().to_string();
 
-    let Some(mut plan) = plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads).await
+    let route_rtt = state
+        .network
+        .routes
+        .snapshot()
+        .into_iter()
+        .map(|(node_id, route)| (node_id, route.rtt_ms))
+        .collect::<std::collections::HashMap<_, _>>();
+    let Some(mut plan) = plan_pipeline_with_rtt(
+        &peers,
+        model,
+        deploy_id,
+        total_layers,
+        &state.loads,
+        &route_rtt,
+    )
+    .await
     else {
         let _ = tx
             .send(GenEvent::Failed(format!(
@@ -1485,6 +1500,7 @@ mod budget_tests {
             deploy_id: String::new(),
             model_path: String::new(),
             model_label: String::new(),
+            deployment_name: String::new(),
             start_layer: 0,
             end_layer: 0,
             total_layers: 0,
@@ -1738,6 +1754,7 @@ pub(crate) mod testkit {
             deploy_id: String::new(),
             model_path: String::new(),
             model_label: "lab".into(),
+            deployment_name: "lab".into(),
             start_layer: 0,
             end_layer: 1,
             total_layers: 2,

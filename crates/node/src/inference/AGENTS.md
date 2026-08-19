@@ -48,7 +48,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
   por requisição.
 - `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
-- `runtime.rs` (977) - `NodeConfig`/`NodeRuntime`: aplica a fatia, sobe e
+- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, guarda o
+  `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
   anotação da fatia servida (Pending → Serving via `/health`).
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:

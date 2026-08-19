@@ -92,7 +92,10 @@ describe("SliceModels", () => {
 
   it("shows the final shard as fixed remainder without a size input", async () => {
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <SliceModels />
         </LocaleProvider>

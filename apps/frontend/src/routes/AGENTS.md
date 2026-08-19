@@ -76,12 +76,16 @@ Per-file list:
   `undeployTargets` is the list the confirmation shows (peers on `group` with
   `total_layers > 0`, sorted by start layer); the node re-scans the cluster
   before acting, so the list is just the preview.
-- `DeployModel.tsx` — "Implantar na rede". Three shapes, chosen by the
-  `KindPicker` at the top and carried to the node as `kind`: **a set of shards**
+- `DeployModel.tsx` — "Implantar na rede". Full-bleed Deploy Studio with a
+  top mode bar, separate technical model and operational deployment name,
+  Simple/Complete strategy, central peer map, compact property inspector and
+  draggable bottom peer strip. Three shapes, chosen by the
+  mode bar at the top and carried to the node as `kind`: **a set of shards**
   (below), **a whole model** (one model picker from `../lib/wholeModels`, one
   machine picker, no coverage ribbon/"included"/merge - a pipeline of one has a
   single answer), or **tensor parallel** (`tensor_parallel`): one model picker
-  plus a `primary` select and a `workers` multi-select over `wholeModel.holders`;
+  plus a `primary` select and a `workers` multi-select limited to whole-model
+  peers currently present on the deployment map;
   `size` is derived (`workers.length + 1`) via `tpPayload`, never a typed number,
   and the node derives the reduce URL from the primary's inference port (the
   operator no longer types `rank0_url`). `tp` is in the plan queryKey so changing
@@ -90,10 +94,14 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
-- `DeployModel.tsx` — the slice shape: picks a slice set (`group`), edits
-  which ranges go to which machine (swaps on collision, merge toggle for
-  adjacent ranges on one machine), reorders by swapping machines, tunes the
-  twelve cluster-wide runtime knobs plus per-machine `n_gpu_layers`/`offload_kqv`.
+- `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
+  planner place ranges on the central map, and exposes a 19rem collapsible
+  inspector. Its colored global section includes context, batching, sampling,
+  repetition, fit-memory and execution toggles; the machine section includes
+  GPU/KV overrides, machine capacity and the available layer ranges that can
+  be assigned to the selected peer. Choosing a range replaces that peer's
+  active range; the same range on a second peer remains a replica. Coverage is
+  a compact footer indicator. The inspector uses Global/Machine tab bars.
   `fit_memory` is on by default for shards and whole-model deployment, and the
   screen disables it for tensor parallelism because llama.cpp cannot auto-fit
   `split-mode tensor`.
@@ -102,6 +110,26 @@ Per-file list:
   a job shown through `useJobs`. Restores the last deploy from localStorage via
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
+- `DeployModel` sends `deployment_name`, `strategy` and `preferred_node_ids` to
+  the planner. The map is explanatory: RTT/capacity/load come from the plan;
+  adding a peer without a range only adds its card and keeps existing positions;
+  in whole-model mode, adding a peer also appends an explicit full-model replica;
+  in tensor mode, adding a peer makes it eligible for a rank but never adds an
+  off-map peer implicitly;
+  assigning a range is what validates a new selection. Removing a card deletes
+  that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
+  canvas do Painel, desenha nós por faixa, rotas selecionadas e alternativas
+  com RTT, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
+  repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
+  um peer disponível ao plano; a atribuição de uma faixa disponível edita
+  somente aquela seleção e volta ao backend para validação.
+- A lista de rodadas de fatias usa `ShardSet.group` como chave técnica e
+  `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
+  mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
+  backend.
+- `Deployments.tsx` - lista as implantações registradas no cluster via
+  `useDeployments`, diferencia "no ar" de "padrão" e permite reimplantar só
+  parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
 - `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   `ConnectionKeys`: the cluster operator key — `POST /admin/regenerate-key`.
@@ -166,10 +194,9 @@ Key logic carriers:
   a pure diagnosis card. The AI action sends both tables as private request
   content, while the initial model is shown as a non-turn mark before chat
   messages.
-- `DeployModel.rowsOf`/`sameRows`/`stepOf`/`assign`/`move` (DeployModel.tsx) —
-  the selection model: merged steps expand back into per-slice rows, edits are
-  sent back to the plan for validation, machine collision swaps ranges, and
-  pipeline reorder is a machine swap between adjacent rows.
+- `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
+  merged steps expand back into per-slice rows and the planner answer is compared
+  with the displayed rows after sorting by layer.
 - `DeployModel.validated`/`syncing`/`answered`/`whyNot` (DeployModel.tsx) - why
   the button is grey, and who is allowed to say so. `sameRows` compares both
   sides **sorted by layer**: the screen keeps its rows in layer order and the

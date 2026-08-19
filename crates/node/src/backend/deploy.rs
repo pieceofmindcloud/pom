@@ -785,6 +785,10 @@ pub struct StepPart {
     source_node_id: Option<String>,
     source_host: Option<String>,
     source_path: Option<String>,
+    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
+    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
+    /// arquivo solto, e sabe conferir o que chegou.
+    source_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -807,6 +811,10 @@ pub struct Step {
     source_node_id: Option<String>,
     source_host: Option<String>,
     source_path: Option<String>,
+    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
+    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
+    /// arquivo solto, e sabe conferir o que chegou.
+    source_sha256: Option<String>,
     /// Where it will be on the target once it lands, when known up front.
     target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -1351,6 +1359,9 @@ fn plan(
                     source_path: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
+                    source_sha256: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .and_then(|s| s.sha256.clone()),
                 });
             }
 
@@ -1438,6 +1449,7 @@ fn plan(
                 source_node_id: None,
                 source_host: None,
                 source_path: None,
+                source_sha256: None,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1542,6 +1554,9 @@ fn plan(
                     source_path: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
+                    source_sha256: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .and_then(|s| s.sha256.clone()),
                     target_path: target
                         .and_then(|t| t.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
@@ -2212,6 +2227,8 @@ async fn run(
         target_host: String,
         source_node_id: String,
         source_path: String,
+        /// Hash da parte, quando a origem a tem endereçada por conteúdo.
+        source_sha256: Option<String>,
         name: String,
         start_layer: u32,
         end_layer: u32,
@@ -2236,6 +2253,7 @@ async fn run(
                     target_host: step.target_host.clone(),
                     source_node_id: source_node.clone(),
                     source_path: source_path.clone(),
+                    source_sha256: part.source_sha256.clone(),
                     name: part.name.clone(),
                     start_layer: part.start_layer,
                     end_layer: part.end_layer,
@@ -2254,6 +2272,7 @@ async fn run(
                 target_host: step.target_host.clone(),
                 source_node_id: source_node.clone(),
                 source_path: source_path.clone(),
+                source_sha256: step.source_sha256.clone(),
                 name: step.name.clone(),
                 start_layer: step.start_layer,
                 end_layer: step.end_layer,
@@ -2294,8 +2313,15 @@ async fn run(
             let body: serde_json::Value = cliente
                 .post(format!("{gateway}/api/transfer/pull"))
                 .bearer_auth(&key)
+                // Por hash sempre que a origem souber o dela. É o que faz a
+                // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
+                // ao lado, em vez de solta na raiz parecendo um modelo
+                // inteiro. O pedido por caminho fica para a fatia sem hash -
+                // um arquivo que ninguém endereçou por conteúdo ainda.
                 .json(&json!({
                     "node_id": pull.source_node_id,
+                    "sha256": pull.source_sha256,
+                    "model": plan.group,
                     "remote_path": pull.source_path,
                     "name": pull.name,
                 }))

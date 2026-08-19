@@ -201,6 +201,7 @@ mod tests {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
 
         state.transfers.offers.write().await.push(TransferOffer {
+            pom: None,
             id: "oferta-1".into(),
             from_node_id: "peer-b".into(),
             from_host: "ksia".into(),

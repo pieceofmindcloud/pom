@@ -341,11 +341,45 @@ pub fn parse_quant(filename: &str) -> Option<String> {
 
 // ── Building the catalog ─────────────────────────────────────────────────────
 
+/// O que o `.pom` diz sobre um arquivo que é parte de um fatiamento.
+///
+/// É a fonte de verdade da identidade de uma parte: nome do modelo, faixa de
+/// camadas e total. O arquivo em si se chama pelo hash - e hash não é nome de
+/// nada que um operador precise ler.
+#[derive(Debug, Clone)]
+pub struct PartContext {
+    pub model_name: String,
+    pub model_label: String,
+    pub total_layers: u32,
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub sha256: String,
+    pub pom_id: String,
+    /// Quantização do modelo de origem, copiada pelo fatiador para o manifesto.
+    /// O nome de uma parte é o hash, então não há de onde deduzi-la.
+    pub quant: Option<String>,
+}
+
+impl PartContext {
+    /// Como esta parte se chama na tela: o modelo e as camadas que ela traz.
+    ///
+    /// **Nunca o hash.** O nome do arquivo é o conteúdo porque isso resolve
+    /// identidade entre máquinas; para quem lê, `a3de…f1.gguf` não diz nem de
+    /// que modelo é nem que pedaço dele. O hash continua no `sha256`, para
+    /// quem precisar casar duas cópias.
+    pub fn display_name(&self) -> String {
+        format!(
+            "{} · L{}-{}",
+            self.model_label, self.start_layer, self.end_layer
+        )
+    }
+}
+
 fn describe(
     path: &Path,
     name: String,
     source: ModelSource,
-    manifest_group: Option<String>,
+    part: Option<&PartContext>,
 ) -> Option<DiscoveredModel> {
     let meta = std::fs::metadata(path).ok()?;
     let size_bytes = meta.len();
@@ -372,30 +406,45 @@ fn describe(
         return None;
     }
 
-    // A identidade de uma parte é o nome dela: `<sha256>.gguf`, escrito assim
-    // por quem a produziu (ver `plan::write_then_name`) ou por quem a recebeu e
-    // conferiu. Um arquivo com qualquer outro nome não é parte de fatiamento
-    // nenhum - é um modelo inteiro que alguém deixou na pasta.
-    let sha256 = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .filter(|s| crate::pom::is_sha256_hex(s))
-        .map(|s| s.to_string());
+    // Quem manda é o `.pom`. O nome do arquivo é o hash, e hash não diz de que
+    // modelo é nem que pedaço dele traz; o manifesto diz as duas coisas. Sem
+    // manifesto o arquivo não é parte de fatiamento nenhum - é um GGUF que
+    // alguém deixou na pasta, e aparece pelo nome dele mesmo.
+    let sha256 = part.map(|c| c.sha256.clone()).or_else(|| {
+        path.file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| crate::pom::is_sha256_hex(s))
+            .map(|s| s.to_string())
+    });
 
-    // A faixa vem do cabeçalho GGUF, que o fatiador carimba. O `.pom` é a
-    // fonte para o conjunto; aqui, olhando um arquivo só, o carimbo basta.
-    let shard_range = info.as_ref().and_then(|i| i.shard_range);
-    let shard_group = shard_range.and(manifest_group.clone());
+    let shard_range = match part {
+        Some(c) => Some((c.start_layer, c.end_layer)),
+        // Sem manifesto, o carimbo do cabeçalho GGUF ainda identifica uma
+        // fatia solta - é o que sobra de um `.pom` perdido.
+        None => info.as_ref().and_then(|i| i.shard_range),
+    };
+    let shard_group = match part {
+        Some(c) => Some(c.model_name.clone()),
+        None => None,
+    };
 
     // For a slice, `block_count` counts the layers *inside the file*, not the
     // model it came from. Only `pom.original_block_count` — written by
     // split_model.py — is a real total. Older slices lack it, so report unknown
     // rather than a number that is wrong; `build_shard_sets` infers it from the
     // coverage of the whole set instead.
-    let total_layers = match (shard_range, info.as_ref()) {
-        (Some(_), Some(i)) => i.original_block_count,
-        (None, Some(i)) => i.total_layers(),
+    let total_layers = match (part, shard_range, info.as_ref()) {
+        (Some(c), _, _) => Some(c.total_layers),
+        (None, Some(_), Some(i)) => i.original_block_count,
+        (None, None, Some(i)) => i.total_layers(),
         _ => None,
+    };
+
+    // O nome que o operador lê. Numa parte ele vem do manifesto; sem manifesto
+    // é o nome do arquivo, como sempre foi.
+    let name = match part {
+        Some(c) => c.display_name(),
+        None => name,
     };
 
     Some(DiscoveredModel {
@@ -407,7 +456,12 @@ fn describe(
         size_bytes,
         architecture: info.as_ref().and_then(|i| i.architecture.clone()),
         total_layers,
-        quant: parse_quant(&filename),
+        // Numa parte o nome do arquivo é o hash, e hash não tem tag de
+        // quantização para achar: quem sabe é o manifesto.
+        quant: match part {
+            Some(c) => c.quant.clone(),
+            None => parse_quant(&filename),
+        },
         shard_range,
         shard_group,
         sha256,
@@ -655,23 +709,11 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
     let exists = dir.is_dir();
     let mut found = 0;
 
-    // Primeiro os manifestos: eles dizem quem é parte de quê.
-    let mut grupo_por_caminho: HashMap<PathBuf, String> = HashMap::new();
-    if exists {
-        for entrada in std::fs::read_dir(dir).into_iter().flatten().flatten() {
-            let pasta = entrada.path();
-            if !pasta.is_dir() {
-                continue;
-            }
-            for m in crate::pom::load_dir(&pasta) {
-                for parte in &m.parts {
-                    if let Ok(p) = crate::pom::part_path(&pasta, &parte.sha256) {
-                        grupo_por_caminho.insert(p, m.model.name.clone());
-                    }
-                }
-            }
-        }
-    }
+    // Os manifestos primeiro, sempre. É deles que sai a identidade de cada
+    // parte - de que modelo é, que camadas traz, qual a quantização -, e sem
+    // isso um `<sha256>.gguf` no catálogo é um arquivo de nome ilegível que a
+    // tela mostraria como se fosse um modelo inteiro.
+    let index = part_index(dir);
 
     let mut files = Vec::new();
     if exists {
@@ -683,8 +725,9 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        let grupo = grupo_por_caminho.get(&f).cloned();
-        if let Some(m) = describe(&f, name, ModelSource::Local, grupo) {
+        let canonico = f.canonicalize().unwrap_or_else(|_| f.clone());
+        let ctx = index.get(&canonico).or_else(|| index.get(&f));
+        if let Some(m) = describe(&f, name, ModelSource::Local, ctx) {
             if !out.iter().any(|e| e.path == m.path) {
                 out.push(m);
                 found += 1;
@@ -697,6 +740,51 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
         exists,
         found,
     });
+}
+
+/// Todo arquivo de parte que os `.pom` da pasta de fatias descrevem.
+///
+/// Varre `<shard_dir>/<modelo>/*.pom` e devolve, por caminho de arquivo, o que
+/// o manifesto diz sobre aquela parte. É esta varredura que faz o nó, ao
+/// arrancar, reconstruir o catálogo a partir dos manifestos em vez de tentar
+/// adivinhar coisa nenhuma pelo nome dos arquivos.
+///
+/// Uma parte listada num manifesto mas ausente do disco simplesmente não entra:
+/// o índice descreve o que existe.
+pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
+    let mut index = HashMap::new();
+    let Ok(rd) = std::fs::read_dir(shard_dir) else {
+        return index;
+    };
+    for entrada in rd.flatten() {
+        let pasta = entrada.path();
+        if !pasta.is_dir() {
+            continue;
+        }
+        for m in crate::pom::load_dir(&pasta) {
+            for parte in &m.parts {
+                let Ok(caminho) = crate::pom::part_path(&pasta, &parte.sha256) else {
+                    continue;
+                };
+                if !caminho.is_file() {
+                    continue;
+                }
+                let ctx = PartContext {
+                    model_name: m.model.name.clone(),
+                    model_label: m.model.label.clone(),
+                    total_layers: m.model.total_layers,
+                    start_layer: parte.start_layer,
+                    end_layer: parte.end_layer,
+                    sha256: parte.sha256.clone(),
+                    pom_id: m.pom_id.clone(),
+                    quant: m.model.quant.clone(),
+                };
+                let chave = caminho.canonicalize().unwrap_or(caminho);
+                index.insert(chave, ctx);
+            }
+        }
+    }
+    index
 }
 
 /// The path as configured — what the operator typed and will recognise.
@@ -950,5 +1038,143 @@ mod tests {
         assert_eq!(sets[0].total_layers, Some(32));
         assert!(sets[0].total_layers_inferred);
         assert!(sets[0].complete);
+    }
+}
+
+/// O catálogo se reconstrói a partir dos `.pom`, e o hash nunca vira nome.
+#[cfg(test)]
+mod part_naming_tests {
+    use super::*;
+    use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
+
+    /// Grava um GGUF de verdade nomeado pelo próprio hash e o manifesto ao lado.
+    fn modelo_fatiado(raiz: &Path) -> (PomManifest, Vec<String>) {
+        let pasta = crate::pom::model_dir(raiz, "qwen3-8b");
+        std::fs::create_dir_all(&pasta).unwrap();
+
+        let mut partes = Vec::new();
+        let mut hashes = Vec::new();
+        // Contagens de camadas diferentes de propósito: `test_gguf_bytes(n)` é
+        // determinística, então duas fatias de 16 camadas dariam **o mesmo
+        // hash** - e, com o nome sendo o conteúdo, um arquivo só. O que
+        // importa aqui é a identidade vir do manifesto, e é ele que declara as
+        // faixas.
+        for (inicio, fim, camadas) in [(0u32, 15u32, 16u32), (16, 31, 12)] {
+            let bytes = crate::splitter::test_gguf_bytes(camadas);
+            let tmp = pasta.join(format!("tmp-{inicio}"));
+            std::fs::write(&tmp, &bytes).unwrap();
+            let (sha, n) = crate::pom::hash_file(&tmp).unwrap();
+            std::fs::rename(&tmp, crate::pom::part_path(&pasta, &sha).unwrap()).unwrap();
+            partes.push(PomPart {
+                sha256: sha.clone(),
+                bytes: n,
+                start_layer: inicio,
+                end_layer: fim,
+                is_first: inicio == 0,
+                is_last: fim == 31,
+                tp: None,
+            });
+            hashes.push(sha);
+        }
+
+        let m = PomManifest::new(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            "no-1",
+            partes,
+        );
+        crate::pom::write_atomic(&pasta, &m).unwrap();
+        (m, hashes)
+    }
+
+    /// O defeito relatado: a fatia aparecia com nome de hash, como se fosse um
+    /// modelo inteiro. O nome que o operador lê tem que dizer **qual modelo** e
+    /// **quais camadas**; o hash é identificação interna.
+    #[test]
+    fn uma_parte_se_chama_pelo_modelo_e_pelas_camadas_nunca_pelo_hash() {
+        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        let (_m, hashes) = modelo_fatiado(&raiz);
+
+        let cat = discover(&[], &raiz);
+        assert_eq!(cat.models.len(), 2, "as duas partes entram no catálogo");
+
+        for m in &cat.models {
+            assert!(
+                !crate::pom::is_sha256_hex(m.name.trim_end_matches(".gguf")),
+                "o nome não pode ser o hash: {}",
+                m.name
+            );
+            assert!(
+                m.name.contains("qwen3:8b"),
+                "o rótulo do modelo: {}",
+                m.name
+            );
+            // E o hash continua disponível, como informação lateral.
+            assert!(m
+                .sha256
+                .as_deref()
+                .is_some_and(|h| hashes.contains(&h.to_string())));
+            assert!(m.is_shard(), "com manifesto, é fatia - não modelo inteiro");
+            assert_eq!(m.total_layers, Some(32));
+            assert_eq!(m.quant.as_deref(), Some("Q4_K_M"));
+        }
+
+        let primeira = cat
+            .models
+            .iter()
+            .find(|m| m.shard_range == Some((0, 15)))
+            .expect("a faixa vem do manifesto");
+        assert!(primeira.name.contains("L0-15"), "{}", primeira.name);
+
+        // E o conjunto se fecha, que é o que a tela de implantar precisa.
+        assert_eq!(cat.shard_sets.len(), 1);
+        assert!(cat.shard_sets[0].complete);
+        assert_eq!(cat.shard_sets[0].group, "qwen3-8b");
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Sem manifesto o arquivo não é fatia de nada: é um GGUF que alguém
+    /// deixou na pasta, e continua aparecendo pelo nome dele.
+    #[test]
+    fn um_gguf_solto_na_pasta_de_fatias_nao_vira_parte() {
+        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        std::fs::create_dir_all(&raiz).unwrap();
+        std::fs::write(
+            raiz.join("modelo-inteiro.gguf"),
+            crate::splitter::test_gguf_bytes(8),
+        )
+        .unwrap();
+
+        let cat = discover(&[], &raiz);
+        assert_eq!(cat.models.len(), 1);
+        assert_eq!(cat.models[0].name, "modelo-inteiro.gguf");
+        assert!(cat.models[0].sha256.is_none());
+        assert!(cat.models[0].shard_group.is_none());
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Uma parte listada no manifesto mas ausente do disco não entra no índice:
+    /// ele descreve o que existe, não o que deveria existir.
+    #[test]
+    fn o_indice_so_conhece_parte_que_esta_em_disco() {
+        let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
+        let (m, hashes) = modelo_fatiado(&raiz);
+
+        let pasta = crate::pom::model_dir(&raiz, "qwen3-8b");
+        std::fs::remove_file(crate::pom::part_path(&pasta, &hashes[1]).unwrap()).unwrap();
+
+        let index = part_index(&raiz);
+        assert_eq!(index.len(), 1);
+        assert!(index.values().all(|c| c.sha256 == hashes[0]));
+        assert_eq!(m.parts.len(), 2, "o manifesto segue descrevendo as duas");
+
+        std::fs::remove_dir_all(&raiz).ok();
     }
 }

@@ -109,6 +109,7 @@ pub fn routes() -> Router<GatewayState> {
     Router::new()
         // Serving side
         .route("/api/transfer/manifest", get(manifest))
+        .route("/api/transfer/pom", get(serve_pom))
         .route("/api/transfer/download", get(download))
         // Receiving side
         .route("/api/transfer/pull", post(start_pull))
@@ -167,6 +168,15 @@ pub struct TransferOffer {
     /// outro lado por minutos. O campo continua na estrutura porque um peer de
     /// versão anterior o exige no corpo do pedido.
     pub md5: String,
+    /// O manifesto do fatiamento a que este arquivo pertence, quando ele é uma
+    /// parte.
+    ///
+    /// Viaja **junto com a oferta**, e não depois: sem ele o outro lado recebe
+    /// um `<sha256>.gguf` que não sabe de que modelo é nem que camadas traz, e
+    /// acaba guardando como se fosse um modelo inteiro. São alguns kB de JSON
+    /// contra gigabytes de peso - mandar junto é de graça.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pom: Option<crate::pom::PomManifest>,
     pub start_layer: Option<u32>,
     pub end_layer: Option<u32>,
 }
@@ -483,6 +493,48 @@ pub struct PathQuery {
     pub peer: Option<String>,
 }
 
+/// O manifesto do fatiamento que contém a parte pedida.
+///
+/// Existe para o caminho de **puxar**: quem oferece manda o `.pom` junto com a
+/// oferta, mas quem puxa por conta própria (é o que a implantação faz ao mover
+/// fatias) não recebe oferta nenhuma. Sem isto o arquivo chega com nome de
+/// hash e nada que o explique, e o catálogo do destino o mostra como um modelo
+/// inteiro - que era o defeito.
+async fn serve_pom(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(q): Query<PathQuery>,
+) -> Response {
+    let Some(sha) = q.sha.as_deref().filter(|s| crate::pom::is_sha256_hex(s)) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "informe ?sha=<sha256>" })),
+        )
+            .into_response();
+    };
+    let shard_dir = state.shard_dir().await;
+    let Some(caminho) = find_part(&shard_dir, sha) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "esta máquina não tem esta parte" })),
+        )
+            .into_response();
+    };
+    let manifesto = caminho.parent().and_then(|pasta| {
+        crate::pom::load_dir(pasta)
+            .into_iter()
+            .find(|m| m.parts.iter().any(|p| p.sha256 == sha))
+    });
+    match manifesto {
+        Some(m) => Json(m).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "a parte existe mas não há manifesto que a descreva" })),
+        )
+            .into_response(),
+    }
+}
+
 /// What the receiver needs before it commits to a multi-gigabyte download.
 async fn manifest(
     _auth: ConnectionAuth,
@@ -677,10 +729,71 @@ pub struct OfferRequest {
     /// [`TransferOffer::md5`].
     #[serde(default)]
     pub md5: String,
+    /// O manifesto do fatiamento, quando o que está sendo oferecido é uma
+    /// parte. Ausente numa oferta de peer antigo ou de arquivo avulso.
+    #[serde(default)]
+    pub pom: Option<crate::pom::PomManifest>,
     #[serde(default)]
     pub start_layer: Option<u32>,
     #[serde(default)]
     pub end_layer: Option<u32>,
+}
+
+/// Onde uma oferta aceita vai parar, e o que precisa existir antes.
+///
+/// Com manifesto, a oferta é uma **parte**: ela cai em
+/// `<shard_dir>/<modelo>/<sha>.gguf`, e o `.pom` é gravado ao lado dela antes
+/// de o primeiro byte chegar. Era este o defeito: sem o manifesto, o arquivo
+/// caía solto na raiz da pasta de fatias e o catálogo daqui o exibia como um
+/// modelo inteiro de nome ilegível.
+///
+/// Gravar o manifesto **antes** é de propósito. Ele é a única coisa que
+/// explica o arquivo, e um download interrompido no meio deixa um `.part` que
+/// ninguém reclama; um manifesto órfão, por outro lado, é inofensivo - descreve
+/// partes que o índice simplesmente não encontra.
+///
+/// Sem manifesto, o caminho antigo: um arquivo avulso em `recebidos/`.
+async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Alvo {
+    let shard_dir = state.shard_dir().await;
+    if let Some(m) = &offer.pom {
+        let sha = std::path::Path::new(&offer.name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| crate::pom::is_sha256_hex(s))
+            .map(|s| s.to_string())
+            // O nome pode vir de um peer antigo; o manifesto ainda diz qual
+            // parte é, desde que ele descreva exatamente uma.
+            .or_else(|| m.parts.first().map(|p| p.sha256.clone()));
+
+        if let Some(sha) = sha {
+            if m.parts.iter().any(|p| p.sha256 == sha) {
+                let pasta = crate::pom::model_dir(&shard_dir, &m.model.name);
+                if let Err(e) = crate::pom::write_atomic(&pasta, m) {
+                    warn!("não deu para gravar o manifesto de {}: {e:#}", m.model.name);
+                } else {
+                    info!(
+                        "manifesto de {} guardado; a parte vai para {}",
+                        m.model.label,
+                        pasta.display()
+                    );
+                }
+                return Alvo::Parte {
+                    sha256: sha,
+                    model_dir: pasta,
+                };
+            }
+        }
+        warn!(
+            "oferta trouxe manifesto de {} mas o arquivo não é parte dele; tratando como avulso",
+            m.model.label
+        );
+    }
+
+    Alvo::Avulso {
+        remote_path: offer.remote_path.clone(),
+        grant: offer.grant.clone(),
+        name: offer.name.clone(),
+    }
 }
 
 /// A peer offers us a slice. Nothing is downloaded until someone accepts.
@@ -702,6 +815,7 @@ async fn receive_offer(
         name: req.name.clone(),
         size_bytes: req.size_bytes,
         md5: req.md5,
+        pom: req.pom,
         start_layer: req.start_layer,
         end_layer: req.end_layer,
     };
@@ -719,15 +833,12 @@ async fn receive_offer(
             dev_auto_accept_env(),
             offer.name
         );
+        let alvo = alvo_da_oferta(&state, &offer).await;
         return match spawn_download(
             state.clone(),
             offer.from_node_id.clone(),
             offer.from_gateway.clone(),
-            Alvo::Avulso {
-                remote_path: offer.remote_path.clone(),
-                grant: offer.grant.clone(),
-                name: offer.name.clone(),
-            },
+            alvo,
             offer.from_host.clone(),
         )
         .await
@@ -797,15 +908,12 @@ async fn accept_offer(
         }
     };
 
+    let alvo = alvo_da_oferta(&state, &offer).await;
     match spawn_download(
         state.clone(),
         offer.from_node_id.clone(),
         offer.from_gateway.clone(),
-        Alvo::Avulso {
-            remote_path: offer.remote_path.clone(),
-            grant: offer.grant.clone(),
-            name: offer.name.clone(),
-        },
+        alvo,
         offer.from_host.clone(),
     )
     .await
@@ -1047,6 +1155,26 @@ fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     Ok(full)
 }
 
+/// O manifesto do fatiamento a que este arquivo pertence, se ele for uma parte.
+///
+/// Procura pelo caminho: uma parte mora em `<shard_dir>/<modelo>/<sha>.gguf`, e
+/// os `.pom` que a descrevem estão na mesma pasta. Um arquivo fora da pasta de
+/// fatias, ou dentro dela mas não listado em manifesto nenhum, não é parte de
+/// coisa alguma e vai sozinho, como sempre foi.
+async fn manifest_for(state: &GatewayState, path: &Path) -> Option<crate::pom::PomManifest> {
+    let sha = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| crate::pom::is_sha256_hex(s))?;
+    let pasta = path.parent()?;
+    // Só vale um manifesto que esteja na pasta do próprio arquivo: um `.pom`
+    // de outro lugar poderia descrever uma parte homônima de outra rodada.
+    let _ = state;
+    crate::pom::load_dir(pasta)
+        .into_iter()
+        .find(|m| m.parts.iter().any(|p| p.sha256 == sha))
+}
+
 /// Offer one of our slices to a peer.
 ///
 /// This only knocks on the door: the peer stores the offer and its owner
@@ -1098,12 +1226,27 @@ async fn send_to_peer(
             .into_response();
     };
 
-    // O nome vem do pedido (o `main` passou a deixar quem envia nomeá-lo);
-    // a faixa de camadas, não. Ela saía daqui lida do nome do arquivo, e não
-    // sai mais: uma parte se chama pelo próprio hash, e quem quer saber a faixa
-    // lê o `.pom`.
+    // O nome vem do pedido: o `main` passou a deixar quem envia nomeá-lo.
     let name = req.filename.trim().to_string();
-    let shard: Option<(u32, u32)> = None;
+
+    // O manifesto vai junto com a oferta. É ele que diz ao outro lado de que
+    // modelo esta parte é e que camadas ela traz - sem isso o arquivo chega
+    // com nome de hash e sem dono, e o catálogo de lá o mostra como um modelo
+    // inteiro qualquer. Quem identifica a parte é o **caminho** do arquivo que
+    // está sendo mandado, não o nome que o pedido escolheu para ele.
+    let pom = manifest_for(&state, &path).await;
+    let sha = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default();
+    // A faixa de camadas saía daqui lida do nome do arquivo. Agora sai do
+    // manifesto, que é quem sabe; sem manifesto, não se inventa.
+    let shard: Option<(u32, u32)> = pom.as_ref().and_then(|m| {
+        m.parts
+            .iter()
+            .find(|p| p.sha256 == sha)
+            .map(|p| (p.start_layer, p.end_layer))
+    });
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
@@ -1145,6 +1288,7 @@ async fn send_to_peer(
         // Sempre vazio. Viaja só porque um peer de versão anterior exige o
         // campo — ver `TransferOffer::md5`.
         "md5": "",
+        "pom": pom,
         "start_layer": shard.map(|(a, _)| a),
         "end_layer": shard.map(|(_, b)| b),
     });
@@ -1354,6 +1498,29 @@ async fn spawn_download(
     locator.push(("job", job_id.clone()));
     locator.push(("peer", state.network.node_id.clone()));
 
+    // O manifesto antes dos bytes. Quem puxa por conta própria não recebeu
+    // oferta nenhuma, então é aqui que ele pede o `.pom` da parte - e sem ele o
+    // arquivo chega sem nada que diga de que modelo é. Falhar em buscá-lo não
+    // aborta a transferência: a parte ainda é útil, e o manifesto pode chegar
+    // por outro caminho (uma oferta, ou uma implantação).
+    if let Alvo::Parte { sha256, model_dir } = &alvo {
+        match fetch_pom(&state, &peer_id, &base_url, &key, sha256).await {
+            Some(m) => {
+                if let Err(e) = crate::pom::write_atomic(model_dir, &m) {
+                    warn!(
+                        "não deu para gravar o manifesto de {}: {e:#}",
+                        m.model.label
+                    );
+                }
+            }
+            None => warn!(
+                "{} não soube dizer de que fatiamento a parte {} é",
+                from_host,
+                &sha256[..12]
+            ),
+        }
+    }
+
     // O diretório é a única coisa que precisa dar certo já: sem ele não há
     // transferência nenhuma para pôr na lista.
     tokio::fs::create_dir_all(&dir)
@@ -1434,6 +1601,32 @@ async fn spawn_download(
     });
 
     Ok(job_id)
+}
+
+/// Pede ao outro lado o manifesto do fatiamento a que uma parte pertence.
+async fn fetch_pom(
+    state: &GatewayState,
+    peer_id: &str,
+    base_url: &str,
+    key: &str,
+    sha256: &str,
+) -> Option<crate::pom::PomManifest> {
+    let resp = state
+        .peer_http
+        // Pinado no node_id do destino, como todo o resto: com o cluster em
+        // TLS um cliente genérico falharia calado.
+        .for_peer(peer_id)
+        .ok()?
+        .get(format!("{base_url}/api/transfer/pom?sha={sha256}"))
+        .bearer_auth(key)
+        .timeout(MANIFEST_TIMEOUT)
+        .send()
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.json().await.ok()
 }
 
 /// Etapa corrente de um job, para a tela ter o que dizer enquanto se espera.
@@ -2341,5 +2534,143 @@ mod part_fetch_tests {
         assert!(find_part(&dir, "../../etc/passwd").is_none());
         assert!(find_part(&dir, "").is_none());
         assert!(find_part(&dir, &"z".repeat(64)).is_none());
+    }
+}
+
+/// A fatia não viaja sozinha: o manifesto vai junto, e ela cai na pasta do
+/// modelo — não solta na raiz, parecendo um modelo inteiro.
+#[cfg(test)]
+mod pom_travels_tests {
+    use super::*;
+    use crate::pom::{self, PomKind, PomManifest, PomModel, PomPart};
+
+    /// Um nó com uma parte e o manifesto dela em disco, servindo o roteador.
+    async fn no_com_parte(raiz: &Path) -> (GatewayState, u16, PomManifest, String) {
+        let pasta = pom::model_dir(raiz, "qwen3-8b");
+        std::fs::create_dir_all(&pasta).unwrap();
+
+        let bytes = crate::splitter::test_gguf_bytes(8);
+        let tmp = pasta.join("tmp");
+        std::fs::write(&tmp, &bytes).unwrap();
+        let (sha, n) = pom::hash_file(&tmp).unwrap();
+        std::fs::rename(&tmp, pom::part_path(&pasta, &sha).unwrap()).unwrap();
+
+        let m = PomManifest::new(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 8,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            "origem",
+            vec![PomPart {
+                sha256: sha.clone(),
+                bytes: n,
+                start_layer: 0,
+                end_layer: 7,
+                is_first: true,
+                is_last: true,
+                tp: None,
+            }],
+        );
+        pom::write_atomic(&pasta, &m).unwrap();
+
+        let state = crate::gateway::testkit::state_with("origem", vec![]).await;
+        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let porta = listener.local_addr().unwrap().port();
+        let app = routes().with_state(state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (state, porta, m, sha)
+    }
+
+    /// Puxar por hash tem que trazer o `.pom` junto e gravar tudo na pasta do
+    /// modelo. Era isto que faltava: a fatia chegava sozinha, na raiz da pasta
+    /// de fatias, e o catálogo do destino a exibia como um modelo inteiro de
+    /// nome ilegível.
+    #[tokio::test]
+    async fn pulling_a_part_brings_its_manifest_along() {
+        let raiz = std::env::temp_dir().join(format!("pom-tr-{}", uuid::Uuid::new_v4().simple()));
+        let disco_origem = raiz.join("origem");
+        let disco_destino = raiz.join("destino");
+        let (_origem, porta, manifesto, sha) = no_com_parte(&disco_origem).await;
+
+        let cliente = crate::gateway::testkit::state_with(
+            "destino",
+            vec![crate::gateway::testkit::peer("origem", "origem", porta)],
+        )
+        .await;
+        cliente.auth.write().await.shard_dir = Some(disco_destino.to_string_lossy().into());
+
+        let resp = start_pull(
+            ConnectionAuth,
+            State(cliente.clone()),
+            Json(PullRequest {
+                sha256: Some(sha.clone()),
+                model: Some("qwen3-8b".into()),
+                node_id: "origem".into(),
+                remote_path: String::new(),
+                name: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let pasta = pom::model_dir(&disco_destino, "qwen3-8b");
+        let destino = pom::part_path(&pasta, &sha).unwrap();
+        for _ in 0..100 {
+            if destino.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        assert!(destino.is_file(), "a parte cai na pasta do modelo");
+        // E **nada** na raiz da pasta de fatias, que era onde ela ia parar.
+        assert!(!disco_destino.join("recebidos").exists());
+        assert!(!disco_destino.join(format!("{sha}.gguf")).exists());
+
+        // O manifesto chegou junto, e é ele que dá nome à fatia no catálogo.
+        let manifestos = pom::load_dir(&pasta);
+        assert_eq!(manifestos.len(), 1, "o `.pom` veio com a parte");
+        assert_eq!(manifestos[0].pom_id, manifesto.pom_id);
+
+        let cat = crate::catalog::discover(&[], &disco_destino);
+        assert_eq!(cat.models.len(), 1);
+        assert!(
+            cat.models[0].name.contains("qwen3:8b") && cat.models[0].name.contains("L0-7"),
+            "a fatia se apresenta pelo modelo e pelas camadas: {}",
+            cat.models[0].name
+        );
+        assert!(cat.models[0].is_shard(), "e como fatia, não modelo inteiro");
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Quem oferece manda o manifesto na própria oferta, para o outro lado
+    /// saber o que está aceitando antes de baixar nada.
+    #[tokio::test]
+    async fn an_offer_carries_the_manifest() {
+        let raiz = std::env::temp_dir().join(format!("pom-of-{}", uuid::Uuid::new_v4().simple()));
+        let disco = raiz.join("origem");
+        let (state, _porta, manifesto, sha) = no_com_parte(&disco).await;
+
+        let pasta = pom::model_dir(&disco, "qwen3-8b");
+        let caminho = pom::part_path(&pasta, &sha).unwrap();
+
+        let achado = manifest_for(&state, &caminho)
+            .await
+            .expect("o manifesto da parte está ao lado dela");
+        assert_eq!(achado.pom_id, manifesto.pom_id);
+
+        // Um arquivo que não é parte de manifesto nenhum vai sozinho.
+        let solto = raiz.join("solto.gguf");
+        std::fs::write(&solto, crate::splitter::test_gguf_bytes(4)).unwrap();
+        assert!(manifest_for(&state, &solto).await.is_none());
+
+        std::fs::remove_dir_all(&raiz).ok();
     }
 }

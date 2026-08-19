@@ -102,6 +102,10 @@ pub enum P2PMessage {
         #[serde(default)]
         addr_candidates: Vec<String>,
         model: String,
+        /// A implantação que este nó serve. Vazio num peer de versão anterior,
+        /// que faz o agrupamento cair de volta no rótulo do modelo.
+        #[serde(default)]
+        deploy_id: String,
         start_layer: u32,
         end_layer: u32,
         total_layers: u32,
@@ -177,6 +181,12 @@ pub struct PeerInfo {
     #[serde(default)]
     pub addr_candidates: Vec<String>,
     pub model: String,
+    /// A implantação que este nó serve. É por ele que `plan_pipeline` agrupa,
+    /// e é o que permite o mesmo modelo estar no ar duas vezes em conjuntos de
+    /// máquinas diferentes. Vazio num peer de versão anterior, e aí o
+    /// agrupamento cai de volta no rótulo. Ver `models/deployment.rs`.
+    #[serde(default)]
+    pub deploy_id: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -815,6 +825,7 @@ impl Network {
             addr: self.announce_addr(),
             addr_candidates: self.self_addr_candidates(),
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
+            deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
@@ -1152,6 +1163,7 @@ impl Network {
             P2PMessage::Announce {
                 node_id,
                 pubkey,
+                deploy_id,
                 addr,
                 addr_candidates,
                 model,
@@ -1188,6 +1200,7 @@ impl Network {
                 };
 
                 let mut peer = PeerInfo {
+                    deploy_id,
                     node_id: node_id.clone(),
                     pubkey,
                     addr: peer_addr.clone(),
@@ -1423,6 +1436,7 @@ mod tests {
         .with_identity("Principal".into(), "macbook".into());
 
         let asgn = LayerAssignment {
+            deploy_id: String::new(),
             model: "qwen35".into(),
             total_layers: 32,
             start_layer: 0,
@@ -1636,6 +1650,7 @@ mod tests {
     #[test]
     fn an_advertised_ipv6_survives_into_the_peer_urls() {
         let peer = PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "n".into(),
             pubkey: "p".into(),
@@ -1676,6 +1691,7 @@ mod tests {
     #[test]
     fn peer_lists_are_split_to_fit_the_path_mtu() {
         let peer = PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
@@ -1723,6 +1739,7 @@ mod tests {
 
     fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "n1".into(),
             pubkey: "p".into(),
@@ -1939,6 +1956,7 @@ mod tests {
 
     fn dummy_peer(node_id: &str, addr: &str) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "p".into(),

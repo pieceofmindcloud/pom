@@ -209,6 +209,7 @@ impl GatewayState {
                 crate::pkarr_node::detect_local_ip(),
             );
             peers.push(PeerInfo {
+                deploy_id: String::new(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
@@ -447,10 +448,17 @@ pub async fn generate_stream(
     )
     .await;
 
+    // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
+    // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
+    let (model, deploy_id) = crate::deployment::split_selector(&model);
+
     // Total layers for THIS model, as reported by a peer that serves it.
     let total_layers = peers
         .iter()
-        .find(|p| p.model == model)
+        .find(|p| match deploy_id {
+            Some(id) => p.deploy_id == id,
+            None => p.model == model,
+        })
         .map(|p| p.total_layers)
         .unwrap_or(32);
 
@@ -458,7 +466,8 @@ pub async fn generate_stream(
     // call, so parallel requests keep isolated KV cache state.
     let session_id = Uuid::new_v4().to_string();
 
-    let Some(mut plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await else {
+    let Some(mut plan) = plan_pipeline(&peers, model, deploy_id, total_layers, &state.loads).await
+    else {
         let _ = tx
             .send(GenEvent::Failed(format!(
                 "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
@@ -562,7 +571,7 @@ pub async fn generate_stream(
         // back the first token once the whole prompt is in.
         let first = match crate::prefill::run(
             &plan,
-            &model,
+            model,
             &session_id,
             &prompt,
             chunk_tokens,
@@ -640,7 +649,7 @@ pub async fn generate_stream(
                     if sliced_mtp {
                         crate::prefill::step(
                             &plan,
-                            &model,
+                            model,
                             &session_id,
                             next_token,
                             dtype,
@@ -659,7 +668,7 @@ pub async fn generate_stream(
                     } else {
                         crate::prefill::step_speculative(
                             &plan,
-                            &model,
+                            model,
                             &session_id,
                             next_token,
                             speculative_k,
@@ -675,7 +684,7 @@ pub async fn generate_stream(
                 } else {
                     crate::prefill::step(
                         &plan,
-                        &model,
+                        model,
                         &session_id,
                         next_token,
                         dtype,
@@ -862,7 +871,7 @@ pub async fn generate_stream(
         for i in 0..max_tokens {
             let res = crate::prefill::step(
                 &plan,
-                &model,
+                model,
                 &session_id,
                 next_token,
                 dtype,
@@ -1473,6 +1482,7 @@ mod budget_tests {
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
         NodeConfig {
+            deploy_id: String::new(),
             model_path: String::new(),
             model_label: String::new(),
             start_layer: 0,
@@ -1559,6 +1569,7 @@ mod peer_visibility_tests {
 
     fn peer(id: &str) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
@@ -1644,6 +1655,7 @@ pub(crate) mod testkit {
     /// Um peer alcançável no `gateway_port` dado, na loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
@@ -1723,6 +1735,7 @@ pub(crate) mod testkit {
     /// interruptor do operador que o gateway lê antes de cada geração.
     pub(crate) fn spec_config() -> crate::runtime::NodeConfig {
         crate::runtime::NodeConfig {
+            deploy_id: String::new(),
             model_path: String::new(),
             model_label: "lab".into(),
             start_layer: 0,

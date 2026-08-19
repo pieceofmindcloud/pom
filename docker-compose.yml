@@ -27,9 +27,11 @@ x-node: &node
       POM_BUILD_COMMIT: ${POM_BUILD_COMMIT:-}
   image: pom:latest
   network_mode: host
+  restart: always
   environment:
     POM_HOME: /data
     POM_UI_DIST: /app/apps/frontend/dist
+    POM_PROFILE_SYNC: 1 
 
 services:
   node-gpu:
@@ -38,6 +40,7 @@ services:
     volumes:
       - ./tests/fixtures/node-gpu:/data
       - ./models:/data/models
+      - ./source-models:/data/source-models
     # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
     # Toolkit on the host; omitted entirely on the other two nodes.
     deploy:
@@ -54,6 +57,7 @@ services:
     volumes:
       - ./tests/fixtures/node-gpu-2:/data
       - ./models:/data/models
+      - ./source-models:/data/source-models
     # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
     # Toolkit on the host; omitted entirely on the other two nodes.
     deploy:
@@ -70,10 +74,12 @@ services:
     volumes:
       - ./tests/fixtures/node-cpu-1:/data
       - ./models:/data/models
+      - ./source-models:/data/source-models
 
-  node-cpu-2:
-    <<: *node
-    container_name: pom-node-cpu-2
-    volumes:
-      - ./tests/fixtures/node-cpu-2:/data
-      - ./models:/data/models
+#  node-cpu-2:
+#    <<: *node
+#    container_name: pom-node-cpu-2
+#    volumes:
+#      - ./tests/fixtures/node-cpu-2:/data
+#      - ./models:/data/models
+#      - ./source-models:/data/source-models

@@ -462,6 +462,69 @@ describe("DeployModel · MTP", () => {
     });
   });
 
+  /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
+  /// digitado.
+  ///
+  /// O texto em edição vive dentro do `RuntimeParamsForm` desde que ele saiu
+  /// desta tela. Quem limpava o rascunho aqui era um `setDrafts({})` que deixou
+  /// de existir: sem remontar o formulário, o botão zerava os parâmetros por
+  /// baixo e o campo continuava mostrando o número velho — a tela dizendo uma
+  /// coisa e o pedido levando outra.
+  it("restaurar o plano do nó também limpa o campo meio digitado", async () => {
+    post.mockImplementation((url: string) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(wholePlan());
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchInterval: false } },
+    });
+    client.setQueryData(keys.jobs, { jobs: [] });
+    client.setQueryData(keys.clusterModels, {
+      peers: [
+        {
+          node_id: "ksia",
+          hostname: "ksia",
+          is_self: false,
+          models: [
+            {
+              id: "1",
+              name: "qwen3.5-9b",
+              source: "lmstudio",
+              source_label: "LM Studio",
+              path: "/lm/qwen3.5-9b.gguf",
+              size_bytes: 5_000_000_000,
+              architecture: "qwen3",
+              total_layers: 32,
+              quant: "Q4_K_M",
+              shard_range: null,
+              shard_group: null,
+            },
+          ],
+        },
+      ],
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeployModel />
+        </LocaleProvider>
+      </QueryClientProvider>,
+    );
+
+    const campo = () =>
+      document.querySelector('input[name="n_ctx"]') as HTMLInputElement | null;
+    await waitFor(() => expect(campo()).toBeTruthy());
+    // O plano do nó traz 4096 (ver `wholePlan`).
+    await waitFor(() => expect(campo()!.value).toBe("4096"));
+
+    fireEvent.change(campo()!, { target: { value: "65536" } });
+    await waitFor(() => expect(campo()!.value).toBe("65536"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Voltar ao plano do nó/ }));
+
+    await waitFor(() => expect(campo()!.value).toBe("4096"));
+  });
+
   it("em modo fatiado o interruptor do MTP está habilitado e liga os controles", async () => {
     post.mockImplementation((url: string) => {
       if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });

@@ -413,6 +413,7 @@ async fn handle_event(
         })) => {
             if let Ok(P2PMessage::Announce {
                 node_id,
+                deploy_id,
                 pubkey,
                 addr,
                 addr_candidates,
@@ -447,6 +448,7 @@ async fn handle_event(
 
                 network
                     .insert_peer(PeerInfo {
+                        deploy_id,
                         node_id,
                         pubkey,
                         // O caminho do gossipsub nao tem endereco de origem para

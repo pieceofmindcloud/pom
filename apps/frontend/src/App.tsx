@@ -13,6 +13,7 @@ import { ModelPaths } from "./routes/ModelPaths";
 import { NetworkSettings } from "./routes/NetworkSettings";
 import { NotFound } from "./routes/NotFound";
 import { DeployModel } from "./routes/DeployModel";
+import { Deployments } from "./routes/Deployments";
 import { Shards } from "./routes/Shards";
 import { SliceModels } from "./routes/SliceModels";
 import { SlicingJobs } from "./routes/SlicingJobs";
@@ -109,6 +110,7 @@ export default function App() {
                     <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
                     <Route path="/implantar" element={<Page><DeployModel /></Page>} />
+                    <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
                     {/* Where deploying used to live, back when it was a leaf of
                         the shards section. Kept so links and bookmarks the
                         operator already has do not land on "page not found". */}

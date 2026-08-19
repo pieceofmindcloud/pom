@@ -12,6 +12,7 @@
 
 import { getActiveLocale } from "../i18n/locales";
 import { storageKey } from "./brand";
+import type { Deployment, RuntimeParams } from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -175,8 +176,62 @@ export interface UndeployReport {
  * volta com um clique. A resposta é um relatório máquina a máquina, e uma que
  * não respondeu vem com `released: false` e o motivo.
  */
-export function undeployPipeline(group: string) {
-  return api.post<UndeployReport>("/api/ui/undeploy", { group });
+export function undeployPipeline(group: string, deployId?: string) {
+  return api.post<UndeployReport>("/api/ui/undeploy", {
+    group,
+    ...(deployId ? { deploy_id: deployId } : {}),
+  });
+}
+
+/** Uma implantação com o que a tela precisa saber sobre o estado dela. */
+export interface DeploymentRow {
+  deployment: Deployment;
+  /** Há peer vivo anunciando este `deploy_id`. */
+  serving: boolean;
+  /** É esta que atende quem pede só o nome do modelo, sem sufixo `@`. */
+  is_default: boolean;
+  /** Quais nós guardam uma cópia do registro. */
+  holders: string[];
+}
+
+/**
+ * Todas as implantações do cluster.
+ *
+ * O registro de cada uma vive numa cópia por nó participante, então este nó
+ * pergunta aos peers e junta — nenhuma máquina sozinha sabe a lista inteira.
+ */
+export function listDeployments() {
+  return api.get<{ node_id: string; deployments: DeploymentRow[] }>(
+    "/api/ui/deployments",
+  );
+}
+
+/**
+ * Reimplanta mexendo só nos parâmetros.
+ *
+ * Mesmo `deploy_id`, mesmas máquinas, mesmas faixas: as máquinas recarregam o
+ * mesmo arquivo com outra configuração. Nada é planejado nem copiado, e quem
+ * estiver usando `modelo@deploy_id` continua chegando no mesmo lugar.
+ */
+export function redeployDeployment(
+  deployId: string,
+  body: {
+    params: RuntimeParams;
+    per_node?: Record<string, { n_gpu_layers?: number; offload_kqv?: boolean }>;
+  },
+) {
+  return api.post<{ job_id: string; deploy_id: string }>(
+    `/api/ui/deployments/${encodeURIComponent(deployId)}/redeploy`,
+    body,
+  );
+}
+
+/** Faz desta a implantação que atende quem pede só o nome do modelo. */
+export function activateDeployment(deployId: string) {
+  return api.post<{ activated: boolean; deploy_id: string; model: string }>(
+    `/api/ui/deployments/${encodeURIComponent(deployId)}/activate`,
+    {},
+  );
 }
 
 /**

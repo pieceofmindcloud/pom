@@ -229,6 +229,7 @@ mod tests {
         // ligar, o erro falaria do arquivo (ou o processo morreria dentro do
         // llama.cpp). Falar de porta ocupada e a prova de que a ordem esta certa.
         let mut cfg = crate::runtime::NodeConfig {
+            deploy_id: String::new(),
             model_path: "/nao/existe/modelo.gguf".into(),
             model_label: "qwen35".into(),
             start_layer: 0,

@@ -68,6 +68,7 @@ import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemo
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes, num } from "../lib/format";
 import { Confirm } from "../components/Confirm";
+import { RuntimeParamsForm, Switch } from "../components/RuntimeParamsForm";
 import { trackOf } from "../components/PipelineRail";
 import { wholeModelsOf } from "../lib/wholeModels";
 import {
@@ -262,96 +263,6 @@ function Coverage({
  * that are genuinely per-machine — GPU offload and where the KV cache lives —
  * are edited in the machines table instead, next to the machine they belong to.
  */
-const KNOBS: Array<{
-  key: keyof RuntimeParams;
-  min: number;
-  max?: number;
-  step?: number;
-}> = [
-  {
-    key: "n_gpu_layers",
-    min: 0,
-  },
-  {
-    key: "n_ctx",
-    min: 512,
-    max: 250000,
-    step: 512,
-  },
-  {
-    key: "n_batch",
-    min: 32,
-    step: 32,
-  },
-  { key: "max_new_tokens", min: 16 },
-  {
-    key: "max_sessions",
-    min: 1,
-    max: 16,
-  },
-  { key: "prefill_chunk_tokens", min: 32, step: 32 },
-  { key: "temperature", min: 0, max: 2, step: 0.05 },
-  { key: "top_p", min: 0, max: 1, step: 0.05 },
-  { key: "top_k", min: 0 },
-  { key: "repeat_penalty", min: 1, max: 2, step: 0.01 },
-  { key: "repeat_last_n", min: 0 },
-];
-
-/// Só aparecem com a especulação ligada: fora dali são dois números sem efeito
-/// nenhum, e a aba já tem onze campos.
-const SPECULATIVE_KNOBS: Array<{
-  key: keyof RuntimeParams;
-  min: number;
-  max?: number;
-  step?: number;
-}> = [
-  { key: "speculative_k", min: 1, max: 16 },
-  { key: "speculative_lookup_window", min: 1, max: 8 },
-];
-
-/// Só aparecem com o MTP ligado. `mtp_draft_tokens` tem o mesmo teto sensato
-/// da largura do rascunho por lookup; `mtp_min_probability` é um piso de
-/// confiança, então vive em [0,1] com passo de centésimo.
-const MTP_KNOBS: Array<{
-  key: keyof RuntimeParams;
-  min: number;
-  max?: number;
-  step?: number;
-}> = [
-  { key: "mtp_draft_tokens", min: 1, max: 8 },
-  { key: "mtp_min_probability", min: 0, max: 1, step: 0.01 },
-];
-
-function Switch({
-  checked,
-  onChange,
-  label,
-  hint,
-  disabled,
-}: {
-  checked: boolean;
-  onChange: (v: boolean) => void;
-  label: string;
-  hint?: string;
-  disabled?: boolean;
-}) {
-  return (
-    <div className={`flex items-start gap-2.5 ${disabled ? "opacity-55" : ""}`}>
-      <span className="mt-0.5">
-        {disabled ? (
-          <Tick on={false} label={label} onToggle={() => {}} />
-        ) : (
-          <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
-        )}
-      </span>
-      <span className="min-w-0">
-        <span className={`block text-[0.82rem] ${disabled ? "text-muted" : "text-fg"}`}>{label}</span>
-        {hint && <span className="mt-0.5 block text-xs text-faint">{hint}</span>}
-      </span>
-    </div>
-  );
-}
-
 function Terminus({ icon, label }: { icon: React.ReactNode; label: string }) {
   return (
     <div className="flex w-[76px] shrink-0 flex-col items-center gap-1.5 text-center">
@@ -489,8 +400,8 @@ export function DeployModel() {
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
   /** Half-typed numbers, so clearing a field does not snap back to a digit. */
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState(false);
+  const [formKey, setFormKey] = useState(0);
   const [running, setRunning] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
@@ -684,15 +595,6 @@ export function DeployModel() {
       (s) => s.merged && s.target_node_id === target && s.parts.some((pt) => pt.start_layer === c.start_layer && pt.end_layer === c.end_layer),
     );
   };
-
-  /** Edit one knob. The draft keeps the field usable while it is half-typed. */
-  function setKnob(key: keyof RuntimeParams, text: string) {
-    setDrafts((d) => ({ ...d, [key]: text }));
-    const value = Number(text);
-    if (text !== "" && Number.isFinite(value)) {
-      setParams({ ...eff, [key]: value });
-    }
-  }
 
   function edit(next: (base: DeploySelection[]) => DeploySelection[]) {
     setSelection(next(rows.map((r) => ({ ...r }))).slice().sort(byLayer));
@@ -914,7 +816,10 @@ export function DeployModel() {
                     onClick={() => {
                       setSelection(null);
                       setParams(null);
-                      setDrafts({});
+                      // O texto meio digitado vive dentro do formulário desde
+                      // que ele saiu daqui; trocar a `key` o remonta, que é
+                      // como se limpa o rascunho de fora.
+                      setFormKey((k) => k + 1);
                     }}
                   >
                     {t("deploy.restore")}
@@ -1683,125 +1588,13 @@ export function DeployModel() {
                         made without reading them is a deploy made blind — the
                         operator was choosing machines on the left with the
                         settings that governed them hidden behind a button. */}
-                    <div className="space-y-5 px-5 py-4">
-                        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
-                          {KNOBS.map((k) => (
-                            <Field key={k.key} label={t("deploy.knob." + k.key)}>
-                              <Input
-                                type="number"
-                                name={k.key}
-                                min={k.min}
-                                max={k.max}
-                                step={k.step}
-                                value={drafts[k.key] ?? String(eff[k.key] ?? "")}
-                                onChange={(e) => setKnob(k.key, e.target.value)}
-                                onBlur={() =>
-                                  setDrafts((d) => {
-                                    const { [k.key]: _drop, ...rest } = d;
-                                    return rest;
-                                  })
-                                }
-                              />
-                            </Field>
-                          ))}
-                        </div>
-
-                        {/* `offload_kqv` used to sit here. It is a property of a
-                            machine's memory, not of the pipeline, so it moved to
-                            the machines table where the machine is. */}
-                        <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-                          <Switch
-                            checked={!isTp && (eff.fit_memory ?? true)}
-                            onChange={(v) => setParams({ ...eff, fit_memory: v })}
-                            disabled={isTp}
-                            label={t("deploy.fitMemory")}
-                            hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
-                          />
-                          <Switch
-                            checked={eff.no_thinking ?? true}
-                            onChange={(v) => setParams({ ...eff, no_thinking: v })}
-                            label={t("deploy.noThinking")}
-                            hint={t("deploy.noThinkingHint")}
-                          />
-                          <Switch
-                            checked={eff.no_embeddings ?? false}
-                            onChange={(v) => setParams({ ...eff, no_embeddings: v })}
-                            label={t("deploy.noEmbeddings")}
-                            hint={t("deploy.noEmbeddingsHint")}
-                          />
-                          <Switch
-                            checked={eff.speculative_decoding_enabled ?? false}
-                            onChange={(v) =>
-                              setParams({ ...eff, speculative_decoding_enabled: v })
-                            }
-                            label={t("deploy.speculative")}
-                            hint={t("deploy.speculativeHint")}
-                          />
-                          <Switch
-                            checked={eff.mtp_enabled ?? false}
-                            onChange={(v) =>
-                              setParams({ ...eff, mtp_enabled: v })
-                            }
-                            label={t("deploy.mtp")}
-                            hint={t("deploy.mtpHint")}
-                          />
-                        </div>
-
-                        {(eff.speculative_decoding_enabled ?? false) && (
-                          <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-                            {SPECULATIVE_KNOBS.map((k) => (
-                              <Field
-                                key={k.key}
-                                label={t("deploy.knob." + k.key)}
-                                hint={t("deploy.knob." + k.key + "Hint")}
-                              >
-                                <Input
-                                  type="number"
-                                  name={k.key}
-                                  min={k.min}
-                                  max={k.max}
-                                  step={k.step}
-                                  value={drafts[k.key] ?? String(eff[k.key] ?? "")}
-                                  onChange={(e) => setKnob(k.key, e.target.value)}
-                                  onBlur={() =>
-                                    setDrafts((d) => {
-                                      const { [k.key]: _drop, ...rest } = d;
-                                      return rest;
-                                    })
-                                  }
-                                />
-                              </Field>
-                            ))}
-                          </div>
-                        )}
-
-                        {(eff.mtp_enabled ?? false) && (
-                          <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-                            {MTP_KNOBS.map((k) => (
-                              <Field
-                                key={k.key}
-                                label={t("deploy.knob." + k.key)}
-                                hint={t("deploy.knob." + k.key + "Hint")}
-                              >
-                                <Input
-                                  type="number"
-                                  name={k.key}
-                                  min={k.min}
-                                  max={k.max}
-                                  step={k.step}
-                                  value={drafts[k.key] ?? String(eff[k.key] ?? "")}
-                                  onChange={(e) => setKnob(k.key, e.target.value)}
-                                  onBlur={() =>
-                                    setDrafts((d) => {
-                                      const { [k.key]: _drop, ...rest } = d;
-                                      return rest;
-                                    })
-                                  }
-                                />
-                              </Field>
-                            ))}
-                          </div>
-                        )}
+                    <div className="px-5 py-4">
+                      <RuntimeParamsForm
+                        key={formKey}
+                        value={eff as RuntimeParams}
+                        onChange={setParams}
+                        isTp={isTp}
+                      />
                     </div>
                   </Panel>
                   </aside>

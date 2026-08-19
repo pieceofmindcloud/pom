@@ -17,6 +17,8 @@ mod collective;
 mod config;
 #[path = "backend/deploy.rs"]
 mod deploy;
+#[path = "models/deployment.rs"]
+mod deployment;
 #[path = "backend/devupdate.rs"]
 mod devupdate;
 #[path = "inference/direct.rs"]
@@ -606,6 +608,7 @@ async fn main() -> Result<()> {
         info!("Layers {}-{} set explicitly", s, e);
         let actual_count = e - s + 1;
         model::LayerAssignment {
+            deploy_id: String::new(),
             model: profile.name.clone(),
             total_layers: profile.total_layers,
             start_layer: s,
@@ -688,6 +691,8 @@ async fn main() -> Result<()> {
 
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
+            deploy_id: String::new(),
+            // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
             model_label: profile.name.clone(),
             start_layer: assignment.start_layer,

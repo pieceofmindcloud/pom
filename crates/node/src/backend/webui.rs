@@ -61,6 +61,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/ui/unload", post(unload_model))
+        .route("/api/ui/reconfigure", post(reconfigure))
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))
         .route("/api/ui/leave", post(leave_network))
@@ -863,7 +864,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
     let routing_edges = if active.is_empty() || total == 0 {
         Vec::new()
     } else {
-        crate::pipeline::plan_pipeline(&peers, &active, total, &state.loads)
+        crate::pipeline::plan_pipeline(&peers, &active, None, total, &state.loads)
             .await
             .map(|plan| {
                 plan.edges
@@ -1051,7 +1052,11 @@ async fn plan_split_endpoint(
 
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `PartialEq` porque o registro de implantação guarda uma cópia por nó
+/// (`deployment::DeploymentNode::config`) e comparar dois registros é como se
+/// verifica que uma reimplantação mudou alguma coisa.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
@@ -1250,6 +1255,9 @@ pub struct ApplyRequest {
     /// no slicing is needed.
     #[serde(default)]
     pub skip_split: bool,
+    /// A implantação de que este nó vai fazer parte. Ver `deployment.rs`.
+    #[serde(default)]
+    pub deploy_id: String,
     /// Hash da parte que este nó tem que carregar, quando quem manda já sabe
     /// qual é - o caso normal numa implantação, em que o `.pom` já existe.
     ///
@@ -1405,7 +1413,7 @@ pub(crate) async fn set_job_progress(id: &str, pct: f64) {
     let pct = pct.clamp(0.0, 100.0);
     let mut map = jobs().write().await;
     if let Some(job) = map.get_mut(id) {
-        if job.progress.map_or(true, |current| pct > current) {
+        if job.progress.is_none_or(|current| pct > current) {
             job.progress = Some(pct);
         }
     }
@@ -1615,6 +1623,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
 
     let cfg = NodeConfig {
+        deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
         model_label: label,
         start_layer: req.start_layer,
@@ -1625,28 +1634,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         primary: req.primary,
         tp: req.tp.clone(),
         inference_port,
-        n_gpu_layers: req.params.n_gpu_layers,
-        n_ctx: req.params.n_ctx,
-        offload_kqv: req.params.offload_kqv,
-        fit_memory: req.params.fit_memory && req.tp.is_none(),
-        n_batch: req.params.n_batch,
-        max_new_tokens: req.params.max_new_tokens,
-        max_sessions: req.params.max_sessions,
-        prefill_chunk_tokens: req.params.prefill_chunk_tokens,
-        temperature: req.params.temperature,
-        top_p: req.params.top_p,
-        top_k: req.params.top_k,
-        repeat_penalty: req.params.repeat_penalty,
-        repeat_last_n: req.params.repeat_last_n,
-        no_thinking: req.params.no_thinking,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
-        speculative_decoding_enabled: req.params.speculative_decoding_enabled,
-        speculative_k: req.params.speculative_k,
-        speculative_lookup_window: req.params.speculative_lookup_window,
-        mtp_enabled: req.params.mtp_enabled,
-        mtp_draft_tokens: req.params.mtp_draft_tokens,
-        mtp_min_probability: req.params.mtp_min_probability,
+        ..NodeConfig::from_params(&req.params, req.tp.is_none())
     };
 
     // Liga/desliga a coletiva TP antes de subir o servidor: o callback tem que
@@ -1903,7 +1893,7 @@ async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) ->
         Err(e) => return bad_request(e),
     };
     let planned = match req.equal_parts {
-        Some(n) if n >= 1 && n <= 64 => plan::plan_equal(&layout, n),
+        Some(n) if (1..=64).contains(&n) => plan::plan_equal(&layout, n),
         Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
         None => plan::plan_by_size(&layout, &req.slices),
     };
@@ -2203,6 +2193,74 @@ async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) 
     .into_response()
 }
 
+/// Outros parâmetros para a fatia que este nó já serve.
+///
+/// Só os parâmetros: o que identifica a fatia (arquivo, faixa de camadas,
+/// posição no pipeline) não está aqui e não pode ser mudado por esta porta.
+/// Ver `NodeConfig::with_params`.
+#[derive(Debug, Deserialize)]
+pub struct ReconfigureRequest {
+    pub params: RuntimeParams,
+}
+
+/// Recarrega o modelo desta máquina com outros parâmetros.
+///
+/// É o caminho de "reimplantar mexendo num parâmetro": nada é planejado, nada
+/// é copiado e nenhuma faixa muda de dono - o nó relê o **mesmo** arquivo com,
+/// digamos, outro `n_ctx`. Passar pelo `deploy` inteiro para isso significaria
+/// re-varrer o cluster e cunhar uma implantação nova, quando o que mudou cabe
+/// num `apply`.
+///
+/// Recusa quando não há nada carregado: reconfigurar o vazio não tem sentido, e
+/// inventar uma fatia a partir de parâmetros soltos seria adivinhar qual.
+async fn reconfigure(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ReconfigureRequest>,
+) -> Response {
+    match reconfigure_local(state, req.params).await {
+        Ok(cfg) => Json(json!({
+            "reconfigured": true,
+            "model": cfg.model_label,
+            "start_layer": cfg.start_layer,
+            "end_layer": cfg.end_layer,
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// A reconfiguração em si, sem HTTP em volta.
+///
+/// Existe separada porque o coordenador de um `redeploy` também é um nó da
+/// implantação: quando a máquina a reconfigurar é ele mesmo, chamar a própria
+/// rota por rede seria dar a volta no mundo para falar consigo.
+pub(crate) async fn reconfigure_local(
+    state: GatewayState,
+    params: RuntimeParams,
+) -> Result<NodeConfig, String> {
+    let Some(atual) = state.runtime.config().await else {
+        return Err("este nó não está servindo nada para reconfigurar".into());
+    };
+
+    let cfg = atual.with_params(&params);
+    info!(
+        "reconfigurando {} (camadas {}-{}) com parâmetros novos",
+        cfg.model_label, cfg.start_layer, cfg.end_layer
+    );
+
+    state
+        .runtime
+        .apply(cfg.clone())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(cfg)
+}
+
 /// A qual máquina o "sair da rede" se refere.
 #[derive(Debug, Default, Deserialize)]
 pub struct LeaveRequest {
@@ -2478,6 +2536,9 @@ async fn release_slice(
     // Same shape a launch dispatches, so the successor comes up exactly as this
     // node was: same label, same position in the split, same runtime params.
     let apply_req = ApplyRequest {
+        // O sucessor entra na **mesma** implantação: é a mesma faixa do mesmo
+        // conjunto, só que noutra máquina.
+        deploy_id: cfg.deploy_id.clone(),
         source_model_path: candidate.path.clone(),
         // O sucessor carrega exatamente o arquivo que este nó carregava, e o
         // nome de uma parte já é o hash dela: é daí que a identidade sai.
@@ -2625,6 +2686,11 @@ pub struct LaunchTarget {
 
 #[derive(Debug, Deserialize)]
 pub struct LaunchRequest {
+    /// A implantação que este launch está subindo. Cunhado por
+    /// `deploy::deploy_endpoint`; vazio num launch avulso, que não passou por
+    /// implantação nenhuma.
+    #[serde(default)]
+    pub deploy_id: String,
     pub base_name: String,
     /// The identity selected in the deployment screen, propagated unchanged
     /// to every apply request. Missing values keep older callers compatible.
@@ -2645,7 +2711,7 @@ pub struct LaunchRequest {
 /// window and the batch decide the prompt budget the gateway enforces, and the
 /// sampling is only used by the last peer — except how much of its own share a
 /// machine offloads to its GPU. That one is a property of the machine.
-fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
+pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
     let mut params = base.clone();
     if let Some(gpu) = target.n_gpu_layers {
         params.n_gpu_layers = gpu;
@@ -2755,6 +2821,7 @@ pub(crate) async fn launch(
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             tp: target.tp.clone(),
             skip_split: target.skip_split,
+            deploy_id: req.deploy_id.clone(),
             part_sha256: target.part_sha256.clone(),
             merge: target.merge.clone(),
             params,
@@ -3451,6 +3518,7 @@ mod tests {
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
+            deploy_id: String::new(),
             part_sha256: None,
             source_model_path: "/m/whole.gguf".into(),
             base_name: "whole".into(),
@@ -3549,6 +3617,7 @@ mod tests {
 
     fn req(start: u32, end: u32, total: u32, peers: u32) -> ApplyRequest {
         ApplyRequest {
+            deploy_id: String::new(),
             part_sha256: None,
             source_model_path: "/m.gguf".into(),
             base_name: "m".into(),
@@ -3677,13 +3746,13 @@ mod tests {
             // Reuse: a second apply with the same range must not rebuild it —
             // a marker written over the output proves the file was left alone.
             let marker = vec![0xAAu8; 2048];
-            std::fs::write(&out_path, &marker).unwrap();
+            std::fs::write(out_path, &marker).unwrap();
             let again = merge_parts(root.clone(), &req, &parts, "job-merge-2")
                 .await
                 .unwrap();
             assert_eq!(again, out);
             assert_eq!(
-                std::fs::read(&out_path).unwrap(),
+                std::fs::read(out_path).unwrap(),
                 marker,
                 "o modelo junto existente foi reaproveitado, não reescrito"
             );

@@ -51,13 +51,14 @@
 //! is not what an operator who picked a whole model is looking at.
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -79,6 +80,191 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/deploy/node", post(add_node_endpoint))
         .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
         .route("/api/ui/undeploy", post(undeploy_endpoint))
+        .route(
+            "/api/ui/deployments",
+            get(list_deployments).post(receive_deployment),
+        )
+        .route(
+            "/api/ui/deployments/:id/activate",
+            post(activate_deployment),
+        )
+        .route("/api/ui/deployments/:id/redeploy", post(redeploy_endpoint))
+}
+
+// ── O registro das implantações ──────────────────────────────────────────────
+
+/// Só as implantações que este nó guarda em disco, sem perguntar a ninguém.
+///
+/// É o que um peer responde quando o coordenador vem juntar a visão do cluster
+/// (`?local=1`), e é o que impede a varredura de se chamar em círculo.
+fn local_deployments(self_id: &str) -> serde_json::Value {
+    let todas = crate::deployment::all();
+    json!({ "node_id": self_id, "deployments": todas })
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListDeploymentsQuery {
+    /// Responder só com os registros deste nó, sem varrer o cluster.
+    #[serde(default)]
+    pub local: bool,
+}
+
+/// Todas as implantações do cluster, com o estado de cada uma.
+///
+/// O registro de uma implantação vive numa cópia por nó participante, então
+/// **nenhuma máquina sozinha sabe a lista inteira**: esta rota pergunta a cada
+/// peer e junta, que é o mesmo desenho de `survey`. Cópias do mesmo
+/// `deploy_id` são deduplicadas ficando com a de `activated_at` mais recente -
+/// um nó que estava fora do ar durante um `activate` tem a cópia velha.
+///
+/// Duas palavras que **não** são sinônimos, e a tela não pode confundir:
+///
+/// * `serving` - há peer vivo anunciando este `deploy_id`. É "está no ar".
+/// * `is_default` - é esta que atende quem pede só o nome do modelo, sem
+///   sufixo `@`. Ver `deployment::active`.
+///
+/// Uma implantação pode estar no ar sem ser a padrão do seu modelo.
+async fn list_deployments(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(q): Query<ListDeploymentsQuery>,
+) -> Response {
+    let self_id = state.network.node_id.clone();
+    if q.local {
+        return Json(local_deployments(&self_id)).into_response();
+    }
+
+    let peers = state.all_peers().await;
+    let key = state.auth.read().await.connection_key.clone();
+
+    // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
+    let mut por_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
+    let mut guardado_por: HashMap<String, Vec<String>> = HashMap::new();
+
+    let absorve = |quem: &str,
+                   registros: Vec<crate::deployment::Deployment>,
+                   por_id: &mut HashMap<String, crate::deployment::Deployment>,
+                   guardado_por: &mut HashMap<String, Vec<String>>| {
+        for d in registros {
+            guardado_por
+                .entry(d.deploy_id.clone())
+                .or_default()
+                .push(quem.to_string());
+            match por_id.get(&d.deploy_id) {
+                Some(atual) if atual.activated_at >= d.activated_at => {}
+                _ => {
+                    por_id.insert(d.deploy_id.clone(), d);
+                }
+            }
+        }
+    };
+
+    absorve(
+        &self_id,
+        crate::deployment::all(),
+        &mut por_id,
+        &mut guardado_por,
+    );
+
+    let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
+        let http = state.peer_http.for_peer(&peer.node_id);
+        let key = key.clone();
+        let node_id = peer.node_id.clone();
+        let base = peer.gateway_url();
+        async move {
+            let base = base?;
+            let resp = http
+                .ok()?
+                .get(format!("{base}/api/ui/deployments?local=true"))
+                .bearer_auth(&key)
+                .timeout(PEER_TIMEOUT)
+                .send()
+                .await
+                .ok()?;
+            let body: serde_json::Value = resp.json().await.ok()?;
+            let registros: Vec<crate::deployment::Deployment> =
+                serde_json::from_value(body.get("deployments")?.clone()).ok()?;
+            Some((node_id, registros))
+        }
+    });
+
+    for (node_id, registros) in futures::future::join_all(buscas)
+        .await
+        .into_iter()
+        .flatten()
+    {
+        absorve(&node_id, registros, &mut por_id, &mut guardado_por);
+    }
+
+    let todas: Vec<crate::deployment::Deployment> = {
+        let mut v: Vec<_> = por_id.into_values().collect();
+        v.sort_by(|a, b| a.deploy_id.cmp(&b.deploy_id));
+        v
+    };
+
+    // "No ar" é o que os peers anunciam, não o que o registro diz: o registro
+    // sobrevive a um nó cair, e mostrá-lo como servindo seria mentir para quem
+    // está tentando entender por que a inferência parou.
+    let anunciados: std::collections::BTreeSet<String> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
+        .map(|p| p.deploy_id.clone())
+        .collect();
+
+    let linhas: Vec<serde_json::Value> = todas
+        .iter()
+        .map(|d| {
+            let padrao = crate::deployment::active(&todas, &d.model.label)
+                .is_some_and(|a| a.deploy_id == d.deploy_id);
+            let mut holders = guardado_por.get(&d.deploy_id).cloned().unwrap_or_default();
+            holders.sort();
+            holders.dedup();
+            json!({
+                "deployment": d,
+                "serving": anunciados.contains(&d.deploy_id),
+                "is_default": padrao,
+                "holders": holders,
+            })
+        })
+        .collect();
+
+    Json(json!({ "node_id": self_id, "deployments": linhas })).into_response()
+}
+
+/// Recebe do coordenador o registro de uma implantação de que este nó faz parte.
+///
+/// Guardar é o que permite a este nó, depois de um reinício, dizer de que
+/// conjunto ele fazia parte - e é o que faz a listagem do cluster sobreviver à
+/// queda de quem coordenou.
+async fn receive_deployment(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(registro): Json<crate::deployment::Deployment>,
+) -> Response {
+    let self_id = state.network.node_id.clone();
+    // Um registro que não menciona esta máquina não é dela para guardar. Sem
+    // isto, qualquer peer autenticado encheria o disco dos outros de registros
+    // de implantações que não os incluem.
+    if registro.node(&self_id).is_none() {
+        return bad(json!({
+            "error": "este nó não faz parte da implantação"
+        }));
+    }
+    // Aceita mesmo incompleto - uma implantação que não fecha o modelo é um
+    // estado real do cluster, e recusar o registro só faria a máquina esquecer
+    // de que conjunto ela faz parte. Mas dizer em voz alta, porque uma
+    // cobertura furada só se manifestaria muito depois, como "Gap at layer N"
+    // na primeira requisição.
+    if !registro.covers_the_model() {
+        warn!(
+            "implantação {} não cobre as {} camadas de {}",
+            registro.deploy_id, registro.model.total_layers, registro.model.label
+        );
+    }
+    match crate::deployment::save(&registro) {
+        Ok(_) => Json(json!({ "stored": true, "deploy_id": registro.deploy_id })).into_response(),
+        Err(e) => bad(json!({ "error": format!("{e:#}") })),
+    }
 }
 
 /// Camadas que a faixa nova compartilha com as que ja estao no ar.
@@ -1712,9 +1898,12 @@ async fn deploy_endpoint(
         new_job(&job_id, "deploy", title, "preparando"),
     );
 
+    // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
+    // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
+    let deploy_id = crate::deployment::new_deploy_id();
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, &id).await {
+        match run(state, plan, params, &deploy_id, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -2011,6 +2200,7 @@ async fn run(
     state: GatewayState,
     plan: Plan,
     params: RuntimeParams,
+    deploy_id: &str,
     job_id: &str,
 ) -> Result<(), String> {
     let key = state.auth.read().await.connection_key.clone();
@@ -2162,10 +2352,26 @@ async fn run(
         .total_layers
         .ok_or_else(|| format!("as fatias de {} não dizem o total de camadas", plan.group))?;
 
+    // O registro da implantação nasce aqui, com os alvos já resolvidos: é o
+    // último ponto em que se sabe, de uma vez só, quem recebeu qual faixa e com
+    // que configuração. Depois do `launch` essa intenção se dissolvia em N
+    // `NodeConfig` espalhados, e ninguém no cluster sabia mais dizer que
+    // aqueles nós eram *a mesma* implantação.
+    let registro = build_record(
+        deploy_id,
+        &plan,
+        &targets,
+        &machines,
+        total_layers,
+        &params,
+        &state.network.node_id,
+    );
+
     let response = launch(
         ConnectionAuth,
-        State(state),
+        State(state.clone()),
         Json(LaunchRequest {
+            deploy_id: deploy_id.to_string(),
             base_name: plan.group.clone(),
             // `group` is the selected value from the deployment model picker.
             // Its name is the cluster identity, not a heuristic profile name.
@@ -2181,7 +2387,606 @@ async fn run(
     if !response.status().is_success() {
         return Err(refusal(response).await);
     }
+
+    // Só depois do launch dar certo: um registro de implantação que não subiu
+    // seria uma implantação fantasma na listagem, e a tela de desimplantar
+    // ofereceria algo que não está no ar.
+    publish_record(&state, &registro).await;
     Ok(())
+}
+
+/// Monta o registro a partir do que o plano e os alvos já dizem.
+///
+/// Nada aqui é recalculado: as faixas, a posição no pipeline e os ajustes por
+/// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
+/// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
+/// vez de uma reconstrução.
+fn build_record(
+    deploy_id: &str,
+    plan: &Plan,
+    targets: &[LaunchTarget],
+    machines: &[Machine],
+    total_layers: u32,
+    params: &RuntimeParams,
+    created_by: &str,
+) -> crate::deployment::Deployment {
+    let kind = match plan.kind {
+        DeployKind::Shards => crate::deployment::DeploymentKind::Shards,
+        DeployKind::Whole => crate::deployment::DeploymentKind::Whole,
+        DeployKind::TensorParallel => crate::deployment::DeploymentKind::TensorParallel,
+    };
+
+    let total_alvos = targets.len() as u32;
+    let nodes = targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| crate::deployment::DeploymentNode {
+            node_id: t.node_id.clone(),
+            hostname: machines
+                .iter()
+                .find(|m| m.node_id == t.node_id)
+                .map(|m| m.label())
+                .unwrap_or_default(),
+            start_layer: t.start_layer,
+            end_layer: t.end_layer,
+            peer_index: t.peer_index.unwrap_or(i as u32),
+            peer_count: t.peer_count.unwrap_or(total_alvos),
+            primary: plan
+                .steps
+                .iter()
+                .any(|s| s.primary && s.target_node_id == t.node_id),
+            part_sha256: t.part_sha256.clone(),
+            tp_rank: t.tp.as_ref().map(|tp| tp.rank),
+            // A mesma função que o `launch` usa para decidir o que cada máquina
+            // recebe, para o registro não poder divergir do que subiu.
+            config: crate::webui::params_for(params, t),
+        })
+        .collect();
+
+    crate::deployment::Deployment::new(
+        deploy_id.to_string(),
+        kind,
+        crate::deployment::DeploymentModel {
+            label: plan.group.clone(),
+            total_layers,
+            pom_id: None,
+        },
+        created_by,
+        nodes,
+    )
+}
+
+/// Grava o registro neste nó e manda uma cópia para cada participante.
+///
+/// Cada nó guarda o próprio exemplar: não há dono único que, ao cair, leve a
+/// implantação junto, e um nó que reinicia lê no disco de que implantação ele
+/// fazia parte. Uma cópia que não chega não derruba a implantação - ela já está
+/// no ar; o que se perde é aquele nó saber se explicar depois de um reinício.
+async fn publish_record(state: &GatewayState, registro: &crate::deployment::Deployment) {
+    if let Err(e) = crate::deployment::save(registro) {
+        warn!(
+            "não deu para anotar a implantação {}: {e:#}",
+            registro.deploy_id
+        );
+    }
+
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+
+    for no in &registro.nodes {
+        if no.node_id == self_id {
+            continue;
+        }
+        let Some(base) = peers
+            .iter()
+            .find(|p| p.node_id == no.node_id)
+            .and_then(|p| p.gateway_url())
+        else {
+            warn!("{} não anuncia gateway; sem cópia do registro", no.node_id);
+            continue;
+        };
+        let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
+            continue;
+        };
+        let envio = cliente
+            .post(format!("{base}/api/ui/deployments"))
+            .bearer_auth(&key)
+            .timeout(PEER_TIMEOUT)
+            .json(registro)
+            .send()
+            .await;
+        if let Err(e) = envio {
+            warn!("{} não aceitou o registro da implantação: {e}", no.node_id);
+        }
+    }
+}
+
+// ── Mexer numa implantação que já está no ar ─────────────────────────────────
+
+/// Acha o registro de uma implantação, aqui ou em quem tiver.
+///
+/// Nem todo nó guarda todo registro - só os participantes guardam -, então o
+/// coordenador de um `redeploy` pode perfeitamente não ter a cópia.
+async fn find_record(
+    state: &GatewayState,
+    deploy_id: &str,
+) -> Option<crate::deployment::Deployment> {
+    if let Ok(caminho) = crate::deployment::path_in(&crate::deployment::dir(), deploy_id) {
+        if let Ok(d) = crate::deployment::load(&caminho) {
+            return Some(d);
+        }
+    }
+
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let buscas = state.all_peers().await.into_iter().filter_map(|peer| {
+        if peer.node_id == self_id {
+            return None;
+        }
+        let http = state.peer_http.for_peer(&peer.node_id).ok()?;
+        let base = peer.gateway_url()?;
+        let key = key.clone();
+        let alvo = deploy_id.to_string();
+        Some(async move {
+            let body: serde_json::Value = http
+                .get(format!("{base}/api/ui/deployments?local=true"))
+                .bearer_auth(&key)
+                .timeout(PEER_TIMEOUT)
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            let registros: Vec<crate::deployment::Deployment> =
+                serde_json::from_value(body.get("deployments")?.clone()).ok()?;
+            registros.into_iter().find(|d| d.deploy_id == alvo)
+        })
+    });
+
+    futures::future::join_all(buscas)
+        .await
+        .into_iter()
+        .flatten()
+        .next()
+}
+
+/// Torna esta a implantação que atende quem pede só o nome do modelo.
+///
+/// Mexe no `activated_at` e reespalha. Como a escolha da padrão é **derivada**
+/// (a de ativação mais recente), não há eleição nem quórum: basta o carimbo
+/// novo chegar, e quem receber converge sozinho. Ver `deployment::active`.
+async fn activate_deployment(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+) -> Response {
+    if !crate::deployment::is_deploy_id(&id) {
+        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+    }
+    let Some(mut registro) = find_record(&state, &id).await else {
+        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+    };
+
+    registro.activated_at = chrono::Utc::now().to_rfc3339();
+    publish_record(&state, &registro).await;
+
+    Json(json!({
+        "activated": true,
+        "deploy_id": registro.deploy_id,
+        "model": registro.model.label,
+    }))
+    .into_response()
+}
+
+/// Ajuste por máquina, para os dois botões que são de verdade por máquina.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PerNodeParams {
+    #[serde(default)]
+    pub n_gpu_layers: Option<u32>,
+    #[serde(default)]
+    pub offload_kqv: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedeployRequest {
+    pub params: RuntimeParams,
+    /// Ajustes por máquina, por `node_id`. Ausente = todo mundo com os mesmos.
+    #[serde(default)]
+    pub per_node: HashMap<String, PerNodeParams>,
+}
+
+/// O que aconteceu com **uma** máquina numa reconfiguração.
+#[derive(Debug, Serialize)]
+pub struct RedeployOutcome {
+    pub node_id: String,
+    pub hostname: String,
+    pub reconfigured: bool,
+    pub error: Option<String>,
+}
+
+/// Reimplanta mexendo só nos parâmetros.
+///
+/// A mesma implantação, o mesmo `deploy_id`, as mesmas máquinas e as mesmas
+/// faixas - só os parâmetros mudam. Por isso **não** passa pelo `deploy`: não
+/// há o que planejar nem o que copiar, e re-planejar cunharia uma implantação
+/// nova, quebrando todo cliente preso a `modelo@deploy_id`.
+///
+/// Cada nó recebe um `/api/ui/reconfigure`, que relê o próprio `NodeConfig` e
+/// troca só os parâmetros (ver `NodeConfig::with_params`). O registro é
+/// reescrito **depois** de os nós aceitarem: um registro que descreve uma
+/// configuração que ninguém está rodando é pior que um registro velho.
+async fn redeploy_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+    Json(req): Json<RedeployRequest>,
+) -> Response {
+    if !crate::deployment::is_deploy_id(&id) {
+        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+    }
+    let Some(registro) = find_record(&state, &id).await else {
+        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+    };
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let titulo = format!(
+        "Reconfigurar {} em {} {}",
+        registro.model.label,
+        registro.nodes.len(),
+        if registro.nodes.len() == 1 {
+            "nó"
+        } else {
+            "nós"
+        }
+    );
+    jobs().write().await.insert(
+        job_id.clone(),
+        new_job(&job_id, "redeploy", titulo, "recarregando"),
+    );
+
+    let id_job = job_id.clone();
+    tokio::spawn(async move {
+        match run_redeploy(state, registro, req, &id_job).await {
+            Ok(falhas) if falhas == 0 => {
+                set_job(&id_job, "done", "pronto", "as máquinas recarregaram").await
+            }
+            Ok(falhas) => {
+                set_job(
+                    &id_job,
+                    "failed",
+                    "parcial",
+                    &format!("{falhas} máquina(s) não recarregaram"),
+                )
+                .await
+            }
+            Err(e) => {
+                warn!("reconfiguração falhou: {e}");
+                set_job(&id_job, "failed", "falhou", &e).await
+            }
+        }
+    });
+
+    Json(json!({ "job_id": job_id, "deploy_id": id })).into_response()
+}
+
+async fn run_redeploy(
+    state: GatewayState,
+    mut registro: crate::deployment::Deployment,
+    req: RedeployRequest,
+    job_id: &str,
+) -> Result<usize, String> {
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+    let total = registro.nodes.len().max(1);
+
+    let mut resultados: Vec<RedeployOutcome> = Vec::new();
+    let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
+
+    // Uma máquina de cada vez, de propósito: recarregar o modelo é o pico de
+    // memória do nó, e mandar o cluster inteiro fazer isso junto é o caminho
+    // mais curto para várias quedas por falta de VRAM ao mesmo tempo.
+    for (i, no) in registro.nodes.iter().enumerate() {
+        set_job(
+            job_id,
+            "running",
+            "recarregando",
+            &format!("{} ({}/{})", no.hostname, i + 1, total),
+        )
+        .await;
+        set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
+
+        // Os ajustes por máquina entram por cima dos parâmetros comuns; sem
+        // ajuste, a máquina fica com os dela, que é o que a tela mostrou.
+        let mut params = req.params.clone();
+        if let Some(ajuste) = req.per_node.get(&no.node_id) {
+            if let Some(g) = ajuste.n_gpu_layers {
+                params.n_gpu_layers = g;
+            }
+            if let Some(k) = ajuste.offload_kqv {
+                params.offload_kqv = k;
+            }
+        }
+
+        let erro = reconfigure_one(&state, &peers, &no.node_id, &self_id, &key, &params).await;
+        match erro {
+            None => {
+                aceitos.insert(no.node_id.clone(), params);
+                resultados.push(RedeployOutcome {
+                    node_id: no.node_id.clone(),
+                    hostname: no.hostname.clone(),
+                    reconfigured: true,
+                    error: None,
+                });
+            }
+            Some(e) => resultados.push(RedeployOutcome {
+                node_id: no.node_id.clone(),
+                hostname: no.hostname.clone(),
+                reconfigured: false,
+                error: Some(e),
+            }),
+        }
+    }
+
+    // Só o que a máquina de fato aceitou entra no registro. Uma que recusou
+    // continua descrita com a configuração antiga, que é a que ela está
+    // rodando - o registro tem que dizer o que **é**, não o que se pediu.
+    for no in registro.nodes.iter_mut() {
+        if let Some(p) = aceitos.remove(&no.node_id) {
+            no.config = p;
+        }
+    }
+    publish_record(&state, &registro).await;
+
+    let falhas = resultados.iter().filter(|r| !r.reconfigured).count();
+    set_job_progress(job_id, 100.0).await;
+    {
+        let mut map = jobs().write().await;
+        if let Some(j) = map.get_mut(job_id) {
+            j.outputs = resultados
+                .iter()
+                .map(|r| match &r.error {
+                    Some(e) => format!("{}: {e}", r.hostname),
+                    None => format!("{}: recarregada", r.hostname),
+                })
+                .collect();
+        }
+    }
+    Ok(falhas)
+}
+
+/// Manda **uma** máquina recarregar com outros parâmetros.
+async fn reconfigure_one(
+    state: &GatewayState,
+    peers: &[PeerInfo],
+    node_id: &str,
+    self_id: &str,
+    key: &str,
+    params: &RuntimeParams,
+) -> Option<String> {
+    let corpo = json!({ "params": params });
+
+    if node_id == self_id {
+        let resposta = crate::webui::reconfigure_local(state.clone(), params.clone()).await;
+        return resposta.err();
+    }
+
+    let base = peers
+        .iter()
+        .find(|p| p.node_id == node_id)
+        .and_then(|p| p.gateway_url())?;
+    let cliente = state.peer_http.for_peer(node_id).ok()?;
+    match cliente
+        .post(format!("{base}/api/ui/reconfigure"))
+        .bearer_auth(key)
+        // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
+        // chamada de controle mataria a conexão no meio de um carregamento que
+        // vai terminar bem.
+        .timeout(Duration::from_secs(1800))
+        .json(&corpo)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => None,
+        Ok(r) => {
+            let status = r.status();
+            let detalhe = r.text().await.unwrap_or_default();
+            Some(format!("a máquina recusou: HTTP {status} {detalhe}"))
+        }
+        Err(e) => Some(format!("máquina inacessível: {e}")),
+    }
+}
+
+/// A visão do cluster e o que a tela de implantações precisa saber.
+#[cfg(test)]
+mod deployments_tests {
+    use super::*;
+    use crate::deployment::{Deployment, DeploymentKind, DeploymentModel, DeploymentNode};
+    use crate::gateway::testkit::{body_of, state_with};
+    use axum::routing::get as axum_get;
+
+    fn no(id: &str, inicio: u32, fim: u32) -> DeploymentNode {
+        DeploymentNode {
+            node_id: id.into(),
+            hostname: id.into(),
+            start_layer: inicio,
+            end_layer: fim,
+            peer_index: 0,
+            peer_count: 1,
+            primary: true,
+            part_sha256: None,
+            tp_rank: None,
+            config: RuntimeParams::default(),
+        }
+    }
+
+    fn registro(id: &str, rotulo: &str, ativado: &str) -> Deployment {
+        let mut d = Deployment::new(
+            id.into(),
+            DeploymentKind::Shards,
+            DeploymentModel {
+                label: rotulo.into(),
+                total_layers: 32,
+                pom_id: None,
+            },
+            "coordenador",
+            vec![no("n1", 0, 31)],
+        );
+        d.activated_at = ativado.into();
+        d
+    }
+
+    /// Um peer que responde `/api/ui/deployments?local=true` com os registros dados.
+    async fn peer_with_records(registros: Vec<Deployment>) -> u16 {
+        let corpo = json!({ "node_id": "outro", "deployments": registros });
+        let app = Router::new().route(
+            "/api/ui/deployments",
+            axum_get(move || {
+                let corpo = corpo.clone();
+                async move { Json(corpo) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        port
+    }
+
+    /// O registro tem uma cópia por nó participante, então a listagem junta e
+    /// **deduplica** - senão uma implantação de três nós apareceria três vezes.
+    /// Empate desfeito pela ativação mais recente: um nó que estava fora do ar
+    /// durante um `activate` tem a cópia velha, e ela não pode ganhar.
+    #[tokio::test]
+    async fn copies_of_one_deployment_collapse_to_the_newest() {
+        let velha = registro("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
+        let nova = registro("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
+
+        let porta = peer_with_records(vec![nova.clone()]).await;
+        let mut peer = crate::gateway::testkit::peer("outro", "outro", porta);
+        peer.model = "qwen3:8b".into();
+        peer.deploy_id = "d-aaaaaaaa".into();
+        peer.total_layers = 32;
+
+        let state = state_with("eu", vec![peer]).await;
+        let _ = velha; // a cópia velha vive no disco de quem não respondeu
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: false }),
+        )
+        .await;
+        let body = body_of(resp).await;
+
+        let linhas = body["deployments"].as_array().unwrap();
+        assert_eq!(linhas.len(), 1, "uma implantação, uma linha");
+        assert_eq!(linhas[0]["deployment"]["deploy_id"], "d-aaaaaaaa");
+        assert_eq!(
+            linhas[0]["deployment"]["activated_at"], "2026-08-19T00:00:00Z",
+            "a cópia mais recentemente ativada é a que vale"
+        );
+        assert_eq!(linhas[0]["serving"], true, "há peer vivo anunciando o id");
+        assert_eq!(linhas[0]["is_default"], true, "é a única do seu modelo");
+    }
+
+    /// "No ar" e "padrão" são coisas diferentes, e a tela não pode confundir:
+    /// duas implantações do mesmo modelo podem estar **as duas** servindo, mas
+    /// só uma atende quem pede o nome pelado.
+    #[tokio::test]
+    async fn serving_and_default_are_not_the_same_thing() {
+        let antiga = registro("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
+        let recente = registro("d-bbbbbbbb", "qwen3:8b", "2026-08-19T00:00:00Z");
+
+        let porta = peer_with_records(vec![antiga, recente]).await;
+        let mut p1 = crate::gateway::testkit::peer("outro", "outro", porta);
+        p1.model = "qwen3:8b".into();
+        p1.deploy_id = "d-aaaaaaaa".into();
+        p1.total_layers = 32;
+        // Só a `d-aaaaaaaa` tem peer vivo; a `d-bbbbbbbb` está registrada mas
+        // ninguém a está servindo.
+        let state = state_with("eu", vec![p1]).await;
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: false }),
+        )
+        .await;
+        let body = body_of(resp).await;
+        let linhas = body["deployments"].as_array().unwrap();
+        assert_eq!(linhas.len(), 2);
+
+        let por_id = |id: &str| -> serde_json::Value {
+            linhas
+                .iter()
+                .find(|l| l["deployment"]["deploy_id"] == id)
+                .cloned()
+                .unwrap()
+        };
+
+        let a = por_id("d-aaaaaaaa");
+        assert_eq!(a["serving"], true, "tem peer anunciando");
+        assert_eq!(a["is_default"], false, "mas não é a mais recente");
+
+        let b = por_id("d-bbbbbbbb");
+        assert_eq!(b["serving"], false, "registrada, mas ninguém no ar");
+        assert_eq!(b["is_default"], true, "é a de ativação mais recente");
+    }
+
+    /// `?local=true` responde do disco e **não** varre o cluster - é o que
+    /// impede a varredura de se chamar em círculo, um nó perguntando ao outro
+    /// que pergunta de volta.
+    #[tokio::test]
+    async fn the_local_answer_does_not_fan_out() {
+        let porta = peer_with_records(vec![registro(
+            "d-cccccccc",
+            "qwen3:8b",
+            "2026-08-19T00:00:00Z",
+        )])
+        .await;
+        let peer = crate::gateway::testkit::peer("outro", "outro", porta);
+        let state = state_with("eu", vec![peer]).await;
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: true }),
+        )
+        .await;
+        let body = body_of(resp).await;
+
+        // O registro do peer não aparece: esta resposta é só do disco local.
+        assert!(body["deployments"].as_array().unwrap().is_empty());
+        assert!(body.get("node_id").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bogus_deploy_id_is_refused_before_anything_happens() {
+        let state = state_with("eu", vec![]).await;
+        let resp = activate_deployment(
+            ConnectionAuth,
+            State(state.clone()),
+            Path("../../etc/passwd".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        let resp = redeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Path("nao-e-id".to_string()),
+            Json(RedeployRequest {
+                params: RuntimeParams::default(),
+                per_node: HashMap::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
 }
 
 // ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
@@ -2193,6 +2998,11 @@ async fn run(
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
+    /// A implantação que ganha a máquina. Vazio enquanto a tela não manda:
+    /// aí o nó entra sem registro, servindo a faixa, e a implantação segue
+    /// sendo identificada pelo rótulo como antes.
+    #[serde(default)]
+    pub deploy_id: String,
     /// Which catalog the range is looked up in. A whole model already in
     /// service takes a second machine the same way a slice does — the added
     /// node becomes a parallel route over the same layers.
@@ -2283,6 +3093,7 @@ async fn add_node_endpoint(
         ConnectionAuth,
         State(state),
         Json(LaunchRequest {
+            deploy_id: req.deploy_id.clone(),
             base_name: req.group.clone(),
             model_label: Some(req.group.clone()),
             total_layers,
@@ -2432,6 +3243,13 @@ pub struct UndeployRequest {
     /// que é o caso do painel: ele mostra uma pipeline de cada vez.
     #[serde(default)]
     pub group: String,
+    /// A implantação exata que sai do ar.
+    ///
+    /// É a saída para o beco em que `resolve_group` batia: com duas
+    /// implantações no ar - inclusive **do mesmo modelo**, que agora é
+    /// possível - o rótulo não distingue, e o id sim.
+    #[serde(default)]
+    pub deploy_id: String,
 }
 
 /// O que aconteceu com **uma** máquina. Uma linha por máquina, sempre — inclusive
@@ -2473,8 +3291,8 @@ async fn undeploy_endpoint(
     }
 
     let peers = state.all_peers().await;
-    let group = match resolve_group(&req.group, &peers) {
-        Ok(g) => g,
+    let alvo = match resolve_target(&req.deploy_id, &req.group, &peers) {
+        Ok(a) => a,
         Err(e) => return bad(json!({ "error": e })),
     };
 
@@ -2482,15 +3300,20 @@ async fn undeploy_endpoint(
     // no meio tempo não pode virar uma linha de falha inventada.
     let serving: Vec<PeerInfo> = peers
         .into_iter()
-        .filter(|p| p.model == group && p.total_layers > 0)
+        .filter(|p| p.total_layers > 0 && alvo.matches(p))
         .collect();
     if serving.is_empty() {
         return bad(json!({
-            "error": format!("nenhuma máquina está servindo {group}")
+            "error": format!("nenhuma máquina está servindo {}", alvo.describe())
         }));
     }
 
-    info!("desimplantando {group} de {} máquina(s)", serving.len());
+    let group = alvo.label();
+    info!(
+        "desimplantando {} de {} máquina(s)",
+        alvo.describe(),
+        serving.len()
+    );
 
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
@@ -2527,8 +3350,23 @@ async fn undeploy_endpoint(
         warn!("{failed} máquina(s) não confirmaram a desimplantação de {group}");
     }
 
+    // O registro só é esquecido depois: um registro apagado com máquinas ainda
+    // servindo deixaria memória presa sem nada que a nomeasse. Neste nó basta
+    // apagar o arquivo; os outros participantes apagam o seu ao serem
+    // descarregados, e um que não respondeu guarda o dele - que é o certo, já
+    // que ele ainda está no ar.
+    if let UndeployTarget::Deployment { deploy_id, .. } = &alvo {
+        if let Err(e) = crate::deployment::remove_in(&crate::deployment::dir(), deploy_id) {
+            warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
+        }
+    }
+
     Json(json!({
         "group": group,
+        "deploy_id": match &alvo {
+            UndeployTarget::Deployment { deploy_id, .. } => Some(deploy_id.clone()),
+            UndeployTarget::Label(_) => None,
+        },
         "released": released,
         "failed": failed,
         "results": results,
@@ -2560,6 +3398,69 @@ fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<String, String> 
             models.join(", ")
         )),
     }
+}
+
+/// O que uma desimplantação vai derrubar: uma implantação, ou tudo que serve um
+/// rótulo.
+enum UndeployTarget {
+    /// Escolha exata. É o que distingue duas implantações do mesmo modelo.
+    Deployment { deploy_id: String, label: String },
+    /// Todo mundo que serve este rótulo, que é o comportamento de sempre e o
+    /// único possível com peers que não anunciam implantação.
+    Label(String),
+}
+
+impl UndeployTarget {
+    fn matches(&self, p: &PeerInfo) -> bool {
+        match self {
+            UndeployTarget::Deployment { deploy_id, .. } => &p.deploy_id == deploy_id,
+            UndeployTarget::Label(l) => &p.model == l,
+        }
+    }
+    fn label(&self) -> String {
+        match self {
+            UndeployTarget::Deployment { label, .. } => label.clone(),
+            UndeployTarget::Label(l) => l.clone(),
+        }
+    }
+    fn describe(&self) -> String {
+        match self {
+            UndeployTarget::Deployment { deploy_id, label } if label.is_empty() => {
+                format!("a implantação {deploy_id}")
+            }
+            UndeployTarget::Deployment { deploy_id, label } => {
+                format!("{label} (implantação {deploy_id})")
+            }
+            UndeployTarget::Label(l) => l.clone(),
+        }
+    }
+}
+
+/// Qual implantação o pedido quer derrubar.
+///
+/// Com `deploy_id`, não há o que deduzir - é aquela, e o rótulo serve só para a
+/// mensagem. Sem ele, cai na regra antiga sobre rótulos, que continua sendo a
+/// certa num cluster onde cada modelo está no ar uma vez só.
+fn resolve_target(
+    deploy_id: &str,
+    group: &str,
+    peers: &[PeerInfo],
+) -> Result<UndeployTarget, String> {
+    if !deploy_id.is_empty() {
+        if !crate::deployment::is_deploy_id(deploy_id) {
+            return Err(format!("deploy_id inválido: {deploy_id}"));
+        }
+        let label = peers
+            .iter()
+            .find(|p| p.deploy_id == deploy_id)
+            .map(|p| p.model.clone())
+            .unwrap_or_else(|| group.to_string());
+        return Ok(UndeployTarget::Deployment {
+            deploy_id: deploy_id.to_string(),
+            label,
+        });
+    }
+    resolve_group(group, peers).map(UndeployTarget::Label)
 }
 
 /// Libera a memória de **uma** máquina, pela mesma porta do botão que já existe.
@@ -2944,6 +3845,74 @@ mod undeploy_tests {
         (port, hits)
     }
 
+    /// Duas implantações do mesmo modelo: derrubar uma tem que deixar a outra
+    /// servindo.
+    ///
+    /// Antes do `deploy_id` isto era inexprimível nos dois sentidos - não dava
+    /// para ter as duas no ar, e `resolve_group` só sabia falar de rótulos, de
+    /// modo que um "desimplantar qwen35" teria levado as duas junto.
+    #[tokio::test]
+    async fn undeploying_one_deployment_leaves_the_other_serving() {
+        let (porta_a, chamadas_a) = fake_machine(axum::http::StatusCode::OK).await;
+        let (porta_b, chamadas_b) = fake_machine(axum::http::StatusCode::OK).await;
+
+        let mut a = peer("no-a", "maquina-a", porta_a, (0, 31));
+        let mut b = peer("no-b", "maquina-b", porta_b, (0, 31));
+        a.deploy_id = "d-aaaaaaaa".into();
+        b.deploy_id = "d-bbbbbbbb".into();
+
+        let state = state_with("eu", vec![a, b]).await;
+        state.auth.write().await.role = Role::Principal;
+
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                deploy_id: "d-aaaaaaaa".into(),
+                group: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = body_of(resp).await;
+
+        assert_eq!(body["released"], 1, "só a implantação escolhida sai do ar");
+        assert_eq!(
+            body["results"].as_array().unwrap().len(),
+            1,
+            "a outra implantação nem aparece no relatório"
+        );
+        assert_eq!(chamadas_a.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            chamadas_b.load(Ordering::SeqCst),
+            0,
+            "a máquina da outra implantação não pode ser tocada"
+        );
+    }
+
+    /// Um id que ninguém serve não pode virar "derruba o rótulo inteiro".
+    #[tokio::test]
+    async fn an_unknown_deployment_id_releases_nothing() {
+        let (porta, chamadas) = fake_machine(axum::http::StatusCode::OK).await;
+        let mut a = peer("no-a", "maquina-a", porta, (0, 31));
+        a.deploy_id = "d-aaaaaaaa".into();
+
+        let state = state_with("eu", vec![a]).await;
+        state.auth.write().await.role = Role::Principal;
+
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                deploy_id: "d-cccccccc".into(),
+                group: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(chamadas.load(Ordering::SeqCst), 0);
+    }
+
     /// O relatório tem uma linha por máquina, e uma máquina que não confirmou
     /// **não** conta como liberada. Fingir sucesso aqui deixaria memória presa
     /// numa caixa que o operador acha que esvaziou.
@@ -2965,6 +3934,7 @@ mod undeploy_tests {
             ConnectionAuth,
             State(state),
             Json(UndeployRequest {
+                deploy_id: String::new(),
                 group: "qwen35".into(),
             }),
         )
@@ -3019,6 +3989,7 @@ mod undeploy_tests {
                 ConnectionAuth,
                 State(state),
                 Json(UndeployRequest {
+                    deploy_id: String::new(),
                     group: "qwen35".into(),
                 }),
             )
@@ -3042,6 +4013,7 @@ mod undeploy_tests {
             ConnectionAuth,
             State(state),
             Json(UndeployRequest {
+                deploy_id: String::new(),
                 group: String::new(),
             }),
         )

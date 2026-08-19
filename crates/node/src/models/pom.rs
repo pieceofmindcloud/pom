@@ -241,21 +241,88 @@ pub fn part_path(model_dir: &Path, sha256: &str) -> Result<PathBuf> {
     Ok(model_dir.join(format!("{sha256}.gguf")))
 }
 
-/// A pasta de um modelo dentro da pasta de fatias.
-pub fn model_dir(shard_dir: &Path, model_name: &str) -> PathBuf {
-    shard_dir.join(sanitize_name(model_name))
+/// O identificador curto de uma rodada, o que aparece em nome de pasta e de
+/// arquivo. Oito dígitos hex do `pom_id`.
+pub fn short_id(pom_id: &str) -> &str {
+    &pom_id[..8.min(pom_id.len())]
 }
 
-/// O arquivo do manifesto: `<nome>-<8 primeiros do pom_id>.pom`.
+/// A pasta de **uma rodada de fatiamento**: `<modelo>-<id da rodada>`.
 ///
-/// O sufixo é o que deixa duas rodadas do mesmo modelo conviverem na mesma
-/// pasta em vez de uma sobrescrever a outra.
-pub fn manifest_path(model_dir: &Path, m: &PomManifest) -> PathBuf {
-    let curto = &m.pom_id[..8.min(m.pom_id.len())];
-    model_dir.join(format!(
-        "{}-{curto}.{POM_EXT}",
-        sanitize_name(&m.model.name)
+/// O id no nome não é enfeite. Fatiar o mesmo modelo duas vezes com cortes
+/// diferentes produz dois conjuntos de partes que nada têm a ver um com o
+/// outro; numa pasta só eles se misturavam, e apagar uma rodada levava junto
+/// as partes que por acaso a outra também usava. Uma pasta por rodada faz de
+/// "apagar este fatiamento" um `rm -r` que não atinge mais ninguém.
+///
+/// Derivado do conteúdo, e não sorteado: refatiar exatamente o mesmo modelo do
+/// mesmo jeito dá o mesmo `pom_id`, logo a mesma pasta - que é o certo, porque
+/// é a mesma coisa - e a rodada não se duplica em disco. É também o que faz
+/// duas máquinas guardarem o mesmo fatiamento no mesmo caminho relativo.
+pub fn run_dir(shard_dir: &Path, model_name: &str, pom_id: &str) -> PathBuf {
+    shard_dir.join(format!(
+        "{}-{}",
+        sanitize_name(model_name),
+        short_id(pom_id)
     ))
+}
+
+/// A pasta da rodada que este manifesto descreve.
+pub fn dir_for(shard_dir: &Path, m: &PomManifest) -> PathBuf {
+    run_dir(shard_dir, &m.model.name, &m.pom_id)
+}
+
+/// O arquivo do manifesto dentro da pasta da rodada.
+pub fn manifest_path(model_dir: &Path, m: &PomManifest) -> PathBuf {
+    model_dir.join(format!(
+        "{}-{}.{POM_EXT}",
+        sanitize_name(&m.model.name),
+        short_id(&m.pom_id)
+    ))
+}
+
+/// Move as partes de uma pasta de trabalho para a pasta definitiva da rodada e
+/// sela o manifesto lá.
+///
+/// O nome da pasta sai do `pom_id`, que só se conhece **depois** de cortar
+/// todas as partes - o hash de cada uma entra no cálculo. Daí o rodeio: corta-se
+/// num diretório temporário e, no fim, a rodada inteira se muda para o nome
+/// definitivo.
+///
+/// Se a pasta de destino já existe, é porque esta rodada já foi produzida antes
+/// (mesmo `pom_id` = mesmo conteúdo). Nesse caso as partes que já estão lá
+/// ficam onde estão e as repetidas são descartadas: são byte a byte as mesmas.
+pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
+    m.validate()?;
+    let destino = dir_for(shard_dir, m);
+    std::fs::create_dir_all(&destino).with_context(|| format!("criar {}", destino.display()))?;
+
+    for parte in &m.parts {
+        let de = part_path(temp, &parte.sha256)?;
+        let para = part_path(&destino, &parte.sha256)?;
+        if !de.is_file() {
+            // A parte foi reaproveitada de uma rodada anterior e nunca passou
+            // pela pasta de trabalho: nada a mover.
+            continue;
+        }
+        if para.is_file() {
+            let _ = std::fs::remove_file(&de);
+            continue;
+        }
+        std::fs::rename(&de, &para)
+            .with_context(|| format!("mover {} para {}", de.display(), para.display()))?;
+    }
+
+    write_atomic(&destino, m)?;
+    // A pasta de trabalho só some se estiver vazia: um arquivo inesperado ali
+    // é sinal de defeito, e apagá-lo escondería a evidência.
+    let _ = std::fs::remove_dir(temp);
+    Ok(destino)
+}
+
+/// Uma pasta de trabalho para uma rodada que ainda não tem nome.
+pub fn scratch_dir(shard_dir: &Path) -> PathBuf {
+    shard_dir.join(format!(".fatiando-{}", uuid::Uuid::new_v4().simple()))
 }
 
 /// Nome que pode virar pasta sem surpresa.
@@ -517,17 +584,68 @@ mod tests {
 
     #[test]
     fn gravar_e_reler_um_manifesto() {
-        let tmp = std::env::temp_dir().join(format!("pom-teste-{}", std::process::id()));
+        let tmp = std::env::temp_dir().join(format!("pom-teste-{}", uuid::Uuid::new_v4().simple()));
         let _ = std::fs::remove_dir_all(&tmp);
-        let dir = model_dir(&tmp, "qwen3:8b");
         let m = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        let dir = dir_for(&tmp, &m);
 
         let escrito = write_atomic(&dir, &m).unwrap();
         assert_eq!(load(&escrito).unwrap(), m);
-        assert_eq!(load_dir(&dir), vec![m]);
-        // O `:` do rótulo não pode virar pasta.
-        assert!(dir.ends_with("qwen3-8b"));
+        assert_eq!(load_dir(&dir), vec![m.clone()]);
+        // O `:` do rótulo não pode virar pasta, e o id da rodada entra no nome.
+        let nome = dir.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(nome, format!("qwen3-8b-{}", short_id(&m.pom_id)));
 
         std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// O defeito que o id no nome da pasta fecha: fatiar o **mesmo modelo**
+    /// duas vezes, com cortes diferentes, punha os dois conjuntos de partes na
+    /// mesma pasta. Eles não têm nada a ver um com o outro, e apagar um levava
+    /// junto as partes que o outro por acaso também usava.
+    #[test]
+    fn duas_fatiagens_do_mesmo_modelo_nao_dividem_pasta() {
+        let raiz = Path::new("/tmp/fatias");
+        let um = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        let outro = manifesto(vec![parte("c", 0, 19), parte("d", 20, 31)], 32);
+
+        assert_ne!(um.pom_id, outro.pom_id);
+        assert_ne!(dir_for(raiz, &um), dir_for(raiz, &outro));
+        // E as duas continuam sendo o mesmo modelo, com o mesmo rótulo.
+        assert_eq!(um.model.label, outro.model.label);
+    }
+
+    /// Refatiar exatamente do mesmo jeito **não** duplica nada: mesmo conteúdo,
+    /// mesmo `pom_id`, mesma pasta. É a mesma rodada.
+    #[test]
+    fn refatiar_igual_cai_na_mesma_pasta() {
+        let raiz = Path::new("/tmp/fatias");
+        let um = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        let de_novo = manifesto(vec![parte("b", 16, 31), parte("a", 0, 15)], 32);
+        assert_eq!(dir_for(raiz, &um), dir_for(raiz, &de_novo));
+    }
+
+    /// A rodada só se muda para o nome definitivo quando está inteira, e as
+    /// partes vão junto.
+    #[test]
+    fn finalizar_muda_a_rodada_para_a_pasta_com_o_id() {
+        let raiz = std::env::temp_dir().join(format!("pom-fin-{}", uuid::Uuid::new_v4().simple()));
+        let trabalho = scratch_dir(&raiz);
+        std::fs::create_dir_all(&trabalho).unwrap();
+
+        let m = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
+        for p in &m.parts {
+            std::fs::write(part_path(&trabalho, &p.sha256).unwrap(), b"conteudo").unwrap();
+        }
+
+        let destino = finalize_run(&raiz, &trabalho, &m).unwrap();
+        assert_eq!(destino, dir_for(&raiz, &m));
+        for p in &m.parts {
+            assert!(part_path(&destino, &p.sha256).unwrap().is_file());
+        }
+        assert_eq!(load_dir(&destino), vec![m]);
+        assert!(!trabalho.exists(), "a pasta de trabalho não fica para trás");
+
+        std::fs::remove_dir_all(&raiz).ok();
     }
 }

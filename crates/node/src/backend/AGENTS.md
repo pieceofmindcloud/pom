@@ -220,8 +220,12 @@ behind an auth extractor.
   bar, detail "conferindo o arquivo na origem"), then in a background task
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
   is a full read on a slow volume - and runs the disk-space check there too),
-  then `run_download` writes `<shard_dir>/recebidos/<name>.part`, resumes with
-  `Range`, verifies MD5 before the rename, and cancels symmetrically on both
+  then `run_download` writes a `.part` next to its destination - the model's
+  folder for a **part** (`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`,
+  `.pom` written first - the run id comes from the manifest, so two slicings of
+  one model never share a folder), `<shard_dir>/recebidos/` for anything that belongs to no manifest -
+  resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
+  (anything else) before the rename, and cancels symmetrically on both
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.

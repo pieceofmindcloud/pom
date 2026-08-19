@@ -5,9 +5,20 @@ O subsistema move fatias GGUF entre máquinas do cluster, inteiro em
 download: **puxar** (este nó pede uma fatia a um peer) e **oferecer** (o dono
 da máquina escolhe um arquivo, o peer aceita e então puxa). Os bytes viajam
 pelo gateway HTTP já existente dos peers, com `Range` para retomada - não pelo
-bitswap do libp2p, que é protocolo órfão (ver `rede-p2p.md`). Arquivos recebidos
-sempre caem em `<shard_dir>/recebidos/`, e um arquivo só toma o nome final
-quando o MD5 confere.
+bitswap do libp2p, que saiu do swarm por ser protocolo órfão (ver `rede-p2p.md`).
+
+Onde o arquivo cai depende do que ele é. Uma **parte** de um fatiamento vai para
+`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`, com o `.pom` gravado ao lado
+antes dos bytes, e é conferida pelo hash que foi pedido. Um arquivo que não é
+parte de manifesto nenhum - um modelo inteiro - cai em `<shard_dir>/recebidos/` e
+só toma o nome final quando o MD5 confere.
+
+**O `.pom` é obrigatório para uma parte, e nos dois sentidos.** Quem manda recusa
+oferecer uma fatia sem manifesto (`send_to_peer`), quem serve recusa entregá-la
+(`servable_path`), e quem recebe recusa aceitá-la (`alvo_da_oferta`,
+`spawn_download`). Não há caminho alternativo: uma fatia órfã é um arquivo que
+ninguém sabe nomear, e o id da rodada - que decide em que pasta ela mora - só
+existe no manifesto.
 
 ## 1. Os dois sentidos, e a regra de quem escolheu o arquivo
 
@@ -46,8 +57,9 @@ Aceitar uma oferta (`POST /api/transfer/offers/:id/accept`) **volta antes de o
 outro lado responder**. `spawn_download`:
 
 1. Registra o job na hora (`bytes_total` 0, barra indeterminada, detalhe
-   "conferindo o arquivo na origem"). O diretório `<shard_dir>/recebidos/` é a
-   única coisa que precisa dar certo já.
+   "conferindo o arquivo na origem"). O diretório de destino - a pasta do
+   modelo, para uma parte; `<shard_dir>/recebidos/`, para um arquivo avulso - é
+   a única coisa que precisa dar certo já.
 2. Numa task de fundo, `fetch_manifest` pede tamanho + MD5 em
    `/api/transfer/manifest` (`MANIFEST_TIMEOUT` = 30 min - um digest é uma
    leitura do arquivo inteiro num volume lento, e o prazo corre em segundo

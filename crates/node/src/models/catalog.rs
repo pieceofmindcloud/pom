@@ -83,6 +83,13 @@ pub struct DiscoveredModel {
     /// conteúdo (`<sha256>.gguf`). É a identidade que atravessa máquinas: dois
     /// nós com o mesmo hash têm, byte a byte, o mesmo arquivo.
     pub sha256: Option<String>,
+    /// O rótulo do modelo de que esta parte saiu, tal como o `.pom` o guarda.
+    /// `None` num arquivo que não pertence a manifesto nenhum.
+    #[serde(default)]
+    pub model_label: Option<String>,
+    /// A rodada de fatiamento que produziu esta parte.
+    #[serde(default)]
+    pub pom_id: Option<String>,
 }
 
 impl DiscoveredModel {
@@ -94,8 +101,16 @@ impl DiscoveredModel {
 /// A set of slices that together (may) cover one model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShardSet {
-    /// Shared prefix of the slice filenames, e.g. "qwen".
+    /// A chave da **rodada** de fatiamento: `<modelo>-<id curto>`, o mesmo nome
+    /// da pasta em disco. Duas fatiagens do mesmo modelo são dois conjuntos.
     pub group: String,
+    /// O rótulo do modelo, para a tela. O `group` identifica; este é o que se
+    /// lê. Vazio numa fatia sem manifesto.
+    #[serde(default)]
+    pub model_label: String,
+    /// A rodada que produziu estas partes. Identificação, não nome.
+    #[serde(default)]
+    pub pom_id: String,
     pub total_layers: Option<u32>,
     /// True when the total came from the slices' own coverage rather than from
     /// `pom.original_block_count`. Old slices carry no such metadata.
@@ -348,13 +363,15 @@ pub fn parse_quant(filename: &str) -> Option<String> {
 /// nada que um operador precise ler.
 #[derive(Debug, Clone)]
 pub struct PartContext {
-    pub model_name: String,
     pub model_label: String,
     pub total_layers: u32,
     pub start_layer: u32,
     pub end_layer: u32,
     pub sha256: String,
     pub pom_id: String,
+    /// Identifica a **rodada** de fatiamento: `<modelo>-<id curto>`, o mesmo
+    /// nome da pasta. É a chave pela qual as fatias se agrupam.
+    pub run_key: String,
     /// Quantização do modelo de origem, copiada pelo fatiador para o manifesto.
     /// O nome de uma parte é o hash, então não há de onde deduzi-la.
     pub quant: Option<String>,
@@ -423,10 +440,12 @@ fn describe(
         // fatia solta - é o que sobra de um `.pom` perdido.
         None => info.as_ref().and_then(|i| i.shard_range),
     };
-    let shard_group = match part {
-        Some(c) => Some(c.model_name.clone()),
-        None => None,
-    };
+    // A chave do conjunto é a **rodada**, não o modelo. Fatiar o mesmo modelo
+    // duas vezes com cortes diferentes produz dois conjuntos que não se somam:
+    // agrupá-los pelo nome do modelo fazia quatro fatias de duas rodadas
+    // parecerem um conjunto só, com faixas que se sobrepõem e uma cobertura que
+    // não quer dizer nada.
+    let shard_group = part.map(|c| c.run_key.clone());
 
     // For a slice, `block_count` counts the layers *inside the file*, not the
     // model it came from. Only `pom.original_block_count` — written by
@@ -465,6 +484,8 @@ fn describe(
         shard_range,
         shard_group,
         sha256,
+        model_label: part.map(|c| c.model_label.clone()),
+        pom_id: part.map(|c| c.pom_id.clone()),
     })
 }
 
@@ -770,13 +791,17 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                     continue;
                 }
                 let ctx = PartContext {
-                    model_name: m.model.name.clone(),
                     model_label: m.model.label.clone(),
                     total_layers: m.model.total_layers,
                     start_layer: parte.start_layer,
                     end_layer: parte.end_layer,
                     sha256: parte.sha256.clone(),
                     pom_id: m.pom_id.clone(),
+                    run_key: format!(
+                        "{}-{}",
+                        crate::pom::sanitize_name(&m.model.name),
+                        crate::pom::short_id(&m.pom_id)
+                    ),
                     quant: m.model.quant.clone(),
                 };
                 let chave = caminho.canonicalize().unwrap_or(caminho);
@@ -837,6 +862,14 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
             let complete = matches!(total_layers, Some(t) if t > 0 && contiguous_to >= t);
 
             ShardSet {
+                model_label: shards
+                    .iter()
+                    .find_map(|s| s.model_label.clone())
+                    .unwrap_or_else(|| group.clone()),
+                pom_id: shards
+                    .iter()
+                    .find_map(|s| s.pom_id.clone())
+                    .unwrap_or_default(),
                 group,
                 total_layers,
                 total_layers_inferred: declared.is_none(),
@@ -929,6 +962,8 @@ mod tests {
             shard_range: Some((start, end)),
             shard_group: Some("s".into()),
             sha256: None,
+            model_label: None,
+            pom_id: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1033,6 +1068,8 @@ mod tests {
             shard_range: Some((start, end)),
             shard_group: Some("qwen".into()),
             sha256: None,
+            model_label: None,
+            pom_id: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));
@@ -1049,7 +1086,9 @@ mod part_naming_tests {
 
     /// Grava um GGUF de verdade nomeado pelo próprio hash e o manifesto ao lado.
     fn modelo_fatiado(raiz: &Path) -> (PomManifest, Vec<String>) {
-        let pasta = crate::pom::model_dir(raiz, "qwen3-8b");
+        // Como a produção faz: corta numa pasta de trabalho e, com o manifesto
+        // pronto, muda a rodada para `<modelo>-<id da rodada>`.
+        let pasta = crate::pom::scratch_dir(raiz);
         std::fs::create_dir_all(&pasta).unwrap();
 
         let mut partes = Vec::new();
@@ -1088,7 +1127,7 @@ mod part_naming_tests {
             "no-1",
             partes,
         );
-        crate::pom::write_atomic(&pasta, &m).unwrap();
+        crate::pom::finalize_run(raiz, &pasta, &m).unwrap();
         (m, hashes)
     }
 
@@ -1133,10 +1172,118 @@ mod part_naming_tests {
 
         // E o conjunto se fecha, que é o que a tela de implantar precisa.
         assert_eq!(cat.shard_sets.len(), 1);
-        assert!(cat.shard_sets[0].complete);
-        assert_eq!(cat.shard_sets[0].group, "qwen3-8b");
+        let set = &cat.shard_sets[0];
+        assert!(set.complete);
+        // A chave do conjunto é a rodada, para duas fatiagens do mesmo modelo
+        // não virarem um amontoado só...
+        assert_eq!(
+            set.group,
+            format!("qwen3-8b-{}", crate::pom::short_id(&_m.pom_id))
+        );
+        // ...mas quem a tela mostra é o rótulo do modelo.
+        assert_eq!(set.model_label, "qwen3:8b");
+        assert_eq!(set.pom_id, _m.pom_id);
 
         std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// O defeito da colisão: **o mesmo modelo, fatiado duas vezes**.
+    ///
+    /// Cortes diferentes produzem partes diferentes, que não têm nada a ver
+    /// umas com as outras. Numa pasta só elas se misturavam: o catálogo via um
+    /// amontoado de partes de duas rodadas, e apagar um fatiamento levava junto
+    /// a parte que a outra rodada por acaso também usava. Cada rodada tem a
+    /// própria pasta, com o id dela no nome.
+    #[test]
+    fn duas_fatiagens_do_mesmo_modelo_ficam_em_pastas_distintas() {
+        let raiz = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
+
+        // Duas rodadas do mesmo modelo, com cortes diferentes.
+        let uma = fatiar(
+            &raiz,
+            "qwen3-8b",
+            "qwen3:8b",
+            32,
+            &[(0, 15, 16), (16, 31, 12)],
+        );
+        let outra = fatiar(
+            &raiz,
+            "qwen3-8b",
+            "qwen3:8b",
+            32,
+            &[(0, 19, 20), (20, 31, 9)],
+        );
+
+        assert_ne!(
+            uma.pom_id, outra.pom_id,
+            "cortes diferentes, rodadas diferentes"
+        );
+        let pasta_uma = crate::pom::dir_for(&raiz, &uma);
+        let pasta_outra = crate::pom::dir_for(&raiz, &outra);
+        assert_ne!(pasta_uma, pasta_outra, "e pastas diferentes");
+        assert!(pasta_uma.is_dir() && pasta_outra.is_dir());
+
+        // As quatro partes aparecem, cada uma sabendo de que rodada é.
+        let cat = discover(&[], &raiz);
+        assert_eq!(cat.models.len(), 4);
+        assert_eq!(cat.shard_sets.len(), 2, "dois conjuntos, não um amontoado");
+        for set in &cat.shard_sets {
+            assert!(set.complete, "cada rodada fecha o modelo por conta própria");
+            assert_eq!(set.shards.len(), 2);
+        }
+
+        // Apagar uma rodada é apagar a pasta dela, e a outra segue inteira.
+        std::fs::remove_dir_all(&pasta_uma).unwrap();
+        let depois = discover(&[], &raiz);
+        assert_eq!(depois.models.len(), 2);
+        assert_eq!(depois.shard_sets.len(), 1);
+        assert!(depois.shard_sets[0].complete);
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Corta um modelo em faixas e sela a rodada, como a produção faz.
+    fn fatiar(
+        raiz: &Path,
+        nome: &str,
+        rotulo: &str,
+        total: u32,
+        cortes: &[(u32, u32, u32)],
+    ) -> crate::pom::PomManifest {
+        let trabalho = crate::pom::scratch_dir(raiz);
+        std::fs::create_dir_all(&trabalho).unwrap();
+
+        let mut partes = Vec::new();
+        for (inicio, fim, camadas) in cortes {
+            let bytes = crate::splitter::test_gguf_bytes(*camadas);
+            let tmp = trabalho.join(format!("tmp-{inicio}"));
+            std::fs::write(&tmp, &bytes).unwrap();
+            let (sha, n) = crate::pom::hash_file(&tmp).unwrap();
+            std::fs::rename(&tmp, crate::pom::part_path(&trabalho, &sha).unwrap()).unwrap();
+            partes.push(crate::pom::PomPart {
+                sha256: sha,
+                bytes: n,
+                start_layer: *inicio,
+                end_layer: *fim,
+                is_first: *inicio == 0,
+                is_last: *fim + 1 >= total,
+                tp: None,
+            });
+        }
+
+        let m = crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: nome.into(),
+                label: rotulo.into(),
+                total_layers: total,
+                quant: None,
+            },
+            crate::pom::PomKind::Layers,
+            "no-1",
+            partes,
+        );
+        crate::pom::finalize_run(raiz, &trabalho, &m).unwrap();
+        m
     }
 
     /// Sem manifesto o arquivo não é fatia de nada: é um GGUF que alguém
@@ -1167,7 +1314,7 @@ mod part_naming_tests {
         let raiz = std::env::temp_dir().join(format!("pom-cat-{}", uuid::Uuid::new_v4().simple()));
         let (m, hashes) = modelo_fatiado(&raiz);
 
-        let pasta = crate::pom::model_dir(&raiz, "qwen3-8b");
+        let pasta = crate::pom::dir_for(&raiz, &m);
         std::fs::remove_file(crate::pom::part_path(&pasta, &hashes[1]).unwrap()).unwrap();
 
         let index = part_index(&raiz);

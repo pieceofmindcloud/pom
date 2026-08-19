@@ -28,7 +28,8 @@ ela é e que faixa cobre. Ver `models/pom.rs`.
   é pulada.
 - `parse_quant` - quantização pelo nome de um modelo **inteiro**; uma parte
   herda a do `.pom`.
-- `build_shard_sets` - agrupa fatias pelo grupo do manifesto, ordena por faixa,
+- `build_shard_sets` - agrupa fatias pela **rodada** (`<modelo>-<id curto>`, o
+  mesmo nome da pasta), ordena por faixa,
   mede a cobertura contígua a partir da camada 0 e deduz o total da cobertura
   quando a fatia não declara (`total_layers_inferred`). A flag `complete` diz se
   a cobertura fecha o modelo.
@@ -122,10 +123,19 @@ plano: a tela nomeia os papéis ("processa o prompt" / "gera os tokens").
 
 `extract_shard` (`plan.rs`) roda `splitter::split` num `spawn_blocking` e apaga o
 arquivo parcial no erro - senão a próxima varredura o tomaria por fatia válida.
-A saída vai para `<shard_dir>/<modelo>/`, gravada primeiro num `<uuid>.part` e
-renomeada para `<sha256>.gguf` quando o corte termina - o nome só se conhece no
-fim, porque o nome **é** o conteúdo. O sha256 sai do mesmo passe que grava os
-bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
+O corte sai numa pasta de trabalho (`pom::scratch_dir`), cada parte gravada
+primeiro num `<uuid>.part` e renomeada para `<sha256>.gguf` quando termina - o
+nome só se conhece no fim, porque o nome **é** o conteúdo. O sha256 sai do mesmo
+passe que grava os bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
+
+No fim, `pom::finalize_run` muda a rodada inteira para
+`<shard_dir>/<modelo>-<id da rodada>/` e sela o `.pom` lá. **O id no nome da
+pasta não é enfeite**: fatiar o mesmo modelo duas vezes com cortes diferentes
+produz dois conjuntos de partes que nada têm a ver um com o outro, e numa pasta
+só eles se misturavam - apagar uma rodada levava junto a parte que a outra por
+acaso também usava. O id é o `pom_id`, derivado do conteúdo, então refatiar
+exatamente igual cai na mesma pasta (é a mesma coisa) e duas máquinas guardam o
+mesmo fatiamento no mesmo caminho relativo.
 
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):

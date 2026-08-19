@@ -408,14 +408,37 @@ export function DeployModel() {
   const invalidate = useInvalidate();
   const jobs = useJobs();
 
-  /** Every slice set anyone in the cluster holds, named once. */
+  /**
+   * Cada **rodada de fatiamento** que alguém no cluster tem, nomeada uma vez.
+   *
+   * A chave é a rodada, não o modelo: o mesmo modelo fatiado duas vezes, com
+   * cortes diferentes, são duas opções distintas aqui - misturá-las daria uma
+   * cobertura de camadas que se sobrepõe e não implanta. O que se lê é o
+   * rótulo do modelo; o id da rodada vai junto, discreto, só para distinguir
+   * duas do mesmo modelo.
+   */
   const groups = useMemo(() => {
-    const seen = new Set<string>();
+    const seen = new Map<string, { key: string; label: string; pomId: string }>();
     for (const peer of cluster.data?.peers ?? []) {
-      for (const set of peer.shard_sets ?? []) seen.add(set.group);
+      for (const set of peer.shard_sets ?? []) {
+        if (!seen.has(set.group)) {
+          seen.set(set.group, {
+            key: set.group,
+            label: set.model_label || set.group,
+            pomId: set.pom_id ?? "",
+          });
+        }
+      }
     }
-    return [...seen].sort();
+    return [...seen.values()].sort((a, b) => a.label.localeCompare(b.label));
   }, [cluster.data]);
+
+  /** Quantas rodadas existem por rótulo, para só desambiguar quando precisa. */
+  const dupes = useMemo(() => {
+    const n = new Map<string, number>();
+    for (const g of groups) n.set(g.label, (n.get(g.label) ?? 0) + 1);
+    return n;
+  }, [groups]);
 
   /** Every un-sliced model anyone in the cluster holds, named once. */
   const wholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
@@ -433,7 +456,7 @@ export function DeployModel() {
 
   const chosen = isWhole || isTp
     ? wholeName || wholes[0]?.name || ""
-    : group || groups[0] || "";
+    : group || groups[0]?.key || "";
   /** The whole model on screen, for the facts the plan does not carry. TP
    *  also picks a whole model (each rank holds its own copy), so it reads the
    *  same facts — architecture, holders — to build the primary/worker selects. */
@@ -972,8 +995,10 @@ export function DeployModel() {
                   className="max-w-md"
                 >
                   {groups.map((g) => (
-                    <option key={g} value={g}>
-                      {g}
+                    <option key={g.key} value={g.key}>
+                      {(dupes.get(g.label) ?? 0) > 1 && g.pomId
+                        ? `${g.label} · ${g.pomId.slice(0, 8)}`
+                        : g.label}
                     </option>
                   ))}
                 </Select>

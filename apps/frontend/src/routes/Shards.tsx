@@ -77,7 +77,7 @@ function ShardCard({
     <Panel>
       <PanelHeader
         eyebrow={t("shards.set")}
-        title={set.group}
+        title={set.model_label || set.group}
         subtitle={
           set.total_layers != null
             ? t("shards.setDetail", { count: set.shards.length, total: num(set.total_layers) })

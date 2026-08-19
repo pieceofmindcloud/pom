@@ -1519,6 +1519,50 @@ fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity
     req.tp.as_ref()
 }
 
+/// Sela uma parte cortada aqui numa rodada só dela.
+///
+/// O `apply` corta **uma** faixa, para esta máquina. Antes isso ia parar numa
+/// pasta com o nome do modelo e sem manifesto nenhum, e o catálogo mostrava um
+/// `<sha256>.gguf` órfão que não dizia de que modelo era. Um manifesto de uma
+/// parte só resolve as duas coisas: dá nome à fatia e põe a rodada na própria
+/// pasta, sem se misturar com outro fatiamento do mesmo modelo.
+fn seal_single_part(
+    shard_dir: &std::path::Path,
+    scratch: &std::path::Path,
+    req: &ApplyRequest,
+    outcome: &plan::SliceOutcome,
+    kind: crate::pom::PomKind,
+    tp: Option<crate::pom::PomTp>,
+    node_id: &str,
+) -> anyhow::Result<String> {
+    let manifesto = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: req.base_name.clone(),
+            label: model_label(req),
+            total_layers: req.total_layers,
+            quant: std::path::Path::new(&req.source_model_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(crate::catalog::parse_quant),
+        },
+        kind,
+        node_id,
+        vec![crate::pom::PomPart {
+            sha256: outcome.sha256.clone(),
+            bytes: outcome.bytes,
+            start_layer: req.start_layer,
+            end_layer: req.end_layer,
+            is_first: req.is_first(),
+            is_last: req.is_last(),
+            tp,
+        }],
+    );
+    let destino = crate::pom::finalize_run(shard_dir, scratch, &manifesto)?;
+    Ok(crate::pom::part_path(&destino, &outcome.sha256)?
+        .to_string_lossy()
+        .into_owned())
+}
+
 async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
     let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
         set_job(
@@ -1528,22 +1572,46 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
             &format!("extraindo shard de tensor rank {}/{}", tp.rank, tp.size),
         )
         .await;
-        let out_dir = crate::pom::model_dir(&state.shard_dir().await, &req.base_name);
-        let progress_job = job_id.to_string();
-        let outcome = plan::extract_tp_shard(
-            &req.source_model_path,
-            &out_dir,
-            req.part_sha256.as_deref(),
-            tp.size,
-            tp.rank,
-            move |pct| {
-                let id = progress_job.clone();
-                tokio::spawn(async move { set_job_progress(&id, pct).await });
-            },
-        )
-        .await?;
-        invalidate_catalog().await;
-        outcome.output_path
+        let shard_dir = state.shard_dir().await;
+        // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
+        // a pasta de destino depende do manifesto, que só existe depois.
+        if let Some(pronta) = req
+            .part_sha256
+            .as_deref()
+            .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+        {
+            info!("shard de tensor já em disco: {}", pronta.display());
+            pronta.to_string_lossy().into_owned()
+        } else {
+            let scratch = crate::pom::scratch_dir(&shard_dir);
+            let progress_job = job_id.to_string();
+            let outcome = plan::extract_tp_shard(
+                &req.source_model_path,
+                &scratch,
+                None,
+                tp.size,
+                tp.rank,
+                move |pct| {
+                    let id = progress_job.clone();
+                    tokio::spawn(async move { set_job_progress(&id, pct).await });
+                },
+            )
+            .await?;
+            let caminho = seal_single_part(
+                &shard_dir,
+                &scratch,
+                &req,
+                &outcome,
+                crate::pom::PomKind::TensorParallel,
+                Some(crate::pom::PomTp {
+                    rank: tp.rank,
+                    size: tp.size,
+                }),
+                &state.network.node_id,
+            )?;
+            invalidate_catalog().await;
+            caminho
+        }
     } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
         merge_parts(shard_dir, &req, &parts, job_id).await?
@@ -1562,35 +1630,49 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         )
         .await;
 
-        let out_dir = crate::pom::model_dir(&state.shard_dir().await, &req.base_name);
-        let progress_job = job_id.to_string();
-        let outcome = plan::extract_shard(
-            &req.source_model_path,
-            &out_dir,
-            req.part_sha256.as_deref(),
-            req.start_layer,
-            req.end_layer,
-            req.is_first(),
-            req.is_last(),
-            move |pct| {
-                let id = progress_job.clone();
-                tokio::spawn(async move { set_job_progress(&id, pct).await });
-            },
-        )
-        .await?;
-        invalidate_catalog().await;
+        let shard_dir = state.shard_dir().await;
+        if let Some(pronta) = req
+            .part_sha256
+            .as_deref()
+            .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+        {
+            info!("fatia já em disco: {}", pronta.display());
+            pronta.to_string_lossy().into_owned()
+        } else {
+            let scratch = crate::pom::scratch_dir(&shard_dir);
+            let progress_job = job_id.to_string();
+            let outcome = plan::extract_shard(
+                &req.source_model_path,
+                &scratch,
+                None,
+                req.start_layer,
+                req.end_layer,
+                req.is_first(),
+                req.is_last(),
+                move |pct| {
+                    let id = progress_job.clone();
+                    tokio::spawn(async move { set_job_progress(&id, pct).await });
+                },
+            )
+            .await?;
+            let caminho = seal_single_part(
+                &shard_dir,
+                &scratch,
+                &req,
+                &outcome,
+                crate::pom::PomKind::Layers,
+                None,
+                &state.network.node_id,
+            )?;
+            invalidate_catalog().await;
 
-        info!(
-            "shard pronto: {} ({:.1} GB, {})",
-            outcome.output_path,
-            outcome.bytes as f64 / 1_073_741_824.0,
-            if outcome.reused {
-                "reaproveitado"
-            } else {
-                "gerado"
-            }
-        );
-        outcome.output_path
+            info!(
+                "shard pronto: {} ({:.1} GB)",
+                caminho,
+                outcome.bytes as f64 / 1_073_741_824.0
+            );
+            caminho
+        }
     };
 
     let shard_dir = state.shard_dir().await;
@@ -1710,26 +1792,23 @@ async fn merge_parts(
         .last()
         .map(|p| p.end_layer)
         .ok_or_else(|| anyhow::anyhow!("nenhuma fatia para juntar"))?;
-    let out_dir = crate::pom::model_dir(&shard_dir, &req.base_name);
-
     // Reaproveitar a junção exige saber o hash do resultado, e quem manda o
-    // pedido sabe: é a mesma parte que o `.pom` lista. Sem ele, junta-se e o
-    // conteúdo se nomeia no fim.
-    if let Some(sha) = req.part_sha256.as_deref() {
-        if let Ok(caminho) = crate::pom::part_path(&out_dir, sha) {
-            if tokio::fs::metadata(&caminho)
-                .await
-                .is_ok_and(|m| m.len() > 1024)
-            {
-                info!(
-                    "modelo junto já existe, reaproveitando: {}",
-                    caminho.display()
-                );
-                invalidate_catalog().await;
-                return Ok(caminho.to_string_lossy().into_owned());
-            }
-        }
+    // pedido sabe: é a mesma parte que o `.pom` lista. A busca é por conteúdo,
+    // em todas as rodadas - a pasta depende do manifesto, que só existe depois.
+    if let Some(caminho) = req
+        .part_sha256
+        .as_deref()
+        .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+    {
+        info!(
+            "modelo junto já existe, reaproveitando: {}",
+            caminho.display()
+        );
+        invalidate_catalog().await;
+        return Ok(caminho.to_string_lossy().into_owned());
     }
+    // O nome da pasta é o id da rodada, que só existe depois de juntar.
+    let out_dir = crate::pom::scratch_dir(&shard_dir);
 
     set_job(
         job_id,
@@ -1788,14 +1867,44 @@ async fn merge_parts(
             let _ = std::fs::remove_file(&temp_cleanup);
         })?;
 
+    // A junção é uma parte nova, e uma parte sem manifesto é um arquivo de nome
+    // ilegível no catálogo. Um manifesto de uma parte só a nomeia e põe a
+    // rodada na pasta dela.
+    let sha = output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let manifesto = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: req.base_name.clone(),
+            label: model_label(req),
+            total_layers: req.total_layers,
+            quant: None,
+        },
+        crate::pom::PomKind::Layers,
+        String::new(),
+        vec![crate::pom::PomPart {
+            sha256: sha.clone(),
+            bytes,
+            start_layer: start,
+            end_layer: end,
+            is_first: start == 0,
+            is_last: end + 1 >= req.total_layers,
+            tp: None,
+        }],
+    );
+    let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
+    let final_path = crate::pom::part_path(&pasta, &sha)?;
+
     invalidate_catalog().await;
 
     info!(
         "modelo junto pronto: {} ({:.1} GB)",
-        output.display(),
+        final_path.display(),
         bytes as f64 / 1_073_741_824.0
     );
-    Ok(output.to_string_lossy().into_owned())
+    Ok(final_path.to_string_lossy().into_owned())
 }
 
 // ── Slicing a whole model, here, on demand ───────────────────────────────────
@@ -1965,7 +2074,11 @@ async fn slice_locally(
         .as_deref()
         .and_then(plan::base_name_from_label)
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
-    let out_dir = crate::pom::model_dir(&state.shard_dir().await, &base_name);
+    // A pasta definitiva leva o id da rodada, e esse id sai do hash das partes -
+    // que só existem depois de cortadas. Corta-se aqui e a rodada se muda para
+    // o nome definitivo no fim, em `pom::finalize_run`.
+    let shard_dir = state.shard_dir().await;
+    let out_dir = crate::pom::scratch_dir(&shard_dir);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let title = format!(
         "Fatiando {base_name} em {} {}",
@@ -1980,11 +2093,14 @@ async fn slice_locally(
     let job_id = id.clone();
     let label = req.name.clone().unwrap_or_else(|| base_name.clone());
     let node_id = state.network.node_id.clone();
-    let destino = out_dir.display().to_string();
+    // A pasta final só se conhece com o manifesto na mão, porque o nome dela
+    // é o id da rodada.
+    let raiz = shard_dir.clone();
     tokio::spawn(async move {
         match run_slice(
             state,
             source,
+            shard_dir,
             out_dir,
             base_name,
             label,
@@ -1997,10 +2113,11 @@ async fn slice_locally(
         {
             Ok(m) => {
                 let msg = format!(
-                    "{} fatia{} em {destino} · pom {}",
+                    "{} fatia{} em {} · pom {}",
                     m.parts.len(),
                     if m.parts.len() == 1 { "" } else { "s" },
-                    &m.pom_id[..8]
+                    crate::pom::dir_for(&raiz, &m).display(),
+                    crate::pom::short_id(&m.pom_id)
                 );
                 set_job(&job_id, "done", "pronto", &msg).await;
             }
@@ -2020,10 +2137,12 @@ async fn slice_locally(
 /// próprio hash e o manifesto, escrito no fim, é o que diz que aquele conjunto
 /// de hashes é um modelo. Sem ele as partes seriam arquivos soltos de nome
 /// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
+#[allow(clippy::too_many_arguments)]
 async fn run_slice(
     state: GatewayState,
     source: std::path::PathBuf,
-    out_dir: std::path::PathBuf,
+    shard_dir: std::path::PathBuf,
+    scratch: std::path::PathBuf,
     base_name: String,
     label: String,
     ranges: Vec<(u32, u32)>,
@@ -2058,7 +2177,7 @@ async fn run_slice(
         let first_report = Arc::new(AtomicBool::new(true));
         let outcome = plan::extract_shard(
             &source.to_string_lossy(),
-            &out_dir,
+            &scratch,
             // Rodada nova: ninguém sabe o hash antes de cortar.
             None,
             start,
@@ -2142,11 +2261,11 @@ async fn run_slice(
         );
     }
 
-    // Por último de propósito: um `.pom` só existe quando todas as partes que
-    // ele lista existem, então achar um manifesto na pasta é o mesmo que achar
-    // um fatiamento inteiro.
-    let caminho = crate::pom::write_atomic(&out_dir, &manifesto)?;
-    info!("manifesto gravado: {}", caminho.display());
+    // A rodada inteira se muda de uma vez para `<modelo>-<id da rodada>`, e o
+    // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
+    // um fatiamento inteiro que existe em disco.
+    let destino = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
+    info!("fatiamento guardado em {}", destino.display());
     invalidate_catalog().await;
 
     Ok(manifesto)

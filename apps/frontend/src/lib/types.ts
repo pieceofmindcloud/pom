@@ -211,9 +211,14 @@ export interface DiscoveredModel {
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
+  /** Chave da rodada de fatiamento: `<modelo>-<id curto>`. */
   shard_group: string | null;
   /** sha256 da parte, quando o arquivo é endereçado por conteúdo. */
   sha256: string | null;
+  /** Rótulo do modelo de origem, do `.pom`. */
+  model_label: string | null;
+  /** A rodada que produziu esta parte. */
+  pom_id: string | null;
 }
 
 /** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
@@ -267,6 +272,10 @@ export interface DeploymentsResponse {
 }
 
 export interface ShardSet {
+  /** Rótulo do modelo — o que se lê. `group` identifica a rodada. */
+  model_label: string;
+  /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
+  pom_id: string;
   group: string;
   total_layers: number | null;
   total_layers_inferred: boolean;

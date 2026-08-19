@@ -406,7 +406,6 @@ export interface PlannedShard {
   is_first: boolean;
   is_last: boolean;
   has_model: boolean;
-  shard_filename: string;
 }
 
 /** `src/plan.rs` — `SplitPlan`, what `POST /api/ui/plan` answers. */

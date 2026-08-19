@@ -17,16 +17,25 @@ um peer pode puxar) e `model_dirs`, e monta o `Catalog` com `models` e
 fatia, `ModelSource::Local`), depois `model_dirs` deduplicados por caminho
 resolvido - symlink não é varrido duas vezes.
 
-O nome da fatia é a convenção que sustenta tudo:
+Quem sustenta tudo é o **manifesto**, não o nome do arquivo. Uma parte se chama
+pelo próprio sha256 (`<sha256>.gguf`), e o `.pom` ao lado dela diz de que modelo
+ela é e que faixa cobre. Ver `models/pom.rs`.
 
-- `parse_shard_name` - `qwen_0_15.gguf` -> `("qwen", 0, 15)`. Os dois últimos
-  campos separados por `_` são a faixa. Parte `-00002-of-00003` (`is_secondary_part`)
+- `pom::load_dir` - lê os `.pom` de uma pasta de modelo. É daí que sai o
+  `shard_group` de cada parte listada.
+- `describe` - a faixa vem do carimbo `pom.start_layer`/`pom.end_layer` que o
+  fatiador grava no cabeçalho GGUF. Parte `-00002-of-00003` (`is_secondary_part`)
   é pulada.
-- `parse_quant` - quantização ignorando o sufixo da fatia.
-- `build_shard_sets` - agrupa fatias pelo base (`shard_group`), ordena por faixa,
+- `parse_quant` - quantização pelo nome de um modelo **inteiro**; uma parte
+  herda a do `.pom`.
+- `build_shard_sets` - agrupa fatias pelo grupo do manifesto, ordena por faixa,
   mede a cobertura contígua a partir da camada 0 e deduz o total da cobertura
   quando a fatia não declara (`total_layers_inferred`). A flag `complete` diz se
   a cobertura fecha o modelo.
+
+A convenção antiga (`<base>_<inicio>_<fim>.gguf`, lida por `parse_shard_name`)
+foi removida: o nome de um arquivo deixou de ser prova de coisa nenhuma. Fatias
+cortadas antes disso precisam ser refatiadas.
 
 `total_layers` é `Option` do catálogo ao plano: fatia antiga sem metadata
 `pom.*` não declara nada, e "não sei" e "zero" são fatos diferentes
@@ -113,8 +122,10 @@ plano: a tela nomeia os papéis ("processa o prompt" / "gera os tokens").
 
 `extract_shard` (`plan.rs`) roda `splitter::split` num `spawn_blocking` e apaga o
 arquivo parcial no erro - senão a próxima varredura o tomaria por fatia válida.
-O arquivo de saída é `{base}_{start}_{end}.gguf` em `<shard_dir>/<base>/`
-(`base_name_of` tira o sufixo `_<start>_<end>`; `shard_filename` o remonta).
+A saída vai para `<shard_dir>/<modelo>/`, gravada primeiro num `<uuid>.part` e
+renomeada para `<sha256>.gguf` quando o corte termina - o nome só se conhece no
+fim, porque o nome **é** o conteúdo. O sha256 sai do mesmo passe que grava os
+bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
 
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):
@@ -258,10 +269,9 @@ entrada (a classificação é uma só), e a rota `POST /api/ui/tp/check`
 tensor-parallel **na tela de implantar** (antes do job) em vez de deixar o apply
 falhar na metade. MoE/SSM/weight-tied e dimensões que não dividem caem aqui.
 
-`plan::extract_tp_shard`/`plan::tp_shard_filename` embrulham isso para o caminho
+`plan::extract_tp_shard` embrulha isso para o caminho
 de `apply` (webui): rodam num `spawn_blocking`, reaproveitam arquivo já completo e
-escrevem `{base}_tp{rank}of{size}.gguf`, que o `parse_shard_name` não confunde
-com a convenção de faixa `{base}_{start}_{end}.gguf`.
+escrevem a parte endereçada por conteúdo, como qualquer outra.
 
 ## 5. Junção (merge)
 

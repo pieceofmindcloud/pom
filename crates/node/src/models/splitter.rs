@@ -15,6 +15,18 @@ use std::io::{BufWriter, Write};
 use std::path::Path;
 use tracing::info;
 
+/// O que um fatiamento deixou em disco.
+///
+/// O `sha256` sai do mesmo passe que grava os bytes (ver
+/// `pom::HashingWriter`), e não de uma segunda leitura: uma fatia tem dezenas
+/// de GB, e reler tudo só para hashear dobrava o tempo do corte. É este hash
+/// que vira o **nome** do arquivo e a identidade da parte no `.pom`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrittenSlice {
+    pub bytes: u64,
+    pub sha256: String,
+}
+
 const GGUF_MAGIC: u32 = 0x4655_4747;
 const ALIGN: usize = 32;
 const CHUNK: usize = 8 << 20; // 8 MB per write
@@ -298,7 +310,7 @@ fn identity_bytes(hidden_dim: u32, dtype: u32) -> (u32, Vec<u8>) {
 /// `start_layer..=end_layer` of the source `src`. `on_progress` receives
 /// values in 0.0..=100.0 as tensor data is streamed to disk.
 ///
-/// Returns the byte size of the output file.
+/// Returns the size and the sha256 of the output file.
 pub fn split(
     src: &Path,
     dst: &Path,
@@ -307,7 +319,7 @@ pub fn split(
     is_first: bool,
     is_last: bool,
     on_progress: impl Fn(f64),
-) -> Result<u64> {
+) -> Result<WrittenSlice> {
     let _ = is_first; // reserved; currently unused (no tensors differ on first vs. middle)
     let n_split = end_layer - start_layer + 1;
 
@@ -583,7 +595,9 @@ pub fn split(
     }
 
     let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
-    let mut w = BufWriter::with_capacity(CHUNK, dst_file);
+    // O hash por fora do buffer: assim ele vê exatamente a sequência de bytes
+    // que o `BufWriter` entrega ao arquivo, uma vez cada.
+    let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     // Fixed header
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
@@ -658,18 +672,19 @@ pub fn split(
     }
 
     w.flush()?;
-
-    let final_size = std::fs::metadata(dst)
-        .with_context(|| format!("stat {}", dst.display()))?
-        .len();
+    let (sha256, final_size) = w.finish();
 
     info!(
-        "fatia pronta: {} ({:.0} MB)",
+        "fatia pronta: {} ({:.0} MB, sha256 {})",
         dst.display(),
-        final_size as f64 / (1024.0 * 1024.0)
+        final_size as f64 / (1024.0 * 1024.0),
+        &sha256[..12]
     );
 
-    Ok(final_size)
+    Ok(WrittenSlice {
+        bytes: final_size,
+        sha256,
+    })
 }
 
 // ── Tensor parallelism: shard por tensor ─────────────────────────────────────
@@ -918,7 +933,7 @@ pub fn shard_tensor_parallel(
     tp_size: u32,
     tp_rank: u32,
     on_progress: impl Fn(f64),
-) -> Result<u64> {
+) -> Result<WrittenSlice> {
     if tp_size < 2 {
         bail!("tp_size precisa ser >= 2");
     }
@@ -1200,7 +1215,7 @@ pub fn shard_tensor_parallel(
             .with_context(|| format!("criar diretório {}", parent.display()))?;
     }
     let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
-    let mut w = BufWriter::with_capacity(CHUNK, dst_file);
+    let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
     w.write_all(&version.to_le_bytes())?;
@@ -1249,18 +1264,19 @@ pub fn shard_tensor_parallel(
         }
     }
     w.flush()?;
-
-    let final_size = std::fs::metadata(dst)
-        .with_context(|| format!("stat {}", dst.display()))?
-        .len();
+    let (sha256, final_size) = w.finish();
 
     info!(
-        "shard de tensor pronto: {} ({:.0} MB)",
+        "shard de tensor pronto: {} ({:.0} MB, sha256 {})",
         dst.display(),
-        final_size as f64 / (1024.0 * 1024.0)
+        final_size as f64 / (1024.0 * 1024.0),
+        &sha256[..12]
     );
 
-    Ok(final_size)
+    Ok(WrittenSlice {
+        bytes: final_size,
+        sha256,
+    })
 }
 
 // ── Merge: the inverse of split ──────────────────────────────────────────────
@@ -1388,7 +1404,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
 /// the union range. `on_progress` receives 0.0..=100.0 as bytes are written.
 ///
 /// Returns the byte size of the output file.
-pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Result<u64> {
+pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Result<WrittenSlice> {
     if parts.len() < 2 {
         bail!("juntar menos de duas fatias não faz sentido");
     }
@@ -1559,7 +1575,7 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
             .with_context(|| format!("criar diretório {}", parent.display()))?;
     }
     let dst_file = File::create(dst).with_context(|| format!("criar {}", dst.display()))?;
-    let mut w = BufWriter::with_capacity(CHUNK, dst_file);
+    let mut w = crate::pom::HashingWriter::new(BufWriter::with_capacity(CHUNK, dst_file));
 
     w.write_all(&GGUF_MAGIC.to_le_bytes())?;
     w.write_all(&parsed[0].version.to_le_bytes())?;
@@ -1612,17 +1628,19 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
 
     w.flush()?;
 
-    let final_size = std::fs::metadata(dst)
-        .with_context(|| format!("stat {}", dst.display()))?
-        .len();
+    let (sha256, final_size) = w.finish();
 
     info!(
-        "fatias juntadas: {} ({:.0} MB)",
+        "fatias juntadas: {} ({:.0} MB, sha256 {})",
         dst.display(),
-        final_size as f64 / (1024.0 * 1024.0)
+        final_size as f64 / (1024.0 * 1024.0),
+        &sha256[..12]
     );
 
-    Ok(final_size)
+    Ok(WrittenSlice {
+        bytes: final_size,
+        sha256,
+    })
 }
 
 #[cfg(test)]
@@ -2054,7 +2072,7 @@ mod tests {
             |_| {},
         )
         .unwrap();
-        assert!(size > 0);
+        assert!(size.bytes > 0);
 
         let file = File::open(&merged).unwrap();
         let mm = unsafe { Mmap::map(&file).unwrap() };

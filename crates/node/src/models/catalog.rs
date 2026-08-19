@@ -79,6 +79,10 @@ pub struct DiscoveredModel {
     pub shard_range: Option<(u32, u32)>,
     /// Shards of the same model share this key.
     pub shard_group: Option<String>,
+    /// sha256 da parte, quando este arquivo é uma parte endereçada por
+    /// conteúdo (`<sha256>.gguf`). É a identidade que atravessa máquinas: dois
+    /// nós com o mesmo hash têm, byte a byte, o mesmo arquivo.
+    pub sha256: Option<String>,
 }
 
 impl DiscoveredModel {
@@ -307,14 +311,11 @@ fn is_secondary_part(path: &Path) -> bool {
 
 /// Pull a quantisation tag such as `Q4_K_M`, `IQ3_XXS` or `BF16` from a filename.
 ///
-/// Any `_<start>_<end>` shard suffix is removed first, otherwise a slice of a
-/// `Q4_K_M` model reports its quantisation as `Q4_K_M_0_19`.
-fn parse_quant(filename: &str) -> Option<String> {
-    let stem = filename.trim_end_matches(".gguf");
-    let stem = match parse_shard_name(filename) {
-        Some((base, _, _)) => base,
-        None => stem.to_string(),
-    };
+/// Só faz sentido no nome de um modelo inteiro. Uma parte se chama pelo hash,
+/// que não tem tag nenhuma para achar - a quantização dela vem do `.pom`, que a
+/// copiou daqui na hora de fatiar.
+pub fn parse_quant(filename: &str) -> Option<String> {
+    let stem = filename.trim_end_matches(".gguf").to_string();
 
     for raw in stem.split(['-', '.', '_']) {
         let up = raw.to_ascii_uppercase();
@@ -338,25 +339,14 @@ fn parse_quant(filename: &str) -> Option<String> {
     None
 }
 
-/// `qwen_0_15.gguf` → `("qwen", 0, 15)`. Mirrors `parse_layers_from_filename`
-/// in `main.rs`, which is what actually drives the assignment at startup.
-pub fn parse_shard_name(filename: &str) -> Option<(String, u32, u32)> {
-    let stem = filename.strip_suffix(".gguf")?;
-    let mut parts: Vec<&str> = stem.split('_').collect();
-    if parts.len() < 3 {
-        return None;
-    }
-    let end: u32 = parts.pop()?.parse().ok()?;
-    let start: u32 = parts.pop()?.parse().ok()?;
-    if start > end || end - start > 500 {
-        return None;
-    }
-    Some((parts.join("_"), start, end))
-}
-
 // ── Building the catalog ─────────────────────────────────────────────────────
 
-fn describe(path: &Path, name: String, source: ModelSource) -> Option<DiscoveredModel> {
+fn describe(
+    path: &Path,
+    name: String,
+    source: ModelSource,
+    manifest_group: Option<String>,
+) -> Option<DiscoveredModel> {
     let meta = std::fs::metadata(path).ok()?;
     let size_bytes = meta.len();
     // A GGUF header alone is a few hundred bytes; anything this small is junk.
@@ -382,14 +372,20 @@ fn describe(path: &Path, name: String, source: ModelSource) -> Option<Discovered
         return None;
     }
 
-    // Shard range: trust GGUF metadata first, fall back to the filename
-    // convention that `main.rs` already relies on.
-    let from_name = parse_shard_name(&filename);
-    let shard_range = info
-        .as_ref()
-        .and_then(|i| i.shard_range)
-        .or_else(|| from_name.as_ref().map(|(_, s, e)| (*s, *e)));
-    let shard_group = from_name.as_ref().map(|(base, _, _)| base.clone());
+    // A identidade de uma parte é o nome dela: `<sha256>.gguf`, escrito assim
+    // por quem a produziu (ver `plan::write_then_name`) ou por quem a recebeu e
+    // conferiu. Um arquivo com qualquer outro nome não é parte de fatiamento
+    // nenhum - é um modelo inteiro que alguém deixou na pasta.
+    let sha256 = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| crate::pom::is_sha256_hex(s))
+        .map(|s| s.to_string());
+
+    // A faixa vem do cabeçalho GGUF, que o fatiador carimba. O `.pom` é a
+    // fonte para o conjunto; aqui, olhando um arquivo só, o carimbo basta.
+    let shard_range = info.as_ref().and_then(|i| i.shard_range);
+    let shard_group = shard_range.and(manifest_group.clone());
 
     // For a slice, `block_count` counts the layers *inside the file*, not the
     // model it came from. Only `pom.original_block_count` — written by
@@ -414,6 +410,7 @@ fn describe(path: &Path, name: String, source: ModelSource) -> Option<Discovered
         quant: parse_quant(&filename),
         shard_range,
         shard_group,
+        sha256,
     })
 }
 
@@ -519,7 +516,7 @@ fn scan_gguf_dir(
                 .to_string_lossy()
                 .into_owned(),
         };
-        if let Some(m) = describe(&f, name, source) {
+        if let Some(m) = describe(&f, name, source, None) {
             if !out.iter().any(|e| e.path == m.path) {
                 out.push(m);
                 found += 1;
@@ -570,7 +567,7 @@ fn scan_ollama_dir(
             else {
                 continue;
             };
-            if let Some(m) = describe(&blob, name, ModelSource::Ollama) {
+            if let Some(m) = describe(&blob, name, ModelSource::Ollama, None) {
                 if !out.iter().any(|e| e.path == m.path) {
                     out.push(m);
                     found += 1;
@@ -647,22 +644,47 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// The slice directory. Names stay bare filenames here because that is what the
-/// `<base>_<start>_<end>.gguf` convention is read from.
+/// A pasta de fatias: um diretório por modelo, e dentro dele as partes
+/// (`<sha256>.gguf`) mais os manifestos (`.pom`) das rodadas de fatiamento.
+///
+/// Quem manda aqui é o manifesto, não o nome do arquivo. Uma parte listada num
+/// `.pom` entra no catálogo sabendo de qual modelo é e que faixa cobre; um
+/// `.gguf` solto na pasta continua aparecendo (o operador pode ter largado um
+/// modelo inteiro ali), só que sem grupo - e sem grupo ele não é fatia de nada.
 fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<ScannedRoot>) {
     let exists = dir.is_dir();
+    let mut found = 0;
+
+    // Primeiro os manifestos: eles dizem quem é parte de quê.
+    let mut grupo_por_caminho: HashMap<PathBuf, String> = HashMap::new();
+    if exists {
+        for entrada in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let pasta = entrada.path();
+            if !pasta.is_dir() {
+                continue;
+            }
+            for m in crate::pom::load_dir(&pasta) {
+                for parte in &m.parts {
+                    if let Ok(p) = crate::pom::part_path(&pasta, &parte.sha256) {
+                        grupo_por_caminho.insert(p, m.model.name.clone());
+                    }
+                }
+            }
+        }
+    }
+
     let mut files = Vec::new();
     if exists {
         find_gguf(dir, 0, &mut files);
     }
-    let mut found = 0;
     for f in files {
         let name = f
             .file_name()
             .unwrap_or_default()
             .to_string_lossy()
             .into_owned();
-        if let Some(m) = describe(&f, name, ModelSource::Local) {
+        let grupo = grupo_por_caminho.get(&f).cloned();
+        if let Some(m) = describe(&f, name, ModelSource::Local, grupo) {
             if !out.iter().any(|e| e.path == m.path) {
                 out.push(m);
                 found += 1;
@@ -788,20 +810,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_shard_filenames() {
-        assert_eq!(
-            parse_shard_name("qwen_0_15.gguf"),
-            Some(("qwen".to_string(), 0, 15))
-        );
-        assert_eq!(
-            parse_shard_name("Qwen3.6-35B-A3B-Q4_K_M_20_39.gguf"),
-            Some(("Qwen3.6-35B-A3B-Q4_K_M".to_string(), 20, 39))
-        );
-        assert_eq!(parse_shard_name("phi-4-Q6_K.gguf"), None);
-        assert_eq!(parse_shard_name("model.gguf"), None);
-    }
-
-    #[test]
     fn parses_quant_tags() {
         assert_eq!(parse_quant("phi-4-Q6_K.gguf").as_deref(), Some("Q6_K"));
         assert_eq!(
@@ -809,15 +817,6 @@ mod tests {
             Some("IQ3_S")
         );
         assert_eq!(parse_quant("model-BF16.gguf").as_deref(), Some("BF16"));
-    }
-
-    #[test]
-    fn quant_ignores_the_shard_suffix() {
-        assert_eq!(
-            parse_quant("Qwen3.6-35B-A3B-Q4_K_M_0_19.gguf").as_deref(),
-            Some("Q4_K_M"),
-            "a fatia tem a mesma quantização do modelo de origem"
-        );
     }
 
     #[test]
@@ -841,6 +840,7 @@ mod tests {
             quant: None,
             shard_range: Some((start, end)),
             shard_group: Some("s".into()),
+            sha256: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -900,7 +900,13 @@ mod tests {
         let filler = vec![0u8; 4096];
         std::fs::write(listed.join("visivel.gguf"), &filler).unwrap();
         std::fs::write(unlisted.join("invisivel.gguf"), &filler).unwrap();
-        std::fs::write(shards.join("m_0_3.gguf"), &filler).unwrap();
+        // Um GGUF de verdade: a faixa da fatia agora sai do cabeçalho que o
+        // fatiador carimba, não do nome do arquivo.
+        std::fs::write(
+            shards.join("m_0_3.gguf"),
+            crate::splitter::test_gguf_bytes(4),
+        )
+        .unwrap();
 
         let catalog = discover(&[listed.clone()], &shards);
         let names: Vec<&str> = catalog.models.iter().map(|m| m.name.as_str()).collect();
@@ -915,7 +921,9 @@ mod tests {
             .find(|m| m.name == "m_0_3.gguf")
             .unwrap();
         assert_eq!(shard.source, ModelSource::Local);
-        assert_eq!(shard.shard_range, Some((0, 3)));
+        // Sem carimbo `pom.start_layer` no cabeçalho não há faixa: o nome do
+        // arquivo deixou de ser prova de coisa nenhuma.
+        assert_eq!(shard.shard_range, None);
 
         std::fs::remove_dir_all(&base).ok();
     }
@@ -936,6 +944,7 @@ mod tests {
             quant: None,
             shard_range: Some((start, end)),
             shard_group: Some("qwen".into()),
+            sha256: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

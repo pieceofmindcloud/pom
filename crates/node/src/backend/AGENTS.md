@@ -286,7 +286,7 @@ behind an auth extractor.
   (`NodeRuntime`, `NodeConfig` - model/slice lifecycle), `crate::config`
   (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`, `model_dir_paths()`),
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
-  (`Catalog`, `GgufLayout`, `PeerBudget`, `parse_shard_name`), `crate::splitter`
+  (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the
   cluster view), `crate::pkarr_node` (`detect_local_ip`), `crate::prefill`
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,

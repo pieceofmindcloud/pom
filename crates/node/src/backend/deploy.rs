@@ -64,7 +64,7 @@ use tracing::{info, warn};
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
-use crate::plan::{self, DEFAULT_RESERVE_PCT};
+use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, MergeSource,
     RuntimeParams, PEER_TIMEOUT,
@@ -276,6 +276,14 @@ struct HeldShard {
     name: String,
     path: String,
     size_bytes: u64,
+    /// sha256 da parte, quando ela é endereçada por conteúdo.
+    ///
+    /// É esta a identidade que o `launch` manda para o destino: com ela o nó
+    /// resolve o caminho local sozinho, e duas fatias de modelos diferentes que
+    /// por acaso cobrem a mesma faixa deixam de ser a mesma coisa aos olhos de
+    /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
+    /// nenhuma.
+    sha256: Option<String>,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -478,6 +486,11 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
         name: v.get("name")?.as_str()?.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
+        sha256: v
+            .get("sha256")
+            .and_then(|h| h.as_str())
+            .filter(|h| crate::pom::is_sha256_hex(h))
+            .map(|h| h.to_string()),
     })
 }
 
@@ -516,6 +529,8 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         name: name.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
+        // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
+        sha256: None,
     })
 }
 
@@ -1226,7 +1241,10 @@ fn plan(
                 start_layer,
                 end_layer,
                 total_layers,
-                name: plan::shard_filename(group, start_layer, end_layer),
+                // O que o operador lê. A identidade de verdade é o hash da
+                // parte, que viaja em `part_sha256`; um "qwen3-8b L0-15" aqui
+                // é rótulo de tela, não chave de nada.
+                name: format!("{group} L{start_layer}-{end_layer}"),
                 size_bytes,
                 target_node_id: target_id.clone(),
                 target_host: target.map(|t| t.label()).unwrap_or_default(),
@@ -1904,6 +1922,9 @@ fn launch_targets(
                 end_layer: step.end_layer,
                 // Nothing to cut: the merge produces the exact range.
                 skip_split: true,
+                // A junção produz um arquivo novo, cujo hash ninguém conhece
+                // antes de juntar: quem junta é que o nomeia.
+                part_sha256: None,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
@@ -1916,9 +1937,8 @@ fn launch_targets(
             continue;
         }
 
-        let path = target_machine
+        let held = target_machine
             .and_then(|m| m.holds(step.start_layer, step.end_layer))
-            .map(|s| s.path.clone())
             .ok_or_else(|| {
                 format!(
                     "{} não achou {} depois da cópia",
@@ -1929,12 +1949,13 @@ fn launch_targets(
 
         targets.push(LaunchTarget {
             node_id: step.target_node_id.clone(),
-            source_model_path: path,
+            source_model_path: held.path.clone(),
             start_layer: step.start_layer,
             end_layer: step.end_layer,
             // Already a file of exactly this range: nothing to cut. A whole
             // model is the same statement about the whole range.
             skip_split: true,
+            part_sha256: held.sha256.clone(),
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
@@ -1969,6 +1990,9 @@ fn launch_targets(
                 start_layer: head.start_layer,
                 end_layer: head.end_layer,
                 skip_split: true,
+                // O shard de tensor deste rank ainda vai ser extraído aqui; o
+                // hash sai do corte.
+                part_sha256: None,
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
                 offload_kqv: head.offload_kqv,
@@ -2223,6 +2247,7 @@ async fn add_node_endpoint(
         }));
     };
     let source_model_path = shard.path.clone();
+    let shard_sha256 = shard.sha256.clone();
 
     let outras: Vec<(u32, u32)> = live_ranges(&state, &req.group)
         .await
@@ -2269,6 +2294,7 @@ async fn add_node_endpoint(
                 start_layer: req.start_layer,
                 end_layer: req.end_layer,
                 skip_split: true,
+                part_sha256: shard_sha256,
                 merge: None,
                 n_gpu_layers: None,
                 offload_kqv: None,
@@ -3201,6 +3227,7 @@ mod tests {
                         total_layers: s.declares,
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
+                        sha256: None,
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -3575,7 +3602,9 @@ mod tests {
         assert!(joined.ready);
         assert_eq!(joined.parts.len(), 2, "duas fatias entram no arquivo");
         assert!(joined.parts.iter().all(|part| part.ready));
-        assert_eq!(joined.name, "m_0_15.gguf", "nome do arquivo junto");
+        // Rótulo de tela, não nome de arquivo: o arquivo junto só ganha nome
+        // depois de existir, e o nome dele é o hash.
+        assert_eq!(joined.name, "m L0-15", "rótulo do passo de junção");
 
         let solo = p.steps.iter().find(|s| !s.merged).unwrap();
         assert_eq!((solo.start_layer, solo.end_layer), (16, 31));
@@ -4011,6 +4040,7 @@ mod tests {
             disk_free_mb: 500_000,
             held: if has {
                 vec![HeldShard {
+                    sha256: None,
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -4386,6 +4416,7 @@ mod tests {
             mem_free_mb: 900_000,
             disk_free_mb: 900_000,
             held: vec![HeldShard {
+                sha256: None,
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),

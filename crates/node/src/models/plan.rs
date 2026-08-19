@@ -55,8 +55,6 @@ pub struct PlannedShard {
     pub is_first: bool,
     pub is_last: bool,
     pub has_model: bool,
-    /// Filename this peer's slice gets, e.g. `qwen_0_15.gguf`.
-    pub shard_filename: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -169,7 +167,6 @@ pub fn plan_split(
             is_first,
             is_last,
             has_model: budget.has_model,
-            shard_filename: shard_filename(&base_name, start_layer, end_layer),
         });
 
         pos = end_layer + 1;
@@ -208,28 +205,17 @@ pub fn plan_split(
     })
 }
 
-/// Strip directory, `.gguf` and any existing `_<start>_<end>` suffix so
-/// re-slicing an already-sliced name does not stack suffixes.
+/// O nome do modelo tirado do caminho do arquivo, sem diretório nem `.gguf`.
+///
+/// Já teve uma segunda função - descascar um sufixo `_<inicio>_<fim>` para que
+/// refatiar uma fatia não empilhasse faixas no nome. Isso morreu junto com a
+/// convenção: a faixa de uma parte mora no `.pom`, e o arquivo se chama pelo
+/// próprio hash.
 pub fn base_name_of(model_path: &str) -> String {
-    let stem = Path::new(model_path)
+    Path::new(model_path)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_else(|| "model".to_string());
-
-    let parts: Vec<&str> = stem.split('_').collect();
-    if parts.len() >= 3 {
-        let last_two_numeric = parts[parts.len() - 1].parse::<u32>().is_ok()
-            && parts[parts.len() - 2].parse::<u32>().is_ok();
-        if last_two_numeric {
-            return parts[..parts.len() - 2].join("_");
-        }
-    }
-    stem
-}
-
-/// The filename convention `main.rs` and `catalog.rs` both parse.
-pub fn shard_filename(base: &str, start: u32, end: u32) -> String {
-    format!("{base}_{start}_{end}.gguf")
+        .unwrap_or_else(|| "model".to_string())
 }
 
 // ── Slicing ──────────────────────────────────────────────────────────────────
@@ -238,8 +224,75 @@ pub fn shard_filename(base: &str, start: u32, end: u32) -> String {
 pub struct SliceOutcome {
     pub output_path: String,
     pub bytes: u64,
+    /// sha256 do arquivo — o nome dele em disco e a identidade dele no `.pom`.
+    pub sha256: String,
     /// True when the slice already existed and was reused.
     pub reused: bool,
+}
+
+/// Grava a fatia num temporário e só a batiza depois de saber o hash.
+///
+/// O nome final é o conteúdo, e o conteúdo só se conhece no fim: por isso o
+/// corte sai para `<uuid>.part` e vira `<sha256>.gguf` num `rename`, que é
+/// atômico no mesmo sistema de arquivos. É também o que impede um corte
+/// interrompido de ficar parecendo fatia boa - o defeito que o critério antigo
+/// ("existe e tem mais de 1 KB") não conseguia enxergar.
+async fn write_then_name<F>(output_dir: &Path, corte: F) -> Result<SliceOutcome>
+where
+    F: FnOnce(PathBuf) -> tokio::task::JoinHandle<Result<crate::splitter::WrittenSlice>>,
+{
+    std::fs::create_dir_all(output_dir)
+        .with_context(|| format!("criar {}", output_dir.display()))?;
+
+    let temp = output_dir.join(format!("{}.part", uuid::Uuid::new_v4()));
+    let escrito = corte(temp.clone())
+        .await
+        .context("spawn_blocking para o fatiador")?
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp);
+        })?;
+
+    let destino = crate::pom::part_path(output_dir, &escrito.sha256)?;
+    // Já existir é o caso bom: outra rodada produziu bytes idênticos, e o
+    // endereço de conteúdo diz que um dos dois arquivos é redundante.
+    if destino.exists() {
+        let _ = std::fs::remove_file(&temp);
+        info!(
+            "parte idêntica já em disco, reaproveitando: {}",
+            destino.display()
+        );
+    } else if let Err(e) = std::fs::rename(&temp, &destino) {
+        let _ = std::fs::remove_file(&temp);
+        return Err(e).with_context(|| format!("renomear para {}", destino.display()));
+    }
+
+    Ok(SliceOutcome {
+        output_path: destino.to_string_lossy().into_owned(),
+        bytes: escrito.bytes,
+        sha256: escrito.sha256,
+        reused: false,
+    })
+}
+
+/// A parte já está aqui, com este hash exato?
+///
+/// Reaproveitar passa a exigir saber **qual** parte se quer, e não adivinhar um
+/// nome: é o `.pom` que diz o hash. Em troca some a classe inteira de defeito
+/// em que um arquivo com o nome certo e o conteúdo errado era carregado como se
+/// estivesse bom.
+fn ja_tenho(output_dir: &Path, sha256: &str) -> Option<SliceOutcome> {
+    let caminho = crate::pom::part_path(output_dir, sha256).ok()?;
+    let meta = std::fs::metadata(&caminho).ok()?;
+    if meta.len() <= 1024 {
+        return None;
+    }
+    info!("parte já existe, reaproveitando: {}", caminho.display());
+    Some(SliceOutcome {
+        output_path: caminho.to_string_lossy().into_owned(),
+        bytes: meta.len(),
+        sha256: sha256.to_string(),
+        reused: true,
+    })
 }
 
 /// Produce this peer's slice, unless it already exists.
@@ -248,70 +301,42 @@ pub struct SliceOutcome {
 /// model — no weights are transferred between peers.
 ///
 /// `on_progress` is called with 0..=100 as the slicer writes bytes.
+///
+/// `expected_sha256` é o que o `.pom` diz que esta parte tem que ser. Com ele,
+/// reaproveitar é uma checagem de endereço de conteúdo; sem ele (uma rodada
+/// nova, que ainda não conhece o hash), corta-se e o hash sai do corte.
 #[allow(clippy::too_many_arguments)]
 pub async fn extract_shard(
     source_model: &str,
     output_dir: &Path,
-    base_name: &str,
+    expected_sha256: Option<&str>,
     start_layer: u32,
     end_layer: u32,
     is_first: bool,
     is_last: bool,
     on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
-    let output = output_dir.join(shard_filename(base_name, start_layer, end_layer));
-
     // Reuse an existing slice: these files are gigabytes and rebuilding one is
     // minutes of I/O for an identical result.
-    if let Ok(meta) = std::fs::metadata(&output) {
-        if meta.len() > 1024 {
-            info!("shard já existe, reaproveitando: {}", output.display());
-            return Ok(SliceOutcome {
-                output_path: output.to_string_lossy().into_owned(),
-                bytes: meta.len(),
-                reused: true,
-            });
-        }
+    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
+        return Ok(pronta);
     }
 
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("criar {}", output_dir.display()))?;
-
     let src = std::path::PathBuf::from(source_model);
-    let dst = output.clone();
-
-    let bytes = tokio::task::spawn_blocking(move || {
-        crate::splitter::split(
-            &src,
-            &dst,
-            start_layer,
-            end_layer,
-            is_first,
-            is_last,
-            on_progress,
-        )
+    write_then_name(output_dir, move |dst| {
+        tokio::task::spawn_blocking(move || {
+            crate::splitter::split(
+                &src,
+                &dst,
+                start_layer,
+                end_layer,
+                is_first,
+                is_last,
+                on_progress,
+            )
+        })
     })
     .await
-    .context("spawn_blocking para splitter")?
-    .inspect_err(|_| {
-        // A partial file would be mistaken for a valid slice next time.
-        let _ = std::fs::remove_file(&output);
-    })?;
-
-    Ok(SliceOutcome {
-        output_path: output.to_string_lossy().into_owned(),
-        bytes,
-        reused: false,
-    })
-}
-
-/// Nome de um shard de tensor parallelism: `{base}_tp{rank}of{size}.gguf`.
-///
-/// Distinto da convenção de faixa `{base}_{start}_{end}.gguf` de propósito:
-/// o `parse_shard_name` do catálogo não confunde os dois, e o sufixo `_tp`
-/// deixa claro que o arquivo é a metade de um grupo, não um modelo autônomo.
-pub fn tp_shard_filename(base: &str, rank: u32, size: u32) -> String {
-    format!("{base}_tp{rank}of{size}.gguf")
 }
 
 /// Extrai o shard de tensor de um rank de tensor parallelism (caminho C).
@@ -320,83 +345,32 @@ pub fn tp_shard_filename(base: &str, rank: u32, size: u32) -> String {
 /// `spawn_blocking`, reaproveita arquivo já completo e apaga o parcial no
 /// erro. O shard NÃO é carregável pelo llama.cpp de hoje; é a metade que o
 /// fork do caminho C carrega junto com a coletiva all-reduce.
+///
+/// O carimbo `pom.tp_format` continua sendo gravado, mas deixou de ser o que
+/// decide reaproveitar: um shard escrito por uma regra antiga tem **outros
+/// bytes**, logo outro hash, logo outro nome. O defeito de 17/08 - a ksia
+/// carregando o mesmo shard obsoleto durante três correções seguidas, com o log
+/// anunciando "reaproveitando" a cada tentativa - não tem como se repetir
+/// quando o nome do arquivo é o conteúdo dele.
 pub async fn extract_tp_shard(
     source_model: &str,
     output_dir: &Path,
-    base_name: &str,
+    expected_sha256: Option<&str>,
     tp_size: u32,
     tp_rank: u32,
     on_progress: impl Fn(f64) + Send + Sync + 'static,
 ) -> Result<SliceOutcome> {
-    let output = output_dir.join(tp_shard_filename(base_name, tp_rank, tp_size));
-
-    // Reaproveitar exige que o arquivo tenha sido escrito pela **regra atual**,
-    // não só que ele exista. "Existe e tem mais de 1 KB" foi o critério até
-    // 17/08, e ele não distingue um shard atual de um escrito por uma versão
-    // com defeito: a ksia carregou o mesmo shard de cabeçalho não dividido
-    // durante três correções seguidas, com o log anunciando "reaproveitando" a
-    // cada tentativa. O carimbo é `pom.tp_format` (ver
-    // `splitter::TP_SHARD_FORMAT`); shard velho não tem a chave, e a ausência
-    // já basta para regenerar.
-    if let Ok(meta) = std::fs::metadata(&output) {
-        if meta.len() > 1024 {
-            let carimbo = crate::gguf::read_info(&output)
-                .ok()
-                .and_then(|i| i.tp_stamp);
-            let atual = carimbo.is_some_and(|c| {
-                c.format == crate::splitter::TP_SHARD_FORMAT
-                    && c.size == tp_size
-                    && c.rank == tp_rank
-            });
-            if atual {
-                info!(
-                    "shard de tensor já existe, reaproveitando: {}",
-                    output.display()
-                );
-                return Ok(SliceOutcome {
-                    output_path: output.to_string_lossy().into_owned(),
-                    bytes: meta.len(),
-                    reused: true,
-                });
-            }
-            // Dizer **por que** está reescrevendo: um rebuild que reescreve
-            // 2,8 GB sem explicação parece defeito.
-            info!(
-                "shard de tensor obsoleto ({}), regerando: carimbo {:?}, esperado formato {} {}of{}",
-                output.display(),
-                carimbo,
-                crate::splitter::TP_SHARD_FORMAT,
-                tp_rank,
-                tp_size,
-            );
-        }
+    if let Some(pronta) = expected_sha256.and_then(|sha| ja_tenho(output_dir, sha)) {
+        return Ok(pronta);
     }
 
-    std::fs::create_dir_all(output_dir)
-        .with_context(|| format!("criar {}", output_dir.display()))?;
-
     let src = std::path::PathBuf::from(source_model);
-    let dst = output.clone();
-
-    let bytes = tokio::task::spawn_blocking(move || {
-        crate::splitter::shard_tensor_parallel(&src, &dst, tp_size, tp_rank, on_progress)
+    write_then_name(output_dir, move |dst| {
+        tokio::task::spawn_blocking(move || {
+            crate::splitter::shard_tensor_parallel(&src, &dst, tp_size, tp_rank, on_progress)
+        })
     })
     .await
-    .context("spawn_blocking para shard_tensor_parallel")?
-    .inspect_err(|_| {
-        let _ = std::fs::remove_file(&output);
-    })?;
-
-    Ok(SliceOutcome {
-        output_path: output.to_string_lossy().into_owned(),
-        bytes,
-        reused: false,
-    })
-}
-
-/// Where slices go: `<pasta de fatias>/<base>/`.
-pub fn shard_output_dir(shard_dir: &Path, base_name: &str) -> PathBuf {
-    shard_dir.join(sanitize(base_name))
 }
 
 // ── Fatias de tamanhos diferentes ────────────────────────────────────────────
@@ -687,41 +661,22 @@ pub fn even_split(total_layers: u32, parts: u32) -> Vec<(u32, u32)> {
     ranges
 }
 
-fn sanitize(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' || c == '.' || c == '_' {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
-
-/// Turn a catalog name such as `qwen3:8b` into something that can be a filename
-/// and still survive `parse_shard_name`.
+/// Turn a catalog name such as `qwen3:8b` into the name of the model's folder.
 ///
-/// Ollama keeps its weights as `sha256-<digest>` blobs, so slicing one straight
-/// from the path produces `sha256-a3de…686f_0_11.gguf` — a name nobody can read
-/// and nothing can match across machines. The friendly name is right there in
-/// the catalog; this makes it usable as a base.
+/// Ollama keeps its weights as `sha256-<digest>` blobs, so naming a slicing run
+/// after the path produces `sha256-a3de…686f` — a name nobody can read and
+/// nothing can match across machines. The friendly name is right there in the
+/// catalog; this makes it usable as a directory.
 pub fn base_name_from_label(label: &str) -> Option<String> {
-    // A model found in a plain folder is named after its file, extension and
-    // all, and stacking another one produces `modelo.gguf_0_15.gguf`.
     let label = label.trim();
     let label = label
         .strip_suffix(".gguf")
         .or_else(|| label.strip_suffix(".GGUF"))
         .unwrap_or(label);
-
-    let cleaned = sanitize(label).trim_matches(['-', '.', '_']).to_string();
-    if cleaned.is_empty() {
+    if label.trim_matches(['-', '.', '_', '/']).is_empty() {
         return None;
     }
-    // The `_<start>_<end>` suffix is what identifies a slice; a base that
-    // already ends in two numbers would make the range ambiguous.
-    Some(base_name_of(&format!("{cleaned}.gguf")))
+    Some(crate::pom::sanitize_name(label))
 }
 
 #[cfg(test)]
@@ -915,24 +870,13 @@ mod tests {
     }
 
     #[test]
-    fn base_name_drops_an_existing_shard_suffix() {
-        assert_eq!(base_name_of("/models/qwen/qwen_0_15.gguf"), "qwen");
+    fn base_name_is_just_the_file_stem() {
+        assert_eq!(base_name_of("/models/qwen/qwen_0_15.gguf"), "qwen_0_15");
         assert_eq!(
-            base_name_of("/x/Qwen3.6-35B-A3B-Q4_K_M_20_39.gguf"),
+            base_name_of("/x/Qwen3.6-35B-A3B-Q4_K_M.gguf"),
             "Qwen3.6-35B-A3B-Q4_K_M"
         );
         assert_eq!(base_name_of("/x/phi-4-Q6_K.gguf"), "phi-4-Q6_K");
-    }
-
-    #[test]
-    fn shard_filename_matches_the_parsed_convention() {
-        assert_eq!(shard_filename("qwen", 0, 15), "qwen_0_15.gguf");
-    }
-
-    #[test]
-    fn tp_shard_filename_does_not_collide_with_the_range_convention() {
-        assert_eq!(tp_shard_filename("qwen", 0, 2), "qwen_tp0of2.gguf");
-        assert_eq!(tp_shard_filename("qwen", 1, 4), "qwen_tp1of4.gguf");
     }
 
     #[tokio::test]
@@ -943,29 +887,51 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
 
-        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, None, 2, 0, |_| {})
             .await
             .unwrap();
         assert!(!outcome.reused);
-        assert!(outcome.output_path.ends_with("whole_tp0of2.gguf"));
+        // O nome é o conteúdo: `<sha256>.gguf`, e nada mais.
+        assert!(outcome
+            .output_path
+            .ends_with(&format!("{}.gguf", outcome.sha256)));
         assert!(std::path::Path::new(&outcome.output_path).exists());
+        assert_eq!(
+            crate::pom::hash_file(std::path::Path::new(&outcome.output_path))
+                .unwrap()
+                .0,
+            outcome.sha256,
+            "o hash do passe de escrita tem que bater com o do arquivo em disco"
+        );
 
-        let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
-            .await
-            .unwrap();
+        // Sabendo o hash, reaproveita sem reescrever.
+        let again = extract_tp_shard(
+            whole.to_str().unwrap(),
+            &dir,
+            Some(&outcome.sha256),
+            2,
+            0,
+            |_| {},
+        )
+        .await
+        .unwrap();
         assert!(
             again.reused,
             "arquivo já completo é reaproveitado, não reescrito"
         );
+        assert_eq!(again.output_path, outcome.output_path);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// Shard escrito por uma regra antiga **não** é reaproveitado.
     ///
     /// Este é o teste que impede a repetição de 17/08: três correções seguidas
     /// no fatiamento por tensor, e a ksia carregando o mesmo shard obsoleto em
-    /// todas, porque o critério de reuso era "existe e tem mais de 1 KB". Um
-    /// arquivo grande sem o carimbo `pom.tp_format` é regra desconhecida, e
-    /// regra desconhecida se regenera.
+    /// todas, porque o critério de reuso era "existe e tem mais de 1 KB".
+    /// Agora o nome do arquivo é o hash do conteúdo, então "regra antiga"
+    /// e "regra atual" nem disputam o mesmo nome - o reuso só acerta quando os
+    /// bytes são exatamente os pedidos.
     #[tokio::test]
     async fn a_shard_from_an_older_rule_is_rewritten_not_reused() {
         let dir = std::env::temp_dir().join(format!("pom-tp-stale-{}", std::process::id()));
@@ -974,17 +940,23 @@ mod tests {
         let whole = dir.join("whole.gguf");
         std::fs::write(&whole, crate::splitter::test_gguf_bytes(32)).unwrap();
 
-        // Um "shard" grande que nunca passou pelo fatiador: sem carimbo, como
-        // todo arquivo escrito antes de `tp_format` existir.
-        let velho = dir.join(tp_shard_filename("whole", 0, 2));
+        // Um "shard" grande que nunca passou pelo fatiador, gravado sob um hash
+        // que não é o dele - exatamente o que uma regra antiga deixava para
+        // trás.
+        let hash_mentiroso = "b".repeat(64);
+        let velho = crate::pom::part_path(&dir, &hash_mentiroso).unwrap();
         std::fs::write(&velho, vec![0u8; 4096]).unwrap();
 
-        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
+        let outcome = extract_tp_shard(whole.to_str().unwrap(), &dir, None, 2, 0, |_| {})
             .await
             .unwrap();
         assert!(
             !outcome.reused,
-            "shard sem carimbo tem que ser reescrito, não reaproveitado"
+            "sem hash esperado não há reuso: o fatiador corta e o conteúdo se nomeia"
+        );
+        assert_ne!(
+            outcome.sha256, hash_mentiroso,
+            "o shard novo não pode herdar o nome do lixo que estava na pasta"
         );
 
         // E o que saiu tem o carimbo da regra atual.
@@ -995,11 +967,7 @@ mod tests {
         assert_eq!(stamp.format, crate::splitter::TP_SHARD_FORMAT);
         assert_eq!((stamp.size, stamp.rank), (2, 0));
 
-        // Agora sim reaproveita: mesmo formato, mesmo rank, mesmo tamanho.
-        let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
-            .await
-            .unwrap();
-        assert!(again.reused);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     // ── Fatias de tamanhos diferentes ────────────────────────────────────────
@@ -1189,10 +1157,11 @@ mod tests {
             base_name_from_label("lmstudio-community/Qwen3.6-35B").as_deref(),
             Some("lmstudio-community-Qwen3.6-35B")
         );
-        // Um rótulo que já termina em dois números viraria uma faixa falsa.
+        // Um rótulo com números no fim já não significa nada: a faixa mora no
+        // `.pom`, não no nome.
         assert_eq!(
             base_name_from_label("modelo_0_15").as_deref(),
-            Some("modelo")
+            Some("modelo_0_15")
         );
         assert_eq!(base_name_from_label("  ").as_deref(), None);
         assert_eq!(base_name_from_label("///").as_deref(), None);
@@ -1202,11 +1171,6 @@ mod tests {
         assert_eq!(
             base_name_from_label("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S.gguf").as_deref(),
             Some("Qwen3.5-9B-DeepSeek-V4-Flash-Q4_K_S")
-        );
-        assert_eq!(
-            shard_filename(&base_name_from_label("qwen_0_15.gguf").unwrap(), 0, 7),
-            "qwen_0_7.gguf",
-            "fatiar uma fatia não empilha faixas no nome"
         );
     }
 

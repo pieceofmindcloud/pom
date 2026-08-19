@@ -1250,6 +1250,14 @@ pub struct ApplyRequest {
     /// no slicing is needed.
     #[serde(default)]
     pub skip_split: bool,
+    /// Hash da parte que este nó tem que carregar, quando quem manda já sabe
+    /// qual é - o caso normal numa implantação, em que o `.pom` já existe.
+    ///
+    /// É o que faz o reaproveitamento ser uma pergunta sobre **conteúdo** em
+    /// vez de sobre nome de arquivo: ou a parte com este hash está no disco, ou
+    /// ela não está, e adivinhar não é uma das opções.
+    #[serde(default)]
+    pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the
     /// peer merges them and serves the union instead of slicing
     /// `source_model_path`.
@@ -1512,12 +1520,12 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
             &format!("extraindo shard de tensor rank {}/{}", tp.rank, tp.size),
         )
         .await;
-        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
+        let out_dir = crate::pom::model_dir(&state.shard_dir().await, &req.base_name);
         let progress_job = job_id.to_string();
         let outcome = plan::extract_tp_shard(
             &req.source_model_path,
             &out_dir,
-            &req.base_name,
+            req.part_sha256.as_deref(),
             tp.size,
             tp.rank,
             move |pct| {
@@ -1546,12 +1554,12 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         )
         .await;
 
-        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
+        let out_dir = crate::pom::model_dir(&state.shard_dir().await, &req.base_name);
         let progress_job = job_id.to_string();
         let outcome = plan::extract_shard(
             &req.source_model_path,
             &out_dir,
-            &req.base_name,
+            req.part_sha256.as_deref(),
             req.start_layer,
             req.end_layer,
             req.is_first(),
@@ -1712,20 +1720,24 @@ async fn merge_parts(
         .last()
         .map(|p| p.end_layer)
         .ok_or_else(|| anyhow::anyhow!("nenhuma fatia para juntar"))?;
-    let out_dir = plan::shard_output_dir(&shard_dir, &req.base_name);
-    let output = out_dir.join(plan::shard_filename(&req.base_name, start, end));
+    let out_dir = crate::pom::model_dir(&shard_dir, &req.base_name);
 
-    // Reuse an existing merge: rebuilding gigabytes is wasted I/O for an
-    // identical result. Safe because the output name is only ever given to a
-    // complete file (see the rename below).
-    if let Ok(meta) = tokio::fs::metadata(&output).await {
-        if meta.len() > 1024 {
-            info!(
-                "modelo junto já existe, reaproveitando: {}",
-                output.display()
-            );
-            invalidate_catalog().await;
-            return Ok(output.to_string_lossy().into_owned());
+    // Reaproveitar a junção exige saber o hash do resultado, e quem manda o
+    // pedido sabe: é a mesma parte que o `.pom` lista. Sem ele, junta-se e o
+    // conteúdo se nomeia no fim.
+    if let Some(sha) = req.part_sha256.as_deref() {
+        if let Ok(caminho) = crate::pom::part_path(&out_dir, sha) {
+            if tokio::fs::metadata(&caminho)
+                .await
+                .is_ok_and(|m| m.len() > 1024)
+            {
+                info!(
+                    "modelo junto já existe, reaproveitando: {}",
+                    caminho.display()
+                );
+                invalidate_catalog().await;
+                return Ok(caminho.to_string_lossy().into_owned());
+            }
         }
     }
 
@@ -1750,45 +1762,41 @@ async fn merge_parts(
             end_layer: p.end_layer,
         })
         .collect();
-    let dst = output.clone();
     // Write to a temporary name and rename when complete, so a merge cut short
     // (kill, power loss) never leaves a half file under the final name where a
     // later apply would reuse it as a finished model. The unique suffix also
     // keeps two concurrent merges of the same range from interleaving writes.
-    let temp = output.with_file_name(format!(
-        "{}.{}.part",
-        output
-            .file_name()
-            .map(|s| s.to_string_lossy())
-            .unwrap_or_default(),
-        uuid::Uuid::new_v4().simple()
-    ));
+    // O nome final só se conhece no fim: é o hash do que saiu.
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("criar {}", out_dir.display()))?;
+    let temp = out_dir.join(format!("{}.part", uuid::Uuid::new_v4().simple()));
     let temp_cleanup = temp.clone();
     let progress_job = job_id.to_string();
+    let destino_dir = out_dir.clone();
 
-    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
-        let n = crate::splitter::merge(&merge_parts, &temp, move |pct| {
-            let id = progress_job.clone();
-            tokio::spawn(async move { set_job_progress(&id, pct).await });
+    let (output, bytes) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(std::path::PathBuf, u64)> {
+            let escrito = crate::splitter::merge(&merge_parts, &temp, move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            })?;
+            let dst = crate::pom::part_path(&destino_dir, &escrito.sha256)?;
+            // Um destino já ocupado é outra junção que terminou primeiro. Com
+            // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
+            // então ficar com o que já está pronto é o certo - e no Windows o
+            // rename nem substituiria.
+            if dst.exists() {
+                let _ = std::fs::remove_file(&temp);
+                return Ok((dst, escrito.bytes));
+            }
+            std::fs::rename(&temp, &dst)
+                .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
+            Ok((dst, escrito.bytes))
+        })
+        .await
+        .context("spawn_blocking para splitter")?
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp_cleanup);
         })?;
-        // No Windows o rename não substitui um destino que já existe. A fusão
-        // só chega aqui quando o arquivo junto não estava lá, então um destino
-        // ocupado é outra fusão que terminou primeiro: o resultado é o mesmo
-        // arquivo, e ficar com o que já está pronto é o certo.
-        #[cfg(windows)]
-        if dst.exists() {
-            let _ = std::fs::remove_file(&temp);
-            return Ok(std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(n));
-        }
-        std::fs::rename(&temp, &dst)
-            .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
-        Ok(n)
-    })
-    .await
-    .context("spawn_blocking para splitter")?
-    .inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp_cleanup);
-    })?;
 
     invalidate_catalog().await;
 
@@ -1967,7 +1975,7 @@ async fn slice_locally(
         .as_deref()
         .and_then(plan::base_name_from_label)
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
-    let out_dir = plan::shard_output_dir(&state.shard_dir().await, &base_name);
+    let out_dir = crate::pom::model_dir(&state.shard_dir().await, &base_name);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let title = format!(
         "Fatiando {base_name} em {} {}",
@@ -1980,29 +1988,29 @@ async fn slice_locally(
         .insert(id.clone(), new_job(&id, "slice", title, "preparando"));
 
     let job_id = id.clone();
+    let label = req.name.clone().unwrap_or_else(|| base_name.clone());
+    let node_id = state.network.node_id.clone();
+    let destino = out_dir.display().to_string();
     tokio::spawn(async move {
         match run_slice(
             state,
             source,
             out_dir,
             base_name,
+            label,
             ranges,
             total_layers,
+            node_id,
             &job_id,
         )
         .await
         {
-            Ok(files) => {
+            Ok(m) => {
                 let msg = format!(
-                    "{} fatia{} em {}",
-                    files.len(),
-                    if files.len() == 1 { "" } else { "s" },
-                    files
-                        .first()
-                        .and_then(|f| std::path::Path::new(f)
-                            .parent()
-                            .map(|p| p.display().to_string()))
-                        .unwrap_or_default()
+                    "{} fatia{} em {destino} · pom {}",
+                    m.parts.len(),
+                    if m.parts.len() == 1 { "" } else { "s" },
+                    &m.pom_id[..8]
                 );
                 set_job(&job_id, "done", "pronto", &msg).await;
             }
@@ -2016,17 +2024,25 @@ async fn slice_locally(
     Json(json!({ "job_id": id })).into_response()
 }
 
+/// Corta o modelo inteiro nas faixas pedidas e sela a rodada num `.pom`.
+///
+/// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
+/// próprio hash e o manifesto, escrito no fim, é o que diz que aquele conjunto
+/// de hashes é um modelo. Sem ele as partes seriam arquivos soltos de nome
+/// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
 async fn run_slice(
     state: GatewayState,
     source: std::path::PathBuf,
     out_dir: std::path::PathBuf,
     base_name: String,
+    label: String,
     ranges: Vec<(u32, u32)>,
     total_layers: u32,
+    node_id: String,
     job_id: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<crate::pom::PomManifest> {
     let parts = ranges.len() as u32;
-    let mut outputs = Vec::new();
+    let mut pecas: Vec<crate::pom::PomPart> = Vec::new();
 
     for (index, (start, end)) in ranges.iter().copied().enumerate() {
         let index = index as u32;
@@ -2053,7 +2069,8 @@ async fn run_slice(
         let outcome = plan::extract_shard(
             &source.to_string_lossy(),
             &out_dir,
-            &base_name,
+            // Rodada nova: ninguém sabe o hash antes de cortar.
+            None,
             start,
             end,
             start == 0,
@@ -2086,7 +2103,15 @@ async fn run_slice(
                 "gerada"
             }
         );
-        outputs.push(outcome.output_path.clone());
+        pecas.push(crate::pom::PomPart {
+            sha256: outcome.sha256.clone(),
+            bytes: outcome.bytes,
+            start_layer: start,
+            end_layer: end,
+            is_first: start == 0,
+            is_last: end + 1 >= total_layers,
+            tp: None,
+        });
 
         // A retenção também precisa acontecer no fluxo de fatiamento isolado:
         // o operador pode criar fatias agora e implantá-las somente depois.
@@ -2102,7 +2127,39 @@ async fn run_slice(
         }
     }
 
-    Ok(outputs)
+    let quant = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(crate::catalog::parse_quant);
+    let manifesto = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: base_name,
+            label,
+            total_layers,
+            quant,
+        },
+        crate::pom::PomKind::Layers,
+        node_id,
+        pecas,
+    );
+    // Cobrir o modelo inteiro é o caso normal, mas fatiar só um pedaço é
+    // legítimo (o operador escolhe as faixas). Dizer isso em voz alta evita a
+    // descoberta lá na frente, na implantação, de que o conjunto não fecha.
+    if !manifesto.complete() {
+        warn!(
+            "as fatias de {} não cobrem as {total_layers} camadas do modelo",
+            manifesto.model.name
+        );
+    }
+
+    // Por último de propósito: um `.pom` só existe quando todas as partes que
+    // ele lista existem, então achar um manifesto na pasta é o mesmo que achar
+    // um fatiamento inteiro.
+    let caminho = crate::pom::write_atomic(&out_dir, &manifesto)?;
+    info!("manifesto gravado: {}", caminho.display());
+    invalidate_catalog().await;
+
+    Ok(manifesto)
 }
 
 // ── Cluster launch ───────────────────────────────────────────────────────────
@@ -2422,6 +2479,13 @@ async fn release_slice(
     // node was: same label, same position in the split, same runtime params.
     let apply_req = ApplyRequest {
         source_model_path: candidate.path.clone(),
+        // O sucessor carrega exatamente o arquivo que este nó carregava, e o
+        // nome de uma parte já é o hash dela: é daí que a identidade sai.
+        part_sha256: std::path::Path::new(&candidate.path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| crate::pom::is_sha256_hex(s))
+            .map(|s| s.to_string()),
         base_name: cfg.model_label.clone(),
         model_label: Some(cfg.model_label.clone()),
         start_layer: cfg.start_layer,
@@ -2511,6 +2575,10 @@ pub struct LaunchTarget {
     pub end_layer: u32,
     #[serde(default)]
     pub skip_split: bool,
+    /// Hash da parte que este alvo carrega, quando o `.pom` já a conhece. É o
+    /// que dispensa o destino de adivinhar um nome de arquivo.
+    #[serde(default)]
+    pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the
     /// peer merges them (`splitter::merge`) and serves the union; the merge
     /// replaces `skip_split` because the file covering the range only comes
@@ -2687,6 +2755,7 @@ pub(crate) async fn launch(
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             tp: target.tp.clone(),
             skip_split: target.skip_split,
+            part_sha256: target.part_sha256.clone(),
             merge: target.merge.clone(),
             params,
         };
@@ -3382,6 +3451,7 @@ mod tests {
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
+            part_sha256: None,
             source_model_path: "/m/whole.gguf".into(),
             base_name: "whole".into(),
             model_label: None,
@@ -3410,9 +3480,9 @@ mod tests {
         let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
         assert_eq!(escolhido.rank, 0);
         assert_eq!(
-            plan::tp_shard_filename("whole", escolhido.rank, escolhido.size),
-            "whole_tp0of2.gguf",
-            "o arquivo que faltava no disco"
+            (escolhido.rank, escolhido.size),
+            (0, 2),
+            "o shard que faltava no disco"
         );
 
         let worker = req(Some(ident(1, "worker")));
@@ -3446,6 +3516,7 @@ mod tests {
             ..RuntimeParams::default()
         };
         let target = |gpu, kqv| LaunchTarget {
+            part_sha256: None,
             node_id: "a".into(),
             source_model_path: "/m.gguf".into(),
             start_layer: 0,
@@ -3478,6 +3549,7 @@ mod tests {
 
     fn req(start: u32, end: u32, total: u32, peers: u32) -> ApplyRequest {
         ApplyRequest {
+            part_sha256: None,
             source_model_path: "/m.gguf".into(),
             base_name: "m".into(),
             model_label: None,
@@ -3582,10 +3654,17 @@ mod tests {
                 .await
                 .unwrap();
             let out_path = std::path::Path::new(&out);
+            // O nome é o conteúdo: quem junta não escolhe como chamar o
+            // resultado, o hash é que o nomeia.
+            let nome = out_path.file_stem().unwrap().to_string_lossy().into_owned();
+            assert!(
+                crate::pom::is_sha256_hex(&nome),
+                "o modelo junto sai endereçado por conteúdo, não por convenção de nome: {nome}"
+            );
             assert_eq!(
-                out_path.file_name().unwrap().to_string_lossy().as_ref(),
-                "m_0_31.gguf",
-                "o modelo junto sai no diretório de fatias com o nome convencional"
+                crate::pom::hash_file(out_path).unwrap().0,
+                nome,
+                "e o hash do arquivo tem que ser o nome dele"
             );
             let layout = crate::gguf::read_layout(out_path).unwrap();
             assert_eq!(

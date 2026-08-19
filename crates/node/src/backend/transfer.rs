@@ -356,17 +356,48 @@ fn safe_model_path(models_dir: &Path, requested: &str) -> Result<PathBuf, String
 async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, String> {
     let path = if let Some(id) = q.grant.as_deref() {
         grant_path(state, id).await?
+    } else if let Some(sha) = q.sha.as_deref() {
+        find_part(&state.shard_dir().await, sha)
+            .ok_or_else(|| format!("esta máquina não tem a parte {}", &sha[..12.min(sha.len())]))?
     } else {
         let requested = q
             .path
             .as_deref()
-            .ok_or_else(|| "informe ?grant= ou ?path=".to_string())?;
+            .ok_or_else(|| "informe ?grant=, ?sha= ou ?path=".to_string())?;
         safe_model_path(&state.shard_dir().await, requested)?
     };
     // Também no caminho da concessão: é por ali que sai um arquivo de fora de
     // `models/`, e era a única porta sem checagem de tipo.
     ensure_gguf(&path)?;
     Ok(path)
+}
+
+/// Onde está a parte com este hash, se esta máquina a tem.
+///
+/// Procura `<sha256>.gguf` em cada pasta de modelo sob o diretório de fatias.
+/// É de propósito que a busca não use o nome do modelo: o mesmo conteúdo pode
+/// estar arquivado sob rodadas ou nomes diferentes em cada máquina, e o que
+/// identifica a parte é o hash, não onde ela foi parar.
+///
+/// A validação do hash em `pom::part_path` é o que impede um `sha` vindo da
+/// rede de virar `../`: sem ela isto seria travessia de diretório servida por
+/// HTTP.
+pub fn find_part(shard_dir: &Path, sha256: &str) -> Option<PathBuf> {
+    if !crate::pom::is_sha256_hex(sha256) {
+        return None;
+    }
+    for entrada in std::fs::read_dir(shard_dir).ok()?.flatten() {
+        let pasta = entrada.path();
+        if !pasta.is_dir() {
+            continue;
+        }
+        if let Ok(p) = crate::pom::part_path(&pasta, sha256) {
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+    }
+    None
 }
 
 /// Look up a grant. A stale or invented id is simply not a file here.
@@ -437,6 +468,11 @@ pub struct PathQuery {
     /// Opaque id of a file our operator offered; may point anywhere.
     #[serde(default)]
     pub grant: Option<String>,
+    /// sha256 de uma parte. É o localizador que não depende de caminho nenhum:
+    /// quem pede não precisa saber como esta máquina organizou o disco, e o que
+    /// chega ou tem esse hash ou é descartado. Ver [`find_part`].
+    #[serde(default)]
+    pub sha: Option<String>,
     /// Id cunhado pelo receptor. Ausente quando o peer é de uma versão antiga:
     /// a transferência funciona igual, só sem visão deste lado.
     #[serde(default)]
@@ -687,9 +723,11 @@ async fn receive_offer(
             state.clone(),
             offer.from_node_id.clone(),
             offer.from_gateway.clone(),
-            offer.remote_path.clone(),
-            offer.grant.clone(),
-            offer.name.clone(),
+            Alvo::Avulso {
+                remote_path: offer.remote_path.clone(),
+                grant: offer.grant.clone(),
+                name: offer.name.clone(),
+            },
             offer.from_host.clone(),
         )
         .await
@@ -763,9 +801,11 @@ async fn accept_offer(
         state.clone(),
         offer.from_node_id.clone(),
         offer.from_gateway.clone(),
-        offer.remote_path.clone(),
-        offer.grant.clone(),
-        offer.name.clone(),
+        Alvo::Avulso {
+            remote_path: offer.remote_path.clone(),
+            grant: offer.grant.clone(),
+            name: offer.name.clone(),
+        },
         offer.from_host.clone(),
     )
     .await
@@ -779,9 +819,22 @@ async fn accept_offer(
 
 #[derive(Debug, Deserialize)]
 pub struct PullRequest {
+    /// Hash da parte que se quer. Presente, é ele que localiza o arquivo do
+    /// outro lado, e `remote_path` deixa de importar.
+    #[serde(default)]
+    pub sha256: Option<String>,
+    /// Nome do modelo, para saber em que pasta a parte vai cair aqui. Só é lido
+    /// junto com `sha256`.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Peer holding the file.
     pub node_id: String,
+    /// Só para o pedido por caminho; um pedido por `sha256` não tem o que
+    /// dizer aqui, porque não sabe (nem precisa saber) como o outro lado
+    /// organizou o disco.
+    #[serde(default)]
     pub remote_path: String,
+    #[serde(default)]
     pub name: String,
 }
 
@@ -814,17 +867,34 @@ async fn start_pull(
         peer.hostname.clone()
     };
 
-    match spawn_download(
-        state.clone(),
-        peer.node_id.clone(),
-        base,
-        req.remote_path,
-        None,
-        req.name,
-        host,
-    )
-    .await
-    {
+    // Duas formas de pedir, e a diferença é quem garante o quê. Com `sha256` a
+    // máquina pede um **conteúdo**: o peer procura quem tem aquele hash, o
+    // arquivo cai direto na pasta do modelo e só recebe o nome depois de
+    // conferido. Sem ele, é o caminho antigo - um arquivo avulso, pelo caminho
+    // que o outro lado expõe, com o digest que ele declarar.
+    let alvo = match req.sha256.as_deref() {
+        Some(sha) if crate::pom::is_sha256_hex(sha) => {
+            let modelo = req.model.as_deref().unwrap_or("partes");
+            Alvo::Parte {
+                sha256: sha.to_string(),
+                model_dir: crate::pom::model_dir(&state.shard_dir().await, modelo),
+            }
+        }
+        Some(_) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "sha256 inválido" })),
+            )
+                .into_response();
+        }
+        None => Alvo::Avulso {
+            remote_path: req.remote_path,
+            grant: None,
+            name: req.name,
+        },
+    };
+
+    match spawn_download(state.clone(), peer.node_id.clone(), base, alvo, host).await {
         Ok(job_id) => Json(json!({ "started": true, "job_id": job_id })).into_response(),
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     }
@@ -1028,8 +1098,12 @@ async fn send_to_peer(
             .into_response();
     };
 
+    // O nome vem do pedido (o `main` passou a deixar quem envia nomeá-lo);
+    // a faixa de camadas, não. Ela saía daqui lida do nome do arquivo, e não
+    // sai mais: uma parte se chama pelo próprio hash, e quem quer saber a faixa
+    // lê o `.pom`.
     let name = req.filename.trim().to_string();
-    let shard = crate::catalog::parse_shard_name(&name).map(|(_, a, b)| (a, b));
+    let shard: Option<(u32, u32)> = None;
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
@@ -1207,13 +1281,30 @@ fn normaliza_esquema(url: &str) -> String {
     }
 }
 
+/// O que se está buscando e onde ele vai parar.
+///
+/// Duas formas: um arquivo avulso, localizado por caminho ou concessão e
+/// largado em `recebidos/`; ou uma **parte**, localizada pelo hash e gravada
+/// direto na pasta do modelo com o hash por nome. A segunda dispensa a
+/// quarentena: o nome só é dado depois da conferência, então um arquivo com
+/// nome de parte é, por construção, uma parte conferida.
+enum Alvo {
+    Avulso {
+        remote_path: String,
+        grant: Option<String>,
+        name: String,
+    },
+    Parte {
+        sha256: String,
+        model_dir: PathBuf,
+    },
+}
+
 async fn spawn_download(
     state: GatewayState,
     peer_id: String,
     base_url: String,
-    remote_path: String,
-    grant: Option<String>,
-    name: String,
+    alvo: Alvo,
     from_host: String,
 ) -> Result<String, String> {
     valid_transfer_filename(&name)?;
@@ -1229,9 +1320,34 @@ async fn spawn_download(
 
     // A grant, when we have one, is the only locator the serving side needs —
     // and the only one that reaches a file outside its `models/`.
-    let mut locator: Vec<(&str, String)> = match &grant {
-        Some(g) => vec![("grant", g.clone())],
-        None => vec![("path", remote_path.clone())],
+    let (mut locator, dir, name, expected_sha): (
+        Vec<(&str, String)>,
+        PathBuf,
+        String,
+        Option<String>,
+    ) = match &alvo {
+        Alvo::Avulso {
+            remote_path,
+            grant,
+            name,
+        } => {
+            let loc = match grant {
+                Some(g) => vec![("grant", g.clone())],
+                None => vec![("path", remote_path.clone())],
+            };
+            (
+                loc,
+                state.shard_dir().await.join("recebidos"),
+                name.clone(),
+                None,
+            )
+        }
+        Alvo::Parte { sha256, model_dir } => (
+            vec![("sha", sha256.clone())],
+            model_dir.clone(),
+            format!("{sha256}.gguf"),
+            Some(sha256.clone()),
+        ),
     };
     // Opcionais de propósito: um peer que ainda não tenha esta versão ignora os
     // dois e a transferência funciona como antes, só sem visão do lado que envia.
@@ -1240,7 +1356,6 @@ async fn spawn_download(
 
     // O diretório é a única coisa que precisa dar certo já: sem ele não há
     // transferência nenhuma para pôr na lista.
-    let dir = state.shard_dir().await.join("recebidos");
     tokio::fs::create_dir_all(&dir)
         .await
         .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
@@ -1266,6 +1381,7 @@ async fn spawn_download(
         let job_id = task_job_id;
         let dest = dir.join(&name);
         let part = dir.join(format!("{name}.part"));
+        let expected_sha = expected_sha;
         let outcome = async {
             let (total, md5) = fetch_manifest(
                 &task_state,
@@ -1295,6 +1411,7 @@ async fn spawn_download(
                 &dest,
                 total,
                 &md5,
+                expected_sha.as_deref(),
             )
             .await
         }
@@ -1401,6 +1518,10 @@ async fn run_download(
     dest: &Path,
     total: u64,
     expected_md5: &str,
+    // `expected_sha256`, quando presente, é o que manda: o receptor confere o
+    // hash que **pediu**, e não um digest que o remetente declarou. É a
+    // diferença entre "o outro lado disse que está certo" e "eu conferi".
+    expected_sha256: Option<&str>,
 ) -> Result<(), String> {
     use futures::StreamExt;
 
@@ -1492,28 +1613,48 @@ async fn run_download(
         }
     }
 
-    let p = part.to_path_buf();
-    let got = tokio::task::spawn_blocking(move || -> Result<String, String> {
-        use std::io::Read;
-        let mut f = std::fs::File::open(&p).map_err(|e| e.to_string())?;
-        let mut hasher = Md5::new();
-        let mut buf = vec![0u8; CHUNK];
-        loop {
-            let n = f.read(&mut buf).map_err(|e| e.to_string())?;
-            if n == 0 {
-                break;
-            }
-            hasher.update(&buf[..n]);
+    if let Some(esperado) = expected_sha256 {
+        let p = part.to_path_buf();
+        let esperado = esperado.to_string();
+        let got = tokio::task::spawn_blocking(move || crate::pom::hash_file(&p))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(|e| e.to_string())?
+            .0;
+        if got != esperado {
+            // Não é "falhou o download": é conteúdo que não é o que foi
+            // pedido. O arquivo parcial some no tratamento de erro de
+            // `spawn_download`, e nada com este nome chega ao disco bom.
+            return Err(format!(
+                "sha256 não confere (pedido {}, obtido {})",
+                &esperado[..12],
+                &got[..12]
+            ));
         }
-        Ok(hex::encode(hasher.finalize()))
-    })
-    .await
-    .map_err(|e| e.to_string())??;
+    } else {
+        let p = part.to_path_buf();
+        let got = tokio::task::spawn_blocking(move || -> Result<String, String> {
+            use std::io::Read;
+            let mut f = std::fs::File::open(&p).map_err(|e| e.to_string())?;
+            let mut hasher = Md5::new();
+            let mut buf = vec![0u8; CHUNK];
+            loop {
+                let n = f.read(&mut buf).map_err(|e| e.to_string())?;
+                if n == 0 {
+                    break;
+                }
+                hasher.update(&buf[..n]);
+            }
+            Ok(hex::encode(hasher.finalize()))
+        })
+        .await
+        .map_err(|e| e.to_string())??;
 
-    if got != expected_md5 {
-        return Err(format!(
-            "MD5 não confere (esperado {expected_md5}, obtido {got})"
-        ));
+        if got != expected_md5 {
+            return Err(format!(
+                "MD5 não confere (esperado {expected_md5}, obtido {got})"
+            ));
+        }
     }
 
     // No Windows o rename não substitui: se o destino existe, ele falha com
@@ -1867,8 +2008,11 @@ mod offer_latency_tests {
         let offer = &offers[0];
         assert_eq!(offer["name"], "fatia_0_15.gguf");
         assert_eq!(offer["size_bytes"], 24 * 1024 * 1024);
-        assert_eq!(offer["start_layer"], 0);
-        assert_eq!(offer["end_layer"], 15);
+        // A faixa vinha do nome do arquivo. Não vem mais: `fatia_0_15.gguf`
+        // deixou de ser uma afirmação sobre camada nenhuma, e adivinhar a
+        // partir dele era justamente o defeito que o `.pom` fecha.
+        assert!(offer["start_layer"].is_null());
+        assert!(offer["end_layer"].is_null());
 
         // A prova de que nada foi lido: o cache de digest desta máquina segue
         // vazio. Ele é populado por `file_digest` e por mais nada, então uma
@@ -1974,9 +2118,11 @@ mod offer_latency_tests {
             state.clone(),
             "peer-b".into(),
             format!("http://127.0.0.1:{port}"),
-            "/qualquer/fatia.gguf".into(),
-            None,
-            "fatia.gguf".into(),
+            Alvo::Avulso {
+                remote_path: "/qualquer/fatia.gguf".into(),
+                grant: None,
+                name: "fatia.gguf".into(),
+            },
             "peer-b".into(),
         )
         .await
@@ -2037,5 +2183,163 @@ mod ipv6_tests {
             format!("http://{out}:8090").parse::<reqwest::Url>().is_ok(),
             "o endereco tem que formar uma URL valida: {out}"
         );
+    }
+}
+
+/// A busca de partes por conteúdo: um nó pede um **hash**, não um caminho.
+///
+/// É o que fecha o modelo torrent do lado da rede. Quem pede não sabe (nem
+/// precisa saber) onde o outro lado guardou o arquivo, e o que chega ou tem o
+/// hash pedido ou não entra no disco com nome de parte.
+#[cfg(test)]
+mod part_fetch_tests {
+    use super::*;
+    use crate::pom;
+
+    /// Um nó de verdade servindo o roteador de transferências numa porta.
+    async fn serving_node(shard_dir: &Path) -> (GatewayState, u16) {
+        let state = crate::gateway::testkit::state_with("servidor", vec![]).await;
+        state.auth.write().await.shard_dir = Some(shard_dir.to_string_lossy().into());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let porta = listener.local_addr().unwrap().port();
+        let app = routes().with_state(state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (state, porta)
+    }
+
+    #[tokio::test]
+    async fn a_part_is_fetched_by_hash_and_verified_on_arrival() {
+        let raiz =
+            std::env::temp_dir().join(format!("pom-parte-{}", uuid::Uuid::new_v4().simple()));
+        let disco_servidor = raiz.join("servidor");
+        let disco_cliente = raiz.join("cliente");
+
+        // O servidor tem a parte, arquivada sob um nome de modelo qualquer.
+        let conteudo = crate::splitter::test_gguf_bytes(8);
+        let (sha, _) = {
+            let tmp = raiz.join("tmp.gguf");
+            std::fs::create_dir_all(&raiz).unwrap();
+            std::fs::write(&tmp, &conteudo).unwrap();
+            pom::hash_file(&tmp).unwrap()
+        };
+        let pasta_servidor = pom::model_dir(&disco_servidor, "qwen3-8b");
+        std::fs::create_dir_all(&pasta_servidor).unwrap();
+        std::fs::write(pom::part_path(&pasta_servidor, &sha).unwrap(), &conteudo).unwrap();
+
+        let (_servidor, porta) = serving_node(&disco_servidor).await;
+
+        // O cliente só conhece o hash e quem tem.
+        let cliente = crate::gateway::testkit::state_with(
+            "cliente",
+            vec![crate::gateway::testkit::peer("servidor", "servidor", porta)],
+        )
+        .await;
+        cliente.auth.write().await.shard_dir = Some(disco_cliente.to_string_lossy().into());
+
+        let resp = start_pull(
+            ConnectionAuth,
+            State(cliente.clone()),
+            Json(PullRequest {
+                sha256: Some(sha.clone()),
+                model: Some("qwen3-8b".into()),
+                node_id: "servidor".into(),
+                remote_path: String::new(),
+                name: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "o pull tem que ser aceito");
+
+        // A transferência é assíncrona; espera ela assentar.
+        let destino = pom::part_path(&pom::model_dir(&disco_cliente, "qwen3-8b"), &sha).unwrap();
+        for _ in 0..100 {
+            if destino.is_file() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        assert!(
+            destino.is_file(),
+            "a parte tem que cair na pasta do modelo, com o hash por nome"
+        );
+        assert_eq!(
+            pom::hash_file(&destino).unwrap().0,
+            sha,
+            "e o conteúdo tem que ser o que foi pedido"
+        );
+        // Nada de quarentena: o nome só é dado depois de conferir.
+        assert!(!disco_cliente.join("recebidos").exists());
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Pedir um hash que ninguém tem falha, e falha **sem** deixar arquivo.
+    #[tokio::test]
+    async fn a_part_nobody_has_fails_without_leaving_a_file() {
+        let raiz =
+            std::env::temp_dir().join(format!("pom-sem-parte-{}", uuid::Uuid::new_v4().simple()));
+        let disco_servidor = raiz.join("servidor");
+        let disco_cliente = raiz.join("cliente");
+        std::fs::create_dir_all(&disco_servidor).unwrap();
+
+        let (_servidor, porta) = serving_node(&disco_servidor).await;
+        let cliente = crate::gateway::testkit::state_with(
+            "cliente",
+            vec![crate::gateway::testkit::peer("servidor", "servidor", porta)],
+        )
+        .await;
+        cliente.auth.write().await.shard_dir = Some(disco_cliente.to_string_lossy().into());
+
+        let ausente = "c".repeat(64);
+        let resp = start_pull(
+            ConnectionAuth,
+            State(cliente.clone()),
+            Json(PullRequest {
+                sha256: Some(ausente.clone()),
+                model: Some("qwen3-8b".into()),
+                node_id: "servidor".into(),
+                remote_path: String::new(),
+                name: String::new(),
+            }),
+        )
+        .await;
+        // O pull começa; quem recusa é o manifesto do outro lado.
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        let mut falhou = false;
+        for _ in 0..100 {
+            if cliente
+                .transfers
+                .jobs
+                .read()
+                .await
+                .values()
+                .any(|j| j.state == TRANSFER_FAILED)
+            {
+                falhou = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(falhou, "o job tem que terminar em falha");
+
+        let destino =
+            pom::part_path(&pom::model_dir(&disco_cliente, "qwen3-8b"), &ausente).unwrap();
+        assert!(!destino.exists(), "nada com nome de parte pode sobrar");
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Um `sha` da rede não pode virar caminho: `find_part` só aceita hash.
+    #[test]
+    fn a_sha_from_the_wire_cannot_escape_the_shard_dir() {
+        let dir = std::env::temp_dir();
+        assert!(find_part(&dir, "../../etc/passwd").is_none());
+        assert!(find_part(&dir, "").is_none());
+        assert!(find_part(&dir, &"z".repeat(64)).is_none());
     }
 }

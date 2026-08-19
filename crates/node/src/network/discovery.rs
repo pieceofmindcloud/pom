@@ -1,4 +1,3 @@
-use crate::bitswap::{self, BitswapCodec};
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
 use crate::network::{Network, P2PMessage, PeerInfo};
 use crate::wire;
@@ -141,7 +140,6 @@ struct DiscBehaviour {
     dcutr: dcutr::Behaviour,
     autonat: autonat::Behaviour,
     relay_server: relay::Behaviour,
-    bitswap: request_response::Behaviour<BitswapCodec>,
     infer_tunnel: request_response::Behaviour<InferTunnelCodec>,
 }
 
@@ -271,7 +269,6 @@ impl Discovery {
 
                 let relay_server = relay::Behaviour::new(peer_id, relay_server_cfg);
 
-                let bitswap = bitswap::bitswap_behaviour();
                 let infer_tunnel = infer_tunnel::infer_tunnel_behaviour();
 
                 DiscBehaviour {
@@ -283,7 +280,6 @@ impl Discovery {
                     dcutr: dcutr::Behaviour::new(peer_id),
                     autonat: autonat::Behaviour::new(peer_id, autonat::Config::default()),
                     relay_server,
-                    bitswap,
                     infer_tunnel,
                 }
             })?
@@ -602,19 +598,6 @@ async fn handle_event(
         })) => {
             info!("NAT status: {:?}", new);
         }
-
-        // ── Bitswap: content-addressed chunk exchange ───────────────────────
-        SwarmEvent::Behaviour(DiscBehaviourEvent::Bitswap(event)) => match event {
-            request_response::Event::Message { peer, message, .. } => match message {
-                request_response::Message::Request { request, .. } => {
-                    debug!("Bitswap request from {}: {:?}", peer, request);
-                }
-                request_response::Message::Response { response, .. } => {
-                    debug!("Bitswap response from {}: {:?}", peer, response);
-                }
-            },
-            _ => {}
-        },
 
         // ── Infer tunnel: inference HTTP calls carried over the swarm as a
         // NAT-traversal fallback. `Message::Request` is the inbound side

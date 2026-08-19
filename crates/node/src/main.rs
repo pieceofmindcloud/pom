@@ -7,8 +7,6 @@ pub mod addrs;
 mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
-#[path = "network/bitswap.rs"]
-mod bitswap;
 #[path = "utils/brand.rs"]
 mod brand;
 #[path = "models/catalog.rs"]
@@ -65,6 +63,8 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+#[path = "models/pom.rs"]
+mod pom;
 #[path = "inference/prefill.rs"]
 mod prefill;
 #[path = "inference/relay.rs"]
@@ -184,8 +184,8 @@ struct Args {
     #[arg(long)]
     start_layer: Option<u32>,
 
-    /// Force the last layer this node owns. Pairs with --start-layer; both are
-    /// inferred from the filename (`name_<start>_<end>.gguf`) when omitted.
+    /// Force the last layer this node owns. Pairs with --start-layer; sem os
+    /// dois, a faixa vem do algoritmo que preenche buracos no cluster.
     #[arg(long)]
     end_layer: Option<u32>,
 
@@ -299,37 +299,6 @@ struct Args {
     /// Configurações › Rede brings it into the network when you want it there.
     #[arg(long)]
     no_discovery: bool,
-}
-
-/// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
-fn parse_layers_from_filename(path: &str) -> Option<(u32, u32)> {
-    let filename = std::path::Path::new(path).file_stem()?.to_str()?;
-
-    // Look for patterns like _0_20 at the end or middle
-    let parts: Vec<&str> = filename.split('_').collect();
-    if parts.len() >= 3 {
-        // Try last two parts first
-        let end_idx = parts.len() - 1;
-        let start_idx = parts.len() - 2;
-
-        if let (Ok(s), Ok(e)) = (
-            parts[start_idx].parse::<u32>(),
-            parts[end_idx].parse::<u32>(),
-        ) {
-            return Some((s, e));
-        }
-
-        // Try searching for any two adjacent numeric parts
-        for i in 0..parts.len() - 1 {
-            if let (Ok(s), Ok(e)) = (parts[i].parse::<u32>(), parts[i + 1].parse::<u32>()) {
-                // Heuristic: start < end and end - start < 200 (sanity check)
-                if s < e && e - s < 200 {
-                    return Some((s, e));
-                }
-            }
-        }
-    }
-    None
 }
 
 #[tokio::main]
@@ -621,20 +590,20 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Layer range, in order of precedence: explicit flags, then the filename
-    // convention (`name_<start>_<end>.gguf`), then the gap-filling algorithm.
+    // Layer range, in order of precedence: explicit flags, then the gap-filling
+    // algorithm.
+    //
+    // Havia um degrau no meio - adivinhar a faixa lendo dois números no nome do
+    // arquivo (`name_<start>_<end>.gguf`). Ele saiu junto com a convenção: uma
+    // parte se chama pelo próprio hash, e um modelo cujo nome termina em dois
+    // números não é uma fatia de nada. Quem sabe a faixa é o `.pom`, e quem
+    // carrega uma parte solta na mão passa `--start-layer`/`--end-layer`.
     let explicit_range = match (args.start_layer, args.end_layer) {
         (Some(s), Some(e)) => Some((s, e)),
         _ => None,
     };
-    let assignment = if let Some((s, e)) =
-        explicit_range.or_else(|| parse_layers_from_filename(&model_name))
-    {
-        if explicit_range.is_some() {
-            info!("Layers {}-{} set explicitly", s, e);
-        } else {
-            info!("Parsed layers {}-{} from filename '{}'", s, e, model_name);
-        }
+    let assignment = if let Some((s, e)) = explicit_range {
+        info!("Layers {}-{} set explicitly", s, e);
         let actual_count = e - s + 1;
         model::LayerAssignment {
             model: profile.name.clone(),

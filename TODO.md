@@ -41,12 +41,10 @@ não voltarem a ser propostos).
   (`PeerInfo`, `NodeConfig`) não foram movidos.
   **Depende de:** a mesma decisão de arquitetura modular.
 
-- [ ] **`bitswap` é protocolo órfão**
-  `crates/node/src/network/discovery.rs::handle_event` · anotado em `crates/node/src/network/AGENTS.md`
-  `bitswap_behaviour` está no swarm e os eventos só viram `debug!` - nenhuma requisição é
-  atendida, nenhum bloco é servido. A transferência real vai por HTTP Range
-  (`backend/transfer.rs`). O protocolo existe sem lado servidor.
-  **Pronto quando:** ou o lado servidor existe, ou o behaviour sai do swarm.
+- [x] **`bitswap` é protocolo órfão** — resolvido saindo do swarm.
+  O behaviour e o arquivo `network/bitswap.rs` foram removidos. O papel que ele
+  ia cumprir (endereçamento por conteúdo) é do `.pom` + `GET /api/transfer/*?sha=`,
+  sobre o mesmo HTTP Range que já carregava as fatias.
 
 ## Recusados - decisão tomada, não voltar a propor
 

@@ -699,7 +699,7 @@ pub async fn run(
         .route("/v1/session/release", post(handle_release))
         .route("/v1/session/rollback", post(handle_rollback))
         .route("/health", get(handle_health))
-        .with_state(state)
+        .with_state(state.clone())
         // Estado próprio, de propósito: ver a nota em `handle_tp_reduce`.
         .merge(
             Router::new()
@@ -721,19 +721,37 @@ pub async fn run(
     // O desligamento gracioso virou uma corrida entre o laço de accept e o
     // watch de geração: quando a geração muda, paramos de aceitar. Conexão em
     // voo termina sozinha, como antes.
-    tokio::select! {
-        r = crate::serve::serve(listener, router, tls) => r?,
-        _ = async move {
-            loop {
-                if stop_rx.changed().await.is_err() {
-                    break;
-                }
-                if *stop_rx.borrow() != generation {
-                    break;
-                }
+    // O desligamento gracioso é sequencial de propósito: primeiro o `serve`
+    // para de aceitar e encerra as conexões que restaram, só depois a VRAM é
+    // devolvida. Na ordem inversa uma requisição em voo tocaria um contexto já
+    // liberado.
+    let resultado = crate::serve::serve_with_shutdown(listener, router, tls, async move {
+        loop {
+            if stop_rx.changed().await.is_err() {
+                break;
             }
-        } => {}
-    }
+            if *stop_rx.borrow() != generation {
+                break;
+            }
+        }
+    })
+    .await;
+
+    // Explícito, e não pela contagem do `Arc`: uma cópia esquecida em qualquer
+    // canto — foi o que as conexões desgarradas faziam — adiava o `Drop` para
+    // sempre, e o `undeploy` respondia "pronto" com o modelo ainda na GPU.
+    // Depois do drenar acima ninguém mais decodifica, então isto é seguro.
+    // `into_inner` no envenenado: um handler que entrou em pânico deixa o
+    // mutex marcado, e recusar a liberação por causa disso seria justamente
+    // deixar a VRAM presa no caso em que ela mais precisa voltar.
+    state
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .engine
+        .unload();
+    info!("memória do modelo devolvida na porta {port}");
+
+    resultado?;
     Ok(())
 }
 

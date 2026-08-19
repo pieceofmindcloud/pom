@@ -296,13 +296,25 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     })
 }
 
-impl Drop for LoadedModel {
-    fn drop(&mut self) {
+impl LoadedModel {
+    /// Devolve os pesos à GPU agora, em vez de esperar o `Drop`.
+    ///
+    /// Idempotente: zera o ponteiro, então o `Drop` que vier depois não tem o
+    /// que liberar. Só `LlmEngine::unload` chama, e só quando é o último dono.
+    fn free_now(&mut self) {
         unsafe {
             if !self.model.is_null() {
                 sys::llama_model_free(self.model);
+                self.model = std::ptr::null_mut();
+                self.vocab = std::ptr::null();
             }
         }
+    }
+}
+
+impl Drop for LoadedModel {
+    fn drop(&mut self) {
+        self.free_now();
     }
 }
 
@@ -366,6 +378,36 @@ fn profile_backend_sync() -> bool {
 // server, so these are never accessed concurrently from multiple threads.
 unsafe impl Send for LlmEngine {}
 unsafe impl Sync for LlmEngine {}
+
+impl LlmEngine {
+    /// Devolve **agora** a VRAM deste motor: contexto, rascunho MTP e, se este
+    /// for o último contexto sobre os pesos, os pesos.
+    ///
+    /// Existe porque esperar o `Drop` amarrava a liberação da memória ao tempo
+    /// de vida das conexões: o `Router` do servidor de inferência carrega o
+    /// `Arc<Mutex<InferState>>`, e cada conexão viva segura uma cópia dele. Uma
+    /// conexão em keep-alive parada — o pool do gateway deixa várias — mantinha
+    /// a contagem acima de zero para sempre, e o `undeploy` voltava sem liberar
+    /// nada: o modelo seguinte não cabia. Quem chama garante que ninguém mais
+    /// vai usar o motor (ver o encerramento em `infer_server::run`).
+    ///
+    /// Idempotente; depois dela o motor não decodifica mais nada.
+    pub fn unload(&mut self) {
+        // Primeiro o rascunho: o contexto dele também é VRAM.
+        self.mtp = None;
+        unsafe {
+            if !self.ctx.is_null() {
+                sys::llama_free(self.ctx);
+                self.ctx = std::ptr::null_mut();
+            }
+        }
+        // Os pesos só saem se este era o último contexto sobre eles; com um
+        // irmão vivo, `get_mut` devolve `None` e o `Drop` do último resolve.
+        if let Some(loaded) = Arc::get_mut(&mut self.loaded) {
+            loaded.free_now();
+        }
+    }
+}
 
 impl Drop for LlmEngine {
     fn drop(&mut self) {

@@ -17,7 +17,8 @@ use hyper_util::server::conn::auto::Builder;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::future::Future;
+use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
 use tracing::{debug, warn};
@@ -170,17 +171,48 @@ pub fn plain_allowed(peer: SocketAddr, strict: bool) -> bool {
 /// `tls: None` é o comportamento anterior a esta feature, e é o que o `testkit`
 /// e os servidores de teste em `127.0.0.1:0` usam.
 pub async fn serve(listener: TcpListener, app: Router, tls: Option<TlsServer>) -> Result<()> {
+    serve_with_shutdown(listener, app, tls, std::future::pending::<()>()).await
+}
+
+/// Quanto tempo uma conexão viva tem para terminar sozinha depois do sinal de
+/// desligamento, antes de ser abortada.
+const DRAIN_DEADLINE: Duration = Duration::from_secs(3);
+
+/// Como `serve`, mas para de aceitar quando `shutdown` resolve e **encerra as
+/// conexões que sobraram** em vez de deixá-las soltas.
+///
+/// A diferença importa para memória, não para higiene: cada conexão fica numa
+/// task que carrega uma cópia do `Router`, e o `Router` do servidor de
+/// inferência carrega os pesos do modelo. Antes disto as tasks eram
+/// desgarradas (`tokio::spawn` sem dono), então uma conexão em keep-alive
+/// parada — o pool do gateway deixa várias — segurava o motor vivo depois do
+/// `undeploy` e a VRAM nunca voltava. Ver `LlmEngine::unload`.
+pub async fn serve_with_shutdown(
+    listener: TcpListener,
+    app: Router,
+    tls: Option<TlsServer>,
+    shutdown: impl Future<Output = ()>,
+) -> Result<()> {
     let acceptor = tls
         .as_ref()
         .map(|t| tokio_rustls::TlsAcceptor::from(t.config.clone()));
 
-    loop {
-        let (stream, peer) = match listener.accept().await {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("accept falhou: {e}");
-                continue;
-            }
+    let mut conns = tokio::task::JoinSet::new();
+    let mut shutdown = std::pin::pin!(shutdown);
+
+    let motivo = loop {
+        let (stream, peer) = tokio::select! {
+            _ = &mut shutdown => break "desligamento pedido",
+            // Conexões já encerradas saem do conjunto aqui; sem isto o
+            // `JoinSet` cresceria por toda a vida do servidor.
+            Some(_) = conns.join_next(), if !conns.is_empty() => continue,
+            aceita = listener.accept() => match aceita {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("accept falhou: {e}");
+                    continue;
+                }
+            },
         };
         // Nagle segura a escrita pequena até o ACK anterior; no SSE cada token é
         // uma escrita pequena. Mesma razão do `tcp_nodelay(true)` que estava no
@@ -191,12 +223,25 @@ pub async fn serve(listener: TcpListener, app: Router, tls: Option<TlsServer>) -
         let acceptor = acceptor.clone();
         let tls = tls.clone();
 
-        tokio::spawn(async move {
+        conns.spawn(async move {
             if let Err(e) = handle_conn(stream, peer, app, acceptor, tls).await {
                 debug!("conexão de {peer} encerrada: {e}");
             }
         });
+    };
+
+    // Prazo para quem está no meio de uma resposta; depois dele, aborta. Quem
+    // está parada em keep-alive não termina sozinha nunca, e é justamente ela
+    // que segurava a memória.
+    debug!("{motivo}: drenando {} conexões", conns.len());
+    let drenagem = async {
+        while conns.join_next().await.is_some() {}
+    };
+    if tokio::time::timeout(DRAIN_DEADLINE, drenagem).await.is_err() {
+        warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
+        conns.shutdown().await;
     }
+    Ok(())
 }
 
 async fn handle_conn(
@@ -539,5 +584,46 @@ mod tests {
         let remoto: SocketAddr = "192.168.100.138:5050".parse().unwrap();
         assert!(!plain_allowed(remoto, true));
         assert!(plain_allowed(remoto, false));
+    }
+
+    /// O bug do `undeploy`: uma conexão em keep-alive parada segurava a task
+    /// que a atendia, a task segurava uma cópia do `Router`, e o `Router` do
+    /// servidor de inferência segura os pesos do modelo — a VRAM nunca voltava
+    /// e o próximo modelo não cabia. O `serve` tem de encerrar mesmo com uma
+    /// conexão dessas aberta, e é o que este teste prende.
+    #[tokio::test]
+    async fn conexao_parada_nao_segura_o_desligamento() {
+        use tokio::io::AsyncWriteExt;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (parar, desligar) = tokio::sync::oneshot::channel::<()>();
+
+        let app = Router::new().route("/health", axum::routing::get(|| async { "ok" }));
+        let servidor = tokio::spawn(async move {
+            serve_with_shutdown(listener, app, None, async {
+                let _ = desligar.await;
+            })
+            .await
+        });
+
+        // Uma requisição de verdade, para a conexão existir do lado do
+        // servidor, e depois nada: é o keep-alive parado do pool do gateway.
+        let mut cliente = TcpStream::connect(addr).await.unwrap();
+        cliente
+            .write_all(b"GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+            .await
+            .unwrap();
+        let mut resposta = [0u8; 12];
+        tokio::io::AsyncReadExt::read(&mut cliente, &mut resposta)
+            .await
+            .unwrap();
+
+        let _ = parar.send(());
+        // Com folga sobre o `DRAIN_DEADLINE`, e muito abaixo do "para sempre"
+        // que era o comportamento antigo.
+        let saida = tokio::time::timeout(DRAIN_DEADLINE * 3, servidor).await;
+        assert!(saida.is_ok(), "o serve não encerrou com uma conexão parada");
+        assert!(saida.unwrap().unwrap().is_ok());
     }
 }

@@ -14,10 +14,10 @@ use anyhow::Result;
 use axum::Router;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto::Builder;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::future::Future;
 use std::time::{Duration, Instant};
 use tokio::net::{TcpListener, TcpStream};
 use tower::Service;
@@ -124,10 +124,18 @@ impl TlsServer {
 pub fn browser_sans(pinned: Option<&str>) -> Vec<String> {
     let mut nomes: Vec<String> = vec!["127.0.0.1".into(), "::1".into()];
     if let Some(p) = pinned {
-        nomes.push(crate::network::ip_host(p).trim_matches(['[', ']']).to_string());
+        nomes.push(
+            crate::network::ip_host(p)
+                .trim_matches(['[', ']'])
+                .to_string(),
+        );
     }
     for addr in crate::addrs::filter_candidates(crate::addrs::local_addrs(), None) {
-        nomes.push(crate::network::ip_host(&addr).trim_matches(['[', ']']).to_string());
+        nomes.push(
+            crate::network::ip_host(&addr)
+                .trim_matches(['[', ']'])
+                .to_string(),
+        );
     }
     if let Ok(h) = hostname_local() {
         nomes.push(h);
@@ -234,10 +242,11 @@ pub async fn serve_with_shutdown(
     // está parada em keep-alive não termina sozinha nunca, e é justamente ela
     // que segurava a memória.
     debug!("{motivo}: drenando {} conexões", conns.len());
-    let drenagem = async {
-        while conns.join_next().await.is_some() {}
-    };
-    if tokio::time::timeout(DRAIN_DEADLINE, drenagem).await.is_err() {
+    let drenagem = async { while conns.join_next().await.is_some() {} };
+    if tokio::time::timeout(DRAIN_DEADLINE, drenagem)
+        .await
+        .is_err()
+    {
         warn!("conexões ainda vivas depois de {DRAIN_DEADLINE:?}; encerrando");
         conns.shutdown().await;
     }
@@ -556,7 +565,10 @@ mod tests {
     fn o_redirecionamento_preserva_o_caminho_e_a_query() {
         assert_eq!(
             plain_reply("ksia:8080", "/config/rede?aba=tls"),
-            (301, Some("https://ksia:8080/config/rede?aba=tls".to_string()))
+            (
+                301,
+                Some("https://ksia:8080/config/rede?aba=tls".to_string())
+            )
         );
         // A porta vai junto porque é a mesma: o servidor atende as duas falas.
         assert_eq!(
@@ -567,7 +579,10 @@ mod tests {
 
     #[test]
     fn rota_de_peer_recebe_403_em_vez_de_redirecionamento() {
-        assert_eq!(plain_reply("ksia:8080", "/api/transfer/download?path=x"), (403, None));
+        assert_eq!(
+            plain_reply("ksia:8080", "/api/transfer/download?path=x"),
+            (403, None)
+        );
         assert_eq!(plain_reply("ksia:8080", "/v1/relay-result"), (403, None));
     }
 

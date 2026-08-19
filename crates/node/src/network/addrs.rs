@@ -105,7 +105,10 @@ pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<St
         // `effective_host`, que colchetea o IPv6, e `a.ip` e o endereco cru.
         // Comparar as duas formas nunca casava, e o endereco fixado saia
         // duplicado no anuncio - num datagrama cujo orcamento e MTU.
-        if saida.iter().any(|s| sem_colchetes(s) == sem_colchetes(&a.ip)) {
+        if saida
+            .iter()
+            .any(|s| sem_colchetes(s) == sem_colchetes(&a.ip))
+        {
             continue;
         }
         let conta = if e_ipv6(&a.ip) { &mut v6 } else { &mut v4 };
@@ -176,7 +179,9 @@ fn parse_ip_addr(saida: &str) -> Vec<LocalAddr> {
         let Some(pos) = campos.iter().position(|c| *c == "inet" || *c == "inet6") else {
             continue;
         };
-        let Some(cidr) = campos.get(pos + 1) else { continue };
+        let Some(cidr) = campos.get(pos + 1) else {
+            continue;
+        };
         let ip = cidr.split('/').next().unwrap_or(cidr).to_string();
         out.push(LocalAddr {
             ip,
@@ -192,14 +197,22 @@ mod tests {
     use super::*;
 
     fn a(ip: &str) -> LocalAddr {
-        LocalAddr { ip: ip.into(), deprecated: false, temporary: false }
+        LocalAddr {
+            ip: ip.into(),
+            deprecated: false,
+            temporary: false,
+        }
     }
 
     #[test]
     fn deprecated_and_link_local_and_loopback_are_dropped() {
         let brutos = vec![
             a("192.168.100.240"),
-            LocalAddr { ip: "2804:d55::9a0d".into(), deprecated: true, temporary: true },
+            LocalAddr {
+                ip: "2804:d55::9a0d".into(),
+                deprecated: true,
+                temporary: true,
+            },
             a("fe80::1"),
             a("127.0.0.1"),
             a("::1"),
@@ -238,9 +251,21 @@ mod tests {
     #[test]
     fn a_secured_address_wins_over_a_temporary_one() {
         let brutos = vec![
-            LocalAddr { ip: "2804:d55::temp1".into(), deprecated: false, temporary: true },
-            LocalAddr { ip: "2804:d55::sec".into(), deprecated: false, temporary: false },
-            LocalAddr { ip: "2804:d55::temp2".into(), deprecated: false, temporary: true },
+            LocalAddr {
+                ip: "2804:d55::temp1".into(),
+                deprecated: false,
+                temporary: true,
+            },
+            LocalAddr {
+                ip: "2804:d55::sec".into(),
+                deprecated: false,
+                temporary: false,
+            },
+            LocalAddr {
+                ip: "2804:d55::temp2".into(),
+                deprecated: false,
+                temporary: true,
+            },
         ];
         assert_eq!(filter_candidates(brutos, None)[0], "2804:d55::sec");
     }
@@ -262,7 +287,10 @@ mod tests {
         );
         assert_eq!(saida[0], "[2804:d55::9a0d]");
         assert_eq!(
-            saida.iter().filter(|s| s.contains("2804:d55::9a0d")).count(),
+            saida
+                .iter()
+                .filter(|s| s.contains("2804:d55::9a0d"))
+                .count(),
             1,
             "{saida:?}"
         );
@@ -340,7 +368,10 @@ mod tests {
         let achados = filter_candidates(local_addrs(), None);
         // Sem esta linha o teste passaria por vacuidade numa maquina onde a
         // enumeracao nao funcionasse, que e justamente o que ele deveria pegar.
-        assert!(!achados.is_empty(), "a enumeracao nao achou endereco nenhum");
+        assert!(
+            !achados.is_empty(),
+            "a enumeracao nao achou endereco nenhum"
+        );
         assert!(achados.len() <= 4, "teto de 2 por familia: {achados:?}");
         for ip in achados {
             assert!(!descartavel(&ip), "{ip} nao deveria ter passado");

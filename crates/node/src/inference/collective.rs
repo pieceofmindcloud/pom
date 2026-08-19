@@ -129,7 +129,10 @@ mod tests {
             reduce_sum(&[vec![1.0, 2.0], vec![3.0, 4.0]]),
             Some(vec![4.0, 6.0])
         );
-        assert_eq!(reduce_sum(&[vec![1.0, 2.0, 3.0]]), Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(
+            reduce_sum(&[vec![1.0, 2.0, 3.0]]),
+            Some(vec![1.0, 2.0, 3.0])
+        );
         // Tamanho divergente é recusa, não soma pela metade.
         assert_eq!(reduce_sum(&[vec![1.0], vec![2.0, 3.0]]), None);
         assert_eq!(reduce_sum(&[]), None);
@@ -170,5 +173,4 @@ mod tests {
         let _rx0 = barrier.contribute("size", 0, 2, vec![1.0, 2.0]).unwrap();
         assert!(barrier.contribute("size", 1, 2, vec![3.0]).is_err());
     }
-
 }

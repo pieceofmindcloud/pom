@@ -425,7 +425,13 @@ mod tests {
         let repetitive: Vec<f32> = prefill_tensor
             .iter()
             .enumerate()
-            .map(|(i, v)| if i % 2 == 0 { (i % 7) as f32 * 0.125 } else { *v })
+            .map(|(i, v)| {
+                if i % 2 == 0 {
+                    (i % 7) as f32 * 0.125
+                } else {
+                    *v
+                }
+            })
             .collect();
         for (name, values) in [
             ("decode 1x4096", &decode_tensor),

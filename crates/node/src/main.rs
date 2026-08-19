@@ -1,6 +1,8 @@
 /// Commit this binary was built from, stamped by `build.rs`.
 pub const BUILD_COMMIT: &str = env!("POM_BUILD_COMMIT");
 
+#[path = "network/addrs.rs"]
+pub mod addrs;
 #[path = "backend/admin.rs"]
 mod admin;
 #[path = "backend/auth.rs"]
@@ -23,8 +25,6 @@ mod devupdate;
 mod direct;
 #[path = "inference/direct_lab.rs"]
 mod direct_lab;
-#[path = "inference/spec_lab.rs"]
-mod spec_lab;
 #[path = "network/discovery.rs"]
 mod discovery;
 #[path = "utils/display.rs"]
@@ -45,30 +45,22 @@ mod lastslice;
 mod llm;
 #[path = "models/memory.rs"]
 mod memory;
-#[path = "inference/mtp.rs"]
-mod mtp;
 #[path = "backend/messages.rs"]
 mod messages;
 #[path = "models/model.rs"]
 mod model;
+#[path = "inference/mtp.rs"]
+mod mtp;
 #[path = "network/network.rs"]
 mod network;
 #[path = "models/ollama.rs"]
 mod ollama;
 #[path = "backend/openai.rs"]
 mod openai;
-#[path = "routing/pipeline.rs"]
-mod pipeline;
-#[path = "network/addrs.rs"]
-pub mod addrs;
-#[path = "network/route.rs"]
-pub mod route;
 #[path = "network/peer_client.rs"]
 pub mod peer_client;
-#[path = "network/tls.rs"]
-pub mod tls;
-#[path = "network/tls_policy.rs"]
-pub mod tls_policy;
+#[path = "routing/pipeline.rs"]
+mod pipeline;
 #[path = "network/pkarr_node.rs"]
 mod pkarr_node;
 #[path = "models/plan.rs"]
@@ -81,20 +73,30 @@ mod relay;
 mod reqlog;
 #[path = "utils/respawn.rs"]
 mod respawn;
+#[path = "network/route.rs"]
+pub mod route;
 #[path = "inference/runtime.rs"]
 mod runtime;
-#[path = "inference/tp.rs"]
-mod tp;
 #[path = "backend/serve.rs"]
 mod serve;
 #[path = "backend/session.rs"]
 mod session;
+#[path = "inference/spec_lab.rs"]
+mod spec_lab;
 #[path = "models/splitter.rs"]
 mod splitter;
+#[path = "models/storage.rs"]
+mod storage;
 #[path = "utils/sysmon.rs"]
 mod sysmon;
+#[path = "network/tls.rs"]
+pub mod tls;
+#[path = "network/tls_policy.rs"]
+pub mod tls_policy;
 #[path = "backend/tool_call.rs"]
 mod tool_call;
+#[path = "inference/tp.rs"]
+mod tp;
 #[path = "backend/transfer.rs"]
 mod transfer;
 #[path = "backend/webapp.rs"]
@@ -692,20 +694,20 @@ async fn main() -> Result<()> {
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
-    let tls_server = match serve::TlsServer::from_identity(
-        &identity,
-        app_config.tls_required,
-        &tls_sans,
-    ) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
-            None
-        }
-    };
+    let tls_server =
+        match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+                None
+            }
+        };
 
-    let node_runtime =
-        runtime::NodeRuntime::new_with_tls(net.clone(), assignment_shared.clone(), tls_server.clone());
+    let node_runtime = runtime::NodeRuntime::new_with_tls(
+        net.clone(),
+        assignment_shared.clone(),
+        tls_server.clone(),
+    );
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
     // fatia anotada por um reinício anterior. Este caminho nunca consome o
@@ -1003,6 +1005,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         // Modelos é onde essa lista deixa de ser um palpite.
         model_dirs: None,
         shard_dir: None,
+        shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
     }));
 
@@ -1297,20 +1300,20 @@ async fn start_gateway_only(
     // máquina, o que o operador fixou, e o hostname. Sem eles o navegador
     // reclamaria do host, e não do emissor.
     let tls_sans = serve::browser_sans(app_config.advertise_addr.as_deref());
-    let tls_server = match serve::TlsServer::from_identity(
-        &identity,
-        app_config.tls_required,
-        &tls_sans,
-    ) {
-        Ok(t) => Some(t),
-        Err(e) => {
-            warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
-            None
-        }
-    };
+    let tls_server =
+        match serve::TlsServer::from_identity(&identity, app_config.tls_required, &tls_sans) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                warn!("não deu para derivar o certificado deste nó, TLS indisponível: {e}");
+                None
+            }
+        };
 
-    let node_runtime =
-        runtime::NodeRuntime::new_with_tls(net.clone(), assignment_shared.clone(), tls_server.clone());
+    let node_runtime = runtime::NodeRuntime::new_with_tls(
+        net.clone(),
+        assignment_shared.clone(),
+        tls_server.clone(),
+    );
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o

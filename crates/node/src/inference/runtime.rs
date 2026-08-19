@@ -563,7 +563,9 @@ impl NodeRuntime {
                             crate::lastslice::clear();
                             let detail = match &porta_presa {
                                 Some(motivo) => {
-                                    format!("desistiu depois de {MAX_RESTARTS} tentativas: {motivo}")
+                                    format!(
+                                        "desistiu depois de {MAX_RESTARTS} tentativas: {motivo}"
+                                    )
                                 }
                                 None => format!("encerrou {MAX_RESTARTS}x: {e}"),
                             };

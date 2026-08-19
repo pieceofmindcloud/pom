@@ -75,7 +75,8 @@ conteúdo `immutable` por 1 ano.
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
-  `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
+  `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
+  (`/config/pastas` continua como alias)
 - `*` -> NotFound
 
 A **Topbar** traz, antes do sino de notificações, o selo de criptografia do

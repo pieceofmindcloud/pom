@@ -123,6 +123,7 @@ export default function App() {
                     <Route path="/config/keys/api" element={<Page><TokenKeys /></Page>} />
                     <Route path="/config/keys/conexao" element={<Page><ConnectionKeys /></Page>} />
                     <Route path="/config/pastas" element={<Page><ModelPaths /></Page>} />
+                    <Route path="/config/armazenamento" element={<Page><ModelPaths /></Page>} />
                     <Route path="*" element={<Page><NotFound /></Page>} />
                   </Routes>
                 </AnimatePresence>

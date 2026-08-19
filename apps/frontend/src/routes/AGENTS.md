@@ -112,19 +112,18 @@ Per-file list:
 - `LogsLive.tsx` — Same `GET /api/ui/requests` source (polled at 3 s), rendered
   newest-first with an animated highlight and a pause/resume that freezes a
   snapshot. Reuses `HopChain` from `LogsByToken`.
-- `ModelPaths.tsx` — Edits `model_dirs` (read-only folders, auto-detect vs
-  explicit list) and `shard_dir` (the one writable folder peers may pull from),
-  saved via `POST /api/ui/paths`. Shows `GET /api/ui/paths` auto-detected
-  folders with kind badges (lmstudio/ollama/folder). Loads server state once so
-  polling does not fight the operator's typing.
+- `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
+  `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
+  or inside a whole-model folder, shows current usage and the slice limit, and
+  keeps `/config/pastas` as an alias.
 - `NetworkSettings.tsx` — Admin view: this node's membership
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
-- `SendFile.tsx` — Offer any readable path on this machine to one peer via
-  `POST /api/transfer/send` (`{to_node_id, path}`); the receiver only ever sees
-  an opaque grant, so "any path out" never becomes "any path in". Pre-fills from
-  `?path=` and offers a picker built from the local catalog.
+- `SendFile.tsx` - offers a `.gguf` from the local catalog via
+  `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
+  friendly name and full path, but sends only the basename; the backend resolves
+  it again and the receiver sees only an opaque grant.
 - `Setup.tsx` — First run (no `pom.json`): choose Principal (mints key via
   `GET /api/setup/key`) or Nó (paste key + `ip:port` bootstrap), then
   `POST /api/setup/save`; the node writes config, respawns, and the screen

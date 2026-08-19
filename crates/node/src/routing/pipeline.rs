@@ -283,10 +283,7 @@ pub async fn plan_pipeline(
     let candidates: Vec<&PeerInfo> = peers
         .iter()
         .filter(|p| {
-            p.inference_port.is_some()
-                && p.is_alive()
-                && p.model == model_name
-                && !p.is_tp_worker()
+            p.inference_port.is_some() && p.is_alive() && p.model == model_name && !p.is_tp_worker()
         })
         .collect();
 
@@ -395,7 +392,10 @@ pub fn resolve_step_url(
         .filter(|url| step.inference_candidates.iter().any(|c| c == url))
         .unwrap_or_else(|| {
             if step.inference_url.is_empty() {
-                step.inference_candidates.first().cloned().unwrap_or_default()
+                step.inference_candidates
+                    .first()
+                    .cloned()
+                    .unwrap_or_default()
             } else {
                 step.inference_url.clone()
             }
@@ -572,7 +572,10 @@ mod ipv6_tests {
             vec!["http://rapido:8181", "http://lento:8181"],
             "http://lento:8181",
         );
-        assert_eq!(resolve_step_url(&step, &tabela, &mut fixadas), "http://rapido:8181");
+        assert_eq!(
+            resolve_step_url(&step, &tabela, &mut fixadas),
+            "http://rapido:8181"
+        );
     }
 
     fn step(caps: &[&str]) -> PipelineStep {
@@ -598,11 +601,18 @@ mod ipv6_tests {
     /// precisam saber decodificar um lote, porque o rascunho viaja para a cabeça.
     #[test]
     fn mtp_needs_the_tail_to_have_nextn_and_everyone_to_batch() {
-        let com_mtp = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP, CAP_SPECULATE_MTP_SLICED][..];
+        let com_mtp = &[
+            CAP_SPECULATE_LOOKUP,
+            CAP_SPECULATE_MTP,
+            CAP_SPECULATE_MTP_SLICED,
+        ][..];
         let so_lote = &[CAP_SPECULATE_LOOKUP, CAP_SPECULATE_MTP_SLICED][..];
         let antigo = &[CAP_SPECULATE_LOOKUP][..];
 
-        assert!(plan_of(vec![step(com_mtp)]).supports_mtp(), "uma máquina só");
+        assert!(
+            plan_of(vec![step(com_mtp)]).supports_mtp(),
+            "uma máquina só"
+        );
         assert!(
             plan_of(vec![step(so_lote), step(com_mtp)]).supports_mtp(),
             "a cauda tem o bloco — é ela quem rascunha, o gateway leva o rascunho à cabeça"
@@ -624,19 +634,25 @@ mod ipv6_tests {
 
     #[test]
     fn relay_chain_requires_every_step_to_advertise_it() {
-        assert!(plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[CAP_RELAY_CHAIN])])
-            .supports_relay_chain());
+        assert!(
+            plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[CAP_RELAY_CHAIN])])
+                .supports_relay_chain()
+        );
         assert!(!plan_of(vec![step(&[CAP_RELAY_CHAIN]), step(&[])]).supports_relay_chain());
         assert!(!plan_of(vec![]).supports_relay_chain());
     }
 
     #[test]
     fn direct_reply_requires_every_step_and_more_than_one_hop() {
-        assert!(plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_DIRECT])])
-            .supports_direct_reply());
+        assert!(
+            plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_DIRECT])])
+                .supports_direct_reply()
+        );
         // Um passo antigo no meio derruba a cadeia inteira para o anel.
-        assert!(!plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_CHAIN])])
-            .supports_direct_reply());
+        assert!(
+            !plan_of(vec![step(&[CAP_RELAY_DIRECT]), step(&[CAP_RELAY_CHAIN])])
+                .supports_direct_reply()
+        );
         // Um hop só já é o mínimo; desviar a resposta não economiza perna.
         assert!(!plan_of(vec![step(&[CAP_RELAY_DIRECT])]).supports_direct_reply());
         assert!(!plan_of(vec![]).supports_direct_reply());
@@ -644,10 +660,11 @@ mod ipv6_tests {
 
     #[test]
     fn speculation_requires_every_step_to_advertise_it() {
-        assert!(
-            plan_of(vec![step(&[CAP_SPECULATE_LOOKUP]), step(&[CAP_SPECULATE_LOOKUP])])
-                .supports_speculation()
-        );
+        assert!(plan_of(vec![
+            step(&[CAP_SPECULATE_LOOKUP]),
+            step(&[CAP_SPECULATE_LOOKUP])
+        ])
+        .supports_speculation());
         assert!(!plan_of(vec![step(&[CAP_SPECULATE_LOOKUP]), step(&[])]).supports_speculation());
         assert!(!plan_of(vec![]).supports_speculation());
     }

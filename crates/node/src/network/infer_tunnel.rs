@@ -77,7 +77,9 @@ where
     if len > MAX_TUNNEL_PAYLOAD_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("tunnel frame of {len} bytes exceeds the {MAX_TUNNEL_PAYLOAD_BYTES}-byte bound"),
+            format!(
+                "tunnel frame of {len} bytes exceeds the {MAX_TUNNEL_PAYLOAD_BYTES}-byte bound"
+            ),
         ));
     }
     let mut data = vec![0u8; len];
@@ -425,10 +427,7 @@ mod tests {
                 let handler = handler.clone();
                 async move {
                     let (status, body) = handler(body.to_vec());
-                    (
-                        axum::http::StatusCode::from_u16(status).unwrap(),
-                        body,
-                    )
+                    (axum::http::StatusCode::from_u16(status).unwrap(), body)
                 }
             }),
         );
@@ -542,8 +541,8 @@ mod tests {
                 _ => None,
             })
             .expect("o multiaddr tem que terminar em /p2p/<peer-id>");
-        let path = std::env::var("POM_TUNNEL_PROBE_PATH")
-            .unwrap_or_else(|_| "/v1/step".to_string());
+        let path =
+            std::env::var("POM_TUNNEL_PROBE_PATH").unwrap_or_else(|_| "/v1/step".to_string());
 
         let mut swarm = libp2p::SwarmBuilder::with_new_identity()
             .with_tokio()
@@ -577,7 +576,11 @@ mod tests {
                 .expect("o peer não respondeu no prazo");
             match event {
                 SwarmEvent::Behaviour(Event::Message {
-                    message: request_response::Message::Response { request_id, response },
+                    message:
+                        request_response::Message::Response {
+                            request_id,
+                            response,
+                        },
                     ..
                 }) if request_id == id => {
                     println!(

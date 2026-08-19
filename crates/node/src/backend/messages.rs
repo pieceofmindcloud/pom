@@ -65,7 +65,10 @@ pub fn routes() -> Router<GatewayState> {
         .route("/v1/messages", post(messages))
         .route("/v1/messages/count_tokens", post(count_tokens))
         .route("/v1/messages", axum::routing::options(preflight))
-        .route("/v1/messages/count_tokens", axum::routing::options(preflight))
+        .route(
+            "/v1/messages/count_tokens",
+            axum::routing::options(preflight),
+        )
 }
 
 // ── Message content ──────────────────────────────────────────────────────────
@@ -389,8 +392,15 @@ async fn blocking_response(
     id: String,
     input_tokens: u32,
 ) -> Response {
-    match crate::gateway::generate_blocking(state, "/v1/messages", caller, model.clone(), prompt, max_tokens)
-        .await
+    match crate::gateway::generate_blocking(
+        state,
+        "/v1/messages",
+        caller,
+        model.clone(),
+        prompt,
+        max_tokens,
+    )
+    .await
     {
         Ok((text, summary)) => {
             let (content, saw_tool_call) = content_blocks(&parse_output(&text));
@@ -1022,7 +1032,7 @@ mod tests {
         let mut out = Vec::new();
         apply_scan_events(
             vec![ScanEvent::ToolCallClose(Err(
-                "<tool_call>bad</tool_call>".into(),
+                "<tool_call>bad</tool_call>".into()
             ))],
             &mut text_open,
             &mut next_index,

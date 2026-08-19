@@ -200,24 +200,19 @@ mod tests {
     async fn transfer_offers_returns_the_real_offers() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
 
-        state
-            .transfers
-            .offers
-            .write()
-            .await
-            .push(TransferOffer {
-                id: "oferta-1".into(),
-                from_node_id: "peer-b".into(),
-                from_host: "ksia".into(),
-                from_gateway: "http://127.0.0.1:8080".into(),
-                remote_path: "/models/fatia_0_15.gguf".into(),
-                grant: None,
-                name: "fatia_0_15.gguf".into(),
-                size_bytes: 4_096,
-                md5: String::new(),
-                start_layer: Some(0),
-                end_layer: Some(15),
-            });
+        state.transfers.offers.write().await.push(TransferOffer {
+            id: "oferta-1".into(),
+            from_node_id: "peer-b".into(),
+            from_host: "ksia".into(),
+            from_gateway: "http://127.0.0.1:8080".into(),
+            remote_path: "/models/fatia_0_15.gguf".into(),
+            grant: None,
+            name: "fatia_0_15.gguf".into(),
+            size_bytes: 4_096,
+            md5: String::new(),
+            start_layer: Some(0),
+            end_layer: Some(15),
+        });
 
         let response = transfer_offers(ConnectionAuth, State(state))
             .await

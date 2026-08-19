@@ -87,7 +87,7 @@ export const NAV: NavSection[] = [
       { labelKey: "nav.network", to: "/config/rede", icon: Network },
       { labelKey: "nav.apiKeys", to: "/config/keys/api", icon: KeyRound },
       { labelKey: "nav.connectionKeys", to: "/config/keys/conexao", icon: SlidersHorizontal },
-      { labelKey: "nav.modelFolders", to: "/config/pastas", icon: FolderTree },
+      { labelKey: "nav.modelFolders", to: "/config/armazenamento", icon: FolderTree },
     ],
   },
 ];

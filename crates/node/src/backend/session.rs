@@ -122,6 +122,7 @@ mod tests {
             blocked_nodes: blocked,
             model_dirs: None,
             shard_dir: None,
+            shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         }))
     }
 
@@ -142,7 +143,9 @@ mod tests {
 
     async fn responder(state: AuthState, req: HandshakeRequest) -> (StatusCode, serde_json::Value) {
         use axum::body::to_bytes;
-        let resp = handle_handshake(State(state), Json(req)).await.into_response();
+        let resp = handle_handshake(State(state), Json(req))
+            .await
+            .into_response();
         let status = resp.status();
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         (status, serde_json::from_slice(&body).unwrap())

@@ -58,11 +58,7 @@ use llama_cpp_sys_2 as sys;
 // Ver `llama_mtp_shim.cpp`: elas moram em `llama-ext.h`, fora do `extern "C"`
 // de `llama.h`, e o `wrapper.h` da crate `-sys` não inclui esse cabeçalho.
 extern "C" {
-    fn pom_llama_set_embeddings_nextn(
-        ctx: *mut sys::llama_context,
-        value: bool,
-        masked: bool,
-    );
+    fn pom_llama_set_embeddings_nextn(ctx: *mut sys::llama_context, value: bool, masked: bool);
     fn pom_llama_get_embeddings_nextn_ith(
         ctx: *mut sys::llama_context,
         i: std::os::raw::c_int,
@@ -313,7 +309,14 @@ impl MtpDrafter {
     /// bloco produziu. `p_min` corta o rascunho no primeiro token de que a
     /// cabeça não tem certeza - continuar depois disso só alarga o lote de
     /// todos os hops para uma aposta que a verificação vai recusar.
-    pub fn draft(&mut self, id_last: i32, n_past: u32, seq_id: u32, k: u32, p_min: f32) -> Vec<i32> {
+    pub fn draft(
+        &mut self,
+        id_last: i32,
+        n_past: u32,
+        seq_id: u32,
+        k: u32,
+        p_min: f32,
+    ) -> Vec<i32> {
         if k == 0 {
             return Vec::new();
         }
@@ -489,7 +492,11 @@ mod tests {
             "o modelo em {path} não trouxe bloco nextn — a sonda precisa de um que traga"
         );
 
-        let prompt = engine.tokenize("The capital of France is Paris. The capital of Italy is", true, false);
+        let prompt = engine.tokenize(
+            "The capital of France is Paris. The capital of Italy is",
+            true,
+            false,
+        );
         assert!(prompt.len() > 4, "prompt curto demais para a sonda");
         engine
             .decode_tokens(&prompt, 0, 0, false)
@@ -504,10 +511,15 @@ mod tests {
             !draft.is_empty(),
             "a cabeça nextn não rascunhou nada — sem rascunho o MTP não acelera coisa nenhuma"
         );
-        let texto: String = draft.iter().map(|&t| engine.token_to_piece(t, false)).collect();
+        let texto: String = draft
+            .iter()
+            .map(|&t| engine.token_to_piece(t, false))
+            .collect();
         eprintln!("rascunho MTP: {draft:?} → {texto:?}");
         assert!(
-            draft.iter().all(|&t| t >= 0 && (t as usize) < engine.n_vocab),
+            draft
+                .iter()
+                .all(|&t| t >= 0 && (t as usize) < engine.n_vocab),
             "token fora do vocabulário: {draft:?}"
         );
 

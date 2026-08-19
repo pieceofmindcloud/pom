@@ -524,11 +524,10 @@ pub async fn generate_stream(
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
             crate::wire::WireDtype::F16,
             cfg.as_ref().is_some_and(|c| c.speculative_decoding_enabled),
-            speculative_k_of(
-                cfg.as_ref().map(|c| c.speculative_k).unwrap_or(4),
-                n_batch,
-            ),
-            cfg.as_ref().map(|c| c.speculative_lookup_window).unwrap_or(3),
+            speculative_k_of(cfg.as_ref().map(|c| c.speculative_k).unwrap_or(4), n_batch),
+            cfg.as_ref()
+                .map(|c| c.speculative_lookup_window)
+                .unwrap_or(3),
             cfg.as_ref().is_some_and(|c| c.mtp_enabled),
             // O parâmetro é "quantos tokens rascunhar"; a largura do lote é
             // isso mais o token já confirmado.
@@ -544,16 +543,15 @@ pub async fn generate_stream(
     // modelo, enquanto o lookup só acerta em saída repetitiva. Nunca os dois
     // na mesma rodada - o lote é um só, e misturar as fontes tornaria a taxa
     // de aceitação impossível de atribuir.
-    let (speculative_enabled, speculative_k, draft_source) =
-        if mtp_enabled && plan.supports_mtp() {
-            (true, mtp_k, crate::prefill::DraftSource::Mtp)
-        } else {
-            (
-                lookup_enabled,
-                lookup_k,
-                crate::prefill::DraftSource::Lookup,
-            )
-        };
+    let (speculative_enabled, speculative_k, draft_source) = if mtp_enabled && plan.supports_mtp() {
+        (true, mtp_k, crate::prefill::DraftSource::Mtp)
+    } else {
+        (
+            lookup_enabled,
+            lookup_k,
+            crate::prefill::DraftSource::Lookup,
+        )
+    };
 
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
@@ -767,9 +765,7 @@ pub async fn generate_stream(
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty()
-                        && tx.send(GenEvent::Token(text.clone())).await.is_err()
-                    {
+                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
                         info!("cliente desconectou após {tokens_generated} tokens");
                         return;
                     }
@@ -864,20 +860,19 @@ pub async fn generate_stream(
         }
 
         for i in 0..max_tokens {
-            let res =
-                crate::prefill::step(
-                    &plan,
-                    &model,
-                    &session_id,
-                    next_token,
-                    dtype,
-                    &state.peer_http,
-                    &state.network.routes,
-                    direct.as_ref(),
-                    state.tunnel_tx.as_ref(),
-                    None,
-                )
-                    .await;
+            let res = crate::prefill::step(
+                &plan,
+                &model,
+                &session_id,
+                next_token,
+                dtype,
+                &state.peer_http,
+                &state.network.routes,
+                direct.as_ref(),
+                state.tunnel_tx.as_ref(),
+                None,
+            )
+            .await;
 
             match res {
                 Ok(step) => {
@@ -1022,30 +1017,31 @@ async fn rollback_sessions(
             .send()
             .await
         {
-            Ok(r) if r.status().is_success() => {
-                match r.json::<serde_json::Value>().await {
-                    Ok(body) => {
-                        if !body
-                            .get("rolled_back")
-                            .and_then(|v| v.as_bool())
-                            .unwrap_or(false)
-                        {
-                            warn!(
-                                "rollback de sessão em {} recusado: {}",
-                                step.node_id,
-                                body.get("reason")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("sem motivo informado")
-                            );
-                            all_ok = false;
-                        }
-                    }
-                    Err(e) => {
-                        warn!("rollback de sessão em {}: corpo ilegível: {e}", step.node_id);
+            Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+                Ok(body) => {
+                    if !body
+                        .get("rolled_back")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false)
+                    {
+                        warn!(
+                            "rollback de sessão em {} recusado: {}",
+                            step.node_id,
+                            body.get("reason")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("sem motivo informado")
+                        );
                         all_ok = false;
                     }
                 }
-            }
+                Err(e) => {
+                    warn!(
+                        "rollback de sessão em {}: corpo ilegível: {e}",
+                        step.node_id
+                    );
+                    all_ok = false;
+                }
+            },
             Ok(r) => {
                 warn!(
                     "rollback de sessão em {} respondeu {}",
@@ -1436,7 +1432,10 @@ mod tests {
         state.network.set_observed_addr("203.0.113.5:9999");
 
         let peers = state.all_peers().await;
-        let me = peers.iter().find(|p| p.node_id == "eu").expect("self entry");
+        let me = peers
+            .iter()
+            .find(|p| p.node_id == "eu")
+            .expect("self entry");
 
         assert!(
             me.addr.starts_with("203.0.113.5:"),
@@ -1711,6 +1710,7 @@ pub(crate) mod testkit {
                 blocked_nodes: vec![],
                 model_dirs: None,
                 shard_dir: None,
+                shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
             })),
             transfers: Default::default(),
             reply_inbox: crate::direct::ReplyInbox::new(),

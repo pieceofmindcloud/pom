@@ -202,11 +202,8 @@ pub fn self_reply_urls(
         // O esquema segue a política do cluster: estas URLs são as que a cauda
         // vai discar de volta, e num cluster em TLS o `/relay/result` deste nó
         // recusa texto claro vindo de fora.
-        let url = crate::peer_client::peer_base_url(
-            &host,
-            gateway_port,
-            crate::peer_client::tls_ativo(),
-        );
+        let url =
+            crate::peer_client::peer_base_url(&host, gateway_port, crate::peer_client::tls_ativo());
         if !urls.contains(&url) {
             urls.push(url);
         }
@@ -242,7 +239,9 @@ fn is_unroutable_host(host: &str) -> bool {
 pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     let (mut meta, _tensor) = match crate::wire::decode(&body) {
         Ok(v) => v,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!("quadro inválido: {e}")).into_response(),
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!("quadro inválido: {e}")).into_response()
+        }
     };
     let Some(ticket) = meta
         .get("ticket")
@@ -320,7 +319,11 @@ pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
 /// certo de fora: o gateway anuncia todos os que conhece de si e quem entrega
 /// descobre qual funciona. Falhou em todos, o gateway fecha no prazo — não há
 /// terceira via, e inventar uma seria pior que a espera.
-pub async fn deliver_result(http: &crate::peer_client::PeerClients, reply_to: &Value, mut meta: Value) -> bool {
+pub async fn deliver_result(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    mut meta: Value,
+) -> bool {
     let Some(ticket) = reply_to.get("ticket").and_then(|v| v.as_str()) else {
         warn!("reply_to sem ticket — resultado direto descartado");
         return false;
@@ -538,7 +541,10 @@ mod tests {
             ],
             8080,
         );
-        assert!(urls.is_empty(), "loopback não alcança outra máquina: {urls:?}");
+        assert!(
+            urls.is_empty(),
+            "loopback não alcança outra máquina: {urls:?}"
+        );
         assert!(
             DirectReply::new(ReplyInbox::new(), urls, "n1".into()).is_none(),
             "sem endereço utilizável o plano tem que cair no anel"
@@ -547,7 +553,11 @@ mod tests {
         // O loopback que o operador fixou é outra história: numa máquina só,
         // apontar para si mesmo é a configuração certa e foi escolha dele.
         assert_eq!(
-            self_reply_urls(Some("127.0.0.1:42777".into()), vec!["127.0.0.1:42777".into()], 8080),
+            self_reply_urls(
+                Some("127.0.0.1:42777".into()),
+                vec!["127.0.0.1:42777".into()],
+                8080
+            ),
             vec!["http://127.0.0.1:8080".to_string()]
         );
     }

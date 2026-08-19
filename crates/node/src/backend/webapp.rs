@@ -177,9 +177,7 @@ mod tests {
     #[tokio::test]
     async fn serves_files_from_the_bundle_directory() {
         let dir = std::env::temp_dir().join(format!("pom-webapp-test-{}", uuid::Uuid::new_v4()));
-        tokio::fs::create_dir_all(dir.join("assets"))
-            .await
-            .unwrap();
+        tokio::fs::create_dir_all(dir.join("assets")).await.unwrap();
         tokio::fs::write(dir.join("index.html"), "<html>CODAI-SERVER</html>")
             .await
             .unwrap();

@@ -788,8 +788,15 @@ fn sse_stream(
                     Some(GenEvent::Token(text)) => {
                         match s.mode {
                             Mode::Completion => {
-                                let chunk =
-                                    chunk_json(&s.id, s.created, &s.model, s.mode, json!(text), None, None);
+                                let chunk = chunk_json(
+                                    &s.id,
+                                    s.created,
+                                    &s.model,
+                                    s.mode,
+                                    json!(text),
+                                    None,
+                                    None,
+                                );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
                             Mode::Chat => {
@@ -802,8 +809,9 @@ fn sse_stream(
                                     &mut deltas,
                                 );
                                 for delta in deltas {
-                                    let chunk =
-                                        chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
+                                    let chunk = chunk_json(
+                                        &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                    );
                                     s.queue.push_back(Event::default().data(chunk));
                                 }
                             }
@@ -822,8 +830,9 @@ fn sse_stream(
                                 &mut deltas,
                             );
                             for delta in deltas {
-                                let chunk =
-                                    chunk_json(&s.id, s.created, &s.model, s.mode, delta, None, None);
+                                let chunk = chunk_json(
+                                    &s.id, s.created, &s.model, s.mode, delta, None, None,
+                                );
                                 s.queue.push_back(Event::default().data(chunk));
                             }
                         }
@@ -847,8 +856,10 @@ fn sse_stream(
                         continue;
                     }
                     Some(GenEvent::Failed(err)) => {
-                        let payload = json!({ "error": { "message": err, "type": "server_error" } });
-                        s.queue.push_back(Event::default().data(payload.to_string()));
+                        let payload =
+                            json!({ "error": { "message": err, "type": "server_error" } });
+                        s.queue
+                            .push_back(Event::default().data(payload.to_string()));
                         s.queue.push_back(Event::default().data("[DONE]"));
                         s.phase = Phase::Ended;
                         continue;
@@ -940,7 +951,10 @@ mod tests {
 
     #[test]
     fn system_prompt_leads_the_conversation() {
-        let out = render_prompt(&[msg("system", "Fale em portugues."), msg("user", "Oi")], &[]);
+        let out = render_prompt(
+            &[msg("system", "Fale em portugues."), msg("user", "Oi")],
+            &[],
+        );
         assert!(out.starts_with("Fale em portugues."));
         assert!(out.ends_with("User: Oi"));
     }
@@ -1063,7 +1077,10 @@ mod tests {
 
     #[test]
     fn no_tools_renders_identically_to_before_tool_support() {
-        let out = render_prompt(&[msg("system", "Fale em portugues."), msg("user", "Oi")], &[]);
+        let out = render_prompt(
+            &[msg("system", "Fale em portugues."), msg("user", "Oi")],
+            &[],
+        );
         assert_eq!(out, "Fale em portugues.\n\nUser: Oi");
     }
 
@@ -1209,7 +1226,7 @@ mod tests {
         let mut out = Vec::new();
         apply_scan_events_openai(
             vec![ScanEvent::ToolCallClose(Err(
-                "<tool_call>bad</tool_call>".into(),
+                "<tool_call>bad</tool_call>".into()
             ))],
             &mut tool_call_index,
             &mut saw_tool_call,

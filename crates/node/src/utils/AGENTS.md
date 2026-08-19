@@ -40,7 +40,8 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 - `model_dir_paths`/`shard_dir_path` - onde procurar modelos inteiros e onde
   escrever/ler fatias. `model_dirs` ausente = detectar (LM Studio + Ollama);
   lista **vazia** = não procure em lugar nenhum; `shard_dir` em branco cai para
-  `<project_root>/models`.
+  `<project_root>/models`. `shard_max_gb` limita somente a pasta de fatias e
+  assume 100 GB quando falta em um `pom.json` antigo.
 - `DEFAULT_INFERENCE_PORT` (8181) - anunciado desde o arranque mesmo antes de
   a fatia ser atribuída (sem ele o `apply` recusava todo modelo).
 

@@ -363,8 +363,10 @@ impl Discovery {
         // matching `Message::Response` or `Event::OutboundFailure` arrives.
         // Lives here, not on `Discovery`, because only this loop ever touches
         // it — same reasoning as `connected_relays`.
-        let mut pending_tunnel: HashMap<OutboundRequestId, oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>> =
-            HashMap::new();
+        let mut pending_tunnel: HashMap<
+            OutboundRequestId,
+            oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
+        > = HashMap::new();
         loop {
             tokio::select! {
                 event = swarm.next() => {
@@ -402,7 +404,10 @@ async fn handle_event(
     relay_peer_ids: &HashSet<PeerId>,
     connected_relays: &mut HashSet<PeerId>,
     http: &reqwest::Client,
-    pending_tunnel: &mut HashMap<OutboundRequestId, oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>>,
+    pending_tunnel: &mut HashMap<
+        OutboundRequestId,
+        oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
+    >,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -435,11 +440,14 @@ async fn handle_event(
                 tp,
             }) = serde_json::from_slice(&message.data)
             {
-                let dial_for_tunnel = libp2p_peer_id.as_deref().and_then(|s| s.parse::<PeerId>().ok()).filter(|_| {
-                    inference_frame_capabilities
-                        .iter()
-                        .any(|c| c == "transport/libp2p-tunnel-v1")
-                });
+                let dial_for_tunnel = libp2p_peer_id
+                    .as_deref()
+                    .and_then(|s| s.parse::<PeerId>().ok())
+                    .filter(|_| {
+                        inference_frame_capabilities
+                            .iter()
+                            .any(|c| c == "transport/libp2p-tunnel-v1")
+                    });
 
                 network
                     .insert_peer(PeerInfo {
@@ -616,7 +624,9 @@ async fn handle_event(
         // `OutboundRequestId` the swarm handed back from `send_request`.
         SwarmEvent::Behaviour(DiscBehaviourEvent::InferTunnel(event)) => match event {
             request_response::Event::Message { peer, message, .. } => match message {
-                request_response::Message::Request { request, channel, .. } => {
+                request_response::Message::Request {
+                    request, channel, ..
+                } => {
                     match network.inference_port {
                         Some(inference_port) => {
                             debug!(
@@ -625,8 +635,10 @@ async fn handle_event(
                             );
                             let response =
                                 infer_tunnel::serve_loopback(http, inference_port, request).await;
-                            let _ =
-                                swarm.behaviour_mut().infer_tunnel.send_response(channel, response);
+                            let _ = swarm
+                                .behaviour_mut()
+                                .infer_tunnel
+                                .send_response(channel, response);
                         }
                         None => {
                             // Nothing to forward to — this node has no
@@ -645,25 +657,42 @@ async fn handle_event(
                         }
                     }
                 }
-                request_response::Message::Response { request_id, response } => {
+                request_response::Message::Response {
+                    request_id,
+                    response,
+                } => {
                     if let Some(reply) = pending_tunnel.remove(&request_id) {
                         let _ = reply.send(Ok(response));
                     } else {
                         // The caller already gave up (e.g. `send_frame_via_tunnel`'s
                         // own timeout fired first) and dropped its `oneshot`
                         // receiver — a late response is expected, not a bug.
-                        debug!("infer-tunnel: response for an unknown/expired request from {}", peer);
+                        debug!(
+                            "infer-tunnel: response for an unknown/expired request from {}",
+                            peer
+                        );
                     }
                 }
             },
-            request_response::Event::OutboundFailure { peer, request_id, error, .. } => {
-                debug!("infer-tunnel: outbound call to {} failed: {:?}", peer, error);
+            request_response::Event::OutboundFailure {
+                peer,
+                request_id,
+                error,
+                ..
+            } => {
+                debug!(
+                    "infer-tunnel: outbound call to {} failed: {:?}",
+                    peer, error
+                );
                 if let Some(reply) = pending_tunnel.remove(&request_id) {
                     let _ = reply.send(Err(error.to_string()));
                 }
             }
             request_response::Event::InboundFailure { peer, error, .. } => {
-                debug!("infer-tunnel: inbound call from {} failed: {:?}", peer, error);
+                debug!(
+                    "infer-tunnel: inbound call from {} failed: {:?}",
+                    peer, error
+                );
             }
             request_response::Event::ResponseSent { .. } => {}
         },

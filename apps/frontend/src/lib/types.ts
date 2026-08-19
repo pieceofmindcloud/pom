@@ -252,6 +252,9 @@ export interface PathEntry {
   path: string;
   exists: boolean;
   kind: "ollama" | "lmstudio" | "folder";
+  used_bytes: number;
+  max_bytes: number | null;
+  usage_percent: number | null;
 }
 
 export interface PathsResponse {
@@ -260,6 +263,7 @@ export interface PathsResponse {
   using_defaults: boolean;
   detected: PathEntry[];
   default_shard_dir: string;
+  shard_max_gb: number;
 }
 
 /** A slicing or apply run. `src/webui.rs` — `Job`. */

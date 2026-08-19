@@ -227,7 +227,10 @@ mod tests {
         c.for_peer("aaaa").unwrap();
         c.for_peer("aaaa").unwrap();
         c.for_peer("bbbb").unwrap();
-        assert_eq!(c.cached_peers(), vec!["aaaa".to_string(), "bbbb".to_string()]);
+        assert_eq!(
+            c.cached_peers(),
+            vec!["aaaa".to_string(), "bbbb".to_string()]
+        );
     }
 
     /// Virar a flag joga fora os clientes: um cliente construído para falar

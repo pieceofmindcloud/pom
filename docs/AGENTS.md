@@ -16,6 +16,12 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
   (`crates/node/src/routing/pipeline.rs`) enquanto a cobertura de equivalencia
   cresce. O README.md da raiz aponta para ele.
 
+## subsystems/
+
+Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
+documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
+a leitura da telemetria correspondente.
+
 ## superpowers/specs/
 
 Designs, o "por que" e o "o quê" antes de qualquer codigo. Estrutura tipica:

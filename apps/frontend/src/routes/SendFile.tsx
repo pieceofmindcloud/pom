@@ -1,11 +1,9 @@
 /**
  * Sending a file this machine's own operator picked.
  *
- * Any readable path is allowed here, deliberately: the models live under LM
- * Studio, under Ollama and in loose folders, and "it is on this machine so I
- * must be able to send it" is the requirement. What keeps that from becoming
- * "any peer can read any file" is that the path came from *this* screen — the
- * receiving peer only ever gets an opaque grant id back (see `src/transfer.rs`).
+ * Only files already present in the local catalog can be selected. The browser
+ * sends a basename and the backend resolves it again, so a path traversal can
+ * never choose an arbitrary file on the machine.
  */
 import { FolderInput, Send, ShieldCheck } from "lucide-react";
 import { useState } from "react";
@@ -14,7 +12,6 @@ import {
   Button,
   Empty,
   Field,
-  Input,
   PageHeader,
   Panel,
   PanelHeader,
@@ -33,7 +30,10 @@ export function SendFile() {
   const catalog = useLocalCatalog();
   const toast = useToast();
 
-  const [path, setPath] = useState(params.get("path") ?? "");
+  const [filename, setFilename] = useState(() => {
+    const value = params.get("filename") ?? params.get("path") ?? "";
+    return value.split(/[\\/]/).pop() ?? "";
+  });
   const [target, setTarget] = useState("");
   const [sending, setSending] = useState(false);
 
@@ -41,21 +41,21 @@ export function SendFile() {
   const local = [
     ...(catalog.data?.models ?? []),
     ...(catalog.data?.shard_sets ?? []).flatMap((s) => s.shards),
-  ];
+  ].filter((m) => /\.gguf$/i.test(m.path));
 
   async function send() {
-    if (!path.trim() || !target) return;
+    if (!filename.trim() || !target) return;
     setSending(true);
     try {
       await api.post("/api/transfer/send", {
         to_node_id: target,
-        path: path.trim(),
+        filename: filename.trim(),
       });
       toast.success(
         t("sendFile.offerSent"),
         t("sendFile.offerSentDetail"),
       );
-      setPath("");
+      setFilename("");
     } catch (e) {
       toast.fromError(t("sendFile.offerFailed"), e);
     } finally {
@@ -84,32 +84,21 @@ export function SendFile() {
             <PanelHeader title={t("sendFile.fileAndTarget")} />
             <div className="space-y-4 px-5 py-4">
               <Field
-                label={t("sendFile.path")}
-                hint={t("sendFile.pathHint")}
+                label={t("sendFile.file")}
+                hint={t("sendFile.fileHint")}
               >
-                <Input
-                  value={path}
-                  onChange={(e) => setPath(e.target.value)}
-                  placeholder="/path/to/models/qwen/qwen_0_15.gguf"
-                  spellCheck={false}
-                />
-              </Field>
-
-              {local.length > 0 && (
-                <Field
-                  label={t("sendFile.pickFound")}
-                  hint={t("sendFile.pickFoundHint")}
-                >
-                  <Select value="" onChange={(e) => e.target.value && setPath(e.target.value)}>
-                    <option value="">{t("sendFile.pickFromList")}</option>
-                    {local.map((m) => (
-                      <option key={m.id} value={m.path}>
-                        {m.name}
+                <Select value={filename} onChange={(e) => setFilename(e.target.value)}>
+                  <option value="">{t("sendFile.pickFromList")}</option>
+                  {local.map((m) => {
+                    const name = m.path.split(/[\\/]/).pop() ?? m.name;
+                    return (
+                      <option key={m.id} value={name}>
+                        {m.name} · {m.path}
                       </option>
-                    ))}
-                  </Select>
-                </Field>
-              )}
+                    );
+                  })}
+                </Select>
+              </Field>
 
               <Field label={t("sendFile.destination")}>
                 <Select value={target} onChange={(e) => setTarget(e.target.value)}>
@@ -126,7 +115,7 @@ export function SendFile() {
                 variant="primary"
                 icon={<Send className="h-3.5 w-3.5" />}
                 loading={sending}
-                disabled={!path.trim() || !target}
+                disabled={!filename.trim() || !target || local.length === 0}
                 onClick={() => void send()}
               >
                 {t("sendFile.offer")}

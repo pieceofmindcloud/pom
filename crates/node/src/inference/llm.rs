@@ -232,10 +232,13 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     let n_devices = unsafe { sys::llama_max_devices() }.max(1);
     let n_overrides = unsafe { sys::llama_max_tensor_buft_overrides() }.max(1);
     let mut tensor_split = vec![0.0_f32; n_devices];
-    let mut tensor_buft_overrides = vec![sys::llama_model_tensor_buft_override {
-        pattern: ptr::null(),
-        buft: ptr::null_mut(),
-    }; n_overrides];
+    let mut tensor_buft_overrides = vec![
+        sys::llama_model_tensor_buft_override {
+            pattern: ptr::null(),
+            buft: ptr::null_mut(),
+        };
+        n_overrides
+    ];
     let mut margins = vec![FIT_MEMORY_MARGIN_BYTES; n_devices];
 
     let mut mparams = unsafe { sys::llama_model_default_params() };
@@ -655,7 +658,14 @@ impl LlmEngine {
     /// Rascunha até `k` tokens com a cabeça `nextn`. Vazio quando não há
     /// cabeça — o chamador então decodifica só o token confirmado, que é o
     /// comportamento de sempre.
-    pub fn mtp_draft(&mut self, id_last: i32, n_past: u32, seq_id: u32, k: u32, p_min: f32) -> Vec<i32> {
+    pub fn mtp_draft(
+        &mut self,
+        id_last: i32,
+        n_past: u32,
+        seq_id: u32,
+        k: u32,
+        p_min: f32,
+    ) -> Vec<i32> {
         match self.mtp.as_mut() {
             Some(d) => d.draft(id_last, n_past, seq_id, k, p_min),
             None => Vec::new(),
@@ -1179,8 +1189,8 @@ impl LlmEngine {
 /// exatamente o que uma sessão já tinha quando as N dividiam um contexto só, e
 /// `max_sessions = 1` porque agora cada contexto atende uma sessão.
 fn per_context_config(cfg: &EngineConfig, n: usize) -> EngineConfig {
-        EngineConfig {
-            n_ctx: cfg.n_ctx / n.max(1) as u32,
+    EngineConfig {
+        n_ctx: cfg.n_ctx / n.max(1) as u32,
         max_sessions: 1,
         ..cfg.clone()
     }
@@ -1790,7 +1800,11 @@ mod tests {
             rs_seq_window: 0,
         };
         let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
-        let tokens = engine.tokenize("Explique o que e inferencia distribuida em uma frase.", true, true);
+        let tokens = engine.tokenize(
+            "Explique o que e inferencia distribuida em uma frase.",
+            true,
+            true,
+        );
 
         for sync in [false, true, false, true] {
             std::env::set_var("POM_PROFILE_SYNC", if sync { "1" } else { "0" });
@@ -1855,7 +1869,11 @@ mod tests {
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
             engine
-                .tokenize("Explique o que e inferencia distribuida em uma frase.", true, true)
+                .tokenize(
+                    "Explique o que e inferencia distribuida em uma frase.",
+                    true,
+                    true
+                )
                 .len()
                 > tokens.len(),
             "a longer prompt must produce more tokens"

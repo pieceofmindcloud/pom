@@ -67,9 +67,7 @@ pub(crate) fn render_tools_block(tools: &[ToolDef]) -> String {
     if tools.is_empty() {
         return String::new();
     }
-    let mut out = String::from(
-        "# Tools\n\nYou have access to the following functions:\n\n<tools>",
-    );
+    let mut out = String::from("# Tools\n\nYou have access to the following functions:\n\n<tools>");
     for t in tools {
         out.push('\n');
         out.push_str(
@@ -308,7 +306,10 @@ impl TagScanner {
 /// a UTF-8 char boundary in `s` regardless of non-ASCII text around it.
 fn longest_prefix_overlap(s: &str, tag: &str) -> usize {
     let max = s.len().min(tag.len().saturating_sub(1));
-    (1..=max).rev().find(|&len| s.ends_with(&tag[..len])).unwrap_or(0)
+    (1..=max)
+        .rev()
+        .find(|&len| s.ends_with(&tag[..len]))
+        .unwrap_or(0)
 }
 
 /// `Wrapped`: two inner formats are accepted, tried in this order — the
@@ -356,7 +357,10 @@ fn parse_bare_function_call(raw: &str) -> Option<(String, serde_json::Value)> {
     if name.is_empty() || name.contains(char::is_whitespace) {
         return None;
     }
-    Some((name.to_string(), serde_json::Value::Object(serde_json::Map::new())))
+    Some((
+        name.to_string(),
+        serde_json::Value::Object(serde_json::Map::new()),
+    ))
 }
 
 /// Parses `<function=NAME>(<parameter=P>value</parameter>)*</function>`.
@@ -514,7 +518,8 @@ mod tests {
 
     #[test]
     fn parse_function_call_xml_preserves_internal_newlines_in_a_multiline_value() {
-        let raw = "<function=Write>\n<parameter=content>\nline 1\nline 2\n</parameter>\n</function>";
+        let raw =
+            "<function=Write>\n<parameter=content>\nline 1\nline 2\n</parameter>\n</function>";
         let (name, parsed) = parse_function_call_xml(raw).expect("parses");
         assert_eq!(name, "Write");
         assert_eq!(parsed["content"], "line 1\nline 2");
@@ -522,12 +527,18 @@ mod tests {
 
     #[test]
     fn parse_function_call_xml_rejects_a_missing_closing_function_tag() {
-        assert!(parse_function_call_xml("<function=Bash>\n<parameter=command>\nls\n</parameter>\n").is_none());
+        assert!(parse_function_call_xml(
+            "<function=Bash>\n<parameter=command>\nls\n</parameter>\n"
+        )
+        .is_none());
     }
 
     #[test]
     fn parse_function_call_xml_rejects_an_unclosed_parameter() {
-        assert!(parse_function_call_xml("<function=Bash>\n<parameter=command>\nls\n</function>").is_none());
+        assert!(
+            parse_function_call_xml("<function=Bash>\n<parameter=command>\nls\n</function>")
+                .is_none()
+        );
     }
 
     #[test]
@@ -649,7 +660,8 @@ mod tests {
 
     #[test]
     fn parse_output_extracts_a_single_tool_call() {
-        let out = parse_output(r#"<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>"#);
+        let out =
+            parse_output(r#"<tool_call>{"name":"Bash","arguments":{"command":"ls"}}</tool_call>"#);
         assert_eq!(out.len(), 1);
         match &out[0] {
             OutputPart::ToolCall { name, arguments } => {

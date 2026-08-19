@@ -127,7 +127,11 @@ impl PkarrNode {
         let json = serde_json::to_string(&payload)?;
 
         let sp = SignedPacket::builder()
-            .txt(crate::brand::dns_record().as_str().try_into()?, json.as_str().try_into()?, 300)
+            .txt(
+                crate::brand::dns_record().as_str().try_into()?,
+                json.as_str().try_into()?,
+                300,
+            )
             .sign(&self.keypair)?;
 
         self.client.publish(&sp, None).await?;
@@ -301,7 +305,10 @@ mod tests {
             .expect("derive keypair")
             .public()
             .to_peer_id();
-        assert_eq!(peer_a, peer_c, "PeerId must survive a reload of the persisted key");
+        assert_eq!(
+            peer_a, peer_c,
+            "PeerId must survive a reload of the persisted key"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 

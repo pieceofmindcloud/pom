@@ -91,11 +91,14 @@ alvo pedido, a faixa que saiu e o tamanho real.
 - `plan_by_size` - alvos em MB (`SizedSlice { target_mb }`) -> faixas
   (`SizedRange { index, start_layer, end_layer, layers, bytes, target_mb, is_rest,
   is_last, too_small, empty }`). `target_mb: None` = "o resto do modelo". Uma
-  camada mínima indivisível aparece como `too_small`/`empty`; cobertura
+  camada mínima indivisível aparece como `too_small`/`empty`; a última entrada
+  da lista é sempre convertida para o resto, mesmo que um cliente antigo envie
+  um alvo numérico; cobertura
   incompleta **não** é recusa - `SizePlan { covered_layers, complete,
   missing_range, missing_bytes, blocked, warnings }` reporta quanto falta.
 - `plan_equal`/`even_split` - "dividir em N": igual em camadas (diferença <= 1),
-  com o alvo de cada faixa preenchido pelo tamanho real. Só aceita 1..=64 fatias.
+  com o alvo das primeiras faixas preenchido pelo tamanho real e a última como
+  resto. Só aceita 1..=64 fatias.
 - O resultado de um `plan_by_size` é um `SizePlan`, serializado como prévia em
   `POST /api/ui/slice/plan` (a tela chama a cada tecla, com o layout em cache por
   arquivo).

@@ -182,18 +182,20 @@ export function WholeModels() {
                           {t("models.slice")}
                         </Button>
                       </Link>
-                      <Link
-                        to={`/transferencias/enviar?path=${encodeURIComponent(m.path)}`}
-                      >
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          icon={<Upload className="h-3.5 w-3.5" />}
-                          aria-label={t("models.sendAria", { name: m.name })}
+                      {/\.gguf$/i.test(m.path) && (
+                        <Link
+                          to={`/transferencias/enviar?filename=${encodeURIComponent(m.path.split(/[\\/]/).pop() ?? "")}`}
                         >
-                          {t("models.send")}
-                        </Button>
-                      </Link>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            icon={<Upload className="h-3.5 w-3.5" />}
+                            aria-label={t("models.sendAria", { name: m.name })}
+                          >
+                            {t("models.send")}
+                          </Button>
+                        </Link>
+                      )}
                       <Button
                         size="sm"
                         variant="ghost"

@@ -9,7 +9,7 @@
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { Layers, Play, Plus, Scissors, Trash2, TriangleAlert } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useNavigate } from "react-router-dom";
 import {
@@ -88,16 +88,23 @@ export function SliceModels() {
 
   const model = models.find((m) => m.path === path);
 
+  const slicePayload = useMemo(
+    () =>
+      slices.map((s, i) => {
+        if (i === slices.length - 1) return {};
+        const gb = Number.parseFloat(s.gb.replace(",", "."));
+        return Number.isFinite(gb) && gb > 0 ? { target_mb: gb * 1024 } : {};
+      }),
+    [slices],
+  );
+
   // The preview is remade on every keystroke; the node caches the tensor table
   // per file, so typing a size stays cheap.
   useEffect(() => {
     if (!path) return;
     const body = {
       model_path: path,
-      slices: slices.map((s) => {
-        const gb = Number.parseFloat(s.gb.replace(",", "."));
-        return Number.isFinite(gb) && gb > 0 ? { target_mb: gb * 1024 } : {};
-      }),
+      slices: slicePayload,
     };
     const timer = window.setTimeout(async () => {
       setPlanning(true);
@@ -112,7 +119,7 @@ export function SliceModels() {
       }
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [path, slices]);
+  }, [path, slicePayload]);
 
   async function fillEqual(parts: number) {
     if (!path) return;
@@ -127,7 +134,9 @@ export function SliceModels() {
       // The shortcut only fills the form — the sizes stay editable, which is
       // the whole point of asymmetric slicing.
       setSlices(
-        equal.ranges.map((r) => row((r.bytes / 1024 ** 3).toFixed(2).replace(".", ","))),
+        equal.ranges.map((r) =>
+          r.is_rest ? row() : row((r.bytes / 1024 ** 3).toFixed(2).replace(".", ",")),
+        ),
       );
     } catch (e) {
       toast.fromError(t("slice.equalFailed"), e);
@@ -141,10 +150,7 @@ export function SliceModels() {
       const { job_id } = await api.post<{ job_id: string }>("/api/ui/slice", {
         model_path: path,
         name: model?.name,
-        slices: slices.map((s) => {
-          const gb = Number.parseFloat(s.gb.replace(",", "."));
-          return Number.isFinite(gb) && gb > 0 ? { target_mb: gb * 1024 } : {};
-        }),
+        slices: slicePayload,
       });
       if (!job_id) throw new Error(t("slice.noJob"));
       toast.success(
@@ -249,20 +255,28 @@ export function SliceModels() {
                       <span className="w-6 shrink-0 font-mono text-[0.72rem] text-faint">
                         {i + 1}
                       </span>
-                      <Input
-                        value={s.gb}
-                        inputMode="decimal"
-                        placeholder={t("slice.rest")}
-                        aria-label={t("slice.sizeAria", { count: i + 1 })}
-                        onChange={(e) =>
-                          setSlices((list) =>
-                            list.map((x) =>
-                              x.id === s.id ? { ...x, gb: e.target.value } : x,
-                            ),
-                          )
-                        }
-                      />
-                      <span className="w-6 shrink-0 text-[0.78rem] text-muted">GB</span>
+                      {i === slices.length - 1 ? (
+                        <div className="flex min-h-9 min-w-0 flex-1 items-center rounded-lg border border-dashed border-line-strong px-3">
+                          <Badge tone="aqua">{t("slice.rest")}</Badge>
+                        </div>
+                      ) : (
+                        <>
+                          <Input
+                            value={s.gb}
+                            inputMode="decimal"
+                            placeholder={t("slice.sizeAria", { count: i + 1 })}
+                            aria-label={t("slice.sizeAria", { count: i + 1 })}
+                            onChange={(e) =>
+                              setSlices((list) =>
+                                list.map((x) =>
+                                  x.id === s.id ? { ...x, gb: e.target.value } : x,
+                                ),
+                              )
+                            }
+                          />
+                          <span className="w-6 shrink-0 text-[0.78rem] text-muted">GB</span>
+                        </>
+                      )}
                       <button
                         onClick={() =>
                           setSlices((list) => list.filter((x) => x.id !== s.id))

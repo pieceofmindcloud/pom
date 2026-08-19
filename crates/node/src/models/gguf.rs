@@ -212,7 +212,9 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k == crate::brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
-            k if k == crate::brand::gguf_key("start_layer") => start_layer = r.value_as_u32(vtype)?,
+            k if k == crate::brand::gguf_key("start_layer") => {
+                start_layer = r.value_as_u32(vtype)?
+            }
             k if k == crate::brand::gguf_key("end_layer") => end_layer = r.value_as_u32(vtype)?,
             // `<arch>.block_count` / `<arch>.embedding_length` — the arch prefix
             // varies per model, so match on the suffix.
@@ -231,7 +233,11 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
     // mas nenhum `tp_format`, e e exatamente esse arquivo que nao pode passar
     // por atual.
     if let (Some(f), Some(sz), Some(rk)) = (tp_format, tp_size, tp_rank) {
-        info.tp_stamp = Some(TpStamp { format: f, size: sz, rank: rk });
+        info.tp_stamp = Some(TpStamp {
+            format: f,
+            size: sz,
+            rank: rk,
+        });
     }
 
     Ok(info)

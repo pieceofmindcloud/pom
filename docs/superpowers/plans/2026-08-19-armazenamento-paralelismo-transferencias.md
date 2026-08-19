@@ -10,6 +10,12 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-19-armazenamento-paralelismo-transferencias-design.md`
 
+**Status:** implementação concluída. A API usa `filename` como basename,
+`PathEntry` expõe uso e limite da pasta de fatias, e a retenção remove somente
+diretórios antigos de fatias elegíveis. Os testes finais passaram com 548 testes
+Rust, 147 testes frontend e build de produção da UI. As alterações produzidas
+por `cargo fmt --all` foram mantidas por decisão do operador.
+
 ## Global Constraints
 
 - O limite de armazenamento vale somente para a pasta de fatias e tem default de 100 GB.
@@ -108,9 +114,10 @@ Expected: PASS.
 **Interfaces:**
 - `Config.shard_max_gb: f64` com default `100.0`.
 - `Config::shard_max_bytes() -> u64` converte o valor validado em bytes.
-- `storage::directory_usage(root: &Path) -> io::Result<StorageUsage>` soma arquivos recursivamente.
-- `storage::retained_files(root: &Path, protected: &HashSet<PathBuf>) -> io::Result<Vec<StorageFile>>` ordena candidatos do mais antigo ao mais novo.
-- `storage::ensure_capacity(root, max_bytes, required_bytes, protected, outputs) -> Result<RetentionReport>` remove apenas candidatos antigos antes de uma nova escrita.
+- `storage::directory_bytes(root: &Path) -> io::Result<u64>` soma arquivos recursivamente.
+- `storage::enforce_limit(root, max_bytes, protected) -> Result<Vec<PathBuf>>` ordena
+  diretórios de fatias do mais antigo ao mais novo e remove somente candidatos
+  não protegidos até o limite ser atendido.
 
 - [ ] **Step 1: Escrever testes de default e rejeição de limite**
 
@@ -157,10 +164,12 @@ Expected: PASS.
 - Test: `crates/node/src/backend/webui.rs` tests
 
 **Interfaces:**
-- `GET /api/ui/paths` retorna `shard_storage: { used_bytes, max_bytes, usage_pct }`.
+- `GET /api/ui/paths` retorna `shard_dir` com `used_bytes`, `max_bytes` e
+  `usage_percent`, além de `shard_max_gb`.
 - `POST /api/ui/paths` aceita `shard_max_gb` e recusa caminhos iguais ou sobrepostos.
 - `check_dir` deve preservar os caminhos digitados, mas a validação de relação usa `canonicalize`.
-- `run_slice` chama `storage::ensure_capacity` antes da primeira escrita e informa a falha no job.
+- O fluxo de implantação aplica a retenção depois de gerar ou reutilizar uma
+  saída na pasta de fatias e informa a falha no job.
 
 - [ ] **Step 1: Escrever testes de validação de caminhos que falham**
 
@@ -205,8 +214,8 @@ Expected: PASS.
 
 **Interfaces:**
 - Rota nova: `/config/armazenamento`.
-- Rota antiga: `/config/pastas` redireciona para a nova.
-- `PathsResponse.shard_storage` contém `used_bytes`, `max_bytes` e `usage_pct`.
+- Rota antiga: `/config/pastas` continua como alias compatível da nova.
+- `PathsResponse.shard_dir` contém `used_bytes`, `max_bytes` e `usage_percent`.
 - POST `/api/ui/paths` envia `model_dirs`, `shard_dir` e `shard_max_gb`.
 
 - [ ] **Step 1: Escrever o teste de tela que falha**
@@ -280,8 +289,8 @@ Expected: PASS.
 - Test: `crates/node/src/backend/transfer.rs` tests
 
 **Interfaces:**
-- `SendRequest { to_node_id: String, file_name: String }` substitui `path`.
-- `local_send_path(state, file_name)` resolve exatamente um basename no catálogo local.
+- `SendRequest { to_node_id: String, filename: String }` substitui `path`.
+- `catalog_send_path(state, filename)` resolve exatamente um basename no catálogo local.
 - `ensure_gguf` exige extensão `.gguf`, além da assinatura GGUF.
 
 - [ ] **Step 1: Escrever testes de segurança que falham**
@@ -304,7 +313,7 @@ Usar as mesmas raízes de `GatewayState` que alimentam `/api/ui/models`, executa
 
 - [ ] **Step 5: Atualizar envio e recebimento**
 
-`send_to_peer` recebe `file_name`, resolve antes de criar a concessão e continua enviando o caminho somente dentro da comunicação autenticada entre peers. `ensure_gguf` passa a exigir `.gguf`. Validar também o basename da oferta antes de criar destino em `recebidos/`.
+`send_to_peer` recebe `filename`, resolve antes de criar a concessão e continua enviando o caminho somente dentro da comunicação autenticada entre peers. `ensure_gguf` passa a exigir `.gguf`. Validar também o basename da oferta antes de criar destino em `recebidos/`.
 
 - [ ] **Step 6: Rodar GREEN e a suíte de transferências**
 
@@ -327,10 +336,10 @@ Expected: PASS.
 - Test: `apps/frontend/src/routes/Shards.test.tsx`
 
 **Interfaces:**
-- `SendFile` mantém apenas `file_name` no estado e no payload.
+- `SendFile` mantém apenas `filename` no estado e no payload.
 - Combobox mostra `m.name` e `m.path`, mas seu `value` é o basename `.gguf`.
-- `WholeModels` usa `?file_name=` e não `?path=`.
-- `Shards` chama `/api/transfer/send` com `{ to_node_id, file_name }`.
+- `WholeModels` usa `?filename=` e não `?path=`.
+- `Shards` chama `/api/transfer/send` com `{ to_node_id, filename }`.
 
 - [ ] **Step 1: Escrever testes frontend que falham**
 

@@ -85,6 +85,9 @@ pub struct Config {
     /// `None` keeps the historical `<project_root>/models`.
     #[serde(default)]
     pub shard_dir: Option<String>,
+    /// Maximum disk space reserved for generated model slices, in GB.
+    #[serde(default = "default_shard_max_gb")]
+    pub shard_max_gb: f64,
     /// Human-readable name for this node shown in the dashboard and peer lists.
     /// Falls back to the OS hostname when absent.
     #[serde(default)]
@@ -96,6 +99,10 @@ fn default_gateway_port() -> u16 {
 }
 fn default_p2p_port() -> u16 {
     42777
+}
+
+fn default_shard_max_gb() -> f64 {
+    crate::storage::DEFAULT_SHARD_MAX_GB
 }
 
 /// Put a peer address the operator typed into the form the resolver accepts.
@@ -245,6 +252,18 @@ impl Config {
             _ => default_shard_dir(),
         }
     }
+
+    pub fn shard_max_gb(&self) -> f64 {
+        if self.shard_max_gb.is_finite() && self.shard_max_gb > 0.0 {
+            self.shard_max_gb
+        } else {
+            default_shard_max_gb()
+        }
+    }
+
+    pub fn shard_max_bytes(&self) -> u64 {
+        (self.shard_max_gb() * 1_073_741_824.0).round() as u64
+    }
 }
 
 /// `<project_root>/models` — where every slice has always landed.
@@ -334,6 +353,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            shard_max_gb: default_shard_max_gb(),
             node_name: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -357,6 +377,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            shard_max_gb: default_shard_max_gb(),
             node_name: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
@@ -375,6 +396,7 @@ mod tests {
         assert!(cfg.model_dirs_are_default());
         assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
+        assert_eq!(cfg.shard_max_gb(), 100.0);
     }
 
     /// Saving the list is the operator taking over: an empty list means "look
@@ -447,6 +469,7 @@ mod tests {
             blocked_nodes: vec![],
             model_dirs: None,
             shard_dir: None,
+            shard_max_gb: default_shard_max_gb(),
             node_name: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");

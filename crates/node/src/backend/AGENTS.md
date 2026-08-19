@@ -27,13 +27,16 @@ behind an auth extractor.
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
-  catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave
+  catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
+  storage paths and slice retention.
   (local or forwarded to a peer).
 - `deploy.rs` (3023) - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: choosing
   which machine serves which slice and sequencing the copies; re-surveys the
   cluster on deploy; undeploy takes a whole pipeline out of the air.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
-  offers carry only a `stat`, the digest is computed by the receiver.
+  offers carry only a `stat`, the digest is computed by the receiver. Pushes
+  accept only a catalog basename in `filename`, resolve it server-side and
+  require `.gguf`.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -195,7 +198,8 @@ behind an auth extractor.
   own `/api/ui/unload` (same route as the single-machine button; the local
   machine uses `runtime.stop()`). `undeploy_authority(role)` gates who may
   undeploy - today it lets every role through (see Defeitos anotados).
-- `transfer.rs` - `CHUNK=1MB`, `DISK_HEADROOM_MB=512`, `GGUF_MAGIC=b"GGUF"`.
+- `transfer.rs` - `CHUNK=1MB`, `DISK_HEADROOM_MB=512`, `GGUF_MAGIC=b"GGUF"`;
+  `/api/transfer/send` receives `{to_node_id, filename}`, never a path.
   Routes: `GET /api/transfer/manifest`, `GET /api/transfer/download`,
   `POST /api/transfer/pull`, `POST /api/transfer/offer`, `GET
   /api/transfer/offers`, `POST /api/transfer/offers/:id/accept` +

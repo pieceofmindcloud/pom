@@ -671,7 +671,9 @@ impl Network {
     /// (`addrs::is_private_or_local`) — that's not new information, just a
     /// peer on the same LAN or a NAT rewriting within another private range.
     pub fn set_observed_addr(&self, host_port: &str) {
-        let host = ip_host(host_port).trim_start_matches('[').trim_end_matches(']');
+        let host = ip_host(host_port)
+            .trim_start_matches('[')
+            .trim_end_matches(']');
         if crate::addrs::is_private_or_local(host) {
             return;
         }
@@ -683,7 +685,10 @@ impl Network {
     }
 
     fn observed_addr(&self) -> Option<String> {
-        self.observed_addr.read().expect("observed_addr lock").clone()
+        self.observed_addr
+            .read()
+            .expect("observed_addr lock")
+            .clone()
     }
 
     /// Host to fall back on when nothing was explicitly pinned: the
@@ -713,16 +718,19 @@ impl Network {
     /// pacote - que e o comportamento de sempre.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let porta = self.bind_addr.port();
-        crate::addrs::filter_candidates(crate::addrs::local_addrs(), self.effective_host().as_deref())
-            .into_iter()
-            .map(|ip| {
-                if ip.contains(':') && !ip.starts_with('[') {
-                    format!("[{ip}]:{porta}")
-                } else {
-                    format!("{ip}:{porta}")
-                }
-            })
-            .collect()
+        crate::addrs::filter_candidates(
+            crate::addrs::local_addrs(),
+            self.effective_host().as_deref(),
+        )
+        .into_iter()
+        .map(|ip| {
+            if ip.contains(':') && !ip.starts_with('[') {
+                format!("[{ip}]:{porta}")
+            } else {
+                format!("{ip}:{porta}")
+            }
+        })
+        .collect()
     }
 
     /// What this node puts in `Announce.addr`.
@@ -1401,10 +1409,18 @@ mod tests {
     /// ficava invisível pela internet enquanto a LAN o via normalmente.
     #[tokio::test]
     async fn gossipsub_and_udp_publish_the_same_announce() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, Some(8181), Some(8080))
-            .await
-            .unwrap()
-            .with_identity("Principal".into(), "macbook".into());
+        let net = Network::new(
+            "n".into(),
+            "p".into(),
+            0,
+            vec![],
+            None,
+            Some(8181),
+            Some(8080),
+        )
+        .await
+        .unwrap()
+        .with_identity("Principal".into(), "macbook".into());
 
         let asgn = LayerAssignment {
             model: "qwen35".into(),
@@ -1498,7 +1514,8 @@ mod tests {
 
         assert_eq!(net.announce_addr(), "203.0.113.5:9999");
         assert!(
-            net.self_addr_candidates().contains(&format!("203.0.113.5:{port}")),
+            net.self_addr_candidates()
+                .contains(&format!("203.0.113.5:{port}")),
             "the observed address's host must appear as a candidate too, at this node's own port"
         );
     }
@@ -1743,7 +1760,10 @@ mod tests {
         peer.merge_observed("[2804:f30::1]:42777");
         assert_eq!(
             peer.addr_candidates,
-            vec!["192.168.1.9:42777".to_string(), "[2804:f30::1]:42777".to_string()],
+            vec![
+                "192.168.1.9:42777".to_string(),
+                "[2804:f30::1]:42777".to_string()
+            ],
         );
     }
 
@@ -1760,7 +1780,10 @@ mod tests {
     #[test]
     fn a_peer_without_candidates_falls_back_to_its_single_addr() {
         let peer = peer_com_candidatos(vec![]);
-        assert_eq!(peer.inference_candidates(), vec!["http://192.168.1.9:8181".to_string()]);
+        assert_eq!(
+            peer.inference_candidates(),
+            vec!["http://192.168.1.9:8181".to_string()]
+        );
     }
 
     /// `inference_url()` costumava ler só `addr` — um valor que podia estar
@@ -1772,8 +1795,14 @@ mod tests {
     #[test]
     fn inference_url_prefers_the_first_candidate_over_the_legacy_addr() {
         let peer = peer_com_candidatos(vec!["203.0.113.5:42777", "192.168.1.9:42777"]);
-        assert_eq!(peer.addr, "192.168.1.9:42777", "addr fica desatualizado de propósito neste teste");
-        assert_eq!(peer.inference_url().as_deref(), Some("http://203.0.113.5:8181"));
+        assert_eq!(
+            peer.addr, "192.168.1.9:42777",
+            "addr fica desatualizado de propósito neste teste"
+        );
+        assert_eq!(
+            peer.inference_url().as_deref(),
+            Some("http://203.0.113.5:8181")
+        );
     }
 
     /// Cada candidato vira uma URL de inferencia, com o IPv6 entre colchetes.
@@ -1796,9 +1825,12 @@ mod tests {
         let antigo = r#"{"type":"Announce","node_id":"n","pubkey":"p","addr":"1.2.3.4:42777",
             "model":"m","start_layer":0,"end_layer":1,"total_layers":2,"memory_mb":1.0,
             "timestamp":"2026-08-13T00:00:00Z"}"#;
-        let msg: P2PMessage = serde_json::from_str(antigo).expect("Announce antigo tem que parsear");
+        let msg: P2PMessage =
+            serde_json::from_str(antigo).expect("Announce antigo tem que parsear");
         match msg {
-            P2PMessage::Announce { addr_candidates, .. } => assert!(addr_candidates.is_empty()),
+            P2PMessage::Announce {
+                addr_candidates, ..
+            } => assert!(addr_candidates.is_empty()),
             _ => panic!("esperava Announce"),
         }
     }
@@ -2049,13 +2081,11 @@ mod tests {
         emissor.send_to(b"oi", ("127.0.0.1", port)).await.unwrap();
 
         let mut buf = [0u8; 8];
-        let recebido = tokio::time::timeout(
-            std::time::Duration::from_secs(2),
-            sock.recv_from(&mut buf),
-        )
-        .await
-        .expect("nada chegou de um remetente IPv4 no socket [::]")
-        .unwrap();
+        let recebido =
+            tokio::time::timeout(std::time::Duration::from_secs(2), sock.recv_from(&mut buf))
+                .await
+                .expect("nada chegou de um remetente IPv4 no socket [::]")
+                .unwrap();
 
         assert_eq!(&buf[..recebido.0], b"oi");
     }

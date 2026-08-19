@@ -307,9 +307,20 @@ struct PathEntry {
     exists: bool,
     /// "ollama" | "lmstudio" | "folder" — what the scan will make of it.
     kind: &'static str,
+    used_bytes: u64,
+    max_bytes: Option<u64>,
+    usage_percent: Option<f64>,
 }
 
-fn path_entry(dir: &std::path::Path) -> PathEntry {
+fn path_entry(dir: &std::path::Path, max_bytes: Option<u64>) -> PathEntry {
+    let used_bytes = crate::storage::directory_bytes(dir).unwrap_or(0);
+    let usage_percent = max_bytes.map(|max| {
+        crate::storage::StorageUsage {
+            used_bytes,
+            max_bytes: max,
+        }
+        .percent()
+    });
     PathEntry {
         path: dir.to_string_lossy().into_owned(),
         exists: dir.is_dir(),
@@ -318,6 +329,9 @@ fn path_entry(dir: &std::path::Path) -> PathEntry {
             catalog::ModelSource::LmStudio => "lmstudio",
             _ => "folder",
         },
+        used_bytes,
+        max_bytes,
+        usage_percent,
     }
 }
 
@@ -325,12 +339,14 @@ fn path_entry(dir: &std::path::Path) -> PathEntry {
 async fn get_paths(State(state): State<GatewayState>) -> impl IntoResponse {
     let cfg = state.auth.read().await;
     let shard = cfg.shard_dir_path();
+    let shard_max_bytes = cfg.shard_max_bytes();
     Json(json!({
-        "model_dirs": cfg.model_dir_paths().iter().map(|d| path_entry(d)).collect::<Vec<_>>(),
-        "shard_dir": path_entry(&shard),
+        "model_dirs": cfg.model_dir_paths().iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
+        "shard_dir": path_entry(&shard, Some(shard_max_bytes)),
+        "shard_max_gb": cfg.shard_max_gb(),
         "using_defaults": cfg.model_dirs_are_default(),
         "detected": catalog::default_model_dirs()
-            .iter().map(|d| path_entry(d)).collect::<Vec<_>>(),
+            .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
     }))
 }
@@ -341,6 +357,8 @@ pub struct SavePathsRequest {
     /// Empty means "back to `<project_root>/models`".
     #[serde(default)]
     pub shard_dir: String,
+    #[serde(default)]
+    pub shard_max_gb: Option<f64>,
 }
 
 /// Refuse anything that is not a directory sitting on this machine right now.
@@ -363,6 +381,23 @@ fn check_dir(raw: &str, what: &str) -> Result<String, String> {
         ));
     }
     Ok(trimmed.to_string())
+}
+
+fn reject_nested_shard_dir(model_dirs: &[String], shard_dir: &str) -> Result<(), String> {
+    let shard = std::path::Path::new(shard_dir)
+        .canonicalize()
+        .map_err(|e| format!("Pasta de modelos fatiados: não deu para resolver o caminho: {e}"))?;
+    for model in model_dirs {
+        let model = std::path::Path::new(model).canonicalize().map_err(|e| {
+            format!("Pasta de modelos inteiros: não deu para resolver {model}: {e}")
+        })?;
+        if shard == model || shard.starts_with(&model) {
+            return Err(
+                "a pasta de modelos fatiados não pode ser a mesma ou ficar dentro de uma pasta de modelos inteiros".to_string(),
+            );
+        }
+    }
+    Ok(())
 }
 
 async fn save_paths(
@@ -391,10 +426,27 @@ async fn save_paths(
         }
     };
 
+    let effective_shard_dir = shard_dir.clone().unwrap_or_else(|| {
+        crate::config::default_shard_dir()
+            .to_string_lossy()
+            .into_owned()
+    });
+    if let Err(e) = reject_nested_shard_dir(&model_dirs, &effective_shard_dir) {
+        return bad_request(e);
+    }
+    let shard_max_gb = match req.shard_max_gb {
+        None => crate::storage::DEFAULT_SHARD_MAX_GB,
+        Some(value) if value.is_finite() && value > 0.0 => value,
+        Some(_) => {
+            return bad_request("o limite da pasta de modelos fatiados precisa ser maior que zero")
+        }
+    };
+
     {
         let mut cfg = state.auth.write().await;
         cfg.model_dirs = Some(model_dirs);
         cfg.shard_dir = shard_dir;
+        cfg.shard_max_gb = shard_max_gb;
         if let Err(e) = cfg.save() {
             return bad_request(format!("não deu para gravar pom.json: {e}"));
         }
@@ -1525,6 +1577,18 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         outcome.output_path
     };
 
+    let shard_dir = state.shard_dir().await;
+    let shard_root = shard_dir
+        .canonicalize()
+        .unwrap_or_else(|_| shard_dir.clone());
+    if std::path::Path::new(&model_path)
+        .canonicalize()
+        .ok()
+        .is_some_and(|path| path.starts_with(&shard_root))
+    {
+        enforce_shard_storage(&state, &model_path).await?;
+    }
+
     set_job(
         job_id,
         "running",
@@ -1598,6 +1662,33 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     state.runtime.apply(cfg).await?;
     state.network.set_tp(req.tp.clone());
     Ok(model_path)
+}
+
+async fn enforce_shard_storage(
+    state: &GatewayState,
+    current_model_path: &str,
+) -> anyhow::Result<()> {
+    let (shard_dir, max_bytes, active_path) = {
+        let cfg = state.auth.read().await;
+        let active = state.runtime.config().await.map(|c| c.model_path);
+        (cfg.shard_dir_path(), cfg.shard_max_bytes(), active)
+    };
+    let mut protected = vec![std::path::PathBuf::from(current_model_path)];
+    if let Some(active) = active_path {
+        protected.push(std::path::PathBuf::from(active));
+    }
+    let removed = tokio::task::spawn_blocking(move || {
+        crate::storage::enforce_limit(&shard_dir, max_bytes, &protected)
+    })
+    .await??;
+    if !removed.is_empty() {
+        info!(
+            "retenção de fatias removeu {} diretório(s) antigo(s)",
+            removed.len()
+        );
+        invalidate_catalog().await;
+    }
+    Ok(())
 }
 
 /// Join local slices into one GGUF covering their union, then serve that.
@@ -1926,7 +2017,7 @@ async fn slice_locally(
 }
 
 async fn run_slice(
-    _state: GatewayState,
+    state: GatewayState,
     source: std::path::PathBuf,
     out_dir: std::path::PathBuf,
     base_name: String,
@@ -1996,6 +2087,12 @@ async fn run_slice(
             }
         );
         outputs.push(outcome.output_path.clone());
+
+        // A retenção também precisa acontecer no fluxo de fatiamento isolado:
+        // o operador pode criar fatias agora e implantá-las somente depois.
+        // A saída recém-criada fica protegida, enquanto diretórios antigos
+        // elegíveis são removidos para manter o limite configurado.
+        enforce_shard_storage(&state, &outcome.output_path).await?;
 
         // Show up in the catalog as each one lands, not only at the end.
         invalidate_catalog().await;
@@ -3089,7 +3186,10 @@ mod catalogo_sob_tls_tests {
         // pela mesma rota HTTP, e sob TLS isso tambem precisa de certificado
         // verificado. O que importa e o peer estar la.
         assert!(
-            state.peer_http.cached_peers().contains(&"outro".to_string()),
+            state
+                .peer_http
+                .cached_peers()
+                .contains(&"outro".to_string()),
             "o levantamento saiu por um cliente sem pinning: {:?}",
             state.peer_http.cached_peers()
         );
@@ -3143,7 +3243,10 @@ mod tls_settings_tests {
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_of(resp).await["tls_required"], true);
         assert!(state.auth.read().await.tls_required);
-        assert!(state.network.tls_enabled(), "o anúncio precisa dizer a verdade");
+        assert!(
+            state.network.tls_enabled(),
+            "o anúncio precisa dizer a verdade"
+        );
         assert!(state.peer_http.tls_enabled());
 
         let resp = save_tls(
@@ -3252,6 +3355,23 @@ mod advertise_addr_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slice_folder_cannot_equal_or_nest_inside_a_whole_model_folder() {
+        let root = std::env::temp_dir().join(format!("pom-paths-{}", std::process::id()));
+        let whole = root.join("whole");
+        let nested = whole.join("slices");
+        let sibling = root.join("slices");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+
+        let whole = whole.to_string_lossy().into_owned();
+        assert!(reject_nested_shard_dir(&[whole.clone()], &whole).is_err());
+        assert!(reject_nested_shard_dir(&[whole.clone()], &nested.to_string_lossy()).is_err());
+        assert!(reject_nested_shard_dir(&[whole], &sibling.to_string_lossy()).is_ok());
+
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     /// Num grupo tensor-parallel o rank 0 fatia igual aos outros.
     ///
@@ -3405,11 +3525,10 @@ mod tests {
 
     #[test]
     fn params_accept_partial_overrides() {
-        let p: RuntimeParams =
-            serde_json::from_str(
-                r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false}"#,
-            )
-                .unwrap();
+        let p: RuntimeParams = serde_json::from_str(
+            r#"{"n_ctx":250000,"no_thinking":false,"offload_kqv":false,"fit_memory":false}"#,
+        )
+        .unwrap();
         assert_eq!(p.n_ctx, 250000);
         assert!(!p.no_thinking);
         assert!(!p.offload_kqv);
@@ -3438,8 +3557,7 @@ mod tests {
     #[test]
     fn merge_parts_joins_two_slices_into_a_whole() {
         block_on(async {
-            let root =
-                std::env::temp_dir().join(format!("pom-webui-merge-{}", std::process::id()));
+            let root = std::env::temp_dir().join(format!("pom-webui-merge-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");
@@ -3498,8 +3616,8 @@ mod tests {
     #[test]
     fn merge_parts_refuses_one_part_or_a_gap() {
         block_on(async {
-            let root = std::env::temp_dir()
-                .join(format!("pom-webui-merge-bad-{}", std::process::id()));
+            let root =
+                std::env::temp_dir().join(format!("pom-webui-merge-bad-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
             let a = parts_dir.join("m_0_15.gguf");

@@ -17,6 +17,7 @@ dele é lá, não aqui.
 | `operacao.md` | subir um cluster, verificar que a inferência é conjunta, pegadinhas de campo, dois peers na mesma máquina, harness, monitor de carga |
 | `rede-p2p.md` | descoberta UDP + libp2p, endereços anunciados, rotas dinâmicas, pkarr/DCuTR, identidade |
 | `inferencia.md` | prefill, decode, wire de estado oculto, anel vs resposta direta, especulativa/MTP, limite de prompt |
+| `paralelismo.md` | pipeline parallelism, tensor parallelism, escolha por topologia e telemetria |
 | `fatiamento.md` | split/merge de GGUF, tabela de tipos ggml, planejamento por tamanho |
 | `implantacao.md` | pôr fatias em serviço, fusão, ordem do pipeline, ciclo de vida da fatia |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |

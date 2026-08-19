@@ -18,8 +18,8 @@
 //! What travels is defined in [`crate::wire`], where precision and encoding are
 //! a parameter rather than an assumption.
 
-use crate::infer_tunnel::TunnelOutboundSender;
 use crate::infer_server::Speculate;
+use crate::infer_tunnel::TunnelOutboundSender;
 use crate::pipeline::PipelinePlan;
 use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
@@ -219,7 +219,8 @@ impl PhaseTrace {
         self.node_token_text_ms += next.node_token_text_ms;
         self.node_sampling_ms += next.node_sampling_ms;
         self.node_encode_ms += next.node_encode_ms;
-        self.node_samples_ms.extend_from_slice(&next.node_samples_ms);
+        self.node_samples_ms
+            .extend_from_slice(&next.node_samples_ms);
         self.refresh_percentiles();
     }
 
@@ -453,8 +454,10 @@ pub async fn run(
         .await;
     }
     if plan.supports_relay_chain() {
-        return run_ring(plan, model, session_id, prompt, chunk_size, dtype, http, routes, tunnel)
-            .await;
+        return run_ring(
+            plan, model, session_id, prompt, chunk_size, dtype, http, routes, tunnel,
+        )
+        .await;
     }
 
     let mut chunk_index: u32 = 0;
@@ -631,11 +634,14 @@ async fn run_ring(
         )
         .await
         .map_err(|e| {
-        routes.mark_failure(&head.node_id, &head.inference_url);
-        ring_relay_error(&head.node_id, e)
-    })?;
+            routes.mark_failure(&head.node_id, &head.inference_url);
+            ring_relay_error(&head.node_id, e)
+        })?;
 
-        for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+        for (i, entry) in crate::relay::bubble_hop_timings(&sent)
+            .into_iter()
+            .enumerate()
+        {
             trace.record_hop_from_json(i, Phase::Prefill, &entry);
         }
 
@@ -967,8 +973,10 @@ pub async fn step(
         .await;
     }
     if plan.supports_relay_chain() {
-        return step_ring(plan, model, session_id, token_id, dtype, http, routes, tunnel, speculate)
-            .await;
+        return step_ring(
+            plan, model, session_id, token_id, dtype, http, routes, tunnel, speculate,
+        )
+        .await;
     }
 
     // Nota: o laço hub abaixo (um POST por hop, sem retry) não passa pelo
@@ -985,7 +993,8 @@ pub async fn step(
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
         let body_meta = if i == 0 {
-            let mut m = json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id });
+            let mut m =
+                json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id });
             if let Some(spec) = &speculate {
                 m["speculate"] = spec.to_meta();
             }
@@ -1131,7 +1140,10 @@ async fn step_ring(
         ring_relay_error(&head.node_id, e)
     })?;
 
-    for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+    for (i, entry) in crate::relay::bubble_hop_timings(&sent)
+        .into_iter()
+        .enumerate()
+    {
         trace.record_hop_from_json(i, Phase::Decode, &entry);
     }
 
@@ -1447,7 +1459,10 @@ async fn step_speculative_ring(
         ring_relay_error(&head.node_id, e)
     })?;
 
-    for (i, entry) in crate::relay::bubble_hop_timings(&sent).into_iter().enumerate() {
+    for (i, entry) in crate::relay::bubble_hop_timings(&sent)
+        .into_iter()
+        .enumerate()
+    {
         trace.record_hop_from_json(i, Phase::Decode, &entry);
     }
 
@@ -1479,10 +1494,12 @@ fn speculative_step_from_meta(
     let done = meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false);
     // O rascunho da cauda para a próxima rodada (pipeline fatiado) — presente
     // nas duas formas de resposta quando a cauda tem o bloco `nextn`.
-    let next_draft: Option<Vec<i32>> = meta
-        .get("next_draft")
-        .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect());
+    let next_draft: Option<Vec<i32>> = meta.get("next_draft").and_then(|v| v.as_array()).map(|a| {
+        a.iter()
+            .filter_map(|v| v.as_i64())
+            .map(|v| v as i32)
+            .collect()
+    });
     let accepted: Vec<(u32, String)> = meta
         .get("accepted")
         .and_then(|v| v.as_array())
@@ -1611,7 +1628,20 @@ mod tests {
         let node = json!({"decode_ms": 10, "residual_ms": 2});
 
         let mut direct = RequestTrace::new("qwen", &[("no1", 0, 15)]);
-        direct.record_hop(0, Phase::Decode, 70, 13, 100, 200, 1, 2, 3, 4, TlsHop::default(), &node);
+        direct.record_hop(
+            0,
+            Phase::Decode,
+            70,
+            13,
+            100,
+            200,
+            1,
+            2,
+            3,
+            4,
+            TlsHop::default(),
+            &node,
+        );
 
         let mut from_json = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         from_json.record_hop_from_json(
@@ -1684,10 +1714,32 @@ mod tests {
     fn hop_trace_keeps_prefill_and_decode_transport_independent() {
         let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
         trace.record_hop(
-            0, Phase::Prefill, 10, 6, 100, 200, 1, 8, 1, 0, TlsHop::default(), &json!({}),
+            0,
+            Phase::Prefill,
+            10,
+            6,
+            100,
+            200,
+            1,
+            8,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
         );
         trace.record_hop(
-            0, Phase::Decode, 20, 9, 10, 20, 1, 18, 1, 0, TlsHop::default(), &json!({}),
+            0,
+            Phase::Decode,
+            20,
+            9,
+            10,
+            20,
+            1,
+            18,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
         );
 
         assert_eq!(trace.hops[0].prefill.network_ms, 4);
@@ -1725,9 +1777,11 @@ mod tests {
     /// Sem isto a geração ignoraria o EOS e só pararia no teto de tokens.
     #[test]
     fn o_fim_da_resposta_de_um_token_e_respeitado() {
-        let passo =
-            speculative_step_from_meta(&json!({"done": true, "token_id": 7, "text": ""}), trace_vazio())
-                .expect("legítima");
+        let passo = speculative_step_from_meta(
+            &json!({"done": true, "token_id": 7, "text": ""}),
+            trace_vazio(),
+        )
+        .expect("legítima");
         assert!(passo.done);
     }
 

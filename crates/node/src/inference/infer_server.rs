@@ -266,13 +266,18 @@ mod tests {
         let (_tx, rx) = tokio::sync::watch::channel(0u64);
 
         let comecou = std::time::Instant::now();
-        let erro = run(cfg, rx, 0, Arc::new(std::sync::atomic::AtomicBool::new(false)), None)
-            .await
-            .expect_err("porta ocupada devia falhar");
+        let erro = run(
+            cfg,
+            rx,
+            0,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
+        )
+        .await
+        .expect_err("porta ocupada devia falhar");
 
         assert!(
-            erro.to_string().to_lowercase().contains("address")
-                || erro.to_string().contains("use"),
+            erro.to_string().to_lowercase().contains("address") || erro.to_string().contains("use"),
             "o erro tinha que ser o da porta, e foi: {erro}"
         );
         assert!(
@@ -306,7 +311,9 @@ mod relay_tests {
         }
     }
 
-    async fn spawn_fake_hop(handler: impl Fn() -> Response + Clone + Send + Sync + 'static) -> String {
+    async fn spawn_fake_hop(
+        handler: impl Fn() -> Response + Clone + Send + Sync + 'static,
+    ) -> String {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let router = Router::new().route(
@@ -368,7 +375,10 @@ mod relay_tests {
 
         let hop_timings = meta["hop_timings"].as_array().expect("hop_timings array");
         assert_eq!(hop_timings.len(), 1);
-        assert_eq!(hop_timings[0]["processing_ms"], 5, "the tail's self-reported processing_ms");
+        assert_eq!(
+            hop_timings[0]["processing_ms"], 5,
+            "the tail's self-reported processing_ms"
+        );
         assert_eq!(hop_timings[0]["node_timings"]["decode_ms"], 3);
     }
 
@@ -825,9 +835,8 @@ async fn bind_dual_stack(port: u16) -> Result<TcpListener> {
 fn http_client() -> &'static crate::peer_client::PeerClients {
     static CLIENT: std::sync::OnceLock<crate::peer_client::PeerClients> =
         std::sync::OnceLock::new();
-    let c = CLIENT.get_or_init(|| {
-        crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600))
-    });
+    let c = CLIENT
+        .get_or_init(|| crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)));
     // A cada uso, não só na criação: o `OnceLock` nasce uma vez e o operador
     // pode virar a flag depois. `set_tls` só faz trabalho quando o valor muda,
     // então isto custa uma leitura atômica no caminho comum.
@@ -937,9 +946,17 @@ pub(crate) async fn handle_tp_reduce(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
-    let barrier_id = match headers.get(crate::tp::TP_BARRIER_HEADER).and_then(|v| v.to_str().ok()) {
+    let barrier_id = match headers
+        .get(crate::tp::TP_BARRIER_HEADER)
+        .and_then(|v| v.to_str().ok())
+    {
         Some(v) => v.to_string(),
-        None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_BARRIER_HEADER)),
+        None => {
+            return err400(format!(
+                "falta o cabeçalho {}",
+                crate::tp::TP_BARRIER_HEADER
+            ))
+        }
     };
     let rank: u32 = match headers
         .get(crate::tp::TP_RANK_HEADER)
@@ -950,7 +967,10 @@ pub(crate) async fn handle_tp_reduce(
         None => return err400(format!("falta o cabeçalho {}", crate::tp::TP_RANK_HEADER)),
     };
     if body.len() % 4 != 0 {
-        return err400(format!("parcial de {} bytes não é múltiplo de 4", body.len()));
+        return err400(format!(
+            "parcial de {} bytes não é múltiplo de 4",
+            body.len()
+        ));
     }
     let data: Vec<f32> = body
         .chunks_exact(4)
@@ -976,7 +996,6 @@ pub(crate) async fn handle_tp_reduce(
     }
 }
 
-
 /// Repassa uma chamada de ciclo de vida de sessão aos demais ranks do grupo.
 ///
 /// O corpo é remontado (não é um quadro binário como o decode), e o cabeçalho
@@ -998,7 +1017,13 @@ fn replicate_session_call(
         return;
     };
     let corpo = json!({ "session_id": session_id }).to_string().into_bytes();
-    crate::tp::broadcast_to(&tp.members, rota, "session", corpo, Some("application/json"));
+    crate::tp::broadcast_to(
+        &tp.members,
+        rota,
+        "session",
+        corpo,
+        Some("application/json"),
+    );
 }
 
 // ── /v1/session/release ───────────────────────────────────────────────────────
@@ -1083,7 +1108,6 @@ async fn handle_rollback(
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
 
-
 /// Abre o decode nos **dois** papéis e, no rank 0, põe os workers para rodar o
 /// mesmo lote.
 ///
@@ -1160,7 +1184,11 @@ async fn handle_prefill(
     let is_last = next_hops
         .as_ref()
         .map(|hops| hops.is_empty())
-        .unwrap_or_else(|| meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false));
+        .unwrap_or_else(|| {
+            meta.get("is_last")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
     // What *this* request says about chunking — correct as received for a
     // middle/tail hop (which just passes it through); wrong for the head,
     // which always gets `false` here (the sender can't know in advance) and
@@ -1715,7 +1743,11 @@ async fn handle_step(
     let is_last = next_hops
         .as_ref()
         .map(|hops| hops.is_empty())
-        .unwrap_or_else(|| meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false));
+        .unwrap_or_else(|| {
+            meta.get("is_last")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        });
     let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let token_id = meta
@@ -1856,11 +1888,7 @@ async fn handle_step(
             forward["mtp_k"] = mtp_k.clone();
         }
         tokio::spawn(forward_direct(
-            hops,
-            "/v1/step",
-            forward,
-            residual,
-            shape,
+            hops, "/v1/step", forward, residual, shape,
             1, // a decode step has never retried — see relay_and_bubble's doc comment
             reply_to,
         ));
@@ -2202,7 +2230,12 @@ impl Speculate {
     pub(crate) fn from_meta(meta: &Value) -> Option<Self> {
         let v = meta.get("speculate")?;
         let draft = v.get("draft").and_then(|d| {
-            d.as_array().map(|a| a.iter().filter_map(|v| v.as_i64()).map(|v| v as i32).collect())
+            d.as_array().map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_i64())
+                    .map(|v| v as i32)
+                    .collect()
+            })
         });
         Some(Speculate {
             k: v.get("k")?.as_u64()? as u32,
@@ -2349,8 +2382,8 @@ mod speculative_tests {
     /// escrito.
     #[test]
     fn a_frame_without_a_draft_source_still_means_lookup() {
-        let spec = Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}}))
-            .expect("k e m bastam");
+        let spec =
+            Speculate::from_meta(&json!({"speculate": {"k": 4, "m": 3}})).expect("k e m bastam");
         assert_eq!(spec.source, DraftSource::Lookup);
         assert_eq!((spec.k, spec.m), (4, 3));
     }
@@ -2538,9 +2571,14 @@ fn step_blocking(
         // cabeça via `tokens` na wire); sem ela, ele desliga o MTP com aviso.
         n_tokens = shape[0];
         let logits_all = incoming_draft.is_some() || !is_last;
-        engine_timing = s
-            .engine
-            .decode_hidden(&hidden, n_tokens, n_past, seq_id, logits_all, batch_tokens.as_deref())?;
+        engine_timing = s.engine.decode_hidden(
+            &hidden,
+            n_tokens,
+            n_past,
+            seq_id,
+            logits_all,
+            batch_tokens.as_deref(),
+        )?;
         // `batch_tokens` segue vivo: a cauda usa-o no gate do `next_draft`
         // (verificação) e no caminho plain.
         reply_tokens = batch_tokens.clone();
@@ -2555,7 +2593,11 @@ fn step_blocking(
         // permanently empty — harmless until something needed it (repetition
         // penalty already reads only the tail's copy, correctly), but
         // prompt-lookup drafting below needs the head's history to search.
-        s.sessions.get_mut(&sid_key).unwrap().recent_tokens.push(tid);
+        s.sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .recent_tokens
+            .push(tid);
 
         // A largura de lote que o gateway quer na rodada seguinte, extraída do
         // `speculate` que a cabeça recebeu e ecoada na resposta — é como a
@@ -2572,7 +2614,8 @@ fn step_blocking(
                 match spec.source {
                     DraftSource::Mtp => {
                         let p_min = s.mtp_min_probability;
-                        s.engine.mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
+                        s.engine
+                            .mtp_draft(tid, n_past, seq_id, spec.k.saturating_sub(1), p_min)
                     }
                     DraftSource::Lookup => {
                         let session = &s.sessions[&sid_key];
@@ -2684,14 +2727,14 @@ fn step_blocking(
                     let n_past_next = session_n_past - (n_tokens as u32 - keep as u32);
                     let id0 = *accepted_ids.last().unwrap_or(&eos);
                     let p_min = s.mtp_min_probability;
-                    let dr = s.engine.mtp_draft(
-                        id0,
-                        n_past_next,
-                        seq_id,
-                        draft.len() as u32,
-                        p_min,
-                    );
-                    if dr.is_empty() { None } else { Some(dr) }
+                    let dr =
+                        s.engine
+                            .mtp_draft(id0, n_past_next, seq_id, draft.len() as u32, p_min);
+                    if dr.is_empty() {
+                        None
+                    } else {
+                        Some(dr)
+                    }
                 } else {
                     None
                 };
@@ -2776,8 +2819,14 @@ fn step_blocking(
                 s.engine.mtp_accept(0);
                 let session_n_past = s.sessions[&sid_key].n_past;
                 let p_min = s.mtp_min_probability;
-                let dr = s.engine.mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
-                if dr.is_empty() { None } else { Some(dr) }
+                let dr =
+                    s.engine
+                        .mtp_draft(next_id, session_n_past, seq_id, k.saturating_sub(1), p_min);
+                if dr.is_empty() {
+                    None
+                } else {
+                    Some(dr)
+                }
             } else {
                 None
             }

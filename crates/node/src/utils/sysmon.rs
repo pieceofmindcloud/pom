@@ -349,7 +349,10 @@ async fn read_memory() -> (MemStat, Option<f64>) {
         let ok = unsafe { win::GlobalMemoryStatusEx(&mut st) } != 0;
         if ok {
             let mb = |b: u64| b as f64 / 1_048_576.0;
-            return (MemStat::new(mb(st.ull_total_phys), mb(st.ull_avail_phys)), None);
+            return (
+                MemStat::new(mb(st.ull_total_phys), mb(st.ull_avail_phys)),
+                None,
+            );
         }
         // Falhou: zeros dizem "não sei", e é assim que o resto do sistema lê
         // (ver os guardas `> 0` em `deploy.rs`).

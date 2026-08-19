@@ -188,7 +188,8 @@ export function Shards() {
   async function send(shard: DiscoveredModel, nodeId: string) {
     setSending(shard.id);
     try {
-      await api.post("/api/transfer/send", { to_node_id: nodeId, path: shard.path });
+      const filename = shard.path.split(/[\\/]/).pop() ?? shard.name;
+      await api.post("/api/transfer/send", { to_node_id: nodeId, filename });
       toast.success(
         t("shards.offerSent"),
         t("shards.offerSentDetail"),

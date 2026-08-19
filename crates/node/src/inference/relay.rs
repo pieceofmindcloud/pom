@@ -138,7 +138,11 @@ pub struct HttpRefusal {
 
 impl std::fmt::Display for HttpRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "peer {} recusou: {} {}", self.peer_label, self.status, self.body)
+        write!(
+            f,
+            "peer {} recusou: {} {}",
+            self.peer_label, self.status, self.body
+        )
     }
 }
 
@@ -337,7 +341,9 @@ pub async fn send_bytes_or_tunnel(
                 SendIssueKind::Transport
             };
             let (Some(tunnel), Some(peer_id)) = (
-                tunnel.filter(|_| should_attempt_tunnel_fallback(kind, supports_tunnel, peer_id.is_some(), true)),
+                tunnel.filter(|_| {
+                    should_attempt_tunnel_fallback(kind, supports_tunnel, peer_id.is_some(), true)
+                }),
                 peer_id,
             ) else {
                 return Err(error.into());
@@ -372,7 +378,9 @@ async fn send_bytes_via_tunnel(
             reply: reply_tx,
         })
         .await
-        .map_err(|_| anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"))?;
+        .map_err(|_| {
+            anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
+        })?;
 
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
@@ -445,10 +453,18 @@ pub async fn send_frame_or_tunnel(
     };
 
     let step_supports_tunnel = step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL);
-    let peer_id = step.libp2p_peer_id.as_deref().and_then(|s| s.parse::<PeerId>().ok());
+    let peer_id = step
+        .libp2p_peer_id
+        .as_deref()
+        .and_then(|s| s.parse::<PeerId>().ok());
     let should_try = last_kind
         .map(|kind| {
-            should_attempt_tunnel_fallback(kind, step_supports_tunnel, peer_id.is_some(), tunnel.is_some())
+            should_attempt_tunnel_fallback(
+                kind,
+                step_supports_tunnel,
+                peer_id.is_some(),
+                tunnel.is_some(),
+            )
         })
         .unwrap_or(false);
 
@@ -457,7 +473,11 @@ pub async fn send_frame_or_tunnel(
     };
 
     warn!("{peer_label}: HTTP falhou ({http_err}), tentando via túnel libp2p");
-    match send_frame_via_tunnel(tunnel, peer_id, path, meta, tensor, dtype, encoding, peer_label).await {
+    match send_frame_via_tunnel(
+        tunnel, peer_id, path, meta, tensor, dtype, encoding, peer_label,
+    )
+    .await
+    {
         Ok(sent) => Ok(sent),
         Err(tunnel_err) => {
             warn!("{peer_label}: túnel libp2p também falhou: {tunnel_err}");
@@ -490,7 +510,10 @@ pub fn should_attempt_tunnel_fallback(
     step_supports_tunnel
         && peer_id_known
         && tunnel_available
-        && matches!(last_issue_kind, SendIssueKind::Timeout | SendIssueKind::Transport)
+        && matches!(
+            last_issue_kind,
+            SendIssueKind::Timeout | SendIssueKind::Transport
+        )
 }
 
 /// Belt-and-suspenders ceiling on top of the tunnel protocol's own 60s
@@ -534,20 +557,15 @@ pub async fn send_frame_via_tunnel(
         },
         reply: reply_tx,
     };
-    tunnel
-        .send(outbound)
-        .await
-        .map_err(|_| anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)"))?;
+    tunnel.send(outbound).await.map_err(|_| {
+        anyhow!("{peer_label}: swarm de libp2p não está disponível (canal fechado)")
+    })?;
 
     let started = Instant::now();
     let response = match tokio::time::timeout(TUNNEL_REPLY_TIMEOUT, reply_rx).await {
         Ok(Ok(Ok(response))) => response,
         Ok(Ok(Err(e))) => return Err(anyhow!("{peer_label}: falha no túnel libp2p: {e}")),
-        Ok(Err(_)) => {
-            return Err(anyhow!(
-                "{peer_label}: túnel libp2p encerrou sem responder"
-            ))
-        }
+        Ok(Err(_)) => return Err(anyhow!("{peer_label}: túnel libp2p encerrou sem responder")),
         Err(_) => return Err(anyhow!("{peer_label}: túnel libp2p não respondeu a tempo")),
     };
     let round_trip_ms = started.elapsed().as_millis() as u64;
@@ -689,9 +707,18 @@ mod tests {
     #[test]
     fn every_precondition_must_hold_or_the_tunnel_is_skipped() {
         let kind = SendIssueKind::Timeout;
-        assert!(!should_attempt_tunnel_fallback(kind, false, true, true), "step must advertise the capability");
-        assert!(!should_attempt_tunnel_fallback(kind, true, false, true), "the hop's PeerId must be known");
-        assert!(!should_attempt_tunnel_fallback(kind, true, true, false), "the local swarm must actually be up");
+        assert!(
+            !should_attempt_tunnel_fallback(kind, false, true, true),
+            "step must advertise the capability"
+        );
+        assert!(
+            !should_attempt_tunnel_fallback(kind, true, false, true),
+            "the hop's PeerId must be known"
+        );
+        assert!(
+            !should_attempt_tunnel_fallback(kind, true, true, false),
+            "the local swarm must actually be up"
+        );
     }
 
     /// `Result<SentFrame>::expect_err` would need `SentFrame: Debug`, which
@@ -768,7 +795,9 @@ mod tests {
         .await;
         let err = expect_err(result, "non-2xx status must surface as an error");
 
-        let refusal = err.downcast_ref::<HttpRefusal>().expect("expected HttpRefusal");
+        let refusal = err
+            .downcast_ref::<HttpRefusal>()
+            .expect("expected HttpRefusal");
         assert_eq!(refusal.status, 500);
         assert!(refusal.body.contains("kv cache corrupted"));
     }
@@ -819,7 +848,11 @@ mod tests {
 
     // ── send_frame_or_tunnel ─────────────────────────────────────────────────
 
-    fn step_with(inference_url: &str, supports_tunnel: bool, peer_id: Option<String>) -> crate::pipeline::PipelineStep {
+    fn step_with(
+        inference_url: &str,
+        supports_tunnel: bool,
+        peer_id: Option<String>,
+    ) -> crate::pipeline::PipelineStep {
         crate::pipeline::PipelineStep {
             node_id: "peer-x".into(),
             inference_url: inference_url.into(),
@@ -842,8 +875,18 @@ mod tests {
     /// afterward with `try_recv`.
     #[tokio::test]
     async fn a_reachable_peer_never_touches_the_tunnel() {
-        let port = spawn_fake_inference_server(|_body| (200, wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap())).await;
-        let step = step_with(&format!("http://127.0.0.1:{port}"), true, Some(PeerId::random().to_string()));
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
 
         let sent = send_frame_or_tunnel(
@@ -900,7 +943,11 @@ mod tests {
     /// the call still completes via the tunnel instead of failing outright.
     #[tokio::test]
     async fn an_unreachable_peer_recovers_via_the_tunnel_when_qualified() {
-        let unreachable = step_with("http://127.0.0.1:1", true, Some(PeerId::random().to_string()));
+        let unreachable = step_with(
+            "http://127.0.0.1:1",
+            true,
+            Some(PeerId::random().to_string()),
+        );
         let tunnel_body = wire::encode(&json!({"token_id": 99}), None, WireDtype::F16).unwrap();
         let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
@@ -931,7 +978,11 @@ mod tests {
     /// never a silent success from a path that was never actually offered.
     #[tokio::test]
     async fn an_unreachable_peer_without_the_capability_stays_failed() {
-        let unreachable = step_with("http://127.0.0.1:1", false, Some(PeerId::random().to_string()));
+        let unreachable = step_with(
+            "http://127.0.0.1:1",
+            false,
+            Some(PeerId::random().to_string()),
+        );
         let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
             status: 200,
             body: wire::encode(&json!({}), None, WireDtype::F16).unwrap(),
@@ -952,7 +1003,10 @@ mod tests {
         )
         .await;
 
-        expect_err(result, "an unqualified hop must not fall back to the tunnel");
+        expect_err(
+            result,
+            "an unqualified hop must not fall back to the tunnel",
+        );
     }
 
     /// An `Http`-class failure (the peer answered, and refused) must never
@@ -961,7 +1015,11 @@ mod tests {
     #[tokio::test]
     async fn an_http_refusal_never_tries_the_tunnel() {
         let port = spawn_fake_inference_server(|_body| (500, b"model crashed".to_vec())).await;
-        let step = step_with(&format!("http://127.0.0.1:{port}"), true, Some(PeerId::random().to_string()));
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
         let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
 
         let result = send_frame_or_tunnel(

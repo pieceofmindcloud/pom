@@ -18,9 +18,10 @@
 //!
 //! What may leave a machine depends on who chose the file. A **pull** names a
 //! path on a machine where nobody chose anything, so it is confined to the
-//! models directory. A **push** is this machine's own operator picking a file,
-//! so it may be any readable path — the peer receives an opaque grant id and
-//! never names a path of ours. See [`TransferState::grants`].
+//! models directory. A **push** is this machine's own operator choosing one
+//! filename from the catalog; the backend resolves that basename against the
+//! configured roots and the peer receives an opaque grant id. See
+//! [`TransferState::grants`].
 //!
 //! Received files are always written under `<pasta de fatias>/recebidos/` — the
 //! directory configured in `pom.json`, `models/` until someone changes it —
@@ -269,10 +270,7 @@ const GGUF_MAGIC: &[u8; 4] = b"GGUF";
 
 /// O único tipo de arquivo que pode sair desta máquina ou ser apagado por ela.
 ///
-/// Conjunção de propósito: o conteúdo tem que ser GGUF, e o nome não pode
-/// mentir sobre isso. Só o cabeçalho deixaria passar um `notas.txt` renomeado
-/// por engano; só a extensão barraria o store inteiro do Ollama, que guarda os
-/// modelos como `blobs/sha256-<hash>`, sem extensão nenhuma.
+/// O conteúdo e a extensão precisam confirmar que é um GGUF.
 pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
     use std::io::Read;
 
@@ -280,14 +278,14 @@ pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
         return Err(format!("não é um arquivo: {}", path.display()));
     }
 
-    if let Some(ext) = path.extension() {
-        if !ext.eq_ignore_ascii_case("gguf") {
-            return Err(format!(
-                "só arquivos GGUF: {} tem extensão .{}",
-                path.display(),
-                ext.to_string_lossy()
-            ));
-        }
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+    {
+        return Err(format!(
+            "só arquivos com extensão .gguf podem ser transferidos: {}",
+            path.display()
+        ));
     }
 
     let mut head = [0u8; 4];
@@ -302,6 +300,25 @@ pub(crate) fn ensure_gguf(path: &Path) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn valid_transfer_filename(raw: &str) -> Result<&str, String> {
+    let filename = raw.trim();
+    let path = Path::new(filename);
+    if filename.is_empty()
+        || path.is_absolute()
+        || path.components().count() != 1
+        || path.file_name().and_then(|name| name.to_str()) != Some(filename)
+    {
+        return Err("a transferência aceita apenas o nome de um arquivo, sem caminho".to_string());
+    }
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("gguf"))
+    {
+        return Err("só arquivos com extensão .gguf podem ser transferidos".to_string());
+    }
+    Ok(filename)
 }
 
 /// Resolve a requested path inside the models directory, or refuse.
@@ -570,7 +587,15 @@ fn served_stream(
 
     let started = Instant::now();
     futures::stream::unfold(
-        (inner, state, job_id, already, already, started, Instant::now()),
+        (
+            inner,
+            state,
+            job_id,
+            already,
+            already,
+            started,
+            Instant::now(),
+        ),
         |(mut inner, state, job_id, mut done, already, started, mut last)| async move {
             if state.transfers.is_cancelled(&job_id).await {
                 // Terminar o corpo aqui corta a transferência: o receptor vê o
@@ -628,6 +653,9 @@ async fn receive_offer(
     State(state): State<GatewayState>,
     Json(req): Json<OfferRequest>,
 ) -> Response {
+    if let Err(e) = valid_transfer_filename(&req.name) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+    }
     let offer = TransferOffer {
         id: uuid::Uuid::new_v4().simple().to_string(),
         from_node_id: req.from_node_id,
@@ -762,6 +790,9 @@ async fn start_pull(
     State(state): State<GatewayState>,
     Json(req): Json<PullRequest>,
 ) -> Response {
+    if let Err(e) = valid_transfer_filename(&req.name) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+    }
     let peers = state.all_peers().await;
     let Some(peer) = peers.iter().find(|p| p.node_id == req.node_id) else {
         return (
@@ -897,17 +928,44 @@ async fn notify_peer_cancel(state: &GatewayState, id: &str, by: &str, peer_host:
 pub struct SendRequest {
     /// Peer that should receive the file.
     pub to_node_id: String,
-    /// File on *this* machine — any readable path, not just `models/`.
-    pub path: String,
+    /// Basename from this node's catalog. Paths are deliberately not accepted.
+    pub filename: String,
 }
 
-/// Resolve a file the local operator asked us to send.
+/// Resolve the basename the local operator selected against this node's catalog.
 ///
-/// Deliberately not restricted to `models/`: the captain's machine holds models
-/// under LM Studio, Ollama and loose directories, and "it is on this machine so
-/// I must be able to send it" is the requirement. The restriction that matters
-/// is that this path came from *here*, and that the peer only ever learns the
-/// grant id — see [`TransferState::grants`].
+/// The browser never gets permission to choose a path. A duplicate basename is
+/// rejected rather than guessed, because guessing would make a transfer depend
+/// on scan order and could send a different model than the operator saw.
+async fn catalog_send_path(state: &GatewayState, filename: &str) -> Result<PathBuf, String> {
+    let filename = valid_transfer_filename(filename)?;
+    let model_dirs = state.model_dirs().await;
+    let shard_dir = state.shard_dir().await;
+    let catalog =
+        tokio::task::spawn_blocking(move || crate::catalog::discover(&model_dirs, &shard_dir))
+            .await
+            .map_err(|e| format!("falha ao consultar o catálogo local: {e}"))?;
+    let matches: Vec<PathBuf> = catalog
+        .models
+        .into_iter()
+        .filter(|model| {
+            Path::new(&model.path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                == Some(filename)
+        })
+        .map(|model| PathBuf::from(model.path))
+        .collect();
+    match matches.as_slice() {
+        [] => Err(format!("arquivo não encontrado no catálogo local: {filename}")),
+        [path] => local_send_path(path.to_string_lossy().as_ref()),
+        _ => Err(format!(
+            "há mais de um arquivo chamado {filename} no catálogo local; renomeie um deles antes de transferir"
+        )),
+    }
+}
+
+/// Validate a path already resolved by the local catalog before granting it.
 fn local_send_path(requested: &str) -> Result<PathBuf, String> {
     let full = Path::new(requested)
         .canonicalize()
@@ -938,7 +996,7 @@ async fn send_to_peer(
     State(state): State<GatewayState>,
     Json(req): Json<SendRequest>,
 ) -> Response {
-    let path = match local_send_path(&req.path) {
+    let path = match catalog_send_path(&state, &req.filename).await {
         Ok(p) => p,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
     };
@@ -970,11 +1028,7 @@ async fn send_to_peer(
             .into_response();
     };
 
-    let name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("fatia.gguf")
-        .to_string();
+    let name = req.filename.trim().to_string();
     let shard = crate::catalog::parse_shard_name(&name).map(|(_, a, b)| (a, b));
 
     // Where the peer should come and fetch it from — our own gateway, on the
@@ -1162,6 +1216,7 @@ async fn spawn_download(
     name: String,
     from_host: String,
 ) -> Result<String, String> {
+    valid_transfer_filename(&name)?;
     // A oferta traz o esquema que o REMETENTE gravou; quem disca é esta
     // máquina, então a política local é a que vale. Ver `normaliza_esquema`.
     let base_url = normaliza_esquema(&base_url);
@@ -1414,7 +1469,12 @@ async fn run_download(
             last_report = Instant::now();
             state
                 .transfers
-                .progress(job_id, done, done.saturating_sub(already), started.elapsed())
+                .progress(
+                    job_id,
+                    done,
+                    done.saturating_sub(already),
+                    started.elapsed(),
+                )
                 .await;
         }
     }
@@ -1538,7 +1598,14 @@ mod tests {
     async fn cancelling_marks_the_job_and_holds_for_a_job_not_yet_known() {
         let transfers = TransferState::default();
         transfers
-            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10)
+            .start_job(
+                "job-1",
+                "f.gguf",
+                TRANSFER_RECEIVING,
+                "ksia",
+                "/m/f.gguf",
+                10,
+            )
             .await;
 
         transfers.cancel("job-1", "macbook").await;
@@ -1560,8 +1627,7 @@ mod tests {
         assert!(transfers.is_cancelled("job-desconhecido").await);
     }
 
-    /// A regra é conjunção: assinatura no cabeçalho E, se houver extensão,
-    /// `.gguf`. Blob do Ollama não tem extensão nenhuma e precisa passar.
+    /// A regra é conjunção: assinatura no cabeçalho E extensão `.gguf`.
     #[test]
     fn only_real_gguf_files_pass_the_gate() {
         let dir = std::env::temp_dir().join(format!("pom-gguf-{}", std::process::id()));
@@ -1571,10 +1637,10 @@ mod tests {
         std::fs::write(&ok, b"GGUF\x03\x00\x00\x00").unwrap();
         assert!(ensure_gguf(&ok).is_ok());
 
-        // Como o Ollama guarda: sem extensão, o conteúdo é o que manda.
+        // Blob sem extensão não é uma transferência permitida.
         let blob = dir.join("sha256-abc123");
         std::fs::write(&blob, b"GGUF\x03\x00\x00\x00").unwrap();
-        assert!(ensure_gguf(&blob).is_ok());
+        assert!(ensure_gguf(&blob).is_err());
 
         // O nome mente sobre o conteúdo.
         let fake = dir.join("mentira.gguf");
@@ -1640,18 +1706,19 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// The requirement: a file on this machine can be sent even when it sits
-    /// nowhere near `models/` — LM Studio, Ollama, or a loose directory.
+    /// A path is never accepted from the transfer API, even when it points to
+    /// a valid GGUF outside the configured catalog.
     #[test]
-    fn the_operator_may_send_a_file_from_anywhere() {
+    fn a_path_cannot_be_used_as_a_transfer_filename() {
         let dir = std::env::temp_dir().join(format!("pom-xfer-any-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("solto.gguf");
         std::fs::write(&f, b"GGUF\x03\x00\x00\x00").unwrap();
 
-        // Nothing here is under a models dir, and that is the point.
-        let resolved = local_send_path(f.to_str().unwrap()).unwrap();
-        assert_eq!(resolved.file_name().unwrap(), "solto.gguf");
+        assert!(valid_transfer_filename(f.to_str().unwrap()).is_err());
+        assert!(valid_transfer_filename("../solto.gguf").is_err());
+        assert!(valid_transfer_filename("solto.txt").is_err());
+        assert_eq!(valid_transfer_filename("solto.gguf").unwrap(), "solto.gguf");
 
         std::fs::remove_dir_all(&dir).ok();
     }
@@ -1780,6 +1847,7 @@ mod offer_latency_tests {
 
         let (port, seen) = fake_peer().await;
         let state = sender_state(port).await;
+        state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
 
         let started = Instant::now();
         let resp = send_to_peer(
@@ -1787,7 +1855,7 @@ mod offer_latency_tests {
             State(state.clone()),
             Json(SendRequest {
                 to_node_id: "peer-b".into(),
-                path: file.to_string_lossy().into(),
+                filename: "fatia_0_15.gguf".into(),
             }),
         )
         .await;
@@ -1841,13 +1909,14 @@ mod offer_latency_tests {
 
         let (port, seen) = fake_peer().await;
         let state = sender_state(port).await;
+        state.auth.write().await.shard_dir = Some(dir.to_string_lossy().into());
 
         let _ = send_to_peer(
             crate::auth::ConnectionAuth,
             State(state.clone()),
             Json(SendRequest {
                 to_node_id: "peer-b".into(),
-                path: file.to_string_lossy().into(),
+                filename: "solto.gguf".into(),
             }),
         )
         .await;

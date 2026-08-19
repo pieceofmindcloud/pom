@@ -124,10 +124,11 @@ fn read(body: &Bytes) -> Incoming {
     let declared: Option<Vec<crate::pipeline::PipelineStep>> = meta
         .get("next_hops")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
-    let is_last = declared
-        .as_ref()
-        .map(|h| h.is_empty())
-        .unwrap_or_else(|| meta.get("is_last").and_then(|v| v.as_bool()).unwrap_or(false));
+    let is_last = declared.as_ref().map(|h| h.is_empty()).unwrap_or_else(|| {
+        meta.get("is_last")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
+    });
     let reply_to = crate::infer_server::direct_reply_to(&meta);
     Incoming {
         inbound_bytes: body.len(),
@@ -184,7 +185,9 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let n_tokens = if hop.is_head {
         PROMPT_TOKENS.saturating_sub(done_before).min(chunk_size)
     } else {
-        chunk_size.min(PROMPT_TOKENS.saturating_sub(done_before)).max(1)
+        chunk_size
+            .min(PROMPT_TOKENS.saturating_sub(done_before))
+            .max(1)
     } as usize;
     let more = hop.is_head && (done_before + n_tokens as u32) < PROMPT_TOKENS;
 
@@ -221,7 +224,12 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             crate::infer_server::apply_prompt_progress(&inc.meta, &mut result);
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
-                crate::direct::deliver_result(&crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)), &reply_to, result).await;
+                crate::direct::deliver_result(
+                    &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+                    &reply_to,
+                    result,
+                )
+                .await;
             });
         } else {
             let forward = json!({
@@ -317,7 +325,8 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
                 sampled.push(i as i32);
                 texts.push(ALFABETO[i % ALFABETO.len()].to_string());
             }
-            let keep = (crate::infer_server::longest_match(&sampled, &draft) + 1).min(sampled.len());
+            let keep =
+                (crate::infer_server::longest_match(&sampled, &draft) + 1).min(sampled.len());
             // O que passou do aceite não saiu: devolve ao contador.
             hop.emitted
                 .fetch_sub((n_positions - keep) as u64, Ordering::Relaxed);
@@ -361,7 +370,12 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
             let mut result = local;
             result["hop_timings"] = json!(hop_timings);
             tokio::spawn(async move {
-                crate::direct::deliver_result(&crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)), &reply_to, result).await;
+                crate::direct::deliver_result(
+                    &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+                    &reply_to,
+                    result,
+                )
+                .await;
             });
         } else {
             let mut forward = json!({
@@ -482,7 +496,11 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         .enumerate()
         .map(|(i, url)| {
             let porta: u16 = url.rsplit(':').next().unwrap().parse().unwrap();
-            let mut p = crate::gateway::testkit::peer(&format!("hop{i}"), &format!("m{i}"), 9000 + i as u16);
+            let mut p = crate::gateway::testkit::peer(
+                &format!("hop{i}"),
+                &format!("m{i}"),
+                9000 + i as u16,
+            );
             p.addr = "127.0.0.1:42777".into();
             p.inference_port = Some(porta);
             p.model = "lab".into();
@@ -538,8 +556,14 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         }
     }
     let _ = bg.await;
-    visto.step_calls = step_calls.iter().map(|c| c.load(Ordering::Relaxed)).collect();
-    visto.direct_steps = direct_steps.iter().map(|c| c.load(Ordering::Relaxed)).collect();
+    visto.step_calls = step_calls
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .collect();
+    visto.direct_steps = direct_steps
+        .iter()
+        .map(|c| c.load(Ordering::Relaxed))
+        .collect();
     visto
 }
 
@@ -585,4 +609,3 @@ async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
     );
     assert!(visto.decode_calls.iter().all(|c| *c > 0));
 }
-

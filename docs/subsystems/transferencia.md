@@ -18,18 +18,17 @@ O que pode sair de uma máquina depende de **quem escolheu o arquivo**:
   (`models/` por padrão) via `safe_model_path`, que canonicaliza e exige
   `starts_with` no diretório raiz. O pedido viaja com o caminho, porque é um
   arquivo de catálogo.
-- **Oferecer** (`POST /api/transfer/send`): o operador escolhe na própria tela
-  um arquivo que pode viver em **qualquer** caminho legível (`local_send_path`,
-  fora de `models/` de propósito - LM Studio, Ollama e pastas soltas). O peer
-  nunca vê esse caminho: recebe só um id opaco (ver concessão abaixo) e busca
-  por `?grant=<id>`. "Mandar qualquer coisa" não vira "ler qualquer coisa":
-  `?path=/etc/passwd` e um `grant` inventado são recusados.
+- **Oferecer** (`POST /api/transfer/send`): a tela mostra somente arquivos
+  `.gguf` presentes no catálogo local e envia o basename em `filename`. O
+  backend varre novamente as pastas configuradas, exige uma correspondência
+  única e só então resolve o caminho real. Caminhos absolutos, `..`, nomes
+  duplicados, arquivos ausentes e extensões diferentes de `.gguf` são recusados.
+  O peer nunca vê esse caminho: recebe só um id opaco (ver concessão abaixo) e
+  busca por `?grant=<id>`.
 
 Os dois sentidos passam por `ensure_gguf`, que exige a assinatura `GGUF` nos
-primeiros 4 bytes **e** extensão `.gguf` quando há extensão - a conjunção de
-propósito: só o cabeçalho deixaria passar um `notas.txt` renomeado; só a
-extensão barraria o store do Ollama, que guarda modelos como `blobs/sha256-*`
-sem extensão.
+primeiros 4 bytes **e** extensão `.gguf`. Blobs sem extensão do store do Ollama
+não são transferíveis por esta tela.
 
 ## 2. A concessão (grant)
 
@@ -147,8 +146,8 @@ O transporte é o mesmo; muda quem escolhe o quê:
   falta do outro lado. É a explicação de "não existe opção de enviar uma fatia"
   quando as máquinas têm as mesmas fatias: o painel é uma lista de diferença e
   não sobra linha para clicar.
-- **Enviar um arquivo desta máquina** (aba Nós): caminho digitado pelo operador,
-  para o que a varredura não acha (o caminho da concessão).
+- **Enviar um arquivo desta máquina** (aba Nós): combobox com nome e caminho
+  completo para conferência visual, enviando somente o basename seguro.
 
 O progresso vive no sino e vem dos nós, então fechar a aba não interrompe nada.
 
@@ -167,7 +166,7 @@ Todas atrás de `ConnectionAuth` (chave de conexão, ver `api-http.md`):
 | `POST /api/transfer/offers/:id/reject` | recebe | descarta a oferta |
 | `GET /api/transfer/jobs` | ambos | jobs em andamento, ordenados por nome |
 | `POST /api/transfer/jobs/:id/cancel` | ambos | cancela (idempotente, avisa o peer) |
-| `POST /api/transfer/send` | oferece | tela local escolhe um arquivo e o oferece a um peer |
+| `POST /api/transfer/send` | oferece | tela local envia `{to_node_id, filename}` para um peer |
 
 Os locators `?job=` e `?peer=` são opcionais de propósito: um peer de versão
 antiga os ignora e a transferência funciona igual, só sem a visão do lado que

@@ -22,6 +22,7 @@ import {
   Skeleton,
 } from "../components/ui";
 import { api } from "../lib/api";
+import { bytes } from "../lib/format";
 import { useInvalidate, usePaths } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { PathsResponse } from "../lib/types";
@@ -41,6 +42,7 @@ export function ModelPaths() {
 
   const [dirs, setDirs] = useState<string[]>([]);
   const [shardDir, setShardDir] = useState("");
+  const [shardMaxGb, setShardMaxGb] = useState("100");
   const [saving, setSaving] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
@@ -49,6 +51,7 @@ export function ModelPaths() {
     if (loaded || !paths.data) return;
     setDirs(paths.data.model_dirs.map((d) => d.path));
     setShardDir(paths.data.shard_dir.path);
+    setShardMaxGb(String(paths.data.shard_max_gb || 100));
     setLoaded(true);
   }, [paths.data, loaded]);
 
@@ -58,6 +61,7 @@ export function ModelPaths() {
       const saved = await api.post<PathsResponse>("/api/ui/paths", {
         model_dirs: dirs.map((d) => d.trim()).filter(Boolean),
         shard_dir: shardDir.trim(),
+        shard_max_gb: Number.parseFloat(shardMaxGb.replace(",", ".")),
       });
       setDirs(saved.model_dirs.map((d) => d.path));
       setShardDir(saved.shard_dir.path);
@@ -172,6 +176,33 @@ export function ModelPaths() {
                     placeholder={paths.data.default_shard_dir}
                   />
                 </Field>
+                <Field label={t("paths.maxShardGb")} hint={t("paths.maxShardGbHint")}>
+                  <Input
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={shardMaxGb}
+                    onChange={(e) => setShardMaxGb(e.target.value)}
+                  />
+                </Field>
+                <div className="space-y-1.5" aria-label={t("paths.usageAria")}>
+                  <div className="flex items-baseline justify-between gap-3 text-xs">
+                    <span className="text-muted">
+                      {bytes(paths.data.shard_dir.used_bytes)} {t("paths.usedOf")} {bytes(paths.data.shard_dir.max_bytes ?? 0)}
+                    </span>
+                    <span className="font-mono text-faint">
+                      {(paths.data.shard_dir.usage_percent ?? 0).toFixed(1)}%
+                    </span>
+                  </div>
+                  <div className="h-2 overflow-hidden rounded-full bg-line" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(paths.data.shard_dir.usage_percent ?? 0, 100)}>
+                    <div
+                      className={`h-full rounded-full transition-[width] ${
+                        (paths.data.shard_dir.usage_percent ?? 0) >= 90 ? "bg-rose" : "bg-aqua"
+                      }`}
+                      style={{ width: `${Math.min(paths.data.shard_dir.usage_percent ?? 0, 100)}%` }}
+                    />
+                  </div>
+                </div>
                 <Footnote icon={<HardDriveDownload className="h-3.5 w-3.5" />}>
                   {t("paths.received")}
                 </Footnote>

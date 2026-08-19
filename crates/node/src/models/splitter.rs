@@ -731,13 +731,13 @@ fn tp_role(name: &str) -> TpRole {
         None => name,
     };
     match tail {
-        "attn_q.weight" | "attn_k.weight" | "attn_v.weight" | "ffn_gate.weight" | "ffn_up.weight" => {
-            TpRole::Column
-        }
+        "attn_q.weight" | "attn_k.weight" | "attn_v.weight" | "ffn_gate.weight"
+        | "ffn_up.weight" => TpRole::Column,
         "attn_output.weight" | "ffn_down.weight" => TpRole::Row,
         "attn_norm.weight" | "attn_norm.bias" | "ffn_norm.weight" | "ffn_norm.bias"
-        | "output_norm.weight" | "output_norm.bias" | "token_embd.weight"
-        | "output.weight" => TpRole::Shared,
+        | "output_norm.weight" | "output_norm.bias" | "token_embd.weight" | "output.weight" => {
+            TpRole::Shared
+        }
         t if t.contains("rope") || t.contains("pos_embd") || t.contains("_norm.") => TpRole::Shared,
         _ => TpRole::Unsupported,
     }
@@ -1455,7 +1455,10 @@ pub fn merge(parts: &[MergePart], dst: &Path, on_progress: impl Fn(f64)) -> Resu
         &crate::brand::gguf_key("start_layer"),
         start_first,
     )));
-    kv_out.push(KvOut::Encoded(encode_kv_u32(&crate::brand::gguf_key("end_layer"), end_last)));
+    kv_out.push(KvOut::Encoded(encode_kv_u32(
+        &crate::brand::gguf_key("end_layer"),
+        end_last,
+    )));
 
     // ── Tensors, one per physical file so the data streams from where it is ──
     struct Out {
@@ -2334,7 +2337,10 @@ mod tests {
     /// é todo f32, então os dados são interpretados como floats.
     fn read_shard_tensor(path: &std::path::Path, name: &str) -> (Vec<u64>, Vec<f32>) {
         let bytes = std::fs::read(path).unwrap();
-        let mut r = R { data: &bytes, pos: 0 };
+        let mut r = R {
+            data: &bytes,
+            pos: 0,
+        };
         assert_eq!(r.u32().unwrap(), GGUF_MAGIC);
         r.u32().unwrap(); // version
         let n_tensors = r.u64().unwrap() as usize;
@@ -2473,7 +2479,11 @@ mod tests {
         let bytes = std::fs::read(&out).unwrap();
 
         assert_eq!(kv_u32(&bytes, "llama.attention.head_count"), Some(2), "4/2");
-        assert_eq!(kv_u32(&bytes, "llama.attention.head_count_kv"), Some(1), "2/2");
+        assert_eq!(
+            kv_u32(&bytes, "llama.attention.head_count_kv"),
+            Some(1),
+            "2/2"
+        );
         assert_eq!(kv_u32(&bytes, "llama.feed_forward_length"), Some(2), "4/2");
 
         // Não particionados: o resíduo atravessa o all-reduce inteiro e toda

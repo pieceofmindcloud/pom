@@ -100,11 +100,7 @@ pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u3
 ///
 /// Uma faixa identica a uma existente e substituicao, nao um peer a mais.
 pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32) {
-    let mut faixas: Vec<(u32, u32)> = existentes
-        .iter()
-        .copied()
-        .filter(|f| *f != nova)
-        .collect();
+    let mut faixas: Vec<(u32, u32)> = existentes.iter().copied().filter(|f| *f != nova).collect();
     faixas.push(nova);
     faixas.sort();
     let index = faixas.iter().position(|f| *f == nova).unwrap_or(0) as u32;
@@ -1529,13 +1525,22 @@ async fn tp_shardability_check(
 ) -> Option<String> {
     let primary = machines.iter().find(|m| m.node_id == tp.primary_node_id)?;
     let Some(path) = primary.held.first().map(|s| s.path.clone()) else {
-        return Some(format!("o primary {} não tem o modelo inteiro", primary.label()));
+        return Some(format!(
+            "o primary {} não tem o modelo inteiro",
+            primary.label()
+        ));
     };
     let Some(base) = primary.gateway_url.clone() else {
-        return Some(format!("não foi possível falar com o primary {}", primary.label()));
+        return Some(format!(
+            "não foi possível falar com o primary {}",
+            primary.label()
+        ));
     };
     let Ok(http) = state.peer_http.for_peer(&primary.node_id) else {
-        return Some(format!("não foi possível falar com o primary {}", primary.label()));
+        return Some(format!(
+            "não foi possível falar com o primary {}",
+            primary.label()
+        ));
     };
 
     // `/api/ui/tp/check` é autenticada como todo `/api/ui/*` de operador: sem a
@@ -1563,7 +1568,10 @@ async fn tp_shardability_check(
     let body: serde_json::Value = match resp.json().await {
         Ok(v) => v,
         Err(_) => {
-            return Some(format!("{} respondeu mal à checagem de shard", primary.label()))
+            return Some(format!(
+                "{} respondeu mal à checagem de shard",
+                primary.label()
+            ))
         }
     };
     tp_check_verdict(&body, &primary.label())
@@ -1721,7 +1729,10 @@ fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<S
         return Some("um grupo tensor-parallel precisa de pelo menos 2 ranks".to_string());
     }
     let Some(primary) = machines.iter().find(|m| m.node_id == tp.primary_node_id) else {
-        return Some(format!("o primary {} não está no cluster", tp.primary_node_id));
+        return Some(format!(
+            "o primary {} não está no cluster",
+            tp.primary_node_id
+        ));
     };
     if !primary.held.iter().any(|s| s.start_layer == 0) {
         return Some(format!(
@@ -2427,7 +2438,11 @@ async fn undeploy_endpoint(
     {
         let role = state.auth.read().await.role.clone();
         if let Err(e) = undeploy_authority(&role) {
-            return (axum::http::StatusCode::FORBIDDEN, Json(json!({ "error": e }))).into_response();
+            return (
+                axum::http::StatusCode::FORBIDDEN,
+                Json(json!({ "error": e })),
+            )
+                .into_response();
         }
     }
 
@@ -2449,10 +2464,7 @@ async fn undeploy_endpoint(
         }));
     }
 
-    info!(
-        "desimplantando {group} de {} máquina(s)",
-        serving.len()
-    );
+    info!("desimplantando {group} de {} máquina(s)", serving.len());
 
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
@@ -2693,10 +2705,13 @@ mod whole_route_tests {
     /// Uma máquina servindo o catálogo dado, com memória e disco de sobra.
     async fn catalog_machine(catalog: serde_json::Value) -> u16 {
         let app = Router::new()
-            .route("/api/ui/models", axum_get(move || {
-                let catalog = catalog.clone();
-                async move { Json(catalog) }
-            }))
+            .route(
+                "/api/ui/models",
+                axum_get(move || {
+                    let catalog = catalog.clone();
+                    async move { Json(catalog) }
+                }),
+            )
             .route(
                 "/api/ui/node",
                 axum_get(|| async {
@@ -2844,8 +2859,7 @@ mod whole_route_tests {
 
         // Sem `kind` nenhum, o mesmo resultado: `shards` é o padrão.
         let port = catalog_machine(catalog()).await;
-        let sem_kind =
-            plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
+        let sem_kind = plan_body(state_seeing_only(port).await, json!({ "group": "qwen" })).await;
         assert_eq!(sem_kind["kind"], "shards");
         assert_eq!(sem_kind["available"].as_array().unwrap().len(), 1);
     }
@@ -2910,11 +2924,15 @@ mod undeploy_tests {
     #[tokio::test]
     async fn every_machine_is_reported_and_a_silent_one_is_not_a_success() {
         let (ok_port, ok_hits) = fake_machine(axum::http::StatusCode::OK).await;
-        let (bad_port, bad_hits) = fake_machine(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
-        let state = state_with("eu", vec![
-            peer("no-a", "ksia", ok_port, (0, 15)),
-            peer("no-b", "macbook", bad_port, (16, 31)),
-        ])
+        let (bad_port, bad_hits) =
+            fake_machine(axum::http::StatusCode::INTERNAL_SERVER_ERROR).await;
+        let state = state_with(
+            "eu",
+            vec![
+                peer("no-a", "ksia", ok_port, (0, 15)),
+                peer("no-b", "macbook", bad_port, (16, 31)),
+            ],
+        )
         .await;
 
         let resp = undeploy_endpoint(
@@ -2961,10 +2979,13 @@ mod undeploy_tests {
             let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
             l.local_addr().unwrap().port()
         };
-        let state = state_with("eu", vec![
-            peer("no-a", "ksia", ok_port, (0, 15)),
-            peer("no-b", "sumida", dead, (16, 31)),
-        ])
+        let state = state_with(
+            "eu",
+            vec![
+                peer("no-a", "ksia", ok_port, (0, 15)),
+                peer("no-b", "sumida", dead, (16, 31)),
+            ],
+        )
         .await;
 
         let body = body_of(
@@ -3372,7 +3393,11 @@ mod tests {
         ];
         let p = plan("m", &ms, Some(&sel));
         assert!(p.blocked.is_some(), "duas faixas em 'a' continua recusa");
-        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        let order: Vec<(u32, u32)> = p
+            .steps
+            .iter()
+            .map(|s| (s.start_layer, s.end_layer))
+            .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
         let positions: Vec<u32> = p.steps.iter().map(|s| s.position).collect();
         assert_eq!(positions, vec![1, 2, 3, 4], "posição é o lugar no pipeline");
@@ -3391,10 +3416,16 @@ mod tests {
             m("b", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
         ]);
         let p = plan("m", &ms, None);
-        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        let order: Vec<(u32, u32)> = p
+            .steps
+            .iter()
+            .map(|s| (s.start_layer, s.end_layer))
+            .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
 
-        let blocked = p.blocked.expect("quatro fatias para duas máquinas é recusa");
+        let blocked = p
+            .blocked
+            .expect("quatro fatias para duas máquinas é recusa");
         assert!(blocked.contains("4 fatias"), "{blocked}");
         assert!(
             !blocked.contains("ficou com duas faixas"),
@@ -3411,7 +3442,9 @@ mod tests {
         assert_eq!(sem_maquina.len(), 2);
         for s in sem_maquina {
             assert!(
-                s.problem.as_deref().is_some_and(|p| p.contains("sem máquina")),
+                s.problem
+                    .as_deref()
+                    .is_some_and(|p| p.contains("sem máquina")),
                 "{:?}",
                 s.problem
             );
@@ -3422,9 +3455,11 @@ mod tests {
     /// without a machine must not read as one machine holding both.
     #[test]
     fn two_hand_picked_ranges_without_a_machine_keep_their_own_rows() {
-        let ms = build(vec![
-            m("a", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
-        ]);
+        let ms = build(vec![m(
+            "a",
+            100_000,
+            &[(0, 7), (8, 15), (16, 23), (24, 31)],
+        )]);
         let sel = [
             pick(0, 7, "a"),
             pick(8, 15, ""),
@@ -3432,7 +3467,11 @@ mod tests {
             pick(24, 31, ""),
         ];
         let p = plan("m", &ms, Some(&sel));
-        let order: Vec<(u32, u32)> = p.steps.iter().map(|s| (s.start_layer, s.end_layer)).collect();
+        let order: Vec<(u32, u32)> = p
+            .steps
+            .iter()
+            .map(|s| (s.start_layer, s.end_layer))
+            .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
         let blocked = p.blocked.expect("faixa sem máquina é recusa");
         assert!(blocked.contains("sem máquina"), "{blocked}");
@@ -4051,7 +4090,10 @@ mod tests {
         // "puxar" à pasta de fatias de quem envia, e um modelo inteiro mora
         // quase sempre fora dela.
         assert!(
-            s.note.as_deref().unwrap_or_default().contains("Transferências"),
+            s.note
+                .as_deref()
+                .unwrap_or_default()
+                .contains("Transferências"),
             "a cópia de um modelo inteiro tem que avisar de onde ela pode sair: {:?}",
             s.note
         );
@@ -4190,8 +4232,8 @@ mod tests {
             primary_node_id: "a".into(),
             worker_node_ids: vec!["b".into()],
         };
-        let alvos =
-            launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp)).expect("dois alvos");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp))
+            .expect("dois alvos");
 
         assert_eq!(alvos.len(), 2);
 
@@ -4221,7 +4263,10 @@ mod tests {
     /// de workers.
     #[test]
     fn tp_group_checks_rejects_bad_groups() {
-        let ms = vec![whole_machine("a", 900_000, true), whole_machine("b", 900_000, true)];
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
 
         let ok = TpLaunch {
             size: 2,
@@ -4235,28 +4280,36 @@ mod tests {
             primary_node_id: "a".into(),
             worker_node_ids: vec![],
         };
-        assert!(tp_group_checks(&small, &ms, "qwen3.5-9b").unwrap().contains("2 ranks"));
+        assert!(tp_group_checks(&small, &ms, "qwen3.5-9b")
+            .unwrap()
+            .contains("2 ranks"));
 
         let ghost = TpLaunch {
             size: 2,
             primary_node_id: "zzz".into(),
             worker_node_ids: vec!["b".into()],
         };
-        assert!(tp_group_checks(&ghost, &ms, "qwen3.5-9b").unwrap().contains("não está no cluster"));
+        assert!(tp_group_checks(&ghost, &ms, "qwen3.5-9b")
+            .unwrap()
+            .contains("não está no cluster"));
 
         let count = TpLaunch {
             size: 3,
             primary_node_id: "a".into(),
             worker_node_ids: vec!["b".into()],
         };
-        assert!(tp_group_checks(&count, &ms, "qwen3.5-9b").unwrap().contains("precisa de 2 workers"));
+        assert!(tp_group_checks(&count, &ms, "qwen3.5-9b")
+            .unwrap()
+            .contains("precisa de 2 workers"));
 
         let self_worker = TpLaunch {
             size: 2,
             primary_node_id: "a".into(),
             worker_node_ids: vec!["a".into()],
         };
-        assert!(tp_group_checks(&self_worker, &ms, "qwen3.5-9b").unwrap().contains("próprio primary"));
+        assert!(tp_group_checks(&self_worker, &ms, "qwen3.5-9b")
+            .unwrap()
+            .contains("próprio primary"));
     }
 
     /// A recusa do peer é repetida ao operador, em vez de virar palpite sobre a
@@ -4269,15 +4322,15 @@ mod tests {
         assert_eq!(tp_check_verdict(&json!({ "ok": true }), "ksia"), None);
 
         assert_eq!(
-            tp_check_verdict(&json!({ "ok": false, "reason": "cabeças não dividem" }), "ksia"),
+            tp_check_verdict(
+                &json!({ "ok": false, "reason": "cabeças não dividem" }),
+                "ksia"
+            ),
             Some("cabeças não dividem".to_string())
         );
 
-        let recusa = tp_check_verdict(
-            &json!({ "error": "missing Authorization header" }),
-            "ksia",
-        )
-        .unwrap();
+        let recusa =
+            tp_check_verdict(&json!({ "error": "missing Authorization header" }), "ksia").unwrap();
         assert!(
             recusa.contains("missing Authorization header"),
             "a razão do peer tem que aparecer: {recusa}"
@@ -4405,7 +4458,10 @@ mod tests {
         let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
         let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None)
             .expect_err("o destino não tem o arquivo");
-        assert!(erro.contains("nao-tem") && erro.contains("o modelo"), "{erro}");
+        assert!(
+            erro.contains("nao-tem") && erro.contains("o modelo"),
+            "{erro}"
+        );
     }
 
     /// O caminho das fatias sai igualzinho pela mesma função - a extração não

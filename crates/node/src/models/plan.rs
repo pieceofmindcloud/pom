@@ -340,12 +340,19 @@ pub async fn extract_tp_shard(
     // já basta para regenerar.
     if let Ok(meta) = std::fs::metadata(&output) {
         if meta.len() > 1024 {
-            let carimbo = crate::gguf::read_info(&output).ok().and_then(|i| i.tp_stamp);
+            let carimbo = crate::gguf::read_info(&output)
+                .ok()
+                .and_then(|i| i.tp_stamp);
             let atual = carimbo.is_some_and(|c| {
-                c.format == crate::splitter::TP_SHARD_FORMAT && c.size == tp_size && c.rank == tp_rank
+                c.format == crate::splitter::TP_SHARD_FORMAT
+                    && c.size == tp_size
+                    && c.rank == tp_rank
             });
             if atual {
-                info!("shard de tensor já existe, reaproveitando: {}", output.display());
+                info!(
+                    "shard de tensor já existe, reaproveitando: {}",
+                    output.display()
+                );
                 return Ok(SliceOutcome {
                     output_path: output.to_string_lossy().into_owned(),
                     bytes: meta.len(),
@@ -416,7 +423,6 @@ impl SizedSlice {
 
     /// "O resto do modelo" — a conveniência que evita erro de arredondamento na
     /// última fatia.
-    #[cfg(test)]
     fn rest() -> Self {
         Self { target_mb: None }
     }
@@ -493,8 +499,12 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
                 end_layer: total_layers,
                 layers: 0,
                 bytes: 0,
-                target_mb: slice.target_mb,
-                is_rest: slice.target_mb.is_none(),
+                target_mb: if last_requested {
+                    None
+                } else {
+                    slice.target_mb
+                },
+                is_rest: slice.target_mb.is_none() || last_requested,
                 is_last: false,
                 too_small: false,
                 empty: true,
@@ -502,9 +512,9 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             continue;
         }
 
-        // "O resto" takes everything left; so does the last slice of the list
-        // when its target overshoots what remains.
-        let take_rest = slice.target_mb.is_none();
+        // "O resto" takes everything left. The final entry is always the rest,
+        // even when an older client still sends a numeric target for it.
+        let take_rest = slice.target_mb.is_none() || last_requested;
         let (end, too_small) = if take_rest {
             (total_layers - 1, false)
         } else {
@@ -553,7 +563,7 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
             end_layer: end,
             layers: end - pos + 1,
             bytes,
-            target_mb: slice.target_mb,
+            target_mb: if take_rest { None } else { slice.target_mb },
             is_rest: take_rest,
             is_last,
             too_small,
@@ -634,7 +644,11 @@ pub fn plan_equal(layout: &GgufLayout, parts: u32) -> Result<SizePlan> {
         .enumerate()
         .map(|(i, (start, end))| {
             let is_last = i == ranges.len() - 1;
-            SizedSlice::of_mb(layout.slice_bytes(*start, *end, is_last) as f64 / MB)
+            if is_last {
+                SizedSlice::rest()
+            } else {
+                SizedSlice::of_mb(layout.slice_bytes(*start, *end, false) as f64 / MB)
+            }
         })
         .collect();
     plan_by_size(layout, &slices)
@@ -859,6 +873,31 @@ mod tests {
     }
 
     #[test]
+    fn the_last_size_entry_ignores_a_target_and_takes_the_rest() {
+        let plan = plan_by_size(
+            &layout(10, 100.0),
+            &[SizedSlice::of_mb(300.0), SizedSlice::of_mb(1.0)],
+        )
+        .unwrap();
+
+        let last = plan.ranges.last().unwrap();
+        assert_eq!(last.target_mb, None);
+        assert!(last.is_rest);
+        assert_eq!(last.end_layer, 9);
+        assert!(plan.complete);
+    }
+
+    #[test]
+    fn equal_parts_leave_the_last_entry_as_rest() {
+        let plan = plan_equal(&layout(10, 100.0), 3).unwrap();
+        let last = plan.ranges.last().unwrap();
+
+        assert!(last.is_rest);
+        assert_eq!(last.target_mb, None);
+        assert_eq!(last.end_layer, 9);
+    }
+
+    #[test]
     fn warns_when_a_peer_lacks_the_model() {
         let l = layout(8, 100.0);
         let mut b = budget("b", 99000.0);
@@ -914,7 +953,10 @@ mod tests {
         let again = extract_tp_shard(whole.to_str().unwrap(), &dir, "whole", 2, 0, |_| {})
             .await
             .unwrap();
-        assert!(again.reused, "arquivo já completo é reaproveitado, não reescrito");
+        assert!(
+            again.reused,
+            "arquivo já completo é reaproveitado, não reescrito"
+        );
     }
 
     /// Shard escrito por uma regra antiga **não** é reaproveitado.
@@ -947,7 +989,9 @@ mod tests {
 
         // E o que saiu tem o carimbo da regra atual.
         let info = crate::gguf::read_info(std::path::Path::new(&outcome.output_path)).unwrap();
-        let stamp = info.tp_stamp.expect("o shard novo carimba a regra que o escreveu");
+        let stamp = info
+            .tp_stamp
+            .expect("o shard novo carimba a regra que o escreveu");
         assert_eq!(stamp.format, crate::splitter::TP_SHARD_FORMAT);
         assert_eq!((stamp.size, stamp.rank), (2, 0));
 
@@ -1030,16 +1074,16 @@ mod tests {
     }
 
     #[test]
-    fn slices_that_fall_short_report_what_is_missing() {
+    fn the_last_numeric_target_is_promoted_to_the_rest() {
         let l = layout(32, 200.0);
         let plan = plan_by_size(&l, &[SizedSlice::of_mb(1100.0)]).unwrap();
-        assert!(!plan.complete);
-        assert_eq!(plan.covered_layers, 5);
-        assert_eq!(plan.missing_range, Some((5, 31)));
-        assert!(plan.missing_bytes > 0);
+        assert!(plan.complete);
+        assert_eq!(plan.covered_layers, 32);
+        assert_eq!(plan.missing_range, None);
+        assert_eq!(plan.missing_bytes, 0);
         assert!(
             plan.warnings.is_empty(),
-            "faltar camada não é aviso solto: são números que a tela escreve numa frase só"
+            "a última entrada é o resto e fecha a cobertura"
         );
         assert!(
             !plan.blocked,
@@ -1074,11 +1118,10 @@ mod tests {
         let plan = plan_equal(&l, 4).unwrap();
         assert_eq!(plan.ranges.len(), 4);
         assert!(plan.complete && !plan.blocked);
-        for r in &plan.ranges {
+        for (i, r) in plan.ranges.iter().enumerate() {
             assert_eq!(r.layers, 8);
-            // O alvo de cada entrada é o tamanho real daquela faixa, não
-            // `total / 4` — a última carrega a cabeça e é maior.
-            assert_eq!(r.target_mb, Some(r.bytes as f64 / MB));
+            // A última entrada é o resto, mesmo no atalho de partes iguais.
+            assert_eq!(r.target_mb, (i < 3).then_some(r.bytes as f64 / MB));
         }
         assert!(plan.ranges[3].bytes > plan.ranges[0].bytes);
     }
@@ -1115,14 +1158,12 @@ mod tests {
     }
 
     #[test]
-    fn nextn_incomplete_split_warns_the_predictor_is_left_out() {
+    fn nextn_numeric_last_entry_still_carries_the_predictor() {
         let mut l = layout(32, 200.0);
         l.nextn_predict_layers = 1;
         let plan = plan_by_size(&l, &[SizedSlice::of_mb(1100.0)]).unwrap();
-        assert!(!plan.complete);
-        assert!(plan.warnings.iter().any(|w| {
-            w.contains("predictor nextn") && w.contains("tronco") && w.contains("não cobre")
-        }));
+        assert!(plan.complete);
+        assert!(plan.warnings.is_empty());
     }
 
     #[test]

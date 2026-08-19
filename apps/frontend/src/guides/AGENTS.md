@@ -17,6 +17,8 @@ em `AGENTS.md - crates/routing-base/`.
   `lead`, `p`, `h`, `steps`, `cards`, `note`, `warn`, `table`, `code`,
   `diagram`, `deep`. Guias hoje: `visao-geral`, `requisicao`,
   `fatiar-implantar`, `operar`, `acesso`.
+  Os blocos `deep` de `requisicao` e `fatiar-implantar` também apontam para
+  `docs/subsystems/paralelismo.md`, que explica quando preferir pipeline ou TP.
 - `Guide.tsx` - `GuideView`, o renderizador. Cada tipo de bloco tem **um** visual,
   decidido aqui e em nenhum outro lugar: é por isso que os guias são dados. Quem
   escreve uma página nova escolhe entre os blocos existentes e ganha espaçamento,

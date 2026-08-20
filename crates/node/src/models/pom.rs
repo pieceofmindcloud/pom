@@ -26,8 +26,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Versão do formato. Sobe quando o significado de um campo muda.
-pub const POM_VERSION: u32 = 1;
+/// Versão do formato novo. Sobe quando o significado de um campo muda.
+pub const POM_VERSION: u32 = 2;
+const LEGACY_POM_VERSION: u32 = 1;
 
 /// Extensão do manifesto.
 pub const POM_EXT: &str = "pom";
@@ -40,6 +41,8 @@ pub enum PomKind {
     Layers,
     /// Corte por tensor: cada parte é um rank da largura total.
     TensorParallel,
+    /// O manifesto contém fatias por camadas e shards de tensor.
+    Combined,
 }
 
 /// A que rank de um grupo tensor-parallel uma parte pertence.
@@ -92,6 +95,9 @@ pub struct PomManifest {
     #[serde(default)]
     pub created_by: String,
     pub parts: Vec<PomPart>,
+    /// Shards de Tensor Parallelism do mesmo GGUF original.
+    #[serde(default)]
+    pub tp_parts: Vec<PomPart>,
 }
 
 /// O identificador da rodada: sha256 sobre as partes, em ordem canônica.
@@ -133,14 +139,84 @@ impl PomManifest {
         parts: Vec<PomPart>,
     ) -> Self {
         Self {
-            pom_version: POM_VERSION,
+            // Este construtor permanece para ler e produzir fixtures do formato
+            // antigo. Os fluxos novos usam `new_for_source` abaixo.
+            pom_version: LEGACY_POM_VERSION,
             pom_id: pom_id(&parts),
             model,
             kind,
             created_at: chrono::Utc::now().to_rfc3339(),
             created_by: created_by.into(),
             parts,
+            tp_parts: Vec::new(),
         }
+    }
+
+    /// Monta um manifesto v2 identificado pelo arquivo GGUF original.
+    pub fn new_for_source(
+        model: PomModel,
+        kind: PomKind,
+        created_by: impl Into<String>,
+        source_sha256: impl Into<String>,
+        parts: Vec<PomPart>,
+    ) -> Self {
+        Self {
+            pom_version: POM_VERSION,
+            pom_id: source_sha256.into(),
+            model,
+            kind,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            created_by: created_by.into(),
+            parts,
+            tp_parts: Vec::new(),
+        }
+    }
+
+    /// Une o conhecimento de duas máquinas sobre o mesmo modelo original.
+    ///
+    /// O manifesto local é a base: uma parte que só existe nele nunca é
+    /// removida porque o peer remoto ainda não a conhece.
+    pub fn merge_from(&mut self, incoming: PomManifest) -> Result<()> {
+        if self.pom_version != POM_VERSION || incoming.pom_version != POM_VERSION {
+            bail!("merge exige manifestos v2");
+        }
+        if self.pom_id != incoming.pom_id {
+            bail!(
+                "manifestos pertencem a modelos diferentes: {} e {}",
+                &self.pom_id[..12.min(self.pom_id.len())],
+                &incoming.pom_id[..12.min(incoming.pom_id.len())]
+            );
+        }
+        self.validate()?;
+        incoming.validate()?;
+        if self.model.total_layers != incoming.model.total_layers {
+            bail!(
+                "manifestos do modelo {} declaram totais de camadas diferentes: {} e {}",
+                self.model.name,
+                self.model.total_layers,
+                incoming.model.total_layers
+            );
+        }
+        if self.model.quant.is_some()
+            && incoming.model.quant.is_some()
+            && self.model.quant != incoming.model.quant
+        {
+            bail!(
+                "manifestos do modelo {} declaram quantizações diferentes",
+                self.model.name
+            );
+        }
+
+        merge_parts(&mut self.parts, incoming.parts, "parts")?;
+        merge_parts(&mut self.tp_parts, incoming.tp_parts, "tp_parts")?;
+        if self.model.label.trim().is_empty() {
+            self.model.label = incoming.model.label;
+        }
+        if self.created_by.trim().is_empty() {
+            self.created_by = incoming.created_by;
+        }
+        self.kind = kind_for(&self.parts, &self.tp_parts);
+        self.validate()
     }
 
     /// As partes cobrem `0..total_layers` sem buraco nem sobreposição?
@@ -148,34 +224,35 @@ impl PomManifest {
     /// Um manifesto incompleto é legítimo enquanto a rodada não terminou; quem
     /// implanta é que não pode subir um pipeline furado.
     pub fn complete(&self) -> bool {
-        if self.kind == PomKind::TensorParallel {
-            let Some(size) = self.parts.first().and_then(|p| p.tp).map(|t| t.size) else {
-                return false;
-            };
-            let mut ranks: Vec<u32> = self
+        if self.pom_version == LEGACY_POM_VERSION && self.kind == PomKind::TensorParallel {
+            return tp_complete_from(&self.parts, None);
+        }
+        let mut proxima = 0u32;
+        loop {
+            let Some(fim) = self
                 .parts
                 .iter()
-                .filter_map(|p| p.tp)
-                .map(|t| t.rank)
-                .collect();
-            ranks.sort_unstable();
-            ranks.dedup();
-            return ranks.len() as u32 == size;
-        }
-        let mut faixas: Vec<(u32, u32)> = self
-            .parts
-            .iter()
-            .map(|p| (p.start_layer, p.end_layer))
-            .collect();
-        faixas.sort_unstable();
-        let mut proxima = 0u32;
-        for (inicio, fim) in faixas {
-            if inicio != proxima {
+                .filter(|p| p.start_layer == proxima)
+                .map(|p| p.end_layer)
+                .max()
+            else {
                 return false;
+            };
+            proxima = fim.saturating_add(1);
+            if proxima >= self.model.total_layers {
+                return proxima == self.model.total_layers;
             }
-            proxima = fim + 1;
         }
-        proxima == self.model.total_layers
+    }
+
+    /// Diz se um grupo TP de tamanho `size` tem todos os ranks.
+    pub fn tp_complete(&self, size: u32) -> bool {
+        let partes = if self.pom_version == LEGACY_POM_VERSION {
+            &self.parts
+        } else {
+            &self.tp_parts
+        };
+        tp_complete_from(partes, Some(size))
     }
 
     /// Confere o que dá para conferir sem ler os arquivos.
@@ -189,10 +266,10 @@ impl PomManifest {
         if self.model.name.trim().is_empty() {
             bail!("manifesto sem nome de modelo");
         }
-        if self.parts.is_empty() {
+        if self.parts.is_empty() && self.tp_parts.is_empty() {
             bail!("manifesto sem partes");
         }
-        for p in &self.parts {
+        for p in self.parts.iter().chain(self.tp_parts.iter()) {
             if !is_sha256_hex(&p.sha256) {
                 bail!("parte com hash inválido: {:?}", p.sha256);
             }
@@ -205,18 +282,81 @@ impl PomManifest {
                 );
             }
         }
-        // O `pom_id` é derivado, então um arquivo em que ele não bate foi
-        // editado à mão ou truncado no meio de uma gravação.
-        let esperado = pom_id(&self.parts);
-        if self.pom_id != esperado {
+        if self.pom_version == LEGACY_POM_VERSION {
+            // O formato antigo derivava o id da lista de partes.
+            let esperado = pom_id(&self.parts);
+            if self.pom_id != esperado {
+                bail!(
+                    "pom_id não confere: o arquivo diz {}, as partes dão {}",
+                    &self.pom_id[..12.min(self.pom_id.len())],
+                    &esperado[..12]
+                );
+            }
+            return Ok(());
+        }
+        if self.pom_version != POM_VERSION || !is_sha256_hex(&self.pom_id) {
+            bail!("pom_id v2 inválido: {:?}", self.pom_id);
+        }
+        if self.parts.iter().any(|p| p.tp.is_some()) {
+            bail!("parts não pode conter shards de Tensor Parallelism");
+        }
+        if self.tp_parts.iter().any(|p| p.tp.is_none()) {
+            bail!("tp_parts exige rank e tamanho do grupo TP");
+        }
+        let esperado = kind_for(&self.parts, &self.tp_parts);
+        if self.kind != esperado {
             bail!(
-                "pom_id não confere: o arquivo diz {}, as partes dão {}",
-                &self.pom_id[..12.min(self.pom_id.len())],
-                &esperado[..12]
+                "kind do manifesto não confere com as partes: {:?}, esperado {:?}",
+                self.kind,
+                esperado
             );
         }
         Ok(())
     }
+}
+
+fn kind_for(parts: &[PomPart], tp_parts: &[PomPart]) -> PomKind {
+    match (parts.is_empty(), tp_parts.is_empty()) {
+        (false, true) => PomKind::Layers,
+        (true, false) => PomKind::TensorParallel,
+        (false, false) => PomKind::Combined,
+        (true, true) => PomKind::Layers,
+    }
+}
+
+fn merge_parts(target: &mut Vec<PomPart>, incoming: Vec<PomPart>, field: &str) -> Result<()> {
+    for part in incoming {
+        if let Some(existing) = target.iter().find(|p| p.sha256 == part.sha256) {
+            if existing != &part {
+                bail!(
+                    "{field} tem metadados diferentes para a parte {}",
+                    &part.sha256[..12]
+                );
+            }
+            continue;
+        }
+        target.push(part);
+    }
+    target.sort_by(|a, b| {
+        (a.start_layer, a.end_layer, &a.sha256).cmp(&(b.start_layer, b.end_layer, &b.sha256))
+    });
+    Ok(())
+}
+
+fn tp_complete_from(parts: &[PomPart], requested_size: Option<u32>) -> bool {
+    let Some(size) = requested_size.or_else(|| parts.first().and_then(|p| p.tp).map(|t| t.size))
+    else {
+        return false;
+    };
+    let mut ranks: Vec<u32> = parts
+        .iter()
+        .filter_map(|p| p.tp)
+        .filter(|tp| tp.size == size)
+        .map(|tp| tp.rank)
+        .collect();
+    ranks.sort_unstable();
+    ranks.dedup();
+    ranks == (0..size).collect::<Vec<_>>()
 }
 
 /// Um hash é um hash: 64 dígitos hex minúsculos e nada mais.
@@ -267,18 +407,109 @@ pub fn run_dir(shard_dir: &Path, model_name: &str, pom_id: &str) -> PathBuf {
     ))
 }
 
+/// A pasta v2 identificada pelo hash completo do GGUF original.
+pub fn source_run_dir(shard_dir: &Path, model_name: &str, source_sha256: &str) -> PathBuf {
+    shard_dir.join(format!(
+        "{}-{}",
+        sanitize_name(model_name),
+        short_id(source_sha256)
+    ))
+}
+
+/// Procura a pasta v2 pelo hash completo, sem confiar no nome legível.
+pub fn locate_source_dir(shard_dir: &Path, source_sha256: &str) -> Option<PathBuf> {
+    if !is_sha256_hex(source_sha256) {
+        return None;
+    }
+    for entry in std::fs::read_dir(shard_dir).ok()?.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if load_dir(&path)
+            .iter()
+            .any(|m| m.pom_version == POM_VERSION && m.pom_id == source_sha256)
+        {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// A pasta da rodada que este manifesto descreve.
 pub fn dir_for(shard_dir: &Path, m: &PomManifest) -> PathBuf {
-    run_dir(shard_dir, &m.model.name, &m.pom_id)
+    if m.pom_version == POM_VERSION {
+        source_run_dir(shard_dir, &m.model.name, &m.pom_id)
+    } else {
+        run_dir(shard_dir, &m.model.name, &m.pom_id)
+    }
 }
 
 /// O arquivo do manifesto dentro da pasta da rodada.
 pub fn manifest_path(model_dir: &Path, m: &PomManifest) -> PathBuf {
-    model_dir.join(format!(
-        "{}-{}.{POM_EXT}",
-        sanitize_name(&m.model.name),
-        short_id(&m.pom_id)
-    ))
+    if m.pom_version == POM_VERSION {
+        model_dir.join(format!("model.{POM_EXT}"))
+    } else {
+        model_dir.join(format!(
+            "{}-{}.{POM_EXT}",
+            sanitize_name(&m.model.name),
+            short_id(&m.pom_id)
+        ))
+    }
+}
+
+struct PomLock(PathBuf);
+
+impl Drop for PomLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
+    }
+}
+
+fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
+    std::fs::create_dir_all(shard_dir)
+        .with_context(|| format!("criar diretório de fatias {}", shard_dir.display()))?;
+    let path = shard_dir.join(format!(".pom-{source_sha256}.lock"));
+    for _ in 0..500 {
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => return Ok(PomLock(path)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(e).with_context(|| format!("criar lock {}", path.display())),
+        }
+    }
+    bail!(
+        "tempo esgotado esperando o lock do manifesto {}",
+        source_sha256
+    )
+}
+
+/// Mescla um manifesto v2 no inventário local do mesmo modelo original.
+pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathBuf, PomManifest)> {
+    if incoming.pom_version != POM_VERSION {
+        bail!("merge exige manifesto v2");
+    }
+    incoming.validate()?;
+    let _lock = acquire_pom_lock(shard_dir, &incoming.pom_id)?;
+    let destino = locate_source_dir(shard_dir, &incoming.pom_id)
+        .unwrap_or_else(|| source_run_dir(shard_dir, &incoming.model.name, &incoming.pom_id));
+    std::fs::create_dir_all(&destino)
+        .with_context(|| format!("criar diretório do modelo {}", destino.display()))?;
+
+    let existente = load_dir(&destino)
+        .into_iter()
+        .find(|m| m.pom_version == POM_VERSION && m.pom_id == incoming.pom_id);
+    let mut agregado = existente.unwrap_or_else(|| incoming.clone());
+    if agregado.parts != incoming.parts || agregado.tp_parts != incoming.tp_parts {
+        agregado.merge_from(incoming.clone())?;
+    }
+    write_atomic(&destino, &agregado)?;
+    Ok((destino, agregado))
 }
 
 /// Move as partes de uma pasta de trabalho para a pasta definitiva da rodada e
@@ -294,10 +525,15 @@ pub fn manifest_path(model_dir: &Path, m: &PomManifest) -> PathBuf {
 /// ficam onde estão e as repetidas são descartadas: são byte a byte as mesmas.
 pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    let destino = dir_for(shard_dir, m);
+    let destino = if m.pom_version == POM_VERSION {
+        locate_source_dir(shard_dir, &m.pom_id)
+            .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id))
+    } else {
+        dir_for(shard_dir, m)
+    };
     std::fs::create_dir_all(&destino).with_context(|| format!("criar {}", destino.display()))?;
 
-    for parte in &m.parts {
+    for parte in m.parts.iter().chain(m.tp_parts.iter()) {
         let de = part_path(temp, &parte.sha256)?;
         let para = part_path(&destino, &parte.sha256)?;
         if !de.is_file() {
@@ -313,6 +549,11 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
             .with_context(|| format!("mover {} para {}", de.display(), para.display()))?;
     }
 
+    if m.pom_version == POM_VERSION {
+        let (destino, _) = merge_manifest(shard_dir, m)?;
+        let _ = std::fs::remove_dir(temp);
+        return Ok(destino);
+    }
     write_atomic(&destino, m)?;
     // A pasta de trabalho só some se estiver vazia: um arquivo inesperado ali
     // é sinal de defeito, e apagá-lo escondería a evidência.
@@ -472,6 +713,61 @@ pub fn hash_file(path: &Path) -> Result<(String, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn hash(seed: &str) -> String {
+        seed.repeat(64 / seed.len())
+    }
+
+    fn layer_part(seed: &str, start: u32, end: u32) -> PomPart {
+        PomPart {
+            sha256: hash(seed),
+            bytes: 1000,
+            start_layer: start,
+            end_layer: end,
+            is_first: start == 0,
+            is_last: false,
+            tp: None,
+        }
+    }
+
+    fn tp_part(seed: &str, rank: u32, size: u32) -> PomPart {
+        PomPart {
+            sha256: hash(seed),
+            bytes: 1000,
+            start_layer: 0,
+            end_layer: 31,
+            is_first: true,
+            is_last: true,
+            tp: Some(PomTp { rank, size }),
+        }
+    }
+
+    fn source_manifest(
+        source_seed: &str,
+        parts: Vec<PomPart>,
+        tp_parts: Vec<PomPart>,
+    ) -> PomManifest {
+        let kind = match (parts.is_empty(), tp_parts.is_empty()) {
+            (false, true) => PomKind::Layers,
+            (true, false) => PomKind::TensorParallel,
+            (false, false) => PomKind::Combined,
+            (true, true) => PomKind::Layers,
+        };
+        let mut manifest = PomManifest::new_for_source(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            kind,
+            "no-1",
+            hash(source_seed),
+            parts,
+        );
+        manifest.tp_parts = tp_parts;
+        manifest
+    }
 
     fn parte(sha: &str, inicio: u32, fim: u32) -> PomPart {
         PomPart {
@@ -647,5 +943,91 @@ mod tests {
         assert!(!trabalho.exists(), "a pasta de trabalho não fica para trás");
 
         std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    #[test]
+    fn v2_pom_id_e_o_hash_do_modelo_original() {
+        let model_hash = hash("a");
+        let manifest = PomManifest::new_for_source(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            "node-1",
+            model_hash.clone(),
+            vec![layer_part("b", 0, 7)],
+        );
+
+        assert_eq!(manifest.pom_version, 2);
+        assert_eq!(manifest.pom_id, model_hash);
+        manifest.validate().unwrap();
+    }
+
+    #[test]
+    fn merge_preserva_alternativas_locais_e_adiciona_tp_parts() {
+        let mut local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
+        let remote = source_manifest("a", vec![layer_part("c", 0, 3)], vec![tp_part("d", 0, 2)]);
+
+        local.merge_from(remote).unwrap();
+
+        assert_eq!(local.parts.len(), 2);
+        assert_eq!(local.tp_parts.len(), 1);
+        assert!(local
+            .parts
+            .iter()
+            .any(|p| p.start_layer == 0 && p.end_layer == 7));
+        assert!(local
+            .parts
+            .iter()
+            .any(|p| p.start_layer == 0 && p.end_layer == 3));
+        assert_eq!(local.kind, PomKind::Combined);
+    }
+
+    #[test]
+    fn merge_repetido_nao_duplica_sha() {
+        let part = layer_part("b", 0, 7);
+        let mut local = source_manifest("a", vec![part.clone()], vec![]);
+        local
+            .merge_from(source_manifest("a", vec![part], vec![]))
+            .unwrap();
+        assert_eq!(local.parts.len(), 1);
+    }
+
+    #[test]
+    fn merge_manifest_reusa_a_pasta_quando_o_nome_legivel_muda() {
+        let raiz =
+            std::env::temp_dir().join(format!("pom-source-{}", uuid::Uuid::new_v4().simple()));
+        let local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
+        let local_dir = source_run_dir(&raiz, "nome-antigo", &local.pom_id);
+        std::fs::create_dir_all(&local_dir).unwrap();
+        write_atomic(&local_dir, &local).unwrap();
+
+        let incoming = source_manifest("a", vec![layer_part("c", 0, 3)], vec![]);
+        let (merged_dir, merged) = merge_manifest(&raiz, &incoming).unwrap();
+
+        assert_eq!(merged_dir, local_dir);
+        assert_eq!(merged.parts.len(), 2);
+        assert_eq!(load_dir(&local_dir).len(), 1);
+        std::fs::remove_dir_all(&raiz).unwrap();
+    }
+
+    #[test]
+    fn merge_manifest_preserva_o_conteudo_local() {
+        let raiz =
+            std::env::temp_dir().join(format!("pom-merge-{}", uuid::Uuid::new_v4().simple()));
+        let local = source_manifest("a", vec![layer_part("b", 0, 7)], vec![]);
+        let local_dir = source_run_dir(&raiz, "qwen3-8b", &local.pom_id);
+        std::fs::create_dir_all(&local_dir).unwrap();
+        write_atomic(&local_dir, &local).unwrap();
+
+        let incoming = source_manifest("a", vec![layer_part("c", 0, 3)], vec![]);
+        let (_, merged) = merge_manifest(&raiz, &incoming).unwrap();
+
+        assert!(merged.parts.iter().any(|p| p.sha256 == hash("b")));
+        assert!(merged.parts.iter().any(|p| p.sha256 == hash("c")));
+        std::fs::remove_dir_all(&raiz).unwrap();
     }
 }

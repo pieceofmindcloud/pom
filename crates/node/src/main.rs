@@ -657,6 +657,8 @@ async fn main() -> Result<()> {
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
+    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
+        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -676,10 +678,11 @@ async fn main() -> Result<()> {
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        Some(auth_config.clone()),
     );
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
@@ -737,11 +740,9 @@ async fn main() -> Result<()> {
 
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
-        let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
-            Arc::new(tokio::sync::RwLock::new(app_config.clone()));
-
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_auth_state(auth_config.clone());
         // A catraca do TLS: escuta o gatilho do gossip e confirma a política
         // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
         tls_policy::spawn_ratchet(
@@ -1291,10 +1292,12 @@ async fn start_gateway_only(
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls(
+    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        Some(auth_state.clone()),
     );
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
@@ -1321,8 +1324,7 @@ async fn start_gateway_only(
 
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
-
-    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
+    peer_clients.set_auth_state(auth_state.clone());
 
     tls_policy::spawn_ratchet(
         net.clone(),

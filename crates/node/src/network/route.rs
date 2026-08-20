@@ -5,6 +5,8 @@
 //! A decisao mora aqui, sozinha e pura, porque errar nela nao da erro: o no
 //! sobe, aparece no cluster, e a requisicao morre calada no primeiro salto.
 
+use serde::{Deserialize, Serialize};
+
 /// Quanto o candidato novo precisa ser melhor para valer a troca.
 ///
 /// As duas condicoes valem juntas. A relativa sozinha trocaria de rota entre
@@ -235,6 +237,94 @@ impl RouteTable {
     }
 }
 
+/// Uma medição de latência de ida e volta partindo deste nó para um destino.
+/// O sentido inverso é outra medição, mantida pelo processo remoto.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RttMeasurement {
+    pub target_node_id: String,
+    pub rtt_ms: f64,
+    /// `libp2p` é o transporte normal. `direct-health` identifica o fallback
+    /// usado quando o peer ainda não oferece o túnel novo.
+    pub transport: String,
+}
+
+struct RttEntry {
+    measurement: RttMeasurement,
+    measured_at: Instant,
+}
+
+/// RTTs direcionais medidos por este processo.
+///
+/// Não é uma tabela de menor caminho. Cada entrada é uma medição direta
+/// `origem -> destino`; nunca se infere uma aresta pela soma de outras.
+#[derive(Default)]
+pub struct RttTable {
+    por_destino: RwLock<HashMap<String, RttEntry>>,
+}
+
+impl RttTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Vec<RttMeasurement> {
+        let mut medidas = self
+            .por_destino
+            .read()
+            .map(|t| {
+                t.values()
+                    .map(|entry| entry.measurement.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        medidas.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+        medidas
+    }
+
+    pub fn precisa_medir(&self, node_id: &str) -> bool {
+        self.por_destino
+            .read()
+            .map(|t| match t.get(node_id) {
+                Some(entry) => entry.measured_at.elapsed() >= RTT_INTERVALO_MEDICAO,
+                None => true,
+            })
+            .unwrap_or(true)
+    }
+
+    pub fn remember(&self, node_id: &str, rtt_ms: f64, transport: &str) {
+        if !rtt_ms.is_finite() || rtt_ms < 0.0 {
+            return;
+        }
+        if let Ok(mut t) = self.por_destino.write() {
+            t.insert(
+                node_id.to_string(),
+                RttEntry {
+                    measurement: RttMeasurement {
+                        target_node_id: node_id.to_string(),
+                        rtt_ms,
+                        transport: transport.to_string(),
+                    },
+                    measured_at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    pub fn mark_failure(&self, node_id: &str) {
+        if let Ok(mut t) = self.por_destino.write() {
+            t.remove(node_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn remember_for_test(&self, node_id: &str, rtt_ms: f64, transport: &str) {
+        self.remember(node_id, rtt_ms, transport);
+    }
+}
+
+/// A medição direcional é renovada junto com a rota de endereçamento.
+const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
+
 #[cfg(test)]
 pub mod tests_support {
     use axum::{routing::get, Router};
@@ -330,6 +420,30 @@ mod tests {
             rtt_ms: None,
         }];
         assert!(choose_route(&medidas, Some("a:1")).is_none());
+    }
+
+    #[test]
+    fn rtt_table_keeps_directional_measurements_and_transport() {
+        let table = RttTable::new();
+        table.remember_for_test("peer-b", 12.5, "libp2p");
+        table.remember_for_test("peer-c", 30.0, "direct-health");
+
+        assert_eq!(
+            table.snapshot(),
+            vec![
+                RttMeasurement {
+                    target_node_id: "peer-b".into(),
+                    rtt_ms: 12.5,
+                    transport: "libp2p".into(),
+                },
+                RttMeasurement {
+                    target_node_id: "peer-c".into(),
+                    rtt_ms: 30.0,
+                    transport: "direct-health".into(),
+                },
+            ]
+        );
+        assert!(table.precisa_medir("peer-d"));
     }
 
     /// Empate exato entre dois candidatos sem rota atual: vence a ordem

@@ -1034,11 +1034,14 @@ pub async fn step(
         // (ver o comentário logo acima sobre o túnel), então a resolução do
         // cliente pinado tem que ser feita aqui também.
         let cliente = http.for_peer(&peer.node_id)?;
-        let resp = cliente
+        let request = cliente
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body)
-            .timeout(Duration::from_secs(600))
+            .timeout(Duration::from_secs(600));
+        let resp = http
+            .authorize_inference_request(request)
+            .await
             .send()
             .await
             .map_err(|e| {

@@ -113,7 +113,8 @@ Per-file list:
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
 - `DeployModel` sends `deployment_name`, `strategy` and `preferred_node_ids` to
-  the planner. The map is explanatory: RTT/capacity/load come from the plan;
+  the planner. The map is explanatory: capacity/load come from the live
+  cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
   in whole-model mode, adding a peer also appends an explicit full-model replica;
   in tensor mode, adding a peer makes it eligible for a rank but never adds an
@@ -121,7 +122,7 @@ Per-file list:
   assigning a range is what validates a new selection. Removing a card deletes
   that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
   canvas do Painel, desenha nós por faixa, pontes somente entre estágios
-  consecutivos e alternativas com RTT, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
+  consecutivos e alternativas com RTT direcional, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
   repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
   um peer disponível ao plano; a atribuição de uma faixa disponível edita
   somente aquela seleção e volta ao backend para validação.

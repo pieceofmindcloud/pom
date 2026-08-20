@@ -1,5 +1,7 @@
 //! libp2p request-response protocol carrying inference HTTP calls, as a
-//! NAT-traversal fallback for peers a hop can't reach with plain `reqwest`.
+//! Transporte preferencial de inferência para peers alcançados pelo swarm.
+//! Quando o túnel não está disponível ou falha por transporte, o chamador usa
+//! o cliente direto pinado como fallback.
 //!
 //! Mirrors `bitswap.rs`'s shape ([4-byte BE length][JSON payload] framing
 //! over an `AsyncRead`/`AsyncWrite` stream), but carries one generic
@@ -22,18 +24,46 @@ use tokio::sync::{mpsc, oneshot};
 
 pub const INFER_TUNNEL_PROTOCOL: &str = "/pom/infer-tunnel/1.0.0";
 
-/// A single generic HTTP call, forwarded to the receiving peer's own
+/// A single generic inference call, forwarded to the receiving peer's own
 /// loopback inference server (`http://127.0.0.1:<inference_port><path>`)
 /// once it arrives — see `discovery.rs`'s handling of
 /// `DiscBehaviourEvent::InferTunnel`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TunnelRequest {
+    /// Método HTTP a ser usado no loopback do peer. Peers antigos não enviam
+    /// esse campo e continuam sendo tratados como chamadas POST.
+    #[serde(default = "default_method")]
+    pub method: String,
     pub path: String,
     pub body: Vec<u8>,
     /// Cabeçalhos necessários por rotas que não carregam seu metadado no corpo
     /// (por exemplo, a barreira do reduce TP).
     #[serde(default)]
     pub headers: Vec<(String, String)>,
+}
+
+fn default_method() -> String {
+    "POST".to_string()
+}
+
+impl TunnelRequest {
+    pub fn post(path: impl Into<String>, body: Vec<u8>, headers: Vec<(String, String)>) -> Self {
+        Self {
+            method: "POST".to_string(),
+            path: path.into(),
+            body,
+            headers,
+        }
+    }
+
+    pub fn get(path: impl Into<String>) -> Self {
+        Self {
+            method: "GET".to_string(),
+            path: path.into(),
+            body: Vec::new(),
+            headers: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -187,6 +217,38 @@ pub fn tunnel_sender() -> Option<&'static TunnelOutboundSender> {
     TUNNEL_SENDER.get()
 }
 
+/// Mede a latência de ida e volta entre este nó e um peer pelo mesmo caminho
+/// libp2p/Noise usado para transportar os frames de inferência.
+///
+/// O endpoint remoto é `/health` no loopback do peer. Assim a medição inclui
+/// somente o transporte e o encaminhamento local, sem carregar o custo de
+/// prefill, decode ou transferência de estado oculto. A medição é direcional:
+/// cada processo registra apenas o tempo da sua própria origem.
+pub async fn measure_rtt(
+    sender: &TunnelOutboundSender,
+    peer_id: PeerId,
+    timeout: Duration,
+) -> Option<f64> {
+    let (reply, response) = oneshot::channel();
+    let started = std::time::Instant::now();
+    sender
+        .send(TunnelOutbound {
+            peer_id,
+            request: TunnelRequest::get("/health"),
+            reply,
+        })
+        .await
+        .ok()?;
+
+    let Ok(Ok(Ok(response))) = tokio::time::timeout(timeout, response).await else {
+        return None;
+    };
+    if !(200..300).contains(&response.status) {
+        return None;
+    }
+    Some(started.elapsed().as_secs_f64() * 1000.0)
+}
+
 /// A real swarm speaking this protocol, wired to a real `TunnelOutboundSender`:
 /// the same pairing `Discovery::run` provides in production, reduced to the one
 /// behaviour under test.
@@ -267,19 +329,21 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
 /// current, always-correct entry point stays the real Axum server; this is
 /// just a same-machine hop in front of it, at a sub-millisecond cost.
 ///
-/// Every real caller (`relay::send_frame_via_tunnel`, mirroring
-/// `relay::send_frame`) only ever POSTs a wire-encoded frame, so this always
-/// POSTs too — it is not a general HTTP-over-libp2p proxy.
+/// Frames de inferência continuam sendo POSTs. A única exceção é o GET curto
+/// de `/health` usado pela medição direcional de RTT.
 pub async fn serve_loopback(
     http: &reqwest::Client,
     inference_port: u16,
     request: TunnelRequest,
 ) -> TunnelResponse {
     let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
-    let mut request_builder = http
-        .post(&url)
-        .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-        .body(request.body);
+    let mut request_builder = if request.method.eq_ignore_ascii_case("GET") {
+        http.get(&url)
+    } else {
+        http.post(&url)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(request.body)
+    };
     for (name, value) in request.headers {
         request_builder = request_builder.header(name, value);
     }
@@ -316,11 +380,7 @@ mod tests {
     async fn a_tunnel_request_round_trips_through_the_codec() {
         let mut codec = InferTunnelCodec;
         let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
-        let req = TunnelRequest {
-            path: "/v1/prefill".to_string(),
-            body: vec![1, 2, 3, 4, 5],
-            headers: Vec::new(),
-        };
+        let req = TunnelRequest::post("/v1/prefill", vec![1, 2, 3, 4, 5], Vec::new());
 
         let mut buf = Vec::new();
         codec
@@ -370,11 +430,7 @@ mod tests {
     async fn an_empty_body_round_trips_cleanly() {
         let mut codec = InferTunnelCodec;
         let protocol = StreamProtocol::new(INFER_TUNNEL_PROTOCOL);
-        let req = TunnelRequest {
-            path: "/health".to_string(),
-            body: vec![],
-            headers: Vec::new(),
-        };
+        let req = TunnelRequest::get("/health");
 
         let mut buf = Vec::new();
         codec
@@ -389,6 +445,7 @@ mod tests {
             .expect("read_request");
 
         assert_eq!(decoded.path, "/health");
+        assert_eq!(decoded.method, "GET");
         assert!(decoded.body.is_empty());
     }
 
@@ -437,6 +494,28 @@ mod tests {
         port
     }
 
+    async fn spawn_fake_health_server() -> u16 {
+        use axum::{routing::get, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route("/health", get(|| async { "ok" }));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn serve_loopback_uses_get_for_the_rtt_probe() {
+        let port = spawn_fake_health_server().await;
+        let response =
+            serve_loopback(&reqwest::Client::new(), port, TunnelRequest::get("/health")).await;
+
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"ok");
+    }
+
     #[tokio::test]
     async fn serve_loopback_forwards_the_body_and_carries_back_the_response() {
         let port = spawn_fake_inference_server(|body| {
@@ -449,11 +528,7 @@ mod tests {
         let response = serve_loopback(
             &http,
             port,
-            TunnelRequest {
-                path: "/v1/step".to_string(),
-                body: b"the request body".to_vec(),
-                headers: Vec::new(),
-            },
+            TunnelRequest::post("/v1/step", b"the request body".to_vec(), Vec::new()),
         )
         .await;
 
@@ -469,11 +544,7 @@ mod tests {
         let response = serve_loopback(
             &http,
             port,
-            TunnelRequest {
-                path: "/v1/step".to_string(),
-                body: vec![],
-                headers: Vec::new(),
-            },
+            TunnelRequest::post("/v1/step", vec![], Vec::new()),
         )
         .await;
 
@@ -497,11 +568,7 @@ mod tests {
         let response = serve_loopback(
             &http,
             port,
-            TunnelRequest {
-                path: "/v1/step".to_string(),
-                body: vec![],
-                headers: Vec::new(),
-            },
+            TunnelRequest::post("/v1/step", vec![], Vec::new()),
         )
         .await;
 
@@ -560,14 +627,9 @@ mod tests {
 
         swarm.add_peer_address(peer_id, addr.clone());
         swarm.dial(addr).expect("dial");
-        let id = swarm.behaviour_mut().send_request(
-            &peer_id,
-            TunnelRequest {
-                path: path.clone(),
-                body: Vec::new(),
-                headers: Vec::new(),
-            },
-        );
+        let id = swarm
+            .behaviour_mut()
+            .send_request(&peer_id, TunnelRequest::get(path.clone()));
 
         let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
         loop {

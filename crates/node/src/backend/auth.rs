@@ -11,6 +11,20 @@ use tokio::sync::RwLock;
 
 pub type AuthState = Arc<RwLock<Config>>;
 
+/// Valida o token que pode atravessar a porta de inferência.
+///
+/// A chave de conexão é compartilhada por todos os nós do cluster. As API
+/// keys são a alternativa para clientes que já chegam autenticados pela
+/// superfície OpenAI/Anthropic. Não aceitar string vazia evita que um nó em
+/// modo setup trate uma requisição sem credencial como autenticada.
+pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
+    (!config.connection_key.is_empty() && token == config.connection_key)
+        || config
+            .api_keys
+            .iter()
+            .any(|key| key.active && token == key.key)
+}
+
 pub struct ConnectionAuth;
 
 #[derive(Debug)]
@@ -128,5 +142,45 @@ mod tests {
 
         let resp = AuthRejection::InvalidKey.into_response();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[test]
+    fn inference_accepts_connection_key_or_active_api_key_only() {
+        let cfg = crate::config::Config {
+            role: crate::config::Role::Principal,
+            connection_key: "cluster-secret".into(),
+            gateway_port: 8080,
+            p2p_port: 42777,
+            inference_port: Some(8181),
+            bootstrap_nodes: vec![],
+            advertise_addr: None,
+            api_keys: vec![
+                crate::config::ApiKey {
+                    key: "sk-active".into(),
+                    label: "test".into(),
+                    node_id: String::new(),
+                    active: true,
+                    created_at: String::new(),
+                },
+                crate::config::ApiKey {
+                    key: "sk-revoked".into(),
+                    label: "revoked".into(),
+                    node_id: String::new(),
+                    active: false,
+                    created_at: String::new(),
+                },
+            ],
+            blocked_nodes: vec![],
+            tls_required: false,
+            model_dirs: None,
+            shard_dir: None,
+            shard_max_gb: 1.0,
+            node_name: None,
+        };
+
+        assert!(is_valid_inference_token(&cfg, "cluster-secret"));
+        assert!(is_valid_inference_token(&cfg, "sk-active"));
+        assert!(!is_valid_inference_token(&cfg, "sk-revoked"));
+        assert!(!is_valid_inference_token(&cfg, "wrong"));
     }
 }

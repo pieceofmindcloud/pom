@@ -985,10 +985,13 @@ async fn release_sessions(
             warn!("sem cliente para liberar sessão em {}", step.node_id);
             continue;
         };
-        match http
+        let request = http
             .post(&url)
             .json(&serde_json::json!({ "session_id": session_id }))
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(10));
+        match clients
+            .authorize_inference_request(request)
+            .await
             .send()
             .await
         {
@@ -1030,17 +1033,15 @@ async fn rollback_sessions(
             all_ok = false;
             continue;
         };
-        match cliente
+        let request = cliente
             .post(&url)
             .json(&serde_json::json!({
                 "session_id": session_id,
                 "accept_count": accept_count,
                 "batch_width": batch_width,
             }))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
+            .timeout(Duration::from_secs(10));
+        match http.authorize_inference_request(request).await.send().await {
             Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                 Ok(body) => {
                     if !body

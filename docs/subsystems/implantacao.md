@@ -157,9 +157,12 @@ timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
   GPU primeiro e RAM como capacidade de contingência. `mem_free_mb` continua
   sendo a capacidade efetiva usada pelas verificações do planner: VRAM discreta
   quando disponível, senão RAM.
-- `rtt_ms` vem da `RouteTable` local; `0` identifica o próprio nó e `null` quer
-  dizer que ainda não houve medição. `load` é a quantidade de requisições em
-  andamento observada pelo `LoadTracker`.
+- `rtt_ms` da máquina é a medição vista pelo gateway para orientar a escolha
+  automática; `0` identifica o próprio nó e `null` quer dizer que ainda não
+  houve medição. As arestas de `route_options` usam uma matriz separada e
+  direcional, agregada dos relatórios `/api/ui/network/rtt`, para não exibir a
+  latência de um terceiro peer como se fosse o hop real. `load` é a quantidade
+  de requisições em andamento observada pelo `LoadTracker`.
 - `label()` - hostname, ou os primeiros 12 caracteres do `node_id` quando o
   hostname é vazio ou repetido.
 
@@ -219,8 +222,9 @@ os dois números de engenharia que derivam de `params` (`prompt_tokens` e
 `chunk_tokens`, das mesmas fórmulas do gateway - `prompt_budget_of` e
 `prompt_chunk_of`), `deployment_name`, `strategy`, `route_options` e
 `load_distribution`. `route_options` mostra somente a ponte entre máquinas
-selecionadas em estágios consecutivos, com o RTT conhecido para o próximo
-estágio; não inventa latência quando a rota ainda não foi medida. Réplicas
+selecionadas em estágios consecutivos, com o RTT direcional conhecido para o
+próximo estágio; não inventa latência quando a origem não publicou a rota.
+Réplicas
 exatas não criam um hop extra: pertencem ao mesmo estágio e o roteador de
 inferência escolhe a cópia com menor RTT medido, equilibrando também a carga em
 voo. `load_distribution` separa carga atual de carga projetada pelo plano, sem

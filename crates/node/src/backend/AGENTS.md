@@ -20,6 +20,8 @@ behind an auth extractor.
 - `auth.rs` (132) - auth extractors. `ConnectionAuth` (connection-key bearer
   only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, either
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
+  `is_valid_inference_token` aplica a mesma regra na porta 8181: a
+  `connection_key` compartilhada ou uma API key ativa.
 - `gateway.rs` (1542) - `GatewayState`, `start_gateway`, `generate_stream` /
   `generate_blocking` / `spawn_logged_generation`, prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
@@ -31,7 +33,7 @@ behind an auth extractor.
   storage paths and slice retention.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
-  capacidade, estratégias simples/completa, cobertura, RTT, carga projetada,
+  capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
   `route_options` liga somente máquinas selecionadas em estágios consecutivos;
@@ -123,7 +125,8 @@ behind an auth extractor.
   (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
-  (GET), `leave` (POST), `rejoin` (POST), `requests` (GET ->
+  (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
+  `requests` (GET ->
   `crate::reqlog::list_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
@@ -161,11 +164,15 @@ behind an auth extractor.
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
   O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
   máquina; `tp_members` transfere esses dados para cada rank, permitindo que
-  `broadcast_to` e o reduce usem o túnel quando o HTTPS direto entre sites não
-  tem rota.
+  `broadcast_to` e o reduce usem primeiro o túnel Noise, com cliente direto
+  pinado como fallback quando o túnel não está disponível.
   O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
   tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
   bytes ou esperas TP com a telemetria de pipeline.
+  O mesmo `survey` agrega os relatórios autenticados de `/api/ui/network/rtt`:
+  cada origem publica somente suas medições diretas, e `route_options` usa a
+  chave `(from_node_id, to_node_id)`. A latência do gateway não é reutilizada
+  para uma aresta entre dois peers remotos.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).

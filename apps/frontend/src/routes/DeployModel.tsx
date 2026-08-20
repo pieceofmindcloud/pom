@@ -483,7 +483,9 @@ export function DeployModel() {
         gpu_used_pct: gpu?.vram_used_pct ?? machine.gpu_used_pct ?? null,
         ram_used_pct: system?.ram.used_pct ?? machine.ram_used_pct ?? null,
         load: peer?.load ?? machine.load,
-        rtt_ms: peer?.route?.rtt_ms ?? machine.rtt_ms,
+        // O RTT de uma máquina vem do survey direcional do backend. A rota
+        // do cluster é a medição HTTP do gateway e não deve sobrescrevê-lo.
+        rtt_ms: machine.rtt_ms,
       };
     });
   }, [liveCluster.data, p]);

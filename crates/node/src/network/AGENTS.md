@@ -13,11 +13,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
   Único arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem
   teste que roda em qualquer sistema.
-- `infer_tunnel.rs` - protocolo request/response que carrega uma chamada HTTP
-  de inferência pelo enxame libp2p, como alternativa quando o HTTP direto não
-  alcança o peer. `TunnelRequest` leva caminho, corpo e cabeçalhos;
-  `serve_loopback` é o lado de dentro e repassa tudo para o próprio servidor
-  de inferência em `127.0.0.1:<inference_port>`.
+- `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
+  inferência pelo enxame libp2p como transporte preferencial quando o peer
+  anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
+  cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
+  corpo e cabeçalhos, inclusive a credencial da porta de inferência;
+  `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
+  sonda `/health`. `measure_rtt` mede a ida e volta pelo mesmo túnel Noise.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
@@ -41,7 +43,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
-  `/health` e histerese contra troca de rota por ruído.
+  `/health` e histerese contra troca de rota por ruído. `RttTable` guarda a
+  medição direcional deste nó para cada destino, sem inferir o sentido inverso.
 
 ## Funções-chave
 
@@ -52,10 +55,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `0.0.0.0`.
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
-  de rotas (30 s, sonda lenta não segura o gossip). A política TLS inicial é
-  aplicada antes de `start`; a task também sincroniza o cliente da sonda com a
-  política atual antes de medir, para que peers HTTPS não desapareçam da tabela
-  de RTT.
+  de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
+  é aplicada antes de `start`; a task mede o RTT por libp2p quando o peer
+  anuncia o túnel e usa o health HTTP apenas para peers antigos.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. Nó destacado
@@ -78,7 +80,7 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
-  túnel libp2p para o fallback entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  túnel libp2p preferencial entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
   `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
   workers da cadeia.
 
@@ -149,6 +151,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   real falhou naquele endereço, sem esperar o ciclo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido", e o chamador cai no `inference_url` do plano.
+- `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
+  `libp2p` é a medição normal e `direct-health` identifica compatibilidade com
+  peers antigos. O endpoint autenticado `/api/ui/network/rtt` publica esse
+  snapshot com o `source_node_id` para o planejador montar arestas direcionais.
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma

@@ -542,6 +542,37 @@ struct Machine {
     held: Vec<HeldShard>,
 }
 
+#[derive(Default, Clone)]
+struct PairwiseRtt {
+    values: std::collections::HashMap<(String, String), f64>,
+}
+
+impl PairwiseRtt {
+    fn remember(&mut self, from_node_id: &str, measurement: &crate::route::RttMeasurement) {
+        self.values.insert(
+            (from_node_id.to_string(), measurement.target_node_id.clone()),
+            measurement.rtt_ms,
+        );
+    }
+
+    fn get(&self, from_node_id: &str, to_node_id: &str) -> Option<f64> {
+        self.values
+            .get(&(from_node_id.to_string(), to_node_id.to_string()))
+            .copied()
+    }
+}
+
+struct Survey {
+    machines: Vec<Machine>,
+    pairwise_rtt: PairwiseRtt,
+}
+
+#[derive(Debug, Deserialize)]
+struct RttReport {
+    source_node_id: String,
+    measurements: Vec<crate::route::RttMeasurement>,
+}
+
 impl Machine {
     fn holds(&self, start: u32, end: u32) -> Option<&HeldShard> {
         self.held
@@ -568,20 +599,41 @@ impl Machine {
 /// `webui::catalogo_sob_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
-    survey(state, group, DeployKind::Shards).await.len()
+    survey(state, group, DeployKind::Shards)
+        .await
+        .machines
+        .len()
 }
 
-async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Machine> {
+async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
-    let route_rtt: std::collections::HashMap<String, f64> = state
+    let mut route_rtt: std::collections::HashMap<String, f64> = state
         .network
         .routes
         .snapshot()
         .into_iter()
         .map(|(node_id, route)| (node_id, route.rtt_ms))
         .collect();
+    // A medição libp2p deste gateway é a fonte correta para os cards das
+    // máquinas. A RouteTable HTTP fica somente como fallback para peers
+    // antigos ou enquanto a primeira sonda libp2p ainda não respondeu.
+    for measurement in state.network.rtts.snapshot() {
+        route_rtt.insert(measurement.target_node_id, measurement.rtt_ms);
+    }
+    let mut pairwise_rtt = PairwiseRtt::default();
+    for measurement in state.network.rtts.snapshot() {
+        pairwise_rtt.remember(&self_id, &measurement);
+    }
+    for (node_id, rtt_ms) in &route_rtt {
+        if pairwise_rtt.get(&self_id, node_id).is_none() {
+            pairwise_rtt
+                .values
+                .insert((self_id.clone(), node_id.clone()), *rtt_ms);
+        }
+    }
     let loads = state.loads.clone();
+    let connection_key = state.auth.read().await.connection_key.clone();
 
     let futures = peers.into_iter().map(|peer| {
         // Pinado no node_id do destino: sem isto, com o cluster em TLS o
@@ -596,16 +648,21 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
         };
         let loads = loads.clone();
         let group = group.to_string();
+        let connection_key = connection_key.clone();
         async move {
             let base = peer.gateway_url()?;
             let http = http.ok()?;
 
-            let (models, node) = futures::future::join(
+            let (models, node, rtt) = futures::future::join3(
                 http.get(format!("{base}/api/ui/models"))
                     .timeout(PEER_TIMEOUT * 4)
                     .send(),
                 http.get(format!("{base}/api/ui/node"))
                     .timeout(PEER_TIMEOUT)
+                    .send(),
+                http.get(format!("{base}/api/ui/network/rtt"))
+                    .timeout(PEER_TIMEOUT)
+                    .bearer_auth(&connection_key)
                     .send(),
             )
             .await;
@@ -614,6 +671,12 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
             let node: serde_json::Value = match node {
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
+            };
+            let rtt_report = match rtt {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<RttReport>().await.ok()
+                }
+                _ => None,
             };
             let (gpu_free_mb, ram_free_mb) = memory_capacity(node.get("system"));
 
@@ -652,45 +715,63 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
             // `~/.ollama/models` is a symlink into the LM Studio library.
             held.dedup_by_key(|s| (s.start_layer, s.end_layer));
 
-            Some(Machine {
-                node_id: peer.node_id.clone(),
-                gateway_url: peer.gateway_url(),
-                inference_url: peer.inference_url(),
-                libp2p_peer_id: peer.libp2p_peer_id.clone(),
-                supports_tunnel: peer
-                    .inference_frame_capabilities
-                    .iter()
-                    .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
-                hostname: if peer.hostname.is_empty() && is_self {
-                    body.get("hostname")
-                        .and_then(|h| h.as_str())
-                        .unwrap_or_default()
-                        .to_string()
-                } else {
-                    peer.hostname.clone()
+            Some((
+                Machine {
+                    node_id: peer.node_id.clone(),
+                    gateway_url: peer.gateway_url(),
+                    inference_url: peer.inference_url(),
+                    libp2p_peer_id: peer.libp2p_peer_id.clone(),
+                    supports_tunnel: peer
+                        .inference_frame_capabilities
+                        .iter()
+                        .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
+                    hostname: if peer.hostname.is_empty() && is_self {
+                        body.get("hostname")
+                            .and_then(|h| h.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    } else {
+                        peer.hostname.clone()
+                    },
+                    mem_free_mb: free_memory_mb(node.get("system")),
+                    gpu_free_mb,
+                    ram_free_mb,
+                    // The peer's own reading beats the one it gossiped minutes ago,
+                    // but the gossip is still there when it did not answer.
+                    disk_free_mb: node
+                        .pointer("/system/disk/free_mb")
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as u64)
+                        .unwrap_or(peer.disk_free_mb),
+                    rtt_ms,
+                    load: loads.load(&peer.node_id).await,
+                    held,
                 },
-                mem_free_mb: free_memory_mb(node.get("system")),
-                gpu_free_mb,
-                ram_free_mb,
-                // The peer's own reading beats the one it gossiped minutes ago,
-                // but the gossip is still there when it did not answer.
-                disk_free_mb: node
-                    .pointer("/system/disk/free_mb")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as u64)
-                    .unwrap_or(peer.disk_free_mb),
-                rtt_ms,
-                load: loads.load(&peer.node_id).await,
-                held,
-            })
+                rtt_report,
+            ))
         }
     });
 
-    futures::future::join_all(futures)
+    let mut machines = Vec::new();
+    for result in futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
-        .collect()
+    {
+        if let Some(report) = &result.1 {
+            if report.source_node_id == result.0.node_id {
+                for measurement in &report.measurements {
+                    pairwise_rtt.remember(&report.source_node_id, measurement);
+                }
+            }
+        }
+        machines.push(result.0);
+    }
+
+    Survey {
+        machines,
+        pairwise_rtt,
+    }
 }
 
 /// Where the weights of a slice would actually have to fit.
@@ -1276,6 +1357,7 @@ fn plan(
     )
 }
 
+#[cfg(test)]
 fn plan_with_options(
     group: &str,
     machines: &[Machine],
@@ -1287,6 +1369,34 @@ fn plan_with_options(
     strategy: DeployStrategy,
     deployment_name: &str,
     preferred_node_ids: &[String],
+) -> Plan {
+    plan_with_rtt_options(
+        group,
+        machines,
+        selection,
+        params,
+        merge,
+        kind,
+        tp,
+        strategy,
+        deployment_name,
+        preferred_node_ids,
+        &PairwiseRtt::default(),
+    )
+}
+
+fn plan_with_rtt_options(
+    group: &str,
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    params: &RuntimeParams,
+    merge: bool,
+    kind: DeployKind,
+    tp: Option<TpLaunch>,
+    strategy: DeployStrategy,
+    deployment_name: &str,
+    preferred_node_ids: &[String],
+    pairwise_rtt: &PairwiseRtt,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -1911,17 +2021,18 @@ fn plan_with_options(
                     continue;
                 }
                 let selected = selected_from == Some(from) && selected_to == Some(to);
+                let rtt_ms = pairwise_rtt.get(from, to);
                 route_options.push(RouteOption {
                     from_node_id: from.clone(),
                     to_node_id: to.clone(),
-                    rtt_ms: machine.rtt_ms,
+                    rtt_ms,
                     selected,
                     note: if selected {
                         "rota escolhida".to_string()
-                    } else if machine.rtt_ms.is_some() {
-                        "rota alternativa medida pelo gateway".to_string()
+                    } else if rtt_ms.is_some() {
+                        "rota alternativa medida no peer de origem".to_string()
                     } else {
-                        "rota alternativa sem medição de RTT".to_string()
+                        "rota alternativa sem medição direcional de RTT".to_string()
                     },
                 });
             }
@@ -2140,9 +2251,11 @@ async fn plan_endpoint(
             Ok(name) => name,
             Err(error) => return bad(json!({ "error": error })),
         };
-    let machines = survey(&state, &req.group, req.kind).await;
+    let survey = survey(&state, &req.group, req.kind).await;
+    let machines = survey.machines;
+    let pairwise_rtt = survey.pairwise_rtt;
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut p = plan_with_options(
+    let mut p = plan_with_rtt_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -2153,6 +2266,7 @@ async fn plan_endpoint(
         req.strategy,
         &deployment_name,
         &req.preferred_node_ids,
+        &pairwise_rtt,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() {
         if let Some(tp) = &req.tp {
@@ -2176,14 +2290,16 @@ async fn deploy_endpoint(
     // meantime would otherwise be handed a slice. What is *not* recomputed is
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
-    let machines = survey(&state, &req.group, req.kind).await;
+    let survey = survey(&state, &req.group, req.kind).await;
+    let machines = survey.machines;
+    let pairwise_rtt = survey.pairwise_rtt;
     let deployment_name =
         match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
             Ok(name) => name,
             Err(error) => return bad(json!({ "error": error })),
         };
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut plan = plan_with_options(
+    let mut plan = plan_with_rtt_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -2194,6 +2310,7 @@ async fn deploy_endpoint(
         req.strategy,
         &deployment_name,
         &req.preferred_node_ids,
+        &pairwise_rtt,
     );
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
@@ -2706,7 +2823,7 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group, plan.kind).await;
+    let machines = survey(&state, &plan.group, plan.kind).await.machines;
     let targets = launch_targets(&plan.steps, &machines, plan.kind, plan.tp.as_ref())?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
@@ -3415,7 +3532,7 @@ async fn add_node_endpoint(
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
-    let machines = survey(&state, &req.group, req.kind).await;
+    let machines = survey(&state, &req.group, req.kind).await.machines;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
         return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
     };
@@ -5268,6 +5385,45 @@ mod tests {
             .collect();
 
         assert_eq!(pairs, vec![("p0", "p1"), ("p1", "p2"), ("p2", "p3")]);
+    }
+
+    #[test]
+    fn route_options_use_the_directional_rtt_of_each_handoff() {
+        let mut ms = build(vec![
+            m("p0", 100_000, &[(0, 1)]),
+            m("p1", 100_000, &[(2, 4)]),
+            m("p2", 100_000, &[(5, 6)]),
+            m("p3", 100_000, &[(7, 10)]),
+        ]);
+        for machine in &mut ms {
+            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
+        }
+        let selection = [
+            pick(0, 1, "p0"),
+            pick(2, 4, "p1"),
+            pick(5, 6, "p2"),
+            pick(7, 10, "p3"),
+        ];
+        let mut rtts = PairwiseRtt::default();
+        rtts.values.insert(("p0".into(), "p1".into()), 11.5);
+        rtts.values.insert(("p1".into(), "p2".into()), 22.5);
+        rtts.values.insert(("p2".into(), "p3".into()), 33.5);
+
+        let p = plan_with_rtt_options(
+            "qwen",
+            &ms,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Simple,
+            "qwen",
+            &[],
+            &rtts,
+        );
+        let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
+        assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
     }
 
     /// The machine list carries what the screen needs to explain a refusal.

@@ -36,6 +36,9 @@ struct TpState {
     /// `SHA256(pubkey) == node_id`. Com TLS ligado, todo POST morria em 13 ms
     /// (medido na ksia, 18/08) e o all-reduce nunca acontecia.
     client: reqwest::Client,
+    /// Configuração viva usada para obter a credencial interna. O receptor
+    /// também aceita API keys ativas, mas os nós usam a connection_key.
+    auth: Option<crate::auth::AuthState>,
     /// Contador de reduces. Em execução lockstep, o k-ésimo reduce de todos os
     /// ranks corresponde à mesma projeção, então o id casa entre os processos.
     counter: AtomicU64,
@@ -290,6 +293,7 @@ pub fn register_tp_reduce(
     rank0_node_id: Option<String>,
     rank0_peer_id: Option<String>,
     rank0_supports_tunnel: bool,
+    auth: Option<crate::auth::AuthState>,
 ) {
     // Cliente da coletiva: pinado quando o cluster está em TLS, simples quando
     // não está. Falhar aqui é melhor que descobrir no meio do primeiro decode.
@@ -326,6 +330,7 @@ pub fn register_tp_reduce(
         rank0_peer_id,
         rank0_supports_tunnel,
         client,
+        auth,
         counter: AtomicU64::new(0),
     });
     if let Ok(mut slot) = TP_STATE.write() {
@@ -466,16 +471,31 @@ pub fn broadcast_to(
         let ct = content_type;
         let id = decode_id.to_string();
         let quem = membro.node_id.clone();
+        let auth = tp_state().and_then(|state| state.auth.clone());
         let peer_id = membro
             .libp2p_peer_id
             .as_deref()
             .and_then(|id| id.parse().ok());
         let supports_tunnel = membro.supports_tunnel;
         let tunnel = crate::infer_tunnel::tunnel_sender();
+        let auth_state = auth.clone();
         tokio::spawn(async move {
+            let inference_token = match auth_state {
+                Some(auth) => {
+                    let config = auth.read().await;
+                    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+                }
+                None => None,
+            };
             let mut headers = vec![(TP_DECODE_HEADER.to_string(), id.clone())];
             if let Some(ct) = ct {
                 headers.push(("content-type".to_string(), ct.to_string()));
+            }
+            if let Some(token) = inference_token {
+                headers.push((
+                    reqwest::header::AUTHORIZATION.as_str().to_string(),
+                    format!("Bearer {token}"),
+                ));
             }
             let result = crate::relay::send_bytes_or_tunnel(
                 &cliente,
@@ -537,6 +557,13 @@ async fn post_reduce(
     let request_bytes = corpo.len() as u64;
     let started = std::time::Instant::now();
 
+    let inference_token = match &state.auth {
+        Some(auth) => {
+            let config = auth.read().await;
+            (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+        }
+        None => None,
+    };
     let headers = vec![
         (TP_BARRIER_HEADER.to_string(), barrier_id.to_string()),
         (TP_RANK_HEADER.to_string(), state.rank.to_string()),
@@ -544,7 +571,15 @@ async fn post_reduce(
             "content-type".to_string(),
             "application/octet-stream".to_string(),
         ),
-    ];
+    ]
+    .into_iter()
+    .chain(inference_token.as_ref().map(|token| {
+        (
+            reqwest::header::AUTHORIZATION.as_str().to_string(),
+            format!("Bearer {token}"),
+        )
+    }))
+    .collect();
     let response = crate::relay::send_bytes_or_tunnel(
         &state.client,
         &state.rank0_url,
@@ -632,6 +667,7 @@ mod tests {
             Some("um-node-id-qualquer".into()),
             None,
             false,
+            None,
         );
         begin_replica_decode("decode-do-grupo");
         let _ = next_barrier_id();
@@ -703,7 +739,7 @@ mod tests {
     fn telemetry_keeps_collective_counts_and_bytes_separate() {
         let _trava = ESTADO_GLOBAL.lock().unwrap();
         limpa();
-        register_tp_reduce(0, 2, "https://127.0.0.1:9/".into(), None, None, false);
+        register_tp_reduce(0, 2, "https://127.0.0.1:9/".into(), None, None, false, None);
         begin_decode("telemetry");
         set_expected_reduces(64);
         record_broadcast_scheduled(2, 128);
@@ -789,6 +825,7 @@ mod tests {
                     rank0_peer_id: None,
                     rank0_supports_tunnel: false,
                     client: reqwest::Client::new(),
+                    auth: None,
                     counter: AtomicU64::new(0),
                 });
                 tokio::spawn(async move { post_reduce(&state, "b", data, None).await })
@@ -841,6 +878,7 @@ mod tests {
             rank0_peer_id: Some(peer_id.to_string()),
             rank0_supports_tunnel: true,
             client: reqwest::Client::new(),
+            auth: None,
             counter: AtomicU64::new(0),
         });
         let result = post_reduce(&state, "b", vec![1.0, 2.0], Some(&tunnel))

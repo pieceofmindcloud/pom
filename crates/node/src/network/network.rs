@@ -411,6 +411,9 @@ pub struct Network {
     detached: AtomicBool,
     /// Por onde este no fala com cada peer, medido por este processo.
     pub routes: Arc<crate::route::RouteTable>,
+    /// RTT direcional deste nó para cada peer, medido pelo transporte de
+    /// inferência libp2p quando disponível.
+    pub rtts: Arc<crate::route::RttTable>,
     /// This node's libp2p `PeerId` (base58), when the swarm derived a stable
     /// one from the pkarr identity — see `Discovery::new`. Set once, after
     /// construction, by whoever builds the libp2p keypair (`main.rs`), since
@@ -633,6 +636,7 @@ impl Network {
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
+            rtts: Arc::new(crate::route::RttTable::new()),
             libp2p_peer_id: None,
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
@@ -1142,29 +1146,83 @@ impl Network {
                 // URLs sob responsabilidade da política global já confirmada.
                 clientes.set_tls(net_routes.tls_enabled());
                 for peer in net_routes.alive_peers().await {
-                    if !net_routes.routes.precisa_medir(&peer.node_id) {
+                    let precisa_rota = net_routes.routes.precisa_medir(&peer.node_id);
+                    let precisa_rtt = net_routes.rtts.precisa_medir(&peer.node_id);
+                    if !precisa_rota && !precisa_rtt {
                         continue;
                     }
-                    let candidatos = peer.inference_candidates();
-                    if candidatos.is_empty() {
-                        continue;
+
+                    if precisa_rota {
+                        let candidatos = peer.inference_candidates();
+                        if !candidatos.is_empty() {
+                            let sondas = peer.gateway_candidates();
+                            let pares: Vec<(String, String)> = candidatos
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, inferencia)| {
+                                    let sonda = sondas
+                                        .get(index)
+                                        .cloned()
+                                        .unwrap_or_else(|| inferencia.clone());
+                                    (inferencia, sonda)
+                                })
+                                .collect();
+                            net_routes
+                                .routes
+                                .measure_peer_with_probes(&clientes, &peer.node_id, &pares)
+                                .await;
+                        }
                     }
-                    let sondas = peer.gateway_candidates();
-                    let pares: Vec<(String, String)> = candidatos
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, inferencia)| {
-                            let sonda = sondas
-                                .get(index)
-                                .cloned()
-                                .unwrap_or_else(|| inferencia.clone());
-                            (inferencia, sonda)
-                        })
-                        .collect();
-                    net_routes
-                        .routes
-                        .measure_peer_with_probes(&clientes, &peer.node_id, &pares)
-                        .await;
+
+                    if precisa_rtt {
+                        let peer_id = peer
+                            .libp2p_peer_id
+                            .as_deref()
+                            .and_then(|id| id.parse::<libp2p::PeerId>().ok());
+                        let has_tunnel = peer_id.is_some()
+                            && peer
+                                .inference_frame_capabilities
+                                .iter()
+                                .any(|cap| cap == crate::pipeline::CAP_LIBP2P_TUNNEL);
+                        let measured =
+                            match (has_tunnel, peer_id, crate::infer_tunnel::tunnel_sender()) {
+                                (true, Some(peer_id), Some(sender)) => {
+                                    crate::infer_tunnel::measure_rtt(
+                                        sender,
+                                        peer_id,
+                                        Duration::from_secs(3),
+                                    )
+                                    .await
+                                }
+                                _ => None,
+                            };
+
+                        if let Some(rtt_ms) = measured {
+                            net_routes.rtts.remember(&peer.node_id, rtt_ms, "libp2p");
+                        } else if !has_tunnel {
+                            // Peers antigos não anunciam o túnel. O health
+                            // HTTP é o fallback de compatibilidade e fica
+                            // explicitamente marcado como tal.
+                            if let Some((_, route)) = net_routes
+                                .routes
+                                .snapshot()
+                                .into_iter()
+                                .find(|(node_id, _)| node_id == &peer.node_id)
+                            {
+                                net_routes.rtts.remember(
+                                    &peer.node_id,
+                                    route.rtt_ms,
+                                    "direct-health",
+                                );
+                            } else {
+                                net_routes.rtts.mark_failure(&peer.node_id);
+                            }
+                        } else {
+                            // Não substitui uma medição libp2p ausente pela
+                            // latência observada pelo gateway ou por outro nó.
+                            net_routes.rtts.mark_failure(&peer.node_id);
+                        }
+                    }
                 }
             }
         });

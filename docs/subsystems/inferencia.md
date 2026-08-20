@@ -19,10 +19,18 @@ soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
 rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
 `direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
 cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
-forward pass. `broadcast_to` e o reduce tentam HTTPS direto primeiro e usam o
-túnel libp2p quando o transporte falha ou expira; `TunnelRequest` preserva os
-cabeçalhos da barreira e do rank nesse caminho alternativo. Ver
+forward pass. `broadcast_to` e o reduce tentam primeiro o túnel libp2p quando o
+membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
+cliente direto pinado, com HTTPS quando a política TLS está ativa.
+`TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
+As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
+ativa. Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
+A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
+um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
+estado oculto. Portanto `round_trip_ms` de um frame não é usado como RTT de
+topologia.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de

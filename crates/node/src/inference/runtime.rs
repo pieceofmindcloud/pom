@@ -409,6 +409,8 @@ pub struct NodeRuntime {
     /// Certificado que o servidor de inferência apresenta, quando há um.
     /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
     tls: Option<crate::serve::TlsServer>,
+    /// Configuração viva usada para autorizar chamadas internas de inferência.
+    auth: Option<crate::auth::AuthState>,
 }
 
 impl NodeRuntime {
@@ -423,6 +425,15 @@ impl NodeRuntime {
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
         tls: Option<crate::serve::TlsServer>,
     ) -> Arc<Self> {
+        Self::new_with_tls_and_auth(net, assignment, tls, None)
+    }
+
+    pub fn new_with_tls_and_auth(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+        auth: Option<crate::auth::AuthState>,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
             config: RwLock::new(None),
@@ -434,6 +445,7 @@ impl NodeRuntime {
             net,
             generation,
             tls,
+            auth,
         })
     }
 
@@ -571,6 +583,7 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
+        let auth = self.auth.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
@@ -641,6 +654,7 @@ impl NodeRuntime {
                     generation,
                     mtp_ready.clone(),
                     tls.clone(),
+                    auth.clone(),
                 )
                 .await
                 {

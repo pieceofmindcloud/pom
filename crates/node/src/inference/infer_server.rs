@@ -20,7 +20,8 @@ use anyhow::{bail, Result};
 use axum::{
     body::Bytes,
     extract::{DefaultBodyLimit, State},
-    http::StatusCode,
+    http::{Request, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -273,6 +274,7 @@ mod tests {
             rx,
             0,
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            None,
             None,
         )
         .await
@@ -527,6 +529,41 @@ struct InferState {
 
 type SharedState = Arc<Mutex<InferState>>;
 
+/// A porta de inferência aceita a credencial compartilhada do cluster ou uma
+/// API key ativa. O gateway usa a connection_key nas chamadas internas; a
+/// alternativa de API key mantém o contrato dos clientes OpenAI/Anthropic.
+async fn require_inference_auth(
+    State(config): State<crate::auth::AuthState>,
+    request: Request<axum::body::Body>,
+    next: Next,
+) -> Response {
+    let token = request
+        .headers()
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.strip_prefix("Bearer ").unwrap_or(value))
+        .or_else(|| {
+            request
+                .headers()
+                .get("x-api-key")
+                .and_then(|value| value.to_str().ok())
+        });
+
+    let Some(token) = token else {
+        return (StatusCode::UNAUTHORIZED, "missing inference credential").into_response();
+    };
+
+    let valid = {
+        let cfg = config.read().await;
+        crate::auth::is_valid_inference_token(&cfg, token)
+    };
+    if !valid {
+        return (StatusCode::FORBIDDEN, "invalid inference credential").into_response();
+    }
+
+    next.run(request).await
+}
+
 impl InferState {
     fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
@@ -634,6 +671,7 @@ pub async fn run(
     generation: u64,
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
+    auth: Option<crate::auth::AuthState>,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -699,7 +737,11 @@ pub async fn run(
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
 
-    let router = Router::new()
+    if let Some(auth) = auth.clone() {
+        http_client().set_auth_state(auth);
+    }
+
+    let inference_routes = Router::new()
         .route(
             "/v1/prefill",
             post(handle_prefill).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
@@ -709,19 +751,32 @@ pub async fn run(
             post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
         )
         .route("/v1/session/release", post(handle_release))
-        .route("/v1/session/rollback", post(handle_rollback))
-        .route("/health", get(handle_health))
-        .with_state(state.clone())
-        // Estado próprio, de propósito: ver a nota em `handle_tp_reduce`.
+        .route("/v1/session/rollback", post(handle_rollback));
+    let inference_routes = if let Some(auth) = auth.clone() {
+        inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
+    } else {
+        inference_routes
+    };
+    let inference_routes = inference_routes.with_state(state.clone());
+
+    let tp_routes = Router::new().route(
+        "/v1/tp/reduce",
+        post(handle_tp_reduce).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
+    );
+    let tp_routes = if let Some(auth) = auth {
+        tp_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
+    } else {
+        tp_routes
+    };
+    let tp_routes = tp_routes.with_state((tp_barrier, tp_size));
+
+    let router = inference_routes
         .merge(
             Router::new()
-                .route(
-                    "/v1/tp/reduce",
-                    post(handle_tp_reduce)
-                        .layer(DefaultBodyLimit::max(inference_frame_body_limit())),
-                )
-                .with_state((tp_barrier, tp_size)),
-        );
+                .route("/health", get(handle_health))
+                .with_state(state.clone()),
+        )
+        .merge(tp_routes);
 
     info!("inference server pronto em [::]:{port}");
 

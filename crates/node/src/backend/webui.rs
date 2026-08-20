@@ -49,6 +49,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/tls", post(save_tls))
@@ -581,6 +582,42 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
         "shard_sets": catalog.shard_sets,
         "scanned": catalog.scanned,
     }))
+}
+
+#[derive(Debug, Serialize)]
+struct RttReport {
+    source_node_id: String,
+    measurements: Vec<crate::route::RttMeasurement>,
+}
+
+/// Publica apenas as medições feitas por este nó. A autenticação é necessária
+/// porque o relatório faz parte da telemetria interna usada para escolher
+/// rotas de inferência.
+async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+    let mut measurements = state.network.rtts.snapshot();
+    let measured_targets: std::collections::HashSet<String> = measurements
+        .iter()
+        .map(|measurement| measurement.target_node_id.clone())
+        .collect();
+
+    // Peers antigos não têm o probe libp2p. O RTT HTTP local continua sendo
+    // uma informação útil para compatibilidade, mas nunca substitui uma
+    // medição libp2p já existente para o mesmo destino.
+    for (node_id, route) in state.network.routes.snapshot() {
+        if !measured_targets.contains(&node_id) {
+            measurements.push(crate::route::RttMeasurement {
+                target_node_id: node_id,
+                rtt_ms: route.rtt_ms,
+                transport: "direct-health".to_string(),
+            });
+        }
+    }
+    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+
+    Json(RttReport {
+        source_node_id: state.network.node_id.clone(),
+        measurements,
+    })
 }
 
 // ── Cluster view ─────────────────────────────────────────────────────────────
@@ -1753,6 +1790,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 tp.rank0_node_id.clone(),
                 rank0.and_then(|m| m.libp2p_peer_id.clone()),
                 rank0.is_some_and(|m| m.supports_tunnel),
+                Some(state.auth.clone()),
             );
         }
         _ => crate::tp::unregister_tp_reduce(),

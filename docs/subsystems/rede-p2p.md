@@ -141,6 +141,15 @@ MacBook↔ksia não pode trocar a cada ciclo); `mark_failure` tira a rota na hor
 quando uma requisição real falhou naquele endereço. `resolve` devolve `None` =
 "ainda não medido", e o chamador cai no `inference_url` do plano.
 
+Essa tabela de endereçamento não é a tabela de RTT do mapa. `RttTable` mede
+`GET /health` pelo `TunnelRequest` libp2p/Noise, o mesmo transporte usado pelos
+frames de inferência, e mantém a direção local `origem -> destino`. O peer
+publica seu snapshot em `GET /api/ui/network/rtt`, autenticado pela chave de
+conexão; o gateway agrega os relatórios e só usa a medição de `A -> B` na
+aresta `A -> B`. Se o peer é antigo e não anuncia o túnel, o relatório pode
+marcar `direct-health` como fallback. Nenhuma latência de outro peer é
+transitiva ou reaproveitada como se fosse a aresta real.
+
 ## 3. Caminho libp2p (internet)
 
 `Discovery` (`discovery.rs`) constrói o swarm (`DiscBehaviour`) com gossipsub
@@ -210,23 +219,22 @@ Comportamento atual do código:
    enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem;
    `insert_peer` (libp2p) não reescreve - um peer assim fica com
    `inference_url` apontando para o próprio nó.
-2. **O tráfego de inferência tem um caminho por libp2p, mas só como desvio.**
-   O gateway fala HTTP direto com `http://<ip-do-peer>:<inference-port>`
-   (`routing/pipeline.rs`, `direct.rs`) e só cai para o túnel
-   (`network/infer_tunnel.rs`, via `relay::send_frame_or_tunnel`) quando essa
-   chamada falha por `Timeout`/`Transport` contra um hop que anuncia
-   `transport/libp2p-tunnel-v1`. Verificado contra a `salem-gpu` pela internet
-   em 2026-08-16 (ver `operacao.md`). O custo é o tempo até desistir do HTTP
-   direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
-   requisição e quem decide acaba sendo o `connect` do sistema.
-   No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra: o
-   `TpMember` fornece `PeerId` e capability para o fallback, e os cabeçalhos do
-   decode, da barreira e do rank viajam no `TunnelRequest`.
-3. **Sem autenticação na porta de inferência (`/v1/prefill`, `/v1/step`).**
-   TLS deixou de ser uma limitação - ver a seção 5 -, mas quem alcança a porta
-   ainda não precisa provar quem é para mandar um quadro. O que o TLS
-   acrescentou foi confidencialidade e a certeza de *com quem* se fala, não uma
-   política de quem pode falar.
+2. **O tráfego de inferência prefere libp2p por hop.** O gateway e os relays
+   usam `network/infer_tunnel.rs` via `relay::send_frame_or_tunnel` quando o
+   hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é
+   protegido por Noise e leva a credencial da inferência até o loopback do
+   destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
+   quadro segue pelo cliente direto pinado, usando HTTPS quando TLS está ativo.
+   Uma resposta HTTP explícita do peer não é repetida em outro transporte.
+   No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra e o
+   `TunnelRequest` preserva os cabeçalhos do decode, da barreira, do rank e da
+   autorização.
+3. **A porta de inferência exige credencial.** `/v1/prefill`, `/v1/step`,
+   `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce` aceitam a
+   `connection_key` compartilhada ou uma API key ativa no nó receptor. A
+   `connection_key` é a credencial usada nas chamadas internas; API keys são
+   aceitas para manter o mesmo contrato de autenticação disponível nas APIs
+   externas. `/health` permanece público para readiness.
 
 ## 5. TLS entre peers
 

@@ -101,7 +101,8 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `node`, `models`, `models/delete`, `cluster`, `cluster/models`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
-`requests` (o log de requisições, `reqlog::list_requests`), `dev/update` +
+`requests` (o log de requisições, `reqlog::list_requests`), `network/rtt` (GET
+autenticado, snapshot direcional deste nó), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
@@ -140,6 +141,14 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`, `paths` GET, `jobs`,
 `jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
+
+A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
+router e também exige credencial em `/v1/prefill`, `/v1/step`,
+`/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`: aceita a
+`connection_key` compartilhada ou uma API key ativa. `/health` continua público
+para sondas de readiness. O transporte preferencial entre nós é o túnel
+libp2p/Noise; o cliente direto pinado é fallback quando o túnel não está
+disponível ou falha no transporte.
 
 ### `relay-result` sem auth é por desenho
 

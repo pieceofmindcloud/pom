@@ -88,12 +88,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
-  `relay::send_bytes_or_tunnel` tenta primeiro o HTTPS direto e, em falha de
-  transporte ou timeout, repete o POST pelo `infer_tunnel` quando o membro
-  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. `TpMember` carrega
-  essa identidade e a capability para o `broadcast_to` do decode e para o
-  reduce no primary. O `TunnelRequest` leva também os cabeçalhos, para que a
-  barreira e o rank sejam preservados no salto pela internet.
+  `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
+  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
+  Noise falha, repete o POST pelo cliente direto pinado, usando HTTPS quando a
+  política TLS está ativa. O `TunnelRequest` leva os cabeçalhos da barreira,
+  do rank e da autorização.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
@@ -244,6 +243,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`.
+- O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
+  `TunnelRequest::get("/health")` é reservado para a medição de RTT de
+  topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
+  não alimenta a tabela direcional de rotas.
 - `bubble_hop_timings`/`as_hop_timing_entry` - insere a entrada do próprio hop
   na frente (ordem head→tail) e dobra `processing_ms`+`node_timings` do callee
   com o round-trip do caller.

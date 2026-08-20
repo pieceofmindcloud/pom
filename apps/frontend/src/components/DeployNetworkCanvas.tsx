@@ -316,7 +316,9 @@ export function DeployNetworkCanvas({
     ...principalEdges.map((edge) => ({
       from_node_id: edge.from,
       to_node_id: edge.to,
-      rtt_ms: machines.find((machine) => machine.node_id === edge.to)?.rtt_ms ?? null,
+      // Sem uma opção explícita não há medição direcional para esta aresta.
+      // Nunca copie o RTT do destino, que seria a medição de outra origem.
+      rtt_ms: null,
       selected: true,
       note: "pipeline",
     })),

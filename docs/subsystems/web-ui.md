@@ -308,7 +308,7 @@ impressão digital é só modelo + conjunto de faixas.
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. Não existe uma segunda
   tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
-  topologia, os RTTs e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
+  topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
   e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
   canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
@@ -323,8 +323,10 @@ impressão digital é só modelo + conjunto de faixas.
   da faixa completa; a mesma faixa em peers diferentes é aceita pelo planner e
   pode ser escolhida pelo roteador por RTT/carga. No Tensor, somente peers que
   estão no mapa entram como primary/worker, mesmo que outros tenham o modelo.
-  GPU, RAM, carga e RTT são atualizados pela visão do cluster a cada 5 segundos;
-  uma GPU ausente aparece como `sem GPU`, sem barra indeterminada. Em Completa, todos os peers entram no canvas e na lista de candidatos. A
+  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
+  RTTs vêm do survey direcional do planner e não são substituídos pela medição
+  HTTP do gateway. Uma GPU ausente aparece como `sem GPU`, sem barra
+  indeterminada. Em Completa, todos os peers entram no canvas e na lista de candidatos. A
   cobertura fica reduzida no rodapé junto da barra de peers.
   A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro

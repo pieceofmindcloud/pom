@@ -140,8 +140,9 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// Advertised when a node's libp2p swarm has actually come up
 /// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
 /// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
-/// directly-reachable and NAT'd hops in the same pipeline is normal, and only
-/// the failing hop needs the fallback. See `relay::should_attempt_tunnel_fallback`.
+/// directly-reachable and NAT'd hops in the same pipeline is normal. The
+/// relay prefers this transport per hop and falls back to the direct client
+/// when it is unavailable or fails at the transport layer.
 pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
 /// A handoff chosen by the planner between two consecutive pipeline steps.

@@ -123,7 +123,7 @@ const ptBR: Guide[] = [
       {
         kind: "warn",
         title: "O prompt tem orçamento, e passar dele é recusa",
-        text: "O limite é a janela de contexto dividida pelas sessões, menos os tokens que a resposta pode gastar. O gateway mede o prompt antes e recusa com uma mensagem citando os parâmetros - antes disso, um prompt grande demais derrubava o processo inteiro.",
+        text: "O limite de cada sessão é a janela de contexto informada, menos os tokens que a resposta pode gastar. Aumentar as sessões multiplica a memória reservada, não divide esse limite. O gateway mede o prompt antes e recusa com uma mensagem citando os parâmetros - antes disso, um prompt grande demais derrubava o processo inteiro.",
       },
       {
         kind: "note",
@@ -352,7 +352,7 @@ const en: Guide[] = [
       {
         kind: "warn",
         title: "The prompt has a budget, and exceeding it is a refusal",
-        text: "The limit is the context window divided by the sessions, minus the tokens the answer may spend. The gateway measures the prompt first and refuses with a message naming the settings - before that, an oversized prompt took the whole process down.",
+        text: "Each session gets the configured context window, minus the tokens the answer may spend. Increasing sessions multiplies reserved memory; it does not divide that limit. The gateway measures the prompt first and refuses with a message naming the settings - before that, an oversized prompt took the whole process down.",
       },
       {
         kind: "note",

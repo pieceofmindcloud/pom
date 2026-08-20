@@ -44,7 +44,7 @@ das tasks de fundo, loop da TUI.
 `--ollama-url`, `--gateway` (deprecated: o único efeito que resta é marcar o nó
 como `primary` na config de inferência montada pela linha de comando),
 `--gateway-port` (8080), `--start-layer`/`--end-layer`,
-`--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192), `--n-batch` (512),
+`--inference-port`, `--n-gpu-layers` (0), `--n-ctx` (8192 por sessão), `--n-batch` (512),
 `--max-new-tokens` (512), `--max-sessions` (1), `--kv-cache-ram`,
 `--prefill-chunk-tokens` (512), `--temperature`/`--top-p`/`--top-k`/
 `--repeat-penalty`/`--repeat-last-n`, `--no-thinking`, `--single-peer`,

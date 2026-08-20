@@ -702,7 +702,7 @@ pub async fn run(
     // recusado. Ver o doc de `EngineConfig::rs_seq_window`.
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
     let engine_cfg = EngineConfig {
-        n_ctx: cfg.n_ctx,
+        n_ctx: crate::runtime::total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
         fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         n_batch: cfg.n_batch,

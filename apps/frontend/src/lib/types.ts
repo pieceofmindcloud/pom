@@ -597,8 +597,10 @@ export interface DeployLoadDistribution {
 /**
  * Execution settings a launch carries. `src/webui.rs` — `RuntimeParams`.
  *
- * Cluster-wide on purpose: the context window and the batch decide the prompt
- * budget the gateway enforces, and the sampling only runs on the last peer.
+ * Cluster-wide on purpose: `n_ctx` is the full window for each session, the
+ * session count multiplies the total KV-cache reservation, and the batch
+ * decides the prompt chunks the gateway sends. Sampling only runs on the last
+ * peer.
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
  */
 export interface RuntimeParams {

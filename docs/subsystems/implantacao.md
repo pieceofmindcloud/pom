@@ -188,7 +188,8 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   a amostragem só roda no último peer.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
   padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
-  antes da carga e pode reduzir as camadas GPU para evitar OOM. Um
+  antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode
+  reduzir as camadas GPU para evitar OOM. Um
   `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
   Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
   o fit nativo não suporta `split-mode tensor`.

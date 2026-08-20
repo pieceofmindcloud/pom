@@ -214,8 +214,8 @@ struct Args {
     #[arg(long, default_value = "512")]
     max_new_tokens: u32,
 
-    /// Generations allowed in flight at once. The KV cache is split evenly
-    /// between them, so the window one request sees is n_ctx / max_sessions.
+    /// Generations allowed in flight at once. Each generation gets the full
+    /// `n_ctx`; the total KV cache reservation grows with this number.
     #[arg(long, default_value = "1")]
     max_sessions: u32,
 

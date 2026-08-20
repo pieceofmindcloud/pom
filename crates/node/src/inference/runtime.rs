@@ -23,6 +23,14 @@ const MAX_RESTARTS: u32 = 10;
 /// contract explicit.
 pub const MAX_CONTEXT_TOKENS: u32 = 250_000;
 
+/// Total KV-cache capacity needed to give every configured session the full
+/// context requested by the operator.
+pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
+    n_ctx
+        .checked_mul(max_sessions.max(1))
+        .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
@@ -74,7 +82,7 @@ pub struct NodeConfig {
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
     pub n_batch: u32,
-    /// Concurrent generations; the context is split between them.
+    /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
     /// Prompt tokens pushed through the pipeline per round trip.
@@ -318,6 +326,7 @@ impl NodeConfig {
         if self.n_ctx == 0 || self.n_ctx > MAX_CONTEXT_TOKENS {
             bail!("n_ctx precisa estar entre 1 e {MAX_CONTEXT_TOKENS}");
         }
+        total_context_tokens(self.n_ctx, self.max_sessions)?;
         if self.end_layer >= self.total_layers {
             bail!(
                 "camada final {} fora do modelo de {} camadas",
@@ -1409,6 +1418,17 @@ mod tests {
 
         c.n_ctx = 250_001;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn each_session_gets_the_configured_context_capacity() {
+        assert_eq!(total_context_tokens(32_768, 2).unwrap(), 65_536);
+        assert_eq!(total_context_tokens(32_768, 0).unwrap(), 32_768);
+    }
+
+    #[test]
+    fn context_capacity_rejects_numeric_overflow() {
+        assert!(total_context_tokens(u32::MAX, 2).is_err());
     }
 
     #[test]

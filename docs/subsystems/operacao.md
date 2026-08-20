@@ -22,10 +22,11 @@ medidas em campo.
   gateway HTTP `--gateway-port` (8080, servido por *todos* os nós), inference
   server `--inference-port` (8181). Máquinas distintas podem usar os mesmos
   números.
-- **Contexto por sessão:** `--max-sessions` (padrão 1) divide o `--n-ctx` entre
-  sessões (`n_ctx_seq = n_ctx / max_sessions`, em `llm.rs`); o orçamento de
-  prompt de cada requisição é esse menos `--max-new-tokens` (ver
-  `inferencia.md`, "Limite de prompt").
+- **Contexto por sessão:** `--n-ctx` é a janela completa de cada sessão.
+  `--max-sessions` (padrão 1) multiplica a capacidade total do cache KV, sem
+  reduzir a janela individual (`n_ctx_total = n_ctx * max_sessions`, em
+  `llm.rs`); o orçamento de prompt de cada requisição é `n_ctx` menos
+  `--max-new-tokens` (ver `inferencia.md`, "Limite de prompt").
 
 ## Subida (cluster de duas máquinas)
 

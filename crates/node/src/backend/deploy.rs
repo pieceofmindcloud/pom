@@ -5462,8 +5462,8 @@ mod tests {
         let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards, None);
 
         assert_eq!(p.params.n_ctx, 32768);
-        // 32768 / 2 sessões − 256 gerados.
-        assert_eq!(p.prompt_tokens, 16128);
+        // Cada sessão recebe 32768; 256 ficam reservados para a resposta.
+        assert_eq!(p.prompt_tokens, 32512);
         // O pedaço nunca passa de n_batch, por mais alto que seja o pedido.
         assert_eq!(p.chunk_tokens, 3072);
     }

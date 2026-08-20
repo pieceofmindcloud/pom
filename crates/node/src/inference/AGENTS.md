@@ -173,8 +173,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   duas formas de resposta em `prefill.rs`).
 
 `llm.rs`:
-- `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, fit_memory, max_sessions). Com `fit_memory=true` e o padrão de
+- `LlmEngine::load` - carga com `EngineConfig` (n_ctx total, n_batch,
+  n_gpu_layers, offload_kqv, fit_memory, max_sessions). O runtime transforma
+  o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
+  `fit_memory=true` e o padrão de
   camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
   carregar os pesos. O plano preserva `tensor_split` e `tensor_buft_overrides`
   quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
@@ -184,9 +186,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
   microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
   reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
-  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
-  divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
-  com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.
+  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
+  total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
+  o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
+  `pool` é a marca disso.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).

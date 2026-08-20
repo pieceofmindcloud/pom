@@ -56,8 +56,9 @@ modelo entre máquinas.
 Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
 fica ligado por padrão. Antes da carga real, a aplicação chama o
 `common_fit_params` do llama.cpp, que pode reduzir `n_gpu_layers` para caber na
-memória disponível e preserva o `n_ctx` solicitado quando ele foi definido
-explicitamente. O `/health` expõe `fit_memory_applied` e
+memória disponível e preserva a capacidade total correspondente a
+`n_ctx * max_sessions` quando ela foi definida explicitamente. O `/health` expõe
+`fit_memory_applied` e
 `n_gpu_layers_effective`. Um `n_gpu_layers` diferente do padrão `99` é uma
 escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
 suporta tensor parallelism; o planner e o runtime normalizam essa opção para
@@ -412,14 +413,16 @@ inteiro.
 `gateway::prompt_budget_of(n_ctx, max_sessions, max_new_tokens)`:
 
 ```
-n_ctx / max_sessions - max_new_tokens
+n_ctx - max_new_tokens
 ```
 
-O KV cache é dividido entre `max_sessions` slots (padrão **1**, não mais o
-`/8` fixo), então a janela de uma requisição é `n_ctx / max_sessions`, menos a
-sobra para os tokens que serão gerados. O gateway mede o prompt
+`n_ctx` é a janela completa de cada sessão. `max_sessions` (padrão **1**) só
+multiplica a capacidade total reservada no `llama_context`, então o runtime usa
+`n_ctx_total = n_ctx * max_sessions` e cada sessão continua com `n_ctx`. O
+gateway mede o prompt
 (`estimate_tokens` ≈ chars/3, pessimista) **antes** de qualquer peer ver o
-prompt e recusa com uma mensagem citando as flags.
+prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
+valores como `n_ctx_total` e `n_ctx_per_session`.
 
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes

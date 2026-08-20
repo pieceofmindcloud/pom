@@ -282,10 +282,8 @@ fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> Strin
 
 /// Prompt tokens a peer running `cfg` can accept.
 ///
-/// The KV cache is split evenly across `max_sessions` slots, so the window one
-/// request sees is `n_ctx / max_sessions` — this divisor used to be hardcoded
-/// to 8, which silently cut the configured context to an eighth and produced
-/// "contexto insuficiente" no matter how high `--n-ctx` was set.
+/// `n_ctx` is the context window for one request. `max_sessions` only controls
+/// how many such windows the inference context must reserve at once.
 ///
 /// `n_batch` deliberately does **not** appear here. It did while the prompt
 /// crossed as a single `llama_batch`; since [`crate::prefill`] advances the
@@ -301,10 +299,9 @@ pub fn prompt_budget(cfg: &crate::runtime::NodeConfig) -> u32 {
 /// chosen and has no running node behind it yet — the deploy screen quotes it
 /// while the operator is editing the knobs, and quoting it from anywhere but
 /// here is how the two go out of step.
-pub fn prompt_budget_of(n_ctx: u32, max_sessions: u32, max_new_tokens: u32) -> u32 {
-    let per_session_ctx = n_ctx / max_sessions.max(1);
+pub fn prompt_budget_of(n_ctx: u32, _max_sessions: u32, max_new_tokens: u32) -> u32 {
     // Room has to be left for the tokens we are about to generate.
-    per_session_ctx.saturating_sub(max_new_tokens)
+    n_ctx.saturating_sub(max_new_tokens)
 }
 
 /// Tokens per prefill chunk — this is what `n_batch` actually constrains.
@@ -424,12 +421,11 @@ pub async fn generate_stream(
             let _ = tx
                 .send(GenEvent::Failed(format!(
                     "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-                     {budget}. O limite é n_ctx/{} ({}) menos max_new_tokens ({}). O prompt vai \
-                     em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
+                     {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
+                     vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
                      n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
                      as requisições simultâneas.",
-                    cfg.max_sessions.max(1),
-                    cfg.n_ctx / cfg.max_sessions.max(1),
+                    cfg.n_ctx,
                     cfg.max_new_tokens,
                     prompt_chunk_tokens(&cfg),
                     cfg.n_batch,
@@ -1544,9 +1540,9 @@ mod budget_tests {
     }
 
     #[test]
-    fn concurrency_divides_the_window() {
+    fn each_session_keeps_the_configured_window() {
         let c = cfg(262_144, 262_144, 1024, 8);
-        assert_eq!(prompt_budget(&c), 262_144 / 8 - 1024);
+        assert_eq!(prompt_budget(&c), 262_144 - 1024);
     }
 
     /// The bug a harness hits on its first real conversation: with the prompt

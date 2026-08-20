@@ -1118,9 +1118,8 @@ pub struct RuntimeParams {
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
     pub max_new_tokens: u32,
-    /// Generations allowed in flight at once. The KV cache is split evenly
-    /// between them, so this divides the usable window: raising it buys
-    /// concurrency and costs context.
+    /// Generations allowed in flight at once. Each generation gets the full
+    /// context window; raising this value multiplies the KV-cache reservation.
     #[serde(default = "d_max_sessions")]
     pub max_sessions: u32,
     /// Prompt tokens per round trip through the pipeline.

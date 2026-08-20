@@ -74,9 +74,10 @@ behind an auth extractor.
   `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
   `self_reply_hosts()` lists the addresses by which a
   peer reaches this node (`self_dial_host` first, then `self_addr_candidates`);
-  `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - the KV cache is
-  split across sessions, so the window is `n_ctx / max_sessions`, and `n_batch`
-  deliberately does NOT appear (prefill chunks the prompt); `generate_stream`
+  `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
+  complete window for each session; `max_sessions` multiplies the runtime KV
+  reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
+  prompt); `generate_stream`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly

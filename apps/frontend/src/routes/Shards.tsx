@@ -23,17 +23,11 @@ import {
 import { api } from "../lib/api";
 import { bytes, layerRange, num } from "../lib/format";
 import { deleteModel } from "../lib/deleteModel";
+import { uniquePeerName } from "../lib/peerName";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { DiscoveredModel, PeerCatalog, ShardSet } from "../lib/types";
 import { useI18n } from "../i18n/provider";
-
-/** Peers of the same machine share a hostname; the short id disambiguates. */
-function uniqueName(peer: { hostname?: string | null; node_id: string }, all: PeerCatalog[]) {
-  const name = peer.hostname || peer.node_id.slice(0, 12);
-  const repeated = all.filter((p) => (p.hostname || p.node_id.slice(0, 12)) === name);
-  return repeated.length > 1 ? `${name} · ${peer.node_id.slice(0, 6)}` : name;
-}
 
 function CoverageBar({ set }: { set: ShardSet }) {
   const total = set.total_layers ?? 0;
@@ -150,7 +144,7 @@ function ShardCard({
                     <option value="">{t("shards.sendTo")}</option>
                     {missing.map((p) => (
                       <option key={p.node_id} value={p.node_id}>
-                        {uniqueName(p, missing)}
+                        {uniquePeerName(p, missing)}
                       </option>
                     ))}
                   </Select>

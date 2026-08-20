@@ -574,9 +574,14 @@ async fn save_tls(
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let catalog = local_catalog(&state).await;
-    let system = sysmon::sample().await;
     Json(json!({
-        "hostname": system.hostname,
+        // Não `sysmon`: aquele é o hostname cru do sistema operacional e
+        // ignora o `node_name` do pom.json. `network.hostname` é o nome que
+        // este nó anuncia aos peers, e é o que o resto da tela mostra - ver a
+        // nota gêmea em `node_info`. Quem lia daqui era o seletor "Enviar
+        // para..." da tela de fatias, e ele era o único lugar do aplicativo
+        // que chamava a máquina por outro nome.
+        "hostname": state.network.hostname,
         "node_id": state.network.node_id,
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
@@ -949,7 +954,8 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let local = local_catalog(&state).await;
-    let local_host = sysmon::sample().await.hostname;
+    // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
+    let local_host = state.network.hostname.clone();
 
     let futures: Vec<_> = peers
         .iter()
@@ -1005,8 +1011,17 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
             })),
+            // Um peer que não respondeu continua sendo uma máquina com nome:
+            // a tabela local de peers guarda o que ele anunciou. Sem isto o
+            // objeto saía **sem `hostname`** e a tela caía no `node_id`, ou
+            // seja, um prefixo hexadecimal no lugar do nome.
             None => out.push(json!({
                 "node_id": node_id,
+                "hostname": peers
+                    .iter()
+                    .find(|p| p.node_id == node_id)
+                    .map(|p| p.hostname.clone())
+                    .filter(|h| !h.is_empty()),
                 "is_self": false,
                 "error": error,
                 "models": [],
@@ -4130,5 +4145,69 @@ mod tests {
 
             std::fs::remove_dir_all(&root).ok();
         });
+    }
+}
+
+/// **A máquina tem um nome, e é um só.**
+///
+/// `node_name` do `pom.json` é como o operador batiza a máquina, e é o nome
+/// que o nó anuncia aos peers (`network.hostname`). O catálogo respondia com
+/// `sysmon`, o hostname cru do sistema operacional — e o seletor "Enviar
+/// para..." da tela de fatias, que lê daí, era o único lugar do aplicativo que
+/// chamava a máquina por outro nome. Numa máquina com dois nós era pior: os
+/// dois relatavam o mesmo hostname do SO, a tela via colisão e desempatava
+/// com o prefixo do `node_id`.
+#[cfg(test)]
+mod node_name_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_named};
+
+    #[tokio::test]
+    async fn o_catalogo_local_se_apresenta_pelo_nome_do_no() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(models(State(state)).await.into_response()).await;
+
+        assert_eq!(
+            corpo["hostname"], "atena",
+            "o catálogo tem que dizer o nome do nó, não o hostname do SO"
+        );
+    }
+
+    #[tokio::test]
+    async fn o_catalogo_do_cluster_tambem() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let eu = &corpo["peers"][0];
+        assert_eq!(eu["is_self"], true);
+        assert_eq!(eu["hostname"], "atena");
+    }
+
+    /// Um peer que não respondeu continua sendo uma máquina com nome: o que
+    /// ele anunciou está na tabela local. Sem isto o objeto saía **sem
+    /// `hostname`** e a tela caía no `node_id` — um prefixo hexadecimal no
+    /// lugar do nome da máquina, que é o rótulo errado do relato.
+    #[tokio::test]
+    async fn um_peer_que_nao_respondeu_ainda_tem_nome() {
+        // A porta do peer falso não tem ninguém ouvindo: a consulta falha.
+        let mut mudo = peer("outro", "ksia", 1);
+        mudo.hostname = "ksia".into();
+        let state = state_named("eu", "atena", vec![mudo]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let outro = corpo["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["node_id"] == "outro")
+            .expect("o peer entra na lista mesmo sem responder");
+        assert!(!outro["error"].is_null(), "e a falha continua reportada");
+        assert_eq!(
+            outro["hostname"], "ksia",
+            "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
+        );
     }
 }

@@ -126,7 +126,8 @@ behind an auth extractor.
   parsed-and-ignored (serde drops unknown fields).
 - `webui.rs` - `CATALOG_TTL=20s`, `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
-  `models` (GET), `models/delete` (POST), `cluster` (GET), `cluster/models`
+  `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
+  `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`

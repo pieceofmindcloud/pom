@@ -168,12 +168,10 @@ Per-file list:
   empty = "the rest"). Every keystroke POSTs `POST /api/ui/slice/plan`
   (debounced 260 ms) and shows target vs actual range/size side by side; the
   "divide in N equal parts" shortcut also goes through plan. `POST /api/ui/slice`
-  starts the job and navigates to `/fatias/andamento`. `asPlan` validates the
-  POST body shape so an old build/proxy cannot take the window down. Only whole
-  models (`isWholeModel`) can be sliced.
-- `SlicingJobs.tsx` — Slicing jobs from `useJobs` (`GET /api/ui/jobs`), one card
-  per job with progress/state/outputs. `STATE` maps job state to tone/color/icon
-  written out literally (Tailwind needs literal class strings).
+  starts the job and keeps the operator on this screen, where
+  `SlicingJobsPanel` shows each job with progress/state/outputs. `asPlan`
+  validates the POST body shape so an old build/proxy cannot take the window
+  down. Only whole models (`isWholeModel`) can be sliced.
 - `Transfers.tsx` — Three panels: pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished

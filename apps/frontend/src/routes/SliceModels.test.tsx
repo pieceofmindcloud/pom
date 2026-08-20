@@ -36,6 +36,28 @@ vi.mock("../lib/queries", () => ({
     refetch: vi.fn(),
   }),
   useInvalidate: () => vi.fn(),
+  useJobs: () => ({
+    data: {
+      jobs: [
+        {
+          id: "job-slice-1",
+          state: "running",
+          step: "writing",
+          message: "writing shard 1 of 2",
+          progress: 42,
+          outputs: [],
+          started_at: "2026-08-20T12:00:00Z",
+          finished_at: null,
+          kind: "slice",
+          title: "qwen.gguf",
+        },
+      ],
+    },
+    isLoading: false,
+    isError: false,
+    error: null,
+    refetch: vi.fn(),
+  }),
 }));
 
 vi.mock("../lib/toast", () => ({
@@ -120,5 +142,22 @@ describe("SliceModels", () => {
         ],
       ]),
     );
+  });
+
+  it("shows the active slicing progress on the model slicing screen", async () => {
+    render(
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByText("Fatiamentos em andamento")).toBeTruthy();
+    expect(screen.getByText("42%")).toBeTruthy();
+    expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("42");
   });
 });

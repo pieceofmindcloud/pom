@@ -61,13 +61,17 @@ conteúdo `immutable` por 1 ano.
 
 `src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
 `labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
+`src/App.tsx`. Dentro de `Modelos`, a ordem é `Modelos inteiros`, `Fatiar
+modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
+somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
+receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens)
-- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels
-- `/fatias` -> Shards; `/fatias/andamento` -> SlicingJobs;
+- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels, com o painel de
+  jobs e progresso de fatiamento embutido
+- `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
@@ -291,10 +295,11 @@ impressão digital é só modelo + conjunto de faixas.
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
   "o resto"). Cada tecla posta `POST /api/ui/slice/plan` (debounce 260 ms) e
   mostra alvo vs faixa/tamanho reais lado a lado; o atalho "dividir em N
-  iguais" passa pelo mesmo plano. `POST /api/ui/slice` roda o job e navega
-  para `/fatias/andamento`. `asPlan` valida o corpo do POST para um build
-  velho não derrubar a tela. Só modelos inteiros (`isWholeModel`) podem ser
-  fatiados.
+  iguais" passa pelo mesmo plano. `POST /api/ui/slice` roda o job e mantém a
+  tela aberta; `SlicingJobsPanel` mostra abaixo a barra de progresso, estado e
+  saídas de cada job consultado por `GET /api/ui/jobs`. `asPlan` valida o corpo
+  do POST para um build velho não derrubar a tela. Só modelos inteiros
+  (`isWholeModel`) podem ser fatiados.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.

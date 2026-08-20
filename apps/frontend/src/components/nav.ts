@@ -47,14 +47,7 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
       { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
-    ],
-  },
-  {
-    labelKey: "nav.shardedModels",
-    icon: Layers,
-    children: [
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
-      { labelKey: "nav.slicing", to: "/fatias/andamento", icon: ListTree },
     ],
   },
   // Its own entry, not a leaf of the shards section: putting a set of slices

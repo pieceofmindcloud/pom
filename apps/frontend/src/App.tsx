@@ -16,7 +16,6 @@ import { DeployModel } from "./routes/DeployModel";
 import { Deployments } from "./routes/Deployments";
 import { Shards } from "./routes/Shards";
 import { SliceModels } from "./routes/SliceModels";
-import { SlicingJobs } from "./routes/SlicingJobs";
 import { ConnectionKeys, TokenKeys } from "./routes/Keys";
 import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
@@ -112,11 +111,8 @@ export default function App() {
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
                     <Route path="/implantar" element={<Page><DeployModel /></Page>} />
                     <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
-                    {/* Where deploying used to live, back when it was a leaf of
-                        the shards section. Kept so links and bookmarks the
-                        operator already has do not land on "page not found". */}
+                    {/* Keep the former deploy URL working for old bookmarks. */}
                     <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                    <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
                     <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                     <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                     <Route path="/logs" element={<Page><LogsByToken /></Page>} />

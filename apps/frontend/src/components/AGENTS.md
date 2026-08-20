@@ -35,7 +35,10 @@ Per-file list:
   App router both consume it; the routes themselves are declared in `../App.tsx`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `Section`/`Leaf` render `NAV` with an animated
-  active pill; a section holding the current path stays open. `SidebarBrand` is
+  active pill; a section holding the current path stays open. The desktop
+  sidebar can be minimized and persists that choice in `localStorage`; the
+  minimized state renders icon-only links and hover/focus flyout menus for
+  sections with children. `SidebarBrand` is
   the header and holds **only the lockup** (`LogoFull variant="band"`), filling
   the strip edge to edge with a divider under it; the menu below it keeps a 5px
   top gap so the first item does not touch that line - the hash sits **on the identity** because in
@@ -49,6 +52,10 @@ Per-file list:
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`).
+- `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
+  `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
+  per job with state, progress and output paths. The former standalone jobs
+  route no longer exists.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network

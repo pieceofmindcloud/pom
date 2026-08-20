@@ -19,6 +19,11 @@ use tracing::{debug, info, warn};
 
 const GOSSIP_TOPIC: &str = "pom/announce/1.0.0";
 
+type InboundTunnelResponse = (
+    request_response::ResponseChannel<infer_tunnel::TunnelResponse>,
+    infer_tunnel::TunnelResponse,
+);
+
 const DEFAULT_RELAY_NODES: &[&str] = &[
     "/ip4/147.75.87.27/tcp/4001/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
     "/ip4/147.75.195.153/tcp/4001/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
@@ -383,17 +388,23 @@ impl Discovery {
             OutboundRequestId,
             oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
         > = HashMap::new();
+        let (inbound_response_tx, mut inbound_response_rx) =
+            mpsc::channel::<InboundTunnelResponse>(64);
         loop {
             tokio::select! {
                 event = swarm.next() => {
                     let Some(ev) = event else { break };
-                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel).await;
+                    handle_event(&mut swarm, &network, ev, &relay_peer_addrs, &relay_peer_ids, &mut connected_relays, &http, &mut pending_tunnel, &inbound_response_tx).await;
                 }
                 msg = announce_rx.recv() => {
                     let Some(data) = msg else { break };
                     if let Err(e) = swarm.behaviour_mut().gossipsub.publish(topic.clone(), data) {
                         debug!("gossipsub publish: {:?}", e);
                     }
+                }
+                response = inbound_response_rx.recv() => {
+                    let Some((channel, response)) = response else { break };
+                    let _ = swarm.behaviour_mut().infer_tunnel.send_response(channel, response);
                 }
                 ma = dial_rx.recv() => {
                     let Some(addr) = ma else { break };
@@ -424,6 +435,7 @@ async fn handle_event(
         OutboundRequestId,
         oneshot::Sender<Result<infer_tunnel::TunnelResponse, String>>,
     >,
+    inbound_response_tx: &mpsc::Sender<InboundTunnelResponse>,
 ) {
     match event {
         // ── Gossipsub: peer announced itself ────────────────────────────────
@@ -658,12 +670,15 @@ async fn handle_event(
                                 "infer-tunnel: {} → loopback :{} {}",
                                 peer, inference_port, request.path
                             );
-                            let response =
-                                infer_tunnel::serve_loopback(http, inference_port, request).await;
-                            let _ = swarm
-                                .behaviour_mut()
-                                .infer_tunnel
-                                .send_response(channel, response);
+                            let response_tx = inbound_response_tx.clone();
+                            spawn_loopback_request(
+                                http,
+                                inference_port,
+                                request,
+                                move |response| async move {
+                                    let _ = response_tx.send((channel, response)).await;
+                                },
+                            );
                         }
                         None => {
                             // Nothing to forward to — this node has no
@@ -724,6 +739,28 @@ async fn handle_event(
 
         _ => {}
     }
+}
+
+/// Forward an inbound inference request without blocking the swarm event loop.
+///
+/// The loopback HTTP call can run for the whole duration of a prefill, decode,
+/// or TP reduction. Keeping that await inside `handle_event` prevents the swarm
+/// from draining GossipSub and other libp2p protocols, eventually filling the
+/// per-peer GossipSub send queue.
+fn spawn_loopback_request<F, Fut>(
+    http: &reqwest::Client,
+    inference_port: u16,
+    request: infer_tunnel::TunnelRequest,
+    on_response: F,
+) where
+    F: FnOnce(infer_tunnel::TunnelResponse) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let http = http.clone();
+    tokio::spawn(async move {
+        let response = infer_tunnel::serve_loopback(&http, inference_port, request).await;
+        on_response(response).await;
+    });
 }
 
 #[cfg(test)]
@@ -892,5 +929,47 @@ mod tests {
             Some(("10.0.0.1", "42777"))
         );
         assert_eq!(split_host_port("[2804:d55::1]"), None);
+    }
+
+    #[tokio::test]
+    async fn slow_inference_forward_is_dispatched_off_the_swarm_loop() {
+        use axum::{routing::get, Router};
+        use std::time::Instant;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route(
+            "/health",
+            get(|| async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                "ok"
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let (response_tx, response_rx) = oneshot::channel();
+        let http = reqwest::Client::new();
+        let started = Instant::now();
+        spawn_loopback_request(
+            &http,
+            port,
+            infer_tunnel::TunnelRequest::get("/health"),
+            move |response| async move {
+                let _ = response_tx.send(response);
+            },
+        );
+
+        assert!(
+            started.elapsed() < Duration::from_millis(50),
+            "dispatch must return before the slow loopback request completes"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(1), response_rx)
+            .await
+            .expect("background request should complete")
+            .expect("background request should send a response");
+        assert_eq!(response.status, 200);
+        assert_eq!(response.body, b"ok");
     }
 }

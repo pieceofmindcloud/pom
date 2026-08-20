@@ -181,6 +181,10 @@ e em `/ip6/::`.
   esse registro acontece junto com a chamada a `Network::insert_peer`. Sem
   ele, um peer aprendido somente pelo gossip tem `PeerId`, mas nenhum endereço
   para `swarm.dial(peer_id)`.
+  Requisições recebidas pelo túnel são encaminhadas ao servidor de inferência
+  local em uma task separada. O loop do swarm continua drenando GossipSub,
+  respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP
+  está em andamento.
   O id de mensagem é `discovery::announce_message_id` (hash do tópico +
   payload), e **isso não é detalhe**: a função padrão do libp2p é
   `source + sequence`, as duas são `None` sob autenticação anônima, e o

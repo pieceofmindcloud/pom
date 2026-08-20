@@ -161,7 +161,9 @@ OpenAI-compatível arbitrário por variável de ambiente.
 ## Monitor de carga (`utils/sysmon.rs`)
 
 Linux: RAM de `/proc/meminfo`, VRAM e processos de `nvidia-smi` (conferido
-contra `nvidia-smi` na mão: bate exato). macOS: RAM de `sysctl` + `vm_stat`;
+contra `nvidia-smi` na mão: bate exato). As chamadas frequentes ao utilitário
+rodam fora do reaper de processos do Tokio, para não interromper o socket UDP
+do DHT pkarr com `EINTR`. macOS: RAM de `sysctl` + `vm_stat`;
 memória unificada **não** reporta VRAM dedicada - a tela diz isso e mostra a
 memória wired, que é onde ficam os buffers do Metal, em vez de inventar um
 número.

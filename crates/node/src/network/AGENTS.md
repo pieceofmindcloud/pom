@@ -94,8 +94,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
   anunciado) e registra os candidatos como multiaddresses `/p2p/<peer-id>`
   antes de aquecer a conexão do túnel; mDNS descobre na LAN e alimenta
-  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta na
-  circuito (`P2pCircuit`); DCuTR/AutoNAT/Bitswap só logam.
+  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
+  circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
+  em tasks separadas para que um prefill, decode ou TP longo não pare o loop
+  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT/
+  Bitswap só logam.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.

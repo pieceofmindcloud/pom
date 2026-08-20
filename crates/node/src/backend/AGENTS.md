@@ -171,11 +171,12 @@ behind an auth extractor.
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
-  O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
-  máquina; `tp_members` transfere esses dados e todos os candidatos de URL para
-  cada rank, permitindo que `broadcast_to` e o reduce usem primeiro o túnel
-  Noise e tentem cada endereço HTTPS alcançável quando o túnel não está
-  disponível.
+  O `survey` preserva o `PeerId`, os candidatos de endereço UDP e a capability
+  do túnel de cada máquina; os candidatos vêm do `/api/ui/node` do próprio
+  peer, e não somente do anúncio que o coordenador recebeu. `tp_members`
+  transfere esses dados e todos os candidatos de URL para cada rank, permitindo
+  que `broadcast_to` e o reduce reidratem o swarm no destino e tentem cada
+  endereço HTTPS alcançável quando o túnel não está disponível.
   O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
   tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
   bytes ou esperas TP com a telemetria de pipeline.

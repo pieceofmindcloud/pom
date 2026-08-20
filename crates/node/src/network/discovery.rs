@@ -97,21 +97,26 @@ async fn ensure_tunnel_peer_address(
     swarm: &mut Swarm<DiscBehaviour>,
     network: &Network,
     peer_id: PeerId,
+    advertised_override: &[String],
 ) -> std::result::Result<(), String> {
-    let peer_id_text = peer_id.to_string();
-    let peer = network
-        .alive_peers()
-        .await
-        .into_iter()
-        .find(|peer| peer.libp2p_peer_id.as_deref() == Some(peer_id_text.as_str()));
-    let Some(peer) = peer else {
-        return Err(format!("nenhum anúncio vivo para o PeerId {peer_id}"));
+    let advertised = if advertised_override.is_empty() {
+        let peer_id_text = peer_id.to_string();
+        let peer = network
+            .alive_peers()
+            .await
+            .into_iter()
+            .find(|peer| peer.libp2p_peer_id.as_deref() == Some(peer_id_text.as_str()));
+        let Some(peer) = peer else {
+            return Err(format!("nenhum anúncio vivo para o PeerId {peer_id}"));
+        };
+        let mut advertised = peer.addr_candidates;
+        if advertised.is_empty() {
+            advertised.push(peer.addr);
+        }
+        advertised
+    } else {
+        advertised_override.to_vec()
     };
-
-    let mut advertised = peer.addr_candidates;
-    if advertised.is_empty() {
-        advertised.push(peer.addr);
-    }
     let addresses = tunnel_peer_multiaddrs(peer_id, &advertised);
     if addresses.is_empty() {
         return Err(format!("o PeerId {peer_id} não tem endereço discável"));
@@ -459,9 +464,9 @@ impl Discovery {
                     }
                 }
                 out = tunnel_rx.recv() => {
-                    let Some(TunnelOutbound { peer_id, request, reply }) = out else { break };
+                    let Some(TunnelOutbound { peer_id, addr_candidates, request, reply }) = out else { break };
                     if !swarm.is_connected(&peer_id) {
-                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id).await {
+                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id, &addr_candidates).await {
                             let _ = reply.send(Err(error));
                             continue;
                         }

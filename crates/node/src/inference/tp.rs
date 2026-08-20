@@ -32,6 +32,9 @@ struct TpState {
     /// O primeiro é `rank0_url`; os demais cobrem NAT, LAN e containers no
     /// mesmo host quando só um deles é alcançável deste rank.
     rank0_urls: Vec<String>,
+    /// Endereços UDP anunciados pelo primary, para o túnel reconstruir as
+    /// multiaddresses TCP sem depender da tabela de descoberta deste rank.
+    rank0_addr_candidates: Vec<String>,
     /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
     /// direta entre as máquinas.
     rank0_peer_id: Option<String>,
@@ -354,6 +357,7 @@ pub fn register_tp_reduce(
         size,
         rank0_url.clone(),
         vec![rank0_url],
+        Vec::new(),
         rank0_node_id,
         rank0_peer_id,
         rank0_supports_tunnel,
@@ -367,6 +371,7 @@ pub fn register_tp_reduce_with_urls(
     size: u32,
     rank0_url: String,
     mut rank0_urls: Vec<String>,
+    rank0_addr_candidates: Vec<String>,
     rank0_node_id: Option<String>,
     rank0_peer_id: Option<String>,
     rank0_supports_tunnel: bool,
@@ -410,6 +415,7 @@ pub fn register_tp_reduce_with_urls(
         size,
         rank0_url,
         rank0_urls,
+        rank0_addr_candidates,
         rank0_peer_id,
         rank0_supports_tunnel,
         client,
@@ -584,6 +590,7 @@ pub fn broadcast_to(
             .as_deref()
             .and_then(|id| id.parse().ok());
         let supports_tunnel = membro.supports_tunnel;
+        let addr_candidates = membro.addr_candidates.clone();
         let tunnel = crate::infer_tunnel::tunnel_sender();
         let auth_state = auth.clone();
         tokio::spawn(async move {
@@ -611,6 +618,7 @@ pub fn broadcast_to(
                 &path,
                 corpo,
                 headers,
+                &addr_candidates,
                 tunnel,
                 peer_id,
                 supports_tunnel,
@@ -716,6 +724,7 @@ async fn post_reduce(
         "/v1/tp/reduce",
         corpo,
         headers,
+        &state.rank0_addr_candidates,
         tunnel,
         state
             .rank0_peer_id
@@ -990,6 +999,7 @@ mod tests {
                     size: 3,
                     rank0_url: url.clone(),
                     rank0_urls: vec![url.clone()],
+                    rank0_addr_candidates: Vec::new(),
                     rank0_peer_id: None,
                     rank0_supports_tunnel: false,
                     client: reqwest::Client::new(),
@@ -1045,6 +1055,7 @@ mod tests {
             size: 2,
             rank0_url: "http://127.0.0.1:1".into(),
             rank0_urls: vec!["http://127.0.0.1:1".into()],
+            rank0_addr_candidates: Vec::new(),
             rank0_peer_id: Some(peer_id.to_string()),
             rank0_supports_tunnel: true,
             client: reqwest::Client::new(),

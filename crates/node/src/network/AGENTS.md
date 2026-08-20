@@ -94,8 +94,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   para formatos de frame anteriores, porque o produto ainda não foi lançado.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
-  (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
-  túnel libp2p preferencial entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  (`None` = nó sem TP). Cada `TpMember` leva o `PeerId`, os candidatos de
+  endereço UDP e a capacidade do túnel libp2p preferencial entre redes.
+  `set_tp`/`tp_identity` ligam/leem sem reiniciar;
   `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
   workers da cadeia.
 

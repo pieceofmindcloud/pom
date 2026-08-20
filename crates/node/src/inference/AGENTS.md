@@ -103,7 +103,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Noise falha, repete o POST pelos candidatos HTTPS diretos pinados, usando
   HTTPS quando a política TLS está ativa. `broadcast_to` mantém a URL base e a
   rota separadas, porque o túnel encaminha a rota para o loopback do worker. O
-  `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
+  plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
+  swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
+  tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
   autorização interna usa a `connection_key` compartilhada e cai para a
   primeira API key ativa quando a chave de conexão não existe.
 

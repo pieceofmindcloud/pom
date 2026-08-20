@@ -410,6 +410,7 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
         end_layer: end,
         inference_frame_capabilities: caps,
         libp2p_peer_id: None,
+        libp2p_addr_candidates: Vec::new(),
     }
 }
 

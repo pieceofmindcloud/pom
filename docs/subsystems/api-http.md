@@ -114,7 +114,10 @@ conveniência, não controle. Não precisa de reinício e pode ser virado quanta
 vezes o operador quiser - o efeito é imediato neste nó (cache de clientes,
 anúncio, recusa de texto claro remoto) e chega aos demais pela catraca, em um
 ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
-`tls_authority` (se **este** nó pode mudar). Ver `rede-p2p.md`, seção 5.
+`tls_authority` (se **este** nó pode mudar), além de `addr_candidates`,
+`libp2p_peer_id` e `inference_frame_capabilities` para que um plano de
+implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
+`rede-p2p.md`, seção 5.
 
 ## 3. Autenticação (`auth.rs`)
 

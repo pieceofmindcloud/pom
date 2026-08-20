@@ -89,6 +89,11 @@ pub struct PipelineStep {
     /// it over the swarm as a NAT-traversal fallback when direct HTTP fails.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
+    /// Endereços UDP anunciados pelo hop para reconstruir o túnel libp2p.
+    /// O plano leva estes endereços porque o processo que executa o hop pode
+    /// não ter recebido o mesmo anúncio na própria tabela de descoberta.
+    #[serde(default)]
+    pub libp2p_addr_candidates: Vec<String>,
 }
 
 /// Advertised when a node can continue a relay itself — see the `next_hops`
@@ -466,6 +471,11 @@ pub async fn plan_pipeline_with_rtt(
             end_layer: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
+            libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
+                vec![chosen.addr.clone()]
+            } else {
+                chosen.addr_candidates.clone()
+            },
         });
 
         pos = chosen.end_layer + 1;
@@ -704,6 +714,7 @@ mod ipv6_tests {
             end_layer: 1,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
     }
@@ -720,6 +731,7 @@ mod ipv6_tests {
                     end_layer: 7,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
                 },
                 PipelineStep {
                     node_id: "replica-b".into(),
@@ -729,6 +741,7 @@ mod ipv6_tests {
                     end_layer: 15,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
                 },
             ],
             edges: Vec::new(),
@@ -751,6 +764,7 @@ mod ipv6_tests {
             end_layer: 9,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 
@@ -833,6 +847,7 @@ mod ipv6_tests {
             end_layer: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 

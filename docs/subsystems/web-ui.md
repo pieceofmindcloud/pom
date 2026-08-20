@@ -151,6 +151,10 @@ API nas rotas `/v1` e como credencial de operador em `/admin/*`. `POST
 /api/setup/key` e `/api/setup/save` **não** estão no router normal de
 propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
 /api/setup/key` rotacionaria a credencial num nó já configurado.
+/api/setup/key` rotacionaria a credencial num nó já configurado. A mesma
+resposta publica `addr_candidates`, `libp2p_peer_id` e as capabilities do
+túnel, usados pelo deploy TP para transportar o endereço correto até cada
+rank.
 
 ## Janelas modais: portal e pilha de Esc
 

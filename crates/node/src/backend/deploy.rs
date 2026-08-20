@@ -527,6 +527,8 @@ struct Machine {
     /// Todos os endereços anunciados para o servidor de inferência, na ordem
     /// em que este coordenador os conhece.
     inference_candidates: Vec<String>,
+    /// Endereços UDP anunciados pelo peer, para reidratar o túnel libp2p.
+    addr_candidates: Vec<String>,
     /// Identidade e capacidade do transporte alternativo do servidor de
     /// inferência, preservadas para o grupo TP.
     libp2p_peer_id: Option<String>,
@@ -675,6 +677,61 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
             };
+            let addr_candidates = node
+                .get("addr_candidates")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .filter(|values| !values.is_empty())
+                .unwrap_or_else(|| {
+                    if peer.addr_candidates.is_empty() {
+                        vec![peer.addr.clone()]
+                    } else {
+                        peer.addr_candidates.clone()
+                    }
+                });
+            let inference_port = node
+                .get("inference_port")
+                .and_then(|value| value.as_u64())
+                .and_then(|value| u16::try_from(value).ok())
+                .or(peer.inference_port);
+            let inference_candidates = inference_port
+                .map(|port| {
+                    addr_candidates
+                        .iter()
+                        .map(|addr| {
+                            format!(
+                                "{}://{}:{}",
+                                crate::peer_client::peer_scheme(),
+                                crate::network::ip_host(addr),
+                                port
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_else(|| peer.inference_candidates());
+            let libp2p_peer_id = node
+                .get("libp2p_peer_id")
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+                .or_else(|| peer.libp2p_peer_id.clone());
+            let supports_tunnel = node
+                .get("inference_frame_capabilities")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .any(|value| value.as_str() == Some(crate::pipeline::CAP_LIBP2P_TUNNEL))
+                })
+                .unwrap_or_else(|| {
+                    peer.inference_frame_capabilities
+                        .iter()
+                        .any(|value| value == crate::pipeline::CAP_LIBP2P_TUNNEL)
+                });
             let rtt_report = match rtt {
                 Ok(response) if response.status().is_success() => {
                     response.json::<RttReport>().await.ok()
@@ -722,13 +779,11 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                 Machine {
                     node_id: peer.node_id.clone(),
                     gateway_url: peer.gateway_url(),
-                    inference_url: peer.inference_url(),
-                    inference_candidates: peer.inference_candidates(),
-                    libp2p_peer_id: peer.libp2p_peer_id.clone(),
-                    supports_tunnel: peer
-                        .inference_frame_capabilities
-                        .iter()
-                        .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
+                    inference_url: inference_candidates.first().cloned(),
+                    inference_candidates,
+                    addr_candidates,
+                    libp2p_peer_id,
+                    supports_tunnel,
                     hostname: if peer.hostname.is_empty() && is_self {
                         body.get("hostname")
                             .and_then(|h| h.as_str())
@@ -2501,6 +2556,11 @@ fn tp_members(
             node_id: node_id.to_string(),
             url,
             url_candidates,
+            addr_candidates: if m.addr_candidates.is_empty() {
+                Vec::new()
+            } else {
+                m.addr_candidates.clone()
+            },
             libp2p_peer_id: m.libp2p_peer_id.clone(),
             supports_tunnel: m.supports_tunnel,
         })
@@ -4714,6 +4774,7 @@ mod tests {
                 gateway_url: None,
                 inference_url: None,
                 inference_candidates: Vec::new(),
+                addr_candidates: Vec::new(),
                 libp2p_peer_id: None,
                 supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
@@ -5716,6 +5777,7 @@ mod tests {
             gateway_url: Some(format!("http://{id}:8080")),
             inference_url: Some(format!("http://{id}:8181")),
             inference_candidates: vec![format!("http://{id}:8181")],
+            addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb,
@@ -6124,6 +6186,7 @@ mod tests {
             gateway_url: Some(format!("http://127.0.0.1:{port}")),
             inference_url: Some(format!("http://127.0.0.1:{port}")),
             inference_candidates: vec![format!("http://127.0.0.1:{port}")],
+            addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb: 900_000,

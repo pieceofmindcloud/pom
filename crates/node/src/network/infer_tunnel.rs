@@ -81,6 +81,9 @@ pub struct TunnelResponse {
 /// intended caller.
 pub struct TunnelOutbound {
     pub peer_id: PeerId,
+    /// Endereços UDP anunciados pelo destino, usados para reconstruir as
+    /// multiaddresses TCP quando o swarm local ainda não recebeu o anúncio.
+    pub addr_candidates: Vec<String>,
     pub request: TunnelRequest,
     pub reply: oneshot::Sender<Result<TunnelResponse, String>>,
 }
@@ -234,6 +237,7 @@ pub async fn measure_rtt(
     sender
         .send(TunnelOutbound {
             peer_id,
+            addr_candidates: Vec::new(),
             request: TunnelRequest::get("/health"),
             reply,
         })
@@ -291,7 +295,7 @@ pub fn live_probe_swarm(peer: PeerId, addr: libp2p::Multiaddr) -> TunnelOutbound
         loop {
             tokio::select! {
                 out = rx.recv() => {
-                    let Some(TunnelOutbound { peer_id, request, reply }) = out else { break };
+                    let Some(TunnelOutbound { peer_id, request, reply, .. }) = out else { break };
                     eprintln!("[probe-swarm] send_request -> {peer_id}");
                     let id = swarm.behaviour_mut().send_request(&peer_id, request);
                     pending.insert(id, reply);

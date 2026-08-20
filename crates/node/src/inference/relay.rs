@@ -567,7 +567,17 @@ async fn send_batch_body(
         step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
-        match send_batch_via_tunnel(tunnel, peer_id, path, body.clone(), peer_label, auth).await {
+        match send_batch_via_tunnel(
+            tunnel,
+            peer_id,
+            &step.libp2p_addr_candidates,
+            path,
+            body.clone(),
+            peer_label,
+            auth,
+        )
+        .await
+        {
             Ok(response) => return Ok(response),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
@@ -638,6 +648,7 @@ async fn send_batch_body(
 async fn send_batch_via_tunnel(
     tunnel: &TunnelOutboundSender,
     peer_id: PeerId,
+    addr_candidates: &[String],
     path: &str,
     body: Vec<u8>,
     peer_label: &str,
@@ -654,6 +665,7 @@ async fn send_batch_via_tunnel(
     tunnel
         .send(TunnelOutbound {
             peer_id,
+            addr_candidates: addr_candidates.to_vec(),
             request: TunnelRequest::post(path, body.clone(), headers),
             reply: reply_tx,
         })
@@ -728,6 +740,7 @@ pub async fn send_bytes_or_tunnel(
         path,
         body,
         headers,
+        &[],
         tunnel,
         peer_id,
         supports_tunnel,
@@ -748,6 +761,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
     path: &str,
     body: Vec<u8>,
     headers: Vec<(String, String)>,
+    tunnel_addr_candidates: &[String],
     tunnel: Option<&TunnelOutboundSender>,
     peer_id: Option<PeerId>,
     supports_tunnel: bool,
@@ -758,6 +772,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
         match send_bytes_via_tunnel(
             tunnel,
             peer_id,
+            tunnel_addr_candidates,
             path,
             body.clone(),
             headers.clone(),
@@ -827,6 +842,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
 async fn send_bytes_via_tunnel(
     tunnel: &TunnelOutboundSender,
     peer_id: PeerId,
+    addr_candidates: &[String],
     path: &str,
     body: Vec<u8>,
     headers: Vec<(String, String)>,
@@ -836,6 +852,7 @@ async fn send_bytes_via_tunnel(
     tunnel
         .send(TunnelOutbound {
             peer_id,
+            addr_candidates: addr_candidates.to_vec(),
             request: TunnelRequest::post(path, body, headers),
             reply: reply_tx,
         })
@@ -923,6 +940,7 @@ pub async fn send_frame_or_tunnel(
         match send_frame_via_tunnel_with_auth(
             tunnel,
             peer_id,
+            &step.libp2p_addr_candidates,
             path,
             meta,
             tensor,
@@ -1011,7 +1029,17 @@ pub async fn send_frame_via_tunnel(
     peer_label: &str,
 ) -> Result<SentFrame> {
     send_frame_via_tunnel_with_auth(
-        tunnel, peer_id, path, meta, tensor, dtype, encoding, false, peer_label, None,
+        tunnel,
+        peer_id,
+        &[],
+        path,
+        meta,
+        tensor,
+        dtype,
+        encoding,
+        false,
+        peer_label,
+        None,
     )
     .await
 }
@@ -1019,6 +1047,7 @@ pub async fn send_frame_via_tunnel(
 async fn send_frame_via_tunnel_with_auth(
     tunnel: &TunnelOutboundSender,
     peer_id: PeerId,
+    addr_candidates: &[String],
     path: &str,
     meta: &Value,
     tensor: Option<(&[f32], [usize; 2])>,
@@ -1051,6 +1080,7 @@ async fn send_frame_via_tunnel_with_auth(
     }
     let outbound = TunnelOutbound {
         peer_id,
+        addr_candidates: addr_candidates.to_vec(),
         request: TunnelRequest::post(path, body.clone(), headers),
         reply: reply_tx,
     };
@@ -1124,6 +1154,7 @@ mod tests {
             "/v1/tp/reduce",
             b"partial".to_vec(),
             Vec::new(),
+            &[],
             None,
             None,
             false,
@@ -1396,6 +1427,7 @@ mod tests {
                 Vec::new()
             },
             libp2p_peer_id: peer_id,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 

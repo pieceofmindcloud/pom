@@ -101,6 +101,12 @@ pub struct NodeInfo {
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
+    /// Endereços UDP anunciados pelo nó, necessários para o plano reconstruir
+    /// as multiaddresses TCP do túnel no processo que executar o hop.
+    pub addr_candidates: Vec<String>,
+    /// Identidade e capabilities do túnel libp2p anunciadas por este nó.
+    pub libp2p_peer_id: Option<String>,
+    pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
     pub inference_port: Option<u16>,
     pub config: Option<NodeConfig>,
@@ -159,6 +165,27 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),
+        addr_candidates: state.network.self_addr_candidates(),
+        libp2p_peer_id: state.network.libp2p_peer_id.clone(),
+        inference_frame_capabilities: {
+            let mut capabilities = vec![
+                crate::pipeline::CAP_FRAME_BATCH.to_string(),
+                "relay/v1-chain".to_string(),
+                "relay/v2-direct".to_string(),
+                "speculate/v1-lookup".to_string(),
+                "speculate/v1-mtp-sliced".to_string(),
+            ];
+            if state.network.mtp_ready() {
+                capabilities.push("speculate/v1-mtp".to_string());
+            }
+            if state.network.batching_ready() {
+                capabilities.push(crate::pipeline::CAP_FRAME_BATCH.to_string());
+            }
+            if state.network.libp2p_tunnel_ready() {
+                capabilities.push(crate::pipeline::CAP_LIBP2P_TUNNEL.to_string());
+            }
+            capabilities
+        },
         gateway_port: state.gateway_port,
         inference_port: state.network.inference_port,
         config,
@@ -1846,6 +1873,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 tp.rank0_url.clone().unwrap(),
                 rank0
                     .map(|member| member.url_candidates.clone())
+                    .unwrap_or_default(),
+                rank0
+                    .map(|member| member.addr_candidates.clone())
                     .unwrap_or_default(),
                 tp.rank0_node_id.clone(),
                 rank0.and_then(|m| m.libp2p_peer_id.clone()),

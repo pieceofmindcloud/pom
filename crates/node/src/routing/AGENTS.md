@@ -9,7 +9,8 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
 
 - `pipeline.rs` - `LoadTracker`/`LoadGuard` (contagem RAII de requisições em
   voo por peer), `PipelineStep`/`PipelinePlan`/`PipelineEdge`, `plan_pipeline`
-  (greedy) e `resolve_step_url` (endereço por hop, por sessão).
+  (greedy) e `resolve_step_url` (endereço por hop, por sessão). Cada
+  `PipelineStep` preserva também os candidatos UDP do hop para o túnel libp2p.
 
 ## Funções-chave
 

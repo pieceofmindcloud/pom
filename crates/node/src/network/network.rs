@@ -85,6 +85,10 @@ pub struct TpMember {
     /// endereço preferido não é alcançável a partir deste rank.
     #[serde(default)]
     pub url_candidates: Vec<String>,
+    /// Endereços UDP anunciados pelo membro, para o túnel reconstruir as
+    /// multiaddresses TCP mesmo quando o swarm local ainda não viu o anúncio.
+    #[serde(default)]
+    pub addr_candidates: Vec<String>,
     /// PeerId usado pelo fallback de transporte libp2p.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,

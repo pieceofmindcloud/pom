@@ -131,10 +131,11 @@ rank 0. Membro sem porta de inferência anunciada é recusa no plano
 `docs/subsystems/fatiamento.md` (seção do shard por tensor) e
 `docs/subsystems/rede-p2p.md`.
 
-Cada membro também carrega o `PeerId` libp2p e a capability do túnel anunciada
-pelo servidor. Assim, o `broadcast_to` do rank 0 e o reduce da coletiva podem
-repetir a chamada pelo swarm quando as máquinas estão em redes sem rota HTTPS
-direta entre si.
+Cada membro também carrega o `PeerId` libp2p, os candidatos UDP anunciados e a
+capability do túnel pelo servidor. Assim, o `broadcast_to` do rank 0 e o reduce
+da coletiva podem reidratar o swarm mesmo quando o processo que executa o rank
+não recebeu o mesmo anúncio, e repetir a chamada pelo swarm quando as máquinas
+estão em redes sem rota HTTPS direta.
 
 `AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
 inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.

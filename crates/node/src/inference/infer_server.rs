@@ -671,6 +671,7 @@ mod relay_tests {
             end_layer: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 

@@ -245,9 +245,10 @@ Comportamento atual do código:
    destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
    quadro segue pelo cliente direto pinado, usando HTTPS quando TLS está ativo.
    Antes de cada envio, o swarm reidrata as multiaddresses TCP a partir dos
-   candidatos do anúncio vivo quando ainda não há conexão. Isso cobre a janela
-   em que o gateway já conhece o `PeerId`, mas o evento gossipsub ainda não
-   registrou um endereço no livro de endereços do libp2p.
+   candidatos UDP levados pelo plano quando disponíveis, ou do anúncio vivo
+   como fallback, quando ainda não há conexão. Isso cobre a janela em que o
+   gateway já conhece o `PeerId`, mas o evento gossipsub ainda não registrou um
+   endereço no livro de endereços do libp2p.
    Uma resposta HTTP explícita do peer não é repetida em outro transporte.
    No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra e o
    `TunnelRequest` preserva os cabeçalhos do decode, da barreira, do rank e da

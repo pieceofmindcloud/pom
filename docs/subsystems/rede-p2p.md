@@ -247,7 +247,9 @@ Comportamento atual do código:
    Uma resposta HTTP explícita do peer não é repetida em outro transporte.
    No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra e o
    `TunnelRequest` preserva os cabeçalhos do decode, da barreira, do rank e da
-   autorização.
+   autorização. O loopback só injeta `application/octet-stream` quando a
+   chamada não informou outro tipo, preservando `application/json` nas rotas de
+   ciclo de vida da sessão.
 3. **A porta de inferência exige credencial.** `/v1/prefill`, `/v1/step`,
    `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce` aceitam a
    `connection_key` compartilhada ou uma API key ativa no nó receptor. A

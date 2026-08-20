@@ -21,7 +21,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
   corpo e cabeçalhos, inclusive a credencial da porta de inferência;
   `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
-  sonda `/health`. `measure_rtt` mede a ida e volta pelo mesmo túnel Noise.
+  sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
+  `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
+  nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
+  mesmo túnel Noise.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).

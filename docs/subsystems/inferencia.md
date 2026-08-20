@@ -28,7 +28,9 @@ cliente direto pinado, com HTTPS quando a política TLS está ativa.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
-key ativa quando a chave compartilhada não existe. Ver
+key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
+`Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
+Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
 A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia

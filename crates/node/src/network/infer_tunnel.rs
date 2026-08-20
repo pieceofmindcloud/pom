@@ -337,12 +337,19 @@ pub async fn serve_loopback(
     request: TunnelRequest,
 ) -> TunnelResponse {
     let url = format!("http://127.0.0.1:{inference_port}{}", request.path);
+    let has_content_type = request
+        .headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case(reqwest::header::CONTENT_TYPE.as_str()));
     let mut request_builder = if request.method.eq_ignore_ascii_case("GET") {
         http.get(&url)
     } else {
-        http.post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(request.body)
+        let builder = http.post(&url).body(request.body);
+        if has_content_type {
+            builder
+        } else {
+            builder.header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+        }
     };
     for (name, value) in request.headers {
         request_builder = request_builder.header(name, value);
@@ -534,6 +541,53 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert_eq!(response.body, b"the response body");
+    }
+
+    #[tokio::test]
+    async fn serve_loopback_preserves_json_content_type_for_lifecycle_calls() {
+        use axum::{
+            body::Bytes,
+            http::{HeaderMap, StatusCode},
+            routing::post,
+            Router,
+        };
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route(
+            "/v1/session/release",
+            post(|headers: HeaderMap, body: Bytes| async move {
+                let content_type = headers
+                    .get(axum::http::header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok());
+                if content_type == Some("application/json")
+                    && body.as_ref() == br#"{"session_id":"s"}"#
+                {
+                    StatusCode::OK
+                } else {
+                    StatusCode::UNSUPPORTED_MEDIA_TYPE
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let response = serve_loopback(
+            &reqwest::Client::new(),
+            port,
+            TunnelRequest::post(
+                "/v1/session/release",
+                br#"{"session_id":"s"}"#.to_vec(),
+                vec![(
+                    reqwest::header::CONTENT_TYPE.as_str().to_string(),
+                    "application/json".to_string(),
+                )],
+            ),
+        )
+        .await;
+
+        assert_eq!(response.status, 200);
     }
 
     #[tokio::test]

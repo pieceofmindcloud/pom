@@ -36,7 +36,9 @@ Par de specs notaveis: `2026-05-24-pkarr-discovery-design.md` e
 `2026-05-25-dcutr-nat-traversal-design.md` (descoberta pela internet, base do
 `pkarr_node.rs`/`discovery.rs`), `2026-08-07-principal-node-architecture-design.md`
 (modo setup e chave de conexao), `2026-08-12-transferencias-simetricas-e-exclusao-design.md`,
-`2026-08-12-request-telemetry-design.md`.
+`2026-08-12-request-telemetry-design.md` e
+`2026-08-20-batching-continuo-inferencia-distribuida-design.md` (scheduler local,
+frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 
 ## superpowers/plans/
 

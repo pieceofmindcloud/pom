@@ -274,7 +274,9 @@ behind an auth extractor.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
   optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, and the connection key counts as operator
-  (`Caller::operator()`). `AuthRejection`: MissingHeader=401, InvalidKey=403.
+  (`Caller::operator()`). `inference_token` chooses the shared connection key,
+  falling back to the first active API key for internal inference calls.
+  `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `CAPACITY=500` in a `OnceLock<RwLock<VecDeque<Entry>>>`;
   `Caller { token_label, token_hint, token_node_id }` (built by the auth
   extractor, the only place that sees the credential); `Entry` carries

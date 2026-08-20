@@ -551,7 +551,7 @@ pub fn broadcast_to(
             let inference_token = match auth_state {
                 Some(auth) => {
                     let config = auth.read().await;
-                    (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+                    crate::auth::inference_token(&config)
                 }
                 None => None,
             };
@@ -649,7 +649,7 @@ async fn post_reduce(
     let inference_token = match &state.auth {
         Some(auth) => {
             let config = auth.read().await;
-            (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+            crate::auth::inference_token(&config)
         }
         None => None,
     };

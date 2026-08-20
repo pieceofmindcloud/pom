@@ -145,8 +145,10 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`,
 `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`: aceita a
-`connection_key` compartilhada ou uma API key ativa. `/health` continua público
-para sondas de readiness. O transporte preferencial entre nós é o túnel
+`connection_key` compartilhada ou uma API key ativa. Nas chamadas internas
+entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
+API key ativa. `/health` continua público para sondas de readiness. O transporte
+preferencial entre nós é o túnel
 libp2p/Noise; o cliente direto pinado é fallback quando o túnel não está
 disponível ou falha no transporte.
 

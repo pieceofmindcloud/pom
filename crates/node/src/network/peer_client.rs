@@ -107,13 +107,13 @@ impl PeerClients {
         }
     }
 
-    /// Chave que os nós usam entre si na porta de inferência. API keys não são
-    /// encaminhadas automaticamente: elas pertencem ao cliente externo e a
-    /// cada configuração local. O receptor, porém, aceita ambas as formas.
+    /// Credencial que os nós usam entre si na porta de inferência. A chave de
+    /// conexão é preferida; uma API key ativa é o fallback aceito pelo mesmo
+    /// middleware quando a instalação não tem connection_key.
     pub async fn inference_token(&self) -> Option<String> {
         let auth = self.auth.read().ok()?.clone()?;
         let config = auth.read().await;
-        (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+        crate::auth::inference_token(&config)
     }
 
     pub async fn authorize_inference_request(

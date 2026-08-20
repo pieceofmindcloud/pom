@@ -27,7 +27,8 @@ membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
 cliente direto pinado, com HTTPS quando a política TLS está ativa.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
-ativa. Ver
+ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
+key ativa quando a chave compartilhada não existe. Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
 A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia

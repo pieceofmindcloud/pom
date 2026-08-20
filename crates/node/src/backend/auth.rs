@@ -11,6 +11,24 @@ use tokio::sync::RwLock;
 
 pub type AuthState = Arc<RwLock<Config>>;
 
+/// Escolhe a credencial que um nó usa nas chamadas internas de inferência.
+///
+/// A `connection_key` continua sendo a credencial canônica e compartilhada do
+/// cluster. Quando ela não está disponível, uma API key ativa é a única outra
+/// credencial que a porta de inferência aceita, então ela pode ser usada para
+/// manter os peers autenticados em instalações configuradas dessa forma.
+/// Nunca retorna uma chave revogada nem uma string vazia.
+pub fn inference_token(config: &Config) -> Option<String> {
+    if !config.connection_key.is_empty() {
+        return Some(config.connection_key.clone());
+    }
+    config
+        .api_keys
+        .iter()
+        .find(|key| key.active && !key.key.is_empty())
+        .map(|key| key.key.clone())
+}
+
 /// Valida o token que pode atravessar a porta de inferência.
 ///
 /// A chave de conexão é compartilhada por todos os nós do cluster. As API
@@ -182,5 +200,36 @@ mod tests {
         assert!(is_valid_inference_token(&cfg, "sk-active"));
         assert!(!is_valid_inference_token(&cfg, "sk-revoked"));
         assert!(!is_valid_inference_token(&cfg, "wrong"));
+    }
+
+    #[test]
+    fn internal_inference_token_prefers_connection_key_and_falls_back_to_active_api_key() {
+        let mut cfg = crate::config::Config {
+            role: crate::config::Role::Principal,
+            connection_key: "cluster-secret".into(),
+            gateway_port: 8080,
+            p2p_port: 42777,
+            inference_port: Some(8181),
+            bootstrap_nodes: vec![],
+            advertise_addr: None,
+            api_keys: vec![crate::config::ApiKey {
+                key: "sk-active".into(),
+                label: "test".into(),
+                node_id: String::new(),
+                active: true,
+                created_at: String::new(),
+            }],
+            blocked_nodes: vec![],
+            tls_required: false,
+            model_dirs: None,
+            shard_dir: None,
+            shard_max_gb: 1.0,
+            node_name: None,
+        };
+
+        assert_eq!(inference_token(&cfg).as_deref(), Some("cluster-secret"));
+
+        cfg.connection_key.clear();
+        assert_eq!(inference_token(&cfg).as_deref(), Some("sk-active"));
     }
 }

@@ -97,8 +97,12 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
   no Linux; Windows fica vazio e cai no endereço observado) e filtra com
   `filter_candidates`: descarta loopback/link-local/deprecated, estável antes de
   temporário, teto de 2 por família. O endereço fixado pelo operador
-  (`--advertise-addr`) vem primeiro e não conta para o teto.
-- `Announce.addr` usa `announce_addr()`: o fixado ou o literal `0.0.0.0:<porta>`.
+  (`--advertise-addr`) vem primeiro e não conta para o teto; sem fixação, os
+  endereços públicos atuais vêm antes do observado por `identify` e dos demais
+  endereços locais.
+- `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
+  local com a porta de descoberta, o observado por `identify`, ou o literal
+  `0.0.0.0:<porta>`.
 - `advertised_addr` normaliza o que o operador digita à mão em `host:port`
   (IPv6 puro precisa de colchetes para ganhar porta).
 - `self_announce` monta o `Announce`; anuncia zero camadas quando não há
@@ -109,12 +113,14 @@ a mesma para UDP e gossipsub - os dois leem do mesmo `Network`):
 
 1. endereço fixado pelo operador - `--advertise-addr` ou `--public-addr`
    alimentam o mesmo campo, `--advertise-addr` vence se os dois vierem;
-2. endereço público observado por um peer via libp2p `identify`
+2. endereço público atual das interfaces locais, com endereço estável antes do
+   IPv6 temporário;
+3. endereço público observado por um peer via libp2p `identify`
    (`Network::set_observed_addr`, chamado de `discovery.rs` no evento
    `identify::Event::Received` - mesmo princípio de um STUN, sobre as conexões
    que o swarm já faz);
-3. interfaces locais desta máquina;
-4. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
+4. demais interfaces locais desta máquina;
+5. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
 
 `addrs::is_private_or_local` decide se um endereço observado é novidade: RFC 1918,
 **`100.64/10` (RFC 6598, o CGNAT - e o que a Tailscale usa)** e IPv6 unique-local
@@ -122,9 +128,9 @@ não contam, porque só provam que quem respondeu está na mesma rede privada.
 
 Conferido ao vivo em 2026-08-16, sem reiniciar nada: fixar o endereço pela tela
 de Rede (`POST /api/ui/network/advertise-addr`) chega aos outros nós em ~10 s;
-limpar o campo volta para o observado pelo `identify`; e o endereço da Tailscale
-(`100.122.132.97`), antes adotado como público, deixou de ser aceito. O que
-**não** é estável é o observado quando nada foi fixado - ver Defeitos anotados.
+limpar o campo volta para o endereço público atual da interface quando existe,
+ou para o observado pelo `identify` quando o nó está atrás de NAT; e o endereço
+da Tailscale (`100.122.132.97`), antes adotado como público, deixou de ser aceito.
 
 ### Rotas dinâmicas (`route.rs`)
 
@@ -391,14 +397,6 @@ quantas vezes quiser.
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
-- **DEFEITO ANOTADO: o endereço observado por um peer não tem critério de
-  desempate** - `Network::set_observed_addr` guarda o que o último `identify`
-  disse. Num Mac com vários IPv6 de privacidade, peers diferentes observam
-  endereços diferentes e o `Announce` alterna entre eles (visto ao vivo em
-  2026-08-16, a mesma tela mostrando dois endereços em leituras seguidas).
-  `addrs::filter_candidates` prefere o estável ao temporário na enumeração
-  local; o caminho do observado não tem essa preferência. Quem precisa de
-  endereço estável fixa em `--advertise-addr` ou na tela de Rede, que vence.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
   `Path::new(".pom.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório

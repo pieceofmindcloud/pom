@@ -76,7 +76,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `detach`/`rejoin` - tirar/voltar o nó da rede sem derrubar a UI/API
   (`--no-discovery`); rejoin refaz bootstrap + announce.
 - `self_announce` - monta o Announce; anuncia zero camadas quando não há
-  assignment, para que nó configurado pela UI ainda seja visível.
+  assignment, para que nó configurado pela UI ainda seja visível. O endereço
+  segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
+  atual das interfaces com estável antes de temporário, endereço observado por
+  `identify`, demais interfaces locais e o sentinela `0.0.0.0`.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
@@ -114,9 +117,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `filter_candidates` - descarta loopback/link-local/deprecated, estável antes
   de temporário, teto de 2 por família (o macOS cria vários IPv6 sozinho e o
   `PeerList` já está no limite da MTU); endereço fixado pelo operador vem
-  primeiro e não conta para o teto. A comparação com o que já entrou é feita
-  sem colchetes dos dois lados - `fixado` vem colchetado de `effective_host` e
-  o local vem cru, e comparar as duas formas duplicava o IPv6 no anúncio.
+  primeiro e não conta para o teto. `Network` separa esses candidatos em
+  públicos e privados: o público atual vem antes do observado por `identify`,
+  e o observado continua fallback para NAT. A comparação com o que já entrou
+  é feita sem colchetes dos dois lados - `fixado` vem colchetado de
+  `effective_host` e o local vem cru, e comparar as duas formas duplicava o
+  IPv6 no anúncio.
 - `is_private_or_local` - decide se um endereço observado por um peer é notícia
   sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
   **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.
@@ -190,15 +196,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
   servidor.
 
-- **O endereço observado troca a cada `identify`, e não há preferência entre
-  eles**: `set_observed_addr` sobrescreve com o que o último peer disse. Num
-  MacBook com vários IPv6 de privacidade, peers diferentes observam endereços
-  diferentes e o `Announce` alterna entre eles - visto ao vivo em 2026-08-16,
-  a mesma tela mostrando `…fc93:da35:2de:2926` e `…99c3:77db:53b:cc08` em
-  leituras seguidas. `filter_candidates` prefere o estável ao temporário na
-  enumeração local, mas o caminho do observado não tem esse critério. Quem
-  precisa de endereço estável fixa em `--advertise-addr` / na tela de Rede,
-  que vence os dois.
 - **Um hop inalcançável custa o timeout de `connect` do sistema antes de o
   túnel ser tentado**: `relay::send_frame` fixa 600 s por requisição (sobrepõe
   o do cliente), então quem decide é o SO - medido em **75 s** no macOS contra

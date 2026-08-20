@@ -243,6 +243,83 @@ pub(crate) fn ip_host(addr: &str) -> &str {
     }
 }
 
+fn bare_host(host: &str) -> &str {
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+fn host_port(host: &str, port: u16) -> String {
+    let host = bare_host(host);
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn local_candidates_by_preference(
+    pinned_host: Option<&str>,
+    observed_addr: Option<&str>,
+    local: Vec<crate::addrs::LocalAddr>,
+) -> Vec<String> {
+    let local = crate::addrs::filter_candidates(local, None);
+    let mut preferred = Vec::with_capacity(local.len() + 2);
+
+    if let Some(pinned) = pinned_host {
+        preferred.push(pinned.to_string());
+        preferred.extend(local);
+        return deduplicate_hosts(preferred);
+    }
+
+    let (public, private_or_local): (Vec<_>, Vec<_>) = local
+        .into_iter()
+        .partition(|ip| !crate::addrs::is_private_or_local(bare_host(ip)));
+    preferred.extend(public);
+
+    if let Some(observed) = observed_addr {
+        let observed_host = ip_host(observed);
+        if !crate::addrs::is_private_or_local(bare_host(observed_host)) {
+            preferred.push(observed_host.to_string());
+        }
+    }
+
+    preferred.extend(private_or_local);
+    deduplicate_hosts(preferred)
+}
+
+fn deduplicate_hosts(hosts: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::with_capacity(hosts.len());
+    for host in hosts {
+        if unique
+            .iter()
+            .all(|existing: &String| bare_host(existing) != bare_host(&host))
+        {
+            unique.push(host);
+        }
+    }
+    unique
+}
+
+fn current_public_local_host(local: Vec<crate::addrs::LocalAddr>) -> Option<String> {
+    crate::addrs::filter_candidates(local, None)
+        .into_iter()
+        .find(|ip| !crate::addrs::is_private_or_local(bare_host(ip)))
+}
+
+fn choose_announce_addr(
+    pinned_addr: Option<String>,
+    observed_addr: Option<String>,
+    local: Vec<crate::addrs::LocalAddr>,
+    port: u16,
+) -> String {
+    if let Some(pinned) = pinned_addr {
+        return pinned;
+    }
+    if let Some(current) = current_public_local_host(local) {
+        return host_port(&current, port);
+    }
+    observed_addr.unwrap_or_else(|| format!("0.0.0.0:{port}"))
+}
+
 impl PeerInfo {
     pub fn layer_range(&self) -> String {
         format!("{}-{}", self.start_layer, self.end_layer)
@@ -731,64 +808,66 @@ impl Network {
             .clone()
     }
 
-    /// Host to fall back on when nothing was explicitly pinned: the
-    /// operator's own choice (`advertise_addr`) always wins over anything
-    /// this node merely inferred about itself.
+    /// Host to use when the node needs to describe how peers can reach it.
     ///
-    /// `pub` (not just used by `self_addr_candidates`/`announce_addr`
-    /// internally) because `GatewayState::all_peers`'s self-entry
-    /// (`gateway.rs`) needs the exact same pinned-then-observed preference
-    /// when it builds this node's own `.addr` — without it, that entry fell
-    /// straight to `advertised_host()` alone and skipped the peer-observed
-    /// public address entirely, so a NAT'd node's own dashboard card kept
-    /// showing its private LAN IP even after `Announce`/`self_addr_candidates`
-    /// were already fixed.
+    /// An explicit pin wins. Otherwise a current public local address wins
+    /// over an older address learned through identify, while the observed
+    /// address remains available for NAT'd nodes with no public interface.
+    /// `pub` because `GatewayState::all_peers` uses the same choice for the
+    /// node's own dashboard entry.
     pub fn effective_host(&self) -> Option<String> {
-        self.advertised_host()
-            .or_else(|| self.observed_addr().map(|a| ip_host(&a).to_string()))
+        let pinned = self.advertised_host();
+        if pinned.is_some() {
+            return pinned;
+        }
+
+        if let Some(current) = current_public_local_host(crate::addrs::local_addrs()) {
+            return Some(current);
+        }
+
+        let observed = self.observed_addr();
+        observed.map(|addr| ip_host(&addr).to_string())
     }
 
     /// Enderecos que este no anuncia de si.
     ///
-    /// O endereco fixado pelo operador vem primeiro; na falta dele, o
-    /// endereco publico observado por algum peer via libp2p `identify` (ver
-    /// `set_observed_addr`) - so entao vem o resto, das interfaces desta
-    /// maquina, ja filtrado. Um no sem nenhum endereco enumeravel devolve
-    /// lista vazia, e o peer do outro lado cai no endereco observado do
-    /// pacote - que e o comportamento de sempre.
+    /// O endereço fixado pelo operador vem primeiro. Sem fixação, os
+    /// endereços públicos atuais das interfaces vêm antes do observado por
+    /// identify, e os endereços locais restantes fecham a lista. Assim, uma
+    /// rotação de IPv6 no macOS não deixa um endereço observado antigo na
+    /// frente, mas um nó atrás de NAT ainda conserva seu fallback público.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let porta = self.bind_addr.port();
-        crate::addrs::filter_candidates(
+        let pinned = self.advertised_host();
+        let observed = self.observed_addr();
+        local_candidates_by_preference(
+            pinned.as_deref(),
+            observed.as_deref(),
             crate::addrs::local_addrs(),
-            self.effective_host().as_deref(),
         )
         .into_iter()
-        .map(|ip| {
-            if ip.contains(':') && !ip.starts_with('[') {
-                format!("[{ip}]:{porta}")
-            } else {
-                format!("{ip}:{porta}")
-            }
-        })
+        .map(|ip| host_port(&ip, porta))
         .collect()
     }
 
     /// What this node puts in `Announce.addr`.
     ///
     /// `0.0.0.0:<port>` is the "ask the receiver" sentinel: `handle_message`
-    /// replaces it with the source address of the packet. Falls back to a
-    /// peer-observed public address (`set_observed_addr`) before that
-    /// sentinel — a NAT'd node with no `--advertise-addr`/`--public-addr` set
-    /// otherwise has nothing better to offer a remote peer reached over
-    /// gossipsub, where there is no packet source to rewrite `addr` with the
-    /// way the UDP path does.
+    /// replaces it with the source address of the packet. Without an explicit
+    /// pin, a current public local address comes first. The peer-observed
+    /// address remains the fallback for NAT'd nodes with no public interface.
     pub fn announce_addr(&self) -> String {
-        self.advertise_addr
+        let pinned = self
+            .advertise_addr
             .read()
             .expect("advertise_addr lock")
-            .clone()
-            .or_else(|| self.observed_addr())
-            .unwrap_or_else(|| format!("0.0.0.0:{}", self.bind_addr.port()))
+            .clone();
+        choose_announce_addr(
+            pinned,
+            self.observed_addr(),
+            crate::addrs::local_addrs(),
+            self.bind_addr.port(),
+        )
     }
 
     /// Put a destination in the address family of our socket.
@@ -1609,30 +1688,73 @@ mod tests {
         }
     }
 
+    /// Quando o IPv6 da interface muda, o último endereço observado por
+    /// identify não pode continuar vencendo o endereço público atual.
+    #[test]
+    fn a_current_public_local_address_outranks_a_stale_observed_address() {
+        let local = vec![
+            crate::addrs::LocalAddr {
+                ip: "2001:db8::2".into(),
+                deprecated: false,
+                temporary: true,
+            },
+            crate::addrs::LocalAddr {
+                ip: "2001:db8::1".into(),
+                deprecated: false,
+                temporary: false,
+            },
+        ];
+        let observed = Some("203.0.113.5:9999".to_string());
+
+        assert_eq!(
+            choose_announce_addr(None, observed.clone(), local.clone(), 42777),
+            "[2001:db8::1]:42777"
+        );
+        assert_eq!(
+            local_candidates_by_preference(None, observed.as_deref(), local),
+            vec!["2001:db8::1", "2001:db8::2", "203.0.113.5"]
+        );
+    }
+
     /// A NAT'd node with nothing pinned has, until now, only its own private
     /// LAN interfaces to offer — useless to a remote peer over gossipsub,
     /// where there is no packet source to rewrite `addr` with the way the
     /// UDP path does. A peer-observed public address has to fill that gap.
-    #[tokio::test]
-    async fn an_observed_public_address_becomes_the_announced_one() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
-            .await
-            .unwrap();
-        let port = net.bind_addr.port();
-
+    #[test]
+    fn an_observed_public_address_becomes_the_announced_one() {
+        let port = 42777;
         assert_eq!(
-            net.announce_addr(),
+            choose_announce_addr(None, None, vec![], port),
             format!("0.0.0.0:{port}"),
             "no pin, nothing observed yet"
         );
-
-        net.set_observed_addr("203.0.113.5:9999");
-
-        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
         assert!(
-            net.self_addr_candidates()
-                .contains(&format!("203.0.113.5:{port}")),
+            local_candidates_by_preference(None, Some("203.0.113.5:9999"), vec![])
+                .contains(&"203.0.113.5".to_string()),
             "the observed address's host must appear as a candidate too, at this node's own port"
+        );
+        assert_eq!(
+            choose_announce_addr(None, Some("203.0.113.5:9999".into()), vec![], port),
+            "203.0.113.5:9999"
+        );
+    }
+
+    #[test]
+    fn an_observed_public_address_outranks_private_local_interfaces() {
+        let local = vec![crate::addrs::LocalAddr {
+            ip: "192.168.1.50".into(),
+            deprecated: false,
+            temporary: false,
+        }];
+        let observed = Some("203.0.113.5:9999".to_string());
+
+        assert_eq!(
+            choose_announce_addr(None, observed.clone(), local.clone(), 42777),
+            "203.0.113.5:9999"
+        );
+        assert_eq!(
+            local_candidates_by_preference(None, observed.as_deref(), local),
+            vec!["203.0.113.5", "192.168.1.50"]
         );
     }
 
@@ -1659,11 +1781,10 @@ mod tests {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
             .await
             .unwrap();
-        let port = net.bind_addr.port();
 
         net.set_observed_addr("192.168.1.50:9999");
 
-        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+        assert_eq!(net.observed_addr(), None);
     }
 
     /// `set_advertise_addr` is the live-update path the web UI's
@@ -1685,10 +1806,8 @@ mod tests {
     }
 
     /// Clearing the pin (`None`, from the UI's "empty means auto" convention)
-    /// has to fall back through the same precedence `announce_addr` already
-    /// applies — back to an observed address if one exists, not straight to
-    /// the `0.0.0.0` sentinel while a perfectly good observed address sits
-    /// unused.
+    /// has to fall back through the same precedence `announce_addr` applies
+    /// back to an observed address if no current public local address exists.
     #[tokio::test]
     async fn clearing_the_pin_falls_back_to_an_observed_address() {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
@@ -1699,7 +1818,11 @@ mod tests {
 
         net.set_advertise_addr(None);
 
-        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
+        assert_eq!(net.advertised_host(), None);
+        assert_eq!(
+            choose_announce_addr(None, net.observed_addr(), vec![], net.bind_addr.port()),
+            "203.0.113.5:9999"
+        );
     }
 
     /// A malformed value passed to the live setter must not silently corrupt
@@ -1713,11 +1836,9 @@ mod tests {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
             .await
             .unwrap();
-        let port = net.bind_addr.port();
-
         net.set_advertise_addr(Some(""));
 
-        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+        assert_eq!(net.advertised_host(), None);
     }
 
     /// The captain types the address by hand and hands it to a friend, so every

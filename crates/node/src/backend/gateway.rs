@@ -199,11 +199,9 @@ impl GatewayState {
             // LAN; com ele de sucessor, o hop remoto recebia um endereço
             // privado e a requisição morria sem chegar a lugar nenhum.
             // `effective_host` já vem com colchetes quando é IPv6. Pinado
-            // pelo operador vence; na falta dele, o endereço público que
-            // algum peer já observou por `identify` (ver
-            // `Network::effective_host`) — sem isto, o próprio cartão deste
-            // nó no painel mostrava o IP da LAN mesmo depois de
-            // `self_addr_candidates`/`Announce` já saberem o certo.
+            // pelo operador vence; sem pin, o endereço público atual da
+            // interface vence o endereço antigo observado por `identify`.
+            // O observado continua sendo fallback para NAT.
             let self_host = self_dial_host(
                 self.network.effective_host(),
                 crate::pkarr_node::detect_local_ip(),
@@ -1447,10 +1445,8 @@ mod tests {
         assert_eq!(self_dial_host(None, None), "127.0.0.1");
     }
 
-    /// The self-entry `.addr` used to consult only the operator's own pin
-    /// (`advertised_host`), never a peer-observed public address — so a NAT'd
-    /// node's own card in the dashboard kept showing its private LAN IP even
-    /// after `Announce`/`self_addr_candidates` already knew the right one.
+    /// The self-entry `.addr` uses the same address precedence as Announce:
+    /// explicit pin, current public local address, then peer observation.
     #[tokio::test]
     async fn the_self_entry_address_picks_up_an_observed_public_address() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -1462,9 +1458,13 @@ mod tests {
             .find(|p| p.node_id == "eu")
             .expect("self entry");
 
+        let expected_host = state
+            .network
+            .effective_host()
+            .expect("self entry has an effective host");
         assert!(
-            me.addr.starts_with("203.0.113.5:"),
-            "self entry addr should use the observed public address, got {}",
+            me.addr.starts_with(&format!("{expected_host}:")),
+            "self entry addr should use the effective host, got {}",
             me.addr
         );
     }

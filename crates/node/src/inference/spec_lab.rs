@@ -483,7 +483,7 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
     }
 
     let mut caps = vec![
-        "frame/v1-f16".to_string(),
+        crate::pipeline::CAP_FRAME_BATCH.to_string(),
         crate::pipeline::CAP_RELAY_CHAIN.to_string(),
         crate::pipeline::CAP_SPECULATE_LOOKUP.to_string(),
     ];

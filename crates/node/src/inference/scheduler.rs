@@ -3,9 +3,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[allow(dead_code)]
-pub const CAP_FRAME_BATCH: &str = "inference/frame-v3-batch";
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WorkClass {
     PrefillTokens,
@@ -24,6 +21,7 @@ pub struct SchedulerConfig {
 }
 
 impl SchedulerConfig {
+    #[cfg(test)]
     pub fn test(max_queue_requests: usize, max_batch_sequences: usize) -> Self {
         Self {
             enabled: true,

@@ -18,7 +18,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 /// Se este nó fala TLS com os peers, visível de qualquer lugar do processo.
@@ -75,25 +75,26 @@ pub fn peer_base_url(host: &str, port: u16, tls: bool) -> String {
     format!("{}://{host}:{port}", scheme(tls))
 }
 
+#[derive(Clone)]
 pub struct PeerClients {
     timeout: Duration,
-    tls: AtomicBool,
+    tls: Arc<AtomicBool>,
     plain: reqwest::Client,
-    per_peer: RwLock<HashMap<String, reqwest::Client>>,
-    auth: RwLock<Option<crate::auth::AuthState>>,
+    per_peer: Arc<RwLock<HashMap<String, reqwest::Client>>>,
+    auth: Arc<RwLock<Option<crate::auth::AuthState>>>,
 }
 
 impl PeerClients {
     pub fn new(timeout: Duration) -> Self {
         Self {
             timeout,
-            tls: AtomicBool::new(false),
+            tls: Arc::new(AtomicBool::new(false)),
             plain: reqwest::Client::builder()
                 .timeout(timeout)
                 .build()
                 .expect("cliente HTTP sem TLS não pode falhar na construção"),
-            per_peer: RwLock::new(HashMap::new()),
-            auth: RwLock::new(None),
+            per_peer: Arc::new(RwLock::new(HashMap::new())),
+            auth: Arc::new(RwLock::new(None)),
         }
     }
 

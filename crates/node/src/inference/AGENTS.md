@@ -54,7 +54,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
   por requisição.
-- `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
+- `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
+  próximo hop, envia um frame único e distribui respostas por `item_id`;
+  `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
@@ -125,8 +127,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   derruba a requisição; e `decode_tokens` ainda compara `reduce_count()` antes e
   depois, porque "o callback nunca foi chamado" não tinha sintoma nenhum além do
   texto sem sentido (18/08).
-- `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
-  em trânsito.
+- `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
+  trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
 
 ## Funções-chave
 
@@ -137,6 +139,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
   individual para especulação e compatibilidade.
+- `BatchRoute::group` - agrupa descritores somente quando modelo, deployment,
+  fase, configuração e próximo hop coincidem; `RouteAffinity` em
+  `pipeline.rs` preserva os node IDs das réplicas escolhidas durante a sessão.
 - `spawn_scheduler`/`run_scheduler` - worker único por contexto llama.cpp,
   com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
   a fila atingiu o limite. O `/health` expõe os limites e os últimos contadores
@@ -387,10 +392,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   retoma).
 
 `wire.rs`:
-- `encode`/`encode_with_encoding`/`decode` - `[4B BE len][JSON header][tensor cru]`;
-  dtype/shape no JSON, corpo binário f16 (nunca base64, nunca f32 na rede).
-- `FrameEncoding{F16, ZstdF16}` - zstd é opt-in (`frame_version=2`,
-  `ZSTD_LEVEL=6`); `WireDtype{F32, F16}` com `as_str`/`parse`/`bytes_per_value`.
+- `BatchFrame`/`BatchItem` - `frame_version=1`, vários itens nomeados no mesmo
+  payload concatenado; `encode_batch`/`decode_batch` rejeitam dtype desconhecido,
+  shape divergente, offsets fora do payload, sobreposição, item duplicado e
+  payload acima de 16 MiB.
+- `encode_batch_items`/`decode_batch_items` são o caminho distribuído; um
+  pedido de uma sessão usa o mesmo protocolo por meio de
+  `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
+  v1/v2 anteriores, pois o produto ainda não foi lançado.
+- `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
+  o fio oficial é sempre `inference/frame-v1-batch`. `WireDtype{F32, F16}`
+  continua com `as_str`/`parse`/`bytes_per_value`.
 - `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
 
 ## Predição multi-token (MTP) - `mtp.rs`

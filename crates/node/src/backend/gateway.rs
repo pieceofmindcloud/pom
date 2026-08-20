@@ -226,8 +226,7 @@ impl GatewayState {
                 // capability constants in routing/pipeline.rs.
                 inference_frame_capabilities: {
                     let mut caps = vec![
-                        "frame/v1-f16".into(),
-                        "frame/v2-zstd-f16".into(),
+                        crate::pipeline::CAP_FRAME_BATCH.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
@@ -235,6 +234,9 @@ impl GatewayState {
                     ];
                     if self.network.mtp_ready() {
                         caps.push("speculate/v1-mtp".into());
+                    }
+                    if self.network.batching_ready() {
+                        caps.push(crate::pipeline::CAP_FRAME_BATCH.into());
                     }
                     if self.network.libp2p_tunnel_ready() {
                         caps.push("transport/libp2p-tunnel-v1".into());
@@ -497,6 +499,15 @@ pub async fn generate_stream(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    // A sessão não pode trocar de réplica depois que o primeiro prefill criou
+    // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
+    // usada para revisar qualquer transformação futura da rota.
+    let route_affinity = crate::pipeline::RouteAffinity::from_plan(
+        deploy_id.unwrap_or_default(),
+        &session_id,
+        &plan,
+    );
+    debug_assert!(route_affinity.matches_plan(&plan));
 
     // Para onde a cauda entrega a resposta. `None` quando esta máquina não
     // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
@@ -1258,7 +1269,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // trade first-token latency for bytes on exactly the path that
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
-        // no risk of compressing already-zstd-compressed payloads here.
+        // no risk of compressing binary inference frames here.
         .layer(tower_http::compression::CompressionLayer::new());
 
     // Both startup paths (with a model and gateway-only) come through here, so

@@ -117,8 +117,8 @@ pub enum P2PMessage {
         ollama_port: Option<u16>,
         #[serde(default)]
         inference_port: Option<u16>,
-        /// Inference frame encodings this peer can receive. Missing means an
-        /// older peer and therefore requires the v1 f16 fallback.
+        /// Inference capabilities this peer can receive. The current product
+        /// exposes the canonical batch frame only after inference is ready.
         #[serde(default)]
         inference_frame_capabilities: Vec<String>,
         /// HTTP port serving the API and web UI. `serde(default)` keeps peers
@@ -516,6 +516,11 @@ pub struct Network {
     /// e a entrada local do gateway leem. Anunciar `speculate/v1-mtp` sem
     /// cabeça mandaria o gateway pedir um rascunho que nunca vem.
     mtp_ready: Arc<AtomicBool>,
+    /// O servidor de inferência carregou um modelo e está com o scheduler
+    /// multi-item ativo. Fica falso durante setup, carregamento, TP e queda;
+    /// anunciar a capability antes disso faria um peer enviar v3 para uma
+    /// porta que só sabe responder o protocolo antigo.
+    batching_ready: Arc<AtomicBool>,
     /// Se este nó fala TLS com os peers, na forma que o anúncio lê.
     ///
     /// A fonte de verdade é `Config.tls_required`; isto é a cópia que o gossip
@@ -724,6 +729,7 @@ impl Network {
             libp2p_peer_id: None,
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
+            batching_ready: Arc::new(AtomicBool::new(false)),
             tls: Arc::new(AtomicBool::new(false)),
             tls_probe: std::sync::RwLock::new(None),
             observed_addr: std::sync::RwLock::new(None),
@@ -957,8 +963,7 @@ impl Network {
             // earlier would send peers to dial a PeerId that can't answer.
             inference_frame_capabilities: {
                 let mut caps = vec![
-                    "frame/v1-f16".into(),
-                    "frame/v2-zstd-f16".into(),
+                    crate::pipeline::CAP_FRAME_BATCH.into(),
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),
@@ -970,6 +975,9 @@ impl Network {
                 ];
                 if self.mtp_ready() {
                     caps.push("speculate/v1-mtp".into());
+                }
+                if self.batching_ready() {
+                    caps.push(crate::pipeline::CAP_FRAME_BATCH.into());
                 }
                 if self.libp2p_tunnel_ready() {
                     caps.push("transport/libp2p-tunnel-v1".into());
@@ -1031,6 +1039,20 @@ impl Network {
 
     pub fn mtp_ready(&self) -> bool {
         self.mtp_ready.load(Ordering::Relaxed)
+    }
+
+    /// Handle written by the inference supervisor once the batch server is
+    /// ready to receive frames.
+    pub fn batching_ready_handle(&self) -> Arc<AtomicBool> {
+        self.batching_ready.clone()
+    }
+
+    pub fn batching_ready(&self) -> bool {
+        self.batching_ready.load(Ordering::Relaxed)
+    }
+
+    pub fn set_batching_ready(&self, ready: bool) {
+        self.batching_ready.store(ready, Ordering::Relaxed);
     }
 
     pub fn tls_enabled(&self) -> bool {
@@ -1670,8 +1692,7 @@ mod tests {
 
             let caps = gossip["inference_frame_capabilities"].as_array().unwrap();
             for cap in [
-                "frame/v1-f16",
-                "frame/v2-zstd-f16",
+                crate::pipeline::CAP_FRAME_BATCH,
                 "relay/v1-chain",
                 "relay/v2-direct",
                 "speculate/v1-lookup",

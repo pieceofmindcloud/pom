@@ -1007,8 +1007,18 @@ impl LlmEngine {
         need_residual: bool,
         enqueue_started: Instant,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        crate::tp::set_expected_reduces(
+            2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64,
+        );
         if crate::tp::is_active() {
-            bail!("batch multi-sequência TP ainda não foi alinhado");
+            let reduces = crate::tp::reduces_in_current_decode();
+            let expected = 2 * unsafe { sys::llama_model_n_layer(self.loaded.model) } as u64;
+            if reduces != expected {
+                bail!("coletiva TP reduziu {reduces} vezes neste batch, esperado {expected}");
+            }
+            if let Some(motivo) = crate::tp::take_failure() {
+                bail!("coletiva de tensor parallelism falhou: {motivo}");
+            }
         }
         let residual = if need_residual {
             Some(self.take_residual(layout.total_tokens())?)

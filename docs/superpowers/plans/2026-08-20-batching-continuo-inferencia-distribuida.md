@@ -6,7 +6,7 @@
 
 **Architecture:** cada processo/peer terá um scheduler local e uma fila limitada. Réplicas da mesma faixa de camadas não compartilham scheduler nem KV: o planejador escolhe uma réplica por sessão e mantém afinidade durante a geração. Um grupo de Tensor Parallelism continua sendo uma unidade coletiva, com um scheduler primário coordenando o mesmo `batch_id` nos workers.
 
-**Tech Stack:** Rust, Tokio mpsc/oneshot, Axum, llama.cpp via `llama-cpp-sys-2`, frames binários f16/zstd-f16, `gateway::testkit`.
+**Tech Stack:** Rust, Tokio mpsc/oneshot, Axum, llama.cpp via `llama-cpp-sys-2`, frames binários f16 em `frame/v1-batch`, `gateway::testkit`.
 
 **Spec:** `docs/superpowers/specs/2026-08-20-batching-continuo-inferencia-distribuida-design.md`
 
@@ -16,7 +16,8 @@
 - Não modificar `vendor/llama-cpp-sys-2/llama.cpp`.
 - Nenhum `llama_decode` concorrente compartilha o mesmo contexto.
 - Réplicas de uma faixa têm schedulers locais independentes e não migram KV entre si.
-- Um peer sem `frame/v3-batch` recebe apenas o protocolo que anunciou.
+- `frame/v1-batch` é o primeiro e único protocolo de inferência; peer sem essa
+  capability não é elegível e não recebe fallback de wire.
 - Falha de uma barreira TP invalida o lote inteiro.
 - Nenhum peso GGUF é transferido para habilitar batching.
 - Testes novos devem provar a falha antes da implementação correspondente.
@@ -32,7 +33,7 @@
 | `crates/node/src/inference/scheduler.rs` | limites, admissão, fairness, seleção de microbatches e comandos locais |
 | `crates/node/src/inference/llm.rs` | descritores de lote, construção de `llama_batch`, logits e residual por item |
 | `crates/node/src/inference/infer_server.rs` | handlers HTTP finos, worker do scheduler, sessão e resposta por item |
-| `crates/node/src/inference/wire.rs` | `frame/v3-batch`, validação de offsets e compatibilidade |
+| `crates/node/src/inference/wire.rs` | `frame/v1-batch`, validação de offsets e lote |
 | `crates/node/src/inference/relay.rs` | envio e retorno de frames multi-item |
 | `crates/node/src/inference/prefill.rs` | encaminhamento de batches por pipeline e afinidade de sessão |
 | `crates/node/src/inference/tp.rs` | chaves de barreira com `batch_id` e sincronização dos ranks |
@@ -235,8 +236,8 @@
   snapshot atômico, sem bloquear o worker. `/v1/tp/reduce` continua fora desse
   estado, pois o callback TP espera a barreira durante o decode.
 
-  Manter os caminhos de uma entrada para peer antigo e para especulação até a
-  lane batch normal estar validada. MTP/lookup não entra no batch normal se o
+  Manter a lane de um item para especulação, que tem contrato de rollback
+  próprio. MTP/lookup não entra no batch normal se o
   item exigir rollback incompatível.
 
 - [ ] **Step 4: Rodar testes de rotas e scheduler**
@@ -252,7 +253,7 @@
   `batch_tokens` e `active_sequences` em `node_timings` e `/health`. Commit:
   `feat: executar inferencia pelo scheduler local`.
 
-### Task 4: frame `v3-batch` e fallback por capacidade
+### Task 4: frame `v1-batch` e capacidade de prontidão
 
 **Files:**
 - Modify: `crates/node/src/inference/wire.rs`
@@ -266,7 +267,7 @@
 - `BatchItem { item_id, session_id, shape, dtype, offset, len, meta }`.
 - `wire::encode_batch(&BatchFrame) -> Result<Vec<u8>>` e
   `wire::decode_batch(&[u8]) -> Result<BatchFrame>`.
-- `CAP_FRAME_BATCH: &str = "inference/frame-v3-batch"`.
+- `CAP_FRAME_BATCH: &str = "inference/frame-v1-batch"`.
 
 - [ ] **Step 1: Escrever testes falhos de round-trip e validação**
 
@@ -284,7 +285,7 @@
   O frame batch é uma versão nova, não uma interpretação heurística de frame
   antigo.
 
-- [ ] **Step 4: Anunciar a capacidade e selecionar fallback**
+- [ ] **Step 4: Anunciar a capacidade e recusar peer não elegível**
 
   Adicionar a capacidade no health/announce somente quando batching estiver
   habilitado. O relay escolhe `encode_batch` apenas se o peer tiver a
@@ -336,8 +337,8 @@
 
 - [ ] **Step 4: Implementar envio multi-item por hop**
 
-  Encaminhar frames v3 quando todos os itens do grupo suportarem a capacidade;
-  no fallback, dividir em frames antigos sem alterar o resultado. Falha de um
+  Encaminhar frames `frame/v1-batch` quando o grupo estiver pronto. Não há
+  fallback para frames antigos. Falha de um
   item deve ser identificada pelo item; falha de transporte que comprometa o
   contexto comum invalida o grupo inteiro.
 
@@ -421,10 +422,10 @@
   solicitar a rodada final; durante o pair programming, cada task mantém seu
   ciclo focado.
 
-- [ ] **Step 3: Revisar o contrato de fallback**
+- [ ] **Step 3: Revisar o contrato único de wire**
 
-  Confirmar que um peer antigo nunca recebe `frame/v3-batch`, que uma rota com
-  peer antigo continua em item único e que a sessão não muda de réplica.
+  Confirmar que uma rota elegível recebe sempre `frame/v1-batch`, que um peer
+  sem a capability não é escolhido e que a sessão não muda de réplica.
 
 - [ ] **Step 4: Commit final da documentação e relatório**
 

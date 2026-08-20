@@ -127,11 +127,11 @@ uma lista estável de itens e uma política de falha: se o decode falhar, todos
 os itens daquele lote recebem o mesmo erro e nenhum resultado parcial é
 publicado como resposta válida.
 
-### 4. Protocolo binário versionado para vários itens
+### 4. Protocolo binário inicial para vários itens
 
-O wire antigo continuará válido para comunicação com peers que não anunciam
-batching. Para peers compatíveis será introduzido `frame/v3-batch`, sem mudar o
-significado de `frame/v1` e `frame/v2`.
+O produto ainda não foi lançado. Portanto `frame/v1-batch` é o primeiro e
+único contrato oficial, sem fallback, adapter ou compatibilidade com formatos
+v1/v2 anteriores.
 
 O novo frame terá um cabeçalho JSON e um payload concatenado. O cabeçalho
 descreverá, para cada item:
@@ -148,15 +148,10 @@ recusado sem tocar no `InferState`. O limite atual de 16 MiB continua valendo
 por frame; o scheduler limitará o número de itens para que o lote não seja uma
 forma de contornar esse limite.
 
-O anúncio de capacidades incluirá `inference/frame-v3-batch`. A seleção será
-por hop: somente peers que anunciam a capacidade receberão um frame de lote.
-Quando qualquer hop de uma rota não suportar a versão, aquela rota usará o
-frame de item único. Não haverá tentativa de interpretar um lote como uma
-requisição antiga, porque isso poderia misturar sessões silenciosamente.
-
-O fallback de item único preserva a interoperabilidade durante a atualização
-gradual dos peers, mas não promete batching distribuído em uma rota que ainda
-tenha um peer antigo.
+O anúncio de capacidades incluirá `inference/frame-v1-batch` somente quando o
+servidor local estiver pronto. Uma requisição de um item usa o mesmo frame
+oficial e não existe interpretação alternativa para um peer sem a capability:
+ele não é elegível para inferência.
 
 ### 5. Pipeline distribuído
 
@@ -251,7 +246,7 @@ barreira TP, em vez de somar tudo em `lock_wait_ms`.
 4. Todos os ranks TP executam o mesmo lote, na mesma ordem e com os mesmos
    shapes antes de uma redução.
 5. Uma redução TP incompleta nunca produz resposta válida.
-6. Um peer sem `frame/v3-batch` recebe somente o protocolo que anunciou.
+6. Todo peer elegível para inferência anuncia e recebe `frame/v1-batch`.
 7. O limite de fila é aplicado antes de alocar uma sessão ou um KV slot.
 8. Release, rollback, timeout e cancelamento liberam todos os slots locais e
    remotos associados ao item.
@@ -266,11 +261,11 @@ Antes de ativar o caminho distribuído, a implementação terá testes para:
 - construção de `llama_batch` com várias sequências, posições e flags de
   logits;
 - mapeamento de logits e residuais de volta aos itens corretos;
-- codificação e decodificação `frame/v3-batch`, incluindo offsets inválidos,
+- codificação e decodificação `frame/v1-batch`, incluindo offsets inválidos,
   payload truncado, shapes incompatíveis e limite de tamanho;
 - FIFO, janela de microbatch, round robin, cancelamento e backpressure;
 - duas requisições em um pipeline de dois ou três hops, com streaming isolado;
-- fallback para peer que anuncia apenas frame antigo;
+- recusa de peer que não anuncia o frame inicial;
 - dois ranks TP com batch alinhado, barreira fora de ordem e perda de um rank;
 - release e rollback sem vazamento de sequência em todos os ranks;
 - mistura proposital de prompts e sessões para provar que não há vazamento de
@@ -309,6 +304,5 @@ paralelo ao runtime existente.
 - Data parallelism entre modelos ou entre processos.
 - Alteração do fork `vendor/llama-cpp-sys-2/llama.cpp` para criar um novo
   backend de rede; o batching usa as APIs de batch já disponíveis no contexto.
-- Garantir batching em uma rota que contenha peer antigo e não anuncie a
-  capacidade nova.
+- Garantir batching em uma rota que não anuncie a capacidade inicial.
 - Reordenar tokens entre requisições para formar um único contexto lógico.

@@ -45,6 +45,7 @@ const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// small wire header. Keeping this limit explicit at 16 MiB allows the
 /// documented 8 MiB frame while still rejecting unbounded peer input.
 const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
 
 /// Timings measured on the inference node itself. The names deliberately name
 /// the boundary being measured instead of guessing whether a CUDA call is
@@ -300,6 +301,10 @@ impl SchedulerHandle {
 struct InferenceAppState {
     state: SharedState,
     scheduler: SchedulerHandle,
+    /// TP exposes one global decode/barrier identity per process. Serialize
+    /// complete inbound batches so a second request cannot replace that id
+    /// while the first batch is waiting for its workers.
+    tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 fn spawn_scheduler(state: SharedState, cfg: crate::scheduler::SchedulerConfig) -> SchedulerHandle {
@@ -626,6 +631,7 @@ mod tests {
             cfg,
             rx,
             0,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
@@ -1023,6 +1029,7 @@ pub async fn run(
     mut stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
 ) -> Result<()> {
@@ -1089,15 +1096,17 @@ pub async fn run(
     let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
-    let mut scheduler_cfg = crate::scheduler::SchedulerConfig::from_node_config(&cfg);
-    // TP still uses the single-decode barrier until its batch key is wired in.
-    // Keeping the local queue in item mode avoids running a primary batch
-    // against workers that were broadcast one frame at a time.
-    if cfg.tp.is_some() {
-        scheduler_cfg.enabled = false;
-    }
+    let scheduler_cfg = crate::scheduler::SchedulerConfig::from_node_config(&cfg);
+    // TP participates in the same canonical batch frame. The handler opens
+    // one shared decode id for the whole frame, broadcasts that frame to the
+    // workers and then submits all items to this local scheduler together.
+    batching_ready.store(scheduler_cfg.enabled, std::sync::atomic::Ordering::Relaxed);
     let scheduler = spawn_scheduler(state.clone(), scheduler_cfg);
-    let app_state = InferenceAppState { state, scheduler };
+    let app_state = InferenceAppState {
+        state,
+        scheduler,
+        tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
+    };
 
     if let Some(auth) = auth.clone() {
         http_client().set_auth_state(auth);
@@ -1182,6 +1191,7 @@ pub async fn run(
     info!("memória do modelo devolvida na porta {port}");
 
     resultado?;
+    batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -1280,6 +1290,154 @@ fn last_handshake_ms(state: &SharedState) -> u64 {
         .unwrap_or(0)
 }
 
+async fn handle_prefill_batch(
+    app: InferenceAppState,
+    headers: axum::http::HeaderMap,
+    batch: wire::BatchFrame,
+) -> Response {
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_batch_guard = if tp_active {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let batch_body = match wire::encode_batch(&batch) {
+        Ok(body) => Bytes::from(body),
+        Err(error) => return err400(format!("batch inválido: {error}")),
+    };
+    open_tp_decode(&app.state, &headers, "/v1/prefill", &batch_body);
+    let calls = batch.items.iter().map(|item| {
+        let app = app.clone();
+        let mut headers = headers.clone();
+        headers.insert(
+            BATCH_CHILD_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        let body = wire::encode_batch_item(&batch, item);
+        async move {
+            match body {
+                Ok(body) => handle_prefill(State(app), headers, Bytes::from(body)).await,
+                Err(error) => err400(format!("item batch inválido: {error}")),
+            }
+        }
+    });
+    let responses = futures::future::join_all(calls).await;
+    let mut items = Vec::with_capacity(responses.len());
+    for (original, response) in batch.items.iter().zip(responses) {
+        if !response.status().is_success() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("item {} falhou no processamento do batch", original.item_id),
+            )
+                .into_response();
+        }
+        let bytes =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(bytes) => bytes,
+                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+            };
+        let decoded = match wire::decode_batch_items(&bytes) {
+            Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
+            Ok(_) => return err500("resposta de item não contém exatamente um item"),
+            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+        };
+        items.push(wire::BatchPayloadItem {
+            item_id: original.item_id.clone(),
+            session_id: original.session_id.clone(),
+            meta: decoded.meta,
+            tensor: decoded.tensor,
+            dtype: decoded.dtype,
+        });
+    }
+    match wire::encode_batch_items(batch.kind, batch.batch_id, &items) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            body,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
+async fn handle_step_batch(
+    app: InferenceAppState,
+    headers: axum::http::HeaderMap,
+    batch: wire::BatchFrame,
+) -> Response {
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_batch_guard = if tp_active {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let batch_body = match wire::encode_batch(&batch) {
+        Ok(body) => Bytes::from(body),
+        Err(error) => return err400(format!("batch inválido: {error}")),
+    };
+    open_tp_decode(&app.state, &headers, "/v1/step", &batch_body);
+    let calls = batch.items.iter().map(|item| {
+        let app = app.clone();
+        let mut headers = headers.clone();
+        headers.insert(
+            BATCH_CHILD_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        let body = wire::encode_batch_item(&batch, item);
+        async move {
+            match body {
+                Ok(body) => handle_step(State(app), headers, Bytes::from(body)).await,
+                Err(error) => err400(format!("item batch inválido: {error}")),
+            }
+        }
+    });
+    let responses = futures::future::join_all(calls).await;
+    let mut items = Vec::with_capacity(responses.len());
+    for (original, response) in batch.items.iter().zip(responses) {
+        if !response.status().is_success() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("item {} falhou no processamento do batch", original.item_id),
+            )
+                .into_response();
+        }
+        let bytes =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(bytes) => bytes,
+                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+            };
+        let decoded = match wire::decode_batch_items(&bytes) {
+            Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
+            Ok(_) => return err500("resposta de item não contém exatamente um item"),
+            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+        };
+        items.push(wire::BatchPayloadItem {
+            item_id: original.item_id.clone(),
+            session_id: original.session_id.clone(),
+            meta: decoded.meta,
+            tensor: decoded.tensor,
+            dtype: decoded.dtype,
+        });
+    }
+    match wire::encode_batch_items(batch.kind, batch.batch_id, &items) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            body,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
 fn err400(msg: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
 }
@@ -1297,8 +1455,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
-        "frame/v1-f16",
-        "frame/v2-zstd-f16",
+        crate::pipeline::CAP_FRAME_BATCH,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -1306,6 +1463,9 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
     ];
     if s.engine.mtp_ready() {
         caps.push("speculate/v1-mtp");
+    }
+    if scheduler.config.enabled {
+        caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
     Json(json!({
         "status": "ok",
@@ -1544,6 +1704,9 @@ async fn handle_rollback(
 /// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
 /// retransmite, senão o grupo se multiplicaria a cada salto.
 fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &str, body: &Bytes) {
+    if headers.get(BATCH_CHILD_HEADER).is_some() {
+        return;
+    }
     let tp = {
         let s = state.lock().unwrap();
         s.tp.clone()
@@ -1573,6 +1736,11 @@ async fn handle_prefill(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Ok(batch) = wire::decode_batch(&body) {
+        if batch.items.len() > 1 {
+            return handle_prefill_batch(app, headers, batch).await;
+        }
+    }
     let state = app.state.clone();
     let scheduler = app.scheduler.clone();
     let processing_started = Instant::now();
@@ -1582,7 +1750,7 @@ async fn handle_prefill(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode(&body) {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -1592,7 +1760,7 @@ async fn handle_prefill(
         .get("session_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("__legacy__")
+        .unwrap_or("__session__")
         .to_string();
     let chunk_index = meta
         .get("chunk_index")
@@ -1774,7 +1942,7 @@ async fn handle_prefill(
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
-        return match wire::encode(
+        return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
             WireDtype::F16,
@@ -1824,7 +1992,7 @@ async fn handle_prefill(
 
     overlay_head_authoritative_fields(&local_meta, &mut bubbled);
 
-    match wire::encode(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -2725,6 +2893,11 @@ async fn handle_step(
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Ok(batch) = wire::decode_batch(&body) {
+        if batch.items.len() > 1 {
+            return handle_step_batch(app, headers, batch).await;
+        }
+    }
     let state = app.state.clone();
     let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
@@ -2734,7 +2907,7 @@ async fn handle_step(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode(&body) {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -2744,7 +2917,7 @@ async fn handle_step(
         .get("session_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("__legacy__")
+        .unwrap_or("__session__")
         .to_string();
     // Present and non-empty only when the sender negotiated relay mode
     // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
@@ -2919,7 +3092,7 @@ async fn handle_step(
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
-        return match wire::encode(
+        return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
             WireDtype::F16,
@@ -2969,7 +3142,7 @@ async fn handle_step(
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
-    match wire::encode(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -3080,7 +3253,7 @@ pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
 /// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
 /// [`crate::direct`].
 pub(crate) fn direct_ack() -> Response {
-    match wire::encode(&json!({"accepted": true}), None, WireDtype::F16) {
+    match wire::encode_batch_single(&json!({"accepted": true}), None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],

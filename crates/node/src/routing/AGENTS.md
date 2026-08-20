@@ -21,8 +21,11 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
   para Ollama local / peer.
 - `LoadTracker::acquire` - incrementa o contador e devolve `LoadGuard`, que
   decrementa no drop (RAII): o balanço de carga nunca fica preso num erro.
-- `PipelineStep::frame_encoding` - escolhe o wire format do tensor: v2-zstd-f16
-  se anunciado, senão v1 f16 (rolling upgrade com nós velhos).
+- `PipelineStep::frame_encoding` - retorna o marcador `F16`; todos os bytes
+  passam pelo frame inicial `inference/frame-v1-batch`.
+- `CAP_FRAME_BATCH` - capability `inference/frame-v1-batch`; o relay só envia
+  depois que o peer anuncia o servidor carregado. Não há rolling upgrade para
+  formatos anteriores nesta primeira versão do produto.
 - `PipelinePlan::supports_relay_chain` / `supports_direct_reply` /
   `supports_speculation` - all-or-nothing: um passo sem a capability derruba a
   feature do plano inteiro (`CAP_RELAY_CHAIN`, `CAP_RELAY_DIRECT`,

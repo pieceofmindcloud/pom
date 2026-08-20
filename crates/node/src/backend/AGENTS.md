@@ -69,9 +69,11 @@ behind an auth extractor.
   `inference_url()/health` (10s timeout) before planning; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
-  `frame/v1-f16`, `frame/v2-zstd-f16`, `relay/v1-chain` and
-  `speculate/v1-lookup`; `speculate/v1-mtp-sliced` goes out unconditionally and
+  `inference/frame-v1-batch`, `relay/v1-chain` and `speculate/v1-lookup`;
+  `speculate/v1-mtp-sliced` goes out unconditionally and
   `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
+  `inference/frame-v1-batch` only when `network.batching_ready()` confirms
+  that the loaded local inference server has the multi-item scheduler active;
   `self_reply_hosts()` lists the addresses by which a
   peer reaches this node (`self_dial_host` first, then `self_addr_candidates`);
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the

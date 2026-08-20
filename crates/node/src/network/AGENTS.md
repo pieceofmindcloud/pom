@@ -83,7 +83,11 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
   atual das interfaces com estável antes de temporário, endereço observado por
   `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
-  virtuais de container não entram nos candidatos automáticos.
+  virtuais de container não entram nos candidatos automáticos. A capability
+  `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
+  um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
+  queda não anunciam capacidade de inferência. Não existe anúncio ou fallback
+  para formatos de frame anteriores, porque o produto ainda não foi lançado.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do

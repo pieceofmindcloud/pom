@@ -396,7 +396,7 @@ async fn spawn_gateway(gw: GatewaySite) -> String {
 
 fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> PipelineStep {
     let mut caps = vec![
-        "frame/v1-f16".to_string(),
+        crate::pipeline::CAP_FRAME_BATCH.to_string(),
         crate::pipeline::CAP_RELAY_CHAIN.to_string(),
     ];
     if direct {

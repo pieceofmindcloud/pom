@@ -2898,7 +2898,6 @@ dependencies = [
  "uuid",
  "winresource",
  "x509-parser 0.16.0",
- "zstd",
 ]
 
 [[package]]

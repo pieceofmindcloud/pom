@@ -534,6 +534,7 @@ impl NodeRuntime {
         *self.assignment.write().await = None;
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+        self.net.set_batching_ready(false);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
         // nó de voltar servindo no próximo arranque e desfazer essa decisão.
@@ -627,6 +628,7 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
+        let batching_ready = self.net.batching_ready_handle();
         let auth = self.auth.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
@@ -697,6 +699,7 @@ impl NodeRuntime {
                     gen_rx.clone(),
                     generation,
                     mtp_ready.clone(),
+                    batching_ready.clone(),
                     tls.clone(),
                     auth.clone(),
                 )
@@ -706,11 +709,13 @@ impl NodeRuntime {
                         info!("servidor de inferência encerrado graciosamente");
                         append_log(port, "encerrado graciosamente");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
@@ -748,6 +753,7 @@ impl NodeRuntime {
             status: self.status_handle(),
         };
         let assignment = self.assignment.clone();
+        let net = self.net.clone();
         let gen_rx = self.generation.subscribe();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -809,6 +815,10 @@ impl NodeRuntime {
 
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported).await;
+                let current_assignment = assignment.read().await.clone();
+                if let Err(e) = net.announce(current_assignment.as_ref()).await {
+                    warn!("announce de capability batch após readiness falhou: {e}");
+                }
                 return;
             }
         });

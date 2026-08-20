@@ -53,7 +53,6 @@ libp2p = { version = "0.56", features = [
 pkarr = "6"
 async-trait = "0.1"
 mime_guess = "2"
-zstd = "0.13"
 tower-http = { version = "0.5", features = ["compression-full"] }
 routing-contract = { path = "../routing-contract" }
 

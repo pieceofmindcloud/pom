@@ -16,7 +16,7 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `tokio` full, `clap` 4 (derive),
-  `socket2`, `zstd`, `tower-http` (compression-full), `routing-contract` (path).
+  `socket2`, `tower-http` (compression-full), `routing-contract` (path).
 - `build = "build.rs"`.
 
 ## build.rs
@@ -106,7 +106,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
-  `wire.rs` (`[len][JSON][tensor]`, f16/zstd), `relay.rs` (chain relay),
+  `wire.rs` (frame inicial único `[len][JSON][itens][tensor]`, f16 e batch
+  validado), `relay.rs` (chain relay + agrupamento por próximo hop),
   `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
@@ -116,6 +117,11 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `deploy.rs`, `transfer.rs` (fatias por HTTP Range), `devupdate.rs`
   (atualizar/reiniciar), `openai.rs` (rotas OpenAI-compatíveis), `messages.rs`,
   `reqlog.rs`, `session.rs`, `tool_call.rs`.
+
+O protocolo de inferência ainda não foi lançado. `frame/v1-batch` é o primeiro
+e único contrato oficial: não manter fallback, adapter ou código de
+compatibilidade para formatos v1/v2 anteriores. Mudanças futuras devem
+evoluir este contrato explicitamente.
 
 ## Ligações
 

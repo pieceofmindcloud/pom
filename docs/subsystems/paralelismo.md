@@ -36,7 +36,9 @@ mesma réplica podem formar um microbatch local.
 Esse batching local não transforma réplicas em um grupo TP. Para batching
 distribuído de pipeline, os peers ainda precisam negociar um frame multi-item e
 correlacionar cada estado oculto por sessão. No estado atual, a negociação e o
-fallback de frame continuam individuais entre hops.
+fallback de frame continuam individuais entre hops. `RouteAffinity` registra
+os node IDs escolhidos por estágio, e `BatchRoute::group` só permite agrupar
+itens que compartilham o mesmo próximo hop e contrato de execução.
 
 ## Tensor parallelism
 

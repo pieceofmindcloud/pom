@@ -111,10 +111,19 @@ codificação em trânsito. Formato:
 - `dtype`/`shape` vão no JSON; o corpo é **binário** f16 (nunca base64, nunca
   f32 na rede). Precisão e codificação são parâmetro de `encode`/`decode`, não
   suposição.
-- `FrameEncoding::F16` é o contrato v1; `ZstdF16` (`frame_version=2`,
-  `ZSTD_LEVEL=6`) é opt-in: só é usado quando o receptor anuncia
-  `frame/v2-zstd-f16`. `PipelineStep::frame_encoding` escolhe por passo, o que
-  mantém rolling upgrade com nós velhos.
+- `frame_version=1` (`inference/frame-v1-batch`) é o primeiro e único contrato
+  oficial. Um header JSON carrega `batch_id` e itens `{item_id, session_id,
+  shape, dtype, offset, len, meta}`, seguido pelo payload concatenado. O
+  decoder valida versão, dtype, tamanho derivado do shape, limites e
+  sobreposição antes de expor qualquer tensor.
+- Uma requisição individual usa o mesmo frame por meio de
+  `encode_batch_single`. O relay mantém uma janela curta de 4 ms e agrupa
+  chamadas compatíveis para o mesmo próximo hop, modelo, implantação,
+  configuração, fase e rota. O peer receptor distribui os itens
+  concorrentemente para o scheduler local e devolve os resultados pelo
+  `item_id` original.
+- O produto ainda não foi lançado, portanto não há fallback, adapter ou
+  código de compatibilidade para formatos v1/v2 anteriores.
 - `MAX_FRAME_PAYLOAD_BYTES = 16 MiB` limita payload no decode; o handler axum
   aplica o mesmo teto no body (`INFERENCE_FRAME_BODY_LIMIT`).
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
@@ -176,6 +185,12 @@ filas e KV independentes; o roteamento deve escolher uma réplica e preservar
 essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
+
+`prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
+transporte: modelo, deployment, fase, configuração relevante e próximo hop
+precisam coincidir para dois itens compartilharem um frame. A escolha efetiva
+das réplicas fica registrada por `pipeline::RouteAffinity`, que rejeita uma
+rota diferente no meio da mesma sessão.
 
 O endpoint `/health` expõe `scheduler.queue_depth`, os limites efetivos, o
 tamanho e os tokens do último lote, além dos contadores acumulados. Isso

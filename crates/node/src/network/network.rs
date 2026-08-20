@@ -80,6 +80,11 @@ pub struct TpMember {
     pub node_id: String,
     /// Base da URL do servidor de inferência (onde o decode é disparado).
     pub url: String,
+    /// Endereços alternativos do servidor de inferência. O primeiro é mantido
+    /// em `url` para o formato antigo; quem disca tenta os demais quando o
+    /// endereço preferido não é alcançável a partir deste rank.
+    #[serde(default)]
+    pub url_candidates: Vec<String>,
     /// PeerId usado pelo fallback de transporte libp2p.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,

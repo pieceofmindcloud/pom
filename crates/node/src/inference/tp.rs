@@ -28,6 +28,10 @@ struct TpState {
     /// URL do primary (rank 0) da coletiva. Os workers POSTam para cá; o rank
     /// 0 usa a barreira local e não disca a própria URL.
     rank0_url: String,
+    /// Candidatos alternativos do primary, escolhidos por quem fez o deploy.
+    /// O primeiro é `rank0_url`; os demais cobrem NAT, LAN e containers no
+    /// mesmo host quando só um deles é alcançável deste rank.
+    rank0_urls: Vec<String>,
     /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
     /// direta entre as máquinas.
     rank0_peer_id: Option<String>,
@@ -335,6 +339,7 @@ fn note_failure(motivo: String) {
 /// Liga a coletiva TP deste processo e registra o callback no llama.cpp.
 ///
 /// Chamado pelo apply quando o nó é primary/worker de um grupo (size > 1).
+#[cfg(test)]
 pub fn register_tp_reduce(
     rank: u32,
     size: u32,
@@ -344,6 +349,34 @@ pub fn register_tp_reduce(
     rank0_supports_tunnel: bool,
     auth: Option<crate::auth::AuthState>,
 ) {
+    register_tp_reduce_with_urls(
+        rank,
+        size,
+        rank0_url.clone(),
+        vec![rank0_url],
+        rank0_node_id,
+        rank0_peer_id,
+        rank0_supports_tunnel,
+        auth,
+    );
+}
+
+/// Liga a coletiva TP com todos os endereços conhecidos do primary.
+pub fn register_tp_reduce_with_urls(
+    rank: u32,
+    size: u32,
+    rank0_url: String,
+    mut rank0_urls: Vec<String>,
+    rank0_node_id: Option<String>,
+    rank0_peer_id: Option<String>,
+    rank0_supports_tunnel: bool,
+    auth: Option<crate::auth::AuthState>,
+) {
+    if rank0_urls.is_empty() {
+        rank0_urls.push(rank0_url.clone());
+    } else if !rank0_urls.iter().any(|url| url == &rank0_url) {
+        rank0_urls.insert(0, rank0_url.clone());
+    }
     // Cliente da coletiva: pinado quando o cluster está em TLS, simples quando
     // não está. Falhar aqui é melhor que descobrir no meio do primeiro decode.
     let client = match (crate::peer_client::tls_ativo(), rank0_node_id.as_deref()) {
@@ -376,6 +409,7 @@ pub fn register_tp_reduce(
         rank,
         size,
         rank0_url,
+        rank0_urls,
         rank0_peer_id,
         rank0_supports_tunnel,
         client,
@@ -531,6 +565,11 @@ pub fn broadcast_to(
         // o path para encaminhar ao loopback do worker. Concatenar a rota e
         // passar `path=""` faz o túnel chegar em `/`, que responde 404.
         let (url, path) = broadcast_target(&membro.url, rota);
+        let url_candidates = if membro.url_candidates.is_empty() {
+            vec![url.clone()]
+        } else {
+            membro.url_candidates.clone()
+        };
         let cliente = match peer_client_for(&membro.node_id) {
             Some(c) => c,
             None => continue,
@@ -565,9 +604,10 @@ pub fn broadcast_to(
                     format!("Bearer {token}"),
                 ));
             }
-            let result = crate::relay::send_bytes_or_tunnel(
+            let result = crate::relay::send_bytes_or_tunnel_with_candidates(
                 &cliente,
                 &url,
+                &url_candidates,
                 &path,
                 corpo,
                 headers,
@@ -669,9 +709,10 @@ async fn post_reduce(
         )
     }))
     .collect();
-    let response = crate::relay::send_bytes_or_tunnel(
+    let response = crate::relay::send_bytes_or_tunnel_with_candidates(
         &state.client,
         &state.rank0_url,
+        &state.rank0_urls,
         "/v1/tp/reduce",
         corpo,
         headers,
@@ -948,6 +989,7 @@ mod tests {
                     rank: rank as u32,
                     size: 3,
                     rank0_url: url.clone(),
+                    rank0_urls: vec![url.clone()],
                     rank0_peer_id: None,
                     rank0_supports_tunnel: false,
                     client: reqwest::Client::new(),
@@ -1002,6 +1044,7 @@ mod tests {
             rank: 1,
             size: 2,
             rank0_url: "http://127.0.0.1:1".into(),
+            rank0_urls: vec!["http://127.0.0.1:1".into()],
             rank0_peer_id: Some(peer_id.to_string()),
             rank0_supports_tunnel: true,
             client: reqwest::Client::new(),

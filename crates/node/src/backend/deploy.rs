@@ -524,6 +524,9 @@ struct Machine {
     gateway_url: Option<String>,
     /// URL do servidor de inferência do peer (rank 0 de um grupo TP).
     inference_url: Option<String>,
+    /// Todos os endereços anunciados para o servidor de inferência, na ordem
+    /// em que este coordenador os conhece.
+    inference_candidates: Vec<String>,
     /// Identidade e capacidade do transporte alternativo do servidor de
     /// inferência, preservadas para o grupo TP.
     libp2p_peer_id: Option<String>,
@@ -720,6 +723,7 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     node_id: peer.node_id.clone(),
                     gateway_url: peer.gateway_url(),
                     inference_url: peer.inference_url(),
+                    inference_candidates: peer.inference_candidates(),
                     libp2p_peer_id: peer.libp2p_peer_id.clone(),
                     supports_tunnel: peer
                         .inference_frame_capabilities
@@ -2485,9 +2489,18 @@ fn tp_members(
                 m.label()
             )
         })?;
+        let mut url_candidates = if m.inference_candidates.is_empty() {
+            vec![url.clone()]
+        } else {
+            m.inference_candidates.clone()
+        };
+        if !url_candidates.iter().any(|candidate| candidate == &url) {
+            url_candidates.insert(0, url.clone());
+        }
         Ok(crate::network::TpMember {
             node_id: node_id.to_string(),
             url,
+            url_candidates,
             libp2p_peer_id: m.libp2p_peer_id.clone(),
             supports_tunnel: m.supports_tunnel,
         })
@@ -4700,6 +4713,7 @@ mod tests {
                 hostname: s.id.to_string(),
                 gateway_url: None,
                 inference_url: None,
+                inference_candidates: Vec::new(),
                 libp2p_peer_id: None,
                 supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
@@ -5701,6 +5715,7 @@ mod tests {
             hostname: id.to_string(),
             gateway_url: Some(format!("http://{id}:8080")),
             inference_url: Some(format!("http://{id}:8181")),
+            inference_candidates: vec![format!("http://{id}:8181")],
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb,
@@ -6108,6 +6123,7 @@ mod tests {
             hostname: "ksia".into(),
             gateway_url: Some(format!("http://127.0.0.1:{port}")),
             inference_url: Some(format!("http://127.0.0.1:{port}")),
+            inference_candidates: vec![format!("http://127.0.0.1:{port}")],
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb: 900_000,

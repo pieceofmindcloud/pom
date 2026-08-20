@@ -707,10 +707,44 @@ pub struct RawPeerResponse {
 /// por transporte ou timeout, repete o mesmo POST pelo HTTPS direto. O túnel
 /// preserva caminho, corpo e cabeçalhos, pois o reduce TP carrega a barreira e
 /// o rank fora do corpo.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel(
     client: &reqwest::Client,
     base_url: &str,
+    path: &str,
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    tunnel: Option<&TunnelOutboundSender>,
+    peer_id: Option<PeerId>,
+    supports_tunnel: bool,
+    peer_label: &str,
+) -> Result<RawPeerResponse> {
+    let direct_urls = [base_url.to_string()];
+    send_bytes_or_tunnel_with_candidates(
+        client,
+        base_url,
+        &direct_urls,
+        path,
+        body,
+        headers,
+        tunnel,
+        peer_id,
+        supports_tunnel,
+        peer_label,
+    )
+    .await
+}
+
+/// Variante do POST bruto que tenta todos os endereços anunciados pelo peer
+/// quando o túnel libp2p falha. O `base_url` continua sendo o endereço
+/// histórico e o primeiro candidato, para manter o contrato dos chamadores
+/// antigos.
+#[allow(clippy::too_many_arguments)]
+pub async fn send_bytes_or_tunnel_with_candidates(
+    client: &reqwest::Client,
+    base_url: &str,
+    direct_urls: &[String],
     path: &str,
     body: Vec<u8>,
     headers: Vec<(String, String)>,
@@ -739,32 +773,55 @@ pub async fn send_bytes_or_tunnel(
         }
     }
 
-    let url = format!("{}{}", base_url.trim_end_matches('/'), path);
-    let mut request = client
-        .post(&url)
-        .timeout(Duration::from_secs(600))
-        .body(body.clone());
-    for (name, value) in &headers {
-        request = request.header(name, value);
+    let candidates: Vec<&str> = if direct_urls.is_empty() {
+        vec![base_url]
+    } else {
+        direct_urls.iter().map(String::as_str).collect()
+    };
+    let mut last_error = None;
+    for candidate in candidates {
+        let url = format!("{}{}", candidate.trim_end_matches('/'), path);
+        let mut request = client
+            .post(&url)
+            // A dead advertised address must not hold the TP barrier for the
+            // full 10-minute request timeout. A real TP broadcast/reduce is
+            // expected to finish well within this bound; another candidate is
+            // tried when this one does not answer.
+            .timeout(DIRECT_BYTES_TIMEOUT)
+            .body(body.clone());
+        for (name, value) in &headers {
+            request = request.header(name, value);
+        }
+
+        match request.send().await {
+            Ok(response) if response.status().is_success() => {
+                return Ok(RawPeerResponse {
+                    body: response.bytes().await?.to_vec(),
+                    transport: ByteTransport::Direct,
+                    fallback: can_use_tunnel,
+                });
+            }
+            Ok(response) => {
+                let status = response.status();
+                let body = response.text().await.unwrap_or_default();
+                return Err(anyhow::Error::new(HttpRefusal {
+                    status: status.as_u16(),
+                    body,
+                    peer_label: peer_label.to_string(),
+                }));
+            }
+            Err(error) => {
+                let detail = error.to_string();
+                warn!("{peer_label}: HTTPS direto não alcançou {candidate}: {detail}");
+                last_error = Some(detail);
+            }
+        }
     }
 
-    match request.send().await {
-        Ok(response) if response.status().is_success() => Ok(RawPeerResponse {
-            body: response.bytes().await?.to_vec(),
-            transport: ByteTransport::Direct,
-            fallback: can_use_tunnel,
-        }),
-        Ok(response) => {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            Err(anyhow::Error::new(HttpRefusal {
-                status: status.as_u16(),
-                body,
-                peer_label: peer_label.to_string(),
-            }))
-        }
-        Err(error) => Err(error.into()),
-    }
+    Err(anyhow!(
+        "{peer_label}: nenhum endereço HTTPS respondeu: {}",
+        last_error.unwrap_or_else(|| "sem candidatos anunciados".to_string())
+    ))
 }
 
 async fn send_bytes_via_tunnel(
@@ -928,6 +985,8 @@ pub fn should_attempt_tunnel_fallback(
         )
 }
 
+const DIRECT_BYTES_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// Belt-and-suspenders ceiling on top of the tunnel protocol's own 60s
 /// `request_response::Config` timeout (`infer_tunnel::infer_tunnel_behaviour`)
 /// — that one should always fire first; this only guards against the swarm's
@@ -1043,6 +1102,40 @@ async fn send_frame_via_tunnel_with_auth(
 mod tests {
     use super::*;
     use crate::infer_tunnel::TunnelResponse;
+
+    #[tokio::test]
+    async fn direct_bytes_fallback_tries_the_next_advertised_address() {
+        use axum::{body::Bytes, routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route("/v1/tp/reduce", post(|body: Bytes| async move { body }));
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let response = send_bytes_or_tunnel_with_candidates(
+            &reqwest::Client::new(),
+            "http://127.0.0.1:1",
+            &[
+                "http://127.0.0.1:1".into(),
+                format!("http://127.0.0.1:{port}"),
+            ],
+            "/v1/tp/reduce",
+            b"partial".to_vec(),
+            Vec::new(),
+            None,
+            None,
+            false,
+            "tp-worker",
+        )
+        .await
+        .expect("segundo endereço direto");
+
+        assert_eq!(response.body, b"partial");
+        assert_eq!(response.transport, ByteTransport::Direct);
+        assert!(!response.fallback);
+    }
 
     #[tokio::test]
     async fn raw_peer_call_falls_back_to_tunnel_and_preserves_headers() {

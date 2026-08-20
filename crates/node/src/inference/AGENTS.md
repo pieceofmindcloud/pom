@@ -100,12 +100,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
   `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
   anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
-  Noise falha, repete o POST pelo cliente direto pinado, usando HTTPS quando a
-  política TLS está ativa. `broadcast_to` mantém a URL base e a rota separadas,
-  porque o túnel encaminha a rota para o loopback do worker. O `TunnelRequest`
-  leva os cabeçalhos da barreira, do rank e da autorização. A autorização
-  interna usa a `connection_key` compartilhada e cai para a primeira API key
-  ativa quando a chave de conexão não existe.
+  Noise falha, repete o POST pelos candidatos HTTPS diretos pinados, usando
+  HTTPS quando a política TLS está ativa. `broadcast_to` mantém a URL base e a
+  rota separadas, porque o túnel encaminha a rota para o loopback do worker. O
+  `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
+  autorização interna usa a `connection_key` compartilhada e cai para a
+  primeira API key ativa quando a chave de conexão não existe.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de

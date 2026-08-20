@@ -30,7 +30,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   atende requisição (ver Defeitos).
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
-  no `Network` via `insert_peer`.
+  no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
+  antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket

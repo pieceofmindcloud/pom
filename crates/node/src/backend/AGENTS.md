@@ -156,7 +156,8 @@ behind an auth extractor.
   varredura lê o modelo do primary, e a descoberta de workers fica junto do
   fork do llama.cpp. O pedido carrega `TpLaunch {size, primary_node_id,
   worker_node_ids}` - o operador escolhe primary/workers por node_id e o nó
-  deriva a `rank0_url` da `Machine.inference_url` (`tp_identity`). Validação em
+  deriva a `rank0_url` e seus candidatos da `Machine.inference_url` e
+  `Machine.inference_candidates` (`tp_identity`). Validação em
   duas camadas antes do deploy: `tp_group_checks` (tamanho, presença no
   cluster, modelo inteiro, sem repetição) dentro do `plan`, e
   `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
@@ -171,9 +172,10 @@ behind an auth extractor.
   mudam de substantivo (`DeployKind::unit`). Ver
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
   O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
-  máquina; `tp_members` transfere esses dados para cada rank, permitindo que
-  `broadcast_to` e o reduce usem primeiro o túnel Noise, com cliente direto
-  pinado como fallback quando o túnel não está disponível.
+  máquina; `tp_members` transfere esses dados e todos os candidatos de URL para
+  cada rank, permitindo que `broadcast_to` e o reduce usem primeiro o túnel
+  Noise e tentem cada endereço HTTPS alcançável quando o túnel não está
+  disponível.
   O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
   tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
   bytes ou esperas TP com a telemetria de pipeline.

@@ -93,10 +93,12 @@ cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, primary_node_id,
 worker_node_ids}` - o operador escolhe o **primary** e os **workers** por
 node_id entre as máquinas no mapa (a tela oferece selects, não um campo de URL), e o nó deriva a
 `rank0_url` da porta de inferência anunciada pelo próprio primary
-(`Machine.inference_url`). A varredura lê o modelo inteiro do primary, e o
-`launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
-cada worker com rank 1..size-1), todos apontando a mesma `rank0_url` para a
-coletiva.
+(`Machine.inference_url`) e preserva os demais candidatos de endereço. A
+varredura lê o modelo inteiro do primary, e o `launch_targets` expande o passo
+em **um alvo por rank** (o primary com rank 0 e cada worker com rank 1..size-1),
+todos apontando a mesma `rank0_url` e sua lista de candidatos para a coletiva.
+Se o túnel libp2p não puder discar, o rank tenta cada endereço HTTPS conhecido
+do destino, o que cobre peers atrás de NAT e containers no mesmo host.
 
 Antes de aceitar, o plano valida em duas camadas: `tp_group_checks` (tamanho,
 primary/workers no cluster e com o modelo inteiro, sem repetição, primary com

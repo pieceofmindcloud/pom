@@ -85,6 +85,51 @@ fn tunnel_peer_multiaddrs(peer_id: PeerId, advertised: &[String]) -> Vec<Multiad
         .collect()
 }
 
+/// Reidrata o livro de endereços do swarm antes de uma chamada pelo túnel.
+///
+/// O anúncio pode ter chegado pelo UDP e o `PeerId` pode ter sido repassado ao
+/// gateway antes de o evento gossipsub correspondente registrar os endereços no
+/// swarm. `request_response::send_request` não disca sem um endereço conhecido:
+/// ele falha imediatamente com `Failed to dial the requested peer`. Consultar a
+/// tabela viva aqui fecha essa janela e também cobre um swarm que perdeu o
+/// endereço após uma reconexão.
+async fn ensure_tunnel_peer_address(
+    swarm: &mut Swarm<DiscBehaviour>,
+    network: &Network,
+    peer_id: PeerId,
+) -> std::result::Result<(), String> {
+    let peer_id_text = peer_id.to_string();
+    let peer = network
+        .alive_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.libp2p_peer_id.as_deref() == Some(peer_id_text.as_str()));
+    let Some(peer) = peer else {
+        return Err(format!("nenhum anúncio vivo para o PeerId {peer_id}"));
+    };
+
+    let mut advertised = peer.addr_candidates;
+    if advertised.is_empty() {
+        advertised.push(peer.addr);
+    }
+    let addresses = tunnel_peer_multiaddrs(peer_id, &advertised);
+    if addresses.is_empty() {
+        return Err(format!("o PeerId {peer_id} não tem endereço discável"));
+    }
+    for address in addresses {
+        swarm.add_peer_address(peer_id, address);
+    }
+    if !swarm.is_connected(&peer_id) {
+        // The request-response behaviour can queue the request while this dial
+        // completes. `AlreadyDialing` is harmless; the important part is that
+        // the address book is populated before `send_request` runs.
+        if let Err(error) = swarm.dial(peer_id) {
+            debug!("libp2p: rediscagem do peer {peer_id} não iniciou: {error}");
+        }
+    }
+    Ok(())
+}
+
 /// Inverse of `udp_to_libp2p_multiaddr`: extract this node's own `host:port`
 /// (UDP-port convention) from a libp2p `identify` `observed_addr` — the
 /// address a remote peer told us it saw *us* connecting from, which is the
@@ -415,6 +460,12 @@ impl Discovery {
                 }
                 out = tunnel_rx.recv() => {
                     let Some(TunnelOutbound { peer_id, request, reply }) = out else { break };
+                    if !swarm.is_connected(&peer_id) {
+                        if let Err(error) = ensure_tunnel_peer_address(&mut swarm, &network, peer_id).await {
+                            let _ = reply.send(Err(error));
+                            continue;
+                        }
+                    }
                     let request_id = swarm.behaviour_mut().infer_tunnel.send_request(&peer_id, request);
                     pending_tunnel.insert(request_id, reply);
                 }

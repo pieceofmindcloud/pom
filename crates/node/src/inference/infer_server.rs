@@ -1094,6 +1094,7 @@ pub async fn run(
     // que o reduce espera a soma. Ver `handle_tp_reduce`.
     let tp_barrier = crate::collective::ReduceBarrier::new();
     let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
+    let local_barrier_handle = crate::tp::set_local_barrier(tp_barrier.clone(), tp_size);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
     let scheduler_cfg = crate::scheduler::SchedulerConfig::from_node_config(&cfg);
@@ -1174,6 +1175,10 @@ pub async fn run(
         }
     })
     .await;
+
+    if let Some(handle) = local_barrier_handle {
+        crate::tp::clear_local_barrier(handle);
+    }
 
     // Explícito, e não pela contagem do `Arc`: uma cópia esquecida em qualquer
     // canto — foi o que as conexões desgarradas faziam — adiava o `Drop` para

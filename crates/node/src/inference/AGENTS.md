@@ -67,8 +67,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   como botão.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
-  lê a parcial (f32), POSTa para o `/v1/tp/reduce` do primary (que soma na
-  `ReduceBarrier` do `infer_server`) e devolve a soma no buffer. O cliente é
+  lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
+  `/v1/tp/reduce` do primary quando é worker. O endpoint soma na
+  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O cliente é
   **pinado no `node_id` do primary** (`TpIdentity.rank0_node_id`): um
   `reqwest::Client` padrão recusa o certificado autoassinado do cluster e todo
   POST morria em 13 ms. O fork insere o op de reduce (`GGML_OP_CUSTOM`) depois
@@ -105,7 +106,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
-  request/response, broadcasts e chamadas diretas, pelo túnel ou por fallback.
+  request/response, chamadas locais, broadcasts e chamadas diretas, pelo
+  túnel ou por fallback.
   Ele mede a espera da barreira síncrona, não uma latência pura de pacote. Em
   um modelo de 32 camadas, a arquitetura atual tem dois pontos de coletiva por
   camada, ou 64 esperas síncronas por `llama_decode` de um token; isso é TP e

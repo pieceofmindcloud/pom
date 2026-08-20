@@ -19,9 +19,11 @@ soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
 rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
 `direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
 cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
-forward pass. `broadcast_to` e o reduce tentam primeiro o túnel libp2p quando o
-membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
-cliente direto pinado, com HTTPS quando a política TLS está ativa.
+forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
+workers enviam a parcial ao primary. `broadcast_to` e o reduce remoto tentam
+primeiro o túnel libp2p quando o membro anunciou `PeerId` e capability. Se o
+transporte Noise falhar, usam o cliente direto pinado, com HTTPS quando a
+política TLS está ativa.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. Ver
@@ -34,7 +36,7 @@ topologia.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
-request/response, broadcasts e o caminho direto ou túnel. A espera inclui a
+request/response, chamadas locais, broadcasts e o caminho direto ou túnel. A espera inclui a
 barreira síncrona e não é latência pura de pacote. Os bytes e waits TP ficam
 separados dos frames de hidden state do pipeline. Com 32 camadas e dois pontos
 row-parallel por camada, um decode de um token pode fazer 64 esperas coletivas;

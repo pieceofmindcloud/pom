@@ -4,15 +4,17 @@
 //! projeções row-parallel (wo e ffn_down). O op chama a llama_tp_reduce_fun,
 //! que copia a parcial e invoca este callback para somar as parciais do grupo.
 //!
-//! O callback roda num thread de blocking durante o llama_decode. O transporte
-//! é uniforme: TODO rank (inclusive o 0) faz um POST da própria parcial para o
-//! primary (rank 0), cujo endpoint /v1/tp/reduce acumula via ReduceBarrier e
-//! devolve a soma. A parcial é f32 (a precisão da GEMM).
+//! O callback roda num thread de blocking durante o llama_decode. Os workers
+//! fazem um POST da própria parcial para o primary (rank 0), cujo endpoint
+//! `/v1/tp/reduce` acumula via `ReduceBarrier`. O próprio primary contribui
+//! diretamente na barreira local, sem discar a própria URL pública. A parcial
+//! é f32 (a precisão da GEMM).
 
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
+use crate::collective::ReduceBarrier;
 use crate::relay::ByteTransport;
 
 /// Cabeçalhos da coletiva. O corpo é a parcial em f32 cru; metadado de tamanho
@@ -23,7 +25,8 @@ pub const TP_RANK_HEADER: &str = "x-pom-tp-rank";
 struct TpState {
     rank: u32,
     size: u32,
-    /// URL do primary (rank 0) da coletiva. Todo rank POSTa para cá.
+    /// URL do primary (rank 0) da coletiva. Os workers POSTam para cá; o rank
+    /// 0 usa a barreira local e não disca a própria URL.
     rank0_url: String,
     /// PeerId e capacidade do túnel do primary, para redes sem rota HTTPS
     /// direta entre as máquinas.
@@ -42,6 +45,10 @@ struct TpState {
     /// Contador de reduces. Em execução lockstep, o k-ésimo reduce de todos os
     /// ranks corresponde à mesma projeção, então o id casa entre os processos.
     counter: AtomicU64,
+    /// Barreira local pertencente ao servidor que registrou este estado TP.
+    /// Mantê-la no estado, e não num único global do processo, evita que uma
+    /// reconfiguração troque a barreira de um decode antigo ainda drenando.
+    local_barrier: std::sync::RwLock<Option<(ReduceBarrier, u32, u64)>>,
 }
 
 /// Estado da coletiva deste processo. `None` = este nó não é de um grupo TP.
@@ -53,6 +60,45 @@ struct TpState {
 /// modelo que nunca teve coletiva nenhuma (18/08). Trocar o grupo também
 /// exigia reiniciar o processo, o que era limitação do tipo, não do desenho.
 static TP_STATE: std::sync::RwLock<Option<Arc<TpState>>> = std::sync::RwLock::new(None);
+
+static NEXT_LOCAL_BARRIER_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) struct LocalBarrierHandle {
+    state: Arc<TpState>,
+    token: u64,
+}
+
+pub(crate) fn set_local_barrier(barrier: ReduceBarrier, size: u32) -> Option<LocalBarrierHandle> {
+    let state = tp_state()?;
+    let token = NEXT_LOCAL_BARRIER_TOKEN.fetch_add(1, Ordering::Relaxed);
+    if let Ok(mut slot) = state.local_barrier.write() {
+        *slot = Some((barrier, size, token));
+    } else {
+        return None;
+    }
+    Some(LocalBarrierHandle { state, token })
+}
+
+pub(crate) fn clear_local_barrier(handle: LocalBarrierHandle) {
+    if let Ok(mut slot) = handle.state.local_barrier.write() {
+        if slot
+            .as_ref()
+            .is_some_and(|(_, _, current)| *current == handle.token)
+        {
+            *slot = None;
+        }
+    }
+}
+
+fn local_barrier_for(state: &Arc<TpState>) -> Option<(ReduceBarrier, u32)> {
+    if state.rank != 0 {
+        return None;
+    }
+    state.local_barrier.read().ok().and_then(|slot| {
+        slot.as_ref()
+            .map(|(barrier, size, _)| (barrier.clone(), *size))
+    })
+}
 
 fn tp_state() -> Option<Arc<TpState>> {
     TP_STATE.read().ok().and_then(|s| s.clone())
@@ -100,6 +146,7 @@ pub struct TpDecodeTelemetry {
     pub reduce_p95_ms: u64,
     pub request_bytes: u64,
     pub response_bytes: u64,
+    pub local_calls: u64,
     pub direct_calls: u64,
     pub tunnel_calls: u64,
     pub fallback_calls: u64,
@@ -176,6 +223,7 @@ fn begin_decode_inner(id: &str) {
             reduce_p95_ms: 0,
             request_bytes: 0,
             response_bytes: 0,
+            local_calls: 0,
             direct_calls: 0,
             tunnel_calls: 0,
             fallback_calls: 0,
@@ -220,6 +268,7 @@ pub fn record_reduce(
             current.response_bytes += response_bytes;
             current.samples_ms.push(elapsed_ms);
             match transport {
+                ByteTransport::Local => current.local_calls += 1,
                 ByteTransport::Direct => current.direct_calls += 1,
                 ByteTransport::Tunnel => current.tunnel_calls += 1,
             }
@@ -332,6 +381,7 @@ pub fn register_tp_reduce(
         client,
         auth,
         counter: AtomicU64::new(0),
+        local_barrier: std::sync::RwLock::new(None),
     });
     if let Ok(mut slot) = TP_STATE.write() {
         *slot = Some(state);
@@ -363,8 +413,9 @@ pub fn unregister_tp_reduce() {
     let _ = take_failure();
 }
 
-/// O callback do op de reduce: lê a parcial (f32), POSTa para o primary e
-/// devolve a soma no mesmo buffer.
+/// O callback do op de reduce: lê a parcial (f32), contribui na barreira local
+/// quando é o primary ou POSTa para ele quando é worker, e devolve a soma no
+/// mesmo buffer.
 unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: *mut c_void) {
     if data.is_null() || n_bytes == 0 || n_bytes % 4 != 0 {
         return;
@@ -546,6 +597,27 @@ async fn post_reduce(
     data: Vec<f32>,
     tunnel: Option<&crate::infer_tunnel::TunnelOutboundSender>,
 ) -> Result<Vec<f32>, String> {
+    if let Some((barrier, size)) = local_barrier_for(state) {
+        let expected = data.len();
+        let request_bytes = (expected * std::mem::size_of::<f32>()) as u64;
+        let started = std::time::Instant::now();
+        let receiver = barrier
+            .contribute(barrier_id, state.rank, size, data)
+            .map_err(|error| format!("barreira local do primary recusou a parcial: {error}"))?;
+        let sum = receiver
+            .await
+            .map_err(|_| "barreira local do primary foi encerrada".to_string())?;
+        record_reduce(
+            expected,
+            request_bytes,
+            (sum.len() * std::mem::size_of::<f32>()) as u64,
+            started.elapsed(),
+            ByteTransport::Local,
+            false,
+        );
+        return Ok(sum);
+    }
+
     // f32 cru, little-endian. JSON custava ~12 bytes por float de 4: um prefill
     // de 100 tokens dava ~5 MB por reduce e estourava o limite de corpo (413),
     // 64 vezes por decode.
@@ -775,6 +847,35 @@ mod tests {
         assert_eq!(telemetry.reduce_p95_ms, 30);
     }
 
+    #[tokio::test]
+    async fn primary_contributes_to_the_local_barrier_without_dialing_itself() {
+        let _trava = ESTADO_GLOBAL.lock().unwrap();
+        limpa();
+        let barrier = ReduceBarrier::new();
+        register_tp_reduce(
+            0,
+            2,
+            "https://[2001:db8::1]:8181".into(),
+            Some("primary-node".into()),
+            Some("12D3KooWPrimary".into()),
+            true,
+            None,
+        );
+        let barrier_handle = set_local_barrier(barrier.clone(), 2).expect("estado do primary");
+
+        let state = tp_state().expect("estado do primary");
+        let worker = barrier
+            .contribute("local-primary", 1, 2, vec![3.0])
+            .expect("contribuição do worker");
+        let primary = post_reduce(&state, "local-primary", vec![2.0], None);
+        let (worker_sum, primary_sum) = tokio::join!(worker, primary);
+
+        assert_eq!(worker_sum.expect("soma do worker"), vec![5.0]);
+        assert_eq!(primary_sum.expect("soma do primary"), vec![5.0]);
+        clear_local_barrier(barrier_handle);
+        unregister_tp_reduce();
+    }
+
     use crate::collective::ReduceBarrier;
     use axum::{routing::post, Router};
     use tokio::sync::mpsc;
@@ -827,6 +928,7 @@ mod tests {
                     client: reqwest::Client::new(),
                     auth: None,
                     counter: AtomicU64::new(0),
+                    local_barrier: std::sync::RwLock::new(None),
                 });
                 tokio::spawn(async move { post_reduce(&state, "b", data, None).await })
             })
@@ -880,6 +982,7 @@ mod tests {
             client: reqwest::Client::new(),
             auth: None,
             counter: AtomicU64::new(0),
+            local_barrier: std::sync::RwLock::new(None),
         });
         let result = post_reduce(&state, "b", vec![1.0, 2.0], Some(&tunnel))
             .await

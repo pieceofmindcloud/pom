@@ -49,8 +49,9 @@ contribuições de todos os ranks. A soma é um all-reduce e cada rank recebe o
 mesmo resultado antes de continuar a camada.
 
 O POM carimba cada shard TP com tamanho e rank. A coletiva HTTP em
-`POST /v1/tp/reduce` troca os parciais durante o forward pass e registra
-bytes, espera e percentis na telemetria. Em um modelo de 32 camadas com dois
+`POST /v1/tp/reduce` troca os parciais dos workers durante o forward pass; o
+primary contribui na barreira local. O sistema registra bytes, espera e
+percentis na telemetria. Em um modelo de 32 camadas com dois
 pontos row-parallel por camada, um decode faz 64 reduces por token. Esses
 reduces não podem ser adiados para o fim: a próxima operação da camada depende
 do resultado somado. Fazer um único reduce final mudaria a matemática do
@@ -86,7 +87,7 @@ ligada à barreira, o runtime mantém TP no caminho de uma sequência por decode
 Pipeline e TP aparecem em blocos separados. Pipeline mostra hops, fase,
 backend, transporte, bytes e o modo de resposta. TP mostra reduces esperados e
 observados, espera total, p50/p95, bytes de request e response e se o caminho
-foi direto ou túnel. Uma espera TP próxima de `reduces * RTT` indica que a
+foi local, direto ou túnel. Uma espera TP próxima de `reduces * RTT` indica que a
 topologia, e não apenas o kernel CUDA, está dominando a taxa de tokens.
 
 Para uma análise operacional, compare:

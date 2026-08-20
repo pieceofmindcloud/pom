@@ -692,6 +692,7 @@ async fn send_batch_via_tunnel(
 /// mensagem de inferência.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ByteTransport {
+    Local,
     Direct,
     Tunnel,
 }

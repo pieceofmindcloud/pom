@@ -437,12 +437,19 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         // A primeira invocação é a prova de que o op do fork está no grafo.
         // Sem esta linha, "o callback não é chamado" e "o callback falha" têm
         // exatamente o mesmo sintoma: texto errado, rápido, sem log.
-        tracing::info!(
-            "coletiva TP ativa: primeiro reduce do rank {} ({} valores) -> {}",
-            state.rank,
-            n,
-            state.rank0_url
-        );
+        if state.rank == 0 {
+            tracing::info!(
+                "coletiva TP ativa: primeiro reduce do rank 0 ({} valores) -> barreira local",
+                n
+            );
+        } else {
+            tracing::info!(
+                "coletiva TP ativa: primeiro reduce do rank {} ({} valores) -> {}",
+                state.rank,
+                n,
+                state.rank0_url
+            );
+        }
     }
 
     let sum = tokio::runtime::Handle::current().block_on(post_reduce(
@@ -497,6 +504,13 @@ pub fn broadcast_decode(
     broadcast_to(members, rota, decode_id, body, None)
 }
 
+fn broadcast_target(member_url: &str, rota: &str) -> (String, String) {
+    (
+        member_url.trim_end_matches('/').to_string(),
+        rota.to_string(),
+    )
+}
+
 /// O mesmo, dizendo o `content-type` quando o corpo não é um quadro binário.
 ///
 /// O extrator `Json` do axum **exige** o cabeçalho: sem ele a réplica devolve
@@ -513,7 +527,10 @@ pub fn broadcast_to(
     let replicas = members.len().saturating_sub(1) as u64;
     record_broadcast_scheduled(replicas, body.len() as u64);
     for membro in members.iter().skip(1) {
-        let url = format!("{}{rota}", membro.url.trim_end_matches('/'));
+        // A base e o path precisam permanecer separados: o túnel usa apenas
+        // o path para encaminhar ao loopback do worker. Concatenar a rota e
+        // passar `path=""` faz o túnel chegar em `/`, que responde 404.
+        let (url, path) = broadcast_target(&membro.url, rota);
         let cliente = match peer_client_for(&membro.node_id) {
             Some(c) => c,
             None => continue,
@@ -551,7 +568,7 @@ pub fn broadcast_to(
             let result = crate::relay::send_bytes_or_tunnel(
                 &cliente,
                 &url,
-                "",
+                &path,
                 corpo,
                 headers,
                 tunnel,
@@ -693,6 +710,14 @@ async fn post_reduce(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn broadcast_keeps_the_inference_route_when_using_the_tunnel() {
+        let (base_url, path) = broadcast_target("https://[2001:db8::2]:8187", "/v1/prefill");
+
+        assert_eq!(base_url, "https://[2001:db8::2]:8187");
+        assert_eq!(path, "/v1/prefill");
+    }
 
     /// O `barrier_id` é função do decode, não do relógio de cada processo.
     ///

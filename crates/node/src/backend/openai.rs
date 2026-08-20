@@ -315,14 +315,24 @@ struct ModelObject {
 }
 
 /// Models this cluster can actually serve: whatever labels the peers advertise.
+/// Os nomes que um cliente pode pedir.
+///
+/// Além do rótulo pelado de cada modelo, cada implantação aparece como
+/// `<modelo>@<deploy_id>`. É o que dá ao cliente como escolher **qual**
+/// implantação atende quando o mesmo modelo está no ar mais de uma vez; o nome
+/// pelado continua valendo e vai para a que quem monta o pipeline escolher.
 pub(crate) async fn model_ids(state: &GatewayState) -> Vec<String> {
-    let mut ids: Vec<String> = state
-        .all_peers()
-        .await
-        .into_iter()
-        .map(|p| p.model)
-        .filter(|m| !m.is_empty())
+    let peers = state.all_peers().await;
+    let mut ids: Vec<String> = peers
+        .iter()
+        .filter(|p| !p.model.is_empty())
+        .map(|p| p.model.clone())
         .collect();
+    for p in &peers {
+        if !p.model.is_empty() && !p.deploy_id.is_empty() {
+            ids.push(format!("{}@{}", p.model, p.deploy_id));
+        }
+    }
     let active = state.active_model().await;
     if !active.is_empty() {
         ids.push(active);
@@ -492,8 +502,16 @@ async fn completions(
 /// whatever this cluster is actually running.
 pub(crate) async fn resolve_model(state: &GatewayState, requested: String) -> String {
     if model_ids(state).await.contains(&requested) {
-        requested
-    } else {
+        return requested;
+    }
+    // Um `@<deploy_id>` que ainda não apareceu no anúncio de ninguém continua
+    // valendo: recusar aqui trocaria "esta implantação não respondeu" por
+    // "atendi noutra", que é pior - o cliente pediu uma configuração
+    // específica. Quem não achar peer nenhum falha adiante, dizendo isso.
+    if crate::deployment::split_selector(&requested).1.is_some() {
+        return requested;
+    }
+    {
         let active = state.active_model().await;
         info!("modelo '{requested}' desconhecido — usando '{active}'");
         active
@@ -935,6 +953,48 @@ mod tests {
             content: Content::Text(text.into()),
             tool_calls: None,
         }
+    }
+
+    // ── Escolha de implantação ───────────────────────────────────────────────
+
+    /// Cada implantação aparece na lista com o próprio sufixo, para o cliente
+    /// ter como pedir uma configuração específica.
+    #[tokio::test]
+    async fn deployments_are_listed_alongside_the_plain_model_name() {
+        let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
+        let mut p2 = crate::gateway::testkit::peer("n2", "n2", 8080);
+        p1.model = "qwen3:8b".into();
+        p1.deploy_id = "d-aaaaaaaa".into();
+        p2.model = "qwen3:8b".into();
+        p2.deploy_id = "d-bbbbbbbb".into();
+
+        let state = crate::gateway::testkit::state_with("eu", vec![p1, p2]).await;
+        let ids = model_ids(&state).await;
+
+        assert!(ids.contains(&"qwen3:8b".to_string()), "{ids:?}");
+        assert!(ids.contains(&"qwen3:8b@d-aaaaaaaa".to_string()), "{ids:?}");
+        assert!(ids.contains(&"qwen3:8b@d-bbbbbbbb".to_string()), "{ids:?}");
+    }
+
+    /// Pedir uma implantação que ninguém anuncia **não** pode cair calado na
+    /// ativa: quem escreveu o sufixo pediu aquela configuração, e responder
+    /// com outra é pior que falhar.
+    #[tokio::test]
+    async fn an_explicit_deployment_is_never_silently_swapped() {
+        let mut p1 = crate::gateway::testkit::peer("n1", "n1", 8080);
+        p1.model = "qwen3:8b".into();
+        p1.deploy_id = "d-aaaaaaaa".into();
+        let state = crate::gateway::testkit::state_with("eu", vec![p1]).await;
+
+        assert_eq!(
+            resolve_model(&state, "qwen3:8b@d-cccccccc".into()).await,
+            "qwen3:8b@d-cccccccc"
+        );
+        // Um nome pelado desconhecido continua caindo na ativa, como sempre.
+        assert_ne!(
+            resolve_model(&state, "modelo-que-nao-existe".into()).await,
+            "modelo-que-nao-existe"
+        );
     }
 
     // ── render_prompt ────────────────────────────────────────────────────────

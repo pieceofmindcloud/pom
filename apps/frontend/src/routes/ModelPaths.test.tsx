@@ -42,7 +42,7 @@ describe("ModelPaths", () => {
 
   it("shows the slice storage limit and current usage", () => {
     render(
-      <MemoryRouter>
+      <MemoryRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
         <LocaleProvider initialLocale="pt-BR">
           <ModelPaths />
         </LocaleProvider>

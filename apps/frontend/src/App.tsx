@@ -13,9 +13,9 @@ import { ModelPaths } from "./routes/ModelPaths";
 import { NetworkSettings } from "./routes/NetworkSettings";
 import { NotFound } from "./routes/NotFound";
 import { DeployModel } from "./routes/DeployModel";
+import { Deployments } from "./routes/Deployments";
 import { Shards } from "./routes/Shards";
 import { SliceModels } from "./routes/SliceModels";
-import { SlicingJobs } from "./routes/SlicingJobs";
 import { ConnectionKeys, TokenKeys } from "./routes/Keys";
 import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
@@ -52,7 +52,8 @@ export default function App() {
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
-  const isFullBleed = isDashboard || location.pathname === "/documentacao";
+  const isFullBleed =
+    isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar";
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -109,11 +110,9 @@ export default function App() {
                     <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
                     <Route path="/implantar" element={<Page><DeployModel /></Page>} />
-                    {/* Where deploying used to live, back when it was a leaf of
-                        the shards section. Kept so links and bookmarks the
-                        operator already has do not land on "page not found". */}
+                    <Route path="/implantacoes" element={<Page><Deployments /></Page>} />
+                    {/* Keep the former deploy URL working for old bookmarks. */}
                     <Route path="/fatias/implantar" element={<Navigate to="/implantar" replace />} />
-                    <Route path="/fatias/andamento" element={<Page><SlicingJobs /></Page>} />
                     <Route path="/transferencias" element={<Page><Transfers /></Page>} />
                     <Route path="/transferencias/enviar" element={<Page><SendFile /></Page>} />
                     <Route path="/logs" element={<Page><LogsByToken /></Page>} />

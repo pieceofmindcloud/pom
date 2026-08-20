@@ -47,20 +47,16 @@ export const NAV: NavSection[] = [
     children: [
       { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
       { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
-    ],
-  },
-  {
-    labelKey: "nav.shardedModels",
-    icon: Layers,
-    children: [
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
-      { labelKey: "nav.slicing", to: "/fatias/andamento", icon: ListTree },
     ],
   },
   // Its own entry, not a leaf of the shards section: putting a set of slices
   // into service is the act the whole screen exists for, and it was two clicks
   // deep behind a section that reads as a file listing.
   { labelKey: "nav.deploy", icon: Rocket, to: "/implantar" },
+  // Separada de "implantar" de proposito: uma cria, a outra mostra e ajusta o
+  // que ja existe. Sao dois momentos diferentes do mesmo trabalho.
+  { labelKey: "nav.deployments", icon: Boxes, to: "/implantacoes" },
   {
     labelKey: "nav.transfers",
     icon: Send,

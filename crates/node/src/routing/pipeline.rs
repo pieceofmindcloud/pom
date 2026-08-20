@@ -140,8 +140,9 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// Advertised when a node's libp2p swarm has actually come up
 /// (`Network::libp2p_tunnel_ready`) — unlike the other capabilities above,
 /// this is checked **per-hop**, not all-or-nothing across a plan: a mix of
-/// directly-reachable and NAT'd hops in the same pipeline is normal, and only
-/// the failing hop needs the fallback. See `relay::should_attempt_tunnel_fallback`.
+/// directly-reachable and NAT'd hops in the same pipeline is normal. The
+/// relay prefers this transport per hop and falls back to the direct client
+/// when it is unavailable or fails at the transport layer.
 pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
 /// A handoff chosen by the planner between two consecutive pipeline steps.
@@ -272,28 +273,108 @@ impl PipelinePlan {
 /// Scoring: `layers_count * 100 - current_load * 10`
 /// — prefers peers that cover more layers and are less busy.
 ///
+/// `deploy_id` escolhe **qual** implantação atende, quando o mesmo modelo está
+/// no ar mais de uma vez. `None` quer dizer "a que estiver lá": casa pelo
+/// rótulo, que é o comportamento de sempre e o único possível com um peer de
+/// versão anterior, que não anuncia implantação nenhuma.
+///
 /// Returns `None` if there is any gap in layer coverage (0..total_layers).
 pub async fn plan_pipeline(
     peers: &[PeerInfo],
     model_name: &str,
+    deploy_id: Option<&str>,
     total_layers: u32,
     tracker: &LoadTracker,
 ) -> Option<PipelinePlan> {
+    plan_pipeline_with_rtt(
+        peers,
+        model_name,
+        deploy_id,
+        total_layers,
+        tracker,
+        &HashMap::new(),
+    )
+    .await
+}
+
+/// Same planner, with RTTs measured by the gateway that is about to originate
+/// the request. Exact range replicas are the same logical stage, so the lowest
+/// measured RTT wins before load is considered. A caller without measurements
+/// can keep using `plan_pipeline` and retains the stable legacy ordering.
+pub async fn plan_pipeline_with_rtt(
+    peers: &[PeerInfo],
+    model_name: &str,
+    deploy_id: Option<&str>,
+    total_layers: u32,
+    tracker: &LoadTracker,
+    rtts: &HashMap<String, f64>,
+) -> Option<PipelinePlan> {
     // Only peers that expose an inference server AND match the model name
-    let candidates: Vec<&PeerInfo> = peers
+    let servindo: Vec<&PeerInfo> = peers
         .iter()
         .filter(|p| {
-            p.inference_port.is_some() && p.is_alive() && p.model == model_name && !p.is_tp_worker()
+            p.inference_port.is_some()
+                && p.is_alive()
+                && !p.is_tp_worker()
+                && match deploy_id {
+                    Some(id) => p.deploy_id == id,
+                    None => p.model == model_name,
+                }
         })
         .collect();
 
-    if candidates.is_empty() {
+    if servindo.is_empty() {
         debug!(
-            "Pipeline plan failed: No alive peers for model '{}' with inference_port",
-            model_name
+            "Pipeline plan failed: No alive peers for model '{}'{} with inference_port",
+            model_name,
+            deploy_id
+                .map(|d| format!(" (implantação {d})"))
+                .unwrap_or_default()
         );
         return None;
     }
+
+    // Um pipeline não pode misturar implantações. Sem isto, duas implantações
+    // do mesmo modelo - que é exatamente o que o `deploy_id` passou a permitir -
+    // virariam um conjunto só de peers, e o passo a passo por camada escolheria
+    // ora de uma ora de outra: metade do prompt numa configuração, metade na
+    // outra, com o operador vendo um pipeline que não implantou.
+    //
+    // Quando quem chamou não escolheu, escolhe-se aqui, e de forma determinística:
+    // duas máquinas do cluster têm que chegar à mesma implantação. A ordem por
+    // id é o critério estável até o registro dizer qual é a ativa
+    // (`deployment::active`).
+    let candidates: Vec<&PeerInfo> = match deploy_id {
+        Some(_) => servindo,
+        None => {
+            let mut ids: Vec<&str> = servindo
+                .iter()
+                .map(|p| p.deploy_id.as_str())
+                .filter(|d| !d.is_empty())
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            match ids.first().copied() {
+                // Nenhum peer anuncia implantação: cluster de versão anterior,
+                // ou nós subidos pela linha de comando. Casa por rótulo.
+                None => servindo,
+                Some(escolhida) => {
+                    if ids.len() > 1 {
+                        debug!(
+                            "modelo '{model_name}' está no ar em {} implantações; usando {escolhida}",
+                            ids.len()
+                        );
+                    }
+                    servindo
+                        .into_iter()
+                        // Um nó sem implantação declarada continua servindo o
+                        // rótulo: ele entra junto em vez de abrir buraco.
+                        .filter(|p| p.deploy_id == escolhida || p.deploy_id.is_empty())
+                        .collect()
+                }
+            }
+        }
+    };
 
     let mut steps: Vec<PipelineStep> = Vec::new();
     let mut pos: u32 = 0; // next layer we need covered
@@ -319,7 +400,14 @@ pub async fn plan_pipeline(
         for peer in reachable {
             let load = tracker.load(&peer.node_id).await as i64;
             let layers = (peer.end_layer - peer.start_layer + 1) as i64;
-            let score = layers * 100 - load * 10;
+            // Layer coverage remains the dominant factor. For peers covering
+            // the same range, lower RTT wins, followed by lower in-flight
+            // load. Unknown RTT is a stable last resort.
+            let rtt_penalty = rtts
+                .get(&peer.node_id)
+                .map(|rtt| (*rtt * 100.0).max(0.0) as i64)
+                .unwrap_or(100_000);
+            let score = layers * 100_000 - rtt_penalty.min(99_999) - load * 10;
             if best.map(|(_, s)| score > s).unwrap_or(true) {
                 best = Some((peer, score));
             }
@@ -411,6 +499,7 @@ mod ipv6_tests {
 
     fn peer(addr: &str, start: u32, end: u32) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "n".repeat(64),
             pubkey: "p".into(),
@@ -461,11 +550,113 @@ mod ipv6_tests {
         let mut primary = peer_tp("192.168.1.11:42777", 0, 31, "primary", 0);
         primary.node_id = "primary".into();
         let tracker = LoadTracker::new();
-        let plan = plan_pipeline(&[worker, primary], "qwen35", 32, &tracker)
+        let plan = plan_pipeline(&[worker, primary], "qwen35", None, 32, &tracker)
             .await
             .expect("plano");
         assert_eq!(plan.steps.len(), 1);
         assert_eq!(plan.steps[0].node_id, "primary");
+    }
+
+    /// Duas implantações do **mesmo modelo**, no mesmo cluster.
+    ///
+    /// É o caso que não existia: antes do `deploy_id` os quatro peers eram um
+    /// conjunto só (todos com `model == "qwen35"`), e o pipeline saía com
+    /// metade das camadas de uma implantação e metade da outra - sem que nada
+    /// nem ninguém pudesse notar.
+    #[tokio::test]
+    async fn two_deployments_of_one_model_never_mix() {
+        // As faixas se cruzam de propósito: a caminhada gulosa por camada
+        // prefere quem cobre mais camadas, então sem agrupamento ela pegaria
+        // `a1` (0-19, a maior em 0) e depois `b2` (16-31, a maior em 20) -
+        // um pipeline com um pé em cada implantação.
+        let mut a1 = peer("10.0.0.1:42777", 0, 19);
+        let mut a2 = peer("10.0.0.2:42777", 20, 31);
+        let mut b1 = peer("10.0.0.3:42777", 0, 15);
+        let mut b2 = peer("10.0.0.4:42777", 16, 31);
+        // O `peer` de teste dá o mesmo `node_id` a todo mundo; aqui eles
+        // precisam ser distinguíveis, que é o ponto do teste.
+        for (p, id, dep) in [
+            (&mut a1, "a1", "d-aaaaaaaa"),
+            (&mut a2, "a2", "d-aaaaaaaa"),
+            (&mut b1, "b1", "d-bbbbbbbb"),
+            (&mut b2, "b2", "d-bbbbbbbb"),
+        ] {
+            p.node_id = id.to_string();
+            p.deploy_id = dep.to_string();
+        }
+        let todos = vec![a1, a2, b1, b2];
+        let tracker = LoadTracker::new();
+
+        // Pedindo uma implantação, só as máquinas dela entram.
+        let plano = plan_pipeline(&todos, "qwen35", Some("d-aaaaaaaa"), 32, &tracker)
+            .await
+            .expect("a implantação A cobre o modelo inteiro");
+        assert_eq!(plano.steps.len(), 2);
+        assert!(
+            plano
+                .steps
+                .iter()
+                .all(|s| s.inference_url.contains("10.0.0.1")
+                    || s.inference_url.contains("10.0.0.2")),
+            "nenhum hop pode vir da implantação B: {:?}",
+            plano
+                .steps
+                .iter()
+                .map(|s| &s.inference_url)
+                .collect::<Vec<_>>()
+        );
+
+        let plano_b = plan_pipeline(&todos, "qwen35", Some("d-bbbbbbbb"), 32, &tracker)
+            .await
+            .unwrap();
+        assert!(plano_b
+            .steps
+            .iter()
+            .all(|s| s.inference_url.contains("10.0.0.3") || s.inference_url.contains("10.0.0.4")));
+
+        // Sem escolher, ainda assim não se misturam: escolhe-se uma, inteira.
+        let qualquer = plan_pipeline(&todos, "qwen35", None, 32, &tracker)
+            .await
+            .unwrap();
+        let ids: std::collections::BTreeSet<&str> = qualquer
+            .steps
+            .iter()
+            .map(|s| {
+                todos
+                    .iter()
+                    .find(|p| p.node_id == s.node_id)
+                    .map(|p| p.deploy_id.as_str())
+                    .unwrap_or("")
+            })
+            .collect();
+        assert_eq!(ids.len(), 1, "um pipeline, uma implantação: {ids:?}");
+    }
+
+    /// Um id que ninguém serve não pode cair de volta no rótulo e devolver a
+    /// outra implantação calado - seria atender numa configuração que o cliente
+    /// explicitamente não pediu.
+    #[tokio::test]
+    async fn an_unknown_deployment_id_serves_nobody() {
+        let mut p1 = peer("10.0.0.1:42777", 0, 31);
+        p1.deploy_id = "d-aaaaaaaa".into();
+        let plano =
+            plan_pipeline(&[p1], "qwen35", Some("d-cccccccc"), 32, &LoadTracker::new()).await;
+        assert!(plano.is_none());
+    }
+
+    /// Cluster em atualização: um peer já anuncia implantação, o outro ainda
+    /// não. O que não anuncia continua servindo o rótulo, senão a atualização
+    /// de um nó por vez abriria um buraco de camadas.
+    #[tokio::test]
+    async fn a_peer_without_a_deployment_still_serves_its_label() {
+        let mut novo = peer("10.0.0.1:42777", 0, 15);
+        novo.deploy_id = "d-aaaaaaaa".into();
+        let antigo = peer("10.0.0.2:42777", 16, 31); // deploy_id vazio
+
+        let plano = plan_pipeline(&[novo, antigo], "qwen35", None, 32, &LoadTracker::new())
+            .await
+            .expect("os dois juntos cobrem o modelo");
+        assert_eq!(plano.steps.len(), 2);
     }
 
     #[test]
@@ -703,7 +894,7 @@ mod ipv6_tests {
             31,
         )];
         let tracker = LoadTracker::new();
-        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker)
+        let plan = plan_pipeline(&peers, "qwen35", None, 32, &tracker)
             .await
             .expect("plano");
         assert_eq!(
@@ -719,10 +910,32 @@ mod ipv6_tests {
         let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let peers = vec![peer("192.168.100.138:42777", 0, 31)];
         let tracker = LoadTracker::new();
-        let plan = plan_pipeline(&peers, "qwen35", 32, &tracker)
+        let plan = plan_pipeline(&peers, "qwen35", None, 32, &tracker)
             .await
             .expect("plano");
         assert_eq!(plan.steps[0].inference_url, "http://192.168.100.138:8181");
+    }
+
+    #[tokio::test]
+    async fn an_exact_replica_prefers_the_lower_rtt() {
+        let mut slow = peer("192.168.1.10:42777", 0, 31);
+        slow.node_id = "slow".into();
+        let mut fast = peer("192.168.1.11:42777", 0, 31);
+        fast.node_id = "fast".into();
+        let rtts = HashMap::from([(String::from("slow"), 80.0), (String::from("fast"), 12.0)]);
+
+        let plan = plan_pipeline_with_rtt(
+            &[slow, fast],
+            "qwen35",
+            None,
+            32,
+            &LoadTracker::new(),
+            &rtts,
+        )
+        .await
+        .expect("plano");
+
+        assert_eq!(plan.steps[0].node_id, "fast");
     }
 
     #[tokio::test]
@@ -732,7 +945,7 @@ mod ipv6_tests {
         let mut second = peer("192.168.1.11:42777", 16, 31);
         second.node_id = "second".into();
 
-        let plan = plan_pipeline(&[first, second], "qwen35", 32, &LoadTracker::new())
+        let plan = plan_pipeline(&[first, second], "qwen35", None, 32, &LoadTracker::new())
             .await
             .expect("plano");
 

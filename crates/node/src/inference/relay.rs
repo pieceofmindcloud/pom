@@ -194,11 +194,14 @@ pub async fn send_frame(
 
     for attempt in 1..=attempts {
         let started = Instant::now();
-        let sent = http
+        let request = http
             .post(&url)
             .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
             .body(body.clone())
-            .timeout(Duration::from_secs(600))
+            .timeout(Duration::from_secs(600));
+        let sent = clients
+            .authorize_inference_request(request)
+            .await
             .send()
             .await;
 
@@ -295,9 +298,10 @@ pub struct RawPeerResponse {
     pub fallback: bool,
 }
 
-/// Envia bytes para um peer por HTTPS e, se o transporte direto falhar, tenta
-/// o mesmo POST pelo túnel libp2p. O túnel preserva caminho, corpo e
-/// cabeçalhos, pois o reduce TP carrega a barreira e o rank fora do corpo.
+/// Envia bytes pelo túnel libp2p quando ele está disponível. Se o túnel falhar
+/// por transporte ou timeout, repete o mesmo POST pelo HTTPS direto. O túnel
+/// preserva caminho, corpo e cabeçalhos, pois o reduce TP carrega a barreira e
+/// o rank fora do corpo.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel(
     client: &reqwest::Client,
@@ -310,6 +314,26 @@ pub async fn send_bytes_or_tunnel(
     supports_tunnel: bool,
     peer_label: &str,
 ) -> Result<RawPeerResponse> {
+    let can_use_tunnel = tunnel.is_some() && supports_tunnel && peer_id.is_some();
+    if let (Some(tunnel), Some(peer_id)) = (tunnel.filter(|_| supports_tunnel), peer_id) {
+        match send_bytes_via_tunnel(
+            tunnel,
+            peer_id,
+            path,
+            body.clone(),
+            headers.clone(),
+            peer_label,
+        )
+        .await
+        {
+            Ok(response) => return Ok(response),
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => {
+                warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto");
+            }
+        }
+    }
+
     let url = format!("{}{}", base_url.trim_end_matches('/'), path);
     let mut request = client
         .post(&url)
@@ -323,7 +347,7 @@ pub async fn send_bytes_or_tunnel(
         Ok(response) if response.status().is_success() => Ok(RawPeerResponse {
             body: response.bytes().await?.to_vec(),
             transport: ByteTransport::Direct,
-            fallback: false,
+            fallback: can_use_tunnel,
         }),
         Ok(response) => {
             let status = response.status();
@@ -334,27 +358,7 @@ pub async fn send_bytes_or_tunnel(
                 peer_label: peer_label.to_string(),
             }))
         }
-        Err(error) => {
-            let kind = if error.is_timeout() {
-                SendIssueKind::Timeout
-            } else {
-                SendIssueKind::Transport
-            };
-            let (Some(tunnel), Some(peer_id)) = (
-                tunnel.filter(|_| {
-                    should_attempt_tunnel_fallback(kind, supports_tunnel, peer_id.is_some(), true)
-                }),
-                peer_id,
-            ) else {
-                return Err(error.into());
-            };
-
-            warn!("{peer_label}: HTTP falhou ({error}), tentando via túnel libp2p");
-            let mut response =
-                send_bytes_via_tunnel(tunnel, peer_id, path, body, headers, peer_label).await?;
-            response.fallback = true;
-            Ok(response)
-        }
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -370,11 +374,7 @@ async fn send_bytes_via_tunnel(
     tunnel
         .send(TunnelOutbound {
             peer_id,
-            request: TunnelRequest {
-                path: path.to_string(),
-                body,
-                headers,
-            },
+            request: TunnelRequest::post(path, body, headers),
             reply: reply_tx,
         })
         .await
@@ -403,18 +403,11 @@ async fn send_bytes_via_tunnel(
     })
 }
 
-/// `send_frame`, with one retry over the libp2p NAT-tunnel when it exhausts
-/// its own attempts on a `Timeout`/`Transport` issue against a hop that
-/// advertises [`crate::pipeline::CAP_LIBP2P_TUNNEL`] and has a known
-/// `libp2p_peer_id` — see `should_attempt_tunnel_fallback` for the exact
-/// gate. `tunnel` is `None` whenever this node's own libp2p swarm never came
-/// up (discovery disabled or failed to start), in which case this behaves
-/// exactly like `send_frame`.
-///
-/// The zero-regression invariant that makes this safe to put in front of
-/// every real call site: a reachable peer never touches the tunnel at all —
-/// the plain HTTP path runs first, unchanged, and only a genuine failure
-/// reaches the fallback check.
+/// Envia um frame pelo túnel libp2p quando o hop anuncia a capability, tem um
+/// `libp2p_peer_id` conhecido e o swarm local está disponível. O túnel usa
+/// Noise e leva a mesma credencial da porta de inferência. Se o transporte do
+/// túnel falhar, a chamada segue pelo cliente direto pinado; uma recusa HTTP
+/// do peer é final e não é repetida em outro transporte.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_frame_or_tunnel(
     clients: &crate::peer_client::PeerClients,
@@ -427,10 +420,30 @@ pub async fn send_frame_or_tunnel(
     encoding: FrameEncoding,
     attempts: u32,
     peer_label: &str,
-    mut on_issue: impl FnMut(SendIssue),
+    on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
-    let mut last_kind = None;
-    let result = send_frame(
+    let peer_id = step
+        .libp2p_peer_id
+        .as_deref()
+        .and_then(|s| s.parse::<PeerId>().ok());
+
+    let can_use_tunnel =
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
+
+    if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
+        let auth = clients.inference_token().await;
+        match send_frame_via_tunnel_with_auth(
+            tunnel, peer_id, path, meta, tensor, dtype, encoding, peer_label, auth,
+        )
+        .await
+        {
+            Ok(sent) => return Ok(sent),
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto"),
+        }
+    }
+
+    send_frame(
         clients,
         &step.node_id,
         &step.inference_url,
@@ -441,58 +454,15 @@ pub async fn send_frame_or_tunnel(
         encoding,
         attempts,
         peer_label,
-        |issue| {
-            last_kind = Some(issue.kind);
-            on_issue(issue);
-        },
-    )
-    .await;
-
-    let Err(http_err) = result else {
-        return result;
-    };
-
-    let step_supports_tunnel = step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL);
-    let peer_id = step
-        .libp2p_peer_id
-        .as_deref()
-        .and_then(|s| s.parse::<PeerId>().ok());
-    let should_try = last_kind
-        .map(|kind| {
-            should_attempt_tunnel_fallback(
-                kind,
-                step_supports_tunnel,
-                peer_id.is_some(),
-                tunnel.is_some(),
-            )
-        })
-        .unwrap_or(false);
-
-    let (Some(tunnel), Some(peer_id)) = (should_try.then_some(tunnel).flatten(), peer_id) else {
-        return Err(http_err);
-    };
-
-    warn!("{peer_label}: HTTP falhou ({http_err}), tentando via túnel libp2p");
-    match send_frame_via_tunnel(
-        tunnel, peer_id, path, meta, tensor, dtype, encoding, peer_label,
+        on_issue,
     )
     .await
-    {
-        Ok(sent) => Ok(sent),
-        Err(tunnel_err) => {
-            warn!("{peer_label}: túnel libp2p também falhou: {tunnel_err}");
-            // The original HTTP error is what a caller's existing failure
-            // handling (`extract_relay_failure`, `routes.mark_failure`, …)
-            // already knows how to interpret — surfacing the tunnel's own
-            // error instead would be a new, unhandled shape for no benefit,
-            // since both mean the same thing to the caller: this hop failed.
-            Err(http_err)
-        }
-    }
 }
 
-/// Whether a hop that just failed with `send_frame` should get one retry
-/// over the libp2p NAT-tunnel instead of being treated as dead.
+/// Predicado mantido para os testes e para consumidores que ainda classificam
+/// uma falha antes de decidir o transporte. O caminho de produção atual tenta
+/// o túnel primeiro e só usa essa classificação para a política de retry
+/// legada.
 ///
 /// `Http`-class issues are excluded on purpose: the peer *was* reached and
 /// gave a considered refusal (bad request, model error, …) — retrying over a
@@ -501,6 +471,7 @@ pub async fn send_frame_or_tunnel(
 /// peer genuinely wasn't reachable — are worth a second attempt through a
 /// path that doesn't share the same failure mode (a different route through
 /// the swarm, not just the same TCP connection retried).
+#[cfg(test)]
 pub fn should_attempt_tunnel_fallback(
     last_issue_kind: SendIssueKind,
     step_supports_tunnel: bool,
@@ -523,13 +494,12 @@ pub fn should_attempt_tunnel_fallback(
 /// `oneshot::Receiver` forever instead of erroring.
 const TUNNEL_REPLY_TIMEOUT: Duration = Duration::from_secs(75);
 
-/// One hop-to-hop call sent over the libp2p swarm instead of plain HTTP —
-/// same encode/decode contract as `send_frame` (identical wire frame, same
-/// `SentFrame` shape), just a different way of getting the bytes to the
-/// peer. Deliberately a single attempt, no internal retry: this is *itself*
-/// the fallback a caller reaches for after `send_frame` already exhausted
-/// its own attempts (see `should_attempt_tunnel_fallback`) — retrying inside
-/// here too would just double the latency of an already-slow path.
+/// Uma chamada hop a hop enviada pelo swarm libp2p. O contrato de
+/// encode/decode é o mesmo de `send_frame`, com uma única tentativa. Se o
+/// túnel falhar por transporte, o chamador decide se deve usar o cliente
+/// direto; repetir dentro do túnel duplicaria a latência de uma chamada já
+/// lenta.
+#[cfg(test)]
 pub async fn send_frame_via_tunnel(
     tunnel: &TunnelOutboundSender,
     peer_id: PeerId,
@@ -540,6 +510,23 @@ pub async fn send_frame_via_tunnel(
     encoding: FrameEncoding,
     peer_label: &str,
 ) -> Result<SentFrame> {
+    send_frame_via_tunnel_with_auth(
+        tunnel, peer_id, path, meta, tensor, dtype, encoding, peer_label, None,
+    )
+    .await
+}
+
+async fn send_frame_via_tunnel_with_auth(
+    tunnel: &TunnelOutboundSender,
+    peer_id: PeerId,
+    path: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+    encoding: FrameEncoding,
+    peer_label: &str,
+    auth_token: Option<String>,
+) -> Result<SentFrame> {
     let encode_started = Instant::now();
     let body = match (tensor, dtype) {
         (Some(tensor), WireDtype::F16) => wire::encode_with_encoding(meta, Some(tensor), encoding)?,
@@ -548,13 +535,16 @@ pub async fn send_frame_via_tunnel(
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
     let (reply_tx, reply_rx) = oneshot::channel();
+    let mut headers = Vec::new();
+    if let Some(token) = auth_token {
+        headers.push((
+            reqwest::header::AUTHORIZATION.as_str().to_string(),
+            format!("Bearer {token}"),
+        ));
+    }
     let outbound = TunnelOutbound {
         peer_id,
-        request: TunnelRequest {
-            path: path.to_string(),
-            body: body.clone(),
-            headers: Vec::new(),
-        },
+        request: TunnelRequest::post(path, body.clone(), headers),
         reply: reply_tx,
     };
     tunnel.send(outbound).await.map_err(|_| {
@@ -868,26 +858,21 @@ mod tests {
         }
     }
 
-    /// The invariant the whole design rests on: a reachable peer must never
-    /// so much as touch the tunnel channel, even when the hop fully
-    /// qualifies for the fallback. Proven here, not assumed — the tunnel
-    /// channel has no consumer, so any attempted send is directly observable
-    /// afterward with `try_recv`.
+    /// A hop that advertises the tunnel uses it before trying HTTP. The
+    /// response is supplied by a fake swarm, so this test never waits for the
+    /// 75-second tunnel timeout.
     #[tokio::test]
-    async fn a_reachable_peer_never_touches_the_tunnel() {
-        let port = spawn_fake_inference_server(|_body| {
-            (
-                200,
-                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
-            )
-        })
-        .await;
+    async fn a_qualified_peer_prefers_the_tunnel() {
         let step = step_with(
-            &format!("http://127.0.0.1:{port}"),
+            "http://127.0.0.1:1",
             true,
             Some(PeerId::random().to_string()),
         );
-        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
+        let tunnel_body = wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap();
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 200,
+            body: tunnel_body,
+        }));
 
         let sent = send_frame_or_tunnel(
             &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
@@ -903,13 +888,9 @@ mod tests {
             |_| {},
         )
         .await
-        .expect("reachable peer must succeed over plain HTTP");
+        .expect("qualified peer must succeed over libp2p");
 
         assert_eq!(sent.meta["done"], true);
-        assert!(
-            tunnel_rx.try_recv().is_err(),
-            "the tunnel channel must never receive anything for a reachable peer"
-        );
     }
 
     /// An HTTP server that spawns per-test on loopback, for `send_frame_or_tunnel`
@@ -1009,18 +990,20 @@ mod tests {
         );
     }
 
-    /// An `Http`-class failure (the peer answered, and refused) must never
-    /// try the tunnel, even with every other precondition satisfied — see
-    /// `should_attempt_tunnel_fallback`'s own doc comment for why.
+    /// A refusal generated by libp2p is final. HTTPS must not repeat the same
+    /// frame after the peer explicitly rejected it.
     #[tokio::test]
-    async fn an_http_refusal_never_tries_the_tunnel() {
+    async fn a_tunnel_http_refusal_never_falls_back_to_https() {
         let port = spawn_fake_inference_server(|_body| (500, b"model crashed".to_vec())).await;
         let step = step_with(
             &format!("http://127.0.0.1:{port}"),
             true,
             Some(PeerId::random().to_string()),
         );
-        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
+        let tunnel_tx = fake_swarm_answering_with(Ok(crate::infer_tunnel::TunnelResponse {
+            status: 500,
+            body: b"model crashed in tunnel".to_vec(),
+        }));
 
         let result = send_frame_or_tunnel(
             &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
@@ -1039,10 +1022,7 @@ mod tests {
 
         let err = expect_err(result, "an HTTP refusal must surface as an error");
         assert!(err.downcast_ref::<HttpRefusal>().is_some());
-        assert!(
-            tunnel_rx.try_recv().is_err(),
-            "an HTTP refusal must never touch the tunnel channel"
-        );
+        assert!(err.to_string().contains("model crashed in tunnel"));
     }
 
     /// A troca de transporte, contra uma máquina que está mesmo na rede.

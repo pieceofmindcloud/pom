@@ -20,7 +20,6 @@
 use serde::Serialize;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
-use tokio::process::Command;
 use tokio::sync::Mutex;
 
 /// Chamadas ao kernel32 declaradas à mão.
@@ -71,6 +70,18 @@ mod win {
 /// Samples are cached this long; the UI polls faster than the numbers move,
 /// and `nvidia-smi` costs a process spawn.
 const CACHE_TTL: Duration = Duration::from_millis(1200);
+
+/// Execute a short host utility without registering it with Tokio's SIGCHLD
+/// reaper. Tokio's process reaper installs a process-wide signal handler, and
+/// that handler can interrupt the blocking UDP receive used by the pkarr DHT.
+/// The caller remains asynchronous because the std process is isolated in a
+/// blocking worker.
+async fn command_output(program: &'static str, args: Vec<String>) -> Option<std::process::Output> {
+    tokio::task::spawn_blocking(move || std::process::Command::new(program).args(args).output())
+        .await
+        .ok()?
+        .ok()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MemStat {
@@ -365,12 +376,7 @@ async fn read_memory() -> (MemStat, Option<f64>) {
 
 #[cfg(target_os = "macos")]
 async fn sysctl_number(key: &str) -> Option<f64> {
-    let out = Command::new("sysctl")
-        .arg("-n")
-        .arg(key)
-        .output()
-        .await
-        .ok()?;
+    let out = command_output("sysctl", vec!["-n".into(), key.to_string()]).await?;
     String::from_utf8_lossy(&out.stdout)
         .trim()
         .parse::<f64>()
@@ -381,7 +387,7 @@ async fn sysctl_number(key: &str) -> Option<f64> {
 /// counts "Memory Used": active + wired + compressed.
 #[cfg(target_os = "macos")]
 async fn vm_stat_used() -> Option<(f64, f64)> {
-    let out = Command::new("vm_stat").output().await.ok()?;
+    let out = command_output("vm_stat", Vec::new()).await?;
     let txt = String::from_utf8_lossy(&out.stdout);
 
     let page_size = txt
@@ -477,14 +483,15 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
 /// Query NVIDIA cards. Returns `None` when `nvidia-smi` is absent or fails,
 /// which is the normal case on the MacBook.
 async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
-    let out = Command::new("nvidia-smi")
-        .args([
-            "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .await
-        .ok()?;
+    let out = command_output(
+        "nvidia-smi",
+        vec![
+            "--query-gpu=index,name,memory.total,memory.used,utilization.gpu,temperature.gpu"
+                .into(),
+            "--format=csv,noheader,nounits".into(),
+        ],
+    )
+    .await?;
     if !out.status.success() {
         return None;
     }
@@ -513,13 +520,14 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     }
 
     let mut procs = Vec::new();
-    if let Ok(out) = Command::new("nvidia-smi")
-        .args([
-            "--query-compute-apps=pid,process_name,used_memory",
-            "--format=csv,noheader,nounits",
-        ])
-        .output()
-        .await
+    if let Some(out) = command_output(
+        "nvidia-smi",
+        vec![
+            "--query-compute-apps=pid,process_name,used_memory".into(),
+            "--format=csv,noheader,nounits".into(),
+        ],
+    )
+    .await
     {
         for line in String::from_utf8_lossy(&out.stdout).lines() {
             let f: Vec<&str> = line.split(',').map(|s| s.trim()).collect();
@@ -539,12 +547,11 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
 
 #[cfg(target_os = "macos")]
 async fn mac_gpu_name() -> Option<String> {
-    let out = Command::new("sysctl")
-        .arg("-n")
-        .arg("machdep.cpu.brand_string")
-        .output()
-        .await
-        .ok()?;
+    let out = command_output(
+        "sysctl",
+        vec!["-n".into(), "machdep.cpu.brand_string".into()],
+    )
+    .await?;
     let cpu = String::from_utf8_lossy(&out.stdout).trim().to_string();
     if cpu.is_empty() {
         None
@@ -577,12 +584,7 @@ async fn read_load_avg() -> [f64; 3] {
 
     #[cfg(target_os = "macos")]
     {
-        if let Ok(out) = Command::new("sysctl")
-            .arg("-n")
-            .arg("vm.loadavg")
-            .output()
-            .await
-        {
+        if let Some(out) = command_output("sysctl", vec!["-n".into(), "vm.loadavg".into()]).await {
             let txt = String::from_utf8_lossy(&out.stdout);
             let v: Vec<f64> = txt
                 .trim()
@@ -611,10 +613,10 @@ async fn hostname() -> String {
     let name = std::env::var("COMPUTERNAME").unwrap_or_default();
 
     #[cfg(not(windows))]
-    let name = match Command::new("hostname").output().await {
-        Ok(out) => String::from_utf8_lossy(&out.stdout).trim().to_string(),
-        Err(_) => String::new(),
-    };
+    let name = command_output("hostname", Vec::new())
+        .await
+        .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+        .unwrap_or_default();
 
     let name = if name.trim().is_empty() {
         std::env::var("HOSTNAME").unwrap_or_else(|_| "unknown".to_string())
@@ -647,5 +649,14 @@ mod tests {
         let s = sample().await;
         assert!(s.ram.total_mb > 0.0, "total RAM should be discoverable");
         assert!(s.cpu_count > 0);
+    }
+
+    #[tokio::test]
+    async fn external_command_output_uses_the_blocking_process_path() {
+        let output = command_output("printf", vec!["ok".into()])
+            .await
+            .expect("printf should run");
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ok");
     }
 }

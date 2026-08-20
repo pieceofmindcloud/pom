@@ -61,16 +61,22 @@ conteúdo `immutable` por 1 ano.
 
 `src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
 `labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
+`src/App.tsx`. Dentro de `Modelos`, a ordem é `Modelos inteiros`, `Fatiar
+modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
+somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
+receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens)
-- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels
-- `/fatias` -> Shards; `/fatias/andamento` -> SlicingJobs;
+- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels, com o painel de
+  jobs e progresso de fatiamento embutido
+- `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
   serviço)
+- `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
+  reconfiguração de parâmetros e desimplantação por `deploy_id`)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
 - `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
@@ -289,17 +295,45 @@ impressão digital é só modelo + conjunto de faixas.
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
   "o resto"). Cada tecla posta `POST /api/ui/slice/plan` (debounce 260 ms) e
   mostra alvo vs faixa/tamanho reais lado a lado; o atalho "dividir em N
-  iguais" passa pelo mesmo plano. `POST /api/ui/slice` roda o job e navega
-  para `/fatias/andamento`. `asPlan` valida o corpo do POST para um build
-  velho não derrubar a tela. Só modelos inteiros (`isWholeModel`) podem ser
-  fatiados.
-- **Implantar** (`DeployModel`): escolhe um conjunto de fatias, edita quais
-  faixas vão para qual máquina (troca em colisão, `merge` para faixas
-  adjacentes numa máquina), reordena trocando máquinas, e afina os onze knobs
-  de runtime do cluster mais `n_gpu_layers`/`offload_kqv` por máquina
-  (propriedade do hardware). Cada edição volta ao nó para validação; o deploy
+  iguais" passa pelo mesmo plano. `POST /api/ui/slice` roda o job e mantém a
+  tela aberta; `SlicingJobsPanel` mostra abaixo a barra de progresso, estado e
+  saídas de cada job consultado por `GET /api/ui/jobs`. `asPlan` valida o corpo
+  do POST para um build velho não derrubar a tela. Só modelos inteiros
+  (`isWholeModel`) podem ser fatiados.
+- **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
+  Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
+  estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
+  Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
+  o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
+  carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
+  exibe hops, capacidade e latência conhecida, além de rotas alternativas e
+  distribuição projetada de carga. O Tensor usa o modelo inteiro em todos os
+  ranks e não apresenta a seleção antiga de fatias. As propriedades globais
+  (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
+  máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
+  inspetor também mostra as camadas que ela executará. Não existe uma segunda
+  tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
+  topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
-  e o progresso vem de `GET /api/ui/jobs`. A última implantação de cada modelo
+  e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
+  canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
+  Redefinir, com posições persistidas por implantação. O inspetor tem 19rem,
+  pode ser recolhido pela borda esquerda, separa visualmente propriedades
+  globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
+  ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
+  peers é uma rota paralela válida, não uma troca. Peers que já estão no mapa
+  deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
+  disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
+  atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita
+  da faixa completa; a mesma faixa em peers diferentes é aceita pelo planner e
+  pode ser escolhida pelo roteador por RTT/carga. No Tensor, somente peers que
+  estão no mapa entram como primary/worker, mesmo que outros tenham o modelo.
+  GPU, RAM e carga são atualizados pela visão do cluster a cada 5 segundos; os
+  RTTs vêm do survey direcional do planner e não são substituídos pela medição
+  HTTP do gateway. Uma GPU ausente aparece como `sem GPU`, sem barra
+  indeterminada. Em Completa, todos os peers entram no canvas e na lista de candidatos. A
+  cobertura fica reduzida no rodapé junto da barra de peers.
+  A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as

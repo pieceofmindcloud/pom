@@ -95,10 +95,16 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 
 - `self_addr_candidates` enumera as interfaces (`ifconfig` no macOS, `ip -o addr`
   no Linux; Windows fica vazio e cai no endereço observado) e filtra com
-  `filter_candidates`: descarta loopback/link-local/deprecated, estável antes de
-  temporário, teto de 2 por família. O endereço fixado pelo operador
-  (`--advertise-addr`) vem primeiro e não conta para o teto.
-- `Announce.addr` usa `announce_addr()`: o fixado ou o literal `0.0.0.0:<porta>`.
+  `filter_candidates`: descarta loopback/link-local/deprecated e interfaces
+  virtuais de container (`docker0`, `br-*`, `veth*`, `cni*`, `podman*` e
+  equivalentes), mantém endereço estável antes de temporário e limita a 2 por
+  família. IPs privados em interfaces reais continuam válidos para clusters na
+  LAN. O endereço fixado pelo operador (`--advertise-addr`) vem primeiro e não
+  conta para o teto; sem fixação, os endereços públicos atuais vêm antes do
+  observado por `identify` e dos demais endereços locais.
+- `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
+  local com a porta de descoberta, o observado por `identify`, ou o literal
+  `0.0.0.0:<porta>`.
 - `advertised_addr` normaliza o que o operador digita à mão em `host:port`
   (IPv6 puro precisa de colchetes para ganhar porta).
 - `self_announce` monta o `Announce`; anuncia zero camadas quando não há
@@ -109,12 +115,14 @@ a mesma para UDP e gossipsub - os dois leem do mesmo `Network`):
 
 1. endereço fixado pelo operador - `--advertise-addr` ou `--public-addr`
    alimentam o mesmo campo, `--advertise-addr` vence se os dois vierem;
-2. endereço público observado por um peer via libp2p `identify`
+2. endereço público atual das interfaces locais, com endereço estável antes do
+   IPv6 temporário;
+3. endereço público observado por um peer via libp2p `identify`
    (`Network::set_observed_addr`, chamado de `discovery.rs` no evento
    `identify::Event::Received` - mesmo princípio de um STUN, sobre as conexões
    que o swarm já faz);
-3. interfaces locais desta máquina;
-4. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
+4. demais interfaces locais desta máquina;
+5. o sentinela `0.0.0.0:<porta>`, só quando nada acima existe.
 
 `addrs::is_private_or_local` decide se um endereço observado é novidade: RFC 1918,
 **`100.64/10` (RFC 6598, o CGNAT - e o que a Tailscale usa)** e IPv6 unique-local
@@ -122,20 +130,36 @@ não contam, porque só provam que quem respondeu está na mesma rede privada.
 
 Conferido ao vivo em 2026-08-16, sem reiniciar nada: fixar o endereço pela tela
 de Rede (`POST /api/ui/network/advertise-addr`) chega aos outros nós em ~10 s;
-limpar o campo volta para o observado pelo `identify`; e o endereço da Tailscale
-(`100.122.132.97`), antes adotado como público, deixou de ser aceito. O que
-**não** é estável é o observado quando nada foi fixado - ver Defeitos anotados.
+limpar o campo volta para o endereço público atual da interface quando existe,
+ou para o observado pelo `identify` quando o nó está atrás de NAT; e o endereço
+da Tailscale (`100.122.132.97`), antes adotado como público, deixou de ser aceito.
 
 ### Rotas dinâmicas (`route.rs`)
 
 Um nó pode ter vários endereços válidos e qual serve depende de quem pergunta.
-`RouteTable` guarda a medição por candidato: sonda `GET /health` na porta de
-inferência (o caminho que a inferência usa de verdade, com firewall no meio),
-timeout 3 s, re-medida a cada 5 min. `choose_route` só troca de rota atual se o
-ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms MacBook↔ksia
-não pode trocar a cada ciclo); `mark_failure` tira a rota na hora quando uma
-requisição real falhou naquele endereço. `resolve` devolve `None` = "ainda não
-medido", e o chamador cai no `inference_url` do plano.
+`RouteTable` guarda a medição por candidato: sonda `GET /health` num endpoint
+real do peer, preferindo a porta de gateway, com timeout 3 s e re-medida a cada
+5 min. O gateway continua disponível quando o modelo ainda não subiu ou a porta
+de inferência está restrita, mas a rota gravada continua sendo a URL de
+inferência correspondente. Quando o peer anuncia endereço, candidatos ou portas
+diferentes, a escolha anterior é invalidada na hora para não reutilizar uma URL
+antiga durante a janela de 5 minutos. O cliente da sonda aceita o certificado
+autoassinado e o hostname do peer; os clientes de inferência continuam com
+pinning. A task
+que mede reaplica ao cliente a política TLS atual antes da sonda. `choose_route` só troca de rota
+atual se o ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms
+MacBook↔ksia não pode trocar a cada ciclo); `mark_failure` tira a rota na hora
+quando uma requisição real falhou naquele endereço. `resolve` devolve `None` =
+"ainda não medido", e o chamador cai no `inference_url` do plano.
+
+Essa tabela de endereçamento não é a tabela de RTT do mapa. `RttTable` mede
+`GET /health` pelo `TunnelRequest` libp2p/Noise, o mesmo transporte usado pelos
+frames de inferência, e mantém a direção local `origem -> destino`. O peer
+publica seu snapshot em `GET /api/ui/network/rtt`, autenticado pela chave de
+conexão; o gateway agrega os relatórios e só usa a medição de `A -> B` na
+aresta `A -> B`. Se o peer é antigo e não anuncia o túnel, o relatório pode
+marcar `direct-health` como fallback. Nenhuma latência de outro peer é
+transitiva ou reaproveitada como se fosse a aresta real.
 
 ## 3. Caminho libp2p (internet)
 
@@ -157,7 +181,15 @@ e em `/ip6/::`.
   assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->
   `self_announce`); `handle_event` converte a mensagem em `PeerInfo` preferindo
   `addr_candidates.first()` ao `addr` (o literal `0.0.0.0` só sobrevive se nada
-  foi anunciado) e chama `Network::insert_peer`.
+  foi anunciado), registra os candidatos convertidos para a porta TCP do
+  libp2p com `/p2p/<peer-id>` no swarm e só então aquece a conexão do túnel;
+  esse registro acontece junto com a chamada a `Network::insert_peer`. Sem
+  ele, um peer aprendido somente pelo gossip tem `PeerId`, mas nenhum endereço
+  para `swarm.dial(peer_id)`.
+  Requisições recebidas pelo túnel são encaminhadas ao servidor de inferência
+  local em uma task separada. O loop do swarm continua drenando GossipSub,
+  respostas TP e eventos de conexão enquanto um prefill, decode ou redução TP
+  está em andamento.
   O id de mensagem é `discovery::announce_message_id` (hash do tópico +
   payload), e **isso não é detalhe**: a função padrão do libp2p é
   `source + sequence`, as duas são `None` sob autenticação anônima, e o
@@ -206,23 +238,22 @@ Comportamento atual do código:
    enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem;
    `insert_peer` (libp2p) não reescreve - um peer assim fica com
    `inference_url` apontando para o próprio nó.
-2. **O tráfego de inferência tem um caminho por libp2p, mas só como desvio.**
-   O gateway fala HTTP direto com `http://<ip-do-peer>:<inference-port>`
-   (`routing/pipeline.rs`, `direct.rs`) e só cai para o túnel
-   (`network/infer_tunnel.rs`, via `relay::send_frame_or_tunnel`) quando essa
-   chamada falha por `Timeout`/`Transport` contra um hop que anuncia
-   `transport/libp2p-tunnel-v1`. Verificado contra a `salem-gpu` pela internet
-   em 2026-08-16 (ver `operacao.md`). O custo é o tempo até desistir do HTTP
-   direto: 75 s medidos no macOS, porque `relay::send_frame` fixa 600 s por
-   requisição e quem decide acaba sendo o `connect` do sistema.
-   No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra: o
-   `TpMember` fornece `PeerId` e capability para o fallback, e os cabeçalhos do
-   decode, da barreira e do rank viajam no `TunnelRequest`.
-3. **Sem autenticação na porta de inferência (`/v1/prefill`, `/v1/step`).**
-   TLS deixou de ser uma limitação - ver a seção 5 -, mas quem alcança a porta
-   ainda não precisa provar quem é para mandar um quadro. O que o TLS
-   acrescentou foi confidencialidade e a certeza de *com quem* se fala, não uma
-   política de quem pode falar.
+2. **O tráfego de inferência prefere libp2p por hop.** O gateway e os relays
+   usam `network/infer_tunnel.rs` via `relay::send_frame_or_tunnel` quando o
+   hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é
+   protegido por Noise e leva a credencial da inferência até o loopback do
+   destino. Se ele estiver indisponível ou falhar por transporte, o mesmo
+   quadro segue pelo cliente direto pinado, usando HTTPS quando TLS está ativo.
+   Uma resposta HTTP explícita do peer não é repetida em outro transporte.
+   No TP, `broadcast_to` e `POST /v1/tp/reduce` seguem a mesma regra e o
+   `TunnelRequest` preserva os cabeçalhos do decode, da barreira, do rank e da
+   autorização.
+3. **A porta de inferência exige credencial.** `/v1/prefill`, `/v1/step`,
+   `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce` aceitam a
+   `connection_key` compartilhada ou uma API key ativa no nó receptor. A
+   `connection_key` é a credencial usada nas chamadas internas; API keys são
+   aceitas para manter o mesmo contrato de autenticação disponível nas APIs
+   externas. `/health` permanece público para readiness.
 
 ## 5. TLS entre peers
 
@@ -379,14 +410,6 @@ quantas vezes quiser.
   requisição é atendida, nenhum bloco é servido. A transferência real vai por
   HTTP Range (`backend/transfer.rs`). O protocolo existe mas ninguém implementa
   o lado servidor.
-- **DEFEITO ANOTADO: o endereço observado por um peer não tem critério de
-  desempate** - `Network::set_observed_addr` guarda o que o último `identify`
-  disse. Num Mac com vários IPv6 de privacidade, peers diferentes observam
-  endereços diferentes e o `Announce` alterna entre eles (visto ao vivo em
-  2026-08-16, a mesma tela mostrando dois endereços em leituras seguidas).
-  `addrs::filter_candidates` prefere o estável ao temporário na enumeração
-  local; o caminho do observado não tem essa preferência. Quem precisa de
-  endereço estável fixa em `--advertise-addr` ou na tela de Rede, que vence.
 - **DEFEITO ANOTADO: chave pkarr relativa ao cwd** (`main.rs`,
   `Path::new(".pom.key")`) - diferente de `identity::key_path()`, que
   resolve contra `project_root()`. Rodar o binário de outro diretório

@@ -118,6 +118,8 @@ unsafe extern "C" fn capture_callback(
 
 #[derive(Debug, Clone)]
 pub struct EngineConfig {
+    /// Capacidade total do cache KV. O runtime já multiplica a janela pública
+    /// por sessão por `max_sessions` antes de montar esta configuração.
     pub n_ctx: u32,
     pub offload_kqv: bool,
     pub fit_memory: bool,
@@ -153,9 +155,8 @@ pub struct EngineConfig {
 /// Separar isto do contexto é o que torna o paralelismo viável sem duplicar
 /// memória: o que pesa são os pesos (gigabytes), e o llama.cpp os trata como
 /// somente-leitura depois da carga - vários `llama_context` podem apontar para
-/// o mesmo `llama_model`. O contexto carrega o cache KV, que já era dividido
-/// entre as sessões, então N contextos de `n_ctx/N` custam o mesmo que um
-/// contexto de `n_ctx` com N sequências.
+/// o mesmo `llama_model`. O contexto carrega o cache KV; o `n_ctx` interno já
+/// é a capacidade total necessária para todas as sequências.
 pub struct LoadedModel {
     model: *mut sys::llama_model,
     vocab: *const sys::llama_vocab,
@@ -506,9 +507,10 @@ impl LlmEngine {
 
     /// N contextos sobre um modelo só, um por sessão simultânea.
     ///
-    /// Custo de memória igual ao de hoje: cada contexto fica com `n_ctx / n`, o
-    /// mesmo tamanho de cache que uma sessão já tinha quando as N dividiam um
-    /// contexto de `n_ctx`. O que muda é que cada um tem o seu `llama_context`,
+    /// O `EngineConfig.n_ctx` é a capacidade total. Cada contexto recebe a
+    /// janela por sessão, `total_n_ctx / n`, e cada sessão mantém o tamanho
+    /// informado pelo operador. O que muda é que cada um tem o seu
+    /// `llama_context`,
     /// e dois decodes podem correr ao mesmo tempo em vez de se enfileirarem no
     /// mutex - que era 194 ms por token na medição de 2026-08-14.
     ///
@@ -548,7 +550,7 @@ impl LlmEngine {
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = effective_n_ubatch(cfg);
-        cparams.n_seq_max = cfg.max_sessions;
+        cparams.n_seq_max = cfg.max_sessions.max(1);
         cparams.offload_kqv = cfg.offload_kqv;
         cparams.embeddings = cfg.need_embeddings;
         cparams.n_rs_seq = cfg.rs_seq_window;
@@ -1185,9 +1187,9 @@ impl LlmEngine {
 /// A configuração de um contexto do pool.
 ///
 /// Separada para poder ser conferida sem GPU: é ela que sustenta a promessa de
-/// que o pool não custa memória a mais. Cada contexto recebe `n_ctx / n`, que é
-/// exatamente o que uma sessão já tinha quando as N dividiam um contexto só, e
-/// `max_sessions = 1` porque agora cada contexto atende uma sessão.
+/// que o pool não custa memória a mais. Como `cfg.n_ctx` é a capacidade total,
+/// cada contexto recebe `cfg.n_ctx / n`, e `max_sessions = 1` porque agora cada
+/// contexto atende uma sessão.
 fn per_context_config(cfg: &EngineConfig, n: usize) -> EngineConfig {
     EngineConfig {
         n_ctx: cfg.n_ctx / n.max(1) as u32,

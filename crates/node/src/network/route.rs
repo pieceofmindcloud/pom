@@ -5,6 +5,8 @@
 //! A decisao mora aqui, sozinha e pura, porque errar nela nao da erro: o no
 //! sobe, aparece no cluster, e a requisicao morre calada no primeiro salto.
 
+use serde::{Deserialize, Serialize};
+
 /// Quanto o candidato novo precisa ser melhor para valer a troca.
 ///
 /// As duas condicoes valem juntas. A relativa sozinha trocaria de rota entre
@@ -134,6 +136,18 @@ impl RouteTable {
         }
     }
 
+    /// Descarta a escolha quando o peer anuncia outra topologia de endereços.
+    ///
+    /// Uma rota medida para um endereço antigo não pode sobreviver a uma
+    /// atualização de `addr_candidates`: durante a janela de 5 minutos da
+    /// medição ela faria o pipeline continuar discando um IP de container que
+    /// já deixou de ser anunciado.
+    pub fn invalidate(&self, node_id: &str) {
+        if let Ok(mut t) = self.por_no.write() {
+            t.remove(node_id);
+        }
+    }
+
     /// Grava uma escolha direto, sem sondar. Só para teste.
     #[cfg(test)]
     pub fn remember_for_test(&self, node_id: &str, addr: &str, rtt_ms: f64) {
@@ -164,27 +178,48 @@ impl RouteTable {
 
     /// Mede todos os candidatos e grava a escolha.
     ///
-    /// A sonda e `GET /health` por HTTP na porta de inferencia, nao ICMP: mede
-    /// o caminho que a inferencia usa de verdade, com firewall e proxy no meio.
-    /// ICMP liberado onde o TCP nao esta mediria um caminho que ninguem percorre.
-    /// O cliente vem do cache por peer porque a sonda fala com o mesmo servidor
-    /// que a inferência vai falar: se o cluster está em TLS, medir em texto
-    /// claro mediria um caminho que a inferência não percorre - e, no modo
-    /// estrito, um caminho que o outro lado recusa.
+    /// A sonda e `GET /health` por HTTP(S), nao ICMP: mede um endpoint real do
+    /// peer, com firewall e proxy no meio. Quando há gateway anunciado, ele é
+    /// usado como alvo porque continua disponível mesmo sem um modelo carregado
+    /// ou com a porta de inferência restrita. A rota gravada ainda é a URL de
+    /// inferência correspondente, nunca a URL do gateway.
+    ///
+    /// O cliente da sonda aceita o certificado autoassinado do nó. Isso só vale
+    /// para medir latência: os clientes que transportam inferência continuam
+    /// usando pinning por `node_id`.
     pub async fn measure_peer(
         &self,
         clientes: &crate::peer_client::PeerClients,
         node_id: &str,
         candidatos: &[String],
     ) {
-        let Ok(http) = clientes.for_peer(node_id) else {
+        let pares: Vec<(String, String)> = candidatos
+            .iter()
+            .cloned()
+            .map(|endereco| (endereco.clone(), endereco))
+            .collect();
+        self.measure_peer_with_probes(clientes, node_id, &pares)
+            .await;
+    }
+
+    /// Mede endpoints de sondagem, mas grava a rota correspondente usada pela
+    /// inferência. O gateway é um bom alvo de health quando o servidor de
+    /// inferência ainda não subiu ou sua porta não está exposta, e não pode
+    /// substituir o endereço que o pipeline precisa discar.
+    pub async fn measure_peer_with_probes(
+        &self,
+        clientes: &crate::peer_client::PeerClients,
+        node_id: &str,
+        pares: &[(String, String)],
+    ) {
+        let Ok(http) = clientes.probe() else {
             return;
         };
-        let mut medidas = Vec::with_capacity(candidatos.len());
-        for base in candidatos {
+        let mut medidas = Vec::with_capacity(pares.len());
+        for (rota, sonda) in pares {
             let inicio = Instant::now();
             let resposta =
-                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{base}/health")).send())
+                tokio::time::timeout(TIMEOUT_SONDA, http.get(format!("{sonda}/health")).send())
                     .await;
             let rtt = match resposta {
                 Ok(Ok(r)) if r.status().is_success() => {
@@ -193,7 +228,7 @@ impl RouteTable {
                 _ => None,
             };
             medidas.push(Measurement {
-                addr: base.clone(),
+                addr: rota.clone(),
                 rtt_ms: rtt,
             });
         }
@@ -213,6 +248,94 @@ impl RouteTable {
         }
     }
 }
+
+/// Uma medição de latência de ida e volta partindo deste nó para um destino.
+/// O sentido inverso é outra medição, mantida pelo processo remoto.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RttMeasurement {
+    pub target_node_id: String,
+    pub rtt_ms: f64,
+    /// `libp2p` é o transporte normal. `direct-health` identifica o fallback
+    /// usado quando o peer ainda não oferece o túnel novo.
+    pub transport: String,
+}
+
+struct RttEntry {
+    measurement: RttMeasurement,
+    measured_at: Instant,
+}
+
+/// RTTs direcionais medidos por este processo.
+///
+/// Não é uma tabela de menor caminho. Cada entrada é uma medição direta
+/// `origem -> destino`; nunca se infere uma aresta pela soma de outras.
+#[derive(Default)]
+pub struct RttTable {
+    por_destino: RwLock<HashMap<String, RttEntry>>,
+}
+
+impl RttTable {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn snapshot(&self) -> Vec<RttMeasurement> {
+        let mut medidas = self
+            .por_destino
+            .read()
+            .map(|t| {
+                t.values()
+                    .map(|entry| entry.measurement.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        medidas.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+        medidas
+    }
+
+    pub fn precisa_medir(&self, node_id: &str) -> bool {
+        self.por_destino
+            .read()
+            .map(|t| match t.get(node_id) {
+                Some(entry) => entry.measured_at.elapsed() >= RTT_INTERVALO_MEDICAO,
+                None => true,
+            })
+            .unwrap_or(true)
+    }
+
+    pub fn remember(&self, node_id: &str, rtt_ms: f64, transport: &str) {
+        if !rtt_ms.is_finite() || rtt_ms < 0.0 {
+            return;
+        }
+        if let Ok(mut t) = self.por_destino.write() {
+            t.insert(
+                node_id.to_string(),
+                RttEntry {
+                    measurement: RttMeasurement {
+                        target_node_id: node_id.to_string(),
+                        rtt_ms,
+                        transport: transport.to_string(),
+                    },
+                    measured_at: Instant::now(),
+                },
+            );
+        }
+    }
+
+    pub fn mark_failure(&self, node_id: &str) {
+        if let Ok(mut t) = self.por_destino.write() {
+            t.remove(node_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn remember_for_test(&self, node_id: &str, rtt_ms: f64, transport: &str) {
+        self.remember(node_id, rtt_ms, transport);
+    }
+}
+
+/// A medição direcional é renovada junto com a rota de endereçamento.
+const RTT_INTERVALO_MEDICAO: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 pub mod tests_support {
@@ -311,6 +434,30 @@ mod tests {
         assert!(choose_route(&medidas, Some("a:1")).is_none());
     }
 
+    #[test]
+    fn rtt_table_keeps_directional_measurements_and_transport() {
+        let table = RttTable::new();
+        table.remember_for_test("peer-b", 12.5, "libp2p");
+        table.remember_for_test("peer-c", 30.0, "direct-health");
+
+        assert_eq!(
+            table.snapshot(),
+            vec![
+                RttMeasurement {
+                    target_node_id: "peer-b".into(),
+                    rtt_ms: 12.5,
+                    transport: "libp2p".into(),
+                },
+                RttMeasurement {
+                    target_node_id: "peer-c".into(),
+                    rtt_ms: 30.0,
+                    transport: "direct-health".into(),
+                },
+            ]
+        );
+        assert!(table.precisa_medir("peer-d"));
+    }
+
     /// Empate exato entre dois candidatos sem rota atual: vence a ordem
     /// lexicografica, para dois nos chegarem a mesma conclusao em vez de
     /// divergirem por ordem de HashMap.
@@ -344,6 +491,16 @@ mod tests {
         tabela.measure_peer(&http, "n1", &[vivo.clone()]).await;
         assert_eq!(tabela.resolve("n1"), Some(vivo.clone()));
         tabela.mark_failure("n1", &vivo);
+        assert_eq!(tabela.resolve("n1"), None);
+    }
+
+    #[test]
+    fn an_address_update_invalidates_the_stale_route() {
+        let tabela = RouteTable::new();
+        tabela.remember_for_test("n1", "https://172.17.0.1:8092", 1.0);
+
+        tabela.invalidate("n1");
+
         assert_eq!(tabela.resolve("n1"), None);
     }
 

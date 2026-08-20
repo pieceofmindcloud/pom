@@ -151,3 +151,11 @@ fundo claro, que sumia no painel escuro) preservando matiz e saturacao, e
 tem contraste proprio no escuro. A regiao preservada e o retangulo do brilho
 dourado, com borda suave para nao deixar costura. Quando existir uma arte
 escura desenhada de verdade, sobrescreva o PNG e apague este script.
+
+## generate-brand-assets.py
+
+Regenera os derivados quadrados de `assets/brand/pom-icon-src.png`: tamanhos
+web, `pom-mark.png`, ícones Linux, `favicon.ico`, `pom.ico` e `pom.icns`.
+`pom-logo-light.png` e `pom-logo-dark.png` são lockups-fonte e não são
+redimensionados por este script. Rode `python3 scripts/generate-brand-assets.py`
+depois de atualizar a arte manual para manter todas as plataformas alinhadas.

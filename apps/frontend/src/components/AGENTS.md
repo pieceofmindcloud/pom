@@ -4,7 +4,7 @@ Reusable UI building blocks, split into two kinds. The small primitives live in
 `ui.tsx` (the design system: panels, buttons, inputs, badges, meters, states,
 formatters) and everything is composed from them. The bigger pieces are the
 app chrome (`Sidebar`/`Topbar`/`Notifications`/`nav.ts`), the cluster
-visualizations (`PipelineRail`, `ModelNetworkCanvas`), and the dialogs/guards
+visualizations (`PipelineRail`, `ModelNetworkCanvas`, `DeployNetworkCanvas`), and the dialogs/guards
 for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 `AddNodeDialog`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
 `UndeployPipeline`), and `PeerDetailCard`, the one card for a machine shown in
@@ -35,7 +35,10 @@ Per-file list:
   App router both consume it; the routes themselves are declared in `../App.tsx`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
   mobile drawer in `Topbar`). `Section`/`Leaf` render `NAV` with an animated
-  active pill; a section holding the current path stays open. `SidebarBrand` is
+  active pill; a section holding the current path stays open. The desktop
+  sidebar can be minimized and persists that choice in `localStorage`; the
+  minimized state renders icon-only links and hover/focus flyout menus for
+  sections with children. `SidebarBrand` is
   the header and holds **only the lockup** (`LogoFull variant="band"`), filling
   the strip edge to edge with a divider under it; the menu below it keeps a 5px
   top gap so the first item does not touch that line - the hash sits **on the identity** because in
@@ -49,6 +52,10 @@ Per-file list:
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`).
+- `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
+  `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
+  per job with state, progress and output paths. The former standalone jobs
+  route no longer exists.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
@@ -199,6 +206,28 @@ Key logic carriers:
 - `ModelNetworkCanvas.beginDrag`/`drag` (ModelNetworkCanvas.tsx:152) — pointer
   capture drag with zoom-aware offsets and clamping to the canvas; positions are
   persisted on every move (`writePositions`).
+- `DeployNetworkCanvas.tsx` — The compact, deploy-time topology view. It
+  reutiliza o contrato visual do `ModelNetworkCanvas`: fundo pontilhado, cards de
+  máquina, `autoLayout`, posições persistidas por fingerprint, arraste com
+  ponteiro, zoom, Fit, Organizar e Redefinir. Cards já presentes no mapa não
+  repetem a faixa inferior; arrastar ou dar duplo clique num peer disponível
+  adiciona-o ao conjunto preferido e faz o card aparecer no mapa. O plano ainda é a fonte de
+  verdade: `route_options` desenha somente pontes entre estágios consecutivos,
+  com caminhos principal/paralelo/inativo e RTT direcional; o canvas também filtra
+  respostas antigas que tentem saltar um estágio. A faixa inferior continua
+  aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
+  e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
+  deixa o RTT ausente em vez de copiar a medição do nó de destino. Réplicas exatas podem aparecer empilhadas na
+  mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
+  explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.
+  Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra
+  indeterminada. A hidratação de posições preserva cards existentes quando um
+  peer novo entra sem faixa, então a topologia não se reorganiza por causa de
+  uma inclusão ainda não configurada. A separação existe porque este grafo
+  representa uma implantação ainda não aplicada.
+- `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
+  inferência usados pelo Deploy Studio e pela tela de implantações registradas;
+  mantém os ajustes por máquina fora do bloco global.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `Sidebar.sectionHoldsPath` (Sidebar.tsx:49) — decides whether a section is
@@ -227,4 +256,3 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET/POST /api/ui/release/candidate` + `/api/ui/release`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
-

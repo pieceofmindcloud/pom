@@ -13,8 +13,9 @@ deploy re-varre o cluster em vez de confiar na prévia.
 
 Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
 chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
-cluster). O pedido carrega `group` (o conjunto de fatias, pelo `shard_group` do
-catálogo - ou o **nome** do modelo no catálogo, com `kind: "whole"`), `kind`
+cluster). O pedido carrega `group` (o modelo original, pela chave técnica
+`ShardSet.group` derivada do `pom_id` do `.pom` - ou o **nome** do modelo no catálogo, com
+`kind: "whole"`), `kind`
 (`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
 `"tensor_parallel"` - ver a seção 1.2), `params` (o
 `RuntimeParams` do pipeline inteiro), `selection` (a escolha explícita do
@@ -24,29 +25,44 @@ máquina). O `selection` viaja na requisição porque o
 não continuar valendo - a cópia da tela pode estar um minuto velha e uma máquina
 que saiu do cluster não pode receber uma fatia.
 
+O pedido também aceita `deployment_name` (nome operacional separado de `group`),
+`strategy: "simple" | "complete"` e `preferred_node_ids`. Nome vazio usa o nome
+do modelo e nomes maiores que 128 caracteres são recusados. `group` continua
+sendo a identidade técnica usada pelo catálogo, gossip e roteamento. A estratégia
+simples usa o menor conjunto suficiente de peers; a completa prefere os cortes
+existentes mais finos e distribui a carga entre mais máquinas. Nenhuma estratégia
+cria limites novos de GGUF: para isso continua existindo a tela de Fatiar.
+
 Três regras saem da arquitetura, não do gosto:
 
 - **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
   prompt inteiro de cada requisição. Escolher a ordem é o mesmo ato que escolher
   quem fica com qual faixa - não há segundo botão.
-- **Um nó serve uma faixa**, exceto com `merge` ligado: faixas adjacentes viram
-  uma unidade fundida (`splitter::merge`, Rust), a máquina junta as fatias num
-  arquivo só e serve a união. O passo fundido carrega `parts`, um por fatia.
-- **Sobreposição é recusa, buraco é aviso.** Duas faixas sobre a mesma camada
-  rodariam a camada duas vezes e corrompem a resposta; um buraco é meia-implantação
-  legítima que só impede o pipeline de planejar.
+- **Um nó serve uma faixa distinta**, exceto com `merge` ligado: faixas adjacentes
+  viram uma unidade fundida (`splitter::merge`, Rust), a máquina junta as fatias
+  num arquivo só e serve a união. O passo fundido carrega `parts`, um por fatia.
+  A mesma faixa exata em nós diferentes é uma réplica do mesmo estágio e forma
+  uma rota paralela válida.
+- **Sobreposição parcial é recusa, buraco é aviso.** Duas faixas com cortes
+  diferentes sobre a mesma camada tornariam a resposta ambígua; cópias exatas
+  são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Um
+  buraco é meia-implantação legítima que só impede o pipeline de planejar.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
-`kind: "whole"` (`DeployKind`, `deploy.rs`) implanta **um GGUF não fatiado numa
-máquina só**. Não existe segundo fluxo: `survey` lê o modelo do `models` do
+`kind: "whole"` (`DeployKind`, `deploy.rs`) implanta **um GGUF não fatiado em
+uma ou mais máquinas**. Cópias da faixa completa são réplicas do mesmo estágio
+e rotas paralelas válidas para balanceamento por RTT/carga. Não existe segundo fluxo: `survey` lê o modelo do `models` do
 `/api/ui/models` de cada peer (em vez do `shard_sets`) e o converte, em
 `parse_whole`, num `HeldShard` de faixa `0..total_layers-1`. Daí para frente é
 tudo o mesmo código - `candidates`, `model_size`, a aritmética de cobertura, o
 guarda de disco/memória, a fase de cópia e `launch_targets`. A cobertura fecha
-por construção, "um nó serve uma faixa" é trivialmente satisfeita, e o alvo sai
+por construção, "um nó serve uma faixa" é trivialmente satisfeita, e cada alvo sai
 como `LaunchTarget` comum com `skip_split: true`, o que faz o `apply` no destino
-se reconhecer como `single_peer` (sem extração de estado oculto).
+se reconhecer como `single_peer` (sem extração de estado oculto). Quando o
+operador seleciona mais de um destino, cada cópia vira um `Step` independente;
+uma repetição literal da mesma faixa no mesmo destino é ignorada como ação
+idempotente.
 
 O que muda de fato:
 
@@ -75,7 +91,7 @@ grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
 pipeline) + K **workers** (cada um extrai o próprio shard de tensor da própria
 cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, primary_node_id,
 worker_node_ids}` - o operador escolhe o **primary** e os **workers** por
-node_id (a tela oferece selects, não um campo de URL), e o nó deriva a
+node_id entre as máquinas no mapa (a tela oferece selects, não um campo de URL), e o nó deriva a
 `rank0_url` da porta de inferência anunciada pelo próprio primary
 (`Machine.inference_url`). A varredura lê o modelo inteiro do primary, e o
 `launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
@@ -127,7 +143,8 @@ inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.
 timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
 `PEER_TIMEOUT`). Monta `Vec<Machine>`:
 
-- `Machine { node_id, hostname, mem_free_mb, disk_free_mb, held: Vec<HeldShard> }`.
+- `Machine { node_id, hostname, mem_free_mb, gpu_free_mb, ram_free_mb,
+  disk_free_mb, rtt_ms, load, held: Vec<HeldShard> }`.
 - `HeldShard` é uma fatia do conjunto naquela máquina, com `total_layers` como
   `Option` - `None` é o estado normal de fatia antiga (sem metadata `pom.*`),
   e fica `Option` até `model_size` porque "não sei" e "zero" são fatos
@@ -136,6 +153,16 @@ timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
   qualquer outra; `0` = a máquina não respondeu, e nada é inferido disso.
 - `disk_free_mb` é o espaço para o arquivo, que é o que uma cópia precisa e o que
   `transfer.rs` checa antes de escrever um byte.
+- `gpu_free_mb` e `ram_free_mb` são expostos separadamente para a tela sugerir
+  GPU primeiro e RAM como capacidade de contingência. `mem_free_mb` continua
+  sendo a capacidade efetiva usada pelas verificações do planner: VRAM discreta
+  quando disponível, senão RAM.
+- `rtt_ms` da máquina é a medição vista pelo gateway para orientar a escolha
+  automática; `0` identifica o próprio nó e `null` quer dizer que ainda não
+  houve medição. As arestas de `route_options` usam uma matriz separada e
+  direcional, agregada dos relatórios `/api/ui/network/rtt`, para não exibir a
+  latência de um terceiro peer como se fosse o hop real. `load` é a quantidade
+  de requisições em andamento observada pelo `LoadTracker`.
 - `label()` - hostname, ou os primeiros 12 caracteres do `node_id` quando o
   hostname é vazio ou repetido.
 
@@ -144,8 +171,11 @@ sobreposição entre uma faixa e a coleção de outra.
 
 ## 3. O plano (`plan`)
 
-`plan(group, machines, selection, params, merge)` monta o `Plan`. Sem `selection`
-(caminho padrão), `auto_chain` + `auto_assign` decidem a distribuição; com
+`plan_with_options(group, machines, selection, params, merge, kind, tp, strategy,
+deployment_name, preferred_node_ids)` monta o `Plan`. Sem `selection` (caminho
+padrão), a estratégia escolhe `auto_chain` ou `auto_chain_complete`, e
+`auto_assign` considera capacidade combinada de GPU/RAM, carga, RTT e peers
+preferidos; um peer sem a fatia local também pode receber a cópia; com
 `selection`, cada `SelectedSlice { start_layer, end_layer, target_node_id,
 n_gpu_layers, offload_kqv }` é validado por posição:
 
@@ -158,7 +188,8 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   a amostragem só roda no último peer.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
   padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
-  antes da carga e pode reduzir as camadas GPU para evitar OOM. Um
+  antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode
+  reduzir as camadas GPU para evitar OOM. Um
   `n_gpu_layers` diferente de `99` é explícito e desliga esse ajuste de camadas.
   Em `tensor_parallel`, o planner normaliza `fit_memory` para desligado porque
   o fit nativo não suporta `split-mode tensor`.
@@ -169,8 +200,9 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   listam toda máquina como alvo de cada faixa com o motivo (`ok`/`note` - "já tem
   a fatia", "só N GB livres em disco", "receberia N GB"). Ocupação é deliberadamente
   fora do `ok`: uma máquina que já serve outra faixa é exatamente a que o operador
-  quer trocar, e escondê-la tornaria a troca impossível. Pegar máquina ocupada é
-  pego pela regra de um-nó-por-faixa, que é o lugar honesto para ela.
+  quer usar como rota paralela, e escondê-la tornaria a redundância impossível.
+  Um peer sem a fatia local também aparece quando tem espaço para receber a
+  cópia. A capacidade usa GPU primeiro e RAM como fallback.
 
 **`steps` sai sempre em ordem de camada**, plano recusado incluído, e
 `position` é numerado depois dessa ordenação. A ordem não é estética: a ordem do
@@ -189,7 +221,15 @@ quando a máquina já tem a fatia, e `merged` quando é unidade fundida com `par
 `blocked`, `merge`, `available`, `machines`, `missing`, `overlap`, `warnings`, e
 os dois números de engenharia que derivam de `params` (`prompt_tokens` e
 `chunk_tokens`, das mesmas fórmulas do gateway - `prompt_budget_of` e
-`prompt_chunk_of`).
+`prompt_chunk_of`), `deployment_name`, `strategy`, `route_options` e
+`load_distribution`. `route_options` mostra somente a ponte entre máquinas
+selecionadas em estágios consecutivos, com o RTT direcional conhecido para o
+próximo estágio; não inventa latência quando a origem não publicou a rota.
+Réplicas
+exatas não criam um hop extra: pertencem ao mesmo estágio e o roteador de
+inferência escolhe a cópia com menor RTT medido, equilibrando também a carga em
+voo. `load_distribution` separa carga atual de carga projetada pelo plano, sem
+abrir uma segunda execução concorrente.
 
 ### O modelo e seu tamanho
 
@@ -205,7 +245,7 @@ aparecem assim.
 ## 4. Execução (`deploy_endpoint` -> `run`)
 
 1. `deploy_endpoint` re-varre (`survey`), re-planeja, recusa `blocked`/vazio,
-   cria o job ("Implantar {group} em {n} nós") e spawna a execução.
+   cria o job ("Implantar {deployment_name} em {n} nós") e spawna a execução.
 2. `run` monta a lista de `Pull`s - uma unidade de movimento por fatia que tem
    que chegar a um alvo. Para passo fundido, um `Pull` por part faltante; a
    máquina "tem" a unidade fundida quando já tem todas as partes, e aí o merge

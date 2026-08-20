@@ -7,8 +7,6 @@ pub mod addrs;
 mod admin;
 #[path = "backend/auth.rs"]
 mod auth;
-#[path = "network/bitswap.rs"]
-mod bitswap;
 #[path = "utils/brand.rs"]
 mod brand;
 #[path = "models/catalog.rs"]
@@ -19,6 +17,8 @@ mod collective;
 mod config;
 #[path = "backend/deploy.rs"]
 mod deploy;
+#[path = "models/deployment.rs"]
+mod deployment;
 #[path = "backend/devupdate.rs"]
 mod devupdate;
 #[path = "inference/direct.rs"]
@@ -65,6 +65,8 @@ mod pipeline;
 mod pkarr_node;
 #[path = "models/plan.rs"]
 mod plan;
+#[path = "models/pom.rs"]
+mod pom;
 #[path = "inference/prefill.rs"]
 mod prefill;
 #[path = "inference/relay.rs"]
@@ -184,8 +186,8 @@ struct Args {
     #[arg(long)]
     start_layer: Option<u32>,
 
-    /// Force the last layer this node owns. Pairs with --start-layer; both are
-    /// inferred from the filename (`name_<start>_<end>.gguf`) when omitted.
+    /// Force the last layer this node owns. Pairs with --start-layer; sem os
+    /// dois, a faixa vem do algoritmo que preenche buracos no cluster.
     #[arg(long)]
     end_layer: Option<u32>,
 
@@ -212,8 +214,8 @@ struct Args {
     #[arg(long, default_value = "512")]
     max_new_tokens: u32,
 
-    /// Generations allowed in flight at once. The KV cache is split evenly
-    /// between them, so the window one request sees is n_ctx / max_sessions.
+    /// Generations allowed in flight at once. Each generation gets the full
+    /// `n_ctx`; the total KV cache reservation grows with this number.
     #[arg(long, default_value = "1")]
     max_sessions: u32,
 
@@ -299,37 +301,6 @@ struct Args {
     /// Configurações › Rede brings it into the network when you want it there.
     #[arg(long)]
     no_discovery: bool,
-}
-
-/// Extract (start, end) layers from a filename like "gemma2_0_20.gguf"
-fn parse_layers_from_filename(path: &str) -> Option<(u32, u32)> {
-    let filename = std::path::Path::new(path).file_stem()?.to_str()?;
-
-    // Look for patterns like _0_20 at the end or middle
-    let parts: Vec<&str> = filename.split('_').collect();
-    if parts.len() >= 3 {
-        // Try last two parts first
-        let end_idx = parts.len() - 1;
-        let start_idx = parts.len() - 2;
-
-        if let (Ok(s), Ok(e)) = (
-            parts[start_idx].parse::<u32>(),
-            parts[end_idx].parse::<u32>(),
-        ) {
-            return Some((s, e));
-        }
-
-        // Try searching for any two adjacent numeric parts
-        for i in 0..parts.len() - 1 {
-            if let (Ok(s), Ok(e)) = (parts[i].parse::<u32>(), parts[i + 1].parse::<u32>()) {
-                // Heuristic: start < end and end - start < 200 (sanity check)
-                if s < e && e - s < 200 {
-                    return Some((s, e));
-                }
-            }
-        }
-    }
-    None
 }
 
 #[tokio::main]
@@ -597,6 +568,7 @@ async fn main() -> Result<()> {
         role: app_config.role.to_string(),
         node_display_name,
         advertise_addr,
+        tls_required: app_config.tls_required,
         relay_peer_keys: relay_peer_keys.clone(),
         serve_relay: args.serve_relay,
         use_default_relays: !args.no_default_relays,
@@ -621,22 +593,23 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Layer range, in order of precedence: explicit flags, then the filename
-    // convention (`name_<start>_<end>.gguf`), then the gap-filling algorithm.
+    // Layer range, in order of precedence: explicit flags, then the gap-filling
+    // algorithm.
+    //
+    // Havia um degrau no meio - adivinhar a faixa lendo dois números no nome do
+    // arquivo (`name_<start>_<end>.gguf`). Ele saiu junto com a convenção: uma
+    // parte se chama pelo próprio hash, e um modelo cujo nome termina em dois
+    // números não é uma fatia de nada. Quem sabe a faixa é o `.pom`, e quem
+    // carrega uma parte solta na mão passa `--start-layer`/`--end-layer`.
     let explicit_range = match (args.start_layer, args.end_layer) {
         (Some(s), Some(e)) => Some((s, e)),
         _ => None,
     };
-    let assignment = if let Some((s, e)) =
-        explicit_range.or_else(|| parse_layers_from_filename(&model_name))
-    {
-        if explicit_range.is_some() {
-            info!("Layers {}-{} set explicitly", s, e);
-        } else {
-            info!("Parsed layers {}-{} from filename '{}'", s, e, model_name);
-        }
+    let assignment = if let Some((s, e)) = explicit_range {
+        info!("Layers {}-{} set explicitly", s, e);
         let actual_count = e - s + 1;
         model::LayerAssignment {
+            deploy_id: String::new(),
             model: profile.name.clone(),
             total_layers: profile.total_layers,
             start_layer: s,
@@ -684,6 +657,8 @@ async fn main() -> Result<()> {
     net.announce(Some(&assignment)).await?;
 
     // ── Runtime: owns the model configuration and the inference server ──────
+    let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
+        Arc::new(tokio::sync::RwLock::new(app_config.clone()));
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -703,10 +678,11 @@ async fn main() -> Result<()> {
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls(
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        Some(auth_config.clone()),
     );
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
@@ -719,8 +695,11 @@ async fn main() -> Result<()> {
 
     if let Some(port) = inference_port {
         let cfg = runtime::NodeConfig {
+            deploy_id: String::new(),
+            // Configurado pela linha de comando: não veio de implantação nenhuma.
             model_path: model_name.clone(),
             model_label: profile.name.clone(),
+            deployment_name: profile.name.clone(),
             start_layer: assignment.start_layer,
             end_layer: assignment.end_layer,
             total_layers: assignment.total_layers,
@@ -761,11 +740,9 @@ async fn main() -> Result<()> {
 
     // ── HTTP API server — every node serves it ───────────────────────────────
     {
-        let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
-            Arc::new(tokio::sync::RwLock::new(app_config.clone()));
-
         let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
         peer_clients.apply_cluster_policy(app_config.tls_required);
+        peer_clients.set_auth_state(auth_config.clone());
         // A catraca do TLS: escuta o gatilho do gossip e confirma a política
         // com o principal antes de gravar qualquer coisa. Ver `tls_policy`.
         tls_policy::spawn_ratchet(
@@ -1064,6 +1041,10 @@ struct P2pStackArgs {
     role: String,
     node_display_name: String,
     advertise_addr: Option<String>,
+    /// Política inicial, aplicada antes da task de sondagem da `Network`.
+    /// Sem isso a URL já nascia em HTTPS pelo cliente global, mas a sonda
+    /// começava em HTTP e todos os RTTs remotos ficavam ausentes.
+    tls_required: bool,
     /// Raw pkarr public keys (`--relay-peers`), resolved to multiaddrs
     /// *inside* this function, after it loads its own `pkarr_node` — not
     /// pre-resolved by the caller. Resolution needs an already-loaded pkarr
@@ -1172,6 +1153,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
         .with_advertise_addr(args.advertise_addr)
         .with_libp2p_peer_id(Some(libp2p_peer_id.clone())),
     );
+    net.set_tls(args.tls_required);
 
     if args.no_discovery {
         net.detach().await;
@@ -1278,6 +1260,7 @@ async fn start_gateway_only(
         role: app_config.role.to_string(),
         node_display_name,
         advertise_addr,
+        tls_required: app_config.tls_required,
         // No CLI here to source pkarr/relay peer keys from — see the plan's
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
@@ -1309,10 +1292,12 @@ async fn start_gateway_only(
             }
         };
 
-    let node_runtime = runtime::NodeRuntime::new_with_tls(
+    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
         tls_server.clone(),
+        Some(auth_state.clone()),
     );
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
@@ -1339,8 +1324,7 @@ async fn start_gateway_only(
 
     let peer_clients = Arc::new(peer_client::PeerClients::new(Duration::from_secs(600)));
     peer_clients.apply_cluster_policy(app_config.tls_required);
-
-    let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config));
+    peer_clients.set_auth_state(auth_state.clone());
 
     tls_policy::spawn_ratchet(
         net.clone(),

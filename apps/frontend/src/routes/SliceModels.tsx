@@ -11,7 +11,6 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Layers, Play, Plus, Scissors, Trash2, TriangleAlert } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { useNavigate } from "react-router-dom";
 import {
   Badge,
   Button,
@@ -34,6 +33,7 @@ import { useToast } from "../lib/toast";
 import { isWholeModel, type SizePlan } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
+import { SlicingJobsPanel } from "../components/SlicingJobsPanel";
 
 /** One row of the builder. Empty means "the rest of the model". */
 interface SliceInput {
@@ -68,7 +68,6 @@ export function SliceModels() {
   const [params] = useSearchParams();
   const catalog = useLocalCatalog();
   const toast = useToast();
-  const navigate = useNavigate();
   const invalidate = useInvalidate();
 
   // Fatiar é sobre modelos inteiros: fatias têm `shard_range` e não podem ser
@@ -158,7 +157,6 @@ export function SliceModels() {
         t("slice.startedDetail", { job: job_id.slice(0, 8) }),
       );
       invalidate();
-      navigate("/fatias/andamento");
     } catch (e) {
       toast.fromError(t("slice.startFailed"), e);
     } finally {
@@ -172,6 +170,10 @@ export function SliceModels() {
         title={t("slice.title")}
         subtitle={t("slice.subtitle")}
       />
+
+      <div className="mb-5">
+        <SlicingJobsPanel />
+      </div>
 
       {catalog.isLoading && <Skeleton className="h-64 w-full" />}
       {catalog.isError && (

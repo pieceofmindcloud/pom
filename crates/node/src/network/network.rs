@@ -102,6 +102,10 @@ pub enum P2PMessage {
         #[serde(default)]
         addr_candidates: Vec<String>,
         model: String,
+        /// A implantação que este nó serve. Vazio num peer de versão anterior,
+        /// que faz o agrupamento cair de volta no rótulo do modelo.
+        #[serde(default)]
+        deploy_id: String,
         start_layer: u32,
         end_layer: u32,
         total_layers: u32,
@@ -177,6 +181,12 @@ pub struct PeerInfo {
     #[serde(default)]
     pub addr_candidates: Vec<String>,
     pub model: String,
+    /// A implantação que este nó serve. É por ele que `plan_pipeline` agrupa,
+    /// e é o que permite o mesmo modelo estar no ar duas vezes em conjuntos de
+    /// máquinas diferentes. Vazio num peer de versão anterior, e aí o
+    /// agrupamento cai de volta no rótulo. Ver `models/deployment.rs`.
+    #[serde(default)]
+    pub deploy_id: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -231,6 +241,83 @@ pub(crate) fn ip_host(addr: &str) -> &str {
     } else {
         addr.split(':').next().unwrap_or("127.0.0.1")
     }
+}
+
+fn bare_host(host: &str) -> &str {
+    host.trim_start_matches('[').trim_end_matches(']')
+}
+
+fn host_port(host: &str, port: u16) -> String {
+    let host = bare_host(host);
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn local_candidates_by_preference(
+    pinned_host: Option<&str>,
+    observed_addr: Option<&str>,
+    local: Vec<crate::addrs::LocalAddr>,
+) -> Vec<String> {
+    let local = crate::addrs::filter_candidates(local, None);
+    let mut preferred = Vec::with_capacity(local.len() + 2);
+
+    if let Some(pinned) = pinned_host {
+        preferred.push(pinned.to_string());
+        preferred.extend(local);
+        return deduplicate_hosts(preferred);
+    }
+
+    let (public, private_or_local): (Vec<_>, Vec<_>) = local
+        .into_iter()
+        .partition(|ip| !crate::addrs::is_private_or_local(bare_host(ip)));
+    preferred.extend(public);
+
+    if let Some(observed) = observed_addr {
+        let observed_host = ip_host(observed);
+        if !crate::addrs::is_private_or_local(bare_host(observed_host)) {
+            preferred.push(observed_host.to_string());
+        }
+    }
+
+    preferred.extend(private_or_local);
+    deduplicate_hosts(preferred)
+}
+
+fn deduplicate_hosts(hosts: Vec<String>) -> Vec<String> {
+    let mut unique = Vec::with_capacity(hosts.len());
+    for host in hosts {
+        if unique
+            .iter()
+            .all(|existing: &String| bare_host(existing) != bare_host(&host))
+        {
+            unique.push(host);
+        }
+    }
+    unique
+}
+
+fn current_public_local_host(local: Vec<crate::addrs::LocalAddr>) -> Option<String> {
+    crate::addrs::filter_candidates(local, None)
+        .into_iter()
+        .find(|ip| !crate::addrs::is_private_or_local(bare_host(ip)))
+}
+
+fn choose_announce_addr(
+    pinned_addr: Option<String>,
+    observed_addr: Option<String>,
+    local: Vec<crate::addrs::LocalAddr>,
+    port: u16,
+) -> String {
+    if let Some(pinned) = pinned_addr {
+        return pinned;
+    }
+    if let Some(current) = current_public_local_host(local) {
+        return host_port(&current, port);
+    }
+    observed_addr.unwrap_or_else(|| format!("0.0.0.0:{port}"))
 }
 
 impl PeerInfo {
@@ -327,6 +414,32 @@ impl PeerInfo {
             )
         })
     }
+
+    /// URLs do gateway, uma por endereço anunciado, para sondas de RTT.
+    ///
+    /// A tabela de rotas continua guardando URLs de inferência, mas o health
+    /// do gateway é um alvo mais confiável: ele existe mesmo quando o modelo
+    /// ainda não subiu e a porta de inferência fica restrita à rede local.
+    pub fn gateway_candidates(&self) -> Vec<String> {
+        let Some(porta) = self.gateway_port else {
+            return Vec::new();
+        };
+        let base: Vec<&String> = if self.addr_candidates.is_empty() {
+            vec![&self.addr]
+        } else {
+            self.addr_candidates.iter().collect()
+        };
+        base.iter()
+            .map(|a| {
+                format!(
+                    "{}://{}:{}",
+                    crate::peer_client::peer_scheme(),
+                    ip_host(a),
+                    porta
+                )
+            })
+            .collect()
+    }
 }
 
 pub struct Network {
@@ -375,6 +488,9 @@ pub struct Network {
     detached: AtomicBool,
     /// Por onde este no fala com cada peer, medido por este processo.
     pub routes: Arc<crate::route::RouteTable>,
+    /// RTT direcional deste nó para cada peer, medido pelo transporte de
+    /// inferência libp2p quando disponível.
+    pub rtts: Arc<crate::route::RttTable>,
     /// This node's libp2p `PeerId` (base58), when the swarm derived a stable
     /// one from the pkarr identity — see `Discovery::new`. Set once, after
     /// construction, by whoever builds the libp2p keypair (`main.rs`), since
@@ -440,6 +556,13 @@ fn short(id: &str) -> &str {
         fim -= 1;
     }
     &id[..fim]
+}
+
+fn peer_address_changed(previous: &PeerInfo, current: &PeerInfo) -> bool {
+    previous.addr != current.addr
+        || previous.addr_candidates != current.addr_candidates
+        || previous.inference_port != current.inference_port
+        || previous.gateway_port != current.gateway_port
 }
 
 /// Payload budget for one UDP datagram, in bytes.
@@ -597,6 +720,7 @@ impl Network {
             socket: Arc::new(socket),
             detached: AtomicBool::new(false),
             routes: Arc::new(crate::route::RouteTable::new()),
+            rtts: Arc::new(crate::route::RttTable::new()),
             libp2p_peer_id: None,
             libp2p_tunnel_ready: AtomicBool::new(false),
             mtp_ready: Arc::new(AtomicBool::new(false)),
@@ -691,64 +815,66 @@ impl Network {
             .clone()
     }
 
-    /// Host to fall back on when nothing was explicitly pinned: the
-    /// operator's own choice (`advertise_addr`) always wins over anything
-    /// this node merely inferred about itself.
+    /// Host to use when the node needs to describe how peers can reach it.
     ///
-    /// `pub` (not just used by `self_addr_candidates`/`announce_addr`
-    /// internally) because `GatewayState::all_peers`'s self-entry
-    /// (`gateway.rs`) needs the exact same pinned-then-observed preference
-    /// when it builds this node's own `.addr` — without it, that entry fell
-    /// straight to `advertised_host()` alone and skipped the peer-observed
-    /// public address entirely, so a NAT'd node's own dashboard card kept
-    /// showing its private LAN IP even after `Announce`/`self_addr_candidates`
-    /// were already fixed.
+    /// An explicit pin wins. Otherwise a current public local address wins
+    /// over an older address learned through identify, while the observed
+    /// address remains available for NAT'd nodes with no public interface.
+    /// `pub` because `GatewayState::all_peers` uses the same choice for the
+    /// node's own dashboard entry.
     pub fn effective_host(&self) -> Option<String> {
-        self.advertised_host()
-            .or_else(|| self.observed_addr().map(|a| ip_host(&a).to_string()))
+        let pinned = self.advertised_host();
+        if pinned.is_some() {
+            return pinned;
+        }
+
+        if let Some(current) = current_public_local_host(crate::addrs::local_addrs()) {
+            return Some(current);
+        }
+
+        let observed = self.observed_addr();
+        observed.map(|addr| ip_host(&addr).to_string())
     }
 
     /// Enderecos que este no anuncia de si.
     ///
-    /// O endereco fixado pelo operador vem primeiro; na falta dele, o
-    /// endereco publico observado por algum peer via libp2p `identify` (ver
-    /// `set_observed_addr`) - so entao vem o resto, das interfaces desta
-    /// maquina, ja filtrado. Um no sem nenhum endereco enumeravel devolve
-    /// lista vazia, e o peer do outro lado cai no endereco observado do
-    /// pacote - que e o comportamento de sempre.
+    /// O endereço fixado pelo operador vem primeiro. Sem fixação, os
+    /// endereços públicos atuais das interfaces vêm antes do observado por
+    /// identify, e os endereços locais restantes fecham a lista. Assim, uma
+    /// rotação de IPv6 no macOS não deixa um endereço observado antigo na
+    /// frente, mas um nó atrás de NAT ainda conserva seu fallback público.
     pub fn self_addr_candidates(&self) -> Vec<String> {
         let porta = self.bind_addr.port();
-        crate::addrs::filter_candidates(
+        let pinned = self.advertised_host();
+        let observed = self.observed_addr();
+        local_candidates_by_preference(
+            pinned.as_deref(),
+            observed.as_deref(),
             crate::addrs::local_addrs(),
-            self.effective_host().as_deref(),
         )
         .into_iter()
-        .map(|ip| {
-            if ip.contains(':') && !ip.starts_with('[') {
-                format!("[{ip}]:{porta}")
-            } else {
-                format!("{ip}:{porta}")
-            }
-        })
+        .map(|ip| host_port(&ip, porta))
         .collect()
     }
 
     /// What this node puts in `Announce.addr`.
     ///
     /// `0.0.0.0:<port>` is the "ask the receiver" sentinel: `handle_message`
-    /// replaces it with the source address of the packet. Falls back to a
-    /// peer-observed public address (`set_observed_addr`) before that
-    /// sentinel — a NAT'd node with no `--advertise-addr`/`--public-addr` set
-    /// otherwise has nothing better to offer a remote peer reached over
-    /// gossipsub, where there is no packet source to rewrite `addr` with the
-    /// way the UDP path does.
+    /// replaces it with the source address of the packet. Without an explicit
+    /// pin, a current public local address comes first. The peer-observed
+    /// address remains the fallback for NAT'd nodes with no public interface.
     pub fn announce_addr(&self) -> String {
-        self.advertise_addr
+        let pinned = self
+            .advertise_addr
             .read()
             .expect("advertise_addr lock")
-            .clone()
-            .or_else(|| self.observed_addr())
-            .unwrap_or_else(|| format!("0.0.0.0:{}", self.bind_addr.port()))
+            .clone();
+        choose_announce_addr(
+            pinned,
+            self.observed_addr(),
+            crate::addrs::local_addrs(),
+            self.bind_addr.port(),
+        )
     }
 
     /// Put a destination in the address family of our socket.
@@ -815,6 +941,7 @@ impl Network {
             addr: self.announce_addr(),
             addr_candidates: self.self_addr_candidates(),
             model: assignment.map(|a| a.model.clone()).unwrap_or_default(),
+            deploy_id: assignment.map(|a| a.deploy_id.clone()).unwrap_or_default(),
             start_layer: assignment.map(|a| a.start_layer).unwrap_or(0),
             end_layer: assignment.map(|a| a.end_layer).unwrap_or(0),
             total_layers: assignment.map(|a| a.total_layers).unwrap_or(0),
@@ -1098,18 +1225,90 @@ impl Network {
                 if net_routes.is_detached() {
                     continue;
                 }
+                // A sonda nova começa sem política própria. Sem sincronizar o
+                // cliente com o estado atual do cluster, os candidatos HTTPS
+                // falham silenciosamente no TLS e o painel fica sem RTT dos
+                // peers remotos. Atualizar só o cliente mantém o esquema das
+                // URLs sob responsabilidade da política global já confirmada.
+                clientes.set_tls(net_routes.tls_enabled());
                 for peer in net_routes.alive_peers().await {
-                    if !net_routes.routes.precisa_medir(&peer.node_id) {
+                    let precisa_rota = net_routes.routes.precisa_medir(&peer.node_id);
+                    let precisa_rtt = net_routes.rtts.precisa_medir(&peer.node_id);
+                    if !precisa_rota && !precisa_rtt {
                         continue;
                     }
-                    let candidatos = peer.inference_candidates();
-                    if candidatos.is_empty() {
-                        continue;
+
+                    if precisa_rota {
+                        let candidatos = peer.inference_candidates();
+                        if !candidatos.is_empty() {
+                            let sondas = peer.gateway_candidates();
+                            let pares: Vec<(String, String)> = candidatos
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, inferencia)| {
+                                    let sonda = sondas
+                                        .get(index)
+                                        .cloned()
+                                        .unwrap_or_else(|| inferencia.clone());
+                                    (inferencia, sonda)
+                                })
+                                .collect();
+                            net_routes
+                                .routes
+                                .measure_peer_with_probes(&clientes, &peer.node_id, &pares)
+                                .await;
+                        }
                     }
-                    net_routes
-                        .routes
-                        .measure_peer(&clientes, &peer.node_id, &candidatos)
-                        .await;
+
+                    if precisa_rtt {
+                        let peer_id = peer
+                            .libp2p_peer_id
+                            .as_deref()
+                            .and_then(|id| id.parse::<libp2p::PeerId>().ok());
+                        let has_tunnel = peer_id.is_some()
+                            && peer
+                                .inference_frame_capabilities
+                                .iter()
+                                .any(|cap| cap == crate::pipeline::CAP_LIBP2P_TUNNEL);
+                        let measured =
+                            match (has_tunnel, peer_id, crate::infer_tunnel::tunnel_sender()) {
+                                (true, Some(peer_id), Some(sender)) => {
+                                    crate::infer_tunnel::measure_rtt(
+                                        sender,
+                                        peer_id,
+                                        Duration::from_secs(3),
+                                    )
+                                    .await
+                                }
+                                _ => None,
+                            };
+
+                        if let Some(rtt_ms) = measured {
+                            net_routes.rtts.remember(&peer.node_id, rtt_ms, "libp2p");
+                        } else if !has_tunnel {
+                            // Peers antigos não anunciam o túnel. O health
+                            // HTTP é o fallback de compatibilidade e fica
+                            // explicitamente marcado como tal.
+                            if let Some((_, route)) = net_routes
+                                .routes
+                                .snapshot()
+                                .into_iter()
+                                .find(|(node_id, _)| node_id == &peer.node_id)
+                            {
+                                net_routes.rtts.remember(
+                                    &peer.node_id,
+                                    route.rtt_ms,
+                                    "direct-health",
+                                );
+                            } else {
+                                net_routes.rtts.mark_failure(&peer.node_id);
+                            }
+                        } else {
+                            // Não substitui uma medição libp2p ausente pela
+                            // latência observada pelo gateway ou por outro nó.
+                            net_routes.rtts.mark_failure(&peer.node_id);
+                        }
+                    }
                 }
             }
         });
@@ -1152,6 +1351,7 @@ impl Network {
             P2PMessage::Announce {
                 node_id,
                 pubkey,
+                deploy_id,
                 addr,
                 addr_candidates,
                 model,
@@ -1188,6 +1388,7 @@ impl Network {
                 };
 
                 let mut peer = PeerInfo {
+                    deploy_id,
                     node_id: node_id.clone(),
                     pubkey,
                     addr: peer_addr.clone(),
@@ -1270,6 +1471,16 @@ impl Network {
                 // funcional, mas nao invalida os outros: por isso entra no
                 // conjunto em vez de substitui-lo.
                 peer.merge_observed(&peer_addr);
+
+                let address_changed = {
+                    let peers = self.peers.read().await;
+                    peers
+                        .get(&node_id)
+                        .is_some_and(|previous| peer_address_changed(previous, &peer))
+                };
+                if address_changed {
+                    self.routes.invalidate(&node_id);
+                }
 
                 let mut peers = self.peers.write().await;
                 peers.insert(node_id, peer);
@@ -1355,7 +1566,13 @@ impl Network {
         if node_id == self.node_id {
             return;
         }
-        let is_new = !self.peers.read().await.contains_key(&node_id);
+        let (is_new, address_changed) = {
+            let peers = self.peers.read().await;
+            match peers.get(&node_id) {
+                Some(previous) => (false, peer_address_changed(previous, &peer)),
+                None => (true, false),
+            }
+        };
         if is_new {
             info!(
                 "🆕 Peer via libp2p: {} model={} layers={}-{}",
@@ -1364,6 +1581,9 @@ impl Network {
                 peer.start_layer,
                 peer.end_layer
             );
+        }
+        if address_changed {
+            self.routes.invalidate(&node_id);
         }
         self.peers.write().await.insert(node_id, peer);
     }
@@ -1423,6 +1643,7 @@ mod tests {
         .with_identity("Principal".into(), "macbook".into());
 
         let asgn = LayerAssignment {
+            deploy_id: String::new(),
             model: "qwen35".into(),
             total_layers: 32,
             start_layer: 0,
@@ -1493,30 +1714,76 @@ mod tests {
         }
     }
 
+    /// Quando o IPv6 da interface muda, o último endereço observado por
+    /// identify não pode continuar vencendo o endereço público atual.
+    #[test]
+    fn a_current_public_local_address_outranks_a_stale_observed_address() {
+        let local = vec![
+            crate::addrs::LocalAddr {
+                ip: "2001:db8::2".into(),
+                interface: None,
+                deprecated: false,
+                temporary: true,
+            },
+            crate::addrs::LocalAddr {
+                ip: "2001:db8::1".into(),
+                interface: None,
+                deprecated: false,
+                temporary: false,
+            },
+        ];
+        let observed = Some("203.0.113.5:9999".to_string());
+
+        assert_eq!(
+            choose_announce_addr(None, observed.clone(), local.clone(), 42777),
+            "[2001:db8::1]:42777"
+        );
+        assert_eq!(
+            local_candidates_by_preference(None, observed.as_deref(), local),
+            vec!["2001:db8::1", "2001:db8::2", "203.0.113.5"]
+        );
+    }
+
     /// A NAT'd node with nothing pinned has, until now, only its own private
     /// LAN interfaces to offer — useless to a remote peer over gossipsub,
     /// where there is no packet source to rewrite `addr` with the way the
     /// UDP path does. A peer-observed public address has to fill that gap.
-    #[tokio::test]
-    async fn an_observed_public_address_becomes_the_announced_one() {
-        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
-            .await
-            .unwrap();
-        let port = net.bind_addr.port();
-
+    #[test]
+    fn an_observed_public_address_becomes_the_announced_one() {
+        let port = 42777;
         assert_eq!(
-            net.announce_addr(),
+            choose_announce_addr(None, None, vec![], port),
             format!("0.0.0.0:{port}"),
             "no pin, nothing observed yet"
         );
-
-        net.set_observed_addr("203.0.113.5:9999");
-
-        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
         assert!(
-            net.self_addr_candidates()
-                .contains(&format!("203.0.113.5:{port}")),
+            local_candidates_by_preference(None, Some("203.0.113.5:9999"), vec![])
+                .contains(&"203.0.113.5".to_string()),
             "the observed address's host must appear as a candidate too, at this node's own port"
+        );
+        assert_eq!(
+            choose_announce_addr(None, Some("203.0.113.5:9999".into()), vec![], port),
+            "203.0.113.5:9999"
+        );
+    }
+
+    #[test]
+    fn an_observed_public_address_outranks_private_local_interfaces() {
+        let local = vec![crate::addrs::LocalAddr {
+            ip: "192.168.1.50".into(),
+            interface: None,
+            deprecated: false,
+            temporary: false,
+        }];
+        let observed = Some("203.0.113.5:9999".to_string());
+
+        assert_eq!(
+            choose_announce_addr(None, observed.clone(), local.clone(), 42777),
+            "203.0.113.5:9999"
+        );
+        assert_eq!(
+            local_candidates_by_preference(None, observed.as_deref(), local),
+            vec!["203.0.113.5", "192.168.1.50"]
         );
     }
 
@@ -1543,11 +1810,10 @@ mod tests {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
             .await
             .unwrap();
-        let port = net.bind_addr.port();
 
         net.set_observed_addr("192.168.1.50:9999");
 
-        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+        assert_eq!(net.observed_addr(), None);
     }
 
     /// `set_advertise_addr` is the live-update path the web UI's
@@ -1569,10 +1835,8 @@ mod tests {
     }
 
     /// Clearing the pin (`None`, from the UI's "empty means auto" convention)
-    /// has to fall back through the same precedence `announce_addr` already
-    /// applies — back to an observed address if one exists, not straight to
-    /// the `0.0.0.0` sentinel while a perfectly good observed address sits
-    /// unused.
+    /// has to fall back through the same precedence `announce_addr` applies
+    /// back to an observed address if no current public local address exists.
     #[tokio::test]
     async fn clearing_the_pin_falls_back_to_an_observed_address() {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
@@ -1583,7 +1847,11 @@ mod tests {
 
         net.set_advertise_addr(None);
 
-        assert_eq!(net.announce_addr(), "203.0.113.5:9999");
+        assert_eq!(net.advertised_host(), None);
+        assert_eq!(
+            choose_announce_addr(None, net.observed_addr(), vec![], net.bind_addr.port()),
+            "203.0.113.5:9999"
+        );
     }
 
     /// A malformed value passed to the live setter must not silently corrupt
@@ -1597,11 +1865,9 @@ mod tests {
         let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
             .await
             .unwrap();
-        let port = net.bind_addr.port();
-
         net.set_advertise_addr(Some(""));
 
-        assert_eq!(net.announce_addr(), format!("0.0.0.0:{port}"));
+        assert_eq!(net.advertised_host(), None);
     }
 
     /// The captain types the address by hand and hands it to a friend, so every
@@ -1636,6 +1902,7 @@ mod tests {
     #[test]
     fn an_advertised_ipv6_survives_into_the_peer_urls() {
         let peer = PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "n".into(),
             pubkey: "p".into(),
@@ -1676,6 +1943,7 @@ mod tests {
     #[test]
     fn peer_lists_are_split_to_fit_the_path_mtu() {
         let peer = PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "7b09e99c538b0f79daf0cf9111d9e5e912094c7c999273b8d2df3a446f6630ec".into(),
             pubkey: "a".repeat(64),
@@ -1723,6 +1991,7 @@ mod tests {
 
     fn peer_com_candidatos(candidatos: Vec<&str>) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: "n1".into(),
             pubkey: "p".into(),
@@ -1939,6 +2208,7 @@ mod tests {
 
     fn dummy_peer(node_id: &str, addr: &str) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "p".into(),

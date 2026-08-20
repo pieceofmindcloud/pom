@@ -77,7 +77,7 @@ function ShardCard({
     <Panel>
       <PanelHeader
         eyebrow={t("shards.set")}
-        title={set.group}
+        title={set.model_label || set.group}
         subtitle={
           set.total_layers != null
             ? t("shards.setDetail", { count: set.shards.length, total: num(set.total_layers) })
@@ -108,6 +108,16 @@ function ShardCard({
                       : t("shards.unknownRange")}
                   </span>
                   <span className="truncate text-[0.82rem] text-fg">{s.name}</span>
+                  {/* O hash identifica a parte entre máquinas, mas não é nome
+                      de nada que se leia: fica ao lado, curto e discreto. */}
+                  {s.sha256 && (
+                    <span
+                      className="shrink-0 font-mono text-[0.7rem] text-faint"
+                      title={s.sha256}
+                    >
+                      {s.sha256.slice(0, 12)}
+                    </span>
+                  )}
                 </div>
                 <p className="break-path mt-0.5 font-mono text-[0.7rem] text-faint">
                   {s.path}

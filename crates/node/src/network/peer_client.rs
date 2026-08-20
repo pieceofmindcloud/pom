@@ -80,6 +80,7 @@ pub struct PeerClients {
     tls: AtomicBool,
     plain: reqwest::Client,
     per_peer: RwLock<HashMap<String, reqwest::Client>>,
+    auth: RwLock<Option<crate::auth::AuthState>>,
 }
 
 impl PeerClients {
@@ -92,6 +93,37 @@ impl PeerClients {
                 .build()
                 .expect("cliente HTTP sem TLS não pode falhar na construção"),
             per_peer: RwLock::new(HashMap::new()),
+            auth: RwLock::new(None),
+        }
+    }
+
+    /// Liga este cache de clientes à configuração viva do nó. A leitura é
+    /// feita por chamada, porque a chave pode ser regenerada pela API sem
+    /// reiniciar o processo.
+    pub fn set_auth_state(&self, auth: crate::auth::AuthState) {
+        if let Ok(mut slot) = self.auth.write() {
+            *slot = Some(auth);
+        }
+    }
+
+    /// Chave que os nós usam entre si na porta de inferência. API keys não são
+    /// encaminhadas automaticamente: elas pertencem ao cliente externo e a
+    /// cada configuração local. O receptor, porém, aceita ambas as formas.
+    pub async fn inference_token(&self) -> Option<String> {
+        let auth = self.auth.read().ok()?.clone()?;
+        let config = auth.read().await;
+        (!config.connection_key.is_empty()).then(|| config.connection_key.clone())
+    }
+
+    pub async fn authorize_inference_request(
+        &self,
+        request: reqwest::RequestBuilder,
+    ) -> reqwest::RequestBuilder {
+        match self.inference_token().await {
+            Some(token) => {
+                request.header(reqwest::header::AUTHORIZATION, format!("Bearer {token}"))
+            }
+            None => request,
         }
     }
 
@@ -123,6 +155,25 @@ impl PeerClients {
     /// Cliente sem pinning, para destino que não é peer (loopback, Ollama).
     pub fn plain(&self) -> reqwest::Client {
         self.plain.clone()
+    }
+
+    /// Cliente exclusivo para sondas de latência.
+    ///
+    /// A sonda só precisa saber se o peer respondeu. Ela não autentica uma
+    /// sessão de inferência e, portanto, não deve depender do certificado
+    /// autoassinado nem do nome presente no certificado do peer. O cliente
+    /// pinado de `for_peer` continua sendo o único caminho para dados de
+    /// inferência.
+    pub fn probe(&self) -> Result<reqwest::Client> {
+        if !self.tls_enabled() {
+            return Ok(self.plain.clone());
+        }
+        reqwest::Client::builder()
+            .timeout(self.timeout)
+            .danger_accept_invalid_certs(true)
+            .danger_accept_invalid_hostnames(true)
+            .build()
+            .context("não deu para construir o cliente TLS da sonda")
     }
 
     /// Cliente para falar com `node_id`, construído sob demanda.

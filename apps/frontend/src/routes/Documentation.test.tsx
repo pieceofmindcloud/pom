@@ -11,14 +11,17 @@
  * (quem é o container que rola), porque é a estrutura que estava errada.
  */
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 import { Documentation } from "./Documentation";
 
 function renderDoc(initialEntry = "/documentacao") {
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <LocaleProvider initialLocale="en">
         <Documentation />
       </LocaleProvider>
@@ -32,7 +35,12 @@ function openReference() {
 }
 
 describe("Documentation", () => {
+  beforeEach(() => {
+    vi.spyOn(window, "scrollTo").mockImplementation(() => {});
+  });
+
   afterEach(cleanup);
+  afterEach(() => vi.restoreAllMocks());
 
   it("abre nos guias, não no markdown de agente", () => {
     renderDoc();

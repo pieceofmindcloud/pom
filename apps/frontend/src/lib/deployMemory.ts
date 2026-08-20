@@ -12,7 +12,7 @@
  * putting it on a node would mean deciding whose preference wins. The trade is
  * that it does not follow you to another browser.
  */
-import type { DeploySelection, RuntimeParams } from "./types";
+import type { DeploySelection, DeployStrategy, RuntimeParams } from "./types";
 import { storageKey } from "./brand";
 
 const STORAGE = storageKey("deploy.last");
@@ -23,6 +23,8 @@ export interface DeployMemory {
   selection: DeploySelection[];
   params: RuntimeParams | null;
   merge: boolean;
+  deployment_name?: string;
+  strategy?: DeployStrategy;
   at: string;
 }
 

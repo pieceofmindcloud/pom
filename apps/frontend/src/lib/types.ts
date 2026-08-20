@@ -76,6 +76,10 @@ export interface RuntimeStatus {
 export interface NodeConfig {
   model_path: string;
   model_label: string;
+  /** A implantação de que este nó faz parte; vazio se ele não veio de uma. */
+  deploy_id: string;
+  /** Nome operacional da implantação, quando informado pelo operador. */
+  deployment_name: string;
   start_layer: number;
   end_layer: number;
   total_layers: number;
@@ -122,6 +126,7 @@ export interface NodeInfo {
   peer_count: number;
   load: number;
   active_model: string;
+  active_deployment?: string;
   /** True while the operator has taken this node off the network. */
   detached?: boolean;
   /** Commit de que o binário foi construído. */
@@ -209,13 +214,71 @@ export interface DiscoveredModel {
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
+  /** Chave da rodada de fatiamento: `<modelo>-<id curto>`. */
   shard_group: string | null;
+  /** sha256 da parte, quando o arquivo é endereçado por conteúdo. */
+  sha256: string | null;
+  /** Rótulo do modelo de origem, do `.pom`. */
+  model_label: string | null;
+  /** A rodada que produziu esta parte. */
+  pom_id: string | null;
 }
 
 /** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
 export const isWholeModel = (m: DiscoveredModel): boolean => m.shard_range == null;
 
+/** `src/models/deployment.rs` — de que forma um modelo está no ar. */
+export type DeploymentKind = 'shards' | 'whole' | 'tensor_parallel';
+
+/** `src/models/deployment.rs` — um nó da implantação, e a config com que subiu. */
+export interface DeploymentNode {
+  node_id: string;
+  hostname: string;
+  start_layer: number;
+  end_layer: number;
+  peer_index: number;
+  peer_count: number;
+  primary: boolean;
+  part_sha256?: string | null;
+  tp_rank?: number | null;
+  config: RuntimeParams;
+}
+
+/**
+ * `src/models/deployment.rs` — a ligação entre um conjunto de nós e um modelo.
+ *
+ * O mesmo modelo pode estar no ar em mais de uma implantação, com máquinas ou
+ * configuração diferentes; o `deploy_id` é o que as distingue. Uma requisição
+ * escolhe uma pelo sufixo `<modelo>@<deploy_id>`.
+ */
+export interface Deployment {
+  deployment_version: number;
+  deploy_id: string;
+  kind: DeploymentKind;
+  model: {
+    label: string;
+    total_layers: number;
+    pom_id?: string | null;
+  };
+  created_at: string;
+  created_by: string;
+  activated_at: string;
+  nodes: DeploymentNode[];
+}
+
+/** O que `GET /api/ui/deployments` responde. */
+export interface DeploymentsResponse {
+  node_id: string;
+  deployments: Deployment[];
+  /** Os `deploy_id` que atendem um pedido feito só com o nome do modelo. */
+  active: string[];
+}
+
 export interface ShardSet {
+  /** Rótulo do modelo — o que se lê. `group` identifica a rodada. */
+  model_label: string;
+  /** A rodada de fatiamento que produziu estas partes. Identificação, não nome. */
+  pom_id: string;
   group: string;
   total_layers: number | null;
   total_layers_inferred: boolean;
@@ -406,7 +469,6 @@ export interface PlannedShard {
   is_first: boolean;
   is_last: boolean;
   has_model: boolean;
-  shard_filename: string;
 }
 
 /** `src/plan.rs` — `SplitPlan`, what `POST /api/ui/plan` answers. */
@@ -503,16 +565,42 @@ export interface DeployMachine {
   node_id: string;
   label: string;
   mem_free_mb: number;
+  gpu_free_mb: number;
+  ram_free_mb: number;
+  /** Métricas live da visão do cluster, ausentes em respostas antigas. */
+  gpu_used_pct?: number | null;
+  ram_used_pct?: number | null;
   disk_free_mb: number;
+  rtt_ms: number | null;
+  load: number;
   holds: Array<[number, number]>;
   taking: [number, number] | null;
+}
+
+export type DeployStrategy = "simple" | "complete";
+
+export interface DeployRouteOption {
+  from_node_id: string;
+  to_node_id: string;
+  rtt_ms: number | null;
+  selected: boolean;
+  note: string;
+}
+
+export interface DeployLoadDistribution {
+  node_id: string;
+  current: number;
+  projected: number;
+  selected: boolean;
 }
 
 /**
  * Execution settings a launch carries. `src/webui.rs` — `RuntimeParams`.
  *
- * Cluster-wide on purpose: the context window and the batch decide the prompt
- * budget the gateway enforces, and the sampling only runs on the last peer.
+ * Cluster-wide on purpose: `n_ctx` is the full window for each session, the
+ * session count multiplies the total KV-cache reservation, and the batch
+ * decides the prompt chunks the gateway sends. Sampling only runs on the last
+ * peer.
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
  */
 export interface RuntimeParams {
@@ -593,6 +681,8 @@ export interface TpLaunch {
 
 export interface DeployPlan {
   group: string;
+  deployment_name: string;
+  strategy: DeployStrategy;
   /**
    * Echoed by the node, so the screen never guesses which question it asked.
    *
@@ -628,4 +718,6 @@ export interface DeployPlan {
   prompt_tokens: number;
   /** Prompt tokens per round trip through the pipeline, under `params`. */
   chunk_tokens: number;
+  route_options: DeployRouteOption[];
+  load_distribution: DeployLoadDistribution[];
 }

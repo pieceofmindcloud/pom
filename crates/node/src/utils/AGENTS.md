@@ -62,7 +62,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 
 `sysmon.rs`:
 - `sample` - leitura com cache de 1,2 s (`nvidia-smi` custa um spawn por leitura;
-  a UI polia mais rápido do que os números mudam).
+  a UI polia mais rápido do que os números mudam). As consultas frequentes ao
+  `nvidia-smi` rodam em `spawn_blocking` com `std::process::Command`, sem usar
+  o reaper SIGCHLD do Tokio, para não interromper o socket UDP da DHT pkarr.
 - `read_memory` - Linux `/proc/meminfo` (MemAvailable, não MemFree); macOS
   `sysctl hw.memsize` + `vm_stat` (active + wired + compressor = "Memory Used"
   do Activity Monitor, e devolve wired para os buffers do Metal); Windows

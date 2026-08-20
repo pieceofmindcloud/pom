@@ -11,13 +11,17 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 
 - `addrs.rs` - enumeração dos endereços locais por plataforma (`ifconfig` no
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
-  Único arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem
-  teste que roda em qualquer sistema.
-- `infer_tunnel.rs` - protocolo request/response que carrega uma chamada HTTP
-  de inferência pelo enxame libp2p, como alternativa quando o HTTP direto não
-  alcança o peer. `TunnelRequest` leva caminho, corpo e cabeçalhos;
-  `serve_loopback` é o lado de dentro e repassa tudo para o próprio servidor
-  de inferência em `127.0.0.1:<inference_port>`.
+  Captura também a interface dona do endereço para excluir bridges e pares
+  virtuais de Docker, Podman, CNI e equivalentes sem perder IPs privados de
+  interfaces reais da LAN. Único arquivo com código por plataforma; a
+  filtragem fica fora do `cfg` e tem teste que roda em qualquer sistema.
+- `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
+  inferência pelo enxame libp2p como transporte preferencial quando o peer
+  anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
+  cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
+  corpo e cabeçalhos, inclusive a credencial da porta de inferência;
+  `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
+  sonda `/health`. `measure_rtt` mede a ida e volta pelo mesmo túnel Noise.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
@@ -41,7 +45,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
-  `/health` e histerese contra troca de rota por ruído.
+  `/health`, histerese contra troca de rota por ruído e invalidação imediata
+  quando o peer muda seus endereços anunciados. `RttTable` guarda a medição
+  direcional deste nó para cada destino, sem inferir o sentido inverso.
 
 ## Funções-chave
 
@@ -52,7 +58,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   `0.0.0.0`.
 - `Network::start` - spawna o receive loop, o loop de gossip (5 s: announce
   incondicional + `discovery_sweep` + `cleanup_dead_peers`) e a task de medição
-  de rotas (30 s, sonda lenta não segura o gossip).
+  de rotas e RTT (30 s, sonda lenta não segura o gossip). A política TLS inicial
+  é aplicada antes de `start`; a task mede o RTT por libp2p quando o peer
+  anuncia o túnel e usa o health HTTP apenas para peers antigos.
 - `Network::handle_message` - Announce (reescreve `0.0.0.0` com o endereço de
   origem e chama `merge_observed`), PeerRequest (responde Announce imediato +
   `PeerList` fatiado), PeerList, Heartbeat, LocalDiscover. Nó destacado
@@ -71,11 +79,15 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `detach`/`rejoin` - tirar/voltar o nó da rede sem derrubar a UI/API
   (`--no-discovery`); rejoin refaz bootstrap + announce.
 - `self_announce` - monta o Announce; anuncia zero camadas quando não há
-  assignment, para que nó configurado pela UI ainda seja visível.
+  assignment, para que nó configurado pela UI ainda seja visível. O endereço
+  segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
+  atual das interfaces com estável antes de temporário, endereço observado por
+  `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
+  virtuais de container não entram nos candidatos automáticos.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
-  túnel libp2p para o fallback entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  túnel libp2p preferencial entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
   `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
   workers da cadeia.
 
@@ -84,9 +96,13 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
-  anunciado); mDNS descobre na LAN e alimenta Kademlia; Identify grava
-  listen_addrs e, para relays conectados, escuta na circuito (`P2pCircuit`);
-  DCuTR/AutoNAT/Bitswap só logam.
+  anunciado) e registra os candidatos como multiaddresses `/p2p/<peer-id>`
+  antes de aquecer a conexão do túnel; mDNS descobre na LAN e alimenta
+  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta no
+  circuito (`P2pCircuit`); requisições recebidas pelo túnel são encaminhadas
+  em tasks separadas para que um prefill, decode ou TP longo não pare o loop
+  que drena GossipSub e as respostas dos outros protocolos; DCuTR/AutoNAT/
+  Bitswap só logam.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.
@@ -109,9 +125,12 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `filter_candidates` - descarta loopback/link-local/deprecated, estável antes
   de temporário, teto de 2 por família (o macOS cria vários IPv6 sozinho e o
   `PeerList` já está no limite da MTU); endereço fixado pelo operador vem
-  primeiro e não conta para o teto. A comparação com o que já entrou é feita
-  sem colchetes dos dois lados - `fixado` vem colchetado de `effective_host` e
-  o local vem cru, e comparar as duas formas duplicava o IPv6 no anúncio.
+  primeiro e não conta para o teto. `Network` separa esses candidatos em
+  públicos e privados: o público atual vem antes do observado por `identify`,
+  e o observado continua fallback para NAT. A comparação com o que já entrou
+  é feita sem colchetes dos dois lados - `fixado` vem colchetado de
+  `effective_host` e o local vem cru, e comparar as duas formas duplicava o
+  IPv6 no anúncio.
 - `is_private_or_local` - decide se um endereço observado por um peer é notícia
   sobre o IP público deste nó. Além de RFC 1918 e `fc00::/7`, recusa
   **`100.64/10` (RFC 6598)**: é a faixa do CGNAT e é a que a Tailscale usa.
@@ -136,13 +155,20 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 - `choose_route` - melhor candidato vivo; só troca de rota atual se o ganho
   passar de 25% relativo **e** 2 ms absolutos (medido 9,6 vs 7,2 ms
   MacBook↔ksia não pode trocar a cada ciclo).
-- `RouteTable::measure_peer` - sonda `GET /health` na porta de inferência (o
-  caminho que a inferência usa de verdade, com firewall no meio), timeout 3 s,
-  intervalo 5 min.
+- `RouteTable::measure_peer` - sonda `GET /health` num endpoint real do peer,
+  preferindo a porta de gateway porque ela continua disponível sem modelo ou
+  quando a porta de inferência está restrita. A escolha gravada continua sendo
+  a URL de inferência correspondente. A sonda aceita o certificado autoassinado
+  e o hostname do peer; isso não altera o cliente pinado usado pela inferência.
+  Timeout de 3 s e intervalo de 5 min.
 - `RouteTable::mark_failure` - tira a rota de uso na hora quando uma requisição
   real falhou naquele endereço, sem esperar o ciclo.
 - `RouteTable::resolve` - endereço escolhido para o node_id; `None` =
   "ainda não medido", e o chamador cai no `inference_url` do plano.
+- `RttTable` - guarda `target_node_id`, `rtt_ms` e `transport` localmente;
+  `libp2p` é a medição normal e `direct-health` identifica compatibilidade com
+  peers antigos. O endpoint autenticado `/api/ui/network/rtt` publica esse
+  snapshot com o `source_node_id` para o planejador montar arestas direcionais.
 
 `pkarr_node.rs`:
 - `PkarrNode::publish` - assina TXT `_pom` (JSON compacto, campos de uma
@@ -178,15 +204,6 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   (`backend/transfer.rs`). O protocolo existe mas ninguém implementa o lado
   servidor.
 
-- **O endereço observado troca a cada `identify`, e não há preferência entre
-  eles**: `set_observed_addr` sobrescreve com o que o último peer disse. Num
-  MacBook com vários IPv6 de privacidade, peers diferentes observam endereços
-  diferentes e o `Announce` alterna entre eles - visto ao vivo em 2026-08-16,
-  a mesma tela mostrando `…fc93:da35:2de:2926` e `…99c3:77db:53b:cc08` em
-  leituras seguidas. `filter_candidates` prefere o estável ao temporário na
-  enumeração local, mas o caminho do observado não tem esse critério. Quem
-  precisa de endereço estável fixa em `--advertise-addr` / na tela de Rede,
-  que vence os dois.
 - **Um hop inalcançável custa o timeout de `connect` do sistema antes de o
   túnel ser tentado**: `relay::send_frame` fixa 600 s por requisição (sobrepõe
   o do cliente), então quem decide é o SO - medido em **75 s** no macOS contra

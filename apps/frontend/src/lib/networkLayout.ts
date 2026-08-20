@@ -99,6 +99,26 @@ export function autoLayout(nodes: LayoutNode[]): Record<string, CanvasPosition> 
   return posicoes;
 }
 
+/**
+ * Reidrata um canvas sem mover quem já estava desenhado.
+ *
+ * A entrada de um peer é uma mudança de topologia, mas não é um pedido para
+ * reorganizar a composição inteira. Posições da sessão têm precedência sobre
+ * as persistidas; o arranjo automático só fornece lugares para nós novos.
+ */
+export function mergePositions(
+  current: Record<string, CanvasPosition>,
+  persisted: Record<string, CanvasPosition>,
+  arrangement: Record<string, CanvasPosition>,
+  nodeIds: string[],
+): Record<string, CanvasPosition> {
+  const next: Record<string, CanvasPosition> = {};
+  for (const nodeId of nodeIds) {
+    next[nodeId] = current[nodeId] ?? persisted[nodeId] ?? arrangement[nodeId] ?? fallbackPosition(nodeIds.indexOf(nodeId));
+  }
+  return next;
+}
+
 export function readPositions(key: string): Record<string, CanvasPosition> {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "{}");

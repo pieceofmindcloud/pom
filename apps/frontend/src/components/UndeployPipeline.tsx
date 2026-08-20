@@ -39,11 +39,19 @@ export interface UndeployTarget {
 export function UndeployPipeline({
   group,
   targets,
+  deployId,
 }: {
   /** Modelo que está no ar. */
   group: string;
   /** Máquinas que servem esse modelo agora, na ordem do pipeline. */
   targets: UndeployTarget[];
+  /**
+   * Qual implantação sai do ar. Sem ele, sai quem estiver servindo o rótulo —
+   * o comportamento do painel, que mostra uma pipeline de cada vez. Com ele o
+   * pedido é exato, que é o que a tela de implantações precisa quando o mesmo
+   * modelo está no ar duas vezes.
+   */
+  deployId?: string;
 }) {
   const { t } = useI18n();
   const [asking, setAsking] = useState(false);
@@ -55,7 +63,7 @@ export function UndeployPipeline({
   async function undeploy() {
     setBusy(true);
     try {
-      const r = await undeployPipeline(group);
+      const r = await undeployPipeline(group, deployId);
       setReport(r);
       if (r.failed === 0) {
         toast.success(t("undeploy.button"), t("undeploy.allReleased", { count: r.released }));

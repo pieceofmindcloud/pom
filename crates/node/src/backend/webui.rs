@@ -13,6 +13,7 @@
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
 use crate::config::Role;
+use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
@@ -48,6 +49,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/tls", post(save_tls))
@@ -61,6 +63,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/jobs", get(list_jobs))
         .route("/api/ui/jobs/:id", get(job_status))
         .route("/api/ui/unload", post(unload_model))
+        .route("/api/ui/reconfigure", post(reconfigure))
         .route("/api/ui/release", post(release_slice))
         .route("/api/ui/release/candidate", get(release_candidate))
         .route("/api/ui/leave", post(leave_network))
@@ -106,6 +109,7 @@ pub struct NodeInfo {
     pub peer_count: usize,
     pub load: u32,
     pub active_model: String,
+    pub active_deployment: String,
     /// True while the operator has taken this node off the network.
     pub detached: bool,
     /// Raw operator-pinned address (`Config.advertise_addr`), for pre-filling
@@ -127,6 +131,11 @@ pub struct NodeInfo {
 
 async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
     let system = sysmon::sample().await;
+    let config = state.runtime.config().await;
+    let active_deployment = config
+        .as_ref()
+        .map(|cfg| cfg.deployment_name.clone())
+        .unwrap_or_default();
     let (role, conn_key, advertise_addr, tls_required, tls_authority) = {
         let cfg = state.auth.read().await;
         (
@@ -152,11 +161,12 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         p2p_port: state.network.bind_addr.port(),
         gateway_port: state.gateway_port,
         inference_port: state.network.inference_port,
-        config: state.runtime.config().await,
+        config,
         status: state.runtime.status().await,
         peer_count: state.network.alive_peers().await.len(),
         load: state.loads.load(&state.network.node_id).await,
         active_model: state.active_model().await,
+        active_deployment,
         detached: state.network.is_detached(),
         advertise_addr,
         effective_address: state.network.announce_addr(),
@@ -574,6 +584,42 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     }))
 }
 
+#[derive(Debug, Serialize)]
+struct RttReport {
+    source_node_id: String,
+    measurements: Vec<crate::route::RttMeasurement>,
+}
+
+/// Publica apenas as medições feitas por este nó. A autenticação é necessária
+/// porque o relatório faz parte da telemetria interna usada para escolher
+/// rotas de inferência.
+async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+    let mut measurements = state.network.rtts.snapshot();
+    let measured_targets: std::collections::HashSet<String> = measurements
+        .iter()
+        .map(|measurement| measurement.target_node_id.clone())
+        .collect();
+
+    // Peers antigos não têm o probe libp2p. O RTT HTTP local continua sendo
+    // uma informação útil para compatibilidade, mas nunca substitui uma
+    // medição libp2p já existente para o mesmo destino.
+    for (node_id, route) in state.network.routes.snapshot() {
+        if !measured_targets.contains(&node_id) {
+            measurements.push(crate::route::RttMeasurement {
+                target_node_id: node_id,
+                rtt_ms: route.rtt_ms,
+                transport: "direct-health".to_string(),
+            });
+        }
+    }
+    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+
+    Json(RttReport {
+        source_node_id: state.network.node_id.clone(),
+        measurements,
+    })
+}
+
 // ── Cluster view ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize)]
@@ -863,7 +909,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
     let routing_edges = if active.is_empty() || total == 0 {
         Vec::new()
     } else {
-        crate::pipeline::plan_pipeline(&peers, &active, total, &state.loads)
+        crate::pipeline::plan_pipeline(&peers, &active, None, total, &state.loads)
             .await
             .map(|plan| {
                 plan.edges
@@ -1051,7 +1097,11 @@ async fn plan_split_endpoint(
 
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+///
+/// `PartialEq` porque o registro de implantação guarda uma cópia por nó
+/// (`deployment::DeploymentNode::config`) e comparar dois registros é como se
+/// verifica que uma reimplantação mudou alguma coisa.
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
@@ -1068,9 +1118,8 @@ pub struct RuntimeParams {
     pub n_batch: u32,
     #[serde(default = "d_max_new")]
     pub max_new_tokens: u32,
-    /// Generations allowed in flight at once. The KV cache is split evenly
-    /// between them, so this divides the usable window: raising it buys
-    /// concurrency and costs context.
+    /// Generations allowed in flight at once. Each generation gets the full
+    /// context window; raising this value multiplies the KV-cache reservation.
     #[serde(default = "d_max_sessions")]
     pub max_sessions: u32,
     /// Prompt tokens per round trip through the pipeline.
@@ -1233,6 +1282,10 @@ pub struct ApplyRequest {
     /// preserved exactly instead of collapsing model families into profiles.
     #[serde(default)]
     pub model_label: Option<String>,
+    /// Nome operacional da implantação, separado da identidade técnica do
+    /// modelo. Vazio mantém compatibilidade com chamadas antigas.
+    #[serde(default)]
+    pub deployment_name: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -1250,6 +1303,17 @@ pub struct ApplyRequest {
     /// no slicing is needed.
     #[serde(default)]
     pub skip_split: bool,
+    /// A implantação de que este nó vai fazer parte. Ver `deployment.rs`.
+    #[serde(default)]
+    pub deploy_id: String,
+    /// Hash da parte que este nó tem que carregar, quando quem manda já sabe
+    /// qual é - o caso normal numa implantação, em que o `.pom` já existe.
+    ///
+    /// É o que faz o reaproveitamento ser uma pergunta sobre **conteúdo** em
+    /// vez de sobre nome de arquivo: ou a parte com este hash está no disco, ou
+    /// ela não está, e adivinhar não é uma das opções.
+    #[serde(default)]
+    pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the
     /// peer merges them and serves the union instead of slicing
     /// `source_model_path`.
@@ -1292,6 +1356,11 @@ fn model_label(req: &ApplyRequest) -> String {
         .filter(|label| !label.trim().is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| crate::model::ModelProfile::guess_from_name(&req.base_name).name)
+}
+
+fn deployment_name(req: &ApplyRequest) -> String {
+    normalize_deployment_name(Some(&req.deployment_name), &req.base_name)
+        .unwrap_or_else(|_| req.base_name.clone())
 }
 
 // ── Job tracking ─────────────────────────────────────────────────────────────
@@ -1397,7 +1466,7 @@ pub(crate) async fn set_job_progress(id: &str, pct: f64) {
     let pct = pct.clamp(0.0, 100.0);
     let mut map = jobs().write().await;
     if let Some(job) = map.get_mut(id) {
-        if job.progress.map_or(true, |current| pct > current) {
+        if job.progress.is_none_or(|current| pct > current) {
             job.progress = Some(pct);
         }
     }
@@ -1503,6 +1572,67 @@ fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity
     req.tp.as_ref()
 }
 
+async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::pom::hash_file(&path).map(|(sha256, _)| sha256))
+        .await
+        .context("calcular o hash do modelo original")?
+}
+
+/// Sela uma parte cortada aqui no manifesto do modelo original.
+///
+/// O `apply` corta **uma** faixa, para esta máquina. Antes isso ia parar numa
+/// pasta com o nome do modelo e sem manifesto nenhum, e o catálogo mostrava um
+/// `<sha256>.gguf` órfão que não dizia de que modelo era. Um manifesto de uma
+/// parte só resolve as duas coisas: dá nome à fatia e a coloca na pasta
+/// compartilhada do modelo, sem perder alternativas anteriores.
+fn seal_single_part(
+    shard_dir: &std::path::Path,
+    scratch: &std::path::Path,
+    req: &ApplyRequest,
+    outcome: &plan::SliceOutcome,
+    source_sha256: impl Into<String>,
+    kind: crate::pom::PomKind,
+    tp: Option<crate::pom::PomTp>,
+    node_id: &str,
+) -> anyhow::Result<String> {
+    let parte = crate::pom::PomPart {
+        sha256: outcome.sha256.clone(),
+        bytes: outcome.bytes,
+        start_layer: req.start_layer,
+        end_layer: req.end_layer,
+        is_first: req.is_first(),
+        is_last: req.is_last(),
+        tp,
+    };
+    let mut manifesto = crate::pom::PomManifest::new_for_source(
+        crate::pom::PomModel {
+            name: req.base_name.clone(),
+            label: model_label(req),
+            total_layers: req.total_layers,
+            quant: std::path::Path::new(&req.source_model_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(crate::catalog::parse_quant),
+        },
+        kind,
+        node_id,
+        source_sha256,
+        Vec::new(),
+    );
+    match kind {
+        crate::pom::PomKind::TensorParallel => manifesto.tp_parts.push(parte),
+        crate::pom::PomKind::Layers => manifesto.parts.push(parte),
+        crate::pom::PomKind::Combined => {
+            anyhow::bail!("uma parte isolada não pode selar um manifesto combinado")
+        }
+    }
+    let destino = crate::pom::finalize_run(shard_dir, scratch, &manifesto)?;
+    Ok(crate::pom::part_path(&destino, &outcome.sha256)?
+        .to_string_lossy()
+        .into_owned())
+}
+
 async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyhow::Result<String> {
     let model_path = if let Some(tp) = tp_shard_to_extract(&req) {
         set_job(
@@ -1512,22 +1642,49 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
             &format!("extraindo shard de tensor rank {}/{}", tp.rank, tp.size),
         )
         .await;
-        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
-        let progress_job = job_id.to_string();
-        let outcome = plan::extract_tp_shard(
-            &req.source_model_path,
-            &out_dir,
-            &req.base_name,
-            tp.size,
-            tp.rank,
-            move |pct| {
-                let id = progress_job.clone();
-                tokio::spawn(async move { set_job_progress(&id, pct).await });
-            },
-        )
-        .await?;
-        invalidate_catalog().await;
-        outcome.output_path
+        let shard_dir = state.shard_dir().await;
+        let source_sha256 =
+            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
+        // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
+        // a pasta de destino depende do manifesto, que só existe depois.
+        if let Some(pronta) = req
+            .part_sha256
+            .as_deref()
+            .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+        {
+            info!("shard de tensor já em disco: {}", pronta.display());
+            pronta.to_string_lossy().into_owned()
+        } else {
+            let scratch = crate::pom::scratch_dir(&shard_dir);
+            let progress_job = job_id.to_string();
+            let outcome = plan::extract_tp_shard(
+                &req.source_model_path,
+                &scratch,
+                None,
+                tp.size,
+                tp.rank,
+                move |pct| {
+                    let id = progress_job.clone();
+                    tokio::spawn(async move { set_job_progress(&id, pct).await });
+                },
+            )
+            .await?;
+            let caminho = seal_single_part(
+                &shard_dir,
+                &scratch,
+                &req,
+                &outcome,
+                source_sha256,
+                crate::pom::PomKind::TensorParallel,
+                Some(crate::pom::PomTp {
+                    rank: tp.rank,
+                    size: tp.size,
+                }),
+                &state.network.node_id,
+            )?;
+            invalidate_catalog().await;
+            caminho
+        }
     } else if let Some(parts) = req.merge.clone() {
         let shard_dir = state.shard_dir().await;
         merge_parts(shard_dir, &req, &parts, job_id).await?
@@ -1546,35 +1703,52 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         )
         .await;
 
-        let out_dir = plan::shard_output_dir(&state.shard_dir().await, &req.base_name);
-        let progress_job = job_id.to_string();
-        let outcome = plan::extract_shard(
-            &req.source_model_path,
-            &out_dir,
-            &req.base_name,
-            req.start_layer,
-            req.end_layer,
-            req.is_first(),
-            req.is_last(),
-            move |pct| {
-                let id = progress_job.clone();
-                tokio::spawn(async move { set_job_progress(&id, pct).await });
-            },
-        )
-        .await?;
-        invalidate_catalog().await;
+        let shard_dir = state.shard_dir().await;
+        let source_sha256 =
+            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
+        if let Some(pronta) = req
+            .part_sha256
+            .as_deref()
+            .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+        {
+            info!("fatia já em disco: {}", pronta.display());
+            pronta.to_string_lossy().into_owned()
+        } else {
+            let scratch = crate::pom::scratch_dir(&shard_dir);
+            let progress_job = job_id.to_string();
+            let outcome = plan::extract_shard(
+                &req.source_model_path,
+                &scratch,
+                None,
+                req.start_layer,
+                req.end_layer,
+                req.is_first(),
+                req.is_last(),
+                move |pct| {
+                    let id = progress_job.clone();
+                    tokio::spawn(async move { set_job_progress(&id, pct).await });
+                },
+            )
+            .await?;
+            let caminho = seal_single_part(
+                &shard_dir,
+                &scratch,
+                &req,
+                &outcome,
+                source_sha256,
+                crate::pom::PomKind::Layers,
+                None,
+                &state.network.node_id,
+            )?;
+            invalidate_catalog().await;
 
-        info!(
-            "shard pronto: {} ({:.1} GB, {})",
-            outcome.output_path,
-            outcome.bytes as f64 / 1_073_741_824.0,
-            if outcome.reused {
-                "reaproveitado"
-            } else {
-                "gerado"
-            }
-        );
-        outcome.output_path
+            info!(
+                "shard pronto: {} ({:.1} GB)",
+                caminho,
+                outcome.bytes as f64 / 1_073_741_824.0
+            );
+            caminho
+        }
     };
 
     let shard_dir = state.shard_dir().await;
@@ -1600,6 +1774,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     // The selected deployment label is shared by every peer. Old callers that
     // do not send it retain the profile-derived compatibility fallback.
     let label = model_label(&req);
+    let deployment = deployment_name(&req);
 
     let inference_port = state
         .network
@@ -1607,8 +1782,10 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         .ok_or_else(|| anyhow::anyhow!("este nó subiu sem --inference-port"))?;
 
     let cfg = NodeConfig {
+        deploy_id: req.deploy_id.clone(),
         model_path: model_path.clone(),
         model_label: label,
+        deployment_name: deployment,
         start_layer: req.start_layer,
         end_layer: req.end_layer,
         total_layers: req.total_layers,
@@ -1617,28 +1794,9 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         primary: req.primary,
         tp: req.tp.clone(),
         inference_port,
-        n_gpu_layers: req.params.n_gpu_layers,
-        n_ctx: req.params.n_ctx,
-        offload_kqv: req.params.offload_kqv,
-        fit_memory: req.params.fit_memory && req.tp.is_none(),
-        n_batch: req.params.n_batch,
-        max_new_tokens: req.params.max_new_tokens,
-        max_sessions: req.params.max_sessions,
-        prefill_chunk_tokens: req.params.prefill_chunk_tokens,
-        temperature: req.params.temperature,
-        top_p: req.params.top_p,
-        top_k: req.params.top_k,
-        repeat_penalty: req.params.repeat_penalty,
-        repeat_last_n: req.params.repeat_last_n,
-        no_thinking: req.params.no_thinking,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
-        speculative_decoding_enabled: req.params.speculative_decoding_enabled,
-        speculative_k: req.params.speculative_k,
-        speculative_lookup_window: req.params.speculative_lookup_window,
-        mtp_enabled: req.params.mtp_enabled,
-        mtp_draft_tokens: req.params.mtp_draft_tokens,
-        mtp_min_probability: req.params.mtp_min_probability,
+        ..NodeConfig::from_params(&req.params, req.tp.is_none())
     };
 
     // Liga/desliga a coletiva TP antes de subir o servidor: o callback tem que
@@ -1654,6 +1812,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 tp.rank0_node_id.clone(),
                 rank0.and_then(|m| m.libp2p_peer_id.clone()),
                 rank0.is_some_and(|m| m.supports_tunnel),
+                Some(state.auth.clone()),
             );
         }
         _ => crate::tp::unregister_tp_reduce(),
@@ -1712,22 +1871,23 @@ async fn merge_parts(
         .last()
         .map(|p| p.end_layer)
         .ok_or_else(|| anyhow::anyhow!("nenhuma fatia para juntar"))?;
-    let out_dir = plan::shard_output_dir(&shard_dir, &req.base_name);
-    let output = out_dir.join(plan::shard_filename(&req.base_name, start, end));
-
-    // Reuse an existing merge: rebuilding gigabytes is wasted I/O for an
-    // identical result. Safe because the output name is only ever given to a
-    // complete file (see the rename below).
-    if let Ok(meta) = tokio::fs::metadata(&output).await {
-        if meta.len() > 1024 {
-            info!(
-                "modelo junto já existe, reaproveitando: {}",
-                output.display()
-            );
-            invalidate_catalog().await;
-            return Ok(output.to_string_lossy().into_owned());
-        }
+    // Reaproveitar a junção exige saber o hash do resultado, e quem manda o
+    // pedido sabe: é a mesma parte que o `.pom` lista. A busca é por conteúdo,
+    // em todas as rodadas - a pasta depende do manifesto, que só existe depois.
+    if let Some(caminho) = req
+        .part_sha256
+        .as_deref()
+        .and_then(|sha| crate::transfer::find_part(&shard_dir, sha))
+    {
+        info!(
+            "modelo junto já existe, reaproveitando: {}",
+            caminho.display()
+        );
+        invalidate_catalog().await;
+        return Ok(caminho.to_string_lossy().into_owned());
     }
+    // O nome da pasta vem do manifesto do modelo original associado às partes.
+    let out_dir = crate::pom::scratch_dir(&shard_dir);
 
     set_job(
         job_id,
@@ -1750,54 +1910,115 @@ async fn merge_parts(
             end_layer: p.end_layer,
         })
         .collect();
-    let dst = output.clone();
     // Write to a temporary name and rename when complete, so a merge cut short
     // (kill, power loss) never leaves a half file under the final name where a
     // later apply would reuse it as a finished model. The unique suffix also
     // keeps two concurrent merges of the same range from interleaving writes.
-    let temp = output.with_file_name(format!(
-        "{}.{}.part",
-        output
-            .file_name()
-            .map(|s| s.to_string_lossy())
-            .unwrap_or_default(),
-        uuid::Uuid::new_v4().simple()
-    ));
+    // O nome final só se conhece no fim: é o hash do que saiu.
+    std::fs::create_dir_all(&out_dir).with_context(|| format!("criar {}", out_dir.display()))?;
+    let temp = out_dir.join(format!("{}.part", uuid::Uuid::new_v4().simple()));
     let temp_cleanup = temp.clone();
     let progress_job = job_id.to_string();
+    let destino_dir = out_dir.clone();
 
-    let bytes = tokio::task::spawn_blocking(move || -> anyhow::Result<u64> {
-        let n = crate::splitter::merge(&merge_parts, &temp, move |pct| {
-            let id = progress_job.clone();
-            tokio::spawn(async move { set_job_progress(&id, pct).await });
+    let (output, bytes) =
+        tokio::task::spawn_blocking(move || -> anyhow::Result<(std::path::PathBuf, u64)> {
+            let escrito = crate::splitter::merge(&merge_parts, &temp, move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            })?;
+            let dst = crate::pom::part_path(&destino_dir, &escrito.sha256)?;
+            // Um destino já ocupado é outra junção que terminou primeiro. Com
+            // endereço de conteúdo os dois arquivos são byte a byte o mesmo,
+            // então ficar com o que já está pronto é o certo - e no Windows o
+            // rename nem substituiria.
+            if dst.exists() {
+                let _ = std::fs::remove_file(&temp);
+                return Ok((dst, escrito.bytes));
+            }
+            std::fs::rename(&temp, &dst)
+                .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
+            Ok((dst, escrito.bytes))
+        })
+        .await
+        .context("spawn_blocking para splitter")?
+        .inspect_err(|_| {
+            let _ = std::fs::remove_file(&temp_cleanup);
         })?;
-        // No Windows o rename não substitui um destino que já existe. A fusão
-        // só chega aqui quando o arquivo junto não estava lá, então um destino
-        // ocupado é outra fusão que terminou primeiro: o resultado é o mesmo
-        // arquivo, e ficar com o que já está pronto é o certo.
-        #[cfg(windows)]
-        if dst.exists() {
-            let _ = std::fs::remove_file(&temp);
-            return Ok(std::fs::metadata(&dst).map(|m| m.len()).unwrap_or(n));
-        }
-        std::fs::rename(&temp, &dst)
-            .with_context(|| format!("mover {} para {}", temp.display(), dst.display()))?;
-        Ok(n)
-    })
-    .await
-    .context("spawn_blocking para splitter")?
-    .inspect_err(|_| {
-        let _ = std::fs::remove_file(&temp_cleanup);
-    })?;
+
+    // A junção é uma parte nova, e uma parte sem manifesto é um arquivo de nome
+    // ilegível no catálogo. Um manifesto de uma parte só a nomeia e põe a
+    // manifesto na pasta do modelo.
+    let sha = output
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or_default()
+        .to_string();
+    let parte = crate::pom::PomPart {
+        sha256: sha.clone(),
+        bytes,
+        start_layer: start,
+        end_layer: end,
+        is_first: start == 0,
+        is_last: end + 1 >= req.total_layers,
+        tp: None,
+    };
+    let source_ids: Vec<String> = parts
+        .iter()
+        .filter_map(|part| {
+            crate::pom::manifest_for_part_path(std::path::Path::new(&part.source_model_path))
+                .map(|manifest| manifest.pom_id)
+        })
+        .collect();
+    let source_sha256 = source_ids.first().cloned();
+    if source_ids
+        .iter()
+        .any(|id| Some(id) != source_sha256.as_ref())
+    {
+        anyhow::bail!("as fatias pertencem a modelos originais diferentes");
+    }
+    let manifesto = if let Some(source_sha256) = source_sha256 {
+        let mut manifesto = crate::pom::PomManifest::new_for_source(
+            crate::pom::PomModel {
+                name: req.base_name.clone(),
+                label: model_label(req),
+                total_layers: req.total_layers,
+                quant: std::path::Path::new(&req.source_model_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(crate::catalog::parse_quant),
+            },
+            crate::pom::PomKind::Layers,
+            String::new(),
+            source_sha256,
+            Vec::new(),
+        );
+        manifesto.parts.push(parte);
+        manifesto
+    } else {
+        crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: req.base_name.clone(),
+                label: model_label(req),
+                total_layers: req.total_layers,
+                quant: None,
+            },
+            crate::pom::PomKind::Layers,
+            String::new(),
+            vec![parte],
+        )
+    };
+    let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
+    let final_path = crate::pom::part_path(&pasta, &sha)?;
 
     invalidate_catalog().await;
 
     info!(
         "modelo junto pronto: {} ({:.1} GB)",
-        output.display(),
+        final_path.display(),
         bytes as f64 / 1_073_741_824.0
     );
-    Ok(output.to_string_lossy().into_owned())
+    Ok(final_path.to_string_lossy().into_owned())
 }
 
 // ── Slicing a whole model, here, on demand ───────────────────────────────────
@@ -1895,7 +2116,7 @@ async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) ->
         Err(e) => return bad_request(e),
     };
     let planned = match req.equal_parts {
-        Some(n) if n >= 1 && n <= 64 => plan::plan_equal(&layout, n),
+        Some(n) if (1..=64).contains(&n) => plan::plan_equal(&layout, n),
         Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
         None => plan::plan_by_size(&layout, &req.slices),
     };
@@ -1961,13 +2182,23 @@ async fn slice_locally(
     if ranges.is_empty() {
         return bad_request("este arquivo não declara camadas — não há o que fatiar");
     }
+    let source_sha256 = match source_model_sha256(&source).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
+        }
+    };
 
     let base_name = req
         .name
         .as_deref()
         .and_then(plan::base_name_from_label)
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
-    let out_dir = plan::shard_output_dir(&state.shard_dir().await, &base_name);
+    // A pasta definitiva leva o início do hash do modelo original. Corta-se
+    // aqui e a rodada se muda para o nome definitivo no fim, em
+    // `pom::finalize_run`.
+    let shard_dir = state.shard_dir().await;
+    let out_dir = crate::pom::scratch_dir(&shard_dir);
     let id = uuid::Uuid::new_v4().simple().to_string();
     let title = format!(
         "Fatiando {base_name} em {} {}",
@@ -1980,29 +2211,32 @@ async fn slice_locally(
         .insert(id.clone(), new_job(&id, "slice", title, "preparando"));
 
     let job_id = id.clone();
+    let label = req.name.clone().unwrap_or_else(|| base_name.clone());
+    let node_id = state.network.node_id.clone();
+    let raiz = shard_dir.clone();
     tokio::spawn(async move {
         match run_slice(
             state,
             source,
+            shard_dir,
             out_dir,
             base_name,
+            label,
             ranges,
             total_layers,
+            node_id,
+            source_sha256,
             &job_id,
         )
         .await
         {
-            Ok(files) => {
+            Ok(m) => {
                 let msg = format!(
-                    "{} fatia{} em {}",
-                    files.len(),
-                    if files.len() == 1 { "" } else { "s" },
-                    files
-                        .first()
-                        .and_then(|f| std::path::Path::new(f)
-                            .parent()
-                            .map(|p| p.display().to_string()))
-                        .unwrap_or_default()
+                    "{} fatia{} em {} · pom {}",
+                    m.parts.len(),
+                    if m.parts.len() == 1 { "" } else { "s" },
+                    crate::pom::dir_for(&raiz, &m).display(),
+                    crate::pom::short_id(&m.pom_id)
                 );
                 set_job(&job_id, "done", "pronto", &msg).await;
             }
@@ -2016,17 +2250,28 @@ async fn slice_locally(
     Json(json!({ "job_id": id })).into_response()
 }
 
+/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no `.pom` v2.
+///
+/// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
+/// próprio hash e o manifesto, escrito no fim, é o que diz de que modelo cada
+/// parte saiu. Sem ele as partes seriam arquivos soltos de nome
+/// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
+#[allow(clippy::too_many_arguments)]
 async fn run_slice(
     state: GatewayState,
     source: std::path::PathBuf,
-    out_dir: std::path::PathBuf,
+    shard_dir: std::path::PathBuf,
+    scratch: std::path::PathBuf,
     base_name: String,
+    label: String,
     ranges: Vec<(u32, u32)>,
     total_layers: u32,
+    node_id: String,
+    source_sha256: String,
     job_id: &str,
-) -> anyhow::Result<Vec<String>> {
+) -> anyhow::Result<crate::pom::PomManifest> {
     let parts = ranges.len() as u32;
-    let mut outputs = Vec::new();
+    let mut pecas: Vec<crate::pom::PomPart> = Vec::new();
 
     for (index, (start, end)) in ranges.iter().copied().enumerate() {
         let index = index as u32;
@@ -2052,8 +2297,9 @@ async fn run_slice(
         let first_report = Arc::new(AtomicBool::new(true));
         let outcome = plan::extract_shard(
             &source.to_string_lossy(),
-            &out_dir,
-            &base_name,
+            &scratch,
+            // Rodada nova: ninguém sabe o hash antes de cortar.
+            None,
             start,
             end,
             start == 0,
@@ -2086,7 +2332,15 @@ async fn run_slice(
                 "gerada"
             }
         );
-        outputs.push(outcome.output_path.clone());
+        pecas.push(crate::pom::PomPart {
+            sha256: outcome.sha256.clone(),
+            bytes: outcome.bytes,
+            start_layer: start,
+            end_layer: end,
+            is_first: start == 0,
+            is_last: end + 1 >= total_layers,
+            tp: None,
+        });
 
         // A retenção também precisa acontecer no fluxo de fatiamento isolado:
         // o operador pode criar fatias agora e implantá-las somente depois.
@@ -2102,7 +2356,40 @@ async fn run_slice(
         }
     }
 
-    Ok(outputs)
+    let quant = source
+        .file_name()
+        .and_then(|n| n.to_str())
+        .and_then(crate::catalog::parse_quant);
+    let manifesto = crate::pom::PomManifest::new_for_source(
+        crate::pom::PomModel {
+            name: base_name,
+            label,
+            total_layers,
+            quant,
+        },
+        crate::pom::PomKind::Layers,
+        node_id,
+        source_sha256,
+        pecas,
+    );
+    // Cobrir o modelo inteiro é o caso normal, mas fatiar só um pedaço é
+    // legítimo (o operador escolhe as faixas). Dizer isso em voz alta evita a
+    // descoberta lá na frente, na implantação, de que o conjunto não fecha.
+    if !manifesto.complete() {
+        warn!(
+            "as fatias de {} não cobrem as {total_layers} camadas do modelo",
+            manifesto.model.name
+        );
+    }
+
+    // A rodada inteira se muda de uma vez para `<modelo>-<hash do modelo>`, e o
+    // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
+    // um fatiamento inteiro que existe em disco.
+    let destino = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
+    info!("fatiamento guardado em {}", destino.display());
+    invalidate_catalog().await;
+
+    Ok(manifesto)
 }
 
 // ── Cluster launch ───────────────────────────────────────────────────────────
@@ -2144,6 +2431,74 @@ async fn unload_model(_auth: ConnectionAuth, State(state): State<GatewayState>) 
         "end_layer": unloaded.as_ref().map(|c| c.end_layer),
     }))
     .into_response()
+}
+
+/// Outros parâmetros para a fatia que este nó já serve.
+///
+/// Só os parâmetros: o que identifica a fatia (arquivo, faixa de camadas,
+/// posição no pipeline) não está aqui e não pode ser mudado por esta porta.
+/// Ver `NodeConfig::with_params`.
+#[derive(Debug, Deserialize)]
+pub struct ReconfigureRequest {
+    pub params: RuntimeParams,
+}
+
+/// Recarrega o modelo desta máquina com outros parâmetros.
+///
+/// É o caminho de "reimplantar mexendo num parâmetro": nada é planejado, nada
+/// é copiado e nenhuma faixa muda de dono - o nó relê o **mesmo** arquivo com,
+/// digamos, outro `n_ctx`. Passar pelo `deploy` inteiro para isso significaria
+/// re-varrer o cluster e cunhar uma implantação nova, quando o que mudou cabe
+/// num `apply`.
+///
+/// Recusa quando não há nada carregado: reconfigurar o vazio não tem sentido, e
+/// inventar uma fatia a partir de parâmetros soltos seria adivinhar qual.
+async fn reconfigure(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ReconfigureRequest>,
+) -> Response {
+    match reconfigure_local(state, req.params).await {
+        Ok(cfg) => Json(json!({
+            "reconfigured": true,
+            "model": cfg.model_label,
+            "start_layer": cfg.start_layer,
+            "end_layer": cfg.end_layer,
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e })),
+        )
+            .into_response(),
+    }
+}
+
+/// A reconfiguração em si, sem HTTP em volta.
+///
+/// Existe separada porque o coordenador de um `redeploy` também é um nó da
+/// implantação: quando a máquina a reconfigurar é ele mesmo, chamar a própria
+/// rota por rede seria dar a volta no mundo para falar consigo.
+pub(crate) async fn reconfigure_local(
+    state: GatewayState,
+    params: RuntimeParams,
+) -> Result<NodeConfig, String> {
+    let Some(atual) = state.runtime.config().await else {
+        return Err("este nó não está servindo nada para reconfigurar".into());
+    };
+
+    let cfg = atual.with_params(&params);
+    info!(
+        "reconfigurando {} (camadas {}-{}) com parâmetros novos",
+        cfg.model_label, cfg.start_layer, cfg.end_layer
+    );
+
+    state
+        .runtime
+        .apply(cfg.clone())
+        .await
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(cfg)
 }
 
 /// A qual máquina o "sair da rede" se refere.
@@ -2421,9 +2776,20 @@ async fn release_slice(
     // Same shape a launch dispatches, so the successor comes up exactly as this
     // node was: same label, same position in the split, same runtime params.
     let apply_req = ApplyRequest {
+        // O sucessor entra na **mesma** implantação: é a mesma faixa do mesmo
+        // conjunto, só que noutra máquina.
+        deploy_id: cfg.deploy_id.clone(),
         source_model_path: candidate.path.clone(),
+        // O sucessor carrega exatamente o arquivo que este nó carregava, e o
+        // nome de uma parte já é o hash dela: é daí que a identidade sai.
+        part_sha256: std::path::Path::new(&candidate.path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| crate::pom::is_sha256_hex(s))
+            .map(|s| s.to_string()),
         base_name: cfg.model_label.clone(),
         model_label: Some(cfg.model_label.clone()),
+        deployment_name: cfg.deployment_name.clone(),
         start_layer: cfg.start_layer,
         end_layer: cfg.end_layer,
         total_layers: cfg.total_layers,
@@ -2511,6 +2877,10 @@ pub struct LaunchTarget {
     pub end_layer: u32,
     #[serde(default)]
     pub skip_split: bool,
+    /// Hash da parte que este alvo carrega, quando o `.pom` já a conhece. É o
+    /// que dispensa o destino de adivinhar um nome de arquivo.
+    #[serde(default)]
+    pub part_sha256: Option<String>,
     /// Local slices to join into one file before serving. When present, the
     /// peer merges them (`splitter::merge`) and serves the union; the merge
     /// replaces `skip_split` because the file covering the range only comes
@@ -2557,11 +2927,19 @@ pub struct LaunchTarget {
 
 #[derive(Debug, Deserialize)]
 pub struct LaunchRequest {
+    /// A implantação que este launch está subindo. Cunhado por
+    /// `deploy::deploy_endpoint`; vazio num launch avulso, que não passou por
+    /// implantação nenhuma.
+    #[serde(default)]
+    pub deploy_id: String,
     pub base_name: String,
     /// The identity selected in the deployment screen, propagated unchanged
     /// to every apply request. Missing values keep older callers compatible.
     #[serde(default)]
     pub model_label: Option<String>,
+    /// Nome operacional exibido em jobs, status e telemetria.
+    #[serde(default)]
+    pub deployment_name: String,
     pub total_layers: u32,
     pub targets: Vec<LaunchTarget>,
     /// Node that should act as the entry point.
@@ -2577,7 +2955,7 @@ pub struct LaunchRequest {
 /// window and the batch decide the prompt budget the gateway enforces, and the
 /// sampling is only used by the last peer — except how much of its own share a
 /// machine offloads to its GPU. That one is a property of the machine.
-fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
+pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> RuntimeParams {
     let mut params = base.clone();
     if let Some(gpu) = target.n_gpu_layers {
         params.n_gpu_layers = gpu;
@@ -2608,6 +2986,10 @@ pub(crate) async fn launch(
              as antigas não, e nesse caso o total é deduzido da cobertura das fatias.",
         );
     }
+    let deployment = match normalize_deployment_name(Some(&req.deployment_name), &req.base_name) {
+        Ok(name) => name,
+        Err(error) => return bad_request(error),
+    };
     if let Some(t) = req.targets.iter().find(|t| t.end_layer >= req.total_layers) {
         return bad_request(format!(
             "a fatia L{}-{} passa do fim de um modelo de {} camadas",
@@ -2679,6 +3061,7 @@ pub(crate) async fn launch(
             source_model_path: target.source_model_path.clone(),
             base_name: req.base_name.clone(),
             model_label: req.model_label.clone(),
+            deployment_name: deployment.clone(),
             start_layer: target.start_layer,
             end_layer: target.end_layer,
             total_layers: req.total_layers,
@@ -2687,6 +3070,8 @@ pub(crate) async fn launch(
             primary: req.primary_node_id.as_deref() == Some(target.node_id.as_str()),
             tp: target.tp.clone(),
             skip_split: target.skip_split,
+            deploy_id: req.deploy_id.clone(),
+            part_sha256: target.part_sha256.clone(),
             merge: target.merge.clone(),
             params,
         };
@@ -3382,9 +3767,12 @@ mod tests {
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
+            deploy_id: String::new(),
+            part_sha256: None,
             source_model_path: "/m/whole.gguf".into(),
             base_name: "whole".into(),
             model_label: None,
+            deployment_name: "whole".into(),
             start_layer: 0,
             end_layer: 31,
             total_layers: 32,
@@ -3410,9 +3798,9 @@ mod tests {
         let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
         assert_eq!(escolhido.rank, 0);
         assert_eq!(
-            plan::tp_shard_filename("whole", escolhido.rank, escolhido.size),
-            "whole_tp0of2.gguf",
-            "o arquivo que faltava no disco"
+            (escolhido.rank, escolhido.size),
+            (0, 2),
+            "o shard que faltava no disco"
         );
 
         let worker = req(Some(ident(1, "worker")));
@@ -3446,6 +3834,7 @@ mod tests {
             ..RuntimeParams::default()
         };
         let target = |gpu, kqv| LaunchTarget {
+            part_sha256: None,
             node_id: "a".into(),
             source_model_path: "/m.gguf".into(),
             start_layer: 0,
@@ -3478,9 +3867,12 @@ mod tests {
 
     fn req(start: u32, end: u32, total: u32, peers: u32) -> ApplyRequest {
         ApplyRequest {
+            deploy_id: String::new(),
+            part_sha256: None,
             source_model_path: "/m.gguf".into(),
             base_name: "m".into(),
             model_label: None,
+            deployment_name: "m".into(),
             start_layer: start,
             end_layer: end,
             total_layers: total,
@@ -3544,6 +3936,82 @@ mod tests {
         assert_eq!(model_label(&request), "Qwen3.5-9B-Instruct");
     }
 
+    #[test]
+    fn sealing_layer_and_tp_parts_merges_them_under_the_source_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-seal-source-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let scratch = root.join(".scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let source_sha256 = "a".repeat(64);
+        let layer_sha256 = "b".repeat(64);
+        let tp_sha256 = "c".repeat(64);
+
+        let mut layer_req = req(0, 14, 32, 2);
+        layer_req.source_model_path = "/models/original.gguf".into();
+        std::fs::write(
+            crate::pom::part_path(&scratch, &layer_sha256).unwrap(),
+            b"layer",
+        )
+        .unwrap();
+        seal_single_part(
+            &root,
+            &scratch,
+            &layer_req,
+            &plan::SliceOutcome {
+                output_path: crate::pom::part_path(&scratch, &layer_sha256)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes: 5,
+                sha256: layer_sha256.clone(),
+                reused: false,
+            },
+            source_sha256.clone(),
+            crate::pom::PomKind::Layers,
+            None,
+            "node-a",
+        )
+        .unwrap();
+
+        let mut tp_req = req(0, 31, 32, 1);
+        tp_req.source_model_path = "/models/original.gguf".into();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(crate::pom::part_path(&scratch, &tp_sha256).unwrap(), b"tp").unwrap();
+        seal_single_part(
+            &root,
+            &scratch,
+            &tp_req,
+            &plan::SliceOutcome {
+                output_path: crate::pom::part_path(&scratch, &tp_sha256)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes: 2,
+                sha256: tp_sha256.clone(),
+                reused: false,
+            },
+            source_sha256.clone(),
+            crate::pom::PomKind::TensorParallel,
+            Some(crate::pom::PomTp { rank: 0, size: 2 }),
+            "node-b",
+        )
+        .unwrap();
+
+        let dir = crate::pom::locate_source_dir(&root, &source_sha256).unwrap();
+        let manifestos = crate::pom::load_dir(&dir);
+        assert_eq!(manifestos.len(), 1);
+        let manifest = &manifestos[0];
+        assert_eq!(manifest.pom_id, source_sha256);
+        assert_eq!(manifest.parts.len(), 1);
+        assert_eq!(manifest.tp_parts.len(), 1);
+        assert_eq!(manifest.kind, crate::pom::PomKind::Combined);
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -3582,10 +4050,17 @@ mod tests {
                 .await
                 .unwrap();
             let out_path = std::path::Path::new(&out);
+            // O nome é o conteúdo: quem junta não escolhe como chamar o
+            // resultado, o hash é que o nomeia.
+            let nome = out_path.file_stem().unwrap().to_string_lossy().into_owned();
+            assert!(
+                crate::pom::is_sha256_hex(&nome),
+                "o modelo junto sai endereçado por conteúdo, não por convenção de nome: {nome}"
+            );
             assert_eq!(
-                out_path.file_name().unwrap().to_string_lossy().as_ref(),
-                "m_0_31.gguf",
-                "o modelo junto sai no diretório de fatias com o nome convencional"
+                crate::pom::hash_file(out_path).unwrap().0,
+                nome,
+                "e o hash do arquivo tem que ser o nome dele"
             );
             let layout = crate::gguf::read_layout(out_path).unwrap();
             assert_eq!(
@@ -3598,13 +4073,13 @@ mod tests {
             // Reuse: a second apply with the same range must not rebuild it —
             // a marker written over the output proves the file was left alone.
             let marker = vec![0xAAu8; 2048];
-            std::fs::write(&out_path, &marker).unwrap();
+            std::fs::write(out_path, &marker).unwrap();
             let again = merge_parts(root.clone(), &req, &parts, "job-merge-2")
                 .await
                 .unwrap();
             assert_eq!(again, out);
             assert_eq!(
-                std::fs::read(&out_path).unwrap(),
+                std::fs::read(out_path).unwrap(),
                 marker,
                 "o modelo junto existente foi reaproveitado, não reescrito"
             );

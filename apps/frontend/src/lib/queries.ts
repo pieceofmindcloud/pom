@@ -8,7 +8,7 @@
  * node nobody is watching.
  */
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { ApiError, api, setConnectionKey } from "./api";
+import { ApiError, api, listDeployments, setConnectionKey } from "./api";
 import type {
   AdminNode,
   ApiKey,
@@ -52,6 +52,7 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
   openaiModels: ["openai-models"] as const,
+  deployments: ["deployments"] as const,
 };
 
 /**
@@ -148,6 +149,21 @@ export function useJobs() {
     queryFn: () =>
       optional(api.get<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }), { jobs: [] }),
     refetchInterval: 2000,
+  });
+}
+
+/**
+ * As implantações do cluster.
+ *
+ * Intervalo maior que o do painel: a lista muda quando alguém implanta ou
+ * desimplanta, não a cada batida do coração, e cada chamada aqui é um fan-out
+ * do nó para todos os peers.
+ */
+export function useDeployments() {
+  return useQuery({
+    queryKey: keys.deployments,
+    queryFn: () => optional(listDeployments(), { node_id: "", deployments: [] }),
+    refetchInterval: 10000,
   });
 }
 

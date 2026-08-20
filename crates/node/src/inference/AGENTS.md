@@ -48,7 +48,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
   por requisição.
 - `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
-- `runtime.rs` (977) - `NodeConfig`/`NodeRuntime`: aplica a fatia, sobe e
+- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, guarda o
+  `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
   anotação da fatia servida (Pending → Serving via `/health`).
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
@@ -87,12 +88,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
-  `relay::send_bytes_or_tunnel` tenta primeiro o HTTPS direto e, em falha de
-  transporte ou timeout, repete o POST pelo `infer_tunnel` quando o membro
-  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. `TpMember` carrega
-  essa identidade e a capability para o `broadcast_to` do decode e para o
-  reduce no primary. O `TunnelRequest` leva também os cabeçalhos, para que a
-  barreira e o rank sejam preservados no salto pela internet.
+  `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
+  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
+  Noise falha, repete o POST pelo cliente direto pinado, usando HTTPS quando a
+  política TLS está ativa. O `TunnelRequest` leva os cabeçalhos da barreira,
+  do rank e da autorização.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
@@ -173,8 +173,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   duas formas de resposta em `prefill.rs`).
 
 `llm.rs`:
-- `LlmEngine::load` - carga com `EngineConfig` (n_ctx, n_batch, n_gpu_layers,
-  offload_kqv, fit_memory, max_sessions). Com `fit_memory=true` e o padrão de
+- `LlmEngine::load` - carga com `EngineConfig` (n_ctx total, n_batch,
+  n_gpu_layers, offload_kqv, fit_memory, max_sessions). O runtime transforma
+  o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
+  `fit_memory=true` e o padrão de
   camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
   carregar os pesos. O plano preserva `tensor_split` e `tensor_buft_overrides`
   quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
@@ -184,9 +186,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
   microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
   reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
-  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre a
-  divisão de n_ctx) ainda **não tem chamador**: o servidor carrega um contexto
-  com `load`, e o `#[allow(dead_code)]` no `pool` é a marca disso.
+  `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
+  total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
+  o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
+  `pool` é a marca disso.
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).
@@ -243,6 +246,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
   `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`.
+- O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
+  `TunnelRequest::get("/health")` é reservado para a medição de RTT de
+  topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
+  não alimenta a tabela direcional de rotas.
 - `bubble_hop_timings`/`as_hop_timing_entry` - insere a entrada do próprio hop
   na frente (ordem head→tail) e dobra `processing_ms`+`node_timings` do callee
   com o round-trip do caller.

@@ -23,6 +23,14 @@ const MAX_RESTARTS: u32 = 10;
 /// contract explicit.
 pub const MAX_CONTEXT_TOKENS: u32 = 250_000;
 
+/// Total KV-cache capacity needed to give every configured session the full
+/// context requested by the operator.
+pub fn total_context_tokens(n_ctx: u32, max_sessions: u32) -> Result<u32> {
+    n_ctx
+        .checked_mul(max_sessions.max(1))
+        .ok_or_else(|| anyhow::anyhow!("n_ctx * max_sessions excede o limite numérico"))
+}
+
 // ── Configuration ────────────────────────────────────────────────────────────
 
 /// What this node is currently serving. Serialisable so the UI can round-trip it.
@@ -34,6 +42,21 @@ pub struct NodeConfig {
     /// chains peers whose label matches exactly, so this must agree across the
     /// cluster (see `ModelProfile::guess_from_name`).
     pub model_label: String,
+    /// A implantação de que este nó faz parte. Ver `models/deployment.rs`.
+    ///
+    /// É o que permite o mesmo modelo estar no ar duas vezes, em máquinas ou
+    /// configurações diferentes: quem monta o pipeline agrupa por este id, e
+    /// não mais pela igualdade de `model_label`, que não distinguia as duas.
+    ///
+    /// Vazio num nó configurado pela linha de comando, que não passou por
+    /// implantação nenhuma - aí o agrupamento cai de volta no rótulo. É também
+    /// o que um peer de versão anterior anuncia.
+    #[serde(default)]
+    pub deploy_id: String,
+    /// Nome operacional desta implantação, separado do rótulo técnico do
+    /// modelo usado pelo roteamento.
+    #[serde(default)]
+    pub deployment_name: String,
     pub start_layer: u32,
     pub end_layer: u32,
     pub total_layers: u32,
@@ -59,7 +82,7 @@ pub struct NodeConfig {
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
     pub n_batch: u32,
-    /// Concurrent generations; the context is split between them.
+    /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
     /// Prompt tokens pushed through the pipeline per round trip.
@@ -108,6 +131,91 @@ pub struct NodeConfig {
     /// para uma aposta que a verificação vai recusar.
     #[serde(default = "default_mtp_min_probability")]
     pub mtp_min_probability: f32,
+}
+
+impl NodeConfig {
+    /// Uma configuração com os **parâmetros** preenchidos e mais nada.
+    ///
+    /// Os campos de identidade (caminho, rótulo, faixa, posição no pipeline)
+    /// saem em branco de propósito: quem chama os preenche por cima, com a
+    /// sintaxe de atualização de struct. Existe para que a lista de "o que é
+    /// parâmetro" viva **num lugar só** - antes ela estava escrita à mão no
+    /// `run_apply`, e qualquer caminho novo que montasse um `NodeConfig` teria
+    /// que repetir as trinta linhas sem esquecer nenhuma.
+    ///
+    /// `allow_fit_memory` é falso num nó de tensor parallelism: o `fit` nativo
+    /// do llama.cpp não sabe lidar com `split-mode tensor`, então lá ele fica
+    /// desligado independentemente do que o operador pediu.
+    pub fn from_params(p: &crate::webui::RuntimeParams, allow_fit_memory: bool) -> Self {
+        Self {
+            deploy_id: String::new(),
+            deployment_name: String::new(),
+            model_path: String::new(),
+            model_label: String::new(),
+            start_layer: 0,
+            end_layer: 0,
+            total_layers: 0,
+            peer_count: 1,
+            peer_index: 0,
+            primary: false,
+            tp: None,
+            inference_port: 0,
+            single_peer: false,
+            no_embeddings: p.no_embeddings,
+
+            n_gpu_layers: p.n_gpu_layers,
+            n_ctx: p.n_ctx,
+            offload_kqv: p.offload_kqv,
+            fit_memory: p.fit_memory && allow_fit_memory,
+            n_batch: p.n_batch,
+            max_new_tokens: p.max_new_tokens,
+            max_sessions: p.max_sessions,
+            prefill_chunk_tokens: p.prefill_chunk_tokens,
+            temperature: p.temperature,
+            top_p: p.top_p,
+            top_k: p.top_k,
+            repeat_penalty: p.repeat_penalty,
+            repeat_last_n: p.repeat_last_n,
+            no_thinking: p.no_thinking,
+            speculative_decoding_enabled: p.speculative_decoding_enabled,
+            speculative_k: p.speculative_k,
+            speculative_lookup_window: p.speculative_lookup_window,
+            mtp_enabled: p.mtp_enabled,
+            mtp_draft_tokens: p.mtp_draft_tokens,
+            mtp_min_probability: p.mtp_min_probability,
+        }
+    }
+
+    /// Esta mesma fatia, com outros parâmetros.
+    ///
+    /// **Nada que identifique a fatia muda**: caminho, rótulo, faixa de
+    /// camadas, posição no pipeline, grupo de TP e porta continuam os deste
+    /// nó. É essa garantia que torna seguro reconfigurar uma implantação no
+    /// ar - o nó recarrega o mesmo arquivo com outro `n_ctx`, e não vira outro
+    /// nó do pipeline no meio do caminho.
+    ///
+    /// `no_embeddings` é exceção só na aparência: ele é decidido pela posição
+    /// no pipeline (a cauda não exporta residual), então vem do que já estava
+    /// aqui, e não do que o operador digitou.
+    pub fn with_params(&self, p: &crate::webui::RuntimeParams) -> Self {
+        Self {
+            deploy_id: self.deploy_id.clone(),
+            deployment_name: self.deployment_name.clone(),
+            model_path: self.model_path.clone(),
+            model_label: self.model_label.clone(),
+            start_layer: self.start_layer,
+            end_layer: self.end_layer,
+            total_layers: self.total_layers,
+            peer_count: self.peer_count,
+            peer_index: self.peer_index,
+            primary: self.primary,
+            tp: self.tp.clone(),
+            inference_port: self.inference_port,
+            single_peer: self.single_peer,
+            no_embeddings: self.no_embeddings,
+            ..Self::from_params(p, self.tp.is_none())
+        }
+    }
 }
 
 fn default_max_sessions() -> u32 {
@@ -218,6 +326,7 @@ impl NodeConfig {
         if self.n_ctx == 0 || self.n_ctx > MAX_CONTEXT_TOKENS {
             bail!("n_ctx precisa estar entre 1 e {MAX_CONTEXT_TOKENS}");
         }
+        total_context_tokens(self.n_ctx, self.max_sessions)?;
         if self.end_layer >= self.total_layers {
             bail!(
                 "camada final {} fora do modelo de {} camadas",
@@ -243,6 +352,7 @@ impl NodeConfig {
         let count = self.layers_count();
         LayerAssignment {
             model: self.model_label.clone(),
+            deploy_id: self.deploy_id.clone(),
             total_layers: self.total_layers,
             start_layer: self.start_layer,
             end_layer: self.end_layer,
@@ -308,6 +418,8 @@ pub struct NodeRuntime {
     /// Certificado que o servidor de inferência apresenta, quando há um.
     /// `None` nos testes, que sobem em `127.0.0.1` e falam em claro.
     tls: Option<crate::serve::TlsServer>,
+    /// Configuração viva usada para autorizar chamadas internas de inferência.
+    auth: Option<crate::auth::AuthState>,
 }
 
 impl NodeRuntime {
@@ -322,6 +434,15 @@ impl NodeRuntime {
         assignment: Arc<RwLock<Option<LayerAssignment>>>,
         tls: Option<crate::serve::TlsServer>,
     ) -> Arc<Self> {
+        Self::new_with_tls_and_auth(net, assignment, tls, None)
+    }
+
+    pub fn new_with_tls_and_auth(
+        net: Arc<Network>,
+        assignment: Arc<RwLock<Option<LayerAssignment>>>,
+        tls: Option<crate::serve::TlsServer>,
+        auth: Option<crate::auth::AuthState>,
+    ) -> Arc<Self> {
         let (generation, _) = watch::channel(0u64);
         Arc::new(Self {
             config: RwLock::new(None),
@@ -333,6 +454,7 @@ impl NodeRuntime {
             net,
             generation,
             tls,
+            auth,
         })
     }
 
@@ -470,6 +592,7 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
+        let auth = self.auth.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
@@ -540,6 +663,7 @@ impl NodeRuntime {
                     generation,
                     mtp_ready.clone(),
                     tls.clone(),
+                    auth.clone(),
                 )
                 .await
                 {
@@ -966,10 +1090,78 @@ mod tests {
         assert_eq!(crate::runtime_mem_source(&s), "inference_server");
     }
 
+    /// A garantia que torna seguro reconfigurar uma implantação no ar: mexer
+    /// nos parâmetros **não** pode mexer em nada que identifique a fatia.
+    ///
+    /// Se `with_params` deixasse escapar um `start_layer` ou um `model_path`,
+    /// um "aumentar o n_ctx" viraria silenciosamente uma máquina servindo outra
+    /// faixa - e o buraco só apareceria na requisição seguinte, como
+    /// "Gap at layer N".
+    #[test]
+    fn reconfigurar_muda_parametros_e_mais_nada() {
+        let mut antes = cfg();
+        antes.deploy_id = "d-4f2a91c3".into();
+        antes.tp = None;
+
+        let mut p = crate::webui::RuntimeParams::default();
+        p.n_ctx = 65536;
+        p.n_gpu_layers = 7;
+        p.temperature = 1.25;
+        p.max_sessions = 4;
+
+        let depois = antes.with_params(&p);
+
+        // O que tinha que mudar, mudou.
+        assert_eq!(depois.n_ctx, 65536);
+        assert_eq!(depois.n_gpu_layers, 7);
+        assert_eq!(depois.temperature, 1.25);
+        assert_eq!(depois.max_sessions, 4);
+
+        // E a identidade da fatia é byte a byte a mesma.
+        assert_eq!(depois.deploy_id, antes.deploy_id);
+        assert_eq!(depois.model_path, antes.model_path);
+        assert_eq!(depois.model_label, antes.model_label);
+        assert_eq!(depois.start_layer, antes.start_layer);
+        assert_eq!(depois.end_layer, antes.end_layer);
+        assert_eq!(depois.total_layers, antes.total_layers);
+        assert_eq!(depois.peer_count, antes.peer_count);
+        assert_eq!(depois.peer_index, antes.peer_index);
+        assert_eq!(depois.primary, antes.primary);
+        assert_eq!(depois.inference_port, antes.inference_port);
+        assert_eq!(depois.single_peer, antes.single_peer);
+        assert_eq!(depois.no_embeddings, antes.no_embeddings);
+    }
+
+    /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e
+    /// isso não pode depender de quem preencheu o formulário.
+    #[test]
+    fn o_fit_de_memoria_continua_desligado_num_no_de_tp() {
+        let mut antes = cfg();
+        antes.tp = Some(crate::network::TpIdentity {
+            role: "worker".into(),
+            group_id: "g".into(),
+            size: 2,
+            rank: 1,
+            rank0_url: None,
+            rank0_node_id: None,
+            members: Vec::new(),
+        });
+
+        let mut p = crate::webui::RuntimeParams::default();
+        p.fit_memory = true;
+
+        assert!(
+            !antes.with_params(&p).fit_memory,
+            "o fit nativo não sabe lidar com split-mode tensor"
+        );
+    }
+
     fn cfg() -> NodeConfig {
         NodeConfig {
+            deploy_id: String::new(),
             model_path: "/nonexistent/model.gguf".into(),
             model_label: "qwen35".into(),
+            deployment_name: "qwen35".into(),
             start_layer: 0,
             end_layer: 15,
             total_layers: 32,
@@ -1226,6 +1418,17 @@ mod tests {
 
         c.n_ctx = 250_001;
         assert!(c.validate().is_err());
+    }
+
+    #[test]
+    fn each_session_gets_the_configured_context_capacity() {
+        assert_eq!(total_context_tokens(32_768, 2).unwrap(), 65_536);
+        assert_eq!(total_context_tokens(32_768, 0).unwrap(), 32_768);
+    }
+
+    #[test]
+    fn context_capacity_rejects_numeric_overflow() {
+        assert!(total_context_tokens(u32::MAX, 2).is_err());
     }
 
     #[test]

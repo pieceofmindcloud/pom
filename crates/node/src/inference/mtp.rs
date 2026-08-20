@@ -144,7 +144,7 @@ impl MtpDrafter {
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = cfg.n_batch;
-        cparams.n_seq_max = cfg.max_sessions;
+        cparams.n_seq_max = cfg.max_sessions.max(1);
         cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
         // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
         // de atenção comum, e o upstream zera este campo pelo mesmo motivo.

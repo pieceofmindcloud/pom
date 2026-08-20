@@ -22,10 +22,11 @@ medidas em campo.
   gateway HTTP `--gateway-port` (8080, servido por *todos* os nós), inference
   server `--inference-port` (8181). Máquinas distintas podem usar os mesmos
   números.
-- **Contexto por sessão:** `--max-sessions` (padrão 1) divide o `--n-ctx` entre
-  sessões (`n_ctx_seq = n_ctx / max_sessions`, em `llm.rs`); o orçamento de
-  prompt de cada requisição é esse menos `--max-new-tokens` (ver
-  `inferencia.md`, "Limite de prompt").
+- **Contexto por sessão:** `--n-ctx` é a janela completa de cada sessão.
+  `--max-sessions` (padrão 1) multiplica a capacidade total do cache KV, sem
+  reduzir a janela individual (`n_ctx_total = n_ctx * max_sessions`, em
+  `llm.rs`); o orçamento de prompt de cada requisição é `n_ctx` menos
+  `--max-new-tokens` (ver `inferencia.md`, "Limite de prompt").
 
 ## Subida (cluster de duas máquinas)
 
@@ -160,7 +161,9 @@ OpenAI-compatível arbitrário por variável de ambiente.
 ## Monitor de carga (`utils/sysmon.rs`)
 
 Linux: RAM de `/proc/meminfo`, VRAM e processos de `nvidia-smi` (conferido
-contra `nvidia-smi` na mão: bate exato). macOS: RAM de `sysctl` + `vm_stat`;
+contra `nvidia-smi` na mão: bate exato). As chamadas frequentes ao utilitário
+rodam fora do reaper de processos do Tokio, para não interromper o socket UDP
+do DHT pkarr com `EINTR`. macOS: RAM de `sysctl` + `vm_stat`;
 memória unificada **não** reporta VRAM dedicada - a tela diz isso e mostra a
 memória wired, que é onde ficam os buffers do Metal, em vez de inventar um
 número.

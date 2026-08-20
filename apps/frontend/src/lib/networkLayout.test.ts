@@ -5,6 +5,7 @@ import {
   clearPositions,
   deploymentLayoutKey,
   fallbackPosition,
+  mergePositions,
   writePositions,
 } from "./networkLayout";
 
@@ -119,5 +120,19 @@ describe("autoLayout", () => {
     const posicoes = autoLayout([{ id: "vazio", start_layer: 0, end_layer: 0 }]);
     expect(Number.isFinite(posicoes.vazio.left)).toBe(true);
     expect(Number.isFinite(posicoes.vazio.top)).toBe(true);
+  });
+
+  it("preserva posições existentes quando um peer novo entra no canvas", () => {
+    const atual = { ksia: { left: 520, top: 140 } };
+    const persistido = { ksia: { left: 100, top: 100 } };
+    const arranjo = {
+      ksia: { left: 100, top: 100 },
+      salem: { left: 340, top: 100 },
+    };
+
+    expect(mergePositions(atual, persistido, arranjo, ["ksia", "salem"])).toEqual({
+      ksia: { left: 520, top: 140 },
+      salem: { left: 340, top: 100 },
+    });
   });
 });

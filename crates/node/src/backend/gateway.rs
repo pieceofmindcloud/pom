@@ -2,7 +2,7 @@ use crate::auth::AuthState;
 use crate::model::LayerAssignment;
 use crate::network::{Network, PeerInfo};
 use crate::ollama::OllamaClient;
-use crate::pipeline::{plan_pipeline, LoadTracker, PipelinePlan};
+use crate::pipeline::{plan_pipeline_with_rtt, LoadTracker, PipelinePlan};
 use crate::runtime::NodeRuntime;
 use crate::{admin, session};
 use anyhow::Result;
@@ -199,16 +199,15 @@ impl GatewayState {
             // LAN; com ele de sucessor, o hop remoto recebia um endereço
             // privado e a requisição morria sem chegar a lugar nenhum.
             // `effective_host` já vem com colchetes quando é IPv6. Pinado
-            // pelo operador vence; na falta dele, o endereço público que
-            // algum peer já observou por `identify` (ver
-            // `Network::effective_host`) — sem isto, o próprio cartão deste
-            // nó no painel mostrava o IP da LAN mesmo depois de
-            // `self_addr_candidates`/`Announce` já saberem o certo.
+            // pelo operador vence; sem pin, o endereço público atual da
+            // interface vence o endereço antigo observado por `identify`.
+            // O observado continua sendo fallback para NAT.
             let self_host = self_dial_host(
                 self.network.effective_host(),
                 crate::pkarr_node::detect_local_ip(),
             );
             peers.push(PeerInfo {
+                deploy_id: String::new(),
                 node_id: self.network.node_id.clone(),
                 tls: self.network.tls_enabled(),
                 pubkey: self.network.pubkey.clone(),
@@ -283,10 +282,8 @@ fn self_dial_host(advertised: Option<String>, local_ip: Option<String>) -> Strin
 
 /// Prompt tokens a peer running `cfg` can accept.
 ///
-/// The KV cache is split evenly across `max_sessions` slots, so the window one
-/// request sees is `n_ctx / max_sessions` — this divisor used to be hardcoded
-/// to 8, which silently cut the configured context to an eighth and produced
-/// "contexto insuficiente" no matter how high `--n-ctx` was set.
+/// `n_ctx` is the context window for one request. `max_sessions` only controls
+/// how many such windows the inference context must reserve at once.
 ///
 /// `n_batch` deliberately does **not** appear here. It did while the prompt
 /// crossed as a single `llama_batch`; since [`crate::prefill`] advances the
@@ -302,10 +299,9 @@ pub fn prompt_budget(cfg: &crate::runtime::NodeConfig) -> u32 {
 /// chosen and has no running node behind it yet — the deploy screen quotes it
 /// while the operator is editing the knobs, and quoting it from anywhere but
 /// here is how the two go out of step.
-pub fn prompt_budget_of(n_ctx: u32, max_sessions: u32, max_new_tokens: u32) -> u32 {
-    let per_session_ctx = n_ctx / max_sessions.max(1);
+pub fn prompt_budget_of(n_ctx: u32, _max_sessions: u32, max_new_tokens: u32) -> u32 {
     // Room has to be left for the tokens we are about to generate.
-    per_session_ctx.saturating_sub(max_new_tokens)
+    n_ctx.saturating_sub(max_new_tokens)
 }
 
 /// Tokens per prefill chunk — this is what `n_batch` actually constrains.
@@ -425,12 +421,11 @@ pub async fn generate_stream(
             let _ = tx
                 .send(GenEvent::Failed(format!(
                     "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-                     {budget}. O limite é n_ctx/{} ({}) menos max_new_tokens ({}). O prompt vai \
-                     em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
+                     {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
+                     vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
                      n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
                      as requisições simultâneas.",
-                    cfg.max_sessions.max(1),
-                    cfg.n_ctx / cfg.max_sessions.max(1),
+                    cfg.n_ctx,
                     cfg.max_new_tokens,
                     prompt_chunk_tokens(&cfg),
                     cfg.n_batch,
@@ -447,10 +442,17 @@ pub async fn generate_stream(
     )
     .await;
 
+    // `qwen3:8b@d-4f2a91c3` escolhe **qual** implantação atende; o nome pelado
+    // deixa a escolha para quem monta o pipeline. Ver `deployment::split_selector`.
+    let (model, deploy_id) = crate::deployment::split_selector(&model);
+
     // Total layers for THIS model, as reported by a peer that serves it.
     let total_layers = peers
         .iter()
-        .find(|p| p.model == model)
+        .find(|p| match deploy_id {
+            Some(id) => p.deploy_id == id,
+            None => p.model == model,
+        })
         .map(|p| p.total_layers)
         .unwrap_or(32);
 
@@ -458,7 +460,23 @@ pub async fn generate_stream(
     // call, so parallel requests keep isolated KV cache state.
     let session_id = Uuid::new_v4().to_string();
 
-    let Some(mut plan) = plan_pipeline(&peers, &model, total_layers, &state.loads).await else {
+    let route_rtt = state
+        .network
+        .routes
+        .snapshot()
+        .into_iter()
+        .map(|(node_id, route)| (node_id, route.rtt_ms))
+        .collect::<std::collections::HashMap<_, _>>();
+    let Some(mut plan) = plan_pipeline_with_rtt(
+        &peers,
+        model,
+        deploy_id,
+        total_layers,
+        &state.loads,
+        &route_rtt,
+    )
+    .await
+    else {
         let _ = tx
             .send(GenEvent::Failed(format!(
                 "Nenhum pipeline válido para o modelo '{model}' (verifique a cobertura de camadas 0..{total_layers})"
@@ -562,7 +580,7 @@ pub async fn generate_stream(
         // back the first token once the whole prompt is in.
         let first = match crate::prefill::run(
             &plan,
-            &model,
+            model,
             &session_id,
             &prompt,
             chunk_tokens,
@@ -640,7 +658,7 @@ pub async fn generate_stream(
                     if sliced_mtp {
                         crate::prefill::step(
                             &plan,
-                            &model,
+                            model,
                             &session_id,
                             next_token,
                             dtype,
@@ -659,7 +677,7 @@ pub async fn generate_stream(
                     } else {
                         crate::prefill::step_speculative(
                             &plan,
-                            &model,
+                            model,
                             &session_id,
                             next_token,
                             speculative_k,
@@ -675,7 +693,7 @@ pub async fn generate_stream(
                 } else {
                     crate::prefill::step(
                         &plan,
-                        &model,
+                        model,
                         &session_id,
                         next_token,
                         dtype,
@@ -862,7 +880,7 @@ pub async fn generate_stream(
         for i in 0..max_tokens {
             let res = crate::prefill::step(
                 &plan,
-                &model,
+                model,
                 &session_id,
                 next_token,
                 dtype,
@@ -961,10 +979,13 @@ async fn release_sessions(
             warn!("sem cliente para liberar sessão em {}", step.node_id);
             continue;
         };
-        match http
+        let request = http
             .post(&url)
             .json(&serde_json::json!({ "session_id": session_id }))
-            .timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(10));
+        match clients
+            .authorize_inference_request(request)
+            .await
             .send()
             .await
         {
@@ -1006,17 +1027,15 @@ async fn rollback_sessions(
             all_ok = false;
             continue;
         };
-        match cliente
+        let request = cliente
             .post(&url)
             .json(&serde_json::json!({
                 "session_id": session_id,
                 "accept_count": accept_count,
                 "batch_width": batch_width,
             }))
-            .timeout(Duration::from_secs(10))
-            .send()
-            .await
-        {
+            .timeout(Duration::from_secs(10));
+        match http.authorize_inference_request(request).await.send().await {
             Ok(r) if r.status().is_success() => match r.json::<serde_json::Value>().await {
                 Ok(body) => {
                     if !body
@@ -1422,10 +1441,8 @@ mod tests {
         assert_eq!(self_dial_host(None, None), "127.0.0.1");
     }
 
-    /// The self-entry `.addr` used to consult only the operator's own pin
-    /// (`advertised_host`), never a peer-observed public address — so a NAT'd
-    /// node's own card in the dashboard kept showing its private LAN IP even
-    /// after `Announce`/`self_addr_candidates` already knew the right one.
+    /// The self-entry `.addr` uses the same address precedence as Announce:
+    /// explicit pin, current public local address, then peer observation.
     #[tokio::test]
     async fn the_self_entry_address_picks_up_an_observed_public_address() {
         let state = crate::gateway::testkit::state_with("eu", vec![]).await;
@@ -1437,9 +1454,13 @@ mod tests {
             .find(|p| p.node_id == "eu")
             .expect("self entry");
 
+        let expected_host = state
+            .network
+            .effective_host()
+            .expect("self entry has an effective host");
         assert!(
-            me.addr.starts_with("203.0.113.5:"),
-            "self entry addr should use the observed public address, got {}",
+            me.addr.starts_with(&format!("{expected_host}:")),
+            "self entry addr should use the effective host, got {}",
             me.addr
         );
     }
@@ -1473,8 +1494,10 @@ mod budget_tests {
 
     fn cfg(n_ctx: u32, n_batch: u32, max_new: u32, max_sessions: u32) -> NodeConfig {
         NodeConfig {
+            deploy_id: String::new(),
             model_path: String::new(),
             model_label: String::new(),
+            deployment_name: String::new(),
             start_layer: 0,
             end_layer: 0,
             total_layers: 0,
@@ -1517,9 +1540,9 @@ mod budget_tests {
     }
 
     #[test]
-    fn concurrency_divides_the_window() {
+    fn each_session_keeps_the_configured_window() {
         let c = cfg(262_144, 262_144, 1024, 8);
-        assert_eq!(prompt_budget(&c), 262_144 / 8 - 1024);
+        assert_eq!(prompt_budget(&c), 262_144 - 1024);
     }
 
     /// The bug a harness hits on its first real conversation: with the prompt
@@ -1559,6 +1582,7 @@ mod peer_visibility_tests {
 
     fn peer(id: &str) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: id.into(),
             pubkey: String::new(),
@@ -1644,6 +1668,7 @@ pub(crate) mod testkit {
     /// Um peer alcançável no `gateway_port` dado, na loopback.
     pub(crate) fn peer(node_id: &str, hostname: &str, gateway_port: u16) -> PeerInfo {
         PeerInfo {
+            deploy_id: String::new(),
             tls: false,
             node_id: node_id.into(),
             pubkey: "pk".into(),
@@ -1723,8 +1748,10 @@ pub(crate) mod testkit {
     /// interruptor do operador que o gateway lê antes de cada geração.
     pub(crate) fn spec_config() -> crate::runtime::NodeConfig {
         crate::runtime::NodeConfig {
+            deploy_id: String::new(),
             model_path: String::new(),
             model_label: "lab".into(),
+            deployment_name: "lab".into(),
             start_layer: 0,
             end_layer: 1,
             total_layers: 2,

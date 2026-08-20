@@ -24,7 +24,11 @@ const post = vi.fn();
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
-      url === "/api/ui/jobs" ? Promise.resolve({ jobs: [] }) : undefined,
+      url === "/api/ui/jobs"
+        ? Promise.resolve({ jobs: [] })
+        : url === "/api/ui/cluster"
+          ? Promise.resolve({ peers: [] })
+          : undefined,
     ),
     post: (...args: unknown[]) => post(...args),
   },
@@ -40,6 +44,7 @@ import { keys } from "../lib/queries";
 const MACHINES = [
   { node_id: "ksia", label: "ksia" },
   { node_id: "mac", label: "mac" },
+  { node_id: "salem", label: "salem" },
 ];
 
 /** O plano de um modelo inteiro: um passo, todas as camadas, uma máquina. */
@@ -130,6 +135,12 @@ function shardPlan(): DeployPlan {
   return p;
 }
 
+function tensorPlan(): DeployPlan {
+  const p = wholePlan();
+  p.kind = "tensor_parallel";
+  return p;
+}
+
 /** Uma máquina com o GGUF inteiro **e** um conjunto de fatias, para que as
  *  duas opções existam e a troca entre elas seja de verdade. */
 function mount() {
@@ -160,6 +171,27 @@ function mount() {
         ],
         shard_sets: [{ group: "qwen", shards: [] }],
       },
+      ...["mac", "salem"].map((node_id, index) => ({
+        node_id,
+        hostname: node_id,
+        is_self: false,
+        models: [
+          {
+            id: String(index + 2),
+            name: "qwen3.5-9b",
+            source: "lmstudio",
+            source_label: "LM Studio",
+            path: "/lm/qwen3.5-9b.gguf",
+            size_bytes: 5_000_000_000,
+            architecture: "qwen3",
+            total_layers: 32,
+            quant: "Q4_K_M",
+            shard_range: null,
+            shard_group: null,
+          },
+        ],
+        shard_sets: [],
+      })),
     ],
   });
   return render(
@@ -175,7 +207,13 @@ function mount() {
 function answerPlans() {
   post.mockImplementation((url: string, body: { kind?: string }) => {
     if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
-    return Promise.resolve(body?.kind === "whole" ? wholePlan() : shardPlan());
+    return Promise.resolve(
+      body?.kind === "whole"
+        ? wholePlan()
+        : body?.kind === "tensor_parallel"
+          ? tensorPlan()
+          : shardPlan(),
+    );
   });
 }
 
@@ -184,6 +222,8 @@ const planCalls = () =>
 
 const chooseWhole = () =>
   fireEvent.click(screen.getByRole("radio", { name: /Um modelo inteiro/ }));
+
+const chooseTensor = () => fireEvent.click(screen.getByRole("radio", { name: "Tensor" }));
 
 describe("DeployModel · modelo inteiro", () => {
   beforeEach(() => {
@@ -231,15 +271,14 @@ describe("DeployModel · modelo inteiro", () => {
     answerPlans();
     mount();
 
-    await waitFor(() => expect(screen.getByText(/Camadas cobertas/)).toBeTruthy());
-    expect(screen.queryByText("Entra")).toBeTruthy();
+    await waitFor(() => expect(screen.getByText(/Cobertura do modelo/)).toBeTruthy());
+    expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
 
     chooseWhole();
 
     await waitFor(() => {
-      expect(screen.queryByText(/Camadas cobertas/)).toBeNull();
+      expect(screen.queryByText(/Cobertura do modelo/)).toBeNull();
     });
-    expect(screen.queryByText("Entra")).toBeNull();
     expect(screen.queryByRole("checkbox", { name: /Incluir/ })).toBeNull();
     // No lugar delas, a faixa inteira como um fato, não como uma escolha.
     expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
@@ -269,12 +308,37 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
+  it("adiciona uma réplica do modelo inteiro ao incluir outra máquina no mapa", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as {
+        selection?: Array<{
+          start_layer: number;
+          end_layer: number;
+          target_node_id: string;
+          n_gpu_layers: number | null;
+          offload_kqv: boolean | null;
+        }>;
+      };
+      expect(last.selection).toEqual([
+        { start_layer: 0, end_layer: 31, target_node_id: "ksia", n_gpu_layers: null, offload_kqv: null },
+        { start_layer: 0, end_layer: 31, target_node_id: "mac", n_gpu_layers: null, offload_kqv: null },
+      ]);
+    });
+  });
+
   it("implanta mandando o mesmo `kind` que planejou", async () => {
     answerPlans();
     mount();
     chooseWhole();
 
-    const button = await screen.findByRole("button", { name: /Implantar assim/ });
+    const button = await screen.findByRole("button", { name: /^Implantar$/ });
     await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(button);
 
@@ -306,7 +370,7 @@ describe("DeployModel · modelo inteiro", () => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
     expect(screen.getAllByText(/está sem máquina/).length).toBeGreaterThan(0);
-    const button = screen.getByRole("button", { name: /Implantar assim/ });
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
     expect((button as HTMLButtonElement).disabled).toBe(true);
   });
 
@@ -337,10 +401,10 @@ describe("DeployModel · modelo inteiro", () => {
     mount();
 
     await waitFor(() => {
-      const button = screen.getByRole("button", { name: /Implantar assim/ });
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
       expect((button as HTMLButtonElement).disabled).toBe(false);
     });
-    expect(screen.queryByText("Entra")).toBeTruthy();
+    expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
   });
 
   it("permite ligar e desligar o ajuste automático de memória", async () => {
@@ -349,7 +413,7 @@ describe("DeployModel · modelo inteiro", () => {
     chooseWhole();
 
     const toggle = await screen.findByRole("checkbox", {
-      name: "Ajustar à memória disponível",
+      name: /Ajustar à memória/,
     });
     expect(toggle.getAttribute("aria-checked")).toBe("true");
 
@@ -441,7 +505,7 @@ describe("DeployModel · MTP", () => {
     });
 
     // Fire the deploy and check the params.
-    const button = screen.getByRole("button", { name: /Implantar assim/ });
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() =>
       expect((button as HTMLButtonElement).disabled).toBe(false),
     );
@@ -460,6 +524,69 @@ describe("DeployModel · MTP", () => {
       expect(body.params.mtp_enabled).toBe(true);
       expect(body.params.mtp_draft_tokens).toBe(5);
     });
+  });
+
+  /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
+  /// digitado.
+  ///
+  /// O texto em edição vive dentro do `RuntimeParamsForm` desde que ele saiu
+  /// desta tela. Quem limpava o rascunho aqui era um `setDrafts({})` que deixou
+  /// de existir: sem remontar o formulário, o botão zerava os parâmetros por
+  /// baixo e o campo continuava mostrando o número velho — a tela dizendo uma
+  /// coisa e o pedido levando outra.
+  it("restaurar o plano do nó também limpa o campo meio digitado", async () => {
+    post.mockImplementation((url: string) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(wholePlan());
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, refetchInterval: false } },
+    });
+    client.setQueryData(keys.jobs, { jobs: [] });
+    client.setQueryData(keys.clusterModels, {
+      peers: [
+        {
+          node_id: "ksia",
+          hostname: "ksia",
+          is_self: false,
+          models: [
+            {
+              id: "1",
+              name: "qwen3.5-9b",
+              source: "lmstudio",
+              source_label: "LM Studio",
+              path: "/lm/qwen3.5-9b.gguf",
+              size_bytes: 5_000_000_000,
+              architecture: "qwen3",
+              total_layers: 32,
+              quant: "Q4_K_M",
+              shard_range: null,
+              shard_group: null,
+            },
+          ],
+        },
+      ],
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <LocaleProvider initialLocale="pt-BR">
+          <DeployModel />
+        </LocaleProvider>
+      </QueryClientProvider>,
+    );
+
+    const campo = () =>
+      document.querySelector('input[name="n_ctx"]') as HTMLInputElement | null;
+    await waitFor(() => expect(campo()).toBeTruthy());
+    // O plano do nó traz 4096 (ver `wholePlan`).
+    await waitFor(() => expect(campo()!.value).toBe("4096"));
+
+    fireEvent.change(campo()!, { target: { value: "65536" } });
+    await waitFor(() => expect(campo()!.value).toBe("65536"));
+
+    fireEvent.click(screen.getByRole("button", { name: /Voltar ao plano do nó/ }));
+
+    await waitFor(() => expect(campo()!.value).toBe("4096"));
   });
 
   it("em modo fatiado o interruptor do MTP está habilitado e liga os controles", async () => {
@@ -490,6 +617,7 @@ describe("DeployModel · MTP", () => {
       </QueryClientProvider>,
     );
 
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
     const switchEl = await screen.findByRole("checkbox", {
       name: /Predição multi-token/,
     });
@@ -547,5 +675,41 @@ describe("DeployModel · MTP", () => {
     // And none of the speculative knobs are visible.
     expect(screen.queryByText("Largura do rascunho")).toBeNull();
     expect(screen.queryByText("Janela de busca")).toBeNull();
+  });
+});
+
+describe("DeployModel · Tensor simples", () => {
+  beforeEach(() => {
+    post.mockReset();
+    localStorage.clear();
+  });
+  afterEach(cleanup);
+
+  it("monta os ranks apenas com as máquinas que estão no mapa", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+
+    const workerSelect = await screen.findByRole("listbox", {
+      name: /Workers do Tensor Parallelism/,
+    });
+    const availablePeer = await screen.findByRole("button", { name: /mac RTT/ });
+    fireEvent.click(availablePeer);
+
+    await waitFor(() => {
+      const last = planCalls().at(-1)![1] as {
+        tp?: { size: number; primary_node_id: string; worker_node_ids: string[] };
+      };
+      expect(last.tp).toMatchObject({
+        size: 2,
+        primary_node_id: "ksia",
+        worker_node_ids: ["mac"],
+      });
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    const currentWorkerSelect = screen.getByRole("listbox", {
+      name: /Workers do Tensor Parallelism/,
+    });
+    expect([...currentWorkerSelect.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["mac"]);
   });
 });

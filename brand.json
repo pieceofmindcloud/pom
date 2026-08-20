@@ -12,6 +12,7 @@
   "favicon": "assets/brand/favicon.ico",
   "icons": {
     "16": "assets/brand/pom-icon-16.png",
+    "24": "assets/brand/pom-icon-24.png",
     "32": "assets/brand/pom-icon-32.png",
     "48": "assets/brand/pom-icon-48.png",
     "64": "assets/brand/pom-icon-64.png",

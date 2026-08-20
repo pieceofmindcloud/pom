@@ -35,10 +35,12 @@
 //!   ranges on the same machine become one *merged unit*: the machine joins
 //!   the slices into a single file (`splitter::merge`) and serves the union.
 //!   A merged step carries `parts`, one per slice, each with its own source.
-//! * **Overlap is not a preference.** Two selected ranges covering the same
-//!   layer would run those layers twice and corrupt the answer, so a set that
-//!   overlaps is refused. A *gap* is different: it is a legitimate half-deploy
-//!   and only stops the pipeline from planning, so it warns.
+//!   The same exact range on different machines is an allowed replica.
+//! * **Overlap is not a preference.** Two different cuts covering the same
+//!   layer would make the pipeline ambiguous, so that overlap is refused. The
+//!   same exact range on different machines is an explicit parallel route. A
+//!   *gap* is different: it is a legitimate half-deploy and only stops the
+//!   pipeline from planning, so it warns.
 //!
 //! ## A whole model is the degenerate case, not a second path
 //!
@@ -51,20 +53,21 @@
 //! is not what an operator who picked a whole model is looking at.
 
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
-use crate::plan::{self, DEFAULT_RESERVE_PCT};
+use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, MergeSource,
     RuntimeParams, PEER_TIMEOUT,
@@ -79,6 +82,191 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/deploy/node", post(add_node_endpoint))
         .route("/api/ui/deploy/node/remove", post(remove_node_endpoint))
         .route("/api/ui/undeploy", post(undeploy_endpoint))
+        .route(
+            "/api/ui/deployments",
+            get(list_deployments).post(receive_deployment),
+        )
+        .route(
+            "/api/ui/deployments/:id/activate",
+            post(activate_deployment),
+        )
+        .route("/api/ui/deployments/:id/redeploy", post(redeploy_endpoint))
+}
+
+// ── O registro das implantações ──────────────────────────────────────────────
+
+/// Só as implantações que este nó guarda em disco, sem perguntar a ninguém.
+///
+/// É o que um peer responde quando o coordenador vem juntar a visão do cluster
+/// (`?local=1`), e é o que impede a varredura de se chamar em círculo.
+fn local_deployments(self_id: &str) -> serde_json::Value {
+    let todas = crate::deployment::all();
+    json!({ "node_id": self_id, "deployments": todas })
+}
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ListDeploymentsQuery {
+    /// Responder só com os registros deste nó, sem varrer o cluster.
+    #[serde(default)]
+    pub local: bool,
+}
+
+/// Todas as implantações do cluster, com o estado de cada uma.
+///
+/// O registro de uma implantação vive numa cópia por nó participante, então
+/// **nenhuma máquina sozinha sabe a lista inteira**: esta rota pergunta a cada
+/// peer e junta, que é o mesmo desenho de `survey`. Cópias do mesmo
+/// `deploy_id` são deduplicadas ficando com a de `activated_at` mais recente -
+/// um nó que estava fora do ar durante um `activate` tem a cópia velha.
+///
+/// Duas palavras que **não** são sinônimos, e a tela não pode confundir:
+///
+/// * `serving` - há peer vivo anunciando este `deploy_id`. É "está no ar".
+/// * `is_default` - é esta que atende quem pede só o nome do modelo, sem
+///   sufixo `@`. Ver `deployment::active`.
+///
+/// Uma implantação pode estar no ar sem ser a padrão do seu modelo.
+async fn list_deployments(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Query(q): Query<ListDeploymentsQuery>,
+) -> Response {
+    let self_id = state.network.node_id.clone();
+    if q.local {
+        return Json(local_deployments(&self_id)).into_response();
+    }
+
+    let peers = state.all_peers().await;
+    let key = state.auth.read().await.connection_key.clone();
+
+    // Por `deploy_id`, ficando com a cópia mais recentemente ativada.
+    let mut por_id: HashMap<String, crate::deployment::Deployment> = HashMap::new();
+    let mut guardado_por: HashMap<String, Vec<String>> = HashMap::new();
+
+    let absorve = |quem: &str,
+                   registros: Vec<crate::deployment::Deployment>,
+                   por_id: &mut HashMap<String, crate::deployment::Deployment>,
+                   guardado_por: &mut HashMap<String, Vec<String>>| {
+        for d in registros {
+            guardado_por
+                .entry(d.deploy_id.clone())
+                .or_default()
+                .push(quem.to_string());
+            match por_id.get(&d.deploy_id) {
+                Some(atual) if atual.activated_at >= d.activated_at => {}
+                _ => {
+                    por_id.insert(d.deploy_id.clone(), d);
+                }
+            }
+        }
+    };
+
+    absorve(
+        &self_id,
+        crate::deployment::all(),
+        &mut por_id,
+        &mut guardado_por,
+    );
+
+    let buscas = peers.iter().filter(|p| p.node_id != self_id).map(|peer| {
+        let http = state.peer_http.for_peer(&peer.node_id);
+        let key = key.clone();
+        let node_id = peer.node_id.clone();
+        let base = peer.gateway_url();
+        async move {
+            let base = base?;
+            let resp = http
+                .ok()?
+                .get(format!("{base}/api/ui/deployments?local=true"))
+                .bearer_auth(&key)
+                .timeout(PEER_TIMEOUT)
+                .send()
+                .await
+                .ok()?;
+            let body: serde_json::Value = resp.json().await.ok()?;
+            let registros: Vec<crate::deployment::Deployment> =
+                serde_json::from_value(body.get("deployments")?.clone()).ok()?;
+            Some((node_id, registros))
+        }
+    });
+
+    for (node_id, registros) in futures::future::join_all(buscas)
+        .await
+        .into_iter()
+        .flatten()
+    {
+        absorve(&node_id, registros, &mut por_id, &mut guardado_por);
+    }
+
+    let todas: Vec<crate::deployment::Deployment> = {
+        let mut v: Vec<_> = por_id.into_values().collect();
+        v.sort_by(|a, b| a.deploy_id.cmp(&b.deploy_id));
+        v
+    };
+
+    // "No ar" é o que os peers anunciam, não o que o registro diz: o registro
+    // sobrevive a um nó cair, e mostrá-lo como servindo seria mentir para quem
+    // está tentando entender por que a inferência parou.
+    let anunciados: std::collections::BTreeSet<String> = peers
+        .iter()
+        .filter(|p| p.is_alive() && !p.deploy_id.is_empty())
+        .map(|p| p.deploy_id.clone())
+        .collect();
+
+    let linhas: Vec<serde_json::Value> = todas
+        .iter()
+        .map(|d| {
+            let padrao = crate::deployment::active(&todas, &d.model.label)
+                .is_some_and(|a| a.deploy_id == d.deploy_id);
+            let mut holders = guardado_por.get(&d.deploy_id).cloned().unwrap_or_default();
+            holders.sort();
+            holders.dedup();
+            json!({
+                "deployment": d,
+                "serving": anunciados.contains(&d.deploy_id),
+                "is_default": padrao,
+                "holders": holders,
+            })
+        })
+        .collect();
+
+    Json(json!({ "node_id": self_id, "deployments": linhas })).into_response()
+}
+
+/// Recebe do coordenador o registro de uma implantação de que este nó faz parte.
+///
+/// Guardar é o que permite a este nó, depois de um reinício, dizer de que
+/// conjunto ele fazia parte - e é o que faz a listagem do cluster sobreviver à
+/// queda de quem coordenou.
+async fn receive_deployment(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(registro): Json<crate::deployment::Deployment>,
+) -> Response {
+    let self_id = state.network.node_id.clone();
+    // Um registro que não menciona esta máquina não é dela para guardar. Sem
+    // isto, qualquer peer autenticado encheria o disco dos outros de registros
+    // de implantações que não os incluem.
+    if registro.node(&self_id).is_none() {
+        return bad(json!({
+            "error": "este nó não faz parte da implantação"
+        }));
+    }
+    // Aceita mesmo incompleto - uma implantação que não fecha o modelo é um
+    // estado real do cluster, e recusar o registro só faria a máquina esquecer
+    // de que conjunto ela faz parte. Mas dizer em voz alta, porque uma
+    // cobertura furada só se manifestaria muito depois, como "Gap at layer N"
+    // na primeira requisição.
+    if !registro.covers_the_model() {
+        warn!(
+            "implantação {} não cobre as {} camadas de {}",
+            registro.deploy_id, registro.model.total_layers, registro.model.label
+        );
+    }
+    match crate::deployment::save(&registro) {
+        Ok(_) => Json(json!({ "stored": true, "deploy_id": registro.deploy_id })).into_response(),
+        Err(e) => bad(json!({ "error": format!("{e:#}") })),
+    }
 }
 
 /// Camadas que a faixa nova compartilha com as que ja estao no ar.
@@ -98,11 +286,13 @@ pub fn overlapping_layers(existentes: &[(u32, u32)], nova: (u32, u32)) -> Vec<u3
 /// vez precisa dizer isso explicitamente, senao o unico alvo da requisicao
 /// vira "peer 1 de 1" e todo no somado se declara o ultimo da divisao.
 ///
-/// Uma faixa identica a uma existente e substituicao, nao um peer a mais.
+/// Réplicas da mesma faixa ocupam o mesmo estágio lógico, mesmo quando entram
+/// pelo endpoint incremental de adicionar uma máquina.
 pub fn split_position(existentes: &[(u32, u32)], nova: (u32, u32)) -> (u32, u32) {
-    let mut faixas: Vec<(u32, u32)> = existentes.iter().copied().filter(|f| *f != nova).collect();
+    let mut faixas: Vec<(u32, u32)> = existentes.to_vec();
     faixas.push(nova);
     faixas.sort();
+    faixas.dedup();
     let index = faixas.iter().position(|f| *f == nova).unwrap_or(0) as u32;
     (index, faixas.len() as u32)
 }
@@ -178,6 +368,38 @@ pub enum DeployKind {
     TensorParallel,
 }
 
+/// How much of the available cluster the planner should use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeployStrategy {
+    /// Pick the smallest set of peers that can serve the selected model.
+    #[default]
+    Simple,
+    /// Consider every eligible peer to maximize GPU use and spread load.
+    Complete,
+}
+
+const MAX_DEPLOYMENT_NAME_CHARS: usize = 128;
+
+pub(crate) fn normalize_deployment_name(
+    requested: Option<&str>,
+    fallback: &str,
+) -> Result<String, String> {
+    let name = requested
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback.trim());
+    if name.is_empty() {
+        return Err("o nome da implantação não pode ficar vazio".to_string());
+    }
+    if name.chars().count() > MAX_DEPLOYMENT_NAME_CHARS {
+        return Err(format!(
+            "o nome da implantação pode ter no máximo {MAX_DEPLOYMENT_NAME_CHARS} caracteres"
+        ));
+    }
+    Ok(name.to_string())
+}
+
 impl DeployKind {
     fn whole(self) -> bool {
         matches!(self, DeployKind::Whole)
@@ -211,6 +433,14 @@ pub struct DeployRequest {
     /// The shard set, named the way the catalog groups it — or, with
     /// `kind: "whole"`, the model's own name in the catalog.
     pub group: String,
+    /// Nome operacional da implantação. `group` continua sendo a identidade
+    /// técnica do modelo usada pelo catálogo e pelo roteamento.
+    #[serde(default)]
+    pub deployment_name: Option<String>,
+    #[serde(default)]
+    pub strategy: DeployStrategy,
+    #[serde(default)]
+    pub preferred_node_ids: Vec<String>,
     /// Slices or a whole model. Absent means slices, which is what every
     /// caller written before whole-model deploys existed means.
     #[serde(default)]
@@ -276,6 +506,14 @@ struct HeldShard {
     name: String,
     path: String,
     size_bytes: u64,
+    /// sha256 da parte, quando ela é endereçada por conteúdo.
+    ///
+    /// É esta a identidade que o `launch` manda para o destino: com ela o nó
+    /// resolve o caminho local sozinho, e duas fatias de modelos diferentes que
+    /// por acaso cobrem a mesma faixa deixam de ser a mesma coisa aos olhos de
+    /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
+    /// nenhuma.
+    sha256: Option<String>,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -294,10 +532,45 @@ struct Machine {
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
     mem_free_mb: u64,
+    gpu_free_mb: u64,
+    ram_free_mb: u64,
     /// Room for the file itself, which is what a copy needs and what
     /// `transfer.rs` checks before it writes a byte.
     disk_free_mb: u64,
+    rtt_ms: Option<f64>,
+    load: u32,
     held: Vec<HeldShard>,
+}
+
+#[derive(Default, Clone)]
+struct PairwiseRtt {
+    values: std::collections::HashMap<(String, String), f64>,
+}
+
+impl PairwiseRtt {
+    fn remember(&mut self, from_node_id: &str, measurement: &crate::route::RttMeasurement) {
+        self.values.insert(
+            (from_node_id.to_string(), measurement.target_node_id.clone()),
+            measurement.rtt_ms,
+        );
+    }
+
+    fn get(&self, from_node_id: &str, to_node_id: &str) -> Option<f64> {
+        self.values
+            .get(&(from_node_id.to_string(), to_node_id.to_string()))
+            .copied()
+    }
+}
+
+struct Survey {
+    machines: Vec<Machine>,
+    pairwise_rtt: PairwiseRtt,
+}
+
+#[derive(Debug, Deserialize)]
+struct RttReport {
+    source_node_id: String,
+    measurements: Vec<crate::route::RttMeasurement>,
 }
 
 impl Machine {
@@ -326,12 +599,41 @@ impl Machine {
 /// `webui::catalogo_sob_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
-    survey(state, group, DeployKind::Shards).await.len()
+    survey(state, group, DeployKind::Shards)
+        .await
+        .machines
+        .len()
 }
 
-async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Machine> {
+async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
+    let mut route_rtt: std::collections::HashMap<String, f64> = state
+        .network
+        .routes
+        .snapshot()
+        .into_iter()
+        .map(|(node_id, route)| (node_id, route.rtt_ms))
+        .collect();
+    // A medição libp2p deste gateway é a fonte correta para os cards das
+    // máquinas. A RouteTable HTTP fica somente como fallback para peers
+    // antigos ou enquanto a primeira sonda libp2p ainda não respondeu.
+    for measurement in state.network.rtts.snapshot() {
+        route_rtt.insert(measurement.target_node_id, measurement.rtt_ms);
+    }
+    let mut pairwise_rtt = PairwiseRtt::default();
+    for measurement in state.network.rtts.snapshot() {
+        pairwise_rtt.remember(&self_id, &measurement);
+    }
+    for (node_id, rtt_ms) in &route_rtt {
+        if pairwise_rtt.get(&self_id, node_id).is_none() {
+            pairwise_rtt
+                .values
+                .insert((self_id.clone(), node_id.clone()), *rtt_ms);
+        }
+    }
+    let loads = state.loads.clone();
+    let connection_key = state.auth.read().await.connection_key.clone();
 
     let futures = peers.into_iter().map(|peer| {
         // Pinado no node_id do destino: sem isto, com o cluster em TLS o
@@ -339,17 +641,28 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
         // "nenhuma máquina do cluster tem fatias de <modelo>".
         let http = state.peer_http.for_peer(&peer.node_id);
         let is_self = peer.node_id == self_id;
+        let rtt_ms = if is_self {
+            Some(0.0)
+        } else {
+            route_rtt.get(&peer.node_id).copied()
+        };
+        let loads = loads.clone();
         let group = group.to_string();
+        let connection_key = connection_key.clone();
         async move {
             let base = peer.gateway_url()?;
             let http = http.ok()?;
 
-            let (models, node) = futures::future::join(
+            let (models, node, rtt) = futures::future::join3(
                 http.get(format!("{base}/api/ui/models"))
                     .timeout(PEER_TIMEOUT * 4)
                     .send(),
                 http.get(format!("{base}/api/ui/node"))
                     .timeout(PEER_TIMEOUT)
+                    .send(),
+                http.get(format!("{base}/api/ui/network/rtt"))
+                    .timeout(PEER_TIMEOUT)
+                    .bearer_auth(&connection_key)
                     .send(),
             )
             .await;
@@ -359,6 +672,13 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
             };
+            let rtt_report = match rtt {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<RttReport>().await.ok()
+                }
+                _ => None,
+            };
+            let (gpu_free_mb, ram_free_mb) = memory_capacity(node.get("system"));
 
             let mut held: Vec<HeldShard> = match kind {
                 DeployKind::Shards => body
@@ -395,41 +715,63 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
             // `~/.ollama/models` is a symlink into the LM Studio library.
             held.dedup_by_key(|s| (s.start_layer, s.end_layer));
 
-            Some(Machine {
-                node_id: peer.node_id.clone(),
-                gateway_url: peer.gateway_url(),
-                inference_url: peer.inference_url(),
-                libp2p_peer_id: peer.libp2p_peer_id.clone(),
-                supports_tunnel: peer
-                    .inference_frame_capabilities
-                    .iter()
-                    .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
-                hostname: if peer.hostname.is_empty() && is_self {
-                    body.get("hostname")
-                        .and_then(|h| h.as_str())
-                        .unwrap_or_default()
-                        .to_string()
-                } else {
-                    peer.hostname.clone()
+            Some((
+                Machine {
+                    node_id: peer.node_id.clone(),
+                    gateway_url: peer.gateway_url(),
+                    inference_url: peer.inference_url(),
+                    libp2p_peer_id: peer.libp2p_peer_id.clone(),
+                    supports_tunnel: peer
+                        .inference_frame_capabilities
+                        .iter()
+                        .any(|c| c == crate::pipeline::CAP_LIBP2P_TUNNEL),
+                    hostname: if peer.hostname.is_empty() && is_self {
+                        body.get("hostname")
+                            .and_then(|h| h.as_str())
+                            .unwrap_or_default()
+                            .to_string()
+                    } else {
+                        peer.hostname.clone()
+                    },
+                    mem_free_mb: free_memory_mb(node.get("system")),
+                    gpu_free_mb,
+                    ram_free_mb,
+                    // The peer's own reading beats the one it gossiped minutes ago,
+                    // but the gossip is still there when it did not answer.
+                    disk_free_mb: node
+                        .pointer("/system/disk/free_mb")
+                        .and_then(|v| v.as_f64())
+                        .map(|v| v as u64)
+                        .unwrap_or(peer.disk_free_mb),
+                    rtt_ms,
+                    load: loads.load(&peer.node_id).await,
+                    held,
                 },
-                mem_free_mb: free_memory_mb(node.get("system")),
-                // The peer's own reading beats the one it gossiped minutes ago,
-                // but the gossip is still there when it did not answer.
-                disk_free_mb: node
-                    .pointer("/system/disk/free_mb")
-                    .and_then(|v| v.as_f64())
-                    .map(|v| v as u64)
-                    .unwrap_or(peer.disk_free_mb),
-                held,
-            })
+                rtt_report,
+            ))
         }
     });
 
-    futures::future::join_all(futures)
+    let mut machines = Vec::new();
+    for result in futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
-        .collect()
+    {
+        if let Some(report) = &result.1 {
+            if report.source_node_id == result.0.node_id {
+                for measurement in &report.measurements {
+                    pairwise_rtt.remember(&report.source_node_id, measurement);
+                }
+            }
+        }
+        machines.push(result.0);
+    }
+
+    Survey {
+        machines,
+        pairwise_rtt,
+    }
 }
 
 /// Where the weights of a slice would actually have to fit.
@@ -438,31 +780,36 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Vec<Mach
 /// its RAM figure says nothing useful. Unified memory has no separate pool to
 /// report, so RAM *is* the answer there — see the note `sysmon` puts on screen.
 fn free_memory_mb(system: Option<&serde_json::Value>) -> u64 {
-    let Some(system) = system else { return 0 };
-    if system.get("gpu_kind").and_then(|k| k.as_str()) == Some("nvidia") {
-        let free: f64 = system
-            .get("gpus")
-            .and_then(|v| v.as_array())
-            .into_iter()
-            .flatten()
-            .filter_map(|g| {
-                let total = g.get("vram_total_mb")?.as_f64()?;
-                let used = g
-                    .get("vram_used_mb")
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0);
-                Some((total - used).max(0.0))
-            })
-            .sum();
-        if free > 0.0 {
-            return free as u64;
-        }
+    let (gpu, ram) = memory_capacity(system);
+    if gpu > 0 {
+        gpu
+    } else {
+        ram
     }
-    system
+}
+
+fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
+    let Some(system) = system else { return (0, 0) };
+    let gpu = system
+        .get("gpus")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|g| {
+            let total = g.get("vram_total_mb")?.as_f64()?;
+            let used = g
+                .get("vram_used_mb")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            Some((total - used).max(0.0))
+        })
+        .sum::<f64>() as u64;
+    let ram = system
         .pointer("/ram/available_mb")
         .and_then(|v| v.as_f64())
         .map(|v| v as u64)
-        .unwrap_or(0)
+        .unwrap_or(0);
+    (gpu, ram)
 }
 
 fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
@@ -478,6 +825,11 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
         name: v.get("name")?.as_str()?.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
+        sha256: v
+            .get("sha256")
+            .and_then(|h| h.as_str())
+            .filter(|h| crate::pom::is_sha256_hex(h))
+            .map(|h| h.to_string()),
     })
 }
 
@@ -516,6 +868,8 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         name: name.to_string(),
         path: v.get("path")?.as_str()?.to_string(),
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
+        // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
+        sha256: None,
     })
 }
 
@@ -548,7 +902,11 @@ pub struct MachineView {
     node_id: String,
     label: String,
     mem_free_mb: u64,
+    gpu_free_mb: u64,
+    ram_free_mb: u64,
     disk_free_mb: u64,
+    rtt_ms: Option<f64>,
+    load: u32,
     /// Ranges of this set it already holds.
     holds: Vec<[u32; 2]>,
     /// Range it takes in the plan being shown, if any.
@@ -584,6 +942,10 @@ pub struct StepPart {
     source_node_id: Option<String>,
     source_host: Option<String>,
     source_path: Option<String>,
+    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
+    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
+    /// arquivo solto, e sabe conferir o que chegou.
+    source_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -606,6 +968,10 @@ pub struct Step {
     source_node_id: Option<String>,
     source_host: Option<String>,
     source_path: Option<String>,
+    /// Hash da parte na origem. É por ele que a cópia é pedida: assim o
+    /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
+    /// arquivo solto, e sabe conferir o que chegou.
+    source_sha256: Option<String>,
     /// Where it will be on the target once it lands, when known up front.
     target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -632,6 +998,8 @@ pub struct Step {
 #[derive(Debug, Serialize)]
 pub struct Plan {
     group: String,
+    deployment_name: String,
+    strategy: DeployStrategy,
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
@@ -679,6 +1047,27 @@ pub struct Plan {
     prompt_tokens: u32,
     /// Prompt tokens per round trip through the pipeline, under `params`.
     chunk_tokens: u32,
+    /// Rotas candidatas entre os hops escolhidos. A latência pode ser nula
+    /// quando o gateway ainda não mediu o peer.
+    route_options: Vec<RouteOption>,
+    load_distribution: Vec<LoadDistribution>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteOption {
+    from_node_id: String,
+    to_node_id: String,
+    rtt_ms: Option<f64>,
+    selected: bool,
+    note: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LoadDistribution {
+    node_id: String,
+    current: u32,
+    projected: u32,
+    selected: bool,
 }
 
 /// Every distinct range anyone holds, in layer order.
@@ -820,42 +1209,113 @@ fn auto_chain(candidates: &[Candidate], total: Option<u32>) -> Vec<usize> {
     chain
 }
 
+/// Complete mode favors the finest existing cut so more eligible peers can
+/// participate. It never invents a new boundary and still refuses overlap in
+/// the common coverage pass below.
+fn auto_chain_complete(candidates: &[Candidate], total: Option<u32>) -> Vec<usize> {
+    let total = total.unwrap_or(0);
+    let mut chain = Vec::new();
+    let mut next = 0u32;
+    loop {
+        let pick = candidates
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.start_layer == next)
+            .min_by_key(|(_, c)| (c.end_layer, std::cmp::Reverse(c.holders.len())))
+            .map(|(i, _)| i)
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, c)| c.start_layer > next)
+                    .min_by_key(|(_, c)| (c.start_layer, c.end_layer))
+                    .map(|(i, _)| i)
+            });
+        let Some(i) = pick else { break };
+        chain.push(i);
+        next = candidates[i].end_layer.saturating_add(1);
+        if total > 0 && next >= total {
+            break;
+        }
+    }
+    chain
+}
+
 /// Hand each range in the chain to a machine.
 ///
-/// A machine that already holds a slice is preferred for it: a 10 GB slice takes
-/// ~17 minutes on the real link, so every avoided copy is the difference between
-/// a deploy that finishes now and one that finishes after lunch. Within that,
-/// roomiest first — and because the chain starts at layer 0, the roomiest
-/// machine gets the range that runs the whole prompt of every request.
-fn auto_assign(chain: &[usize], candidates: &[Candidate], machines: &[Machine]) -> Vec<String> {
+/// A machine that already holds a slice is preferred because a copy is costly,
+/// but a peer without that file is still a valid target when its disk and
+/// combined GPU/RAM capacity can receive it. Complete mode then breaks ties by
+/// the measured RTT, current in-flight load and available capacity. This keeps
+/// the planner data-driven: node ids are only values from the live survey.
+fn target_capacity_mb(machine: &Machine) -> u64 {
+    machine
+        .mem_free_mb
+        .max(machine.gpu_free_mb.saturating_add(machine.ram_free_mb))
+}
+
+fn target_capacity_class(candidate: &Candidate, machine: &Machine) -> u8 {
+    if machine
+        .holds(candidate.start_layer, candidate.end_layer)
+        .is_some()
+    {
+        return 0;
+    }
+    let need = needed_mb(candidate.size_bytes);
+    let capacity = target_capacity_mb(machine);
+    if capacity == 0 {
+        return 3;
+    }
+    if capacity >= need {
+        if machine.gpu_free_mb >= need {
+            1
+        } else {
+            2
+        }
+    } else {
+        4
+    }
+}
+
+fn auto_assign(
+    chain: &[usize],
+    candidates: &[Candidate],
+    machines: &[Machine],
+    strategy: DeployStrategy,
+    preferred_node_ids: &[String],
+) -> Vec<String> {
     let mut taken: Vec<String> = Vec::new();
     let mut targets = vec![String::new(); chain.len()];
 
     for (slot, &ci) in chain.iter().enumerate() {
         let c = &candidates[ci];
-        let mut holders: Vec<&Machine> = machines
-            .iter()
-            .filter(|m| !taken.contains(&m.node_id) && c.holders.contains(&m.node_id))
-            .collect();
-        holders.sort_by_key(|m| std::cmp::Reverse(m.mem_free_mb));
-        if let Some(m) = holders.first() {
-            taken.push(m.node_id.clone());
-            targets[slot] = m.node_id.clone();
-        }
-    }
-
-    for target in targets.iter_mut() {
-        if !target.is_empty() {
-            continue;
-        }
-        let mut free: Vec<&Machine> = machines
+        let mut possible: Vec<&Machine> = machines
             .iter()
             .filter(|m| !taken.contains(&m.node_id))
             .collect();
-        free.sort_by_key(|m| std::cmp::Reverse(m.mem_free_mb));
-        if let Some(m) = free.first() {
+        possible.sort_by_key(|m| {
+            (
+                target_capacity_class(c, m),
+                !c.holders.contains(&m.node_id),
+                !preferred_node_ids.iter().any(|id| id == &m.node_id),
+                if strategy == DeployStrategy::Complete {
+                    m.rtt_ms
+                        .map(|rtt| (rtt.max(0.0) * 1000.0) as u64)
+                        .unwrap_or(u64::MAX)
+                } else {
+                    0
+                },
+                if strategy == DeployStrategy::Complete {
+                    m.load
+                } else {
+                    0
+                },
+                std::cmp::Reverse(m.mem_free_mb),
+            )
+        });
+        if let Some(m) = possible.first() {
             taken.push(m.node_id.clone());
-            *target = m.node_id.clone();
+            targets[slot] = m.node_id.clone();
         }
     }
 
@@ -873,6 +1333,7 @@ fn usable_mb(free_mb: u64) -> u64 {
 }
 
 /// Decide who serves what — or check what the operator decided.
+#[cfg(test)]
 fn plan(
     group: &str,
     machines: &[Machine],
@@ -881,6 +1342,61 @@ fn plan(
     merge: bool,
     kind: DeployKind,
     tp: Option<TpLaunch>,
+) -> Plan {
+    plan_with_options(
+        group,
+        machines,
+        selection,
+        params,
+        merge,
+        kind,
+        tp,
+        DeployStrategy::Simple,
+        group,
+        &[],
+    )
+}
+
+#[cfg(test)]
+fn plan_with_options(
+    group: &str,
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    params: &RuntimeParams,
+    merge: bool,
+    kind: DeployKind,
+    tp: Option<TpLaunch>,
+    strategy: DeployStrategy,
+    deployment_name: &str,
+    preferred_node_ids: &[String],
+) -> Plan {
+    plan_with_rtt_options(
+        group,
+        machines,
+        selection,
+        params,
+        merge,
+        kind,
+        tp,
+        strategy,
+        deployment_name,
+        preferred_node_ids,
+        &PairwiseRtt::default(),
+    )
+}
+
+fn plan_with_rtt_options(
+    group: &str,
+    machines: &[Machine],
+    selection: Option<&[SelectedSlice]>,
+    params: &RuntimeParams,
+    merge: bool,
+    kind: DeployKind,
+    tp: Option<TpLaunch>,
+    strategy: DeployStrategy,
+    deployment_name: &str,
+    preferred_node_ids: &[String],
+    pairwise_rtt: &PairwiseRtt,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -895,8 +1411,11 @@ fn plan(
 
     match selection {
         None => {
-            let chain = auto_chain(&available, total_layers);
-            let targets = auto_assign(&chain, &available, machines);
+            let chain = match strategy {
+                DeployStrategy::Simple => auto_chain(&available, total_layers),
+                DeployStrategy::Complete => auto_chain_complete(&available, total_layers),
+            };
+            let targets = auto_assign(&chain, &available, machines, strategy, preferred_node_ids);
             chosen = chain
                 .into_iter()
                 .zip(targets)
@@ -915,12 +1434,16 @@ fn plan(
                     ));
                     continue;
                 };
-                if chosen.iter().any(|(j, ..)| *j == i) {
-                    blocked.get_or_insert(format!(
-                        "{} foi escolhid{} duas vezes",
-                        kind.unit(group, s.start_layer, s.end_layer),
-                        if kind.whole() { "o" } else { "a" }
-                    ));
+                if chosen.iter().any(|(j, target, ..)| {
+                    let existing = &available[*j];
+                    existing.start_layer == s.start_layer
+                        && existing.end_layer == s.end_layer
+                        && target == &s.target_node_id
+                }) {
+                    // Repeating the exact same row is an idempotent UI action.
+                    // It must not turn a valid replica on another peer into a
+                    // refusal, and it must not create two launch steps on one
+                    // peer for the same file.
                     continue;
                 }
                 chosen.push((
@@ -1016,8 +1539,13 @@ fn plan(
     let mut missing: Vec<[u32; 2]> = Vec::new();
     let mut overlap: Vec<[u32; 2]> = Vec::new();
     let mut next = 0u32;
+    let mut covered_exact: Option<(u32, u32)> = None;
     for (i, ..) in &chosen {
         let c = &available[*i];
+        if covered_exact == Some((c.start_layer, c.end_layer)) {
+            continue;
+        }
+        covered_exact = Some((c.start_layer, c.end_layer));
         if c.start_layer > next {
             missing.push([next, c.start_layer - 1]);
         } else if c.start_layer < next {
@@ -1150,6 +1678,9 @@ fn plan(
                     source_path: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
+                    source_sha256: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .and_then(|s| s.sha256.clone()),
                 });
             }
 
@@ -1197,7 +1728,7 @@ fn plan(
                         gb(t.disk_free_mb),
                         gb(disk_need)
                     ));
-                } else if t.mem_free_mb > 0 && mem_need > usable_mb(t.mem_free_mb) {
+                } else if target_capacity_mb(t) > 0 && mem_need > usable_mb(target_capacity_mb(t)) {
                     note = Some(format!(
                         "{} tem {} GB de memória livre para o modelo junto de {} GB",
                         t.label(),
@@ -1226,7 +1757,10 @@ fn plan(
                 start_layer,
                 end_layer,
                 total_layers,
-                name: plan::shard_filename(group, start_layer, end_layer),
+                // O que o operador lê. A identidade de verdade é o hash da
+                // parte, que viaja em `part_sha256`; um "qwen3-8b L0-15" aqui
+                // é rótulo de tela, não chave de nada.
+                name: format!("{group} L{start_layer}-{end_layer}"),
                 size_bytes,
                 target_node_id: target_id.clone(),
                 target_host: target.map(|t| t.label()).unwrap_or_default(),
@@ -1234,6 +1768,7 @@ fn plan(
                 source_node_id: None,
                 source_host: None,
                 source_path: None,
+                source_sha256: None,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -1285,7 +1820,7 @@ fn plan(
                             gb(t.disk_free_mb),
                             gb(need)
                         ));
-                    } else if t.mem_free_mb > 0 && need > usable_mb(t.mem_free_mb) {
+                    } else if target_capacity_mb(t) > 0 && need > usable_mb(target_capacity_mb(t)) {
                         note = Some(format!(
                             "{} tem {} GB de memória livre para {} de {} GB",
                             t.label(),
@@ -1338,6 +1873,9 @@ fn plan(
                     source_path: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
+                    source_sha256: source
+                        .and_then(|m| m.holds(c.start_layer, c.end_layer))
+                        .and_then(|s| s.sha256.clone()),
                     target_path: target
                         .and_then(|t| t.holds(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
@@ -1391,7 +1929,11 @@ fn plan(
             node_id: m.node_id.clone(),
             label: m.label(),
             mem_free_mb: m.mem_free_mb,
+            gpu_free_mb: m.gpu_free_mb,
+            ram_free_mb: m.ram_free_mb,
             disk_free_mb: m.disk_free_mb,
+            rtt_ms: m.rtt_ms,
+            load: m.load,
             holds: m
                 .held
                 .iter()
@@ -1406,8 +1948,101 @@ fn plan(
         })
         .collect();
 
+    let selected_ids: std::collections::HashSet<&str> = steps
+        .iter()
+        .map(|step| step.target_node_id.as_str())
+        .collect();
+    let mut projected: std::collections::HashMap<&str, u32> = machines
+        .iter()
+        .map(|m| (m.node_id.as_str(), m.load))
+        .collect();
+    for step in &steps {
+        if let Some(value) = projected.get_mut(step.target_node_id.as_str()) {
+            *value = value.saturating_add(1);
+        }
+    }
+    let load_distribution = machines
+        .iter()
+        .map(|machine| LoadDistribution {
+            node_id: machine.node_id.clone(),
+            current: machine.load,
+            projected: projected
+                .get(machine.node_id.as_str())
+                .copied()
+                .unwrap_or(machine.load),
+            selected: selected_ids.contains(machine.node_id.as_str()),
+        })
+        .collect();
+
+    // Build edges between consecutive logical layer stages, not between every
+    // pair of machines in the plan. Two exact copies of L0-14 are one stage
+    // with two source choices; treating them as L0-14 -> L0-14 would invent a
+    // backward pipeline hop. A route option is only useful when its target is
+    // one of the selected machines serving the immediately next stage. A peer
+    // that merely has an inference endpoint, or serves a later stage, is not a
+    // bridge for this handoff.
+    let mut stage_ranges: Vec<(u32, u32)> = Vec::new();
+    for step in &steps {
+        let range = (step.start_layer, step.end_layer);
+        if !stage_ranges.contains(&range) {
+            stage_ranges.push(range);
+        }
+    }
+    let mut route_options = Vec::new();
+    for pair in stage_ranges.windows(2) {
+        let from_range = pair[0];
+        let to_range = pair[1];
+        let from_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == from_range && !step.target_node_id.is_empty()
+            })
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let to_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == to_range && !step.target_node_id.is_empty()
+            })
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let selected_from = from_nodes.first();
+        let selected_to = to_nodes.first();
+
+        for from in &from_nodes {
+            for to in &to_nodes {
+                if from == to {
+                    continue;
+                }
+                let Some(machine) = machines.iter().find(|machine| &machine.node_id == to) else {
+                    continue;
+                };
+                if machine.inference_url.is_none() {
+                    continue;
+                }
+                let selected = selected_from == Some(from) && selected_to == Some(to);
+                let rtt_ms = pairwise_rtt.get(from, to);
+                route_options.push(RouteOption {
+                    from_node_id: from.clone(),
+                    to_node_id: to.clone(),
+                    rtt_ms,
+                    selected,
+                    note: if selected {
+                        "rota escolhida".to_string()
+                    } else if rtt_ms.is_some() {
+                        "rota alternativa medida no peer de origem".to_string()
+                    } else {
+                        "rota alternativa sem medição direcional de RTT".to_string()
+                    },
+                });
+            }
+        }
+    }
+
     Plan {
         group: group.to_string(),
+        deployment_name: deployment_name.to_string(),
+        strategy,
         kind,
         tp,
         total_layers,
@@ -1430,6 +2065,8 @@ fn plan(
         ),
         chunk_tokens: crate::gateway::prompt_chunk_of(params.prefill_chunk_tokens, params.n_batch),
         params: params.clone(),
+        route_options,
+        load_distribution,
     }
 }
 
@@ -1450,7 +2087,7 @@ fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Al
         .map(|m| {
             let has = m.holds(c.start_layer, c.end_layer).is_some();
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
-            let tight = m.mem_free_mb > 0 && need > usable_mb(m.mem_free_mb);
+            let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
                 node_id: m.node_id.clone(),
                 label: m.label(),
@@ -1491,7 +2128,7 @@ fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternat
                 .iter()
                 .all(|p| m.holds(p.start_layer, p.end_layer).is_some());
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
-            let tight = m.mem_free_mb > 0 && need > usable_mb(m.mem_free_mb);
+            let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
                 node_id: m.node_id.clone(),
                 label: m.label(),
@@ -1609,9 +2246,16 @@ async fn plan_endpoint(
     State(state): State<GatewayState>,
     Json(req): Json<DeployRequest>,
 ) -> Response {
-    let machines = survey(&state, &req.group, req.kind).await;
+    let deployment_name =
+        match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
+            Ok(name) => name,
+            Err(error) => return bad(json!({ "error": error })),
+        };
+    let survey = survey(&state, &req.group, req.kind).await;
+    let machines = survey.machines;
+    let pairwise_rtt = survey.pairwise_rtt;
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut p = plan(
+    let mut p = plan_with_rtt_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -1619,6 +2263,10 @@ async fn plan_endpoint(
         req.merge,
         req.kind,
         req.tp.clone(),
+        req.strategy,
+        &deployment_name,
+        &req.preferred_node_ids,
+        &pairwise_rtt,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() {
         if let Some(tp) = &req.tp {
@@ -1642,9 +2290,16 @@ async fn deploy_endpoint(
     // meantime would otherwise be handed a slice. What is *not* recomputed is
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
-    let machines = survey(&state, &req.group, req.kind).await;
+    let survey = survey(&state, &req.group, req.kind).await;
+    let machines = survey.machines;
+    let pairwise_rtt = survey.pairwise_rtt;
+    let deployment_name =
+        match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
+            Ok(name) => name,
+            Err(error) => return bad(json!({ "error": error })),
+        };
     let params = effective_params_for_kind(req.kind, &req.params);
-    let mut plan = plan(
+    let mut plan = plan_with_rtt_options(
         &req.group,
         &machines,
         req.selection.as_deref(),
@@ -1652,6 +2307,10 @@ async fn deploy_endpoint(
         req.merge,
         req.kind,
         req.tp.clone(),
+        req.strategy,
+        &deployment_name,
+        &req.preferred_node_ids,
+        &pairwise_rtt,
     );
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
@@ -1685,7 +2344,7 @@ async fn deploy_endpoint(
     // makes an operator wonder what else was written for the other case.
     let title = format!(
         "Implantar {} em {} {}",
-        req.group,
+        deployment_name,
         plan.steps.len(),
         if plan.steps.len() == 1 { "nó" } else { "nós" }
     );
@@ -1694,9 +2353,12 @@ async fn deploy_endpoint(
         new_job(&job_id, "deploy", title, "preparando"),
     );
 
+    // Cunhado antes de subir nada: é o nome desta implantação, e ele vai junto
+    // com cada `apply` para que o nó saiba de que conjunto passou a fazer parte.
+    let deploy_id = crate::deployment::new_deploy_id();
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, &id).await {
+        match run(state, plan, params, &deploy_id, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -1865,6 +2527,28 @@ fn launch_targets(
         None => Vec::new(),
     };
 
+    // Réplicas da mesma faixa ocupam o mesmo estágio lógico do pipeline. Cada
+    // cópia precisa receber o mesmo peer_index/peer_count para exportar o
+    // residual exatamente como a rota principal daquele estágio.
+    let mut pipeline_ranges: Vec<(u32, u32)> = Vec::new();
+    for step in steps {
+        let range = (step.start_layer, step.end_layer);
+        if !pipeline_ranges.contains(&range) {
+            pipeline_ranges.push(range);
+        }
+    }
+    let pipeline_peer_count = pipeline_ranges.len() as u32;
+    let pipeline_fields = |step: &Step| {
+        if kind != DeployKind::Shards {
+            return (None, None);
+        }
+        let index = pipeline_ranges
+            .iter()
+            .position(|range| *range == (step.start_layer, step.end_layer))
+            .unwrap_or(0) as u32;
+        (Some(index), Some(pipeline_peer_count))
+    };
+
     let mut targets = Vec::new();
     for step in steps {
         let target_machine = machines.iter().find(|m| m.node_id == step.target_node_id);
@@ -1893,6 +2577,7 @@ fn launch_targets(
                 .first()
                 .map(|m| m.source_model_path.clone())
                 .ok_or_else(|| format!("{} não tem fatias para juntar", step.target_host))?;
+            let (peer_index, peer_count) = pipeline_fields(step);
 
             targets.push(LaunchTarget {
                 node_id: step.target_node_id.clone(),
@@ -1904,21 +2589,21 @@ fn launch_targets(
                 end_layer: step.end_layer,
                 // Nothing to cut: the merge produces the exact range.
                 skip_split: true,
+                // A junção produz um arquivo novo, cujo hash ninguém conhece
+                // antes de juntar: quem junta é que o nomeia.
+                part_sha256: None,
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
-                // A implantação completa descreve o pipeline inteiro, então a
-                // posição na lista de alvos é a posição real.
-                peer_index: None,
-                peer_count: None,
+                peer_index,
+                peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
             });
             continue;
         }
 
-        let path = target_machine
+        let held = target_machine
             .and_then(|m| m.holds(step.start_layer, step.end_layer))
-            .map(|s| s.path.clone())
             .ok_or_else(|| {
                 format!(
                     "{} não achou {} depois da cópia",
@@ -1926,20 +2611,22 @@ fn launch_targets(
                     kind.unit(&step.name, step.start_layer, step.end_layer)
                 )
             })?;
+        let (peer_index, peer_count) = pipeline_fields(step);
 
         targets.push(LaunchTarget {
             node_id: step.target_node_id.clone(),
-            source_model_path: path,
+            source_model_path: held.path.clone(),
             start_layer: step.start_layer,
             end_layer: step.end_layer,
             // Already a file of exactly this range: nothing to cut. A whole
             // model is the same statement about the whole range.
             skip_split: true,
+            part_sha256: held.sha256.clone(),
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
-            peer_index: None,
-            peer_count: None,
+            peer_index,
+            peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
         });
     }
@@ -1969,6 +2656,9 @@ fn launch_targets(
                 start_layer: head.start_layer,
                 end_layer: head.end_layer,
                 skip_split: true,
+                // O shard de tensor deste rank ainda vai ser extraído aqui; o
+                // hash sai do corte.
+                part_sha256: None,
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
                 offload_kqv: head.offload_kqv,
@@ -1987,6 +2677,7 @@ async fn run(
     state: GatewayState,
     plan: Plan,
     params: RuntimeParams,
+    deploy_id: &str,
     job_id: &str,
 ) -> Result<(), String> {
     let key = state.auth.read().await.connection_key.clone();
@@ -1998,6 +2689,8 @@ async fn run(
         target_host: String,
         source_node_id: String,
         source_path: String,
+        /// Hash da parte, quando a origem a tem endereçada por conteúdo.
+        source_sha256: Option<String>,
         name: String,
         start_layer: u32,
         end_layer: u32,
@@ -2022,6 +2715,7 @@ async fn run(
                     target_host: step.target_host.clone(),
                     source_node_id: source_node.clone(),
                     source_path: source_path.clone(),
+                    source_sha256: part.source_sha256.clone(),
                     name: part.name.clone(),
                     start_layer: part.start_layer,
                     end_layer: part.end_layer,
@@ -2040,6 +2734,7 @@ async fn run(
                 target_host: step.target_host.clone(),
                 source_node_id: source_node.clone(),
                 source_path: source_path.clone(),
+                source_sha256: step.source_sha256.clone(),
                 name: step.name.clone(),
                 start_layer: step.start_layer,
                 end_layer: step.end_layer,
@@ -2080,8 +2775,15 @@ async fn run(
             let body: serde_json::Value = cliente
                 .post(format!("{gateway}/api/transfer/pull"))
                 .bearer_auth(&key)
+                // Por hash sempre que a origem souber o dela. É o que faz a
+                // fatia cair em `<shard_dir>/<modelo>/<sha>.gguf` com o `.pom`
+                // ao lado, em vez de solta na raiz parecendo um modelo
+                // inteiro. O pedido por caminho fica para a fatia sem hash -
+                // um arquivo que ninguém endereçou por conteúdo ainda.
                 .json(&json!({
                     "node_id": pull.source_node_id,
+                    "sha256": pull.source_sha256,
+                    "model": plan.group,
                     "remote_path": pull.source_path,
                     "name": pull.name,
                 }))
@@ -2121,7 +2823,7 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group, plan.kind).await;
+    let machines = survey(&state, &plan.group, plan.kind).await.machines;
     let targets = launch_targets(&plan.steps, &machines, plan.kind, plan.tp.as_ref())?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
@@ -2138,14 +2840,31 @@ async fn run(
         .total_layers
         .ok_or_else(|| format!("as fatias de {} não dizem o total de camadas", plan.group))?;
 
+    // O registro da implantação nasce aqui, com os alvos já resolvidos: é o
+    // último ponto em que se sabe, de uma vez só, quem recebeu qual faixa e com
+    // que configuração. Depois do `launch` essa intenção se dissolvia em N
+    // `NodeConfig` espalhados, e ninguém no cluster sabia mais dizer que
+    // aqueles nós eram *a mesma* implantação.
+    let registro = build_record(
+        deploy_id,
+        &plan,
+        &targets,
+        &machines,
+        total_layers,
+        &params,
+        &state.network.node_id,
+    );
+
     let response = launch(
         ConnectionAuth,
-        State(state),
+        State(state.clone()),
         Json(LaunchRequest {
+            deploy_id: deploy_id.to_string(),
             base_name: plan.group.clone(),
             // `group` is the selected value from the deployment model picker.
             // Its name is the cluster identity, not a heuristic profile name.
             model_label: Some(plan.group.clone()),
+            deployment_name: plan.deployment_name.clone(),
             total_layers,
             targets,
             primary_node_id: primary,
@@ -2157,7 +2876,606 @@ async fn run(
     if !response.status().is_success() {
         return Err(refusal(response).await);
     }
+
+    // Só depois do launch dar certo: um registro de implantação que não subiu
+    // seria uma implantação fantasma na listagem, e a tela de desimplantar
+    // ofereceria algo que não está no ar.
+    publish_record(&state, &registro).await;
     Ok(())
+}
+
+/// Monta o registro a partir do que o plano e os alvos já dizem.
+///
+/// Nada aqui é recalculado: as faixas, a posição no pipeline e os ajustes por
+/// máquina são exatamente os que foram para o `launch`. Guardar o **resultado**
+/// é o que faz "com que configuração aquela máquina subiu?" ser uma leitura em
+/// vez de uma reconstrução.
+fn build_record(
+    deploy_id: &str,
+    plan: &Plan,
+    targets: &[LaunchTarget],
+    machines: &[Machine],
+    total_layers: u32,
+    params: &RuntimeParams,
+    created_by: &str,
+) -> crate::deployment::Deployment {
+    let kind = match plan.kind {
+        DeployKind::Shards => crate::deployment::DeploymentKind::Shards,
+        DeployKind::Whole => crate::deployment::DeploymentKind::Whole,
+        DeployKind::TensorParallel => crate::deployment::DeploymentKind::TensorParallel,
+    };
+
+    let total_alvos = targets.len() as u32;
+    let nodes = targets
+        .iter()
+        .enumerate()
+        .map(|(i, t)| crate::deployment::DeploymentNode {
+            node_id: t.node_id.clone(),
+            hostname: machines
+                .iter()
+                .find(|m| m.node_id == t.node_id)
+                .map(|m| m.label())
+                .unwrap_or_default(),
+            start_layer: t.start_layer,
+            end_layer: t.end_layer,
+            peer_index: t.peer_index.unwrap_or(i as u32),
+            peer_count: t.peer_count.unwrap_or(total_alvos),
+            primary: plan
+                .steps
+                .iter()
+                .any(|s| s.primary && s.target_node_id == t.node_id),
+            part_sha256: t.part_sha256.clone(),
+            tp_rank: t.tp.as_ref().map(|tp| tp.rank),
+            // A mesma função que o `launch` usa para decidir o que cada máquina
+            // recebe, para o registro não poder divergir do que subiu.
+            config: crate::webui::params_for(params, t),
+        })
+        .collect();
+
+    crate::deployment::Deployment::new(
+        deploy_id.to_string(),
+        kind,
+        crate::deployment::DeploymentModel {
+            label: plan.group.clone(),
+            total_layers,
+            pom_id: None,
+        },
+        created_by,
+        nodes,
+    )
+}
+
+/// Grava o registro neste nó e manda uma cópia para cada participante.
+///
+/// Cada nó guarda o próprio exemplar: não há dono único que, ao cair, leve a
+/// implantação junto, e um nó que reinicia lê no disco de que implantação ele
+/// fazia parte. Uma cópia que não chega não derruba a implantação - ela já está
+/// no ar; o que se perde é aquele nó saber se explicar depois de um reinício.
+async fn publish_record(state: &GatewayState, registro: &crate::deployment::Deployment) {
+    if let Err(e) = crate::deployment::save(registro) {
+        warn!(
+            "não deu para anotar a implantação {}: {e:#}",
+            registro.deploy_id
+        );
+    }
+
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+
+    for no in &registro.nodes {
+        if no.node_id == self_id {
+            continue;
+        }
+        let Some(base) = peers
+            .iter()
+            .find(|p| p.node_id == no.node_id)
+            .and_then(|p| p.gateway_url())
+        else {
+            warn!("{} não anuncia gateway; sem cópia do registro", no.node_id);
+            continue;
+        };
+        let Ok(cliente) = state.peer_http.for_peer(&no.node_id) else {
+            continue;
+        };
+        let envio = cliente
+            .post(format!("{base}/api/ui/deployments"))
+            .bearer_auth(&key)
+            .timeout(PEER_TIMEOUT)
+            .json(registro)
+            .send()
+            .await;
+        if let Err(e) = envio {
+            warn!("{} não aceitou o registro da implantação: {e}", no.node_id);
+        }
+    }
+}
+
+// ── Mexer numa implantação que já está no ar ─────────────────────────────────
+
+/// Acha o registro de uma implantação, aqui ou em quem tiver.
+///
+/// Nem todo nó guarda todo registro - só os participantes guardam -, então o
+/// coordenador de um `redeploy` pode perfeitamente não ter a cópia.
+async fn find_record(
+    state: &GatewayState,
+    deploy_id: &str,
+) -> Option<crate::deployment::Deployment> {
+    if let Ok(caminho) = crate::deployment::path_in(&crate::deployment::dir(), deploy_id) {
+        if let Ok(d) = crate::deployment::load(&caminho) {
+            return Some(d);
+        }
+    }
+
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let buscas = state.all_peers().await.into_iter().filter_map(|peer| {
+        if peer.node_id == self_id {
+            return None;
+        }
+        let http = state.peer_http.for_peer(&peer.node_id).ok()?;
+        let base = peer.gateway_url()?;
+        let key = key.clone();
+        let alvo = deploy_id.to_string();
+        Some(async move {
+            let body: serde_json::Value = http
+                .get(format!("{base}/api/ui/deployments?local=true"))
+                .bearer_auth(&key)
+                .timeout(PEER_TIMEOUT)
+                .send()
+                .await
+                .ok()?
+                .json()
+                .await
+                .ok()?;
+            let registros: Vec<crate::deployment::Deployment> =
+                serde_json::from_value(body.get("deployments")?.clone()).ok()?;
+            registros.into_iter().find(|d| d.deploy_id == alvo)
+        })
+    });
+
+    futures::future::join_all(buscas)
+        .await
+        .into_iter()
+        .flatten()
+        .next()
+}
+
+/// Torna esta a implantação que atende quem pede só o nome do modelo.
+///
+/// Mexe no `activated_at` e reespalha. Como a escolha da padrão é **derivada**
+/// (a de ativação mais recente), não há eleição nem quórum: basta o carimbo
+/// novo chegar, e quem receber converge sozinho. Ver `deployment::active`.
+async fn activate_deployment(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+) -> Response {
+    if !crate::deployment::is_deploy_id(&id) {
+        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+    }
+    let Some(mut registro) = find_record(&state, &id).await else {
+        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+    };
+
+    registro.activated_at = chrono::Utc::now().to_rfc3339();
+    publish_record(&state, &registro).await;
+
+    Json(json!({
+        "activated": true,
+        "deploy_id": registro.deploy_id,
+        "model": registro.model.label,
+    }))
+    .into_response()
+}
+
+/// Ajuste por máquina, para os dois botões que são de verdade por máquina.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PerNodeParams {
+    #[serde(default)]
+    pub n_gpu_layers: Option<u32>,
+    #[serde(default)]
+    pub offload_kqv: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct RedeployRequest {
+    pub params: RuntimeParams,
+    /// Ajustes por máquina, por `node_id`. Ausente = todo mundo com os mesmos.
+    #[serde(default)]
+    pub per_node: HashMap<String, PerNodeParams>,
+}
+
+/// O que aconteceu com **uma** máquina numa reconfiguração.
+#[derive(Debug, Serialize)]
+pub struct RedeployOutcome {
+    pub node_id: String,
+    pub hostname: String,
+    pub reconfigured: bool,
+    pub error: Option<String>,
+}
+
+/// Reimplanta mexendo só nos parâmetros.
+///
+/// A mesma implantação, o mesmo `deploy_id`, as mesmas máquinas e as mesmas
+/// faixas - só os parâmetros mudam. Por isso **não** passa pelo `deploy`: não
+/// há o que planejar nem o que copiar, e re-planejar cunharia uma implantação
+/// nova, quebrando todo cliente preso a `modelo@deploy_id`.
+///
+/// Cada nó recebe um `/api/ui/reconfigure`, que relê o próprio `NodeConfig` e
+/// troca só os parâmetros (ver `NodeConfig::with_params`). O registro é
+/// reescrito **depois** de os nós aceitarem: um registro que descreve uma
+/// configuração que ninguém está rodando é pior que um registro velho.
+async fn redeploy_endpoint(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Path(id): Path<String>,
+    Json(req): Json<RedeployRequest>,
+) -> Response {
+    if !crate::deployment::is_deploy_id(&id) {
+        return bad(json!({ "error": format!("deploy_id inválido: {id}") }));
+    }
+    let Some(registro) = find_record(&state, &id).await else {
+        return bad(json!({ "error": format!("implantação {id} desconhecida") }));
+    };
+
+    let job_id = uuid::Uuid::new_v4().to_string();
+    let titulo = format!(
+        "Reconfigurar {} em {} {}",
+        registro.model.label,
+        registro.nodes.len(),
+        if registro.nodes.len() == 1 {
+            "nó"
+        } else {
+            "nós"
+        }
+    );
+    jobs().write().await.insert(
+        job_id.clone(),
+        new_job(&job_id, "redeploy", titulo, "recarregando"),
+    );
+
+    let id_job = job_id.clone();
+    tokio::spawn(async move {
+        match run_redeploy(state, registro, req, &id_job).await {
+            Ok(falhas) if falhas == 0 => {
+                set_job(&id_job, "done", "pronto", "as máquinas recarregaram").await
+            }
+            Ok(falhas) => {
+                set_job(
+                    &id_job,
+                    "failed",
+                    "parcial",
+                    &format!("{falhas} máquina(s) não recarregaram"),
+                )
+                .await
+            }
+            Err(e) => {
+                warn!("reconfiguração falhou: {e}");
+                set_job(&id_job, "failed", "falhou", &e).await
+            }
+        }
+    });
+
+    Json(json!({ "job_id": job_id, "deploy_id": id })).into_response()
+}
+
+async fn run_redeploy(
+    state: GatewayState,
+    mut registro: crate::deployment::Deployment,
+    req: RedeployRequest,
+    job_id: &str,
+) -> Result<usize, String> {
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+    let total = registro.nodes.len().max(1);
+
+    let mut resultados: Vec<RedeployOutcome> = Vec::new();
+    let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
+
+    // Uma máquina de cada vez, de propósito: recarregar o modelo é o pico de
+    // memória do nó, e mandar o cluster inteiro fazer isso junto é o caminho
+    // mais curto para várias quedas por falta de VRAM ao mesmo tempo.
+    for (i, no) in registro.nodes.iter().enumerate() {
+        set_job(
+            job_id,
+            "running",
+            "recarregando",
+            &format!("{} ({}/{})", no.hostname, i + 1, total),
+        )
+        .await;
+        set_job_progress(job_id, 100.0 * i as f64 / total as f64).await;
+
+        // Os ajustes por máquina entram por cima dos parâmetros comuns; sem
+        // ajuste, a máquina fica com os dela, que é o que a tela mostrou.
+        let mut params = req.params.clone();
+        if let Some(ajuste) = req.per_node.get(&no.node_id) {
+            if let Some(g) = ajuste.n_gpu_layers {
+                params.n_gpu_layers = g;
+            }
+            if let Some(k) = ajuste.offload_kqv {
+                params.offload_kqv = k;
+            }
+        }
+
+        let erro = reconfigure_one(&state, &peers, &no.node_id, &self_id, &key, &params).await;
+        match erro {
+            None => {
+                aceitos.insert(no.node_id.clone(), params);
+                resultados.push(RedeployOutcome {
+                    node_id: no.node_id.clone(),
+                    hostname: no.hostname.clone(),
+                    reconfigured: true,
+                    error: None,
+                });
+            }
+            Some(e) => resultados.push(RedeployOutcome {
+                node_id: no.node_id.clone(),
+                hostname: no.hostname.clone(),
+                reconfigured: false,
+                error: Some(e),
+            }),
+        }
+    }
+
+    // Só o que a máquina de fato aceitou entra no registro. Uma que recusou
+    // continua descrita com a configuração antiga, que é a que ela está
+    // rodando - o registro tem que dizer o que **é**, não o que se pediu.
+    for no in registro.nodes.iter_mut() {
+        if let Some(p) = aceitos.remove(&no.node_id) {
+            no.config = p;
+        }
+    }
+    publish_record(&state, &registro).await;
+
+    let falhas = resultados.iter().filter(|r| !r.reconfigured).count();
+    set_job_progress(job_id, 100.0).await;
+    {
+        let mut map = jobs().write().await;
+        if let Some(j) = map.get_mut(job_id) {
+            j.outputs = resultados
+                .iter()
+                .map(|r| match &r.error {
+                    Some(e) => format!("{}: {e}", r.hostname),
+                    None => format!("{}: recarregada", r.hostname),
+                })
+                .collect();
+        }
+    }
+    Ok(falhas)
+}
+
+/// Manda **uma** máquina recarregar com outros parâmetros.
+async fn reconfigure_one(
+    state: &GatewayState,
+    peers: &[PeerInfo],
+    node_id: &str,
+    self_id: &str,
+    key: &str,
+    params: &RuntimeParams,
+) -> Option<String> {
+    let corpo = json!({ "params": params });
+
+    if node_id == self_id {
+        let resposta = crate::webui::reconfigure_local(state.clone(), params.clone()).await;
+        return resposta.err();
+    }
+
+    let base = peers
+        .iter()
+        .find(|p| p.node_id == node_id)
+        .and_then(|p| p.gateway_url())?;
+    let cliente = state.peer_http.for_peer(node_id).ok()?;
+    match cliente
+        .post(format!("{base}/api/ui/reconfigure"))
+        .bearer_auth(key)
+        // Recarregar pesos é minutos, não segundos: o `PEER_TIMEOUT` de uma
+        // chamada de controle mataria a conexão no meio de um carregamento que
+        // vai terminar bem.
+        .timeout(Duration::from_secs(1800))
+        .json(&corpo)
+        .send()
+        .await
+    {
+        Ok(r) if r.status().is_success() => None,
+        Ok(r) => {
+            let status = r.status();
+            let detalhe = r.text().await.unwrap_or_default();
+            Some(format!("a máquina recusou: HTTP {status} {detalhe}"))
+        }
+        Err(e) => Some(format!("máquina inacessível: {e}")),
+    }
+}
+
+/// A visão do cluster e o que a tela de implantações precisa saber.
+#[cfg(test)]
+mod deployments_tests {
+    use super::*;
+    use crate::deployment::{Deployment, DeploymentKind, DeploymentModel, DeploymentNode};
+    use crate::gateway::testkit::{body_of, state_with};
+    use axum::routing::get as axum_get;
+
+    fn no(id: &str, inicio: u32, fim: u32) -> DeploymentNode {
+        DeploymentNode {
+            node_id: id.into(),
+            hostname: id.into(),
+            start_layer: inicio,
+            end_layer: fim,
+            peer_index: 0,
+            peer_count: 1,
+            primary: true,
+            part_sha256: None,
+            tp_rank: None,
+            config: RuntimeParams::default(),
+        }
+    }
+
+    fn registro(id: &str, rotulo: &str, ativado: &str) -> Deployment {
+        let mut d = Deployment::new(
+            id.into(),
+            DeploymentKind::Shards,
+            DeploymentModel {
+                label: rotulo.into(),
+                total_layers: 32,
+                pom_id: None,
+            },
+            "coordenador",
+            vec![no("n1", 0, 31)],
+        );
+        d.activated_at = ativado.into();
+        d
+    }
+
+    /// Um peer que responde `/api/ui/deployments?local=true` com os registros dados.
+    async fn peer_with_records(registros: Vec<Deployment>) -> u16 {
+        let corpo = json!({ "node_id": "outro", "deployments": registros });
+        let app = Router::new().route(
+            "/api/ui/deployments",
+            axum_get(move || {
+                let corpo = corpo.clone();
+                async move { Json(corpo) }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        port
+    }
+
+    /// O registro tem uma cópia por nó participante, então a listagem junta e
+    /// **deduplica** - senão uma implantação de três nós apareceria três vezes.
+    /// Empate desfeito pela ativação mais recente: um nó que estava fora do ar
+    /// durante um `activate` tem a cópia velha, e ela não pode ganhar.
+    #[tokio::test]
+    async fn copies_of_one_deployment_collapse_to_the_newest() {
+        let velha = registro("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
+        let nova = registro("d-aaaaaaaa", "qwen3:8b", "2026-08-19T00:00:00Z");
+
+        let porta = peer_with_records(vec![nova.clone()]).await;
+        let mut peer = crate::gateway::testkit::peer("outro", "outro", porta);
+        peer.model = "qwen3:8b".into();
+        peer.deploy_id = "d-aaaaaaaa".into();
+        peer.total_layers = 32;
+
+        let state = state_with("eu", vec![peer]).await;
+        let _ = velha; // a cópia velha vive no disco de quem não respondeu
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: false }),
+        )
+        .await;
+        let body = body_of(resp).await;
+
+        let linhas = body["deployments"].as_array().unwrap();
+        assert_eq!(linhas.len(), 1, "uma implantação, uma linha");
+        assert_eq!(linhas[0]["deployment"]["deploy_id"], "d-aaaaaaaa");
+        assert_eq!(
+            linhas[0]["deployment"]["activated_at"], "2026-08-19T00:00:00Z",
+            "a cópia mais recentemente ativada é a que vale"
+        );
+        assert_eq!(linhas[0]["serving"], true, "há peer vivo anunciando o id");
+        assert_eq!(linhas[0]["is_default"], true, "é a única do seu modelo");
+    }
+
+    /// "No ar" e "padrão" são coisas diferentes, e a tela não pode confundir:
+    /// duas implantações do mesmo modelo podem estar **as duas** servindo, mas
+    /// só uma atende quem pede o nome pelado.
+    #[tokio::test]
+    async fn serving_and_default_are_not_the_same_thing() {
+        let antiga = registro("d-aaaaaaaa", "qwen3:8b", "2026-01-01T00:00:00Z");
+        let recente = registro("d-bbbbbbbb", "qwen3:8b", "2026-08-19T00:00:00Z");
+
+        let porta = peer_with_records(vec![antiga, recente]).await;
+        let mut p1 = crate::gateway::testkit::peer("outro", "outro", porta);
+        p1.model = "qwen3:8b".into();
+        p1.deploy_id = "d-aaaaaaaa".into();
+        p1.total_layers = 32;
+        // Só a `d-aaaaaaaa` tem peer vivo; a `d-bbbbbbbb` está registrada mas
+        // ninguém a está servindo.
+        let state = state_with("eu", vec![p1]).await;
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: false }),
+        )
+        .await;
+        let body = body_of(resp).await;
+        let linhas = body["deployments"].as_array().unwrap();
+        assert_eq!(linhas.len(), 2);
+
+        let por_id = |id: &str| -> serde_json::Value {
+            linhas
+                .iter()
+                .find(|l| l["deployment"]["deploy_id"] == id)
+                .cloned()
+                .unwrap()
+        };
+
+        let a = por_id("d-aaaaaaaa");
+        assert_eq!(a["serving"], true, "tem peer anunciando");
+        assert_eq!(a["is_default"], false, "mas não é a mais recente");
+
+        let b = por_id("d-bbbbbbbb");
+        assert_eq!(b["serving"], false, "registrada, mas ninguém no ar");
+        assert_eq!(b["is_default"], true, "é a de ativação mais recente");
+    }
+
+    /// `?local=true` responde do disco e **não** varre o cluster - é o que
+    /// impede a varredura de se chamar em círculo, um nó perguntando ao outro
+    /// que pergunta de volta.
+    #[tokio::test]
+    async fn the_local_answer_does_not_fan_out() {
+        let porta = peer_with_records(vec![registro(
+            "d-cccccccc",
+            "qwen3:8b",
+            "2026-08-19T00:00:00Z",
+        )])
+        .await;
+        let peer = crate::gateway::testkit::peer("outro", "outro", porta);
+        let state = state_with("eu", vec![peer]).await;
+
+        let resp = list_deployments(
+            ConnectionAuth,
+            State(state),
+            Query(ListDeploymentsQuery { local: true }),
+        )
+        .await;
+        let body = body_of(resp).await;
+
+        // O registro do peer não aparece: esta resposta é só do disco local.
+        assert!(body["deployments"].as_array().unwrap().is_empty());
+        assert!(body.get("node_id").is_some());
+    }
+
+    #[tokio::test]
+    async fn a_bogus_deploy_id_is_refused_before_anything_happens() {
+        let state = state_with("eu", vec![]).await;
+        let resp = activate_deployment(
+            ConnectionAuth,
+            State(state.clone()),
+            Path("../../etc/passwd".to_string()),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+
+        let resp = redeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Path("nao-e-id".to_string()),
+            Json(RedeployRequest {
+                params: RuntimeParams::default(),
+                per_node: HashMap::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
 }
 
 // ── Somar ou tirar uma maquina de um modelo ja no ar ─────────────────────────
@@ -2169,6 +3487,11 @@ async fn run(
 #[derive(Debug, Deserialize)]
 pub struct AddNodeRequest {
     pub group: String,
+    /// A implantação que ganha a máquina. Vazio enquanto a tela não manda:
+    /// aí o nó entra sem registro, servindo a faixa, e a implantação segue
+    /// sendo identificada pelo rótulo como antes.
+    #[serde(default)]
+    pub deploy_id: String,
     /// Which catalog the range is looked up in. A whole model already in
     /// service takes a second machine the same way a slice does — the added
     /// node becomes a parallel route over the same layers.
@@ -2209,7 +3532,7 @@ async fn add_node_endpoint(
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
-    let machines = survey(&state, &req.group, req.kind).await;
+    let machines = survey(&state, &req.group, req.kind).await.machines;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
         return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
     };
@@ -2223,6 +3546,7 @@ async fn add_node_endpoint(
         }));
     };
     let source_model_path = shard.path.clone();
+    let shard_sha256 = shard.sha256.clone();
 
     let outras: Vec<(u32, u32)> = live_ranges(&state, &req.group)
         .await
@@ -2258,8 +3582,10 @@ async fn add_node_endpoint(
         ConnectionAuth,
         State(state),
         Json(LaunchRequest {
+            deploy_id: req.deploy_id.clone(),
             base_name: req.group.clone(),
             model_label: Some(req.group.clone()),
+            deployment_name: req.group.clone(),
             total_layers,
             // Um alvo so: o `launch` para a inferencia dos alvos que recebe, e
             // esta lista tem exatamente a maquina que esta entrando.
@@ -2269,6 +3595,7 @@ async fn add_node_endpoint(
                 start_layer: req.start_layer,
                 end_layer: req.end_layer,
                 skip_split: true,
+                part_sha256: shard_sha256,
                 merge: None,
                 n_gpu_layers: None,
                 offload_kqv: None,
@@ -2406,6 +3733,13 @@ pub struct UndeployRequest {
     /// que é o caso do painel: ele mostra uma pipeline de cada vez.
     #[serde(default)]
     pub group: String,
+    /// A implantação exata que sai do ar.
+    ///
+    /// É a saída para o beco em que `resolve_group` batia: com duas
+    /// implantações no ar - inclusive **do mesmo modelo**, que agora é
+    /// possível - o rótulo não distingue, e o id sim.
+    #[serde(default)]
+    pub deploy_id: String,
 }
 
 /// O que aconteceu com **uma** máquina. Uma linha por máquina, sempre — inclusive
@@ -2447,8 +3781,8 @@ async fn undeploy_endpoint(
     }
 
     let peers = state.all_peers().await;
-    let group = match resolve_group(&req.group, &peers) {
-        Ok(g) => g,
+    let alvo = match resolve_target(&req.deploy_id, &req.group, &peers) {
+        Ok(a) => a,
         Err(e) => return bad(json!({ "error": e })),
     };
 
@@ -2456,15 +3790,20 @@ async fn undeploy_endpoint(
     // no meio tempo não pode virar uma linha de falha inventada.
     let serving: Vec<PeerInfo> = peers
         .into_iter()
-        .filter(|p| p.model == group && p.total_layers > 0)
+        .filter(|p| p.total_layers > 0 && alvo.matches(p))
         .collect();
     if serving.is_empty() {
         return bad(json!({
-            "error": format!("nenhuma máquina está servindo {group}")
+            "error": format!("nenhuma máquina está servindo {}", alvo.describe())
         }));
     }
 
-    info!("desimplantando {group} de {} máquina(s)", serving.len());
+    let group = alvo.label();
+    info!(
+        "desimplantando {} de {} máquina(s)",
+        alvo.describe(),
+        serving.len()
+    );
 
     let key = state.auth.read().await.connection_key.clone();
     let self_id = state.network.node_id.clone();
@@ -2501,8 +3840,23 @@ async fn undeploy_endpoint(
         warn!("{failed} máquina(s) não confirmaram a desimplantação de {group}");
     }
 
+    // O registro só é esquecido depois: um registro apagado com máquinas ainda
+    // servindo deixaria memória presa sem nada que a nomeasse. Neste nó basta
+    // apagar o arquivo; os outros participantes apagam o seu ao serem
+    // descarregados, e um que não respondeu guarda o dele - que é o certo, já
+    // que ele ainda está no ar.
+    if let UndeployTarget::Deployment { deploy_id, .. } = &alvo {
+        if let Err(e) = crate::deployment::remove_in(&crate::deployment::dir(), deploy_id) {
+            warn!("não deu para esquecer a implantação {deploy_id}: {e:#}");
+        }
+    }
+
     Json(json!({
         "group": group,
+        "deploy_id": match &alvo {
+            UndeployTarget::Deployment { deploy_id, .. } => Some(deploy_id.clone()),
+            UndeployTarget::Label(_) => None,
+        },
         "released": released,
         "failed": failed,
         "results": results,
@@ -2534,6 +3888,69 @@ fn resolve_group(requested: &str, peers: &[PeerInfo]) -> Result<String, String> 
             models.join(", ")
         )),
     }
+}
+
+/// O que uma desimplantação vai derrubar: uma implantação, ou tudo que serve um
+/// rótulo.
+enum UndeployTarget {
+    /// Escolha exata. É o que distingue duas implantações do mesmo modelo.
+    Deployment { deploy_id: String, label: String },
+    /// Todo mundo que serve este rótulo, que é o comportamento de sempre e o
+    /// único possível com peers que não anunciam implantação.
+    Label(String),
+}
+
+impl UndeployTarget {
+    fn matches(&self, p: &PeerInfo) -> bool {
+        match self {
+            UndeployTarget::Deployment { deploy_id, .. } => &p.deploy_id == deploy_id,
+            UndeployTarget::Label(l) => &p.model == l,
+        }
+    }
+    fn label(&self) -> String {
+        match self {
+            UndeployTarget::Deployment { label, .. } => label.clone(),
+            UndeployTarget::Label(l) => l.clone(),
+        }
+    }
+    fn describe(&self) -> String {
+        match self {
+            UndeployTarget::Deployment { deploy_id, label } if label.is_empty() => {
+                format!("a implantação {deploy_id}")
+            }
+            UndeployTarget::Deployment { deploy_id, label } => {
+                format!("{label} (implantação {deploy_id})")
+            }
+            UndeployTarget::Label(l) => l.clone(),
+        }
+    }
+}
+
+/// Qual implantação o pedido quer derrubar.
+///
+/// Com `deploy_id`, não há o que deduzir - é aquela, e o rótulo serve só para a
+/// mensagem. Sem ele, cai na regra antiga sobre rótulos, que continua sendo a
+/// certa num cluster onde cada modelo está no ar uma vez só.
+fn resolve_target(
+    deploy_id: &str,
+    group: &str,
+    peers: &[PeerInfo],
+) -> Result<UndeployTarget, String> {
+    if !deploy_id.is_empty() {
+        if !crate::deployment::is_deploy_id(deploy_id) {
+            return Err(format!("deploy_id inválido: {deploy_id}"));
+        }
+        let label = peers
+            .iter()
+            .find(|p| p.deploy_id == deploy_id)
+            .map(|p| p.model.clone())
+            .unwrap_or_else(|| group.to_string());
+        return Ok(UndeployTarget::Deployment {
+            deploy_id: deploy_id.to_string(),
+            label,
+        });
+    }
+    resolve_group(group, peers).map(UndeployTarget::Label)
 }
 
 /// Libera a memória de **uma** máquina, pela mesma porta do botão que já existe.
@@ -2918,6 +4335,74 @@ mod undeploy_tests {
         (port, hits)
     }
 
+    /// Duas implantações do mesmo modelo: derrubar uma tem que deixar a outra
+    /// servindo.
+    ///
+    /// Antes do `deploy_id` isto era inexprimível nos dois sentidos - não dava
+    /// para ter as duas no ar, e `resolve_group` só sabia falar de rótulos, de
+    /// modo que um "desimplantar qwen35" teria levado as duas junto.
+    #[tokio::test]
+    async fn undeploying_one_deployment_leaves_the_other_serving() {
+        let (porta_a, chamadas_a) = fake_machine(axum::http::StatusCode::OK).await;
+        let (porta_b, chamadas_b) = fake_machine(axum::http::StatusCode::OK).await;
+
+        let mut a = peer("no-a", "maquina-a", porta_a, (0, 31));
+        let mut b = peer("no-b", "maquina-b", porta_b, (0, 31));
+        a.deploy_id = "d-aaaaaaaa".into();
+        b.deploy_id = "d-bbbbbbbb".into();
+
+        let state = state_with("eu", vec![a, b]).await;
+        state.auth.write().await.role = Role::Principal;
+
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                deploy_id: "d-aaaaaaaa".into(),
+                group: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::OK);
+        let body = body_of(resp).await;
+
+        assert_eq!(body["released"], 1, "só a implantação escolhida sai do ar");
+        assert_eq!(
+            body["results"].as_array().unwrap().len(),
+            1,
+            "a outra implantação nem aparece no relatório"
+        );
+        assert_eq!(chamadas_a.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            chamadas_b.load(Ordering::SeqCst),
+            0,
+            "a máquina da outra implantação não pode ser tocada"
+        );
+    }
+
+    /// Um id que ninguém serve não pode virar "derruba o rótulo inteiro".
+    #[tokio::test]
+    async fn an_unknown_deployment_id_releases_nothing() {
+        let (porta, chamadas) = fake_machine(axum::http::StatusCode::OK).await;
+        let mut a = peer("no-a", "maquina-a", porta, (0, 31));
+        a.deploy_id = "d-aaaaaaaa".into();
+
+        let state = state_with("eu", vec![a]).await;
+        state.auth.write().await.role = Role::Principal;
+
+        let resp = undeploy_endpoint(
+            ConnectionAuth,
+            State(state),
+            Json(UndeployRequest {
+                deploy_id: "d-cccccccc".into(),
+                group: String::new(),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), axum::http::StatusCode::BAD_REQUEST);
+        assert_eq!(chamadas.load(Ordering::SeqCst), 0);
+    }
+
     /// O relatório tem uma linha por máquina, e uma máquina que não confirmou
     /// **não** conta como liberada. Fingir sucesso aqui deixaria memória presa
     /// numa caixa que o operador acha que esvaziou.
@@ -2939,6 +4424,7 @@ mod undeploy_tests {
             ConnectionAuth,
             State(state),
             Json(UndeployRequest {
+                deploy_id: String::new(),
                 group: "qwen35".into(),
             }),
         )
@@ -2993,6 +4479,7 @@ mod undeploy_tests {
                 ConnectionAuth,
                 State(state),
                 Json(UndeployRequest {
+                    deploy_id: String::new(),
                     group: "qwen35".into(),
                 }),
             )
@@ -3016,6 +4503,7 @@ mod undeploy_tests {
             ConnectionAuth,
             State(state),
             Json(UndeployRequest {
+                deploy_id: String::new(),
                 group: String::new(),
             }),
         )
@@ -3052,6 +4540,30 @@ mod undeploy_tests {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deployment_request_defaults_to_simple_and_normalizes_name() {
+        let req: super::DeployRequest = serde_json::from_value(serde_json::json!({
+            "group": "qwen35"
+        }))
+        .expect("request válida");
+
+        assert_eq!(req.strategy, super::DeployStrategy::Simple);
+        assert_eq!(
+            super::normalize_deployment_name(req.deployment_name.as_deref(), &req.group)
+                .expect("nome padrão"),
+            "qwen35"
+        );
+    }
+
+    #[test]
+    fn deployment_name_rejects_blank_and_overlong_values() {
+        assert_eq!(
+            super::normalize_deployment_name(Some("  "), "qwen35").expect("fallback"),
+            "qwen35"
+        );
+        assert!(super::normalize_deployment_name(Some(&"x".repeat(129)), "qwen35").is_err());
+    }
+
     /// O tipo tensor-parallel nomeia o grupo, não uma fatia nem um modelo: a
     /// tela oferece o formato, e a recusa tem que falar a língua do formato.
     #[test]
@@ -3191,7 +4703,11 @@ mod tests {
                 libp2p_peer_id: None,
                 supports_tunnel: false,
                 mem_free_mb: s.mem_free_mb,
+                gpu_free_mb: s.mem_free_mb,
+                ram_free_mb: s.mem_free_mb,
                 disk_free_mb: s.disk_free_mb,
+                rtt_ms: None,
+                load: 0,
                 held: s
                     .held
                     .iter()
@@ -3201,6 +4717,7 @@ mod tests {
                         total_layers: s.declares,
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
+                        sha256: None,
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -3274,6 +4791,36 @@ mod tests {
         assert_eq!(p.transfer_bytes, 0);
         assert!(p.steps.iter().all(|s| s.ready));
         assert!(p.auto);
+    }
+
+    #[test]
+    fn complete_strategy_prefers_existing_finer_cuts() {
+        let ms = build(vec![
+            m("whole", 900_000, &[(0, 31)]),
+            m("left", 500_000, &[(0, 15)]),
+            m("right", 500_000, &[(16, 31)]),
+        ]);
+        let p = super::plan_with_options(
+            "m",
+            &ms,
+            None,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Complete,
+            "chat-prod",
+            &[],
+        );
+        assert_eq!(p.strategy, DeployStrategy::Complete);
+        assert_eq!(p.deployment_name, "chat-prod");
+        assert_eq!(
+            p.steps
+                .iter()
+                .map(|step| (step.start_layer, step.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 15), (16, 31)]
+        );
     }
 
     /// One machine holds both slices: the other has to be given one, and the
@@ -3498,6 +5045,36 @@ mod tests {
         assert_eq!(p.steps[1].target_node_id, "grande");
     }
 
+    #[test]
+    fn complete_mode_can_transfer_a_range_to_a_peer_with_capacity() {
+        let ms = build(vec![
+            m("holder", 100_000, &[(0, 15), (16, 31)]),
+            m("capacity", 900_000, &[]),
+        ]);
+        let p = super::plan_with_options(
+            "m",
+            &ms,
+            None,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Complete,
+            "m",
+            &[],
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "capacidade suficiente não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].target_node_id, "holder");
+        assert_eq!(p.steps[1].target_node_id, "capacity");
+        assert_eq!(p.transfer_bytes, GIB);
+    }
+
     /// Mixing two slicings is exactly the thing that has to be refused: layers
     /// 5-10 would run twice and the answer would be quietly wrong.
     #[test]
@@ -3511,6 +5088,56 @@ mod tests {
         let blocked = p.blocked.expect("sobreposição tem que barrar");
         assert!(blocked.contains("L5-10"), "{blocked}");
         assert!(!p.complete);
+    }
+
+    /// A mesma faixa em máquinas diferentes é uma réplica deliberada da rota,
+    /// não uma sobreposição de cortes incompatíveis. O pipeline escolhe uma
+    /// das cópias quando chega à camada.
+    #[test]
+    fn an_exact_range_on_two_machines_is_a_parallel_route() {
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 15)]),
+            m("b", 100_000, &[(0, 15)]),
+            m("c", 100_000, &[(16, 31)]),
+        ]);
+        let p = plan(
+            "m",
+            &ms,
+            Some(&[pick(0, 15, "a"), pick(0, 15, "b"), pick(16, 31, "c")]),
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "réplica exata não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert!(p.complete);
+        assert_eq!(p.overlap, Vec::<[u32; 2]>::new());
+        assert_eq!(p.steps.len(), 3);
+        assert_eq!(
+            p.steps
+                .iter()
+                .take(2)
+                .map(|step| step.target_node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"],
+        );
+        let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("targets");
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| (
+                    target.node_id.as_str(),
+                    target.peer_index,
+                    target.peer_count
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("a", Some(0), Some(2)),
+                ("b", Some(0), Some(2)),
+                ("c", Some(1), Some(2))
+            ],
+        );
     }
 
     /// A hole the operator left on purpose warns loudly but still deploys —
@@ -3575,7 +5202,9 @@ mod tests {
         assert!(joined.ready);
         assert_eq!(joined.parts.len(), 2, "duas fatias entram no arquivo");
         assert!(joined.parts.iter().all(|part| part.ready));
-        assert_eq!(joined.name, "m_0_15.gguf", "nome do arquivo junto");
+        // Rótulo de tela, não nome de arquivo: o arquivo junto só ganha nome
+        // depois de existir, e o nome dele é o hash.
+        assert_eq!(joined.name, "m L0-15", "rótulo do passo de junção");
 
         let solo = p.steps.iter().find(|s| !s.merged).unwrap();
         assert_eq!((solo.start_layer, solo.end_layer), (16, 31));
@@ -3730,6 +5359,73 @@ mod tests {
         assert!(!c.has && c.ok, "c não tem a fatia mas pode receber");
     }
 
+    #[test]
+    fn route_options_only_bridge_consecutive_selected_stages() {
+        let mut ms = build(vec![
+            m("p0", 100_000, &[(0, 1)]),
+            m("p1", 100_000, &[(2, 4)]),
+            m("p2", 100_000, &[(5, 6)]),
+            m("p3", 100_000, &[(7, 10)]),
+        ]);
+        for machine in &mut ms {
+            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
+        }
+
+        let selection = [
+            pick(0, 1, "p0"),
+            pick(2, 4, "p1"),
+            pick(5, 6, "p2"),
+            pick(7, 10, "p3"),
+        ];
+        let p = plan("qwen", &ms, Some(&selection));
+        let pairs: Vec<_> = p
+            .route_options
+            .iter()
+            .map(|route| (route.from_node_id.as_str(), route.to_node_id.as_str()))
+            .collect();
+
+        assert_eq!(pairs, vec![("p0", "p1"), ("p1", "p2"), ("p2", "p3")]);
+    }
+
+    #[test]
+    fn route_options_use_the_directional_rtt_of_each_handoff() {
+        let mut ms = build(vec![
+            m("p0", 100_000, &[(0, 1)]),
+            m("p1", 100_000, &[(2, 4)]),
+            m("p2", 100_000, &[(5, 6)]),
+            m("p3", 100_000, &[(7, 10)]),
+        ]);
+        for machine in &mut ms {
+            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
+        }
+        let selection = [
+            pick(0, 1, "p0"),
+            pick(2, 4, "p1"),
+            pick(5, 6, "p2"),
+            pick(7, 10, "p3"),
+        ];
+        let mut rtts = PairwiseRtt::default();
+        rtts.values.insert(("p0".into(), "p1".into()), 11.5);
+        rtts.values.insert(("p1".into(), "p2".into()), 22.5);
+        rtts.values.insert(("p2".into(), "p3".into()), 33.5);
+
+        let p = plan_with_rtt_options(
+            "qwen",
+            &ms,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Shards,
+            None,
+            DeployStrategy::Simple,
+            "qwen",
+            &[],
+            &rtts,
+        );
+        let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
+        assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
+    }
+
     /// The machine list carries what the screen needs to explain a refusal.
     #[test]
     fn the_plan_carries_the_machines_and_what_they_take() {
@@ -3766,8 +5462,8 @@ mod tests {
         let p = super::plan("m", &ms, None, &params, false, DeployKind::Shards, None);
 
         assert_eq!(p.params.n_ctx, 32768);
-        // 32768 / 2 sessões − 256 gerados.
-        assert_eq!(p.prompt_tokens, 16128);
+        // Cada sessão recebe 32768; 256 ficam reservados para a resposta.
+        assert_eq!(p.prompt_tokens, 32512);
         // O pedaço nunca passa de n_batch, por mais alto que seja o pedido.
         assert_eq!(p.chunk_tokens, 3072);
     }
@@ -4008,9 +5704,14 @@ mod tests {
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb,
+            gpu_free_mb: mem_free_mb,
+            ram_free_mb: mem_free_mb,
             disk_free_mb: 500_000,
+            rtt_ms: Some(0.0),
+            load: 0,
             held: if has {
                 vec![HeldShard {
+                    sha256: None,
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -4068,6 +5769,32 @@ mod tests {
         assert_eq!(p.steps.len(), 1);
         assert_eq!(p.steps[0].target_node_id, "b");
         assert!(p.steps[0].ready);
+    }
+
+    /// Duas cópias do modelo inteiro são duas rotas válidas para a mesma
+    /// faixa. O erro de modelo escolhido duas vezes só vale quando o mesmo
+    /// destino aparece duas vezes na seleção.
+    #[test]
+    fn a_whole_model_on_two_machines_is_a_parallel_route() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let p = whole(
+            "qwen3.5-9b",
+            &ms,
+            Some(&[pick(0, 31, "a"), pick(0, 31, "b")]),
+        );
+
+        assert!(
+            p.blocked.is_none(),
+            "réplica exata não deve bloquear: {:?}",
+            p.blocked
+        );
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps[0].target_node_id, "a");
+        assert_eq!(p.steps[1].target_node_id, "b");
     }
 
     /// Uma máquina que não tem o arquivo recebe uma cópia, exatamente como uma
@@ -4384,8 +6111,13 @@ mod tests {
             libp2p_peer_id: None,
             supports_tunnel: false,
             mem_free_mb: 900_000,
+            gpu_free_mb: 900_000,
+            ram_free_mb: 900_000,
             disk_free_mb: 900_000,
+            rtt_ms: Some(0.0),
+            load: 0,
             held: vec![HeldShard {
+                sha256: None,
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),

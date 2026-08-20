@@ -20,6 +20,8 @@ behind an auth extractor.
 - `auth.rs` (132) - auth extractors. `ConnectionAuth` (connection-key bearer
   only), `ApiKeyAuth(pub Caller)` (connection key or minted API key, either
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
+  `is_valid_inference_token` aplica a mesma regra na porta 8181: a
+  `connection_key` compartilhada ou uma API key ativa.
 - `gateway.rs` (1542) - `GatewayState`, `start_gateway`, `generate_stream` /
   `generate_blocking` / `spawn_logged_generation`, prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
@@ -30,13 +32,18 @@ behind an auth extractor.
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention.
   (local or forwarded to a peer).
-- `deploy.rs` (3023) - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: choosing
-  which machine serves which slice and sequencing the copies; re-surveys the
-  cluster on deploy; undeploy takes a whole pipeline out of the air.
+- `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
+  capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
+  escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
+  deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  `route_options` liga somente máquinas selecionadas em estágios consecutivos;
+  réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
+  `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`.
+  require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
+  preservando `parts` e `tp_parts` locais.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -67,9 +74,10 @@ behind an auth extractor.
   `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
   `self_reply_hosts()` lists the addresses by which a
   peer reaches this node (`self_dial_host` first, then `self_addr_candidates`);
-  `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - the KV cache is
-  split across sessions, so the window is `n_ctx / max_sessions`, and `n_batch`
-  deliberately does NOT appear (prefill chunks the prompt); `generate_stream`
+  `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
+  complete window for each session; `max_sessions` multiplies the runtime KV
+  reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
+  prompt); `generate_stream`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -119,7 +127,8 @@ behind an auth extractor.
   (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
-  (GET), `leave` (POST), `rejoin` (POST), `requests` (GET ->
+  (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
+  `requests` (GET ->
   `crate::reqlog::list_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
@@ -129,7 +138,8 @@ behind an auth extractor.
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
   stale-while-revalidate), `merge_parts` (temp file with unique suffix, rename
-  at the end; reuses an already-complete output and invalidates the catalog),
+  at the end; reuses an already-complete output, preserves the source
+  `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be
@@ -157,11 +167,15 @@ behind an auth extractor.
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
   O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
   máquina; `tp_members` transfere esses dados para cada rank, permitindo que
-  `broadcast_to` e o reduce usem o túnel quando o HTTPS direto entre sites não
-  tem rota.
+  `broadcast_to` e o reduce usem primeiro o túnel Noise, com cliente direto
+  pinado como fallback quando o túnel não está disponível.
   O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
   tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
   bytes ou esperas TP com a telemetria de pipeline.
+  O mesmo `survey` agrega os relatórios autenticados de `/api/ui/network/rtt`:
+  cada origem publica somente suas medições diretas, e `route_options` usa a
+  chave `(from_node_id, to_node_id)`. A latência do gateway não é reutilizada
+  para uma aresta entre dois peers remotos.
 - `deploy.rs` - `launch_targets` é a fase 2 extraída de `run`: os passos do
   plano resolvidos contra a varredura pós-cópia, que é a única parte do deploy
   testável sem cluster (`a_whole_model_is_launched_as_one_plain_target`).
@@ -176,8 +190,11 @@ behind an auth extractor.
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
-  every prompt); one range per node unless `merge` (adjacent ranges joined via
-  `splitter::merge`); overlap is refused, a gap only warns.
+  every prompt); one distinct range per node unless `merge` (adjacent ranges
+  joined via `splitter::merge`); the exact same range on different nodes is a
+  replica and a valid parallel route; the same whole model may likewise be
+  selected on multiple nodes for balancing; distinct overlapping cuts are refused,
+  and a gap only warns.
   **`steps` always comes back in layer order**, blocked plans included:
   `position` only means "place in the pipeline" in that order, `run` reads the
   launch order straight off the list, and the screen lines the plan up against
@@ -220,8 +237,12 @@ behind an auth extractor.
   bar, detail "conferindo o arquivo na origem"), then in a background task
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
   is a full read on a slow volume - and runs the disk-space check there too),
-  then `run_download` writes `<shard_dir>/recebidos/<name>.part`, resumes with
-  `Range`, verifies MD5 before the rename, and cancels symmetrically on both
+  then `run_download` writes a `.part` next to its destination - the model's
+  folder for a **part** (`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`,
+  `.pom` written first - the run id comes from the manifest, so two slicings of
+  one model never share a folder), `<shard_dir>/recebidos/` for anything that belongs to no manifest -
+  resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
+  (anything else) before the rename, and cancels symmetrically on both
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.
@@ -286,7 +307,7 @@ behind an auth extractor.
   (`NodeRuntime`, `NodeConfig` - model/slice lifecycle), `crate::config`
   (`Config`, `ApiKey`, `ui_dist_dir()`, `shard_dir_path()`, `model_dir_paths()`),
   `crate::models`/`crate::catalog`/`crate::gguf`/`crate::plan`
-  (`Catalog`, `GgufLayout`, `PeerBudget`, `parse_shard_name`), `crate::splitter`
+  (`Catalog`, `GgufLayout`, `PeerBudget`, `pom::PomManifest`), `crate::splitter`
   (`MergePart`, `merge`), `crate::sysmon`, `crate::route` (`RouteTable` for the
   cluster view), `crate::pkarr_node` (`detect_local_ip`), `crate::prefill`
   (`RequestTrace` in the summaries), `crate::direct` (`ReplyInbox`,

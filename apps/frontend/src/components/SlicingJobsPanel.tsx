@@ -1,16 +1,13 @@
-import { CheckCircle2, CircleDot, ListTree, Scissors, XCircle } from "lucide-react";
-import { Link } from "react-router-dom";
+import { CheckCircle2, CircleDot, ListTree, XCircle } from "lucide-react";
 import {
   Badge,
-  Button,
   Empty,
   ErrorState,
-  PageHeader,
   Panel,
   PanelHeader,
   Progress,
   Skeleton,
-} from "../components/ui";
+} from "./ui";
 import { clock, since } from "../lib/format";
 import { useJobs } from "../lib/queries";
 import type { Job } from "../lib/types";
@@ -68,9 +65,9 @@ function JobCard({ job }: { job: Job }) {
 
       {job.outputs.length > 0 && (
         <ul className="mt-3 space-y-1 border-t border-line pt-2.5">
-          {job.outputs.map((o) => (
-            <li key={o} className="break-path font-mono text-[0.72rem] text-muted">
-              {o}
+          {job.outputs.map((output) => (
+            <li key={output} className="break-path font-mono text-[0.72rem] text-muted">
+              {output}
             </li>
           ))}
         </ul>
@@ -79,56 +76,32 @@ function JobCard({ job }: { job: Job }) {
   );
 }
 
-export function SlicingJobs() {
+/** The former jobs screen, embedded below the slicing controls. */
+export function SlicingJobsPanel() {
   const { t } = useI18n();
   const jobs = useJobs();
   const list = jobs.data?.jobs ?? [];
-  const running = list.filter((j) => j.state === "running");
+  const running = list.filter((job) => job.state === "running");
+
+  if (jobs.isError) return <ErrorState error={jobs.error} onRetry={() => void jobs.refetch()} />;
+  if (jobs.isLoading) return <Skeleton className="h-40 w-full" />;
 
   return (
-    <>
-      <PageHeader
-        title={t("jobs.title")}
+    <Panel aria-label={t("jobs.title")}>
+      <PanelHeader
+        eyebrow={t("jobs.title")}
+        title={running.length ? t("jobs.runningCount", { count: running.length }) : t("jobs.nothingRunning")}
         subtitle={t("jobs.subtitle")}
-        actions={
-          <Link to="/modelos/fatiar">
-            <Button variant="primary" icon={<Scissors className="h-3.5 w-3.5" />}>
-              {t("jobs.sliceModel")}
-            </Button>
-          </Link>
-        }
       />
-
-      {jobs.isError && <ErrorState error={jobs.error} onRetry={() => void jobs.refetch()} />}
-      {jobs.isLoading && <Skeleton className="h-40 w-full" />}
-
-      {jobs.data && (
-        <Panel>
-          {/* An empty panel says its piece once: the header would only repeat
-              what the empty state already spells out. */}
-          {list.length > 0 && (
-            <PanelHeader
-              title={
-                running.length
-                  ? t("jobs.runningCount", { count: running.length })
-                  : t("jobs.nothingRunning")
-              }
-              subtitle={t("jobs.finishedDetail")}
-            />
-          )}
-          {list.length === 0 ? (
-            <Empty icon={<ListTree className="h-5 w-5" />} title={t("jobs.nothingRunning")}>
-              {t("jobs.emptyDetail")}
-            </Empty>
-          ) : (
-            <div className="divide-y divide-line">
-              {list.map((j) => (
-                <JobCard key={j.id} job={j} />
-              ))}
-            </div>
-          )}
-        </Panel>
+      {list.length === 0 ? (
+        <Empty icon={<ListTree className="h-5 w-5" />} title={t("jobs.nothingRunning")}>
+          {t("jobs.emptyDetail")}
+        </Empty>
+      ) : (
+        <div className="divide-y divide-line">
+          {list.map((job) => <JobCard key={job.id} job={job} />)}
+        </div>
       )}
-    </>
+    </Panel>
   );
 }

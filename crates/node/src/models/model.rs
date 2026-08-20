@@ -153,6 +153,13 @@ impl ModelProfile {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LayerAssignment {
     pub model: String,
+    /// A implantação de que este nó faz parte, quando ele veio de uma.
+    ///
+    /// Vazio num nó configurado pela linha de comando e no que um peer de
+    /// versão anterior anuncia - e é justamente esse vazio que faz o
+    /// agrupamento cair de volta no rótulo do modelo. Ver `deployment.rs`.
+    #[serde(default)]
+    pub deploy_id: String,
     pub total_layers: u32,
     pub start_layer: u32, // inclusive
     pub end_layer: u32,   // inclusive
@@ -194,6 +201,7 @@ pub fn calculate_assignment(
     let actual_count = end_layer - start_layer + 1;
 
     LayerAssignment {
+        deploy_id: String::new(),
         model: profile.name.clone(),
         total_layers: profile.total_layers,
         start_layer,

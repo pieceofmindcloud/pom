@@ -19,10 +19,18 @@ soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
 rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
 `direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
 cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
-forward pass. `broadcast_to` e o reduce tentam HTTPS direto primeiro e usam o
-túnel libp2p quando o transporte falha ou expira; `TunnelRequest` preserva os
-cabeçalhos da barreira e do rank nesse caminho alternativo. Ver
+forward pass. `broadcast_to` e o reduce tentam primeiro o túnel libp2p quando o
+membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
+cliente direto pinado, com HTTPS quando a política TLS está ativa.
+`TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
+As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
+ativa. Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
+A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
+um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
+estado oculto. Portanto `round_trip_ms` de um frame não é usado como RTT de
+topologia.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
@@ -48,8 +56,9 @@ modelo entre máquinas.
 Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
 fica ligado por padrão. Antes da carga real, a aplicação chama o
 `common_fit_params` do llama.cpp, que pode reduzir `n_gpu_layers` para caber na
-memória disponível e preserva o `n_ctx` solicitado quando ele foi definido
-explicitamente. O `/health` expõe `fit_memory_applied` e
+memória disponível e preserva a capacidade total correspondente a
+`n_ctx * max_sessions` quando ela foi definida explicitamente. O `/health` expõe
+`fit_memory_applied` e
 `n_gpu_layers_effective`. Um `n_gpu_layers` diferente do padrão `99` é uma
 escolha explícita e desliga o ajuste automático de camadas. O fit nativo não
 suporta tensor parallelism; o planner e o runtime normalizam essa opção para
@@ -404,14 +413,16 @@ inteiro.
 `gateway::prompt_budget_of(n_ctx, max_sessions, max_new_tokens)`:
 
 ```
-n_ctx / max_sessions - max_new_tokens
+n_ctx - max_new_tokens
 ```
 
-O KV cache é dividido entre `max_sessions` slots (padrão **1**, não mais o
-`/8` fixo), então a janela de uma requisição é `n_ctx / max_sessions`, menos a
-sobra para os tokens que serão gerados. O gateway mede o prompt
+`n_ctx` é a janela completa de cada sessão. `max_sessions` (padrão **1**) só
+multiplica a capacidade total reservada no `llama_context`, então o runtime usa
+`n_ctx_total = n_ctx * max_sessions` e cada sessão continua com `n_ctx`. O
+gateway mede o prompt
 (`estimate_tokens` ≈ chars/3, pessimista) **antes** de qualquer peer ver o
-prompt e recusa com uma mensagem citando as flags.
+prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
+valores como `n_ctx_total` e `n_ctx_per_session`.
 
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes

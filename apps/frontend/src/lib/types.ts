@@ -360,6 +360,11 @@ export interface TransferJob {
   bytes_per_sec: number;
   eta_secs: number | null;
   detail: string;
+  /**
+   * Quando o job entrou num estado terminal, em RFC 3339. Ausente enquanto
+   * corre, e também num nó de versão anterior, que não carimbava a hora.
+   */
+  finished_at?: string | null;
 }
 
 export interface TransferOffer {

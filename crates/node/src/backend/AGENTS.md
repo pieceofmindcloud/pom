@@ -43,7 +43,9 @@ behind an auth extractor.
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
   require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
-  preservando `parts` e `tp_parts` locais.
+  preservando `parts` e `tp_parts` locais. **O veredito volta para quem
+  ofereceu** (`receive_answer`), e todo desfecho passa por
+  `TransferState::finish`, que carimba `finished_at`.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -220,8 +222,9 @@ behind an auth extractor.
   Routes: `GET /api/transfer/manifest`, `GET /api/transfer/download`,
   `POST /api/transfer/pull`, `POST /api/transfer/offer`, `GET
   /api/transfer/offers`, `POST /api/transfer/offers/:id/accept` +
-  `/:id/reject`, `GET /api/transfer/jobs`, `POST
-  /api/transfer/jobs/:id/cancel`, `POST /api/transfer/send`. Path safety is
+  `/:id/reject`, `POST /api/transfer/offers/answer`, `GET
+  /api/transfer/jobs`, `POST /api/transfer/jobs/:id/cancel`, `POST
+  /api/transfer/send`. Path safety is
   directional: `safe_model_path` confines the *pull* direction to `models/`
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF
@@ -246,6 +249,19 @@ behind an auth extractor.
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.
+  **Os dois lados sabem o desfecho.** Todo estado terminal passa por
+  `TransferState::finish`, que grava `finished_at` e recusa reescrever um
+  terminal já posto - é ele que faz "cancelado por X" sobreviver a um "falhou"
+  anônimo, e é o carimbo que deixa o sino mostrar o que **acabou de** terminar.
+  Do lado que envia, `served_stream` fecha o job no **último byte** e não no
+  fim do stream: o hyper para de puxar quando o corpo satisfaz o
+  `Content-Length` e nunca pede o `None` do fim, então o job de envio ficava
+  `running` para sempre com `bytes_done` congelado. E o veredito do receptor
+  volta por `notify_offerer` → `POST /api/transfer/offers/answer`
+  (`receive_answer`), casado pelo `grant` guardado em `TransferState::offered`:
+  aceite vira job `sending` já em curso ("aceito; aguardando o início do
+  envio"), recusa vira `cancelled` com o nome de quem recusou. Um veredito de
+  um `node_id` que não é o destino registrado é 403.
   `DEV_AUTO_ACCEPT_ENV` (`POM_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.

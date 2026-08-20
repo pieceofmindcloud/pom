@@ -28,7 +28,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
-- `transferStatus.ts` - predicates over `TransferJob["state"]` for the transfers UI.
+- `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
 - `types.ts` - all API shapes served by the node, one authoritative source.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
@@ -133,6 +133,7 @@ would go.
 
 ### transferStatus.ts
 - `isFinishedTransfer` / `isActiveTransfer` / `canCancel` - state predicates; only `running`/`verifying` can be cancelled.
+- `isRecentlyFinished(job, now?)` / `isWorthNotifying(job, now?)` / `RECENTLY_FINISHED_MS` (5 min) - o que o **sino** mostra: o que anda mais o que acabou de terminar. Sem isto o desfecho sumia da tela no instante em que acontecia, e só sobrevivia na tela de Transferências. `finished_at` ausente (nó de versão anterior) nunca conta como recente: supor "agora" encheria o sino de transferências velhas a cada carregamento.
 
 ### chatScroll.ts
 - `isNearBottom(metrics, threshold = 32)` - decides whether streaming keeps the chat pinned to the bottom.

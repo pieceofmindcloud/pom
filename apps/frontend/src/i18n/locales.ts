@@ -74,15 +74,19 @@ const messages: Record<Locale, Record<string, Message>> = {
     "notifications.transferStarted": () => "Transfer started",
     "notifications.offerRejected": () => "Offer rejected",
     "notifications.offerFailed": () => "The offer could not be answered",
-    "notifications.title": () => "In progress",
+    "notifications.title": () => "Activity",
     "notifications.empty": () => "Nothing happening",
     "notifications.emptyDetail": () => "Slicing and transfers appear here while running, even after reloading the page.",
     "notifications.started": () => "started",
     "notifications.accept": () => "Accept",
     "notifications.reject": () => "Reject",
    "notifications.allTransfers": () => "View all transfers",
-    "notifications.activityAria": ({ count }) => Number(count) === 0 ? "Nothing in progress" : String(count) + (Number(count) === 1 ? " activity in progress" : " activities in progress"),
-    "notifications.downloadDetail": ({ host, detail }) => "from " + String(host) + " · " + String(detail),
+    "notifications.activityAria": ({ count }) => Number(count) === 0 ? "No activity" : String(count) + (Number(count) === 1 ? " activity" : " activities"),
+    "notifications.transferFrom": ({ host }) => "from " + String(host),
+    "notifications.transferTo": ({ host }) => "to " + String(host),
+    "notifications.state.done": ({ size }) => "completed · " + String(size),
+    "notifications.state.failed": () => "failed",
+    "notifications.state.cancelled": () => "cancelled",
     "notifications.downloadProgress": ({ done, total, rate, remaining }) => String(done) + " of " + String(total) + " · " + String(rate) + (remaining ? " · " + String(remaining) + " remaining" : ""),
     "notifications.offerTitle": ({ host, name }) => String(host) + " wants to send " + String(name),
     "errorBoundary.title": () => "This screen stopped working",
@@ -843,6 +847,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "transfers.cancelled": () => "Transfer cancelled",
     "transfers.cancelFailed": () => "Could not cancel",
     "transfers.cancel": () => "Cancel",
+    "transfers.ofTotal": ({ done, total }) => String(done) + " of " + String(total),
+    "transfers.cancelledState": () => "Refused",
     "transfers.sendingTo": ({ host }) => "sending to " + String(host),
     "transfers.receivingFrom": ({ host }) => "receiving from " + String(host),
     "chat.thinking": () => "Thinking",
@@ -966,15 +972,19 @@ const messages: Record<Locale, Record<string, Message>> = {
     "notifications.transferStarted": () => "Transferência iniciada",
     "notifications.offerRejected": () => "Oferta recusada",
     "notifications.offerFailed": () => "A oferta não pôde ser respondida",
-    "notifications.title": () => "Em andamento",
+    "notifications.title": () => "Atividade",
     "notifications.empty": () => "Nada acontecendo",
     "notifications.emptyDetail": () => "Fatiamentos e transferências aparecem aqui enquanto rodam, mesmo depois de recarregar a página.",
     "notifications.started": () => "começou",
     "notifications.accept": () => "Aceitar",
     "notifications.reject": () => "Recusar",
    "notifications.allTransfers": () => "Ver todas as transferências",
-    "notifications.activityAria": ({ count }) => Number(count) === 0 ? "Nada em andamento" : String(count) + (Number(count) === 1 ? " atividade em andamento" : " atividades em andamento"),
-    "notifications.downloadDetail": ({ host, detail }) => "de " + String(host) + " · " + String(detail),
+    "notifications.activityAria": ({ count }) => Number(count) === 0 ? "Nenhuma atividade" : String(count) + (Number(count) === 1 ? " atividade" : " atividades"),
+    "notifications.transferFrom": ({ host }) => "de " + String(host),
+    "notifications.transferTo": ({ host }) => "para " + String(host),
+    "notifications.state.done": ({ size }) => "concluída · " + String(size),
+    "notifications.state.failed": () => "falhou",
+    "notifications.state.cancelled": () => "cancelada",
     "notifications.downloadProgress": ({ done, total, rate, remaining }) => String(done) + " de " + String(total) + " · " + String(rate) + (remaining ? " · faltam " + String(remaining) : ""),
     "notifications.offerTitle": ({ host, name }) => String(host) + " quer enviar " + String(name),
     "errorBoundary.title": () => "Esta tela parou de funcionar",
@@ -1733,6 +1743,8 @@ const messages: Record<Locale, Record<string, Message>> = {
     "transfers.cancelled": () => "Transferência cancelada",
     "transfers.cancelFailed": () => "Não deu para cancelar",
     "transfers.cancel": () => "Cancelar",
+    "transfers.ofTotal": ({ done, total }) => String(done) + " de " + String(total),
+    "transfers.cancelledState": () => "Recusada",
     "transfers.sendingTo": ({ host }) => "enviando para " + String(host),
     "transfers.receivingFrom": ({ host }) => "recebendo de " + String(host),
     "chat.thinking": () => "Pensamento",
@@ -1847,6 +1859,17 @@ export function formatMessage(locale: Locale, key: string, values: MessageValues
  */
 export function localizeServerText(locale: Locale, text: string, fallbackKey = "common.serverDetails"): string {
   if (locale === "pt-BR" || !text) return text;
+  // Frases do nó que carregam um nome de máquina no fim. O nome não se
+  // traduz, o verbo sim — e sem isto o desfecho de uma transferência aparecia
+  // em português no meio da tela em inglês ("recusado por ksia").
+  const comNome: Array<[RegExp, string]> = [
+    [/^recusado por (.+)$/i, "refused by $1"],
+    [/^cancelado por (.+)$/i, "cancelled by $1"],
+  ];
+  for (const [padrao, molde] of comNome) {
+    const achou = text.match(padrao);
+    if (achou) return molde.replace("$1", achou[1]);
+  }
   const known: Record<string, string> = {
     pronto: "Ready",
     erro: "Error",
@@ -1854,6 +1877,9 @@ export function localizeServerText(locale: Locale, text: string, fallbackKey = "
     gravando: "Writing",
     "subindo os nós": "Starting nodes",
     "atribuindo as faixas": "Assigning ranges",
+    "conferindo o arquivo na origem": "checking the file at the source",
+    "aceito; aguardando o início do envio": "accepted; waiting for the send to start",
+    "enviado por inteiro": "sent in full",
   };
   if (known[text]) return known[text];
   const portuguese = /[ãõç]|\b(não|nenhuma|nenhum|camadas|fatias|memória|modelo|máquina|servidor|falhou|pronto|erro)\b/i;

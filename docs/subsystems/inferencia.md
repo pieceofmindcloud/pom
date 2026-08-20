@@ -154,6 +154,33 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   `more_chunks`/`n_prompt_tokens`. O gateway sempre manda `is_final_chunk:
   false` e quem tokenizou corrige (ver `prompt_progress` na seção 4).
 
+### 3.1 Scheduler local e batching contínuo
+
+Cada processo de inferência possui um scheduler próprio para o contexto
+`llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,
+aplica backpressure antes de criar uma sessão e responde `429` com
+`Retry-After: 1` quando `max_queue_requests` foi atingido. O padrão é fila 128,
+janela de coleta de 4 ms, `max_batch_sequences` limitado por `max_sessions` e
+`max_batch_tokens` limitado por `n_batch`.
+
+Quando as entradas são compatíveis, o worker monta um único `llama_batch` com
+uma sequência física por sessão. Prefill e decode de tokens ficam em uma lane;
+hidden states ficam em outra. Uma sessão aparece no máximo uma vez por
+microbatch, e o `BatchLayout` usa `item_id` e o range global de linhas para
+associar cada residual e posição de logits à resposta correta. Especulação,
+rollback e Tensor Parallelism continuam no caminho individual até terem
+contratos de batch próprios.
+
+O scheduler é local ao peer. Duas réplicas que servem a mesma faixa possuem
+filas e KV independentes; o roteamento deve escolher uma réplica e preservar
+essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
+unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
+isso a execução multi-sequência ainda fica desabilitada no TP atual.
+
+O endpoint `/health` expõe `scheduler.queue_depth`, os limites efetivos, o
+tamanho e os tokens do último lote, além dos contadores acumulados. Isso
+permite diferenciar fila local de tempo de rede e de tempo de decode.
+
 ## 4. Modo anel vs resposta direta
 
 **Anel** (`relay/v1-chain`): pilha de chamadas HTTP aninhadas. Cada hop segura

@@ -1122,6 +1122,16 @@ pub struct RuntimeParams {
     /// context window; raising this value multiplies the KV-cache reservation.
     #[serde(default = "d_max_sessions")]
     pub max_sessions: u32,
+    #[serde(default = "d_batching_enabled")]
+    pub batching_enabled: bool,
+    #[serde(default = "d_max_queue_requests")]
+    pub max_queue_requests: u32,
+    #[serde(default = "d_batch_window_ms")]
+    pub batch_window_ms: u32,
+    #[serde(default = "d_max_batch_sequences")]
+    pub max_batch_sequences: u32,
+    #[serde(default = "d_max_batch_tokens")]
+    pub max_batch_tokens: u32,
     /// Prompt tokens per round trip through the pipeline.
     #[serde(default = "d_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
@@ -1175,6 +1185,21 @@ fn d_max_new() -> u32 {
 fn d_max_sessions() -> u32 {
     1
 }
+fn d_batching_enabled() -> bool {
+    true
+}
+fn d_max_queue_requests() -> u32 {
+    128
+}
+fn d_batch_window_ms() -> u32 {
+    4
+}
+fn d_max_batch_sequences() -> u32 {
+    u32::MAX
+}
+fn d_max_batch_tokens() -> u32 {
+    u32::MAX
+}
 fn d_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
 }
@@ -1219,6 +1244,11 @@ impl Default for RuntimeParams {
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
+            batching_enabled: d_batching_enabled(),
+            max_queue_requests: d_max_queue_requests(),
+            batch_window_ms: d_batch_window_ms(),
+            max_batch_sequences: d_max_batch_sequences(),
+            max_batch_tokens: d_max_batch_tokens(),
             prefill_chunk_tokens: d_prefill_chunk(),
             temperature: d_temp(),
             top_p: d_top_p(),
@@ -1252,6 +1282,11 @@ impl From<&NodeConfig> for RuntimeParams {
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
+            batching_enabled: c.batching_enabled,
+            max_queue_requests: c.max_queue_requests,
+            batch_window_ms: c.batch_window_ms,
+            max_batch_sequences: c.max_batch_sequences,
+            max_batch_tokens: c.max_batch_tokens,
             prefill_chunk_tokens: c.prefill_chunk_tokens,
             temperature: c.temperature,
             top_p: c.top_p,
@@ -3910,6 +3945,11 @@ mod tests {
         assert_eq!(p.n_gpu_layers, 99);
         assert_eq!(p.n_ctx, 8192);
         assert_eq!(p.n_batch, 512);
+        assert!(p.batching_enabled);
+        assert_eq!(p.max_queue_requests, 128);
+        assert_eq!(p.batch_window_ms, 4);
+        assert_eq!(p.max_batch_sequences, u32::MAX);
+        assert_eq!(p.max_batch_tokens, u32::MAX);
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);

@@ -19,3 +19,8 @@ por hash e o catálogo só expõe as partes cujo arquivo existe no disco.
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
 inteiros são somente leitura e nunca entram na retenção automática.
+
+`lastslice.rs` serializa o `NodeConfig` inteiro com `serde(flatten)`. Portanto,
+as configurações do scheduler local (`batching_enabled`, limites da fila,
+janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
+mesma fatia servida.

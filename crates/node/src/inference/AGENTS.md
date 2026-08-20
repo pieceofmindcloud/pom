@@ -29,12 +29,19 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
   token para N=2,3,4 com o gateway na cabeça/meio/cauda.
-- `infer_server.rs` (2204) - axum server: `/v1/prefill`, `/v1/step`,
+- `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
-  e o branch de relay.
-- `llm.rs` (1466) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
+  e o branch de relay. Os handlers decodificam o frame e entregam comandos a
+  uma fila local limitada; o worker seleciona uma entrada por sessão e pode
+  chamar o decode multi-sequência.
+- `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   residual capture, sampling, e o dono da cabeça de rascunho `nextn`
-  (`Option<MtpDrafter>`).
+  (`Option<MtpDrafter>`). `decode_tokens_batch` e `decode_hidden_batch`
+  constroem um `llama_batch` com sequências independentes e devolvem o layout
+  para mapear logits e residuais por item.
+- `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
+  round robin. Cada processo cria sua própria fila; réplicas da mesma faixa não
+  compartilham scheduler, KV ou capacidade de fila.
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
@@ -126,9 +133,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `infer_server.rs`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
-- `handle_prefill`/`handle_step` - dispatch para `prefill::run`/`run_ring`/
-  `run_direct` e `step_speculative`; `spawn_blocking` para os decodes não
-  travarem o runtime.
+- `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
+  scheduler local. O worker usa `prefill_batch_blocking` ou
+  `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
+  individual para especulação e compatibilidade.
+- `spawn_scheduler`/`run_scheduler` - worker único por contexto llama.cpp,
+  com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
+  a fila atingiu o limite. O `/health` expõe os limites e os últimos contadores
+  de lote.
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`
@@ -163,9 +175,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct` junto das outras capabilities e expõe
-  `kv_can_shift` (se o modelo permite deslocar o KV, condição de a cabeça
-  rascunhar).
+- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift` e também o snapshot
+  do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
   legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no
@@ -198,6 +209,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
+- `BatchLayout` - transforma a ordem física das linhas do `llama_batch` em
+  ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
+  da sessão. Mistura de token e hidden state fica em lanes distintas.
 
 `prefill.rs`:
 - `run`/`step` - dispatch em três níveis: `run_direct`/`step_direct` quando
@@ -329,7 +343,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `runtime.rs`:
 - `NodeConfig` - tudo que define a fatia servida: model_path/label,
   start/end/total_layers, peer_count/index, primary, inference_port, n_gpu_layers,
-  n_ctx, offload_kqv, n_batch, max_sessions, prefill_chunk_tokens, max_new_tokens,
+  n_ctx, offload_kqv, n_batch, max_sessions, batching_enabled,
+  max_queue_requests, batch_window_ms, max_batch_sequences,
+  max_batch_tokens, prefill_chunk_tokens, max_new_tokens,
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
   speculative_k/lookup_window, mtp_enabled, mtp_draft_tokens,
   mtp_min_probability.

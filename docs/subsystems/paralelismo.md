@@ -24,6 +24,20 @@ travessia por fronteira de camada para cada token e não precisa de uma barreira
 global a cada operação interna. A ordem dos nós importa, e a máquina da camada
 0 deve ter memória suficiente para o prompt e o KV cache.
 
+### Réplicas e scheduler
+
+Duas máquinas que anunciam a mesma faixa são réplicas de um estágio, não dois
+saltos consecutivos da mesma requisição. Cada peer mantém seu próprio scheduler
+local, contexto `llama.cpp` e KV cache. O gateway escolhe uma réplica para cada
+sessão e preserva essa afinidade nas rodadas seguintes; as duas réplicas não
+compartilham fila nem scheduler global. Requisições independentes que chegam à
+mesma réplica podem formar um microbatch local.
+
+Esse batching local não transforma réplicas em um grupo TP. Para batching
+distribuído de pipeline, os peers ainda precisam negociar um frame multi-item e
+correlacionar cada estado oculto por sessão. No estado atual, a negociação e o
+fallback de frame continuam individuais entre hops.
+
 ## Tensor parallelism
 
 No TP, todos os ranks carregam todas as camadas, mas alguns tensores de cada
@@ -59,6 +73,11 @@ TP pode reduzir a memória de pesos por rank, mas não transforma a rede em um
 tráfego de estado oculto único. O próprio parcial das projeções row-parallel
 precisa atravessar a rede antes que a camada seguinte possa rodar. Compressão
 de frame do pipeline não elimina essa dependência; são problemas diferentes.
+
+O scheduler de um grupo TP também não é uma fila compartilhada entre processos.
+O rank primário deve coordenar a mesma lista de itens, posições e shapes em
+todos os ranks antes de uma coletiva. Enquanto essa chave de batch não estiver
+ligada à barreira, o runtime mantém TP no caminho de uma sequência por decode.
 
 ## Telemetria
 

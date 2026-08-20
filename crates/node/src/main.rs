@@ -79,6 +79,8 @@ mod respawn;
 pub mod route;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "inference/scheduler.rs"]
+mod scheduler;
 #[path = "backend/serve.rs"]
 mod serve;
 #[path = "backend/session.rs"]
@@ -714,6 +716,11 @@ async fn main() -> Result<()> {
             fit_memory: true,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: args.prefill_chunk_tokens,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,

@@ -104,10 +104,10 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`).
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
-  (rotas de inferência + `should_draft`/`kv_can_shift`), `runtime.rs`
+  (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
   `wire.rs` (`[len][JSON][tensor]`, f16/zstd), `relay.rs` (chain relay),
-  `prefill.rs`, `llm.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
+  `prefill.rs`, `llm.rs`, `scheduler.rs`, `session.rs`, `spec_lab.rs`, `mtp.rs` +
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
 - `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,

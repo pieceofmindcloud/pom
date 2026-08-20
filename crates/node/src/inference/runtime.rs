@@ -85,6 +85,21 @@ pub struct NodeConfig {
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
+    /// Enable the in-process multi-sequence scheduler.
+    #[serde(default = "default_batching_enabled")]
+    pub batching_enabled: bool,
+    /// Maximum number of requests waiting before admission returns overload.
+    #[serde(default = "default_max_queue_requests")]
+    pub max_queue_requests: u32,
+    /// Time allowed for collecting a local microbatch.
+    #[serde(default = "default_batch_window_ms")]
+    pub batch_window_ms: u32,
+    /// Maximum active sequences in one llama batch. Clamped to max_sessions.
+    #[serde(default = "default_max_batch_sequences")]
+    pub max_batch_sequences: u32,
+    /// Maximum tokens in one llama batch. Clamped to n_batch.
+    #[serde(default = "default_max_batch_tokens")]
+    pub max_batch_tokens: u32,
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
@@ -170,6 +185,11 @@ impl NodeConfig {
             n_batch: p.n_batch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
+            batching_enabled: p.batching_enabled,
+            max_queue_requests: p.max_queue_requests,
+            batch_window_ms: p.batch_window_ms,
+            max_batch_sequences: p.max_batch_sequences,
+            max_batch_tokens: p.max_batch_tokens,
             prefill_chunk_tokens: p.prefill_chunk_tokens,
             temperature: p.temperature,
             top_p: p.top_p,
@@ -220,6 +240,21 @@ impl NodeConfig {
 
 fn default_max_sessions() -> u32 {
     1
+}
+fn default_batching_enabled() -> bool {
+    true
+}
+fn default_max_queue_requests() -> u32 {
+    128
+}
+fn default_batch_window_ms() -> u32 {
+    4
+}
+fn default_max_batch_sequences() -> u32 {
+    u32::MAX
+}
+fn default_max_batch_tokens() -> u32 {
+    u32::MAX
 }
 fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
@@ -1174,6 +1209,11 @@ mod tests {
             offload_kqv: true,
             fit_memory: true,
             max_sessions: 1,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
             max_new_tokens: 256,

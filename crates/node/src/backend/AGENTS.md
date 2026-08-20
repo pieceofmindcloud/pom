@@ -91,6 +91,9 @@ behind an auth extractor.
   (`!draft_sent && step.next_draft.is_none()`), then the gateway calls
   `prefill::step` (the direct reply) for the rest of the request - insisting
   would pin the chain to the bubbled ring (2N hops per token);
+  the gateway still chooses the pipeline replica per session. Continuous
+  batching is owned by the inference process at that replica, not by a global
+  gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,

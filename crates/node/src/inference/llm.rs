@@ -20,7 +20,9 @@
 //! request would carry the other's residual - no error, just a wrong answer.
 
 use anyhow::{bail, Context, Result};
+use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
+use std::ops::Range;
 use std::ptr;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -873,6 +875,166 @@ impl LlmEngine {
 
     // ── Batch decode ─────────────────────────────────────────────────────────
 
+    /// Decodes multiple independent token sequences in one llama batch.
+    ///
+    /// Each descriptor owns a physical KV sequence. The method deliberately
+    /// does not sample or mutate session history: the scheduler does that
+    /// after it maps logits back to the logical item.
+    pub fn decode_tokens_batch(
+        &mut self,
+        entries: &[TokenBatchEntry],
+        need_residual: bool,
+    ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        if entries.is_empty() {
+            bail!("batch de tokens vazio");
+        }
+        let descriptors: Vec<BatchEntry> = entries.iter().map(|e| e.descriptor.clone()).collect();
+        let layout = BatchLayout::new(&descriptors)?;
+        for entry in entries {
+            if entry.tokens.len() != entry.descriptor.tokens {
+                bail!(
+                    "item {} declara {} tokens, recebeu {}",
+                    entry.descriptor.item_id,
+                    entry.descriptor.tokens,
+                    entry.tokens.len()
+                );
+            }
+        }
+
+        let n = i32::try_from(layout.total_tokens())
+            .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
+        let enqueue_started = Instant::now();
+        self.reset_capture_slot();
+        let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
+        batch.n_tokens = n;
+        let mut row = 0usize;
+        unsafe {
+            for entry in entries {
+                for (offset, &token) in entry.tokens.iter().enumerate() {
+                    *batch.token.add(row) = token;
+                    *batch.pos.add(row) = (entry.descriptor.pos + offset as u32) as i32;
+                    *batch.n_seq_id.add(row) = 1;
+                    *(*batch.seq_id.add(row)).add(0) = entry.descriptor.seq_id as i32;
+                    *batch.logits.add(row) =
+                        if entry.descriptor.want_logits && offset + 1 == entry.tokens.len() {
+                            1
+                        } else {
+                            0
+                        };
+                    row += 1;
+                }
+            }
+        }
+        let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        unsafe { sys::llama_batch_free(batch) };
+        if rc != 0 {
+            bail!("llama_decode (token batch) failed rc={rc}");
+        }
+        self.finish_batch(layout, need_residual, enqueue_started)
+    }
+
+    /// Decodes multiple hidden-state sequences in one llama batch.
+    pub fn decode_hidden_batch(
+        &mut self,
+        entries: &[HiddenBatchEntry],
+        need_residual: bool,
+    ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        if entries.is_empty() {
+            bail!("batch de hidden states vazio");
+        }
+        let descriptors: Vec<BatchEntry> = entries.iter().map(|e| e.descriptor.clone()).collect();
+        let layout = BatchLayout::new(&descriptors)?;
+        for entry in entries {
+            let expected = entry.descriptor.tokens.saturating_mul(self.n_embd);
+            if entry.hidden.len() != expected {
+                bail!(
+                    "item {} tem hidden state com {} floats, esperado {}",
+                    entry.descriptor.item_id,
+                    entry.hidden.len(),
+                    expected
+                );
+            }
+        }
+
+        let n = i32::try_from(layout.total_tokens())
+            .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
+        let enqueue_started = Instant::now();
+        self.reset_capture_slot();
+        let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
+        batch.n_tokens = n;
+        batch.token = ptr::null_mut();
+        let mut row = 0usize;
+        unsafe {
+            for entry in entries {
+                let start = row * self.n_embd;
+                let end = start + entry.hidden.len();
+                std::ptr::copy_nonoverlapping(
+                    entry.hidden.as_ptr(),
+                    batch.embd.add(start),
+                    end - start,
+                );
+                for offset in 0..entry.descriptor.tokens {
+                    *batch.pos.add(row) = (entry.descriptor.pos + offset as u32) as i32;
+                    *batch.n_seq_id.add(row) = 1;
+                    *(*batch.seq_id.add(row)).add(0) = entry.descriptor.seq_id as i32;
+                    *batch.logits.add(row) =
+                        if entry.descriptor.want_logits && offset + 1 == entry.descriptor.tokens {
+                            1
+                        } else {
+                            0
+                        };
+                    row += 1;
+                }
+            }
+        }
+        let rc = unsafe { sys::llama_decode(self.ctx, batch) };
+        unsafe { sys::llama_batch_free(batch) };
+        if rc != 0 {
+            bail!("llama_decode (hidden batch) failed rc={rc}");
+        }
+        self.finish_batch(layout, need_residual, enqueue_started)
+    }
+
+    fn reset_capture_slot(&self) {
+        let mut capture = self.capture.lock().unwrap();
+        capture.buf = None;
+        capture.copy_us = 0;
+    }
+
+    fn finish_batch(
+        &self,
+        layout: BatchLayout,
+        need_residual: bool,
+        enqueue_started: Instant,
+    ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        if crate::tp::is_active() {
+            bail!("batch multi-sequência TP ainda não foi alinhado");
+        }
+        let residual = if need_residual {
+            Some(self.take_residual(layout.total_tokens())?)
+        } else {
+            None
+        };
+        let mut timings = DecodeTimings {
+            enqueue_us: enqueue_started.elapsed().as_micros() as u64,
+            residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
+            ..Default::default()
+        };
+        if profile_backend_sync() {
+            let completion_started = Instant::now();
+            unsafe { sys::llama_synchronize(self.ctx) };
+            timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
+        }
+        Ok((
+            BatchDecodeOutput {
+                layout,
+                residual,
+                n_embd: self.n_embd,
+            },
+            timings,
+        ))
+    }
+
     /// Decode a batch of token IDs. `logits_all=true` means every position
     /// gets logits; `false` means only the last one.
     pub fn decode_tokens(
@@ -1195,6 +1357,208 @@ fn per_context_config(cfg: &EngineConfig, n: usize) -> EngineConfig {
         n_ctx: cfg.n_ctx / n.max(1) as u32,
         max_sessions: 1,
         ..cfg.clone()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchEntry {
+    pub item_id: String,
+    pub seq_id: u32,
+    pub pos: u32,
+    pub tokens: usize,
+    pub want_logits: bool,
+}
+
+impl BatchEntry {
+    #[cfg(test)]
+    fn test(item_id: &str, seq_id: u32, pos: u32, tokens: usize, want_logits: bool) -> Self {
+        Self {
+            item_id: item_id.into(),
+            seq_id,
+            pos,
+            tokens,
+            want_logits,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TokenBatchEntry {
+    pub descriptor: BatchEntry,
+    pub tokens: Vec<i32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct HiddenBatchEntry {
+    pub descriptor: BatchEntry,
+    pub hidden: Vec<f32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRange {
+    pub rows: Range<usize>,
+    pub logits_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchLayout {
+    ranges: HashMap<String, BatchRange>,
+    total_tokens: usize,
+}
+
+impl BatchLayout {
+    pub fn new(entries: &[BatchEntry]) -> Result<Self> {
+        if entries.is_empty() {
+            bail!("batch sem entradas");
+        }
+
+        let mut ranges = HashMap::with_capacity(entries.len());
+        let mut seq_ids = HashSet::with_capacity(entries.len());
+        let mut cursor = 0usize;
+        for entry in entries {
+            if entry.item_id.is_empty() {
+                bail!("batch item sem item_id");
+            }
+            if ranges.contains_key(&entry.item_id) {
+                bail!("item_id duplicado: {}", entry.item_id);
+            }
+            if !seq_ids.insert(entry.seq_id) {
+                bail!("seq_id duplicado: {}", entry.seq_id);
+            }
+            if entry.tokens == 0 {
+                bail!("item {} sem tokens", entry.item_id);
+            }
+            let end = cursor
+                .checked_add(entry.tokens)
+                .ok_or_else(|| anyhow::anyhow!("batch excede o limite numérico"))?;
+            let logits_index = entry.want_logits.then_some(end - 1);
+            ranges.insert(
+                entry.item_id.clone(),
+                BatchRange {
+                    rows: cursor..end,
+                    logits_index,
+                },
+            );
+            cursor = end;
+        }
+
+        Ok(Self {
+            ranges,
+            total_tokens: cursor,
+        })
+    }
+
+    pub fn total_tokens(&self) -> usize {
+        self.total_tokens
+    }
+
+    pub fn range(&self, item_id: &str) -> Option<&BatchRange> {
+        self.ranges.get(item_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchDecodeOutput {
+    pub layout: BatchLayout,
+    residual: Option<Vec<f32>>,
+    n_embd: usize,
+}
+
+impl BatchDecodeOutput {
+    #[cfg(test)]
+    fn test(layout: BatchLayout, residual: Vec<f32>, n_embd: usize) -> Self {
+        Self {
+            layout,
+            residual: Some(residual),
+            n_embd,
+        }
+    }
+
+    pub fn residual_for(&self, item_id: &str, n_embd: usize) -> Result<Vec<f32>> {
+        let range = self
+            .layout
+            .range(item_id)
+            .ok_or_else(|| anyhow::anyhow!("item_id ausente no resultado: {item_id}"))?;
+        let residual = self
+            .residual
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("batch não capturou residual"))?;
+        if n_embd != self.n_embd {
+            bail!(
+                "n_embd solicitado {} diverge do batch {}",
+                n_embd,
+                self.n_embd
+            );
+        }
+        let start = range
+            .rows
+            .start
+            .checked_mul(n_embd)
+            .ok_or_else(|| anyhow::anyhow!("offset de residual excede o limite numérico"))?;
+        let end = range
+            .rows
+            .end
+            .checked_mul(n_embd)
+            .ok_or_else(|| anyhow::anyhow!("fim de residual excede o limite numérico"))?;
+        residual
+            .get(start..end)
+            .map(|values| values.to_vec())
+            .ok_or_else(|| anyhow::anyhow!("residual incompleto para item {item_id}"))
+    }
+}
+
+#[cfg(test)]
+mod batch_layout_tests {
+    use super::*;
+
+    #[test]
+    fn layout_marca_a_posicao_global_de_logits_de_cada_item() {
+        let entries = vec![
+            BatchEntry::test("a", 0, 10, 3, true),
+            BatchEntry::test("b", 1, 4, 2, true),
+            BatchEntry::test("c", 2, 8, 1, false),
+        ];
+        let layout = BatchLayout::new(&entries).unwrap();
+
+        assert_eq!(layout.total_tokens(), 6);
+        assert_eq!(layout.range("a").unwrap().rows, 0..3);
+        assert_eq!(layout.range("a").unwrap().logits_index, Some(2));
+        assert_eq!(layout.range("b").unwrap().rows, 3..5);
+        assert_eq!(layout.range("b").unwrap().logits_index, Some(4));
+        assert_eq!(layout.range("c").unwrap().rows, 5..6);
+        assert_eq!(layout.range("c").unwrap().logits_index, None);
+    }
+
+    #[test]
+    fn layout_recusa_item_duplicado_ou_sem_tokens() {
+        let duplicate = vec![
+            BatchEntry::test("a", 0, 0, 1, false),
+            BatchEntry::test("a", 1, 0, 1, false),
+        ];
+        assert!(BatchLayout::new(&duplicate)
+            .unwrap_err()
+            .to_string()
+            .contains("item_id duplicado"));
+
+        let empty = vec![BatchEntry::test("empty", 0, 0, 0, false)];
+        assert!(BatchLayout::new(&empty)
+            .unwrap_err()
+            .to_string()
+            .contains("sem tokens"));
+    }
+
+    #[test]
+    fn saida_do_batch_devolve_residual_somente_do_item_pedido() {
+        let entries = vec![
+            BatchEntry::test("a", 0, 0, 2, false),
+            BatchEntry::test("b", 1, 0, 1, false),
+        ];
+        let layout = BatchLayout::new(&entries).unwrap();
+        let output = BatchDecodeOutput::test(layout, vec![1.0, 2.0, 3.0], 1);
+
+        assert_eq!(output.residual_for("a", 1).unwrap(), vec![1.0, 2.0]);
+        assert_eq!(output.residual_for("b", 1).unwrap(), vec![3.0]);
+        assert!(output.residual_for("missing", 1).is_err());
     }
 }
 

@@ -8,17 +8,22 @@ pelo gateway HTTP já existente dos peers, com `Range` para retomada - não pelo
 bitswap do libp2p, que saiu do swarm por ser protocolo órfão (ver `rede-p2p.md`).
 
 Onde o arquivo cai depende do que ele é. Uma **parte** de um fatiamento vai para
-`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`, com o `.pom` gravado ao lado
-antes dos bytes, e é conferida pelo hash que foi pedido. Um arquivo que não é
-parte de manifesto nenhum - um modelo inteiro - cai em `<shard_dir>/recebidos/` e
-só toma o nome final quando o MD5 confere.
+`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`, com o manifesto
+`model.pom` gravado ao lado antes dos bytes, e é conferida pelo hash que foi
+pedido. Um arquivo que não é parte de manifesto nenhum - um modelo inteiro -
+cai em `<shard_dir>/recebidos/` e só toma o nome final quando o MD5 confere.
+
+Ao receber um manifesto v2, o peer faz merge por `pom_id`: partes locais são
+preservadas e partes remotas ausentes são adicionadas. Isto vale tanto para
+`parts` quanto para `tp_parts`; nunca se substitui o manifesto local por uma
+visão parcial do peer que enviou.
 
 **O `.pom` é obrigatório para uma parte, e nos dois sentidos.** Quem manda recusa
 oferecer uma fatia sem manifesto (`send_to_peer`), quem serve recusa entregá-la
 (`servable_path`), e quem recebe recusa aceitá-la (`alvo_da_oferta`,
 `spawn_download`). Não há caminho alternativo: uma fatia órfã é um arquivo que
-ninguém sabe nomear, e o id da rodada - que decide em que pasta ela mora - só
-existe no manifesto.
+ninguém sabe nomear, e o hash do modelo original - que decide em que pasta ela
+mora - só existe no manifesto.
 
 ## 1. Os dois sentidos, e a regra de quem escolheu o arquivo
 

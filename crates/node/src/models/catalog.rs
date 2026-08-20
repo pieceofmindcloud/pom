@@ -87,28 +87,35 @@ pub struct DiscoveredModel {
     /// `None` num arquivo que não pertence a manifesto nenhum.
     #[serde(default)]
     pub model_label: Option<String>,
-    /// A rodada de fatiamento que produziu esta parte.
+    /// O manifesto do modelo original que produziu esta parte.
     #[serde(default)]
     pub pom_id: Option<String>,
+    /// True when the file is a Tensor Parallelism shard, not a layer slice.
+    #[serde(default)]
+    pub tensor_parallel: bool,
 }
 
 impl DiscoveredModel {
     pub fn is_shard(&self) -> bool {
         self.shard_range.is_some()
     }
+
+    pub fn is_tensor_parallel(&self) -> bool {
+        self.tensor_parallel
+    }
 }
 
 /// A set of slices that together (may) cover one model.
 #[derive(Debug, Clone, Serialize)]
 pub struct ShardSet {
-    /// A chave da **rodada** de fatiamento: `<modelo>-<id curto>`, o mesmo nome
-    /// da pasta em disco. Duas fatiagens do mesmo modelo são dois conjuntos.
+    /// A chave do manifesto: `<modelo>-<hash curto>`, o mesmo nome da pasta em
+    /// disco. Alternativas do mesmo modelo compartilham este conjunto.
     pub group: String,
     /// O rótulo do modelo, para a tela. O `group` identifica; este é o que se
     /// lê. Vazio numa fatia sem manifesto.
     #[serde(default)]
     pub model_label: String,
-    /// A rodada que produziu estas partes. Identificação, não nome.
+    /// O hash do modelo original. Identificação, não nome.
     #[serde(default)]
     pub pom_id: String,
     pub total_layers: Option<u32>,
@@ -369,12 +376,13 @@ pub struct PartContext {
     pub end_layer: u32,
     pub sha256: String,
     pub pom_id: String,
-    /// Identifica a **rodada** de fatiamento: `<modelo>-<id curto>`, o mesmo
-    /// nome da pasta. É a chave pela qual as fatias se agrupam.
+    /// Identifica o manifesto: `<modelo>-<hash curto>`, o mesmo nome da pasta.
+    /// É a chave pela qual as fatias alternativas se agrupam.
     pub run_key: String,
     /// Quantização do modelo de origem, copiada pelo fatiador para o manifesto.
     /// O nome de uma parte é o hash, então não há de onde deduzi-la.
     pub quant: Option<String>,
+    pub tensor_parallel: bool,
 }
 
 impl PartContext {
@@ -440,11 +448,9 @@ fn describe(
         // fatia solta - é o que sobra de um `.pom` perdido.
         None => info.as_ref().and_then(|i| i.shard_range),
     };
-    // A chave do conjunto é a **rodada**, não o modelo. Fatiar o mesmo modelo
-    // duas vezes com cortes diferentes produz dois conjuntos que não se somam:
-    // agrupá-los pelo nome do modelo fazia quatro fatias de duas rodadas
-    // parecerem um conjunto só, com faixas que se sobrepõem e uma cobertura que
-    // não quer dizer nada.
+    // A chave do conjunto é o manifesto do modelo original. Fatiar o mesmo
+    // modelo duas vezes com cortes diferentes adiciona alternativas ao mesmo
+    // inventário, que é exatamente o que o planejador pode escolher.
     let shard_group = part.map(|c| c.run_key.clone());
 
     // For a slice, `block_count` counts the layers *inside the file*, not the
@@ -486,6 +492,7 @@ fn describe(
         sha256,
         model_label: part.map(|c| c.model_label.clone()),
         pom_id: part.map(|c| c.pom_id.clone()),
+        tensor_parallel: part.is_some_and(|c| c.tensor_parallel),
     })
 }
 
@@ -783,7 +790,12 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
             continue;
         }
         for m in crate::pom::load_dir(&pasta) {
-            for parte in &m.parts {
+            for (parte, tensor_parallel) in m
+                .parts
+                .iter()
+                .map(|parte| (parte, false))
+                .chain(m.tp_parts.iter().map(|parte| (parte, true)))
+            {
                 let Ok(caminho) = crate::pom::part_path(&pasta, &parte.sha256) else {
                     continue;
                 };
@@ -803,6 +815,7 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                         crate::pom::short_id(&m.pom_id)
                     ),
                     quant: m.model.quant.clone(),
+                    tensor_parallel,
                 };
                 let chave = caminho.canonicalize().unwrap_or(caminho);
                 index.insert(chave, ctx);
@@ -830,7 +843,10 @@ fn identity_path(dir: &Path) -> PathBuf {
 /// model end to end.
 fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
     let mut groups: HashMap<String, Vec<DiscoveredModel>> = HashMap::new();
-    for m in models.iter().filter(|m| m.is_shard()) {
+    for m in models
+        .iter()
+        .filter(|m| m.is_shard() && !m.is_tensor_parallel())
+    {
         let key = m.shard_group.clone().unwrap_or_else(|| m.name.clone());
         groups.entry(key).or_default().push(m.clone());
     }
@@ -964,6 +980,7 @@ mod tests {
             sha256: None,
             model_label: None,
             pom_id: None,
+            tensor_parallel: false,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1070,6 +1087,7 @@ mod tests {
             sha256: None,
             model_label: None,
             pom_id: None,
+            tensor_parallel: false,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

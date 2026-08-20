@@ -13,8 +13,8 @@ deploy re-varre o cluster em vez de confiar na prévia.
 
 Duas rotas fazem o trabalho grosso: `POST /api/ui/deploy/plan` (leitura, barata,
 chamada a cada edição na tela) e `POST /api/ui/deploy` (executa; re-varre o
-cluster). O pedido carrega `group` (a rodada de fatias, pela chave técnica
-`ShardSet.group` derivada do `.pom` - ou o **nome** do modelo no catálogo, com
+cluster). O pedido carrega `group` (o modelo original, pela chave técnica
+`ShardSet.group` derivada do `pom_id` do `.pom` - ou o **nome** do modelo no catálogo, com
 `kind: "whole"`), `kind`
 (`"shards"`, o padrão, `"whole"` - ver a seção 1.1 - ou
 `"tensor_parallel"` - ver a seção 1.2), `params` (o

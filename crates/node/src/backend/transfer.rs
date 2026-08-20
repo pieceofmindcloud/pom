@@ -26,9 +26,9 @@
 //! Onde o arquivo cai depende do que ele é:
 //!
 //! * uma **parte** de um fatiamento vai para
-//!   `<pasta de fatias>/<modelo>-<id da rodada>/`, com o nome sendo o próprio
-//!   sha256 e o `.pom` gravado ao lado antes dos bytes. O id vem do manifesto,
-//!   e é ele que impede duas fatiagens do mesmo modelo de se misturarem;
+//!   `<pasta de fatias>/<modelo>-<hash curto do original>/`, com o nome sendo o
+//!   próprio sha256 e o `model.pom` gravado ao lado antes dos bytes. O id vem do
+//!   hash do modelo original, e novas alternativas são mescladas no manifesto;
 //!   É o hash pedido que confere o que chegou - não um digest que o remetente
 //!   declarou;
 //! * qualquer outro arquivo - um modelo inteiro, que não pertence a manifesto
@@ -391,9 +391,12 @@ async fn servable_path(state: &GatewayState, q: &PathQuery) -> Result<PathBuf, S
         // arquivo que ele não vai saber nomear - e o outro lado recusaria
         // depois de mover gigabytes. A recusa cabe aqui, antes deles.
         let descrita = encontrada.parent().is_some_and(|pasta| {
-            crate::pom::load_dir(pasta)
-                .iter()
-                .any(|m| m.parts.iter().any(|p| p.sha256 == sha))
+            crate::pom::load_dir(pasta).iter().any(|m| {
+                m.parts
+                    .iter()
+                    .chain(m.tp_parts.iter())
+                    .any(|p| p.sha256 == sha)
+            })
         });
         if !descrita {
             return Err(format!(
@@ -553,9 +556,12 @@ async fn serve_pom(
             .into_response();
     };
     let manifesto = caminho.parent().and_then(|pasta| {
-        crate::pom::load_dir(pasta)
-            .into_iter()
-            .find(|m| m.parts.iter().any(|p| p.sha256 == sha))
+        crate::pom::load_dir(pasta).into_iter().find(|m| {
+            m.parts
+                .iter()
+                .chain(m.tp_parts.iter())
+                .any(|p| p.sha256 == sha)
+        })
     });
     match manifesto {
         Some(m) => Json(m).into_response(),
@@ -795,22 +801,45 @@ async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<A
             .map(|s| s.to_string())
             // O nome pode vir de um peer antigo; o manifesto ainda diz qual
             // parte é, desde que ele descreva exatamente uma.
-            .or_else(|| m.parts.first().map(|p| p.sha256.clone()));
+            .or_else(|| {
+                m.parts
+                    .iter()
+                    .chain(m.tp_parts.iter())
+                    .next()
+                    .map(|p| p.sha256.clone())
+            });
 
         if let Some(sha) = sha {
-            if m.parts.iter().any(|p| p.sha256 == sha) {
-                // A pasta leva o id da rodada: duas fatiagens do mesmo modelo
-                // não podem se misturar no disco de quem recebe.
-                let pasta = crate::pom::dir_for(&shard_dir, m);
-                if let Err(e) = crate::pom::write_atomic(&pasta, m) {
-                    warn!("não deu para gravar o manifesto de {}: {e:#}", m.model.name);
+            if m.parts
+                .iter()
+                .chain(m.tp_parts.iter())
+                .any(|p| p.sha256 == sha)
+            {
+                // O manifesto recebido é apenas conhecimento remoto. Mescle-o
+                // ao manifesto local para não apagar partes que este peer já
+                // tinha do mesmo modelo original.
+                let pasta = if m.pom_version == crate::pom::POM_VERSION {
+                    match crate::pom::merge_manifest(&shard_dir, m) {
+                        Ok((pasta, _)) => pasta,
+                        Err(e) => {
+                            return Err(format!(
+                                "não deu para mesclar o manifesto de {}: {e:#}",
+                                m.model.label
+                            ));
+                        }
+                    }
                 } else {
-                    info!(
-                        "manifesto de {} guardado; a parte vai para {}",
-                        m.model.label,
-                        pasta.display()
-                    );
-                }
+                    let pasta = crate::pom::dir_for(&shard_dir, m);
+                    if let Err(e) = crate::pom::write_atomic(&pasta, m) {
+                        warn!("não deu para gravar o manifesto de {}: {e:#}", m.model.name);
+                    }
+                    pasta
+                };
+                info!(
+                    "manifesto de {} guardado; a parte vai para {}",
+                    m.model.label,
+                    pasta.display()
+                );
                 return Ok(Alvo::Parte {
                     sha256: sha,
                     model_dir: Some(pasta),
@@ -1239,9 +1268,12 @@ async fn manifest_for(state: &GatewayState, path: &Path) -> Option<crate::pom::P
     // Só vale um manifesto que esteja na pasta do próprio arquivo: um `.pom`
     // de outro lugar poderia descrever uma parte homônima de outra rodada.
     let _ = state;
-    crate::pom::load_dir(pasta)
-        .into_iter()
-        .find(|m| m.parts.iter().any(|p| p.sha256 == sha))
+    crate::pom::load_dir(pasta).into_iter().find(|m| {
+        m.parts
+            .iter()
+            .chain(m.tp_parts.iter())
+            .any(|p| p.sha256 == sha)
+    })
 }
 
 /// Offer one of our slices to a peer.
@@ -1333,6 +1365,7 @@ async fn send_to_peer(
     let shard: Option<(u32, u32)> = pom.as_ref().and_then(|m| {
         m.parts
             .iter()
+            .chain(m.tp_parts.iter())
             .find(|p| p.sha256 == sha)
             .map(|p| (p.start_layer, p.end_layer))
     });
@@ -1613,22 +1646,39 @@ async fn spawn_download(
                                 &sha256[..12]
                             )
                         })?;
-                    if !m.parts.iter().any(|p| &p.sha256 == sha256) {
+                    if !m
+                        .parts
+                        .iter()
+                        .chain(m.tp_parts.iter())
+                        .any(|p| &p.sha256 == sha256)
+                    {
                         return Err(format!(
                             "o manifesto que {from_host} mandou não descreve a parte {}",
                             &sha256[..12]
                         ));
                     }
-                    let p = crate::pom::dir_for(&state.shard_dir().await, &m);
                     // Gravar o manifesto é parte da transferência, não um
-                    // extra: se ele não entra em disco, a parte que vem depois
-                    // fica órfã do mesmo jeito.
-                    crate::pom::write_atomic(&p, &m).map_err(|e| {
-                        format!(
-                            "não deu para gravar o manifesto de {}: {e:#}",
-                            m.model.label
-                        )
-                    })?;
+                    // extra. O merge preserva partes que já existiam neste
+                    // peer e adiciona apenas o conhecimento remoto que falta.
+                    let p = if m.pom_version == crate::pom::POM_VERSION {
+                        crate::pom::merge_manifest(&state.shard_dir().await, &m)
+                            .map(|(path, _)| path)
+                            .map_err(|e| {
+                                format!(
+                                    "não deu para mesclar o manifesto de {}: {e:#}",
+                                    m.model.label
+                                )
+                            })?
+                    } else {
+                        let path = crate::pom::dir_for(&state.shard_dir().await, &m);
+                        crate::pom::write_atomic(&path, &m).map_err(|e| {
+                            format!(
+                                "não deu para gravar o manifesto de {}: {e:#}",
+                                m.model.label
+                            )
+                        })?;
+                        path
+                    };
                     p
                 }
             };
@@ -2896,6 +2946,94 @@ mod pom_travels_tests {
         let solto = raiz.join("solto.gguf");
         std::fs::write(&solto, crate::splitter::test_gguf_bytes(4)).unwrap();
         assert!(manifest_for(&state, &solto).await.is_none());
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    #[tokio::test]
+    async fn accepting_a_part_merges_with_the_local_manifest() {
+        let raiz = std::env::temp_dir().join(format!(
+            "pom-transfer-merge-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        let source_sha256 = "a".repeat(64);
+        let local_sha256 = "b".repeat(64);
+        let remote_sha256 = "c".repeat(64);
+        let model = PomModel {
+            name: "original".into(),
+            label: "original".into(),
+            total_layers: 32,
+            quant: None,
+        };
+        let local_part = PomPart {
+            sha256: local_sha256.clone(),
+            bytes: 5,
+            start_layer: 0,
+            end_layer: 14,
+            is_first: true,
+            is_last: false,
+            tp: None,
+        };
+        let remote_part = PomPart {
+            sha256: remote_sha256.clone(),
+            bytes: 6,
+            start_layer: 15,
+            end_layer: 31,
+            is_first: false,
+            is_last: true,
+            tp: None,
+        };
+        let local_manifest = PomManifest::new_for_source(
+            model.clone(),
+            PomKind::Layers,
+            "local",
+            source_sha256.clone(),
+            vec![local_part],
+        );
+        let scratch = pom::scratch_dir(&raiz);
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(pom::part_path(&scratch, &local_sha256).unwrap(), b"local").unwrap();
+        let model_dir = pom::finalize_run(&raiz, &scratch, &local_manifest).unwrap();
+
+        let state = crate::gateway::testkit::state_with("destino", vec![]).await;
+        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        let incoming = PomManifest::new_for_source(
+            model,
+            PomKind::Layers,
+            "remote",
+            source_sha256.clone(),
+            vec![remote_part],
+        );
+        let offer = TransferOffer {
+            id: "offer-merge".into(),
+            from_node_id: "remoto".into(),
+            from_host: "remoto".into(),
+            from_gateway: "http://127.0.0.1:1".into(),
+            remote_path: format!("/slices/{remote_sha256}.gguf"),
+            grant: Some("grant".into()),
+            name: format!("{remote_sha256}.gguf"),
+            size_bytes: 6,
+            md5: String::new(),
+            pom: Some(incoming),
+            start_layer: Some(15),
+            end_layer: Some(31),
+        };
+
+        let alvo = alvo_da_oferta(&state, &offer).await.unwrap();
+        let destino = match alvo {
+            Alvo::Parte { model_dir, .. } => model_dir.unwrap(),
+            Alvo::Avulso { .. } => panic!("a oferta com manifesto é uma parte"),
+        };
+        assert_eq!(destino, model_dir);
+        let manifestos = pom::load_dir(&destino);
+        assert_eq!(manifestos.len(), 1);
+        assert_eq!(manifestos[0].pom_id, source_sha256);
+        assert_eq!(manifestos[0].parts.len(), 2);
+        assert!(manifestos[0].parts.iter().any(|p| p.sha256 == local_sha256));
+        assert!(manifestos[0]
+            .parts
+            .iter()
+            .any(|p| p.sha256 == remote_sha256));
 
         std::fs::remove_dir_all(&raiz).ok();
     }

@@ -42,7 +42,8 @@ behind an auth extractor.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`.
+  require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
+  preservando `parts` e `tp_parts` locais.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -136,7 +137,8 @@ behind an auth extractor.
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
   stale-while-revalidate), `merge_parts` (temp file with unique suffix, rename
-  at the end; reuses an already-complete output and invalidates the catalog),
+  at the end; reuses an already-complete output, preserves the source
+  `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be

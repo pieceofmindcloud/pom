@@ -1573,23 +1573,40 @@ fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity
     req.tp.as_ref()
 }
 
-/// Sela uma parte cortada aqui numa rodada só dela.
+async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || crate::pom::hash_file(&path).map(|(sha256, _)| sha256))
+        .await
+        .context("calcular o hash do modelo original")?
+}
+
+/// Sela uma parte cortada aqui no manifesto do modelo original.
 ///
 /// O `apply` corta **uma** faixa, para esta máquina. Antes isso ia parar numa
 /// pasta com o nome do modelo e sem manifesto nenhum, e o catálogo mostrava um
 /// `<sha256>.gguf` órfão que não dizia de que modelo era. Um manifesto de uma
-/// parte só resolve as duas coisas: dá nome à fatia e põe a rodada na própria
-/// pasta, sem se misturar com outro fatiamento do mesmo modelo.
+/// parte só resolve as duas coisas: dá nome à fatia e a coloca na pasta
+/// compartilhada do modelo, sem perder alternativas anteriores.
 fn seal_single_part(
     shard_dir: &std::path::Path,
     scratch: &std::path::Path,
     req: &ApplyRequest,
     outcome: &plan::SliceOutcome,
+    source_sha256: impl Into<String>,
     kind: crate::pom::PomKind,
     tp: Option<crate::pom::PomTp>,
     node_id: &str,
 ) -> anyhow::Result<String> {
-    let manifesto = crate::pom::PomManifest::new(
+    let parte = crate::pom::PomPart {
+        sha256: outcome.sha256.clone(),
+        bytes: outcome.bytes,
+        start_layer: req.start_layer,
+        end_layer: req.end_layer,
+        is_first: req.is_first(),
+        is_last: req.is_last(),
+        tp,
+    };
+    let mut manifesto = crate::pom::PomManifest::new_for_source(
         crate::pom::PomModel {
             name: req.base_name.clone(),
             label: model_label(req),
@@ -1601,16 +1618,16 @@ fn seal_single_part(
         },
         kind,
         node_id,
-        vec![crate::pom::PomPart {
-            sha256: outcome.sha256.clone(),
-            bytes: outcome.bytes,
-            start_layer: req.start_layer,
-            end_layer: req.end_layer,
-            is_first: req.is_first(),
-            is_last: req.is_last(),
-            tp,
-        }],
+        source_sha256,
+        Vec::new(),
     );
+    match kind {
+        crate::pom::PomKind::TensorParallel => manifesto.tp_parts.push(parte),
+        crate::pom::PomKind::Layers => manifesto.parts.push(parte),
+        crate::pom::PomKind::Combined => {
+            anyhow::bail!("uma parte isolada não pode selar um manifesto combinado")
+        }
+    }
     let destino = crate::pom::finalize_run(shard_dir, scratch, &manifesto)?;
     Ok(crate::pom::part_path(&destino, &outcome.sha256)?
         .to_string_lossy()
@@ -1627,6 +1644,8 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         )
         .await;
         let shard_dir = state.shard_dir().await;
+        let source_sha256 =
+            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
         // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
         // a pasta de destino depende do manifesto, que só existe depois.
         if let Some(pronta) = req
@@ -1656,6 +1675,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 &scratch,
                 &req,
                 &outcome,
+                source_sha256,
                 crate::pom::PomKind::TensorParallel,
                 Some(crate::pom::PomTp {
                     rank: tp.rank,
@@ -1685,6 +1705,8 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         .await;
 
         let shard_dir = state.shard_dir().await;
+        let source_sha256 =
+            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
         if let Some(pronta) = req
             .part_sha256
             .as_deref()
@@ -1714,6 +1736,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
                 &scratch,
                 &req,
                 &outcome,
+                source_sha256,
                 crate::pom::PomKind::Layers,
                 None,
                 &state.network.node_id,
@@ -1864,7 +1887,7 @@ async fn merge_parts(
         invalidate_catalog().await;
         return Ok(caminho.to_string_lossy().into_owned());
     }
-    // O nome da pasta é o id da rodada, que só existe depois de juntar.
+    // O nome da pasta vem do manifesto do modelo original associado às partes.
     let out_dir = crate::pom::scratch_dir(&shard_dir);
 
     set_job(
@@ -1926,31 +1949,66 @@ async fn merge_parts(
 
     // A junção é uma parte nova, e uma parte sem manifesto é um arquivo de nome
     // ilegível no catálogo. Um manifesto de uma parte só a nomeia e põe a
-    // rodada na pasta dela.
+    // manifesto na pasta do modelo.
     let sha = output
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or_default()
         .to_string();
-    let manifesto = crate::pom::PomManifest::new(
-        crate::pom::PomModel {
-            name: req.base_name.clone(),
-            label: model_label(req),
-            total_layers: req.total_layers,
-            quant: None,
-        },
-        crate::pom::PomKind::Layers,
-        String::new(),
-        vec![crate::pom::PomPart {
-            sha256: sha.clone(),
-            bytes,
-            start_layer: start,
-            end_layer: end,
-            is_first: start == 0,
-            is_last: end + 1 >= req.total_layers,
-            tp: None,
-        }],
-    );
+    let parte = crate::pom::PomPart {
+        sha256: sha.clone(),
+        bytes,
+        start_layer: start,
+        end_layer: end,
+        is_first: start == 0,
+        is_last: end + 1 >= req.total_layers,
+        tp: None,
+    };
+    let source_ids: Vec<String> = parts
+        .iter()
+        .filter_map(|part| {
+            crate::pom::manifest_for_part_path(std::path::Path::new(&part.source_model_path))
+                .map(|manifest| manifest.pom_id)
+        })
+        .collect();
+    let source_sha256 = source_ids.first().cloned();
+    if source_ids
+        .iter()
+        .any(|id| Some(id) != source_sha256.as_ref())
+    {
+        anyhow::bail!("as fatias pertencem a modelos originais diferentes");
+    }
+    let manifesto = if let Some(source_sha256) = source_sha256 {
+        let mut manifesto = crate::pom::PomManifest::new_for_source(
+            crate::pom::PomModel {
+                name: req.base_name.clone(),
+                label: model_label(req),
+                total_layers: req.total_layers,
+                quant: std::path::Path::new(&req.source_model_path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .and_then(crate::catalog::parse_quant),
+            },
+            crate::pom::PomKind::Layers,
+            String::new(),
+            source_sha256,
+            Vec::new(),
+        );
+        manifesto.parts.push(parte);
+        manifesto
+    } else {
+        crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: req.base_name.clone(),
+                label: model_label(req),
+                total_layers: req.total_layers,
+                quant: None,
+            },
+            crate::pom::PomKind::Layers,
+            String::new(),
+            vec![parte],
+        )
+    };
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
 
@@ -2125,15 +2183,21 @@ async fn slice_locally(
     if ranges.is_empty() {
         return bad_request("este arquivo não declara camadas — não há o que fatiar");
     }
+    let source_sha256 = match source_model_sha256(&source).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
+        }
+    };
 
     let base_name = req
         .name
         .as_deref()
         .and_then(plan::base_name_from_label)
         .unwrap_or_else(|| plan::base_name_of(&req.model_path));
-    // A pasta definitiva leva o id da rodada, e esse id sai do hash das partes -
-    // que só existem depois de cortadas. Corta-se aqui e a rodada se muda para
-    // o nome definitivo no fim, em `pom::finalize_run`.
+    // A pasta definitiva leva o início do hash do modelo original. Corta-se
+    // aqui e a rodada se muda para o nome definitivo no fim, em
+    // `pom::finalize_run`.
     let shard_dir = state.shard_dir().await;
     let out_dir = crate::pom::scratch_dir(&shard_dir);
     let id = uuid::Uuid::new_v4().simple().to_string();
@@ -2150,8 +2214,6 @@ async fn slice_locally(
     let job_id = id.clone();
     let label = req.name.clone().unwrap_or_else(|| base_name.clone());
     let node_id = state.network.node_id.clone();
-    // A pasta final só se conhece com o manifesto na mão, porque o nome dela
-    // é o id da rodada.
     let raiz = shard_dir.clone();
     tokio::spawn(async move {
         match run_slice(
@@ -2164,6 +2226,7 @@ async fn slice_locally(
             ranges,
             total_layers,
             node_id,
+            source_sha256,
             &job_id,
         )
         .await
@@ -2188,11 +2251,11 @@ async fn slice_locally(
     Json(json!({ "job_id": id })).into_response()
 }
 
-/// Corta o modelo inteiro nas faixas pedidas e sela a rodada num `.pom`.
+/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no `.pom` v2.
 ///
 /// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
-/// próprio hash e o manifesto, escrito no fim, é o que diz que aquele conjunto
-/// de hashes é um modelo. Sem ele as partes seriam arquivos soltos de nome
+/// próprio hash e o manifesto, escrito no fim, é o que diz de que modelo cada
+/// parte saiu. Sem ele as partes seriam arquivos soltos de nome
 /// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
 #[allow(clippy::too_many_arguments)]
 async fn run_slice(
@@ -2205,6 +2268,7 @@ async fn run_slice(
     ranges: Vec<(u32, u32)>,
     total_layers: u32,
     node_id: String,
+    source_sha256: String,
     job_id: &str,
 ) -> anyhow::Result<crate::pom::PomManifest> {
     let parts = ranges.len() as u32;
@@ -2297,7 +2361,7 @@ async fn run_slice(
         .file_name()
         .and_then(|n| n.to_str())
         .and_then(crate::catalog::parse_quant);
-    let manifesto = crate::pom::PomManifest::new(
+    let manifesto = crate::pom::PomManifest::new_for_source(
         crate::pom::PomModel {
             name: base_name,
             label,
@@ -2306,6 +2370,7 @@ async fn run_slice(
         },
         crate::pom::PomKind::Layers,
         node_id,
+        source_sha256,
         pecas,
     );
     // Cobrir o modelo inteiro é o caso normal, mas fatiar só um pedaço é
@@ -2318,7 +2383,7 @@ async fn run_slice(
         );
     }
 
-    // A rodada inteira se muda de uma vez para `<modelo>-<id da rodada>`, e o
+    // A rodada inteira se muda de uma vez para `<modelo>-<hash do modelo>`, e o
     // `.pom` é selado lá por último: um manifesto na pasta é, por construção,
     // um fatiamento inteiro que existe em disco.
     let destino = crate::pom::finalize_run(&shard_dir, &scratch, &manifesto)?;
@@ -3870,6 +3935,82 @@ mod tests {
         request.model_label = Some("Qwen3.5-9B-Instruct".into());
 
         assert_eq!(model_label(&request), "Qwen3.5-9B-Instruct");
+    }
+
+    #[test]
+    fn sealing_layer_and_tp_parts_merges_them_under_the_source_model() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-seal-source-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let scratch = root.join(".scratch");
+        std::fs::create_dir_all(&scratch).unwrap();
+        let source_sha256 = "a".repeat(64);
+        let layer_sha256 = "b".repeat(64);
+        let tp_sha256 = "c".repeat(64);
+
+        let mut layer_req = req(0, 14, 32, 2);
+        layer_req.source_model_path = "/models/original.gguf".into();
+        std::fs::write(
+            crate::pom::part_path(&scratch, &layer_sha256).unwrap(),
+            b"layer",
+        )
+        .unwrap();
+        seal_single_part(
+            &root,
+            &scratch,
+            &layer_req,
+            &plan::SliceOutcome {
+                output_path: crate::pom::part_path(&scratch, &layer_sha256)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes: 5,
+                sha256: layer_sha256.clone(),
+                reused: false,
+            },
+            source_sha256.clone(),
+            crate::pom::PomKind::Layers,
+            None,
+            "node-a",
+        )
+        .unwrap();
+
+        let mut tp_req = req(0, 31, 32, 1);
+        tp_req.source_model_path = "/models/original.gguf".into();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(crate::pom::part_path(&scratch, &tp_sha256).unwrap(), b"tp").unwrap();
+        seal_single_part(
+            &root,
+            &scratch,
+            &tp_req,
+            &plan::SliceOutcome {
+                output_path: crate::pom::part_path(&scratch, &tp_sha256)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                bytes: 2,
+                sha256: tp_sha256.clone(),
+                reused: false,
+            },
+            source_sha256.clone(),
+            crate::pom::PomKind::TensorParallel,
+            Some(crate::pom::PomTp { rank: 0, size: 2 }),
+            "node-b",
+        )
+        .unwrap();
+
+        let dir = crate::pom::locate_source_dir(&root, &source_sha256).unwrap();
+        let manifestos = crate::pom::load_dir(&dir);
+        assert_eq!(manifestos.len(), 1);
+        let manifest = &manifestos[0];
+        assert_eq!(manifest.pom_id, source_sha256);
+        assert_eq!(manifest.parts.len(), 1);
+        assert_eq!(manifest.tp_parts.len(), 1);
+        assert_eq!(manifest.kind, crate::pom::PomKind::Combined);
+
+        std::fs::remove_dir_all(root).ok();
     }
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {

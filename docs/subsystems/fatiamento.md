@@ -28,8 +28,8 @@ ela é e que faixa cobre. Ver `models/pom.rs`.
   é pulada.
 - `parse_quant` - quantização pelo nome de um modelo **inteiro**; uma parte
   herda a do `.pom`.
-- `build_shard_sets` - agrupa fatias pela **rodada** (`<modelo>-<id curto>`, o
-  mesmo nome da pasta), ordena por faixa,
+- `build_shard_sets` - agrupa fatias pelo **modelo original** (`<modelo>-<hash
+  curto>`, o mesmo nome da pasta), ordena por faixa,
   mede a cobertura contígua a partir da camada 0 e deduz o total da cobertura
   quando a fatia não declara (`total_layers_inferred`). A flag `complete` diz se
   a cobertura fecha o modelo.
@@ -128,14 +128,17 @@ primeiro num `<uuid>.part` e renomeada para `<sha256>.gguf` quando termina - o
 nome só se conhece no fim, porque o nome **é** o conteúdo. O sha256 sai do mesmo
 passe que grava os bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
 
-No fim, `pom::finalize_run` muda a rodada inteira para
-`<shard_dir>/<modelo>-<id da rodada>/` e sela o `.pom` lá. **O id no nome da
-pasta não é enfeite**: fatiar o mesmo modelo duas vezes com cortes diferentes
-produz dois conjuntos de partes que nada têm a ver um com o outro, e numa pasta
-só eles se misturavam - apagar uma rodada levava junto a parte que a outra por
-acaso também usava. O id é o `pom_id`, derivado do conteúdo, então refatiar
-exatamente igual cai na mesma pasta (é a mesma coisa) e duas máquinas guardam o
-mesmo fatiamento no mesmo caminho relativo.
+No fim, `pom::finalize_run` guarda as partes em
+`<shard_dir>/<modelo>-<hash curto do original>/` e sela `model.pom` lá. No
+formato v2, `pom_id` é o sha256 completo do GGUF original, não o hash da lista
+de partes. Assim, fatiar novamente o mesmo modelo não cria outro manifesto:
+as partes novas são mescladas por `sha256`, inclusive quando cobrem faixas
+alternativas como `L0-7` e `L0-3`. O mesmo manifesto também pode conter
+`tp_parts`, reservado aos shards de Tensor Parallelism.
+
+O merge é protegido por lock por `pom_id` e grava o manifesto atomicamente.
+Manifestos v1 continuam sendo lidos e gravados com a convenção antiga para
+compatibilidade, mas todos os fluxos novos usam v2.
 
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):

@@ -15,10 +15,10 @@
 //! **qualquer** peer que as tenha, e confere o hash que pediu contra os bytes
 //! que chegaram.
 //!
-//! O `pom_id` é o sha256 da lista canônica de partes — o equivalente ao
-//! infohash. Ele nomeia a *rodada* de fatiamento: refatiar o mesmo modelo com
-//! outros cortes produz um `.pom` novo ao lado do antigo, em vez de sobrescrever
-//! calado o que já estava lá.
+//! No formato v2, o `pom_id` é o sha256 do GGUF original. Uma pasta por modelo
+//! preserva todas as alternativas de fatiamento e também os shards de Tensor
+//! Parallelism no campo separado `tp_parts`. O formato v1 continua legível para
+//! compatibilidade com manifestos antigos.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -82,7 +82,7 @@ pub struct PomModel {
     pub quant: Option<String>,
 }
 
-/// O manifesto de uma rodada de fatiamento.
+/// O manifesto de um modelo original e das partes disponíveis localmente.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PomManifest {
     pub pom_version: u32,
@@ -100,7 +100,7 @@ pub struct PomManifest {
     pub tp_parts: Vec<PomPart>,
 }
 
-/// O identificador da rodada: sha256 sobre as partes, em ordem canônica.
+/// O identificador legado: sha256 sobre as partes, em ordem canônica.
 ///
 /// Canônico quer dizer ordenado por hash e serializado sem espaço em branco, de
 /// modo que duas máquinas que produziram as mesmas partes cheguem ao mesmo
@@ -387,7 +387,7 @@ pub fn short_id(pom_id: &str) -> &str {
     &pom_id[..8.min(pom_id.len())]
 }
 
-/// A pasta de **uma rodada de fatiamento**: `<modelo>-<id da rodada>`.
+/// A pasta de um manifesto legado: `<modelo>-<id da rodada>`.
 ///
 /// O id no nome não é enfeite. Fatiar o mesmo modelo duas vezes com cortes
 /// diferentes produz dois conjuntos de partes que nada têm a ver um com o
@@ -407,7 +407,7 @@ pub fn run_dir(shard_dir: &Path, model_name: &str, pom_id: &str) -> PathBuf {
     ))
 }
 
-/// A pasta v2 identificada pelo hash completo do GGUF original.
+/// A pasta v2 identificada pelo início do hash completo do GGUF original.
 pub fn source_run_dir(shard_dir: &Path, model_name: &str, source_sha256: &str) -> PathBuf {
     shard_dir.join(format!(
         "{}-{}",
@@ -512,17 +512,10 @@ pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathB
     Ok((destino, agregado))
 }
 
-/// Move as partes de uma pasta de trabalho para a pasta definitiva da rodada e
-/// sela o manifesto lá.
-///
-/// O nome da pasta sai do `pom_id`, que só se conhece **depois** de cortar
-/// todas as partes - o hash de cada uma entra no cálculo. Daí o rodeio: corta-se
-/// num diretório temporário e, no fim, a rodada inteira se muda para o nome
-/// definitivo.
-///
-/// Se a pasta de destino já existe, é porque esta rodada já foi produzida antes
-/// (mesmo `pom_id` = mesmo conteúdo). Nesse caso as partes que já estão lá
-/// ficam onde estão e as repetidas são descartadas: são byte a byte as mesmas.
+/// Move as partes de uma pasta de trabalho para a pasta do modelo e mescla o
+/// manifesto. Em v2, a identidade já vem do hash do GGUF original, então uma
+/// nova forma de particionar o mesmo modelo adiciona partes à mesma pasta.
+/// Partes repetidas são descartadas por hash.
 pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
     let destino = if m.pom_version == POM_VERSION {
@@ -643,6 +636,26 @@ pub fn load_dir(model_dir: &Path) -> Vec<PomManifest> {
         }
     }
     out
+}
+
+/// Localiza o manifesto v2 que conhece a parte armazenada neste caminho.
+///
+/// Uma parte pode ter chegado por transferência ou ter sido produzida por uma
+/// junção. Em ambos os casos o diretório pai é a fonte de verdade do modelo
+/// original; não devemos calcular o `pom_id` a partir da parte resultante.
+pub fn manifest_for_part_path(path: &Path) -> Option<PomManifest> {
+    let sha256 = path.file_stem()?.to_str()?;
+    if !is_sha256_hex(sha256) {
+        return None;
+    }
+    load_dir(path.parent()?).into_iter().find(|manifest| {
+        manifest.pom_version == POM_VERSION
+            && manifest
+                .parts
+                .iter()
+                .chain(manifest.tp_parts.iter())
+                .any(|part| part.sha256 == sha256)
+    })
 }
 
 // ── Hash em streaming ────────────────────────────────────────────────────────

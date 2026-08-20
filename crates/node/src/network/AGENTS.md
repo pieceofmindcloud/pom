@@ -92,9 +92,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   convertido por `udp_to_libp2p_multiaddr` e os relays (padrão IPFS + `--relay-peers`).
 - `handle_event` - Gossipsub Announce vira `PeerInfo` usando
   `addr_candidates.first()` (o literal `0.0.0.0` só sobrevive se nada foi
-  anunciado); mDNS descobre na LAN e alimenta Kademlia; Identify grava
-  listen_addrs e, para relays conectados, escuta na circuito (`P2pCircuit`);
-  DCuTR/AutoNAT/Bitswap só logam.
+  anunciado) e registra os candidatos como multiaddresses `/p2p/<peer-id>`
+  antes de aquecer a conexão do túnel; mDNS descobre na LAN e alimenta
+  Kademlia; Identify grava listen_addrs e, para relays conectados, escuta na
+  circuito (`P2pCircuit`); DCuTR/AutoNAT/Bitswap só logam.
 - `udp_to_libp2p_multiaddr` - `host:port` UDP → multiaddr `/ip4`/`/ip6`/`/dns`
   na porta TCP. Conserta o bug de IPv6 que era colado num `/ip4/`, falhava o
   parse e era dialado sem nenhuma palavra no log.

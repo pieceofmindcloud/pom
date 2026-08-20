@@ -176,7 +176,11 @@ e em `/ip6/::`.
   assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->
   `self_announce`); `handle_event` converte a mensagem em `PeerInfo` preferindo
   `addr_candidates.first()` ao `addr` (o literal `0.0.0.0` só sobrevive se nada
-  foi anunciado) e chama `Network::insert_peer`.
+  foi anunciado), registra os candidatos convertidos para a porta TCP do
+  libp2p com `/p2p/<peer-id>` no swarm e só então aquece a conexão do túnel;
+  esse registro acontece junto com a chamada a `Network::insert_peer`. Sem
+  ele, um peer aprendido somente pelo gossip tem `PeerId`, mas nenhum endereço
+  para `swarm.dial(peer_id)`.
   O id de mensagem é `discovery::announce_message_id` (hash do tópico +
   payload), e **isso não é detalhe**: a função padrão do libp2p é
   `source + sequence`, as duas são `None` sob autenticação anônima, e o

@@ -60,6 +60,26 @@ fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
     ma.parse().ok()
 }
 
+/// Convert the UDP-style addresses from an `Announce` into the libp2p
+/// addresses that belong to the announced peer.
+///
+/// Gossipsub carries the peer identity and the project's advertised UDP port,
+/// while the libp2p TCP listener uses that port plus 10,000. Registering these
+/// addresses with the swarm is required before `swarm.dial(peer_id)` can work;
+/// a peer learned only through gossip otherwise has an identity but no dialable
+/// address and libp2p returns `Failed to dial the requested peer`.
+fn tunnel_peer_multiaddrs(peer_id: PeerId, advertised: &[String]) -> Vec<Multiaddr> {
+    use libp2p::multiaddr::Protocol;
+
+    let mut seen = HashSet::new();
+    advertised
+        .iter()
+        .filter_map(|addr| udp_to_libp2p_multiaddr(addr))
+        .map(|addr| addr.with(Protocol::P2p(peer_id)))
+        .filter(|addr| seen.insert(addr.clone()))
+        .collect()
+}
+
 /// Inverse of `udp_to_libp2p_multiaddr`: extract this node's own `host:port`
 /// (UDP-port convention) from a libp2p `identify` `observed_addr` — the
 /// address a remote peer told us it saw *us* connecting from, which is the
@@ -445,6 +465,13 @@ async fn handle_event(
                             .iter()
                             .any(|c| c == "transport/libp2p-tunnel-v1")
                     });
+                let tunnel_peer_addrs = dial_for_tunnel.map(|peer_id| {
+                    let mut advertised = addr_candidates.clone();
+                    if advertised.is_empty() {
+                        advertised.push(addr.clone());
+                    }
+                    (peer_id, tunnel_peer_multiaddrs(peer_id, &advertised))
+                });
 
                 network
                     .insert_peer(PeerInfo {
@@ -487,10 +514,23 @@ async fn handle_event(
                 // latency cold onto the very first real inference request.
                 // `is_connected` skips a redundant dial for an already-live
                 // link (e.g. this peer is also reachable directly on the LAN).
-                if let Some(peer_id) = dial_for_tunnel {
+                if let Some((peer_id, addresses)) = tunnel_peer_addrs {
+                    for address in &addresses {
+                        swarm.add_peer_address(peer_id, address.clone());
+                    }
+
                     if !swarm.is_connected(&peer_id) {
-                        debug!("libp2p: warming connection to tunnel-capable peer {peer_id}");
-                        swarm.dial(peer_id).ok();
+                        if addresses.is_empty() {
+                            debug!("libp2p: tunnel peer {peer_id} announced no dialable address");
+                        } else {
+                            debug!(
+                                "libp2p: warming connection to tunnel-capable peer {peer_id} via {} address(es)",
+                                addresses.len()
+                            );
+                            if let Err(error) = swarm.dial(peer_id) {
+                                debug!("libp2p: could not warm tunnel peer {peer_id}: {error}");
+                            }
+                        }
                     }
                 }
             }
@@ -710,6 +750,26 @@ mod tests {
             Some("/dns/ksia.local/tcp/52777")
         );
         assert_eq!(ma("sem-porta"), None);
+    }
+
+    #[test]
+    fn an_announced_tunnel_peer_gets_a_dialable_peer_multiaddr() {
+        let peer_id = PeerId::random();
+        let addrs = tunnel_peer_multiaddrs(
+            peer_id,
+            &[
+                "[2001:db8::42]:42777".to_string(),
+                "192.0.2.42:42777".to_string(),
+            ],
+        );
+
+        assert_eq!(
+            addrs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            vec![
+                format!("/ip6/2001:db8::42/tcp/52777/p2p/{peer_id}"),
+                format!("/ip4/192.0.2.42/tcp/52777/p2p/{peer_id}"),
+            ]
+        );
     }
 
     /// Inverse of `a_bootstrap_address_becomes_a_dialable_multiaddr` — round

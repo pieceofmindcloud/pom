@@ -11,8 +11,10 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
 
 - `addrs.rs` - enumeração dos endereços locais por plataforma (`ifconfig` no
   macOS, `ip -o addr` no Linux) e a filtragem que decide o que anunciar.
-  Único arquivo com código por plataforma; a filtragem fica fora do `cfg` e tem
-  teste que roda em qualquer sistema.
+  Captura também a interface dona do endereço para excluir bridges e pares
+  virtuais de Docker, Podman, CNI e equivalentes sem perder IPs privados de
+  interfaces reais da LAN. Único arquivo com código por plataforma; a
+  filtragem fica fora do `cfg` e tem teste que roda em qualquer sistema.
 - `infer_tunnel.rs` - protocolo request/response que carrega a chamada de
   inferência pelo enxame libp2p como transporte preferencial quando o peer
   anuncia essa capability. Se o túnel falhar por transporte, o relay usa o
@@ -43,8 +45,9 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   busca autenticada em `GET /api/cluster/tls` no principal grava a política.
   Busca que falha preserva o valor local.
 - `route.rs` - `RouteTable`: qual endereço usar para cada peer, com sonda
-  `/health` e histerese contra troca de rota por ruído. `RttTable` guarda a
-  medição direcional deste nó para cada destino, sem inferir o sentido inverso.
+  `/health`, histerese contra troca de rota por ruído e invalidação imediata
+  quando o peer muda seus endereços anunciados. `RttTable` guarda a medição
+  direcional deste nó para cada destino, sem inferir o sentido inverso.
 
 ## Funções-chave
 
@@ -79,7 +82,8 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   assignment, para que nó configurado pela UI ainda seja visível. O endereço
   segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
   atual das interfaces com estável antes de temporário, endereço observado por
-  `identify`, demais interfaces locais e o sentinela `0.0.0.0`.
+  `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
+  virtuais de container não entram nos candidatos automáticos.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
   (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do

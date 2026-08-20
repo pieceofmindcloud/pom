@@ -558,6 +558,13 @@ fn short(id: &str) -> &str {
     &id[..fim]
 }
 
+fn peer_address_changed(previous: &PeerInfo, current: &PeerInfo) -> bool {
+    previous.addr != current.addr
+        || previous.addr_candidates != current.addr_candidates
+        || previous.inference_port != current.inference_port
+        || previous.gateway_port != current.gateway_port
+}
+
 /// Payload budget for one UDP datagram, in bytes.
 ///
 /// The measured path from the captain's 5G tethering to his Linux box has an
@@ -1465,6 +1472,16 @@ impl Network {
                 // conjunto em vez de substitui-lo.
                 peer.merge_observed(&peer_addr);
 
+                let address_changed = {
+                    let peers = self.peers.read().await;
+                    peers
+                        .get(&node_id)
+                        .is_some_and(|previous| peer_address_changed(previous, &peer))
+                };
+                if address_changed {
+                    self.routes.invalidate(&node_id);
+                }
+
                 let mut peers = self.peers.write().await;
                 peers.insert(node_id, peer);
             }
@@ -1549,7 +1566,13 @@ impl Network {
         if node_id == self.node_id {
             return;
         }
-        let is_new = !self.peers.read().await.contains_key(&node_id);
+        let (is_new, address_changed) = {
+            let peers = self.peers.read().await;
+            match peers.get(&node_id) {
+                Some(previous) => (false, peer_address_changed(previous, &peer)),
+                None => (true, false),
+            }
+        };
         if is_new {
             info!(
                 "🆕 Peer via libp2p: {} model={} layers={}-{}",
@@ -1558,6 +1581,9 @@ impl Network {
                 peer.start_layer,
                 peer.end_layer
             );
+        }
+        if address_changed {
+            self.routes.invalidate(&node_id);
         }
         self.peers.write().await.insert(node_id, peer);
     }
@@ -1695,11 +1721,13 @@ mod tests {
         let local = vec![
             crate::addrs::LocalAddr {
                 ip: "2001:db8::2".into(),
+                interface: None,
                 deprecated: false,
                 temporary: true,
             },
             crate::addrs::LocalAddr {
                 ip: "2001:db8::1".into(),
+                interface: None,
                 deprecated: false,
                 temporary: false,
             },
@@ -1743,6 +1771,7 @@ mod tests {
     fn an_observed_public_address_outranks_private_local_interfaces() {
         let local = vec![crate::addrs::LocalAddr {
             ip: "192.168.1.50".into(),
+            interface: None,
             deprecated: false,
             temporary: false,
         }];

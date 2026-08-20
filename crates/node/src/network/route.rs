@@ -136,6 +136,18 @@ impl RouteTable {
         }
     }
 
+    /// Descarta a escolha quando o peer anuncia outra topologia de endereços.
+    ///
+    /// Uma rota medida para um endereço antigo não pode sobreviver a uma
+    /// atualização de `addr_candidates`: durante a janela de 5 minutos da
+    /// medição ela faria o pipeline continuar discando um IP de container que
+    /// já deixou de ser anunciado.
+    pub fn invalidate(&self, node_id: &str) {
+        if let Ok(mut t) = self.por_no.write() {
+            t.remove(node_id);
+        }
+    }
+
     /// Grava uma escolha direto, sem sondar. Só para teste.
     #[cfg(test)]
     pub fn remember_for_test(&self, node_id: &str, addr: &str, rtt_ms: f64) {
@@ -479,6 +491,16 @@ mod tests {
         tabela.measure_peer(&http, "n1", &[vivo.clone()]).await;
         assert_eq!(tabela.resolve("n1"), Some(vivo.clone()));
         tabela.mark_failure("n1", &vivo);
+        assert_eq!(tabela.resolve("n1"), None);
+    }
+
+    #[test]
+    fn an_address_update_invalidates_the_stale_route() {
+        let tabela = RouteTable::new();
+        tabela.remember_for_test("n1", "https://172.17.0.1:8092", 1.0);
+
+        tabela.invalidate("n1");
+
         assert_eq!(tabela.resolve("n1"), None);
     }
 

@@ -95,11 +95,13 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 
 - `self_addr_candidates` enumera as interfaces (`ifconfig` no macOS, `ip -o addr`
   no Linux; Windows fica vazio e cai no endereço observado) e filtra com
-  `filter_candidates`: descarta loopback/link-local/deprecated, estável antes de
-  temporário, teto de 2 por família. O endereço fixado pelo operador
-  (`--advertise-addr`) vem primeiro e não conta para o teto; sem fixação, os
-  endereços públicos atuais vêm antes do observado por `identify` e dos demais
-  endereços locais.
+  `filter_candidates`: descarta loopback/link-local/deprecated e interfaces
+  virtuais de container (`docker0`, `br-*`, `veth*`, `cni*`, `podman*` e
+  equivalentes), mantém endereço estável antes de temporário e limita a 2 por
+  família. IPs privados em interfaces reais continuam válidos para clusters na
+  LAN. O endereço fixado pelo operador (`--advertise-addr`) vem primeiro e não
+  conta para o teto; sem fixação, os endereços públicos atuais vêm antes do
+  observado por `identify` e dos demais endereços locais.
 - `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
   local com a porta de descoberta, o observado por `identify`, ou o literal
   `0.0.0.0:<porta>`.
@@ -139,8 +141,11 @@ Um nó pode ter vários endereços válidos e qual serve depende de quem pergunt
 real do peer, preferindo a porta de gateway, com timeout 3 s e re-medida a cada
 5 min. O gateway continua disponível quando o modelo ainda não subiu ou a porta
 de inferência está restrita, mas a rota gravada continua sendo a URL de
-inferência correspondente. O cliente da sonda aceita o certificado autoassinado
-e o hostname do peer; os clientes de inferência continuam com pinning. A task
+inferência correspondente. Quando o peer anuncia endereço, candidatos ou portas
+diferentes, a escolha anterior é invalidada na hora para não reutilizar uma URL
+antiga durante a janela de 5 minutos. O cliente da sonda aceita o certificado
+autoassinado e o hostname do peer; os clientes de inferência continuam com
+pinning. A task
 que mede reaplica ao cliente a política TLS atual antes da sonda. `choose_route` só troca de rota
 atual se o ganho passar de 25% relativo **e** 2 ms absolutos (9,6 vs 7,2 ms
 MacBook↔ksia não pode trocar a cada ciclo); `mark_failure` tira a rota na hora

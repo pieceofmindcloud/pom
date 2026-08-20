@@ -10,11 +10,31 @@ const MAX_POR_FAMILIA: usize = 2;
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalAddr {
     pub ip: String,
+    /// Interface that owns the address, when the operating system reports it.
+    /// Synthetic callers may leave it empty.
+    pub interface: Option<String>,
     /// Endereco que o sistema marcou como em fim de vida. O macOS mantem estes
     /// por um tempo depois de rotacionar o IPv6 de privacidade.
     pub deprecated: bool,
     /// IPv6 de privacidade, que roda sozinho. Serve, mas perde para o `secured`.
     pub temporary: bool,
+}
+
+fn is_virtual_interface(interface: Option<&str>) -> bool {
+    let Some(interface) = interface else {
+        return false;
+    };
+    let interface = interface.split('@').next().unwrap_or(interface);
+    interface == "docker0"
+        || interface.starts_with("br-")
+        || interface.starts_with("docker")
+        || interface.starts_with("veth")
+        || interface.starts_with("virbr")
+        || interface.starts_with("podman")
+        || interface.starts_with("cni")
+        || interface.starts_with("flannel")
+        || interface.starts_with("cali")
+        || interface.starts_with("weave")
 }
 
 fn e_ipv6(ip: &str) -> bool {
@@ -88,7 +108,9 @@ pub fn is_private_or_local(ip: &str) -> bool {
 pub fn filter_candidates(brutos: Vec<LocalAddr>, fixado: Option<&str>) -> Vec<String> {
     let mut uteis: Vec<LocalAddr> = brutos
         .into_iter()
-        .filter(|a| !a.deprecated && !descartavel(&a.ip))
+        .filter(|a| {
+            !a.deprecated && !descartavel(&a.ip) && !is_virtual_interface(a.interface.as_deref())
+        })
         .collect();
     // Estavel antes de temporario, e ordem lexicografica para desempatar: o
     // conjunto anunciado nao pode mudar so porque a enumeracao veio noutra ordem.
@@ -154,7 +176,11 @@ fn run(programa: &str, args: &[&str]) -> String {
 #[cfg(target_os = "macos")]
 fn parse_ifconfig(saida: &str) -> Vec<LocalAddr> {
     let mut out = Vec::new();
+    let mut interface = None;
     for linha in saida.lines() {
+        if !linha.starts_with(char::is_whitespace) {
+            interface = linha.split(':').next().map(str::trim).map(str::to_string);
+        }
         let l = linha.trim();
         let campos: Vec<&str> = l.split_whitespace().collect();
         if campos.len() < 2 || (campos[0] != "inet" && campos[0] != "inet6") {
@@ -164,6 +190,7 @@ fn parse_ifconfig(saida: &str) -> Vec<LocalAddr> {
         let ip = campos[1].split('%').next().unwrap_or(campos[1]).to_string();
         out.push(LocalAddr {
             ip,
+            interface: interface.clone(),
             deprecated: l.contains("deprecated"),
             temporary: l.contains("temporary"),
         });
@@ -183,8 +210,13 @@ fn parse_ip_addr(saida: &str) -> Vec<LocalAddr> {
             continue;
         };
         let ip = cidr.split('/').next().unwrap_or(cidr).to_string();
+        let interface = campos
+            .get(1)
+            .and_then(|name| name.split('@').next())
+            .map(str::to_string);
         out.push(LocalAddr {
             ip,
+            interface,
             deprecated: linha.contains("deprecated"),
             temporary: linha.contains("temporary"),
         });
@@ -199,6 +231,16 @@ mod tests {
     fn a(ip: &str) -> LocalAddr {
         LocalAddr {
             ip: ip.into(),
+            interface: None,
+            deprecated: false,
+            temporary: false,
+        }
+    }
+
+    fn on(ip: &str, interface: &str) -> LocalAddr {
+        LocalAddr {
+            ip: ip.into(),
+            interface: Some(interface.into()),
             deprecated: false,
             temporary: false,
         }
@@ -210,6 +252,7 @@ mod tests {
             a("192.168.100.240"),
             LocalAddr {
                 ip: "2804:d55::9a0d".into(),
+                interface: None,
                 deprecated: true,
                 temporary: true,
             },
@@ -253,16 +296,19 @@ mod tests {
         let brutos = vec![
             LocalAddr {
                 ip: "2804:d55::temp1".into(),
+                interface: None,
                 deprecated: false,
                 temporary: true,
             },
             LocalAddr {
                 ip: "2804:d55::sec".into(),
+                interface: None,
                 deprecated: false,
                 temporary: false,
             },
             LocalAddr {
                 ip: "2804:d55::temp2".into(),
+                interface: None,
                 deprecated: false,
                 temporary: true,
             },
@@ -335,6 +381,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn docker_bridge_addresses_are_not_announced_but_lan_addresses_are() {
+        let achados = filter_candidates(
+            vec![on("172.17.0.1", "docker0"), on("192.168.100.138", "eth0")],
+            None,
+        );
+
+        assert_eq!(achados, vec!["192.168.100.138"]);
+    }
+
     /// Loopback e link-local sao faixas, nao os dois enderecos que
     /// `descartavel` cita pelo nome.
     #[test]
@@ -376,5 +432,21 @@ mod tests {
         for ip in achados {
             assert!(!descartavel(&ip), "{ip} nao deveria ter passado");
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn docker_bridge_addresses_are_not_announced() {
+        let achados = filter_candidates(
+            parse_ip_addr(
+                r#"2: docker0: <BROADCAST,UP> mtu 1500 state UP
+    2: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0
+    3: eth0: <BROADCAST,UP> mtu 1500 state UP
+    3: eth0    inet 192.168.100.138/24 brd 192.168.100.255 scope global eth0"#,
+            ),
+            None,
+        );
+
+        assert_eq!(achados, vec!["192.168.100.138"]);
     }
 }

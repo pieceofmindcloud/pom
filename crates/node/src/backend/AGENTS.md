@@ -45,7 +45,8 @@ behind an auth extractor.
   require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
   preservando `parts` e `tp_parts` locais. **O veredito volta para quem
   ofereceu** (`receive_answer`), e todo desfecho passa por
-  `TransferState::finish`, que carimba `finished_at`.
+  `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
+  da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -262,6 +263,12 @@ behind an auth extractor.
   aceite vira job `sending` já em curso ("aceito; aguardando o início do
   envio"), recusa vira `cancelled` com o nome de quem recusou. Um veredito de
   um `node_id` que não é o destino registrado é 403.
+  **Um job diz de que modelo é.** `TransferJob` carrega `model_label`,
+  `start_layer` e `end_layer`, montados por `slice_label`/`slice_label_for_path`
+  a partir do `.pom` que está ao lado do arquivo - nunca deduzidos do nome, que
+  é o sha256 e não afirma nada sobre camada nenhuma. O manifesto já está no
+  lugar quando o job nasce nos dois sentidos: veio na oferta (push) ou foi
+  buscado em `/api/transfer/pom` (pull), sempre antes do primeiro byte de peso.
   `DEV_AUTO_ACCEPT_ENV` (`POM_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.

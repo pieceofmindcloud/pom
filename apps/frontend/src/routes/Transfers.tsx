@@ -17,6 +17,7 @@ import { bytes, duration, layerRange, rate } from "../lib/format";
 import { useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { canCancel, isActiveTransfer, isFinishedTransfer } from "../lib/transferStatus";
+import { transferHash, transferTitle } from "../lib/transferLabel";
 import { useI18n } from "../i18n/provider";
 
 export function Transfers() {
@@ -88,11 +89,18 @@ export function Transfers() {
                 >
                   <div className="min-w-[14rem] flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-medium text-fg">{o.name}</span>
+                      <span className="font-medium text-fg">
+                        {o.pom?.model.label ?? o.name}
+                      </span>
                       {o.start_layer != null && o.end_layer != null && (
                         <Badge mono tone="iris">
                           {layerRange(o.start_layer, o.end_layer)}
                         </Badge>
+                      )}
+                      {transferHash(o.name) && (
+                        <span className="font-mono text-[0.7rem] text-faint" title={o.name}>
+                          {transferHash(o.name)}
+                        </span>
                       )}
                     </div>
                     <p className="break-path mt-0.5 text-[0.78rem] text-muted">
@@ -156,7 +164,12 @@ export function Transfers() {
                       ) : (
                         <Download className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />
                       )}
-                      {job.name}
+                      {transferTitle(job)}
+                      {transferHash(job.name) && (
+                        <span className="font-mono text-[0.7rem] font-normal text-faint" title={job.name}>
+                          {transferHash(job.name)}
+                        </span>
+                      )}
                     </span>
                     <span className="flex items-center gap-3">
                       <span className="font-mono text-[0.78rem] text-muted">
@@ -215,7 +228,9 @@ export function Transfers() {
                       />
                     )}
                     <div className="min-w-0">
-                      <span className="block truncate text-[0.88rem] text-fg">{job.name}</span>
+                      <span className="block truncate text-[0.88rem] text-fg">
+                        {transferTitle(job)}
+                      </span>
                       {job.detail && (
                         <span className="block truncate text-[0.72rem] text-muted" title={job.detail}>
                           {job.detail}

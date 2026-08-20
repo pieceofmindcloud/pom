@@ -177,7 +177,8 @@ Per-file list:
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
   ones. State classification from `../lib/transferStatus`. `cancelled` é
   mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
-  de alguém, não erro.
+  de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
+  (`../lib/transferLabel`), com o hash curto ao lado.
 - `WholeModels.tsx` — Full-model catalog from `useLocalCatalog`, one `ModelRow`
   per model with actions: slice (links to `/modelos/fatiar?path=`), send
   (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`

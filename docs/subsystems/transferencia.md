@@ -87,8 +87,20 @@ nas duas máquinas com direções opostas - é assim que os dois lados falam da
 mesma transferência. Estados do job: `running`, `verifying`, `done`, `failed`,
 `cancelled`; os campos de `TransferJob` são `id`, `name`, `direction`, `peer_host`
 (substitui `from_host`, que mentia no sentido de envio), `path`, `state`,
-`bytes_done`, `bytes_total`, `bytes_per_sec`, `eta_secs`, `detail` e
-`finished_at`.
+`bytes_done`, `bytes_total`, `bytes_per_sec`, `eta_secs`, `detail`,
+`finished_at`, `model_label`, `start_layer` e `end_layer`.
+
+**Uma fatia se apresenta pelo modelo e pelas camadas, nunca pelo hash.** O
+`name` de uma parte é o sha256 dela, e hash não diz de que modelo é nem que
+pedaço dele traz - a notificação mostrava `df48d094c3d1023c0dab9e…` e o
+operador não tinha como decidir nada com isso. Quem sabe as duas coisas é o
+`.pom`, e ele **chega antes de qualquer byte de peso**: viaja dentro da oferta
+(`TransferOffer::pom`) no sentido push, e é pedido a `/api/transfer/pom` antes
+do download no sentido pull. Em ambos os casos ele já está gravado na pasta do
+modelo quando `spawn_download` registra o job, e é de lá que `slice_label_for_path`
+lê o rótulo. Do lado que envia, `download` faz a mesma leitura ao lado do
+arquivo servido. O hash continua na tela, como identificação secundária -
+é ele que nomeia o arquivo em disco e identifica a parte entre máquinas.
 
 **O envio fecha no último byte, não no fim do stream.** Quando o corpo satisfaz
 o `Content-Length` prometido, o hyper para de puxar e larga o stream sem nunca

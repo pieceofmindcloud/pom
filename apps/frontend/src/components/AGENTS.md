@@ -74,7 +74,11 @@ Per-file list:
   via a barra andar e depois nada, quem enviava não via aviso de aceite nem de
   recusa. Uma transferência terminada não desenha barra (uma barra parada em
   100% sugere que ainda anda), e o `detail` do nó passa por
-  `localizeServerText`.
+  `localizeServerText`. O título de uma fatia é **modelo + faixa de camadas**
+  (`transferLabel`), com o sha256 curto como identificação secundária ao lado:
+  a notificação mostrava o hash, que não diz de que modelo é nem que pedaço
+  traz. Numa oferta, o que se oferece é o título e quem oferece é o subtítulo —
+  ao contrário, a faixa de camadas era justamente o que a reticência comia.
 - `PipelineRail.tsx` — The cluster as the path a request takes: `PipelineRail`
   draws peer cards in execution order connected by `Conduit` wires labelled
   with the layer boundary the hidden state crosses; `LayerRibbon` is one tick

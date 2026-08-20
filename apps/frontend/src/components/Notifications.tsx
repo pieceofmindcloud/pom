@@ -32,6 +32,7 @@ import { bytes, duration, rate, since } from "../lib/format";
 import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
+import { transferHash, transferTitle } from "../lib/transferLabel";
 import type { TransferJob } from "../lib/types";
 import { Badge, Button, Empty, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
@@ -62,6 +63,7 @@ function transferLook(job: TransferJob) {
 function Row({
   icon,
   title,
+  aside,
   detail,
   progress,
   tone,
@@ -69,6 +71,8 @@ function Row({
 }: {
   icon: React.ReactNode;
   title: string;
+  /** Identificação secundária — o hash curto de uma fatia. */
+  aside?: string | null;
   detail?: string;
   progress?: number | null;
   tone?: "iris" | "aqua" | "amber" | "rose";
@@ -80,9 +84,16 @@ function Row({
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[0.83rem] font-medium text-fg" title={title}>
-          {title}
-        </p>
+        <div className="flex items-baseline gap-2">
+          <p className="truncate text-[0.83rem] font-medium text-fg" title={title}>
+            {title}
+          </p>
+          {aside && (
+            <span className="shrink-0 font-mono text-[0.68rem] text-faint" title={aside}>
+              {aside}
+            </span>
+          )}
+        </div>
         {detail && (
           <p className="break-path mt-0.5 text-xs leading-relaxed text-muted">{detail}</p>
         )}
@@ -206,7 +217,8 @@ export function Notifications() {
                   <Row
                     key={job.id}
                     icon={look.icon}
-                    title={job.name}
+                    title={transferTitle(job)}
+                    aside={transferHash(job.name)}
                     detail={[
                       t(
                         job.direction === "sending"
@@ -253,8 +265,26 @@ export function Notifications() {
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
-                  title={t("notifications.offerTitle", { host: o.from_host, name: o.name })}
-                  detail={`${bytes(o.size_bytes)} · ${o.remote_path}`}
+                  // O que está sendo oferecido é o título; quem oferece e
+                  // quanto pesa são o subtítulo. Ao contrário, "atena quer
+                  // enviar qwen3:8b · L0–15" não cabe numa linha e a faixa de
+                  // camadas — a informação que decide — é justamente o que a
+                  // reticência come.
+                  title={transferTitle({
+                    name: o.name,
+                    model_label: o.pom?.model.label,
+                    start_layer: o.start_layer,
+                    end_layer: o.end_layer,
+                  })}
+                  aside={transferHash(o.name)}
+                  // O caminho completo na máquina de origem enchia cinco
+                  // linhas do painel e não ajuda a decidir. O tamanho, sim: é
+                  // o que se aceita gravar em disco. O caminho continua na
+                  // tela de Transferências, onde há largura para ele.
+                  detail={t("notifications.offerTitle", {
+                    host: o.from_host,
+                    size: bytes(o.size_bytes),
+                  })}
                   footer={
                     <>
                       <Button

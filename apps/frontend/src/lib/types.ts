@@ -361,6 +361,16 @@ export interface TransferJob {
   eta_secs: number | null;
   detail: string;
   /**
+   * De que modelo esta transferência é, e que camadas ela traz — do `.pom`.
+   *
+   * O `name` de uma parte é o sha256 dela, e hash não identifica nada que se
+   * leia. Ausentes quando o arquivo não é parte de fatiamento nenhum (um
+   * modelo inteiro) ou quando o nó é de versão anterior.
+   */
+  model_label?: string | null;
+  start_layer?: number | null;
+  end_layer?: number | null;
+  /**
    * Quando o job entrou num estado terminal, em RFC 3339. Ausente enquanto
    * corre, e também num nó de versão anterior, que não carimbava a hora.
    */
@@ -384,6 +394,24 @@ export interface TransferOffer {
   md5: string;
   start_layer: number | null;
   end_layer: number | null;
+  /**
+   * O manifesto do fatiamento a que esta parte pertence, quando ela é uma.
+   *
+   * Viaja **junto com a oferta**, e não depois: é ele que diz de que modelo a
+   * parte é. Sem isto a notificação só tinha o `<sha256>.gguf` para mostrar.
+   */
+  pom?: OfferManifest | null;
+}
+
+/** `crate::pom::PomManifest`, na parte que a tela usa. */
+export interface OfferManifest {
+  pom_id: string;
+  model: {
+    name: string;
+    label: string;
+    total_layers: number;
+    quant?: string | null;
+  };
 }
 
 export interface AdminNode {

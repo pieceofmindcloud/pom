@@ -166,6 +166,19 @@ pub struct TransferJob {
     pub bytes_per_sec: f64,
     pub eta_secs: Option<u64>,
     pub detail: String,
+    /// De que modelo esta transferência é, e que camadas ela traz.
+    ///
+    /// **O nome de uma parte é o sha256 dela**, e hash não diz de que modelo é
+    /// nem que pedaço dele traz. Quem sabe as duas coisas é o `.pom`, que já
+    /// viaja com a oferta e é gravado antes do primeiro byte; sem estes campos
+    /// a notificação só tinha o hash para mostrar. O `name` continua aqui como
+    /// identificação secundária - é ele que nomeia o arquivo em disco.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_layer: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_layer: Option<u32>,
     /// Quando o job entrou num estado terminal, em RFC 3339.
     ///
     /// O sino lista transferência em andamento; sem esta marca ele não tem como
@@ -237,6 +250,45 @@ pub struct TransferState {
     offered: RwLock<HashMap<String, OfferedFile>>,
 }
 
+/// Como uma fatia se apresenta na tela: o modelo e a faixa de camadas.
+///
+/// Sai do `.pom`, e só de lá. O nome do arquivo é o sha256 e não afirma nada
+/// sobre camada nenhuma - deduzir a faixa do nome foi um defeito real, e o
+/// manifesto é quem sabe.
+#[derive(Debug, Clone)]
+pub struct SliceLabel {
+    pub model_label: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+/// O descritor da parte `sha256` dentro de um manifesto, se ele a descreve.
+pub fn slice_label(m: &crate::pom::PomManifest, sha256: &str) -> Option<SliceLabel> {
+    m.parts
+        .iter()
+        .chain(m.tp_parts.iter())
+        .find(|p| p.sha256 == sha256)
+        .map(|p| SliceLabel {
+            model_label: m.model.label.clone(),
+            start_layer: p.start_layer,
+            end_layer: p.end_layer,
+        })
+}
+
+/// O descritor de um arquivo em disco, quando ele é parte de um fatiamento.
+///
+/// O que identifica a parte é o **caminho**: o `.pom` mora ao lado dela, e o
+/// nome com que alguém a está mandando não decide de que rodada ela é.
+fn slice_label_for_path(path: &Path) -> Option<SliceLabel> {
+    let sha = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| crate::pom::is_sha256_hex(s))?;
+    crate::pom::load_dir(path.parent()?)
+        .iter()
+        .find_map(|m| slice_label(m, sha))
+}
+
 /// Uma oferta que saiu daqui, guardada para dar nome ao veredito que voltar.
 #[derive(Debug, Clone)]
 pub struct OfferedFile {
@@ -246,11 +298,14 @@ pub struct OfferedFile {
     pub name: String,
     pub path: String,
     pub size_bytes: u64,
+    /// Modelo e camadas, para o veredito não voltar falando em hash.
+    pub fatia: Option<SliceLabel>,
 }
 
 impl TransferState {
     /// Registra uma transferência em curso. Chamado pelos dois lados, com o
     /// mesmo id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_job(
         &self,
         id: &str,
@@ -259,6 +314,7 @@ impl TransferState {
         peer_host: &str,
         path: &str,
         bytes_total: u64,
+        fatia: Option<&SliceLabel>,
     ) {
         self.jobs.write().await.insert(
             id.to_string(),
@@ -274,6 +330,9 @@ impl TransferState {
                 bytes_per_sec: 0.0,
                 eta_secs: None,
                 detail: String::new(),
+                model_label: fatia.map(|f| f.model_label.clone()),
+                start_layer: fatia.map(|f| f.start_layer),
+                end_layer: fatia.map(|f| f.end_layer),
                 finished_at: None,
             },
         );
@@ -684,6 +743,9 @@ async fn download(
     // para se perder, e o número continua certo com a tela do outro fechada.
     if let Some(job_id) = q.job.as_deref() {
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
+        // O `.pom` está ao lado do arquivo: é dele que sai o "qwen3:8b · L0-15"
+        // que a tela mostra no lugar do hash.
+        let fatia = slice_label_for_path(&path);
         state
             .transfers
             .start_job(
@@ -695,6 +757,7 @@ async fn download(
                 &peer_host,
                 &path.to_string_lossy(),
                 total,
+                fatia.as_ref(),
             )
             .await;
     }
@@ -1112,6 +1175,7 @@ async fn receive_answer(
                 &oferta.to_host,
                 &oferta.path,
                 oferta.size_bytes,
+                oferta.fatia.as_ref(),
             )
             .await;
         set_detail(&state, &job_id, "aceito; aguardando o início do envio").await;
@@ -1133,6 +1197,7 @@ async fn receive_answer(
             &oferta.to_host,
             &oferta.path,
             oferta.size_bytes,
+            oferta.fatia.as_ref(),
         )
         .await;
     let motivo = match req.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
@@ -1608,13 +1673,8 @@ async fn send_to_peer(
 
     // A faixa de camadas saía daqui lida do nome do arquivo. Agora sai do
     // manifesto, que é quem sabe; sem manifesto, não se inventa.
-    let shard: Option<(u32, u32)> = pom.as_ref().and_then(|m| {
-        m.parts
-            .iter()
-            .chain(m.tp_parts.iter())
-            .find(|p| p.sha256 == sha)
-            .map(|p| (p.start_layer, p.end_layer))
-    });
+    let fatia = pom.as_ref().and_then(|m| slice_label(m, sha));
+    let shard: Option<(u32, u32)> = fatia.as_ref().map(|f| (f.start_layer, f.end_layer));
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
@@ -1646,6 +1706,7 @@ async fn send_to_peer(
             name: name.clone(),
             path: path.to_string_lossy().into_owned(),
             size_bytes: size,
+            fatia: fatia.clone(),
         },
     );
 
@@ -1972,6 +2033,14 @@ async fn spawn_download(
         .await
         .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
 
+    // **O `.pom` já está no lugar, e é dele que sai o nome da tela.** Quem
+    // chegou por oferta trouxe o manifesto junto e ele acabou de ser mesclado
+    // na pasta; quem puxa por hash pediu o dele à origem logo acima - nos dois
+    // casos antes de qualquer byte de peso. Ler daqui é o que troca o
+    // `<sha256>.gguf` da notificação por "qwen3:8b · L0-15".
+    let destino = dir.join(&name);
+    let fatia = slice_label_for_path(&destino);
+
     // `bytes_total` 0 até o manifesto responder — a barra fica indeterminada, o
     // que é a verdade: ainda não se sabe o tamanho.
     state
@@ -1981,8 +2050,9 @@ async fn spawn_download(
             &name,
             TRANSFER_RECEIVING,
             &from_host,
-            &dir.join(&name).to_string_lossy(),
+            &destino.to_string_lossy(),
             0,
+            fatia.as_ref(),
         )
         .await;
     set_detail(&state, &job_id, "conferindo o arquivo na origem").await;
@@ -2365,6 +2435,11 @@ mod tests {
                 "ksia",
                 "/models/fatia_0_15.gguf",
                 4_096,
+                Some(&SliceLabel {
+                    model_label: "qwen3:8b".into(),
+                    start_layer: 0,
+                    end_layer: 15,
+                }),
             )
             .await;
 
@@ -2376,6 +2451,50 @@ mod tests {
         assert_eq!(job.state, TRANSFER_RUNNING);
         assert_eq!(job.path, "/models/fatia_0_15.gguf");
         assert!(job.finished_at.is_none(), "ainda não terminou");
+        // E a tela tem o que mostrar além do nome do arquivo.
+        assert_eq!(job.model_label.as_deref(), Some("qwen3:8b"));
+        assert_eq!((job.start_layer, job.end_layer), (Some(0), Some(15)));
+    }
+
+    /// O descritor de uma parte sai do `.pom`, e só de lá.
+    ///
+    /// O nome do arquivo é o sha256 e não afirma nada sobre camada nenhuma;
+    /// deduzir a faixa dele foi um defeito real. Um hash que o manifesto não
+    /// descreve não ganha rótulo inventado.
+    #[test]
+    fn a_slice_describes_itself_through_its_manifest() {
+        use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
+
+        let sha = "a".repeat(64);
+        let outro = "b".repeat(64);
+        let m = PomManifest::new(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            "no-1",
+            vec![PomPart {
+                sha256: sha.clone(),
+                bytes: 10,
+                start_layer: 16,
+                end_layer: 31,
+                is_first: false,
+                is_last: true,
+                tp: None,
+            }],
+        );
+
+        let f = slice_label(&m, &sha).expect("o manifesto descreve esta parte");
+        assert_eq!(f.model_label, "qwen3:8b");
+        assert_eq!((f.start_layer, f.end_layer), (16, 31));
+
+        assert!(
+            slice_label(&m, &outro).is_none(),
+            "parte que o manifesto não descreve não ganha rótulo inventado"
+        );
     }
 
     /// Um job que terminou carrega **quando** terminou.
@@ -2388,7 +2507,7 @@ mod tests {
     async fn a_finished_job_records_when_it_finished() {
         let transfers = TransferState::default();
         transfers
-            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10)
+            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10, None)
             .await;
 
         transfers.finish("job-1", TRANSFER_DONE, "MD5 conferido").await;
@@ -2411,7 +2530,7 @@ mod tests {
     async fn a_finished_job_is_never_relabelled() {
         let transfers = TransferState::default();
         transfers
-            .start_job("job-1", "f.gguf", TRANSFER_SENDING, "ksia", "/m/f.gguf", 10)
+            .start_job("job-1", "f.gguf", TRANSFER_SENDING, "ksia", "/m/f.gguf", 10, None)
             .await;
 
         transfers.cancel("job-1", "atena").await;
@@ -2446,6 +2565,7 @@ mod tests {
                 "ksia",
                 "/m/f.gguf",
                 10,
+                None,
             )
             .await;
 
@@ -3555,6 +3675,25 @@ mod verdict_tests {
         // Respondida, a oferta sai do registro do remetente.
         assert!(atena.transfers.offered.read().await.is_empty());
 
+        // **E os dois lados sabem dizer o que era, sem falar em hash.** O nome
+        // do arquivo é o sha256; quem diz de que modelo é e que camadas traz é
+        // o `.pom`, e ele viaja com a oferta e é gravado antes do primeiro byte.
+        for (quem, job) in [("recebido", &recebido), ("enviado", &enviado)] {
+            assert_eq!(
+                job.model_label.as_deref(),
+                Some("qwen3:8b"),
+                "{quem}: a tela precisa do modelo, não do hash"
+            );
+            assert_eq!(
+                (job.start_layer, job.end_layer),
+                (Some(0), Some(7)),
+                "{quem}: e da faixa de camadas"
+            );
+            // O hash continua disponível, como identificação secundária: é ele
+            // que nomeia o arquivo em disco.
+            assert_eq!(job.name, format!("{sha}.gguf"), "{quem}");
+        }
+
         std::fs::remove_dir_all(&raiz).ok();
     }
 
@@ -3628,6 +3767,9 @@ mod verdict_tests {
             recusa.detail
         );
         assert!(recusa.finished_at.is_some());
+        // O aviso de recusa também fala em modelo, não em hash.
+        assert_eq!(recusa.model_label.as_deref(), Some("qwen3:8b"));
+        assert_eq!((recusa.start_layer, recusa.end_layer), (Some(0), Some(7)));
 
         std::fs::remove_dir_all(&raiz).ok();
     }
@@ -3667,6 +3809,7 @@ mod verdict_tests {
                 name: "f.gguf".into(),
                 path: "/m/f.gguf".into(),
                 size_bytes: 10,
+                fatia: None,
             },
         );
 

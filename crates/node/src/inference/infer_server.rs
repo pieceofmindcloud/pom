@@ -492,6 +492,20 @@ mod tests {
         StatusCode::NO_CONTENT
     }
 
+    #[test]
+    fn resposta_de_item_unico_preserva_identidade_do_batch() {
+        let request = json!({
+            "item_id": "request-item",
+            "batch_id": "request-batch",
+        });
+        let mut response = json!({"done": true});
+
+        preserve_batch_identity(&request, &mut response);
+
+        assert_eq!(response["item_id"], "request-item");
+        assert_eq!(response["batch_id"], "request-batch");
+    }
+
     #[tokio::test]
     async fn prefill_route_accepts_a_default_f16_frame_larger_than_axums_two_mib_default() {
         let app = Router::new()
@@ -1747,6 +1761,23 @@ async fn handle_prefill(
             return handle_prefill_batch(app, headers, batch).await;
         }
     }
+    // A one-item frame is still a batch frame: the gateway's
+    // `BatchCoordinator` deliberately sends it through the same path. TP has
+    // one decode id and one collective barrier per request, so keep the
+    // complete top-level request under the same gate as a multi-item batch.
+    // Fan-out children already hold the gate in `handle_prefill_batch` and
+    // mark themselves with `BATCH_CHILD_HEADER`, otherwise they would try to
+    // acquire the same non-reentrant mutex again.
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_request_guard = if tp_active && headers.get(BATCH_CHILD_HEADER).is_none() {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
     let state = app.state.clone();
     let scheduler = app.scheduler.clone();
     let processing_started = Instant::now();
@@ -1883,6 +1914,7 @@ async fn handle_prefill(
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
     // `prompt_progress`: no anel borbulhado a cabeça sobrescrevia
@@ -1931,6 +1963,7 @@ async fn handle_prefill(
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        preserve_batch_identity(&meta, &mut forward);
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
         }
@@ -1983,6 +2016,7 @@ async fn handle_prefill(
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
             }
+            preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
         },
         (&residual, shape),
@@ -2071,6 +2105,18 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
             if !value.is_null() {
                 result[field] = value.clone();
             }
+        }
+    }
+}
+
+/// Preserve the identity assigned by `BatchCoordinator` when a one-item
+/// frame takes the regular handler path. `encode_batch_single` cannot infer
+/// that identity from the scheduler reply, so dropping these fields makes the
+/// coordinator unable to match the response to its waiting request.
+pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut Value) {
+    for field in ["item_id", "batch_id"] {
+        if let Some(value) = request_meta.get(field) {
+            response_meta[field] = value.clone();
         }
     }
 }
@@ -2904,6 +2950,19 @@ async fn handle_step(
             return handle_step_batch(app, headers, batch).await;
         }
     }
+    // See the matching guard in `handle_prefill`: a one-item batch must not
+    // overwrite the decode/barrier state of another TP request while its
+    // ranks are still in the collective.
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_request_guard = if tp_active && headers.get(BATCH_CHILD_HEADER).is_none() {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
     let state = app.state.clone();
     let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
@@ -3037,6 +3096,7 @@ async fn handle_step(
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
     // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
@@ -3079,6 +3139,7 @@ async fn handle_step(
             "session_id": sid_for_forward,
             "hop_timings": hop_timings,
         });
+        preserve_batch_identity(&meta, &mut forward);
         if let Some(draft) = local_meta.get("draft") {
             forward["draft"] = draft.clone();
         }
@@ -3118,6 +3179,7 @@ async fn handle_step(
     let hops = next_hops.expect("should_relay implies next_hops is Some");
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
     let mut forward_meta = json!({"session_id": sid_for_forward});
+    preserve_batch_identity(&meta, &mut forward_meta);
     // Keep threading the draft toward the tail — absent entirely (not just
     // an empty array) when this round isn't speculative, same distinction
     // `incoming_draft` relies on above.

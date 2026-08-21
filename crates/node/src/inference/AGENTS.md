@@ -102,11 +102,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
-  `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
-  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
-  Noise falha, repete o POST pelos candidatos HTTPS diretos pinados, usando
-  HTTPS quando a política TLS está ativa. `broadcast_to` mantém a URL base e a
-  rota separadas, porque o túnel encaminha a rota para o loopback do worker. O
+  `relay::send_bytes_or_tunnel` tenta primeiro os candidatos HTTPS diretos
+  pinados. Se nenhum endereço responde por falha de transporte, tenta o
+  `infer_tunnel` quando o membro anunciou `libp2p_peer_id` e
+  `transport/libp2p-tunnel-v1`. Essa ordem é importante no reduce TP: a chamada
+  fica dentro da barreira e um túnel indisponível não deve atrasar um endereço
+  HTTPS alcançável. `broadcast_to` mantém a URL base e a rota separadas, porque
+  o túnel encaminha a rota para o loopback do worker. O
   plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
   tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
@@ -127,6 +129,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.
   Sem o repasse a sessão do worker segurava o único slot e a **segunda**
   requisição morria com "seq pool esgotado" (18/08).
+
+  Os handlers `handle_prefill` e `handle_step` também seguram
+  `tp_batch_gate` no caminho de um frame com um único item. O gateway envia
+  esse caso pelo `BatchCoordinator`, então o receptor precisa manter
+  `item_id`/`batch_id` no meta da resposta e impedir que outra requisição
+  altere o decode global enquanto a coletiva ainda espera todos os ranks. Os
+  filhos internos de um batch pulam o lock por meio de `BATCH_CHILD_HEADER`.
 
   **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
   Ele só é usado pela decodificação especulativa, que está desligada nas configs

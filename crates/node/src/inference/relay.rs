@@ -712,13 +712,17 @@ pub enum ByteTransport {
 pub struct RawPeerResponse {
     pub body: Vec<u8>,
     pub transport: ByteTransport,
+    /// True when the direct HTTPS candidates failed and the tunnel completed
+    /// the request.
     pub fallback: bool,
 }
 
-/// Envia bytes pelo túnel libp2p quando ele está disponível. Se o túnel falhar
-/// por transporte ou timeout, repete o mesmo POST pelo HTTPS direto. O túnel
-/// preserva caminho, corpo e cabeçalhos, pois o reduce TP carrega a barreira e
-/// o rank fora do corpo.
+/// Envia bytes pelo HTTPS direto pinado e, se todos os endereços anunciados
+/// falharem por transporte, tenta o túnel libp2p. O caminho direto vem
+/// primeiro porque a coletiva TP espera a resposta HTTP dentro da barreira e
+/// um túnel indisponível não deve impor seu timeout antes de usar um endereço
+/// HTTPS comprovadamente alcançável. O túnel preserva caminho, corpo e
+/// cabeçalhos, pois o reduce TP carrega a barreira e o rank fora do corpo.
 #[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel(
@@ -749,10 +753,10 @@ pub async fn send_bytes_or_tunnel(
     .await
 }
 
-/// Variante do POST bruto que tenta todos os endereços anunciados pelo peer
-/// quando o túnel libp2p falha. O `base_url` continua sendo o endereço
-/// histórico e o primeiro candidato, para manter o contrato dos chamadores
-/// antigos.
+/// Variante do POST bruto que tenta todos os endereços HTTPS anunciados pelo
+/// peer antes de recorrer ao túnel libp2p. O `base_url` continua sendo o
+/// endereço histórico e o primeiro candidato, para manter o contrato dos
+/// chamadores atuais.
 #[allow(clippy::too_many_arguments)]
 pub async fn send_bytes_or_tunnel_with_candidates(
     client: &reqwest::Client,
@@ -767,27 +771,6 @@ pub async fn send_bytes_or_tunnel_with_candidates(
     supports_tunnel: bool,
     peer_label: &str,
 ) -> Result<RawPeerResponse> {
-    let can_use_tunnel = tunnel.is_some() && supports_tunnel && peer_id.is_some();
-    if let (Some(tunnel), Some(peer_id)) = (tunnel.filter(|_| supports_tunnel), peer_id) {
-        match send_bytes_via_tunnel(
-            tunnel,
-            peer_id,
-            tunnel_addr_candidates,
-            path,
-            body.clone(),
-            headers.clone(),
-            peer_label,
-        )
-        .await
-        {
-            Ok(response) => return Ok(response),
-            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => {
-                warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto");
-            }
-        }
-    }
-
     let candidates: Vec<&str> = if direct_urls.is_empty() {
         vec![base_url]
     } else {
@@ -813,7 +796,7 @@ pub async fn send_bytes_or_tunnel_with_candidates(
                 return Ok(RawPeerResponse {
                     body: response.bytes().await?.to_vec(),
                     transport: ByteTransport::Direct,
-                    fallback: can_use_tunnel,
+                    fallback: false,
                 });
             }
             Ok(response) => {
@@ -833,10 +816,36 @@ pub async fn send_bytes_or_tunnel_with_candidates(
         }
     }
 
-    Err(anyhow!(
+    let direct_error = anyhow!(
         "{peer_label}: nenhum endereço HTTPS respondeu: {}",
         last_error.unwrap_or_else(|| "sem candidatos anunciados".to_string())
-    ))
+    );
+
+    if let (Some(tunnel), Some(peer_id)) = (tunnel.filter(|_| supports_tunnel), peer_id) {
+        match send_bytes_via_tunnel(
+            tunnel,
+            peer_id,
+            tunnel_addr_candidates,
+            path,
+            body,
+            headers,
+            peer_label,
+        )
+        .await
+        {
+            Ok(mut response) => {
+                response.fallback = true;
+                return Ok(response);
+            }
+            Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
+            Err(error) => {
+                warn!("{peer_label}: HTTPS direto e libp2p falharam ({error})");
+                return Err(anyhow!("{direct_error}; túnel: {error}"));
+            }
+        }
+    }
+
+    Err(direct_error)
 }
 
 async fn send_bytes_via_tunnel(
@@ -1169,6 +1178,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn raw_peer_call_prefers_direct_before_the_tunnel() {
+        use axum::{body::Bytes, routing::post, Router};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = Router::new().route(
+            "/v1/tp/reduce",
+            post(|_body: Bytes| async move { Bytes::from_static(b"reduced-directly") }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let peer_id = PeerId::random();
+        let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
+        let receiver = tokio::spawn(async move {
+            if let Some(outbound) = received.recv().await {
+                outbound
+                    .reply
+                    .send(Ok(TunnelResponse {
+                        status: 200,
+                        body: b"reduced-by-tunnel".to_vec(),
+                    }))
+                    .expect("reply");
+            }
+        });
+
+        let response = send_bytes_or_tunnel_with_candidates(
+            &reqwest::Client::new(),
+            &format!("http://127.0.0.1:{port}"),
+            &[format!("http://127.0.0.1:{port}")],
+            "/v1/tp/reduce",
+            b"partial".to_vec(),
+            Vec::new(),
+            &[],
+            Some(&tunnel),
+            Some(peer_id),
+            true,
+            "tp-worker",
+        )
+        .await
+        .expect("HTTPS direto");
+
+        assert_eq!(response.body, b"reduced-directly");
+        assert_eq!(response.transport, ByteTransport::Direct);
+        assert!(!response.fallback);
+        drop(tunnel);
+        receiver.await.expect("receiver");
+    }
+
+    #[tokio::test]
     async fn raw_peer_call_falls_back_to_tunnel_and_preserves_headers() {
         let peer_id = PeerId::random();
         let (tunnel, mut received) = mpsc::channel::<TunnelOutbound>(1);
@@ -1211,6 +1271,7 @@ mod tests {
         .expect("tunnel fallback");
 
         assert_eq!(response.body, b"reduced-by-tunnel");
+        assert!(response.fallback);
         receiver.await.expect("receiver");
     }
 

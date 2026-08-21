@@ -22,9 +22,11 @@ cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
 forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
 workers enviam a parcial ao primary. `broadcast_to` mantém a URL base e a rota
 separadas para o túnel encaminhar a requisição ao path correto no loopback do
-worker. O broadcast e o reduce remoto tentam primeiro o túnel libp2p quando o
-membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
-cliente direto pinado, com HTTPS quando a política TLS está ativa.
+worker. O broadcast e o reduce remoto tentam primeiro os candidatos HTTPS
+diretos pinados. Se nenhum endereço responde por falha de transporte, tentam o
+túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
+necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
+túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
@@ -196,6 +198,15 @@ filas e KV independentes; o roteamento deve escolher uma réplica e preservar
 essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
+
+No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
+frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
+frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode
+global enquanto os ranks ainda aguardam a coletiva. Os filhos fan-out de um
+batch já protegido usam `BATCH_CHILD_HEADER` para não tentar adquirir o mesmo
+lock novamente. Ao reencodar a resposta de um item único, os handlers
+preservam `item_id` e `batch_id`; sem isso o coordenador não consegue associar
+a resposta ao pedido que está aguardando.
 
 `prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
 transporte: modelo, deployment, fase, configuração relevante e próximo hop

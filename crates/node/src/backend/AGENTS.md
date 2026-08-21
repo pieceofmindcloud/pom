@@ -39,6 +39,10 @@ behind an auth extractor.
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
+  rank e transfere pelo hash do arquivo original; o `apply` usa
+  `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
+  de runtime que extrai cada rank de um modelo inteiro.
   `route_options` liga somente máquinas selecionadas em estágios consecutivos;
   réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
   `undeploy` tira uma pipeline inteira do ar.

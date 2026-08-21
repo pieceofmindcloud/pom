@@ -20,7 +20,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; serializes the two telemetry tables for the AI analysis action.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
-- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
+- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
@@ -58,12 +58,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployPlan`,
+  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
   capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
   carries merged-slice steps, `primary` marks whoever holds layer 0.
+  `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
+  pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
   off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).

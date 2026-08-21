@@ -514,6 +514,10 @@ struct HeldShard {
     /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
     /// nenhuma.
     sha256: Option<String>,
+    /// Rank TP desta parte, quando a rodada foi fatiada para tensor parallelism.
+    tp_rank: Option<u32>,
+    /// Número total de ranks desta rodada TP.
+    tp_size: Option<u32>,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -583,6 +587,14 @@ impl Machine {
         self.held
             .iter()
             .find(|s| s.start_layer == start && s.end_layer == end)
+    }
+    fn holds_tp(&self, start: u32, end: u32, rank: u32, size: u32) -> Option<&HeldShard> {
+        self.held.iter().find(|s| {
+            s.start_layer == start
+                && s.end_layer == end
+                && s.tp_rank == Some(rank)
+                && s.tp_size == Some(size)
+        })
     }
     fn label(&self) -> String {
         if self.hostname.is_empty() {
@@ -755,25 +767,53 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     })
                     .filter_map(parse_shard)
                     .collect(),
-                // TP v1 lê o modelo inteiro do primary; a descoberta de workers
-                // (que seguram shards de tensor, não modelos) é o passo seguinte.
-                DeployKind::Whole | DeployKind::TensorParallel => body
+                DeployKind::Whole => body
                     .get("models")
                     .and_then(|v| v.as_array())
                     .into_iter()
                     .flatten()
                     .filter_map(|m| parse_whole(m, &group))
                     .collect(),
+                DeployKind::TensorParallel => {
+                    let parts: Vec<HeldShard> = body
+                        .get("shard_sets")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|set| {
+                            set.get("group").and_then(|g| g.as_str()) == Some(group.as_str())
+                                || set.get("model_label").and_then(|g| g.as_str())
+                                    == Some(group.as_str())
+                        })
+                        .flat_map(|set| {
+                            set.get("tp_parts")
+                                .and_then(|v| v.as_array())
+                                .into_iter()
+                                .flatten()
+                        })
+                        .filter_map(parse_shard)
+                        .collect();
+                    if parts.is_empty() {
+                        body.get("models")
+                            .and_then(|v| v.as_array())
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|m| parse_whole(m, &group))
+                            .collect()
+                    } else {
+                        parts
+                    }
+                }
             };
             // Directory order is whatever the filesystem felt like; the screen
             // lists these as "L0–4 · L5–31" and reads as noise unsorted.
-            held.sort_by_key(|s| (s.start_layer, s.end_layer));
+            held.sort_by_key(|s| (s.start_layer, s.end_layer, s.tp_rank.unwrap_or(0)));
             // Two copies of the same file on one machine are one range, not
             // two: `candidates` would otherwise list the machine twice as a
             // holder of it. The whole-model path meets this the moment the same
             // GGUF is reachable through two scanned folders — the captain's
             // `~/.ollama/models` is a symlink into the LM Studio library.
-            held.dedup_by_key(|s| (s.start_layer, s.end_layer));
+            held.dedup_by_key(|s| (s.start_layer, s.end_layer, s.tp_rank, s.tp_size));
 
             Some((
                 Machine {
@@ -889,6 +929,14 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .and_then(|h| h.as_str())
             .filter(|h| crate::pom::is_sha256_hex(h))
             .map(|h| h.to_string()),
+        tp_rank: v
+            .get("tp_rank")
+            .and_then(|rank| rank.as_u64())
+            .map(|rank| rank as u32),
+        tp_size: v
+            .get("tp_size")
+            .and_then(|size| size.as_u64())
+            .map(|size| size as u32),
     })
 }
 
@@ -929,6 +977,8 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,
+        tp_rank: None,
+        tp_size: None,
     })
 }
 
@@ -1054,6 +1104,31 @@ pub struct Step {
     parts: Vec<StepPart>,
 }
 
+/// Um rank de uma rodada TP já fatiada. Diferente de um `Step`, cada rank
+/// cobre o modelo inteiro e deve ser iniciado no peer correspondente da
+/// coletiva, sem passar novamente pelo extrator de shards.
+#[derive(Debug, Clone, Serialize)]
+pub struct TpTarget {
+    rank: u32,
+    size: u32,
+    start_layer: u32,
+    end_layer: u32,
+    total_layers: Option<u32>,
+    name: String,
+    size_bytes: u64,
+    target_node_id: String,
+    target_host: String,
+    ready: bool,
+    source_node_id: Option<String>,
+    source_host: Option<String>,
+    source_path: Option<String>,
+    source_sha256: Option<String>,
+    target_path: Option<String>,
+    problem: Option<String>,
+    n_gpu_layers: Option<u32>,
+    offload_kqv: Option<bool>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct Plan {
     group: String,
@@ -1074,6 +1149,9 @@ pub struct Plan {
     /// the model has 32 layers or 40 and the tail is missing from the cluster.
     total_layers_inferred: bool,
     steps: Vec<Step>,
+    /// Alvos por rank quando o grupo foi obtido de `tp_parts`. Fica vazio no
+    /// caminho de fallback que extrai os ranks de modelos inteiros.
+    tp_targets: Vec<TpTarget>,
     /// Every layer from 0 to `total_layers` is covered exactly once.
     complete: bool,
     /// Bytes that have to cross the network before this can serve.
@@ -1138,7 +1216,8 @@ fn candidates(machines: &[Machine]) -> Vec<Candidate> {
                 .iter_mut()
                 .find(|c| c.start_layer == s.start_layer && c.end_layer == s.end_layer)
             {
-                Some(c) => c.holders.push(m.node_id.clone()),
+                Some(c) if !c.holders.contains(&m.node_id) => c.holders.push(m.node_id.clone()),
+                Some(_) => {}
                 None => out.push(Candidate {
                     start_layer: s.start_layer,
                     end_layer: s.end_layer,
@@ -1460,6 +1539,7 @@ fn plan_with_rtt_options(
     let mut available = candidates(machines);
     let size = model_size(&available);
     let total_layers = size.value();
+    let tp_pre_sliced = kind == DeployKind::TensorParallel && has_tp_parts(machines);
 
     // What we are planning: (index into `available`, target node id).
     let auto = selection.is_none();
@@ -1867,7 +1947,7 @@ fn plan_with_rtt_options(
                             && m.holds(c.start_layer, c.end_layer).is_some()
                     })
                 };
-                if !ready && target.is_some() {
+                if !tp_pre_sliced && !ready && target.is_some() {
                     transfer_bytes += c.size_bytes;
                 }
 
@@ -1978,6 +2058,41 @@ fn plan_with_rtt_options(
     steps.sort_by_key(|s| (s.start_layer, s.end_layer));
     for (i, s) in steps.iter_mut().enumerate() {
         s.position = i as u32 + 1;
+    }
+
+    let mut tp_targets = Vec::new();
+    if tp_pre_sliced {
+        if let Some(tp) = &tp {
+            let overrides = steps
+                .first()
+                .map(|step| (step.n_gpu_layers, step.offload_kqv));
+            let (resolved, bytes, reason) = tp_targets_for(
+                tp,
+                machines,
+                group,
+                total_layers,
+                overrides.and_then(|value| value.0),
+                overrides.and_then(|value| value.1),
+            );
+            tp_targets = resolved;
+            transfer_bytes = transfer_bytes.saturating_add(bytes);
+            if let Some(reason) = reason {
+                blocked.get_or_insert(reason);
+            }
+            if let (Some(step), Some(rank0)) = (
+                steps.iter_mut().find(|step| step.primary),
+                tp_targets.first(),
+            ) {
+                step.ready = rank0.ready;
+                step.source_node_id = rank0.source_node_id.clone();
+                step.source_host = rank0.source_host.clone();
+                step.source_path = rank0.source_path.clone();
+                step.source_sha256 = rank0.source_sha256.clone();
+                step.target_path = rank0.target_path.clone();
+                step.size_bytes = rank0.size_bytes;
+                step.problem = rank0.problem.clone();
+            }
+        }
     }
 
     // The auto planner runs out of machines before it runs out of slices, and
@@ -2122,6 +2237,7 @@ fn plan_with_rtt_options(
         complete,
         transfer_bytes,
         steps,
+        tp_targets,
         blocked,
         auto,
         merge,
@@ -2340,7 +2456,7 @@ async fn plan_endpoint(
         &req.preferred_node_ids,
         &pairwise_rtt,
     );
-    if req.kind == DeployKind::TensorParallel && p.blocked.is_none() {
+    if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {
             if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {
                 p.blocked = Some(reason);
@@ -2388,7 +2504,8 @@ async fn deploy_endpoint(
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
     // sobre a varredura fresca, então também re-valida aqui — não confia no
     // preview que a tela mostrou.
-    if req.kind == DeployKind::TensorParallel && plan.blocked.is_none() {
+    if req.kind == DeployKind::TensorParallel && plan.blocked.is_none() && !has_tp_parts(&machines)
+    {
         if let Some(tp) = &req.tp {
             if let Some(reason) = tp_shardability_check(&state, &machines, tp).await {
                 plan.blocked = Some(reason);
@@ -2468,12 +2585,6 @@ fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<S
             tp.primary_node_id
         ));
     };
-    if !primary.held.iter().any(|s| s.start_layer == 0) {
-        return Some(format!(
-            "o primary {} não tem o modelo inteiro {group}",
-            primary.label()
-        ));
-    }
     if primary.inference_url.is_none() {
         return Some(format!(
             "não foi possível descobrir a URL de inferência do primary {} (ele precisa anunciar a porta de inferência)",
@@ -2492,6 +2603,8 @@ fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<S
         ));
     }
 
+    let pre_sliced = has_tp_parts(machines);
+
     let mut seen = std::collections::HashSet::new();
     for worker_id in &tp.worker_node_ids {
         if worker_id == &tp.primary_node_id {
@@ -2503,6 +2616,43 @@ fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<S
         let Some(worker) = machines.iter().find(|m| &m.node_id == worker_id) else {
             return Some(format!("o worker {worker_id} não está no cluster"));
         };
+        if worker.inference_url.is_none() {
+            return Some(format!(
+                "não foi possível descobrir a URL de inferência do worker {}",
+                worker.label()
+            ));
+        }
+    }
+
+    if pre_sliced {
+        let total = model_size(&candidates(machines)).value().unwrap_or(0);
+        let end = total.saturating_sub(1);
+        for rank in 0..tp.size {
+            if !machines
+                .iter()
+                .any(|machine| machine.holds_tp(0, end, rank, tp.size).is_some())
+            {
+                return Some(format!(
+                    "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                    rank + 1,
+                    tp.size
+                ));
+            }
+        }
+        return None;
+    }
+
+    if !primary.held.iter().any(|s| s.start_layer == 0) {
+        return Some(format!(
+            "o primary {} não tem o modelo inteiro {group}",
+            primary.label()
+        ));
+    }
+    for worker_id in &tp.worker_node_ids {
+        let worker = machines
+            .iter()
+            .find(|m| &m.node_id == worker_id)
+            .expect("worker validado");
         if !worker.held.iter().any(|s| s.start_layer == 0) {
             return Some(format!(
                 "o worker {} não tem o modelo inteiro {group} para extrair o shard",
@@ -2511,6 +2661,98 @@ fn tp_group_checks(tp: &TpLaunch, machines: &[Machine], group: &str) -> Option<S
         }
     }
     None
+}
+
+fn has_tp_parts(machines: &[Machine]) -> bool {
+    machines
+        .iter()
+        .any(|machine| machine.held.iter().any(|shard| shard.tp_size.is_some()))
+}
+
+/// Resolve o arquivo de cada rank TP pré-fatiado. O alvo pode já ter o rank;
+/// nesse caso não há transferência. Se ainda não tiver, escolhemos qualquer
+/// peer que possua exatamente o mesmo `tp_rank` e carregamos o hash e caminho
+/// desse peer para a transferência por conteúdo.
+fn tp_targets_for(
+    tp: &TpLaunch,
+    machines: &[Machine],
+    group: &str,
+    total_layers: Option<u32>,
+    n_gpu_layers: Option<u32>,
+    offload_kqv: Option<bool>,
+) -> (Vec<TpTarget>, u64, Option<String>) {
+    let total = total_layers.unwrap_or(0);
+    let end_layer = total.saturating_sub(1);
+    let mut transfer_bytes: u64 = 0;
+    let mut blocked = None;
+    let mut targets = Vec::with_capacity(tp.size as usize);
+
+    for rank in 0..tp.size {
+        let target_node_id = if rank == 0 {
+            tp.primary_node_id.clone()
+        } else {
+            tp.worker_node_ids
+                .get(rank as usize - 1)
+                .cloned()
+                .unwrap_or_default()
+        };
+        let target = machines.iter().find(|m| m.node_id == target_node_id);
+        let held = target.and_then(|m| m.holds_tp(0, end_layer, rank, tp.size));
+        let source = if held.is_none() {
+            machines.iter().find(|m| {
+                m.node_id != target_node_id && m.holds_tp(0, end_layer, rank, tp.size).is_some()
+            })
+        } else {
+            None
+        };
+        let file = held.or_else(|| source.and_then(|m| m.holds_tp(0, end_layer, rank, tp.size)));
+        let ready = held.is_some();
+        let problem = if target_node_id.is_empty() {
+            Some(format!("rank {}of{} está sem máquina", rank + 1, tp.size))
+        } else if target.is_none() {
+            Some(format!("a máquina {target_node_id} não está no cluster"))
+        } else if file.is_none() {
+            Some(format!(
+                "rank {}of{} do grupo TP {group} não existe em máquina nenhuma do cluster",
+                rank + 1,
+                tp.size
+            ))
+        } else {
+            None
+        };
+        if let Some(reason) = &problem {
+            blocked.get_or_insert(reason.clone());
+        }
+        if !ready && file.is_some() {
+            transfer_bytes = transfer_bytes.saturating_add(file.map(|s| s.size_bytes).unwrap_or(0));
+        }
+
+        let source_shard = source.and_then(|m| m.holds_tp(0, end_layer, rank, tp.size));
+        let target_shard = held;
+        let shard = target_shard.or(source_shard).or(file);
+        targets.push(TpTarget {
+            rank,
+            size: tp.size,
+            start_layer: 0,
+            end_layer,
+            total_layers,
+            name: format!("{group} · {}of{}", rank + 1, tp.size),
+            size_bytes: shard.map(|s| s.size_bytes).unwrap_or(0),
+            target_node_id,
+            target_host: target.map(|m| m.label()).unwrap_or_default(),
+            ready,
+            source_node_id: source.map(|m| m.node_id.clone()),
+            source_host: source.map(|m| m.label()),
+            source_path: source_shard.map(|s| s.path.clone()),
+            source_sha256: source_shard.and_then(|s| s.sha256.clone()),
+            target_path: target_shard.map(|s| s.path.clone()),
+            problem,
+            n_gpu_layers,
+            offload_kqv,
+        });
+    }
+
+    (targets, transfer_bytes, blocked)
 }
 
 fn tp_identity(
@@ -2590,6 +2832,7 @@ fn launch_targets(
     machines: &[Machine],
     kind: DeployKind,
     tp: Option<&TpLaunch>,
+    tp_targets: &[TpTarget],
 ) -> Result<Vec<LaunchTarget>, String> {
     // A URL da coletiva (rank 0) é derivada do primary, não digitada: é a porta
     // de inferência que o próprio nó anuncia. `tp.is_some()` ⟺ `rank0_url.is_some()`.
@@ -2612,6 +2855,56 @@ fn launch_targets(
         Some(t) => tp_members(t, machines)?,
         None => Vec::new(),
     };
+
+    if let Some(tp) = tp.filter(|_| !tp_targets.is_empty()) {
+        let mut targets = Vec::with_capacity(tp_targets.len());
+        for target in tp_targets {
+            let machine = machines
+                .iter()
+                .find(|machine| machine.node_id == target.target_node_id)
+                .ok_or_else(|| format!("{} não está no cluster", target.target_node_id))?;
+            let held = machine
+                .holds_tp(
+                    target.start_layer,
+                    target.end_layer,
+                    target.rank,
+                    target.size,
+                )
+                .ok_or_else(|| {
+                    format!(
+                        "{} não achou o rank {}of{} depois da cópia",
+                        machine.label(),
+                        target.rank + 1,
+                        target.size
+                    )
+                })?;
+            targets.push(LaunchTarget {
+                node_id: target.target_node_id.clone(),
+                source_model_path: held.path.clone(),
+                start_layer: target.start_layer,
+                end_layer: target.end_layer,
+                skip_split: true,
+                part_sha256: held.sha256.clone(),
+                merge: None,
+                n_gpu_layers: target.n_gpu_layers,
+                offload_kqv: target.offload_kqv,
+                peer_index: None,
+                peer_count: None,
+                tp: Some(tp_identity(
+                    tp.size,
+                    &target.name,
+                    target.rank,
+                    if target.rank == 0 {
+                        "primary"
+                    } else {
+                        "worker"
+                    },
+                    &membros,
+                )),
+            });
+        }
+        return Ok(targets);
+    }
 
     // Réplicas da mesma faixa ocupam o mesmo estágio lógico do pipeline. Cada
     // cópia precisa receber o mesmo peer_index/peer_count para exportar o
@@ -2782,18 +3075,64 @@ async fn run(
         end_layer: u32,
     }
     let mut pulls: Vec<Pull> = Vec::new();
-    for step in &plan.steps {
-        if step.merged {
-            for part in &step.parts {
-                if part.ready {
-                    continue;
+    if !plan.tp_targets.is_empty() {
+        for target in &plan.tp_targets {
+            if target.ready {
+                continue;
+            }
+            let (Some(source_node), Some(source_path)) =
+                (&target.source_node_id, &target.source_path)
+            else {
+                return Err(format!(
+                    "o rank {}of{} não tem de onde vir",
+                    target.rank + 1,
+                    target.size
+                ));
+            };
+            pulls.push(Pull {
+                target_node_id: target.target_node_id.clone(),
+                target_host: target.target_host.clone(),
+                source_node_id: source_node.clone(),
+                source_path: source_path.clone(),
+                source_sha256: target.source_sha256.clone(),
+                name: target.name.clone(),
+                start_layer: target.start_layer,
+                end_layer: target.end_layer,
+            });
+        }
+    } else {
+        for step in &plan.steps {
+            if step.merged {
+                for part in &step.parts {
+                    if part.ready {
+                        continue;
+                    }
+                    let (Some(source_node), Some(source_path)) =
+                        (&part.source_node_id, &part.source_path)
+                    else {
+                        return Err(format!(
+                            "a fatia L{}-{} não tem de onde vir",
+                            part.start_layer, part.end_layer
+                        ));
+                    };
+                    pulls.push(Pull {
+                        target_node_id: step.target_node_id.clone(),
+                        target_host: step.target_host.clone(),
+                        source_node_id: source_node.clone(),
+                        source_path: source_path.clone(),
+                        source_sha256: part.source_sha256.clone(),
+                        name: part.name.clone(),
+                        start_layer: part.start_layer,
+                        end_layer: part.end_layer,
+                    });
                 }
+            } else if !step.ready {
                 let (Some(source_node), Some(source_path)) =
-                    (&part.source_node_id, &part.source_path)
+                    (&step.source_node_id, &step.source_path)
                 else {
                     return Err(format!(
                         "a fatia L{}-{} não tem de onde vir",
-                        part.start_layer, part.end_layer
+                        step.start_layer, step.end_layer
                     ));
                 };
                 pulls.push(Pull {
@@ -2801,30 +3140,12 @@ async fn run(
                     target_host: step.target_host.clone(),
                     source_node_id: source_node.clone(),
                     source_path: source_path.clone(),
-                    source_sha256: part.source_sha256.clone(),
-                    name: part.name.clone(),
-                    start_layer: part.start_layer,
-                    end_layer: part.end_layer,
+                    source_sha256: step.source_sha256.clone(),
+                    name: step.name.clone(),
+                    start_layer: step.start_layer,
+                    end_layer: step.end_layer,
                 });
             }
-        } else if !step.ready {
-            let (Some(source_node), Some(source_path)) = (&step.source_node_id, &step.source_path)
-            else {
-                return Err(format!(
-                    "a fatia L{}-{} não tem de onde vir",
-                    step.start_layer, step.end_layer
-                ));
-            };
-            pulls.push(Pull {
-                target_node_id: step.target_node_id.clone(),
-                target_host: step.target_host.clone(),
-                source_node_id: source_node.clone(),
-                source_path: source_path.clone(),
-                source_sha256: step.source_sha256.clone(),
-                name: step.name.clone(),
-                start_layer: step.start_layer,
-                end_layer: step.end_layer,
-            });
         }
     }
 
@@ -2910,7 +3231,13 @@ async fn run(
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
     let machines = survey(&state, &plan.group, plan.kind).await.machines;
-    let targets = launch_targets(&plan.steps, &machines, plan.kind, plan.tp.as_ref())?;
+    let targets = launch_targets(
+        &plan.steps,
+        &machines,
+        plan.kind,
+        plan.tp.as_ref(),
+        &plan.tp_targets,
+    )?;
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -4806,6 +5133,8 @@ mod tests {
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
                         sha256: None,
+                        tp_rank: None,
+                        tp_size: None,
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -5210,7 +5539,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a", "b"],
         );
-        let targets = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("targets");
+        let targets =
+            launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("targets");
         assert_eq!(
             targets
                 .iter()
@@ -5802,6 +6132,8 @@ mod tests {
             held: if has {
                 vec![HeldShard {
                     sha256: None,
+                    tp_rank: None,
+                    tp_size: None,
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -5813,6 +6145,22 @@ mod tests {
                 Vec::new()
             },
         }
+    }
+
+    fn tp_machine(id: &'static str, rank: u32) -> Machine {
+        let mut machine = whole_machine(id, 900_000, false);
+        machine.held.push(HeldShard {
+            start_layer: 0,
+            end_layer: 31,
+            total_layers: Some(32),
+            name: format!("qwen · {}of2", rank + 1),
+            path: format!("/{id}/rank-{rank}.gguf"),
+            size_bytes: 2 * GIB,
+            sha256: Some(format!("{:064x}", rank + 1)),
+            tp_rank: Some(rank),
+            tp_size: Some(2),
+        });
+        machine
     }
 
     /// O plano de um modelo inteiro é uma máquina cobrindo tudo - e é
@@ -6018,7 +6366,7 @@ mod tests {
     fn a_whole_model_is_launched_as_one_plain_target() {
         let ms = vec![whole_machine("a", 900_000, true)];
         let p = whole("qwen3.5-9b", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole, None).expect("um alvo");
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[]).expect("um alvo");
 
         assert_eq!(alvos.len(), 1);
         let alvo = &alvos[0];
@@ -6049,7 +6397,7 @@ mod tests {
             primary_node_id: "a".into(),
             worker_node_ids: vec!["b".into()],
         };
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp))
+        let alvos = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
             .expect("dois alvos");
 
         assert_eq!(alvos.len(), 2);
@@ -6101,7 +6449,7 @@ mod tests {
         );
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
 
-        let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp))
+        let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp), &[])
             .expect("um alvo por rank");
         assert_eq!(targets.len(), 2);
         assert_eq!(
@@ -6113,6 +6461,51 @@ mod tests {
         );
         assert_eq!(targets[0].tp.as_ref().unwrap().role, "primary");
         assert_eq!(targets[1].tp.as_ref().unwrap().role, "worker");
+    }
+
+    #[test]
+    fn pre_sliced_tensor_parallel_uses_one_existing_file_per_rank() {
+        let ms = vec![tp_machine("a", 0), tp_machine("b", 1)];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        let p = super::plan(
+            "qwen",
+            &ms,
+            None,
+            &RuntimeParams::default(),
+            false,
+            DeployKind::TensorParallel,
+            Some(tp.clone()),
+        );
+
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert_eq!(p.tp_targets.len(), 2);
+        assert!(p.tp_targets.iter().all(|target| target.ready));
+        assert_eq!(p.tp_targets[0].name, "qwen · 1of2");
+
+        let targets = launch_targets(
+            &p.steps,
+            &ms,
+            DeployKind::TensorParallel,
+            Some(&tp),
+            &p.tp_targets,
+        )
+        .expect("um alvo por rank pré-fatiado");
+        assert_eq!(targets.len(), 2);
+        assert!(targets.iter().all(|target| target.skip_split));
+        assert_eq!(
+            targets[0].part_sha256.as_deref(),
+            Some("0000000000000000000000000000000000000000000000000000000000000001")
+        );
+        assert_eq!(
+            targets[1].part_sha256.as_deref(),
+            Some("0000000000000000000000000000000000000000000000000000000000000002")
+        );
+        assert_eq!(targets[0].source_model_path, "/a/rank-0.gguf");
+        assert_eq!(targets[1].source_model_path, "/b/rank-1.gguf");
     }
 
     /// As validações estáticas do grupo TP recusam o plano antes de qualquer
@@ -6250,6 +6643,8 @@ mod tests {
             load: 0,
             held: vec![HeldShard {
                 sha256: None,
+                tp_rank: None,
+                tp_size: None,
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),
@@ -6320,7 +6715,7 @@ mod tests {
             whole_machine("nao-tem", 900_000, false),
         ];
         let p = whole("qwen3.5-9b", &ms, Some(&[pick(0, 31, "nao-tem")]));
-        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None)
+        let erro = launch_targets(&p.steps, &ms, DeployKind::Whole, None, &[])
             .expect_err("o destino não tem o arquivo");
         assert!(
             erro.contains("nao-tem") && erro.contains("o modelo"),
@@ -6337,7 +6732,8 @@ mod tests {
             m("b", 200_000, &[(16, 31)]),
         ]);
         let p = plan("m", &ms, None);
-        let alvos = launch_targets(&p.steps, &ms, DeployKind::Shards, None).expect("dois alvos");
+        let alvos =
+            launch_targets(&p.steps, &ms, DeployKind::Shards, None, &[]).expect("dois alvos");
         assert_eq!(alvos.len(), 2);
         assert_eq!(alvos[0].source_model_path, "/models/m_0_15.gguf");
         assert_eq!((alvos[0].start_layer, alvos[0].end_layer), (0, 15));

@@ -1646,7 +1646,7 @@ async fn apply(
 /// contra workers em meia largura. O `_tp0of2.gguf` nunca chegava a existir no
 /// disco, e o `_tp1of2.gguf` do worker era a única metade do grupo.
 fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity> {
-    req.tp.as_ref()
+    req.tp.as_ref().filter(|_| !req.skip_split)
 }
 
 async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
@@ -4079,12 +4079,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Num grupo tensor-parallel o rank 0 fatia igual aos outros.
-    ///
-    /// Enquanto a decisão foi `role == "worker"`, o primary servia o GGUF
-    /// inteiro: largura cheia de um lado, meia largura do outro, e o
-    /// `_tp0of2.gguf` nunca existia. O `role` endereça a coletiva, não decide
-    /// quem corta.
+    /// Um alvo TP runtime extrai o próprio rank, mas um alvo que já aponta para
+    /// `tp_parts` usa o arquivo existente e não o fatia novamente.
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
@@ -4101,7 +4097,7 @@ mod tests {
             peer_index: 0,
             primary: true,
             tp,
-            skip_split: true,
+            skip_split: false,
             merge: None,
             params: RuntimeParams::default(),
         };
@@ -4116,7 +4112,7 @@ mod tests {
         };
 
         let primary = req(Some(ident(0, "primary")));
-        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
+        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 runtime também fatia");
         assert_eq!(escolhido.rank, 0);
         assert_eq!(
             (escolhido.rank, escolhido.size),
@@ -4126,6 +4122,13 @@ mod tests {
 
         let worker = req(Some(ident(1, "worker")));
         assert_eq!(tp_shard_to_extract(&worker).unwrap().rank, 1);
+
+        let mut pre_sliced = req(Some(ident(0, "primary")));
+        pre_sliced.skip_split = true;
+        assert!(
+            tp_shard_to_extract(&pre_sliced).is_none(),
+            "rank TP já fatiado deve ser carregado diretamente"
+        );
 
         assert!(
             tp_shard_to_extract(&req(None)).is_none(),

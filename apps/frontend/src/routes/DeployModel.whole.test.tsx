@@ -169,7 +169,53 @@ function mount() {
             shard_group: null,
           },
         ],
-        shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
+        shard_sets: [{
+          group: "qwen",
+          model_label: "qwen3.5-9b",
+          pom_id: "pom-qwen",
+          total_layers: 32,
+          total_layers_inferred: false,
+          shards: [],
+          tp_parts: [
+            {
+              id: "tp-0",
+              name: "qwen3.5-9b · L0-31 · rank 0",
+              source: "local",
+              source_label: "Local",
+              path: "/shards/tp0.gguf",
+              size_bytes: 2_500_000_000,
+              architecture: "qwen3",
+              total_layers: 32,
+              quant: "Q4_K_M",
+              shard_range: [0, 31],
+              shard_group: "qwen",
+              sha256: "tp0",
+              model_label: "qwen3.5-9b",
+              pom_id: "pom-qwen",
+              tp_rank: 0,
+              tp_size: 2,
+            },
+            {
+              id: "tp-1",
+              name: "qwen3.5-9b · L0-31 · rank 1",
+              source: "local",
+              source_label: "Local",
+              path: "/shards/tp1.gguf",
+              size_bytes: 2_500_000_000,
+              architecture: "qwen3",
+              total_layers: 32,
+              quant: "Q4_K_M",
+              shard_range: [0, 31],
+              shard_group: "qwen",
+              sha256: "tp1",
+              model_label: "qwen3.5-9b",
+              pom_id: "pom-qwen",
+              tp_rank: 1,
+              tp_size: 2,
+            },
+          ],
+          complete: true,
+        }],
       },
       ...["mac", "salem"].map((node_id, index) => ({
         node_id,
@@ -190,7 +236,33 @@ function mount() {
             shard_group: null,
           },
         ],
-        shard_sets: [],
+        shard_sets: node_id === "mac" ? [{
+          group: "qwen",
+          model_label: "qwen3.5-9b",
+          pom_id: "pom-qwen",
+          total_layers: 32,
+          total_layers_inferred: false,
+          shards: [],
+          tp_parts: [{
+            id: "tp-1-mac",
+            name: "qwen3.5-9b · L0-31 · rank 1",
+            source: "local",
+            source_label: "Local",
+            path: "/shards/tp1.gguf",
+            size_bytes: 2_500_000_000,
+            architecture: "qwen3",
+            total_layers: 32,
+            quant: "Q4_K_M",
+            shard_range: [0, 31],
+            shard_group: "qwen",
+            sha256: "tp1",
+            model_label: "qwen3.5-9b",
+            pom_id: "pom-qwen",
+            tp_rank: 1,
+            tp_size: 2,
+          }],
+          complete: false,
+        }] : [],
       })),
     ],
   });
@@ -711,5 +783,17 @@ describe("DeployModel · Tensor simples", () => {
       name: /Workers do Tensor Parallelism/,
     });
     expect([...currentWorkerSelect.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["mac"]);
+  });
+
+  it("escolhe o grupo TP fatiado e mostra os ranks, não camadas de pipeline", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+
+    const model = await screen.findByRole("combobox", { name: "Modelo técnico" });
+    expect((model as HTMLSelectElement).value).toBe("qwen:2");
+    expect(screen.getByText(/1of2/)).toBeTruthy();
+    expect(screen.getByText(/2of2/)).toBeTruthy();
+    expect(screen.queryByText("Camadas disponíveis neste peer")).toBeNull();
   });
 });

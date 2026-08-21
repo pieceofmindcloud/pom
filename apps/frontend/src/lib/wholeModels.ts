@@ -17,7 +17,7 @@
  * the cluster having lost it; picking it gets a refusal from the node that says
  * what is actually wrong with the file.
  */
-import { isWholeModel, type PeerCatalog } from "./types";
+import { isWholeModel, tpPartsOf, type PeerCatalog } from "./types";
 
 export interface WholeModelEntry {
   /** Catalog name — what `group` carries for a whole-model deploy. */
@@ -28,6 +28,33 @@ export interface WholeModelEntry {
   quant: string | null;
   architecture: string | null;
   /** Node ids that have this file. */
+  holders: string[];
+}
+
+export interface TensorParallelRankEntry {
+  rank: number;
+  size: number;
+  holders: string[];
+}
+
+/**
+ * Tensor-parallel slicing rounds, grouped by source manifest and TP width.
+ *
+ * A TP part is not a pipeline stage: every rank covers the complete layer
+ * range. The deployment screen therefore needs the rank inventory separately
+ * from `wholeModelsOf`, otherwise it silently turns `1of2` and `2of2` into one
+ * ordinary `L0-31` model.
+ */
+export interface TensorParallelGroupEntry {
+  key: string;
+  group: string;
+  label: string;
+  total_layers: number | null;
+  size_bytes: number;
+  quant: string | null;
+  architecture: string | null;
+  tp_size: number;
+  ranks: TensorParallelRankEntry[];
   holders: string[];
 }
 
@@ -59,4 +86,50 @@ export function wholeModelsOf(peers: PeerCatalog[] | undefined): WholeModelEntry
     }
   }
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export function tensorParallelModelsOf(
+  peers: PeerCatalog[] | undefined,
+): TensorParallelGroupEntry[] {
+  const byKey = new Map<string, TensorParallelGroupEntry>();
+  for (const peer of peers ?? []) {
+    for (const set of peer.shard_sets ?? []) {
+      for (const part of tpPartsOf(set)) {
+        if (part.tp_rank == null || part.tp_size == null || part.tp_size < 2) continue;
+        const key = `${set.group}:${part.tp_size}`;
+        const found = byKey.get(key);
+        const entry = found ?? {
+          key,
+          group: set.group,
+          label: set.model_label || set.group,
+          total_layers: set.total_layers ?? part.total_layers,
+          size_bytes: part.size_bytes,
+          quant: part.quant,
+          architecture: part.architecture,
+          tp_size: part.tp_size,
+          ranks: [],
+          holders: [],
+        };
+        entry.total_layers ??= part.total_layers;
+        entry.size_bytes = Math.max(entry.size_bytes, part.size_bytes);
+        entry.quant ??= part.quant;
+        entry.architecture ??= part.architecture;
+        if (!entry.holders.includes(peer.node_id)) entry.holders.push(peer.node_id);
+        let rank = entry.ranks.find((candidate) => candidate.rank === part.tp_rank);
+        if (!rank) {
+          rank = { rank: part.tp_rank, size: part.tp_size, holders: [] };
+          entry.ranks.push(rank);
+        }
+        if (!rank.holders.includes(peer.node_id)) rank.holders.push(peer.node_id);
+        byKey.set(key, entry);
+      }
+    }
+  }
+  return [...byKey.values()]
+    .map((entry) => ({
+      ...entry,
+      ranks: entry.ranks.slice().sort((a, b) => a.rank - b.rank),
+      holders: entry.holders.slice().sort(),
+    }))
+    .sort((a, b) => a.label.localeCompare(b.label) || a.tp_size - b.tp_size);
 }

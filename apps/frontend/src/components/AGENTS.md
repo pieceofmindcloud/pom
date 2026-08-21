@@ -230,7 +230,8 @@ Key logic carriers:
   respostas antigas que tentem saltar um estágio. A faixa inferior continua
   aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
   e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
-  deixa o RTT ausente em vez de copiar a medição do nó de destino. Réplicas exatas podem aparecer empilhadas na
+  deixa o RTT da aresta ausente em vez de copiar a medição do nó de destino; o
+  card ainda pode mostrar o RTT local anunciado pela própria máquina. Réplicas exatas podem aparecer empilhadas na
   mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
   explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.
   Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra

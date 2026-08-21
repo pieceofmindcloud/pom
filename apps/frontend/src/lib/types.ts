@@ -613,6 +613,28 @@ export interface DeployStep {
   parts: DeployStepPart[];
 }
 
+/** One pre-sliced tensor-parallel rank in a deploy plan. */
+export interface DeployTpTarget {
+  rank: number;
+  size: number;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number | null;
+  name: string;
+  size_bytes: number;
+  target_node_id: string;
+  target_host: string;
+  ready: boolean;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+  source_sha256: string | null;
+  target_path: string | null;
+  problem: string | null;
+  n_gpu_layers: number | null;
+  offload_kqv: boolean | null;
+}
+
 /** A range that exists somewhere in the cluster, selected or not. */
 export interface DeployCandidate {
   start_layer: number;
@@ -764,6 +786,8 @@ export interface DeployPlan {
    *  metadata. The deploy still runs; the screen has to say so. */
   total_layers_inferred: boolean;
   steps: DeployStep[];
+  /** TP ranks are alternatives, not additional pipeline stages. */
+  tp_targets?: DeployTpTarget[];
   complete: boolean;
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */

@@ -49,6 +49,10 @@ struct TpState {
     /// Configuração viva usada para obter a credencial interna. O receptor
     /// também aceita API keys ativas, mas os nós usam a connection_key.
     auth: Option<crate::auth::AuthState>,
+    /// Runtime que hospeda o servidor de inferência. O callback do llama.cpp
+    /// roda numa thread `spawn_blocking`, então `Handle::current()` não existe
+    /// ali; o handle precisa ser capturado no registro do grupo TP.
+    runtime: Option<tokio::runtime::Handle>,
     /// Contador de reduces. Em execução lockstep, o k-ésimo reduce de todos os
     /// ranks corresponde à mesma projeção, então o id casa entre os processos.
     counter: AtomicU64,
@@ -377,6 +381,13 @@ pub fn register_tp_reduce_with_urls(
     rank0_supports_tunnel: bool,
     auth: Option<crate::auth::AuthState>,
 ) {
+    let runtime = tokio::runtime::Handle::try_current().ok();
+    if runtime.is_none() {
+        note_failure(
+            "coletiva TP registrada fora de um runtime Tokio; o callback não poderá aguardar a barreira"
+                .to_string(),
+        );
+    }
     if rank0_urls.is_empty() {
         rank0_urls.push(rank0_url.clone());
     } else if !rank0_urls.iter().any(|url| url == &rank0_url) {
@@ -420,6 +431,7 @@ pub fn register_tp_reduce_with_urls(
         rank0_supports_tunnel,
         client,
         auth,
+        runtime,
         counter: AtomicU64::new(0),
         local_barrier: std::sync::RwLock::new(None),
     });
@@ -492,7 +504,11 @@ unsafe extern "C" fn tp_reduce_cb(data: *mut c_void, n_bytes: usize, _userdata: 
         }
     }
 
-    let sum = tokio::runtime::Handle::current().block_on(post_reduce(
+    let Some(runtime) = state.runtime.as_ref() else {
+        note_failure("coletiva TP sem runtime Tokio para aguardar o reduce".to_string());
+        return;
+    };
+    let sum = runtime.block_on(post_reduce(
         state,
         &barrier_id,
         partial,
@@ -951,6 +967,41 @@ mod tests {
         unregister_tp_reduce();
     }
 
+    #[tokio::test]
+    async fn callback_can_block_on_tokio_from_a_llama_blocking_thread() {
+        let _trava = ESTADO_GLOBAL.lock().unwrap();
+        limpa();
+        register_tp_reduce(
+            0,
+            1,
+            "http://127.0.0.1:9/".into(),
+            Some("primary-node".into()),
+            None,
+            false,
+            None,
+        );
+        let barrier_handle = set_local_barrier(ReduceBarrier::new(), 1).expect("barreira");
+        begin_decode("blocking-thread");
+
+        let values = std::thread::spawn(|| {
+            let mut values = vec![2.0f32, 3.0];
+            unsafe {
+                tp_reduce_cb(
+                    values.as_mut_ptr().cast(),
+                    values.len() * std::mem::size_of::<f32>(),
+                    std::ptr::null_mut(),
+                );
+            }
+            values
+        })
+        .join()
+        .expect("callback não pode panicar");
+
+        assert_eq!(values, [2.0, 3.0]);
+        clear_local_barrier(barrier_handle);
+        unregister_tp_reduce();
+    }
+
     use crate::collective::ReduceBarrier;
     use axum::{routing::post, Router};
     use tokio::sync::mpsc;
@@ -1004,6 +1055,7 @@ mod tests {
                     rank0_supports_tunnel: false,
                     client: reqwest::Client::new(),
                     auth: None,
+                    runtime: None,
                     counter: AtomicU64::new(0),
                     local_barrier: std::sync::RwLock::new(None),
                 });
@@ -1060,6 +1112,7 @@ mod tests {
             rank0_supports_tunnel: true,
             client: reqwest::Client::new(),
             auth: None,
+            runtime: None,
             counter: AtomicU64::new(0),
             local_barrier: std::sync::RwLock::new(None),
         });

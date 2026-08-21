@@ -33,6 +33,11 @@ key ativa quando a chave compartilhada não existe. O loopback do túnel mantém
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
+O callback nativo do llama.cpp roda em uma thread de `spawn_blocking`, fora do
+contexto local de uma task Tokio. Por isso o registro do grupo captura o
+`tokio::runtime::Handle` do servidor e o callback usa esse handle para aguardar
+o reduce; chamar `Handle::current()` dentro da thread nativa causa panic.
+
 A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
 um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
 estado oculto. Portanto `round_trip_ms` de um frame não é usado como RTT de

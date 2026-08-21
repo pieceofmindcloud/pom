@@ -71,7 +71,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
   `/v1/tp/reduce` do primary quando é worker. O endpoint soma na
-  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O cliente é
+  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O callback roda
+  em uma thread `spawn_blocking` do llama.cpp e usa o `Handle` Tokio capturado
+  no registro do grupo, nunca `Handle::current()` na thread nativa. O cliente é
   **pinado no `node_id` do primary** (`TpIdentity.rank0_node_id`): um
   `reqwest::Client` padrão recusa o certificado autoassinado do cluster e todo
   POST morria em 13 ms. O fork insere o op de reduce (`GGML_OP_CUSTOM`) depois

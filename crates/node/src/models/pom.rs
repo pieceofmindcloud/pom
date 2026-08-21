@@ -15,10 +15,9 @@
 //! **qualquer** peer que as tenha, e confere o hash que pediu contra os bytes
 //! que chegaram.
 //!
-//! No formato v2, o `pom_id` é o sha256 do GGUF original. Uma pasta por modelo
-//! preserva todas as alternativas de fatiamento e também os shards de Tensor
-//! Parallelism no campo separado `tp_parts`. O formato v1 continua legível para
-//! compatibilidade com manifestos antigos.
+//! O `pom_id` é o sha256 do GGUF original. Uma pasta por modelo preserva todas
+//! as alternativas de fatiamento e também os shards de Tensor Parallelism no
+//! campo separado `tp_parts`.
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
@@ -26,9 +25,9 @@ use sha2::{Digest, Sha256};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-/// Versão do formato novo. Sobe quando o significado de um campo muda.
-pub const POM_VERSION: u32 = 2;
-const LEGACY_POM_VERSION: u32 = 1;
+/// Versão do formato. O produto ainda não foi lançado, então este é o único
+/// contrato aceito: identidade pelo hash do GGUF original.
+pub const POM_VERSION: u32 = 1;
 
 /// Extensão do manifesto.
 pub const POM_EXT: &str = "pom";
@@ -86,7 +85,7 @@ pub struct PomModel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PomManifest {
     pub pom_version: u32,
-    /// sha256 da lista canônica de partes. Ver [`pom_id`].
+    /// sha256 do GGUF original que deu origem a todas as partes.
     pub pom_id: String,
     pub model: PomModel,
     pub kind: PomKind,
@@ -100,66 +99,16 @@ pub struct PomManifest {
     pub tp_parts: Vec<PomPart>,
 }
 
-/// O identificador legado: sha256 sobre as partes, em ordem canônica.
-///
-/// Canônico quer dizer ordenado por hash e serializado sem espaço em branco, de
-/// modo que duas máquinas que produziram as mesmas partes cheguem ao mesmo
-/// `pom_id` mesmo tendo montado a lista em ordens diferentes — que é o caso
-/// normal, já que cada nó fatia a própria parte e as respostas voltam fora de
-/// ordem.
-pub fn pom_id(parts: &[PomPart]) -> String {
-    let mut ordenadas: Vec<&PomPart> = parts.iter().collect();
-    ordenadas.sort_by(|a, b| a.sha256.cmp(&b.sha256));
-
-    let mut h = Sha256::new();
-    for p in ordenadas {
-        // Campos crus em vez de JSON: o hash não pode mudar porque um campo
-        // novo entrou no struct ou porque o serde mudou de ordem.
-        h.update(p.sha256.as_bytes());
-        h.update(b"\0");
-        h.update(p.bytes.to_le_bytes());
-        h.update(p.start_layer.to_le_bytes());
-        h.update(p.end_layer.to_le_bytes());
-        h.update([p.is_first as u8, p.is_last as u8]);
-        if let Some(tp) = p.tp {
-            h.update(tp.rank.to_le_bytes());
-            h.update(tp.size.to_le_bytes());
-        }
-        h.update(b"\n");
-    }
-    hex::encode(h.finalize())
-}
-
 impl PomManifest {
-    /// Monta um manifesto e calcula o `pom_id` a partir das partes.
+    /// Monta o manifesto único do GGUF original.
     pub fn new(
-        model: PomModel,
-        kind: PomKind,
-        created_by: impl Into<String>,
-        parts: Vec<PomPart>,
-    ) -> Self {
-        Self {
-            // Este construtor permanece para ler e produzir fixtures do formato
-            // antigo. Os fluxos novos usam `new_for_source` abaixo.
-            pom_version: LEGACY_POM_VERSION,
-            pom_id: pom_id(&parts),
-            model,
-            kind,
-            created_at: chrono::Utc::now().to_rfc3339(),
-            created_by: created_by.into(),
-            parts,
-            tp_parts: Vec::new(),
-        }
-    }
-
-    /// Monta um manifesto v2 identificado pelo arquivo GGUF original.
-    pub fn new_for_source(
-        model: PomModel,
+        mut model: PomModel,
         kind: PomKind,
         created_by: impl Into<String>,
         source_sha256: impl Into<String>,
         parts: Vec<PomPart>,
     ) -> Self {
+        model.name = canonical_model_name(&model.name);
         Self {
             pom_version: POM_VERSION,
             pom_id: source_sha256.into(),
@@ -178,7 +127,7 @@ impl PomManifest {
     /// removida porque o peer remoto ainda não a conhece.
     pub fn merge_from(&mut self, incoming: PomManifest) -> Result<()> {
         if self.pom_version != POM_VERSION || incoming.pom_version != POM_VERSION {
-            bail!("merge exige manifestos v2");
+            bail!("merge exige o manifesto da versão {POM_VERSION}");
         }
         if self.pom_id != incoming.pom_id {
             bail!(
@@ -224,9 +173,6 @@ impl PomManifest {
     /// Um manifesto incompleto é legítimo enquanto a rodada não terminou; quem
     /// implanta é que não pode subir um pipeline furado.
     pub fn complete(&self) -> bool {
-        if self.pom_version == LEGACY_POM_VERSION && self.kind == PomKind::TensorParallel {
-            return tp_complete_from(&self.parts, None);
-        }
         let mut proxima = 0u32;
         loop {
             let Some(fim) = self
@@ -247,19 +193,14 @@ impl PomManifest {
 
     /// Diz se um grupo TP de tamanho `size` tem todos os ranks.
     pub fn tp_complete(&self, size: u32) -> bool {
-        let partes = if self.pom_version == LEGACY_POM_VERSION {
-            &self.parts
-        } else {
-            &self.tp_parts
-        };
-        tp_complete_from(partes, Some(size))
+        tp_complete_from(&self.tp_parts, Some(size))
     }
 
     /// Confere o que dá para conferir sem ler os arquivos.
     pub fn validate(&self) -> Result<()> {
-        if self.pom_version > POM_VERSION {
+        if self.pom_version != POM_VERSION {
             bail!(
-                "manifesto versão {} é mais novo que esta build (suporta até {POM_VERSION})",
+                "manifesto versão {} não é a versão ativa {POM_VERSION}",
                 self.pom_version
             );
         }
@@ -282,20 +223,8 @@ impl PomManifest {
                 );
             }
         }
-        if self.pom_version == LEGACY_POM_VERSION {
-            // O formato antigo derivava o id da lista de partes.
-            let esperado = pom_id(&self.parts);
-            if self.pom_id != esperado {
-                bail!(
-                    "pom_id não confere: o arquivo diz {}, as partes dão {}",
-                    &self.pom_id[..12.min(self.pom_id.len())],
-                    &esperado[..12]
-                );
-            }
-            return Ok(());
-        }
-        if self.pom_version != POM_VERSION || !is_sha256_hex(&self.pom_id) {
-            bail!("pom_id v2 inválido: {:?}", self.pom_id);
+        if !is_sha256_hex(&self.pom_id) {
+            bail!("pom_id do GGUF original inválido: {:?}", self.pom_id);
         }
         if self.parts.iter().any(|p| p.tp.is_some()) {
             bail!("parts não pode conter shards de Tensor Parallelism");
@@ -381,42 +310,30 @@ pub fn part_path(model_dir: &Path, sha256: &str) -> Result<PathBuf> {
     Ok(model_dir.join(format!("{sha256}.gguf")))
 }
 
-/// O identificador curto de uma rodada, o que aparece em nome de pasta e de
-/// arquivo. Oito dígitos hex do `pom_id`.
+/// O identificador curto do arquivo original, o que aparece no nome da pasta.
 pub fn short_id(pom_id: &str) -> &str {
     &pom_id[..8.min(pom_id.len())]
 }
 
-/// A pasta de um manifesto legado: `<modelo>-<id da rodada>`.
-///
-/// O id no nome não é enfeite. Fatiar o mesmo modelo duas vezes com cortes
-/// diferentes produz dois conjuntos de partes que nada têm a ver um com o
-/// outro; numa pasta só eles se misturavam, e apagar uma rodada levava junto
-/// as partes que por acaso a outra também usava. Uma pasta por rodada faz de
-/// "apagar este fatiamento" um `rm -r` que não atinge mais ninguém.
-///
-/// Derivado do conteúdo, e não sorteado: refatiar exatamente o mesmo modelo do
-/// mesmo jeito dá o mesmo `pom_id`, logo a mesma pasta - que é o certo, porque
-/// é a mesma coisa - e a rodada não se duplica em disco. É também o que faz
-/// duas máquinas guardarem o mesmo fatiamento no mesmo caminho relativo.
-pub fn run_dir(shard_dir: &Path, model_name: &str, pom_id: &str) -> PathBuf {
-    shard_dir.join(format!(
-        "{}-{}",
-        sanitize_name(model_name),
-        short_id(pom_id)
-    ))
+/// Nome canônico usado na pasta e no manifesto, sem o sufixo do arquivo GGUF.
+pub fn canonical_model_name(name: &str) -> String {
+    let stem = name
+        .strip_suffix(".gguf")
+        .or_else(|| name.strip_suffix(".GGUF"))
+        .unwrap_or(name);
+    sanitize_name(stem)
 }
 
-/// A pasta v2 identificada pelo início do hash completo do GGUF original.
+/// A pasta identificada pelo início do hash completo do GGUF original.
 pub fn source_run_dir(shard_dir: &Path, model_name: &str, source_sha256: &str) -> PathBuf {
     shard_dir.join(format!(
         "{}-{}",
-        sanitize_name(model_name),
+        canonical_model_name(model_name),
         short_id(source_sha256)
     ))
 }
 
-/// Procura a pasta v2 pelo hash completo, sem confiar no nome legível.
+/// Procura a pasta pelo hash completo, sem confiar no nome legível.
 pub fn locate_source_dir(shard_dir: &Path, source_sha256: &str) -> Option<PathBuf> {
     if !is_sha256_hex(source_sha256) {
         return None;
@@ -436,26 +353,25 @@ pub fn locate_source_dir(shard_dir: &Path, source_sha256: &str) -> Option<PathBu
     None
 }
 
-/// A pasta da rodada que este manifesto descreve.
+/// A pasta que este manifesto descreve.
 pub fn dir_for(shard_dir: &Path, m: &PomManifest) -> PathBuf {
-    if m.pom_version == POM_VERSION {
-        source_run_dir(shard_dir, &m.model.name, &m.pom_id)
-    } else {
-        run_dir(shard_dir, &m.model.name, &m.pom_id)
-    }
+    source_run_dir(shard_dir, &m.model.name, &m.pom_id)
 }
 
-/// O arquivo do manifesto dentro da pasta da rodada.
+/// O arquivo único do manifesto dentro da pasta do modelo.
 pub fn manifest_path(model_dir: &Path, m: &PomManifest) -> PathBuf {
-    if m.pom_version == POM_VERSION {
-        model_dir.join(format!("model.{POM_EXT}"))
-    } else {
-        model_dir.join(format!(
-            "{}-{}.{POM_EXT}",
-            sanitize_name(&m.model.name),
-            short_id(&m.pom_id)
-        ))
-    }
+    let folder = model_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            format!(
+                "{}-{}",
+                canonical_model_name(&m.model.name),
+                short_id(&m.pom_id)
+            )
+        });
+    model_dir.join(format!("{folder}.{POM_EXT}"))
 }
 
 struct PomLock(PathBuf);
@@ -489,10 +405,10 @@ fn acquire_pom_lock(shard_dir: &Path, source_sha256: &str) -> Result<PomLock> {
     )
 }
 
-/// Mescla um manifesto v2 no inventário local do mesmo modelo original.
+/// Mescla o manifesto no inventário local do mesmo modelo original.
 pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathBuf, PomManifest)> {
     if incoming.pom_version != POM_VERSION {
-        bail!("merge exige manifesto v2");
+        bail!("merge exige o manifesto da versão {POM_VERSION}");
     }
     incoming.validate()?;
     let _lock = acquire_pom_lock(shard_dir, &incoming.pom_id)?;
@@ -513,17 +429,13 @@ pub fn merge_manifest(shard_dir: &Path, incoming: &PomManifest) -> Result<(PathB
 }
 
 /// Move as partes de uma pasta de trabalho para a pasta do modelo e mescla o
-/// manifesto. Em v2, a identidade já vem do hash do GGUF original, então uma
-/// nova forma de particionar o mesmo modelo adiciona partes à mesma pasta.
+/// manifesto. A identidade vem do hash do GGUF original, então uma nova forma
+/// de particionar o mesmo modelo adiciona partes à mesma pasta.
 /// Partes repetidas são descartadas por hash.
 pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<PathBuf> {
     m.validate()?;
-    let destino = if m.pom_version == POM_VERSION {
-        locate_source_dir(shard_dir, &m.pom_id)
-            .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id))
-    } else {
-        dir_for(shard_dir, m)
-    };
+    let destino = locate_source_dir(shard_dir, &m.pom_id)
+        .unwrap_or_else(|| source_run_dir(shard_dir, &m.model.name, &m.pom_id));
     std::fs::create_dir_all(&destino).with_context(|| format!("criar {}", destino.display()))?;
 
     for parte in m.parts.iter().chain(m.tp_parts.iter()) {
@@ -542,12 +454,7 @@ pub fn finalize_run(shard_dir: &Path, temp: &Path, m: &PomManifest) -> Result<Pa
             .with_context(|| format!("mover {} para {}", de.display(), para.display()))?;
     }
 
-    if m.pom_version == POM_VERSION {
-        let (destino, _) = merge_manifest(shard_dir, m)?;
-        let _ = std::fs::remove_dir(temp);
-        return Ok(destino);
-    }
-    write_atomic(&destino, m)?;
+    let (destino, _) = merge_manifest(shard_dir, m)?;
     // A pasta de trabalho só some se estiver vazia: um arquivo inesperado ali
     // é sinal de defeito, e apagá-lo escondería a evidência.
     let _ = std::fs::remove_dir(temp);
@@ -638,7 +545,7 @@ pub fn load_dir(model_dir: &Path) -> Vec<PomManifest> {
     out
 }
 
-/// Localiza o manifesto v2 que conhece a parte armazenada neste caminho.
+/// Localiza o manifesto v1 que conhece a parte armazenada neste caminho.
 ///
 /// Uma parte pode ter chegado por transferência ou ter sido produzida por uma
 /// junção. Em ambos os casos o diretório pai é a fonte de verdade do modelo
@@ -766,7 +673,7 @@ mod tests {
             (false, false) => PomKind::Combined,
             (true, true) => PomKind::Layers,
         };
-        let mut manifest = PomManifest::new_for_source(
+        let mut manifest = PomManifest::new(
             PomModel {
                 name: "qwen3-8b".into(),
                 label: "qwen3:8b".into(),
@@ -804,26 +711,18 @@ mod tests {
             },
             PomKind::Layers,
             "no-1",
+            hash("a"),
             partes,
         )
     }
 
-    /// Cada nó fatia a própria parte e as respostas voltam fora de ordem. Se a
-    /// ordem de chegada mudasse o `pom_id`, duas máquinas discordariam sobre o
-    /// nome da mesma rodada.
     #[test]
-    fn o_pom_id_nao_depende_da_ordem_das_partes() {
-        let a = parte("a", 0, 15);
-        let b = parte("b", 16, 31);
-        assert_eq!(pom_id(&[a.clone(), b.clone()]), pom_id(&[b, a]));
-    }
-
-    /// E precisa depender do conteúdo, senão não identifica rodada nenhuma.
-    #[test]
-    fn cortes_diferentes_dao_pom_ids_diferentes() {
-        let um = vec![parte("a", 0, 15), parte("b", 16, 31)];
-        let outro = vec![parte("a", 0, 19), parte("b", 20, 31)];
-        assert_ne!(pom_id(&um), pom_id(&outro));
+    fn o_pom_id_e_o_hash_do_arquivo_original() {
+        let source_sha256 = hash("a");
+        let manifest = source_manifest("a", vec![parte("b", 0, 31)], vec![]);
+        assert_eq!(manifest.pom_version, POM_VERSION);
+        assert_eq!(manifest.pom_id, source_sha256);
+        manifest.validate().unwrap();
     }
 
     #[test]
@@ -835,12 +734,10 @@ mod tests {
         volta.validate().unwrap();
     }
 
-    /// O `pom_id` é derivado: se ele não bate com as partes, o arquivo foi
-    /// editado à mão ou truncado, e carregá-lo seria confiar em lixo.
     #[test]
-    fn um_pom_id_adulterado_e_recusado() {
+    fn um_pom_id_que_nao_e_hash_e_recusado() {
         let mut m = manifesto(vec![parte("a", 0, 31)], 32);
-        m.pom_id = "0".repeat(64);
+        m.pom_id = "nao-e-hash".into();
         assert!(m.validate().is_err());
     }
 
@@ -848,12 +745,10 @@ mod tests {
     fn faixa_invertida_e_hash_torto_sao_recusados() {
         let mut m = manifesto(vec![parte("a", 0, 31)], 32);
         m.parts[0].start_layer = 40; // depois do `end_layer`, que é 31
-        m.pom_id = pom_id(&m.parts);
         assert!(m.validate().is_err());
 
         let mut m = manifesto(vec![parte("a", 0, 31)], 32);
         m.parts[0].sha256 = "nao-e-hash".into();
-        m.pom_id = pom_id(&m.parts);
         assert!(m.validate().is_err());
     }
 
@@ -901,27 +796,27 @@ mod tests {
         let escrito = write_atomic(&dir, &m).unwrap();
         assert_eq!(load(&escrito).unwrap(), m);
         assert_eq!(load_dir(&dir), vec![m.clone()]);
-        // O `:` do rótulo não pode virar pasta, e o id da rodada entra no nome.
+        assert_eq!(
+            escrito.file_name().unwrap().to_string_lossy(),
+            "qwen3-8b-aaaaaaaa.pom"
+        );
+        // O `:` do rótulo não pode virar pasta, e o hash da fonte entra no nome.
         let nome = dir.file_name().unwrap().to_string_lossy().into_owned();
         assert_eq!(nome, format!("qwen3-8b-{}", short_id(&m.pom_id)));
 
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
-    /// O defeito que o id no nome da pasta fecha: fatiar o **mesmo modelo**
-    /// duas vezes, com cortes diferentes, punha os dois conjuntos de partes na
-    /// mesma pasta. Eles não têm nada a ver um com o outro, e apagar um levava
-    /// junto as partes que o outro por acaso também usava.
+    /// Fatiamentos diferentes do **mesmo arquivo original** compartilham a
+    /// pasta e o manifesto, porque o hash da fonte é a identidade do modelo.
     #[test]
-    fn duas_fatiagens_do_mesmo_modelo_nao_dividem_pasta() {
+    fn duas_fatiagens_do_mesmo_arquivo_compartilham_pasta() {
         let raiz = Path::new("/tmp/fatias");
         let um = manifesto(vec![parte("a", 0, 15), parte("b", 16, 31)], 32);
         let outro = manifesto(vec![parte("c", 0, 19), parte("d", 20, 31)], 32);
 
-        assert_ne!(um.pom_id, outro.pom_id);
-        assert_ne!(dir_for(raiz, &um), dir_for(raiz, &outro));
-        // E as duas continuam sendo o mesmo modelo, com o mesmo rótulo.
-        assert_eq!(um.model.label, outro.model.label);
+        assert_eq!(um.pom_id, outro.pom_id);
+        assert_eq!(dir_for(raiz, &um), dir_for(raiz, &outro));
     }
 
     /// Refatiar exatamente do mesmo jeito **não** duplica nada: mesmo conteúdo,
@@ -959,11 +854,11 @@ mod tests {
     }
 
     #[test]
-    fn v2_pom_id_e_o_hash_do_modelo_original() {
+    fn o_nome_do_modelo_remove_o_sufixo_gguf() {
         let model_hash = hash("a");
-        let manifest = PomManifest::new_for_source(
+        let manifest = PomManifest::new(
             PomModel {
-                name: "qwen3-8b".into(),
+                name: "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into(),
                 label: "qwen3:8b".into(),
                 total_layers: 32,
                 quant: Some("Q4_K_M".into()),
@@ -974,8 +869,9 @@ mod tests {
             vec![layer_part("b", 0, 7)],
         );
 
-        assert_eq!(manifest.pom_version, 2);
+        assert_eq!(manifest.pom_version, POM_VERSION);
         assert_eq!(manifest.pom_id, model_hash);
+        assert_eq!(manifest.model.name, "Llama-3.1-8B-Instruct-Q4_K_M");
         manifest.validate().unwrap();
     }
 

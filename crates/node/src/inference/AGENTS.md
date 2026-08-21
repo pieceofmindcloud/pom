@@ -28,7 +28,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   tickets, `reply_to`, telemetria acumulada na ida.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
-  token para N=2,3,4 com o gateway na cabeça/meio/cauda.
+  token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
+  somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
   e o branch de relay. Os handlers decodificam o frame e entregam comandos a
@@ -64,7 +65,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
-  como botão.
+  como botão. O fixture não anuncia batching, pois o endpoint falso atende
+  frames unitários.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o

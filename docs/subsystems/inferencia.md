@@ -453,8 +453,9 @@ inteiro.
   `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
   (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
-  verdade - só o llama.cpp faz isso, ver o doc do módulo para o que mudou em
-  2026-08-16.
+  verdade. Como os hops falsos implementam frames unitários, o fixture só
+  anuncia capabilities compatíveis e não entra no `BatchCoordinator`; só o
+  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16.
 
 ## 9. Limite de prompt
 

@@ -1530,8 +1530,21 @@ fn plan_with_rtt_options(
             if let Some(reason) = tp_group_checks(tp, machines, group) {
                 blocked.get_or_insert(reason);
             }
-            if let Some(entry) = chosen.first_mut() {
-                entry.1 = tp.primary_node_id.clone();
+            // A seleção da tela pode conter o modelo inteiro uma vez para o
+            // primary e outra vez para um worker. Worker é rank da coletiva,
+            // não etapa adicional do pipeline. Mantemos somente a linha do
+            // primary, preservando seus overrides, e `launch_targets` cria os
+            // workers exatamente uma vez abaixo.
+            if let Some(primary_index) = chosen
+                .iter()
+                .position(|(_, target, _)| target == &tp.primary_node_id)
+            {
+                let (candidate, _, overrides) = chosen.remove(primary_index);
+                chosen.clear();
+                chosen.push((candidate, tp.primary_node_id.clone(), overrides));
+            } else if let Some((candidate, _, overrides)) = chosen.first().cloned() {
+                chosen.clear();
+                chosen.push((candidate, tp.primary_node_id.clone(), overrides));
             }
         }
     }
@@ -6060,6 +6073,46 @@ mod tests {
             worker.tp.as_ref().unwrap().rank0_url.as_deref(),
             Some("http://a:8181")
         );
+    }
+
+    /// A TP worker can also appear in the explicit selection sent by the UI.
+    /// It is a rank in the collective, not a second pipeline stage, so the
+    /// launch must still contain exactly one primary and one worker target.
+    #[test]
+    fn a_tensor_parallel_worker_is_not_launched_as_a_pipeline_stage() {
+        let ms = vec![
+            whole_machine("a", 900_000, true),
+            whole_machine("b", 900_000, true),
+        ];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        let selection = [pick(0, 31, "a"), pick(0, 31, "b")];
+        let p = super::plan(
+            "qwen3.5-9b",
+            &ms,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::TensorParallel,
+            Some(tp.clone()),
+        );
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+
+        let targets = launch_targets(&p.steps, &ms, DeployKind::TensorParallel, Some(&tp))
+            .expect("um alvo por rank");
+        assert_eq!(targets.len(), 2);
+        assert_eq!(
+            targets
+                .iter()
+                .map(|target| target.node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(targets[0].tp.as_ref().unwrap().role, "primary");
+        assert_eq!(targets[1].tp.as_ref().unwrap().role, "worker");
     }
 
     /// As validações estáticas do grupo TP recusam o plano antes de qualquer

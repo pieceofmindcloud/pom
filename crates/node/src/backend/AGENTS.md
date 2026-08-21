@@ -42,7 +42,7 @@ behind an auth extractor.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
+  require `.gguf`. Manifestos v1 são mesclados por `pom_id` no peer receptor,
   preservando `parts` e `tp_parts` locais. **O veredito volta para quem
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
@@ -251,9 +251,10 @@ behind an auth extractor.
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
   is a full read on a slow volume - and runs the disk-space check there too),
   then `run_download` writes a `.part` next to its destination - the model's
-  folder for a **part** (`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`,
-  `.pom` written first - the run id comes from the manifest, so two slicings of
-  one model never share a folder), `<shard_dir>/recebidos/` for anything that belongs to no manifest -
+  folder for a **part** (`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`,
+  `<modelo>-<hash curto do original>.pom` written first - pipeline and tensor
+  slicing of one model share the folder and manifest), `<shard_dir>/recebidos/`
+  for anything that belongs to no manifest -
   resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
   (anything else) before the rename, and cancels symmetrically on both
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet

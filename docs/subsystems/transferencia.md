@@ -9,11 +9,11 @@ bitswap do libp2p, que saiu do swarm por ser protocolo órfão (ver `rede-p2p.md
 
 Onde o arquivo cai depende do que ele é. Uma **parte** de um fatiamento vai para
 `<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`, com o manifesto
-`model.pom` gravado ao lado antes dos bytes, e é conferida pelo hash que foi
-pedido. Um arquivo que não é parte de manifesto nenhum - um modelo inteiro -
+`<modelo>-<hash curto do original>.pom` gravado na mesma pasta antes dos bytes,
+e é conferida pelo hash que foi pedido. Um arquivo que não é parte de manifesto nenhum - um modelo inteiro -
 cai em `<shard_dir>/recebidos/` e só toma o nome final quando o MD5 confere.
 
-Ao receber um manifesto v2, o peer faz merge por `pom_id`: partes locais são
+Ao receber um manifesto v1, o peer faz merge por `pom_id`: partes locais são
 preservadas e partes remotas ausentes são adicionadas. Isto vale tanto para
 `parts` quanto para `tp_parts`; nunca se substitui o manifesto local por uma
 visão parcial do peer que enviou.

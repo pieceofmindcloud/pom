@@ -856,13 +856,20 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
         .map(|(group, mut shards)| {
             shards.sort_by_key(|s| s.shard_range.map(|r| r.0).unwrap_or(0));
 
-            // How far the slices reach without a gap, starting from layer 0.
+            // How far at least one exact pipeline chain reaches without a gap.
+            // A source manifest can contain alternatives such as 0-15 and
+            // 0-19; stopping at the first sorted row would incorrectly call
+            // the aggregate incomplete even when 0-15 + 16-31 is complete.
             let mut contiguous_to = 0u32;
-            for s in &shards {
-                match s.shard_range {
-                    Some((start, end)) if start == contiguous_to => contiguous_to = end + 1,
-                    _ => break,
-                }
+            while let Some(end) = shards
+                .iter()
+                .filter_map(|s| match s.shard_range {
+                    Some((start, end)) if start == contiguous_to => Some(end),
+                    _ => None,
+                })
+                .max()
+            {
+                contiguous_to = end.saturating_add(1);
             }
 
             // Slices written by split_model.py record the original layer count.
@@ -1143,6 +1150,7 @@ mod part_naming_tests {
             },
             PomKind::Layers,
             "no-1",
+            "a".repeat(64),
             partes,
         );
         crate::pom::finalize_run(raiz, &pasta, &m).unwrap();
@@ -1192,8 +1200,8 @@ mod part_naming_tests {
         assert_eq!(cat.shard_sets.len(), 1);
         let set = &cat.shard_sets[0];
         assert!(set.complete);
-        // A chave do conjunto é a rodada, para duas fatiagens do mesmo modelo
-        // não virarem um amontoado só...
+        // A chave do conjunto é a fonte original, para todas as alternativas
+        // de pipeline e os shards TP do mesmo modelo compartilharem o grupo.
         assert_eq!(
             set.group,
             format!("qwen3-8b-{}", crate::pom::short_id(&_m.pom_id))
@@ -1205,15 +1213,10 @@ mod part_naming_tests {
         std::fs::remove_dir_all(&raiz).ok();
     }
 
-    /// O defeito da colisão: **o mesmo modelo, fatiado duas vezes**.
-    ///
-    /// Cortes diferentes produzem partes diferentes, que não têm nada a ver
-    /// umas com as outras. Numa pasta só elas se misturavam: o catálogo via um
-    /// amontoado de partes de duas rodadas, e apagar um fatiamento levava junto
-    /// a parte que a outra rodada por acaso também usava. Cada rodada tem a
-    /// própria pasta, com o id dela no nome.
+    /// O mesmo arquivo original, fatiado de duas formas, compartilha a pasta e
+    /// o manifesto; o catálogo preserva todas as alternativas de `parts`.
     #[test]
-    fn duas_fatiagens_do_mesmo_modelo_ficam_em_pastas_distintas() {
+    fn duas_fatiagens_do_mesmo_arquivo_ficam_na_mesma_pasta() {
         let raiz = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
 
         // Duas rodadas do mesmo modelo, com cortes diferentes.
@@ -1232,30 +1235,18 @@ mod part_naming_tests {
             &[(0, 19, 20), (20, 31, 9)],
         );
 
-        assert_ne!(
-            uma.pom_id, outra.pom_id,
-            "cortes diferentes, rodadas diferentes"
-        );
+        assert_eq!(uma.pom_id, outra.pom_id, "a fonte é a identidade do modelo");
         let pasta_uma = crate::pom::dir_for(&raiz, &uma);
         let pasta_outra = crate::pom::dir_for(&raiz, &outra);
-        assert_ne!(pasta_uma, pasta_outra, "e pastas diferentes");
-        assert!(pasta_uma.is_dir() && pasta_outra.is_dir());
+        assert_eq!(pasta_uma, pasta_outra, "um manifesto único por fonte");
+        assert!(pasta_uma.is_dir());
 
-        // As quatro partes aparecem, cada uma sabendo de que rodada é.
+        // As quatro partes aparecem no mesmo manifesto, cada uma com sua faixa.
         let cat = discover(&[], &raiz);
         assert_eq!(cat.models.len(), 4);
-        assert_eq!(cat.shard_sets.len(), 2, "dois conjuntos, não um amontoado");
-        for set in &cat.shard_sets {
-            assert!(set.complete, "cada rodada fecha o modelo por conta própria");
-            assert_eq!(set.shards.len(), 2);
-        }
-
-        // Apagar uma rodada é apagar a pasta dela, e a outra segue inteira.
-        std::fs::remove_dir_all(&pasta_uma).unwrap();
-        let depois = discover(&[], &raiz);
-        assert_eq!(depois.models.len(), 2);
-        assert_eq!(depois.shard_sets.len(), 1);
-        assert!(depois.shard_sets[0].complete);
+        assert_eq!(cat.shard_sets.len(), 1, "um conjunto por arquivo original");
+        assert!(cat.shard_sets[0].complete);
+        assert_eq!(cat.shard_sets[0].shards.len(), 4);
 
         std::fs::remove_dir_all(&raiz).ok();
     }
@@ -1298,6 +1289,7 @@ mod part_naming_tests {
             },
             crate::pom::PomKind::Layers,
             "no-1",
+            "a".repeat(64),
             partes,
         );
         crate::pom::finalize_run(raiz, &trabalho, &m).unwrap();

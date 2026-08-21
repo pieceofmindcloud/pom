@@ -1682,7 +1682,7 @@ fn seal_single_part(
         is_last: req.is_last(),
         tp,
     };
-    let mut manifesto = crate::pom::PomManifest::new_for_source(
+    let mut manifesto = crate::pom::PomManifest::new(
         crate::pom::PomModel {
             name: req.base_name.clone(),
             label: model_label(req),
@@ -2060,37 +2060,24 @@ async fn merge_parts(
     {
         anyhow::bail!("as fatias pertencem a modelos originais diferentes");
     }
-    let manifesto = if let Some(source_sha256) = source_sha256 {
-        let mut manifesto = crate::pom::PomManifest::new_for_source(
-            crate::pom::PomModel {
-                name: req.base_name.clone(),
-                label: model_label(req),
-                total_layers: req.total_layers,
-                quant: std::path::Path::new(&req.source_model_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(crate::catalog::parse_quant),
-            },
-            crate::pom::PomKind::Layers,
-            String::new(),
-            source_sha256,
-            Vec::new(),
-        );
-        manifesto.parts.push(parte);
-        manifesto
-    } else {
-        crate::pom::PomManifest::new(
-            crate::pom::PomModel {
-                name: req.base_name.clone(),
-                label: model_label(req),
-                total_layers: req.total_layers,
-                quant: None,
-            },
-            crate::pom::PomKind::Layers,
-            String::new(),
-            vec![parte],
-        )
-    };
+    let source_sha256 = source_sha256
+        .ok_or_else(|| anyhow::anyhow!("as fatias não têm manifesto do modelo original"))?;
+    let mut manifesto = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: req.base_name.clone(),
+            label: model_label(req),
+            total_layers: req.total_layers,
+            quant: std::path::Path::new(&req.source_model_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(crate::catalog::parse_quant),
+        },
+        crate::pom::PomKind::Layers,
+        String::new(),
+        source_sha256,
+        Vec::new(),
+    );
+    manifesto.parts.push(parte);
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
 
@@ -2333,7 +2320,7 @@ async fn slice_locally(
     Json(json!({ "job_id": id })).into_response()
 }
 
-/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no `.pom` v2.
+/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no manifesto v1.
 ///
 /// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
 /// próprio hash e o manifesto, escrito no fim, é o que diz de que modelo cada
@@ -2443,7 +2430,7 @@ async fn run_slice(
         .file_name()
         .and_then(|n| n.to_str())
         .and_then(crate::catalog::parse_quant);
-    let manifesto = crate::pom::PomManifest::new_for_source(
+    let manifesto = crate::pom::PomManifest::new(
         crate::pom::PomModel {
             name: base_name,
             label,
@@ -4039,6 +4026,7 @@ mod tests {
 
         let mut layer_req = req(0, 14, 32, 2);
         layer_req.source_model_path = "/models/original.gguf".into();
+        layer_req.base_name = "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into();
         std::fs::write(
             crate::pom::part_path(&scratch, &layer_sha256).unwrap(),
             b"layer",
@@ -4066,6 +4054,7 @@ mod tests {
 
         let mut tp_req = req(0, 31, 32, 1);
         tp_req.source_model_path = "/models/original.gguf".into();
+        tp_req.base_name = "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into();
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(crate::pom::part_path(&scratch, &tp_sha256).unwrap(), b"tp").unwrap();
         seal_single_part(
@@ -4089,6 +4078,10 @@ mod tests {
         .unwrap();
 
         let dir = crate::pom::locate_source_dir(&root, &source_sha256).unwrap();
+        assert_eq!(
+            dir.file_name().unwrap().to_string_lossy(),
+            "Llama-3.1-8B-Instruct-Q4_K_M-aaaaaaaa"
+        );
         let manifestos = crate::pom::load_dir(&dir);
         assert_eq!(manifestos.len(), 1);
         let manifest = &manifestos[0];
@@ -4116,10 +4109,39 @@ mod tests {
             let root = std::env::temp_dir().join(format!("pom-webui-merge-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
-            let a = parts_dir.join("m_0_15.gguf");
-            let b = parts_dir.join("m_16_31.gguf");
-            std::fs::write(&a, crate::splitter::test_gguf_bytes(16)).unwrap();
-            std::fs::write(&b, crate::splitter::test_gguf_bytes(16)).unwrap();
+            let source_sha256 = "d".repeat(64);
+            let write_part = |dir: &std::path::Path, start: u32, end: u32| {
+                std::fs::create_dir_all(dir).unwrap();
+                let tmp = dir.join("tmp");
+                std::fs::write(&tmp, crate::splitter::test_gguf_bytes(16)).unwrap();
+                let (sha256, bytes) = crate::pom::hash_file(&tmp).unwrap();
+                let path = crate::pom::part_path(dir, &sha256).unwrap();
+                std::fs::rename(&tmp, &path).unwrap();
+                let manifest = crate::pom::PomManifest::new(
+                    crate::pom::PomModel {
+                        name: "m".into(),
+                        label: "m".into(),
+                        total_layers: 32,
+                        quant: None,
+                    },
+                    crate::pom::PomKind::Layers,
+                    "test",
+                    source_sha256.clone(),
+                    vec![crate::pom::PomPart {
+                        sha256: sha256.clone(),
+                        bytes,
+                        start_layer: start,
+                        end_layer: end,
+                        is_first: start == 0,
+                        is_last: end == 31,
+                        tp: None,
+                    }],
+                );
+                crate::pom::write_atomic(dir, &manifest).unwrap();
+                path
+            };
+            let a = write_part(&parts_dir.join("a"), 0, 15);
+            let b = write_part(&parts_dir.join("b"), 16, 31);
 
             let req = req(0, 31, 32, 1);
             let parts = vec![

@@ -97,6 +97,9 @@ node_id entre as máquinas no mapa (a tela oferece selects, não um campo de URL
 varredura lê o modelo inteiro do primary, e o `launch_targets` expande o passo
 em **um alvo por rank** (o primary com rank 0 e cada worker com rank 1..size-1),
 todos apontando a mesma `rank0_url` e sua lista de candidatos para a coletiva.
+Quando a seleção explícita também lista um worker como se fosse uma etapa de
+pipeline, o planejador remove essa linha antes de montar `steps`: worker é
+somente rank da coletiva e cada máquina entra uma vez em `launch_targets`.
 Se o túnel libp2p não puder discar, o rank tenta cada endereço HTTPS conhecido
 do destino, o que cobre peers atrás de NAT e containers no mesmo host.
 

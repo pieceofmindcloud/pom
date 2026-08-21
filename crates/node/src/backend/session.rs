@@ -109,6 +109,7 @@ mod tests {
 
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
         Arc::new(RwLock::new(Config {
+            gpus: None,
             role: Role::Principal,
             tls_required: false,
             node_name: None,

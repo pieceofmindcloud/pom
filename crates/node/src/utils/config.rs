@@ -88,6 +88,23 @@ pub struct Config {
     /// Maximum disk space reserved for generated model slices, in GB.
     #[serde(default = "default_shard_max_gb")]
     pub shard_max_gb: f64,
+    /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
+    /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
+    ///
+    /// Três estados, e os três querem dizer coisas diferentes:
+    ///
+    /// - **ausente** (`None`): todas as placas disponíveis. É o padrão, e é o
+    ///   que uma `pom.json` antiga significa sem ter sido editada.
+    /// - **lista com itens**: só essas. Numa máquina com Radeon e NVIDIA, é
+    ///   assim que se reserva uma placa para outro uso.
+    /// - **lista vazia**: nenhuma - a inferência fica em CPU. Vazio é uma
+    ///   escolha explícita, não "não configurado", mesma regra do `model_dirs`.
+    ///
+    /// O índice é o do nó, não o do backend: `gpu_selection` traduz para o
+    /// `CUDA_VISIBLE_DEVICES` e o `GGML_VK_VISIBLE_DEVICES` que cada backend
+    /// entende, que numeram as placas em espaços separados.
+    #[serde(default)]
+    pub gpus: Option<Vec<u32>>,
     /// Human-readable name for this node shown in the dashboard and peer lists.
     /// Falls back to the OS hostname when absent.
     #[serde(default)]
@@ -341,6 +358,7 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            gpus: None,
             role: Role::Principal,
             tls_required: false,
             connection_key: "test-key".into(),
@@ -365,6 +383,7 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            gpus: None,
             role: Role::Node,
             tls_required: false,
             connection_key: "node-key".into(),
@@ -442,6 +461,7 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            gpus: None,
             role: Role::Principal,
             tls_required: false,
             connection_key: "k".into(),

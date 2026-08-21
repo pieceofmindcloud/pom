@@ -817,3 +817,132 @@ mod tests {
         assert_eq!(output.stdout, b"ok");
     }
 }
+
+/// Traduz a escolha de GPUs da `pom.json` para o que cada backend do ggml lê.
+///
+/// **Precisa rodar antes do primeiro `llama_backend_init`.** Os backends
+/// enumeram os dispositivos ao serem registrados, e a partir daí a lista está
+/// congelada: mexer nas variáveis depois não tira nem devolve placa nenhuma.
+///
+/// A tradução existe porque os índices vivem em espaços diferentes. O nó publica
+/// uma lista só (`system.gpus[]`, NVIDIA primeiro, Radeon depois) e é esse
+/// número que o operador vê no painel e escreve na config; já o CUDA numera só
+/// as placas NVIDIA e o Vulkan só as dele. Mandar o índice do nó direto para o
+/// backend selecionaria a placa errada assim que houvesse duas marcas.
+///
+/// Devolve o que aplicou, para o log dizer em que placas o nó vai rodar.
+pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> Vec<String> {
+    let Some(selection) = selection else {
+        // Ausente é "todas": não tocar nas variáveis é justamente o que deixa
+        // cada backend enxergar tudo o que existe.
+        return Vec::new();
+    };
+
+    // Índice do nó -> índice dentro do próprio fabricante.
+    let mut cuda = Vec::new();
+    let mut vulkan = Vec::new();
+    let (mut n_nvidia, mut n_amd) = (0u32, 0u32);
+    let mut escolhidas = Vec::new();
+
+    for gpu in detected {
+        let local = match gpu.vendor {
+            GpuVendor::Nvidia => {
+                let i = n_nvidia;
+                n_nvidia += 1;
+                i
+            }
+            GpuVendor::Amd => {
+                let i = n_amd;
+                n_amd += 1;
+                i
+            }
+            // Apple não tem seleção por dispositivo: o Metal serve a única GPU
+            // da máquina, e não há variável para restringir.
+            GpuVendor::Apple => continue,
+        };
+        if !selection.contains(&gpu.index) {
+            continue;
+        }
+        escolhidas.push(format!("{} (#{})", gpu.name, gpu.index));
+        match gpu.vendor {
+            GpuVendor::Nvidia => cuda.push(local.to_string()),
+            GpuVendor::Amd => vulkan.push(local.to_string()),
+            GpuVendor::Apple => {}
+        }
+    }
+
+    // Lista vazia é escolha explícita por CPU, então as variáveis vão vazias -
+    // que é como CUDA e Vulkan dizem "nenhum dispositivo".
+    std::env::set_var("CUDA_VISIBLE_DEVICES", cuda.join(","));
+    std::env::set_var("GGML_VK_VISIBLE_DEVICES", vulkan.join(","));
+    escolhidas
+}
+
+#[cfg(test)]
+mod gpu_selection_tests {
+    use super::*;
+
+    /// As variáveis de ambiente são do processo inteiro, e o cargo roda os
+    /// testes em paralelo: sem este mutex um teste lê o que o outro acabou de
+    /// escrever. Serializar é o que torna o resultado determinístico.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn gpu(index: u32, vendor: GpuVendor) -> GpuStat {
+        GpuStat {
+            index,
+            name: format!("gpu{index}"),
+            vendor,
+            vram_total_mb: None,
+            vram_used_mb: None,
+            vram_used_pct: None,
+            utilization_pct: None,
+            temperature_c: None,
+        }
+    }
+
+    fn ambas() -> Vec<GpuStat> {
+        vec![
+            gpu(0, GpuVendor::Nvidia),
+            gpu(1, GpuVendor::Amd),
+            gpu(2, GpuVendor::Amd),
+        ]
+    }
+
+    /// Sem escolha na config, nada é restringido - é o padrão pedido: todas.
+    #[test]
+    fn ausente_nao_restringe_nada() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("CUDA_VISIBLE_DEVICES");
+        std::env::remove_var("GGML_VK_VISIBLE_DEVICES");
+        assert!(apply_gpu_selection(None, &ambas()).is_empty());
+        assert!(std::env::var("CUDA_VISIBLE_DEVICES").is_err());
+        assert!(std::env::var("GGML_VK_VISIBLE_DEVICES").is_err());
+    }
+
+    /// O ponto todo da tradução: a segunda Radeon é `#2` para o nó e `1` para o
+    /// Vulkan. Mandar `2` selecionaria uma placa que não existe naquele backend.
+    #[test]
+    fn indice_do_no_vira_indice_do_backend() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[2]), &ambas());
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "1");
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    #[test]
+    fn escolher_a_nvidia_nao_libera_as_radeon() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[0]), &ambas());
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "0");
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    /// Lista vazia é "só CPU", e não "não configurado".
+    #[test]
+    fn lista_vazia_desliga_as_duas_familias() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[]), &ambas());
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
+    }
+}

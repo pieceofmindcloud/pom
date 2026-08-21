@@ -1750,6 +1750,7 @@ pub(crate) mod testkit {
             runtime: NodeRuntime::new(net, assignment),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
+                gpus: None,
                 role: Role::Node,
                 tls_required: false,
                 node_name: None,

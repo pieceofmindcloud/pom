@@ -333,6 +333,22 @@ async fn main() -> Result<()> {
     // ── Load existing config ─────────────────────────────────────────────────
     let app_config = config::Config::load()?;
     info!("Role: {}", app_config.role);
+
+    // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
+    // enumeram os dispositivos ao serem registrados, e depois disso a lista está
+    // congelada. Aplicar a escolha mais tarde não tiraria nem devolveria placa.
+    {
+        let detected = sysmon::sample().await.gpus;
+        match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
+            _ if app_config.gpus.is_none() => {
+                info!("GPUs: todas as {} disponíveis (pom.json não restringe)", detected.len());
+            }
+            escolhidas if escolhidas.is_empty() => {
+                info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
+            }
+            escolhidas => info!("GPUs: {}", escolhidas.join(", ")),
+        }
+    }
     let p2p_port = app_config.p2p_port;
     let gateway_port = app_config.gateway_port;
     let inference_port = Some(
@@ -977,6 +993,9 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
         tls_required: false,
+        // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
+        // depois que a `pom.json` existir.
+        gpus: None,
         connection_key: String::new(),
         gateway_port,
         p2p_port: 42777,

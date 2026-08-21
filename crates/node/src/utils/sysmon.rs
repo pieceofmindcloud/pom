@@ -111,6 +111,10 @@ impl MemStat {
 pub struct GpuStat {
     pub index: u32,
     pub name: String,
+    /// De quem é esta placa. `gpu_kind` resume a máquina; isto identifica a
+    /// peça - é o que permite ao painel mostrar uma Radeon e uma NVIDIA lado a
+    /// lado sem adivinhar pelo nome.
+    pub vendor: GpuVendor,
     /// Dedicated VRAM. `None` on unified-memory machines, where the concept
     /// does not apply.
     pub vram_total_mb: Option<f64>,
@@ -128,11 +132,40 @@ pub struct GpuProcess {
     pub used_mb: f64,
 }
 
+/// O fabricante de uma placa específica.
+///
+/// Separado de `GpuKind` de propósito: `GpuKind` descreve a **máquina** (e por
+/// isso tem `None` e `Mixed`), enquanto isto descreve **uma placa**, onde essas
+/// duas variantes não fariam sentido.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuVendor {
+    Nvidia,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Amd,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Apple,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuKind {
     /// Discrete NVIDIA card with its own VRAM.
     Nvidia,
+    /// Discrete AMD card with its own VRAM, servida pelo backend Vulkan.
+    ///
+    /// Mesma observação da `Unified`: só o Linux constrói esta variante, mas ela
+    /// não pode sair por `cfg` porque `GpuKind` é serializado e um nó macOS
+    /// mostra no painel o estado de peers que rodam com Radeon.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Amd,
+    /// Placas de fabricantes diferentes na mesma máquina (NVIDIA + Radeon).
+    ///
+    /// Existe porque `gpu_kind` é um resumo, e resumir duas placas de marcas
+    /// diferentes como uma delas esconderia a outra de quem lê só este campo.
+    /// Quem precisa do detalhe lê `gpus[].vendor`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Mixed,
     /// Apple Silicon: GPU and CPU share one memory pool.
     ///
     /// Só `read_gpu` no macOS constrói esta variante, então fora do macOS ela é
@@ -421,10 +454,37 @@ async fn vm_stat_used() -> Option<(f64, f64)> {
 // ── GPU ──────────────────────────────────────────────────────────────────────
 
 async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<GpuProcess>) {
-    if let Some((gpus, procs)) = nvidia_smi().await {
-        if !gpus.is_empty() {
-            return (GpuKind::Nvidia, None, gpus, procs);
-        }
+    // As duas famílias são somadas, não escolhidas: numa máquina com Radeon e
+    // NVIDIA juntas, reportar só uma esconderia metade do hardware de quem
+    // decide onde implantar. `gpu_kind` vira o resumo; cada placa carrega o
+    // próprio `vendor`.
+    // Só o ramo Linux abaixo estende a lista, então fora dele o `mut` sobra -
+    // e tirá-lo por `cfg` partiria a linha em duas versões do mesmo código.
+    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+    let (mut gpus, procs) = nvidia_smi().await.unwrap_or_default();
+    let nvidia = gpus.len();
+
+    #[cfg(target_os = "linux")]
+    {
+        // Índices continuam a contagem da NVIDIA para não haver dois `index: 0`
+        // - a interface usa esse número para falar de uma placa específica.
+        gpus.extend(amd_sysfs(gpus.len() as u32).await);
+    }
+    let amd = gpus.len() - nvidia;
+
+    if !gpus.is_empty() {
+        let kind = match (nvidia, amd) {
+            (0, _) => GpuKind::Amd,
+            (_, 0) => GpuKind::Nvidia,
+            _ => GpuKind::Mixed,
+        };
+        let note = (amd > 0).then(|| {
+            "Radeon lida pelo sysfs do amdgpu e servida pelo backend Vulkan \
+             (compile com `--features vulkan`). Ao contrário do nvidia-smi, esse \
+             caminho não lista processos por GPU."
+                .to_string()
+        });
+        return (kind, note, gpus, procs);
     }
 
     #[cfg(target_os = "macos")]
@@ -444,6 +504,7 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
                 vec![GpuStat {
                     index: 0,
                     name,
+                    vendor: GpuVendor::Apple,
                     vram_total_mb: None,
                     vram_used_mb: None,
                     vram_used_pct: None,
@@ -507,6 +568,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
         gpus.push(GpuStat {
             index: f[0].parse().unwrap_or(0),
             name: f[1].to_string(),
+            vendor: GpuVendor::Nvidia,
             vram_total_mb: Some(total),
             vram_used_mb: Some(used),
             vram_used_pct: if total > 0.0 {
@@ -546,6 +608,101 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
 }
 
 #[cfg(target_os = "macos")]
+/// As Radeon desta máquina, lidas do sysfs do `amdgpu`.
+///
+/// Sem binário externo de propósito: o equivalente ao `nvidia-smi` seria o
+/// `rocm-smi`, que só existe se o ROCm inteiro estiver instalado - e o backend
+/// que usamos é o Vulkan, que não depende de ROCm. O `amdgpu` já publica tudo
+/// o que o painel mostra, e uma máquina sem Radeon simplesmente não tem os
+/// arquivos.
+///
+/// O driver proprietário da NVIDIA não usa este sysfs, então o filtro por
+/// `vendor == 0x1002` nunca confunde as duas placas de uma máquina mista.
+#[cfg(target_os = "linux")]
+async fn amd_sysfs(first_index: u32) -> Vec<GpuStat> {
+    /// Vendor PCI da AMD/ATI.
+    const AMD: &str = "0x1002";
+
+    let read = |p: std::path::PathBuf| async move {
+        tokio::fs::read_to_string(p)
+            .await
+            .ok()
+            .map(|v| v.trim().to_string())
+    };
+
+    let mut entries = match tokio::fs::read_dir("/sys/class/drm").await {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    // `card0`, `card1`, ... sem os conectores (`card1-DP-2`), que apontam para o
+    // mesmo dispositivo e contariam a placa várias vezes.
+    let mut cards: Vec<String> = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("card") && !name[4..].contains('-') {
+            cards.push(name);
+        }
+    }
+    cards.sort();
+
+    let mut out = Vec::new();
+    for name in cards {
+        let dev = std::path::Path::new("/sys/class/drm").join(&name).join("device");
+        if read(dev.join("vendor")).await.as_deref() != Some(AMD) {
+            continue;
+        }
+
+        let mb = |bytes: Option<String>| {
+            bytes
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|b| b / 1024.0 / 1024.0)
+        };
+        let total = mb(read(dev.join("mem_info_vram_total")).await);
+        let used = mb(read(dev.join("mem_info_vram_used")).await);
+
+        out.push(GpuStat {
+            index: first_index + out.len() as u32,
+            vendor: GpuVendor::Amd,
+            // O sysfs não traz nome comercial: `product_name` só existe nas
+            // placas de datacenter. O id PCI é o que sempre está lá, e é o que
+            // identifica o modelo sem inventar tabela de nomes.
+            name: match read(dev.join("device")).await {
+                Some(id) => format!("AMD Radeon ({id})"),
+                None => "AMD Radeon".to_string(),
+            },
+            vram_total_mb: total,
+            vram_used_mb: used,
+            vram_used_pct: match (total, used) {
+                (Some(t), Some(u)) if t > 0.0 => Some(u / t * 100.0),
+                _ => None,
+            },
+            utilization_pct: read(dev.join("gpu_busy_percent"))
+                .await
+                .and_then(|v| v.parse::<f64>().ok()),
+            temperature_c: amd_temperature(&dev).await,
+        });
+    }
+    out
+}
+
+/// Temperatura da placa, em `hwmon/hwmon<N>/temp1_input` (milésimos de grau).
+///
+/// O `<N>` é atribuído na ordem em que os drivers registram, então varia entre
+/// arranques e não pode ser fixado - daí a varredura do diretório.
+#[cfg(target_os = "linux")]
+async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
+    let mut hwmon = tokio::fs::read_dir(device.join("hwmon")).await.ok()?;
+    while let Ok(Some(entry)) = hwmon.next_entry().await {
+        if let Ok(raw) = tokio::fs::read_to_string(entry.path().join("temp1_input")).await {
+            if let Ok(milli) = raw.trim().parse::<f64>() {
+                return Some(milli / 1000.0);
+            }
+        }
+    }
+    None
+}
+
 async fn mac_gpu_name() -> Option<String> {
     let out = command_output(
         "sysctl",

@@ -607,7 +607,6 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     Some((gpus, procs))
 }
 
-#[cfg(target_os = "macos")]
 /// As Radeon desta máquina, lidas do sysfs do `amdgpu`.
 ///
 /// Sem binário externo de propósito: o equivalente ao `nvidia-smi` seria o
@@ -703,6 +702,7 @@ async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
     None
 }
 
+#[cfg(target_os = "macos")]
 async fn mac_gpu_name() -> Option<String> {
     let out = command_output(
         "sysctl",

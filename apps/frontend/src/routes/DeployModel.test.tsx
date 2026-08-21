@@ -140,6 +140,44 @@ function planOutOfLayerOrder(): DeployPlan {
   };
 }
 
+function planWithUnassignedMiddleRange(): DeployPlan {
+  const plan = planOutOfLayerOrder();
+  const ranges: Array<[number, number]> = [
+    [0, 22],
+    [23, 26],
+    [27, 43],
+    [44, 64],
+  ];
+  plan.total_layers = 65;
+  plan.steps = [
+    step(0, 22, "ksia", 1),
+    step(23, 26, "", 2),
+    step(27, 43, "salem", 3),
+    step(44, 64, "mac", 4),
+  ];
+  plan.available = ranges.map(([start_layer, end_layer]) => ({
+    start_layer,
+    end_layer,
+    total_layers: 65,
+    name: `m_${start_layer}_${end_layer}.gguf`,
+    size_bytes: 1_000_000,
+    holders: ["ksia", "ksia-2", "salem", "mac"],
+    selected: true,
+  }));
+  plan.machines = ["ksia", "ksia-2", "salem", "mac"].map((node_id) => ({
+    node_id,
+    label: node_id,
+    mem_free_mb: 100_000,
+    disk_free_mb: 500_000,
+    holds: ranges,
+    taking: null,
+  }));
+  plan.blocked = "a fatia L23-26 está sem máquina";
+  plan.complete = false;
+  plan.missing = [[23, 26]];
+  return plan;
+}
+
 function mount() {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
@@ -358,6 +396,25 @@ describe("DeployModel", () => {
       expect(selectionBody?.selection?.find((row) => row.start_layer === 0)?.target_node_id).toBe("ksia");
       expect(selectionBody?.selection?.filter((row) => row.start_layer === 8)).toHaveLength(2);
       expect(selectionBody?.selection?.find((row) => row.start_layer === 8 && row.target_node_id === "salem")).toBeTruthy();
+    });
+  });
+
+  it("remove a linha sem máquina quando a faixa é atribuída pelo mapa", async () => {
+    const p = planWithUnassignedMiddleRange();
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.doubleClick(screen.getByRole("button", { name: /ksia-2.*RTT/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Atribuir L23–26 a ksia-2" }));
+
+    await waitFor(() => {
+      const selectionBody = post.mock.calls
+        .map(([, body]) => body as { selection?: Array<{ start_layer: number; end_layer: number; target_node_id: string }> })
+        .find((body) => body.selection?.some((row) => row.start_layer === 23 && row.target_node_id === "ksia-2"));
+      expect(selectionBody?.selection?.filter((row) => row.start_layer === 23 && row.end_layer === 26)).toEqual([
+        { start_layer: 23, end_layer: 26, target_node_id: "ksia-2", n_gpu_layers: null, offload_kqv: null },
+      ]);
     });
   });
 

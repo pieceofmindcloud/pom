@@ -763,7 +763,14 @@ export function DeployModel() {
     );
     if (!candidate) return;
     setSelection((current) => {
-      const base = (current ?? rows).map((row) => ({ ...row }));
+      const base = (current ?? rows)
+        .filter(
+          (row) =>
+            row.start_layer !== candidate.start_layer ||
+            row.end_layer !== candidate.end_layer ||
+            row.target_node_id !== "",
+        )
+        .map((row) => ({ ...row }));
       const existing = base.find((row) => row.target_node_id === nodeId);
       const alreadyAssigned = base.some(
         (row) =>

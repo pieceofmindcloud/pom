@@ -125,7 +125,9 @@ Per-file list:
   in whole-model mode, adding a peer also appends an explicit full-model replica;
   in tensor mode, adding a peer makes it eligible for a rank but never adds an
   off-map peer implicitly;
-  assigning a range is what validates a new selection. Removing a card deletes
+  assigning a range is what validates a new selection. Choosing a range removes
+  an empty placeholder for that same range, while an already assigned copy on
+  another machine remains as a replica. Removing a card deletes
   that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
   canvas do Painel, desenha nós por faixa, pontes somente entre estágios
   consecutivos e alternativas com RTT direcional, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não

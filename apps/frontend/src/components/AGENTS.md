@@ -11,7 +11,7 @@ for destructive or remote actions (`Confirm`/`Modal`, `ErrorBoundary`,
 the Dashboard details tab and in the window the Flow canvas opens. Test files
 present: `AddNodeDialog.test.tsx`, `Confirm.test.tsx`, `LeaveNode.test.tsx`,
 `UndeployPipeline.test.tsx`, `ModelNetworkCanvas.test.tsx`,
-`PeerDetailCard.test.tsx`. Fake peers for these tests come from
+`PeerDetailCard.test.tsx`, `ProfileSwitcher.test.tsx`. Fake peers for these tests come from
 `../test/fixtures.ts` and must have the *full* shape the node serves - a
 partial `node` (e.g. one without `status`) slips past one component's `?.` and
 crashes the next.
@@ -33,8 +33,14 @@ Per-file list:
   (icon + `to` or `children: NavLeaf[]`), each leaf with `labelKey`, route and
   `end` (whether the sidebar should match child routes too). The sidebar and the
   App router both consume it; the routes themselves are declared in `../App.tsx`.
+  `navForProfile(profile)` devolve o menu já podado pelo perfil ativo, lendo a
+  mesma tabela (`../lib/access.ts`) que o guarda de rota do `App.tsx` consulta -
+  uma seção com filhas só some quando **nenhuma** filha sobra. Ele copia a seção
+  antes de filtrar; reescrever `NAV` deixaria o outro perfil com o menu podado.
+  Testes em `nav.test.ts`.
 - `Sidebar.tsx` — `Sidebar` (desktop aside) and `SidebarContent` (reused by the
-  mobile drawer in `Topbar`). `Section`/`Leaf` render `NAV` with an animated
+  mobile drawer in `Topbar`). `SidebarContent` lê `useProfile()` e renderiza
+  `navForProfile(profile)`, não `NAV` cru. `Section`/`Leaf` render it with an animated
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and hover/focus flyout menus for
@@ -52,13 +58,19 @@ Per-file list:
   target here is whoever opened the panel in the wrong language - the language
   name stays in `aria-label`/`title`, because a flag is not a language to a
   screen reader. Plus the dark/light toggle (`../lib/theme`).
+- `ProfileSwitcher.tsx` — **Andaime de desenvolvimento.** Alterna o perfil ativo
+  (`admin`/`node`) direto na barra superior para conferir a tela pelos olhos de
+  cada perfil. Borda tracejada e âmbar de propósito: não é controle de operação
+  e não concede permissão nenhuma - quem manda é `../lib/profile.tsx`.
+  `PROFILE_SWITCHER_ENABLED` false faz o componente renderizar `null`; quando o
+  perfil passar a chegar do nó, este arquivo sai inteiro.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
   per job with state, progress and output paths only while at least one job is
   running. Completed history stays available to the notification system, but
   does not leave an empty activity card on the slicing screen.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
-  coverage), the bell (`Notifications`), and `NodeActions` — a menu to unload
+  coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network
   (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
   `SidebarContent` inside an animated panel.

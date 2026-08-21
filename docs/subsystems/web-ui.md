@@ -85,6 +85,37 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
 
+### Perfis: o que cada um enxerga
+
+Duas pessoas abrem a mesma interface com trabalhos diferentes. O **administrador**
+opera o cluster; o **nó** cuida da própria máquina, e telas como "Implantar na
+rede" descrevem um trabalho que não é dele. O perfil é o que separa os dois.
+
+`src/lib/access.ts` é a tabela: prefixo de rota -> perfis que entram, e rota
+ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` (com a filha
+`/logs/ao-vivo`) são só do administrador. A chave casa **segmento inteiro**, então
+`/logs` cobre `/logs/ao-vivo` sem repetir a filha e não cobre `/logs-antigos`.
+
+**Uma tabela só, lida em dois lugares.** O `App.tsx` a consulta para barrar a rota
+(`Forbidden` no lugar da tela) e o `navForProfile` (`components/nav.ts`) para podar
+o menu. Duas listas separadas dariam os dois defeitos clássicos: menu que oferece o
+que a rota recusa, ou rota aberta a um endereço digitado que o menu já escondia.
+Uma seção com folhas some quando **nenhuma** folha sobra - "Logs" desaparece
+inteira para o perfil `node`, "Configurações" continuaria de pé se só uma folha
+fechasse.
+
+**Isto não é autorização, é apresentação.** O perfil vive no navegador
+(`localStorage` `pom.profile`) e não muda nada do lado do nó: a credencial continua
+sendo a chave de conexão, verificada no gateway (ver *Autenticação*). Um perfil
+trocado na tela não abre nem fecha rota nenhuma da API. Quando o perfil passar a
+vir do nó, quem decide é ele e a tela reflete a resposta - não o contrário.
+
+O seletor `Administrador | Nó` na barra superior (`components/ProfileSwitcher.tsx`)
+é **andaime de desenvolvimento**: existe para conferir a tela pelos olhos de cada
+perfil, e por isso usa borda tracejada e âmbar, para não se confundir com um
+controle de operação. `PROFILE_SWITCHER_ENABLED` (`lib/profile.tsx`) em `false`
+apaga o botão; quando o perfil chegar do nó, o componente e a constante saem.
+
 A **Topbar** traz, antes do sino de notificações, o selo de criptografia do
 cluster (`TlsChip`): `ShieldCheck` em `aqua` com "TLS" quando a política está
 ligada, `ShieldOff` em `amber` com "sem TLS" quando não, e um link para
@@ -155,6 +186,10 @@ propósito: só o modo setup (sem `pom.json`) as serve, porque `GET
 resposta publica `addr_candidates`, `libp2p_peer_id` e as capabilities do
 túnel, usados pelo deploy TP para transportar o endereço correto até cada
 rank.
+
+O **perfil** da interface (*Menu e rotas*) não entra nesta conta: ele é escolha
+local do navegador e não vale como credencial. Toda rota da API continua exigindo
+a chave de conexão, seja qual for o perfil na tela.
 
 ## Janelas modais: portal e pilha de Esc
 

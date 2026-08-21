@@ -157,6 +157,10 @@ Per-file list:
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
+- `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
+  endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
+  manda trocar de perfil em vez de mandar procurar defeito de rota. Quem a
+  escolhe é o guarda em `../App.tsx`, pela tabela de `../lib/access.ts`.
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves

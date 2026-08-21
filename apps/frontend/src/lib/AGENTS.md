@@ -26,6 +26,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
+- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
+  `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
+  desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
+  telas no navegador e nada mais; a credencial continua sendo a chave de conexão
+  verificada no nó.
+- `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
+  para a lista de perfis; rota ausente é livre. `canAccessRoute(path, profile)` é
+  lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
+  `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
+  a rota recusa. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
@@ -97,6 +107,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
+
+### profile.tsx / access.ts
+- `PROFILES` / `Profile` - `["admin", "node"]` e a união literal.
+- `DEFAULT_PROFILE` - `admin`. Abrir como `node` esconderia telas de quem sempre
+  as teve, sem a pessoa saber que existe perfil para trocar.
+- `ProfileProvider({ children, initialProfile })` - estado inicial de
+  `initialProfile` (usado pelos testes) ou do `localStorage` `pom.profile`;
+  valor desconhecido guardado cai no padrão. Escreve `<html data-profile>`.
+- `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
+  Casa por segmento (`/logs` cobre `/logs/ao-vivo`, e **não** `/logs-antigos`) e
+  a chave mais específica vence.
 
 ### theme.tsx
 - `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.

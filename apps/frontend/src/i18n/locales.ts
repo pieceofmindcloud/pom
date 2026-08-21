@@ -158,6 +158,15 @@ const messages: Record<Locale, Record<string, Message>> = {
     "notFound.title": () => "This page does not exist",
     "notFound.back": () => "Back to dashboard",
     "notFound.detail": () => "The address does not match any screen in this app.",
+    "forbidden.title": () => "Screen restricted to another profile",
+    "forbidden.back": () => "Back to dashboard",
+    "forbidden.detail": ({ profile }) =>
+      "The active profile is " + String(profile) + ", and this screen is not part of it. Switch profile to open it.",
+    "profile.admin": () => "Administrator",
+    "profile.node": () => "Node",
+    "profile.switcher": () => "Profile being previewed",
+    "profile.switcherHint": () =>
+      "Development control: it previews what each profile sees on screen and grants no permission.",
     "chat.new": () => "New chat",
     "chat.localOnly": () => "Chats stay in this browser.",
     "chat.message": ({ count }) => Number(count) === 1 ? "message" : "messages",
@@ -1070,6 +1079,15 @@ const messages: Record<Locale, Record<string, Message>> = {
     "notFound.title": () => "Esta tela não existe",
     "notFound.back": () => "Voltar ao painel",
     "notFound.detail": () => "O endereço digitado não corresponde a nenhuma tela deste aplicativo.",
+    "forbidden.title": () => "Tela restrita a outro perfil",
+    "forbidden.back": () => "Voltar ao painel",
+    "forbidden.detail": ({ profile }) =>
+      "O perfil ativo é " + String(profile) + ", e esta tela não faz parte dele. Troque de perfil para abri-la.",
+    "profile.admin": () => "Administrador",
+    "profile.node": () => "Nó",
+    "profile.switcher": () => "Perfil em visualização",
+    "profile.switcherHint": () =>
+      "Controle de desenvolvimento: mostra a tela como cada perfil a vê e não concede permissão nenhuma.",
     "chat.new": () => "Conversa nova",
     "chat.localOnly": () => "As conversas ficam neste navegador.",
     "chat.message": ({ count }) => Number(count) === 1 ? "mensagem" : "mensagens",

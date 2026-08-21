@@ -5,8 +5,9 @@ import { useEffect, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { brand } from "../lib/brand";
-import { NAV, type NavSection } from "./nav";
+import { navForProfile, type NavSection } from "./nav";
 import { useI18n } from "../i18n/provider";
+import { useProfile } from "../lib/profile";
 import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 
@@ -366,6 +367,10 @@ export function SidebarContent({
   collapsed?: boolean;
   onToggle?: () => void;
 }) {
+  // O menu segue o perfil: o que este perfil não abre também não é oferecido.
+  // Ver `navForProfile` e a tabela em `lib/access.ts`.
+  const { profile } = useProfile();
+  const sections = navForProfile(profile);
   return (
     <>
       <SidebarBrand collapsed={collapsed} onToggle={onToggle} />
@@ -377,7 +382,7 @@ export function SidebarContent({
           collapsed ? "overflow-visible px-2" : "overflow-y-auto px-3",
         )}
       >
-        {NAV.map((s) => (
+        {sections.map((s) => (
           <Section key={s.labelKey} section={s} onNavigate={onNavigate} collapsed={collapsed} />
         ))}
       </nav>

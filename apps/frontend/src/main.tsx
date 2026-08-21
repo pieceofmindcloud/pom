@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App";
 import "./index.css";
+import { ProfileProvider } from "./lib/profile";
 import { ThemeProvider } from "./lib/theme";
 import { ToastProvider } from "./lib/toast";
 import { LocaleProvider } from "./i18n/provider";
@@ -24,18 +25,20 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <LocaleProvider>
-        <ThemeProvider>
-          <ToastProvider>
-          {/* Opt in to the v7 behaviour now: it is what this app already
-              assumes, and it keeps the dev console free of deprecation noise
-              so a real warning stands out. */}
-          <BrowserRouter
-            future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
-          >
-            <App />
-          </BrowserRouter>
-          </ToastProvider>
-        </ThemeProvider>
+        <ProfileProvider>
+          <ThemeProvider>
+            <ToastProvider>
+              {/* Opt in to the v7 behaviour now: it is what this app already
+                  assumes, and it keeps the dev console free of deprecation
+                  noise so a real warning stands out. */}
+              <BrowserRouter
+                future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+              >
+                <App />
+              </BrowserRouter>
+            </ToastProvider>
+          </ThemeProvider>
+        </ProfileProvider>
       </LocaleProvider>
     </QueryClientProvider>
   </StrictMode>,

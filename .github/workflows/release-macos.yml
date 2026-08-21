@@ -1,9 +1,9 @@
 name: Release · macOS
 
-# Só roda quando você mandar. **Atenção à cota**: em repositório privado o
-# minuto de runner macOS conta 10x, então este é de longe o workflow mais caro
-# dos três. Ver `docs/subsystems/build-execucao.md`, seção "Release pelo GitHub
-# Actions", inclusive para trocar por um runner self-hosted.
+# Só roda quando você mandar, e roda no **runner self-hosted `macbook`** - não
+# consome cota nenhuma. Se o MacBook estiver desligado o job fica na fila em vez
+# de falhar. Ver `docs/subsystems/build-execucao.md`, "Release pelo GitHub
+# Actions".
 on:
   workflow_dispatch:
     inputs:
@@ -25,33 +25,13 @@ env:
   LLAMA_REF: pom-tensor-parallel
 
 jobs:
-  # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
-  # e o minuto de Linux conta 1x. Compilá-la dentro do runner macOS custaria 10x
-  # pelo mesmo `dist`.
-  ui:
-    name: Interface web
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-          cache: npm
-          cache-dependency-path: apps/frontend/package-lock.json
-      - run: npm ci
-        working-directory: apps/frontend
-      - run: npm run build
-        working-directory: apps/frontend
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ui-dist-macos
-          path: apps/frontend/dist
-          if-no-files-found: error
-
+  # Um job só. Em runner hospedado a interface era compilada à parte, num runner
+  # Linux, porque o minuto de macOS custava 10x; aqui não há multiplicador, e
+  # separar só acrescentaria uma ida e volta de artefato entre dois jobs que
+  # rodariam na mesma máquina de qualquer jeito - o runner atende um job por vez.
   build:
     name: macOS arm64 (Metal)
-    needs: ui
-    runs-on: macos-14
+    runs-on: [self-hosted, macOS, ARM64, macbook]
     steps:
       - uses: actions/checkout@v4
 
@@ -68,25 +48,50 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: Swatinem/rust-cache@v2
+      # Sem `Swatinem/rust-cache`: ele existe para devolver o `target/` a um
+      # runner que nasce vazio. Aqui o workspace é o mesmo entre execuções, o
+      # `target/` já está lá, e restaurar por cima só gastaria tempo e disco.
 
-      # A imagem do runner já traz cmake e o clang da Apple (com os headers que
-      # o bindgen precisa); a linha existe para falhar com mensagem clara caso
-      # uma imagem futura deixe de trazê-lo.
-      - name: Dependências de build
-        run: cmake --version || brew install cmake
+      - name: Conferir dependências da máquina
+        run: |
+          # Num runner self-hosted as dependências são provisionadas uma vez na
+          # máquina, não instaladas a cada execução. Falhar aqui, nomeando o que
+          # falta, é melhor que morrer lá dentro do build do llama.cpp.
+          faltou=""
+          for p in cmake git; do command -v "$p" >/dev/null || faltou="$faltou $p"; done
+          if [ -n "$faltou" ]; then
+            echo "faltando na máquina:$faltou (instale com: brew install$faltou)" >&2
+            exit 1
+          fi
+          cmake --version | head -1
+
+      # Fixa o Node em vez de confiar no que a máquina tem no PATH: o runner
+      # self-hosted grava um retrato do PATH de quem o configurou, e a ksia traz
+      # Node 18. Aqui a versão é a mesma que o projeto usa em desenvolvimento,
+      # baixada para o cache de ferramentas do runner.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Interface web
+        run: |
+          npm ci
+          npm run build
+        working-directory: apps/frontend
 
       - name: Compilar
         run: cargo build --release --locked --features metal
 
-      - uses: actions/download-artifact@v4
-        with:
-          name: ui-dist-macos
-          path: pacote/apps/frontend/dist
-
       - name: Montar o pacote
         run: |
           nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
+          # O workspace persiste entre execuções neste runner: limpar a sobra da
+          # release anterior evita empacotar o pacote velho junto.
+          rm -rf pacote pom-*.tar.gz "$nome"
+          mkdir -p pacote/apps/frontend
+          cp -R apps/frontend/dist pacote/apps/frontend/dist
           cp target/release/pom pacote/
           cp README.md pacote/ 2>/dev/null || true
 
@@ -107,20 +112,11 @@ jobs:
           path: pom-*.tar.gz
           if-no-files-found: error
 
-  # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
-  # rodar cria a release, os outros anexam o arquivo deles.
-  release:
-    name: Publicar
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: pacote-macos
-          path: pacotes
+      # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow
+      # a rodar cria a release, os outros anexam o arquivo deles.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}
           name: ${{ inputs.version }}
           prerelease: ${{ inputs.prerelease }}
-          files: pacotes/*
+          files: pom-*.tar.gz

@@ -19,6 +19,7 @@ import type {
   NodeInfo,
   PathsResponse,
   PeerCatalog,
+  PeerRuntime,
   RequestLogEntry,
   TransferJob,
   TransferOffer,
@@ -53,6 +54,7 @@ export const keys = {
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
+  peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
 };
@@ -108,6 +110,30 @@ export function useCluster() {
     queryKey: keys.cluster,
     queryFn: () => api.get<ClusterView>("/api/ui/cluster", { auth: false }),
     refetchInterval: 5000,
+  });
+}
+
+/**
+ * Como uma máquina carregou o modelo, buscado só com o card aberto.
+ *
+ * `enabled` é o ponto: isto sai do `/health` do peer, e pedir por peer a cada
+ * ciclo do Painel seria um leque de chamadas por uma tela que quase sempre está
+ * fechada. Um nó antigo sem a rota devolve 404, e aí a seção some em vez de
+ * virar erro - mesmo critério do `optional` acima.
+ */
+export function usePeerRuntime(nodeId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.peerRuntime(nodeId),
+    queryFn: () =>
+      optional(
+        api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
+          auth: false,
+        }),
+        { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+      ),
+    enabled,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
   });
 }
 

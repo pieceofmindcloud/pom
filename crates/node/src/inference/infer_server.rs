@@ -1510,6 +1510,12 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
+        // Onde as camadas e o cache KV ficaram de verdade, direto do
+        // llama.cpp. `null` quando a ponte não respondeu - a interface diz
+        // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que
+        // erraria sempre que um override de buffer type entrasse.
+        "placement": s.engine.placement(),
+        "context_memory": s.engine.context_memory(),
         "inference_frame_capabilities": caps,
         "scheduler": scheduler.stats.json(&scheduler.config),
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do

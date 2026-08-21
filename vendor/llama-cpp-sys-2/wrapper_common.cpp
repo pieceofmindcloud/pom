@@ -3,12 +3,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <map>
 #include <memory>
 #include <string>
 #include <stdint.h>
 #include <vector>
 
 #include "llama.cpp/common/common.h"
+// Cabeçalhos internos: `llama_model` (`tensors_by_name`, `dev_layer`) e o
+// `llama-ext.h` de estágio (`llama_get_memory_breakdown`). Nada disso está no
+// `llama.h` público, e é justamente o que responde onde cada camada ficou.
+#include "llama.cpp/src/llama-ext.h"
+#include "llama.cpp/src/llama-model.h"
+#include "llama.cpp/ggml/include/ggml-backend.h"
 #include "llama.cpp/common/fit.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/speculative.h"
@@ -148,6 +155,146 @@ extern "C" int llama_rs_fit_params(
 
 extern "C" void llama_rs_memory_breakdown_print(const struct llama_context * ctx) {
     common_memory_breakdown_print(ctx);
+}
+
+// ── Onde o modelo ficou ───────────────────────────────────────────────────────
+
+// O bloco a que um tensor pertence, ou -1 quando ele não é de bloco nenhum
+// (embeddings, norma de saída, cabeça). Os nomes do GGUF são `blk.<i>.<resto>`.
+static int llama_rs_tensor_block(const std::string & name) {
+    static const std::string prefix = "blk.";
+    if (name.compare(0, prefix.size(), prefix) != 0) {
+        return -1;
+    }
+    const size_t dot = name.find('.', prefix.size());
+    if (dot == std::string::npos) {
+        return -1;
+    }
+    try {
+        return std::stoi(name.substr(prefix.size(), dot - prefix.size()));
+    } catch (const std::exception &) {
+        return -1;
+    }
+}
+
+// Quantos bytes de um grupo de tensores foram parar em cada buffer.
+// `map` ordenado só para a saída sair estável entre execuções.
+using llama_rs_buffer_bytes = std::map<std::string, size_t>;
+
+static void llama_rs_account(llama_rs_buffer_bytes & into, const ggml_tensor * t) {
+    if (!t || !t->buffer) {
+        return;
+    }
+    into[ggml_backend_buffer_name(t->buffer)] += ggml_nbytes(t);
+}
+
+static nlohmann::ordered_json llama_rs_buffers_json(const llama_rs_buffer_bytes & bytes) {
+    auto out = nlohmann::ordered_json::array();
+    for (const auto & [name, n] : bytes) {
+        out.push_back({{"buffer", name}, {"bytes", n}});
+    }
+    return out;
+}
+
+extern "C" llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, char ** out_json) {
+    if (!model || !out_json) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_json = nullptr;
+
+    try {
+        const int n_layer = llama_model_n_layer(model);
+
+        std::vector<llama_rs_buffer_bytes> per_layer(n_layer > 0 ? (size_t) n_layer : 0);
+        llama_rs_buffer_bytes other;
+        llama_rs_buffer_bytes totals;
+
+        for (const auto & [name, tensor] : model->tensors_by_name) {
+            const int il = llama_rs_tensor_block(name);
+            if (il >= 0 && il < n_layer) {
+                llama_rs_account(per_layer[(size_t) il], tensor);
+            } else {
+                llama_rs_account(other, tensor);
+            }
+            llama_rs_account(totals, tensor);
+        }
+
+        auto layers = nlohmann::ordered_json::array();
+        for (int il = 0; il < n_layer; ++il) {
+            // O dispositivo é a atribuição que o llama.cpp fez ao bloco; os
+            // buffers são onde os pesos dele estão. Os dois divergem
+            // exatamente no caso que interessa ver.
+            ggml_backend_dev_t dev = model->dev_layer(il);
+            layers.push_back({
+                {"layer",   il},
+                {"device",  dev ? ggml_backend_dev_name(dev) : "CPU"},
+                {"buffers", llama_rs_buffers_json(per_layer[(size_t) il])},
+            });
+        }
+
+        ggml_backend_dev_t dev_out = model->dev_output();
+        auto devices = nlohmann::ordered_json::array();
+        for (int i = 0; i < llama_model_n_devices(model); ++i) {
+            ggml_backend_dev_t dev = llama_model_get_device(model, i);
+            if (!dev) {
+                continue;
+            }
+            devices.push_back({
+                {"name",        ggml_backend_dev_name(dev)},
+                {"description", ggml_backend_dev_description(dev)},
+            });
+        }
+
+        const nlohmann::ordered_json out = {
+            {"n_layer",              n_layer},
+            {"n_gpu_layers",         model->n_gpu_layers()},
+            {"has_tensor_overrides", model->has_tensor_overrides()},
+            {"devices",              devices},
+            {"layers",               layers},
+            {"output", {
+                {"device",  dev_out ? ggml_backend_dev_name(dev_out) : "CPU"},
+                {"buffers", llama_rs_buffers_json(other)},
+            }},
+            {"totals", llama_rs_buffers_json(totals)},
+        };
+
+        *out_json = llama_rs_dup_string(out.dump());
+        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
+}
+
+extern "C" llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json) {
+    if (!ctx || !out_json) {
+        return LLAMA_RS_STATUS_INVALID_ARGUMENT;
+    }
+    *out_json = nullptr;
+
+    try {
+        auto buffers = nlohmann::ordered_json::array();
+        for (const auto & [buft, data] : llama_get_memory_breakdown(ctx)) {
+            if (!buft) {
+                continue;
+            }
+            ggml_backend_dev_t dev = ggml_backend_buft_get_device(buft);
+            buffers.push_back({
+                {"buffer",  ggml_backend_buft_name(buft)},
+                {"device",  dev ? ggml_backend_dev_name(dev) : "CPU"},
+                {"model",   data.model},
+                // `context` é o cache KV (mais o estado recorrente, quando o
+                // modelo tem um). É esta linha que responde onde o KV ficou.
+                {"context", data.context},
+                {"compute", data.compute},
+            });
+        }
+
+        const nlohmann::ordered_json out = {{"buffers", buffers}};
+        *out_json = llama_rs_dup_string(out.dump());
+        return *out_json ? LLAMA_RS_STATUS_OK : LLAMA_RS_STATUS_ALLOCATION_FAILED;
+    } catch (const std::exception &) {
+        return LLAMA_RS_STATUS_EXCEPTION;
+    }
 }
 
 struct llama_rs_mtp_speculative {

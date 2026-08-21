@@ -140,7 +140,7 @@ behind an auth extractor.
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
-  (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
+  (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),

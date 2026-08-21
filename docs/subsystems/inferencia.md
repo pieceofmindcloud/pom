@@ -106,6 +106,33 @@ antes de criar o contexto de rascunho; deixar essa flag falsa mantém os
 metadados MTP, mas deixa `nextn.eh_proj` nulo e faz o Qwen3.5 abortar na
 construção do grafo.
 
+### Onde as camadas ficaram
+
+Nada acima diz onde o modelo **de fato** foi parar. `n_gpu_layers` é o pedido; o
+`fit` o reduz numa GPU cheia, e um override de buffer type manda parte de uma
+camada - tipicamente os experts de um MoE - para a CPU sem mudar o dispositivo
+do bloco. Derivar a colocação desses números erra exatamente nos casos que
+importam.
+
+Por isso o `/health` do servidor de inferência traz dois campos medidos depois
+da carga, os dois vindos do llama.cpp por `wrapper_common.cpp` (ver o
+`AGENTS.md` de `vendor/llama-cpp-sys-2/`):
+
+- **`placement`** - por camada, o dispositivo atribuído (`dev_layer`) e quantos
+  bytes de peso ficaram em cada buffer, mais a cabeça de saída, os totais e
+  `has_tensor_overrides`. Uma camada é "na GPU" pelos bytes dela, não pelo
+  dispositivo do bloco: com override, os dois divergem.
+- **`context_memory`** - a memória do contexto por buffer, separada em `model`,
+  `context` e `compute`. O `context` é o cache KV, e é ele que responde onde o
+  KV ficou; `offload_kqv` é só o que foi pedido, e o fallback de VRAM acima pode
+  não atendê-lo. O tamanho que aparece já reflete o tipo configurado, que o
+  mesmo `/health` publica em `cache_type_k` e `cache_type_v`.
+
+Os dois são `null` quando a ponte não responde, e aí a interface diz que não
+sabe em vez de inventar um mapa. Quem os mostra é o card de máquina do Painel,
+que os busca por `/api/ui/peer/:node_id/runtime` só com o card aberto - ver
+`api-http.md` e `web-ui.md`.
+
 ## 1. Os três modos de execução
 
 O dispatch acontece em `inference/prefill.rs` (`run` para o prefill, `step`

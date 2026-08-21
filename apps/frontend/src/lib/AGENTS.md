@@ -90,6 +90,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### queries.ts
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useNode()` - polls `/api/ui/node` every 4s, stores `connection_key`.
+- `usePeerRuntime(nodeId, enabled)` 15s (stale 10s) - o `/health` daquela
+  máquina, por `optional` (um nó sem a rota devolve 404 e a seção some). O
+  `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
+  sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
+  sempre fechada.
 - `useCluster()` 5s, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` / `useTransfers()` 2s, `useOffers()` 2s, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` polls at 2s (was 5s): an offer is a question waiting on a human, not a progress bar, and with the sender no longer hashing the file before offering (the digest moved to the receiver, after accept) an offer now lands in milliseconds - a 5s cadence only added waiting on top of a 5s poll.
@@ -188,4 +193,4 @@ would go.
 - `components/Notifications.tsx` and `routes/Transfers.tsx` use `transferStatus` and `transferLabel`.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
-- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+- Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.

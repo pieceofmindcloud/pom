@@ -220,6 +220,19 @@ atualizar/reiniciar só quando o peer anuncia `dev_update`. Ao lado de
 "Adicionar nó" há `UndeployPipeline` quando há modelo no ar. `PipelineRail`
 ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
 
+Numa máquina servindo, o card traz também **"Como o modelo foi carregado"**
+(`ModelPlacement.tsx`): uma tira com uma célula por camada - verde inteira na
+GPU, âmbar dividida, cinza na CPU -, os pesos de cada lado em bytes, onde o
+cache KV ficou e a cabeça de saída. É a resposta medida, não a configuração:
+uma camada conta pelos **bytes** dela em cada buffer, então os experts de um
+MoE empurrados para a CPU aparecem como camada dividida em vez de camada
+descarregada. Os dados vêm de `/api/ui/peer/:node_id/runtime`, que repassa o
+`/health` daquela máquina, e a busca só acontece com o card montado
+(`usePeerRuntime(nodeId, enabled)`) - o Painel recarrega em ciclo curto, e um
+`/health` por peer a cada ciclo seria caro por uma seção quase sempre fechada.
+Nó que não informa a colocação faz a seção dizer que não sabe. Ver
+`inferencia.md`, "Onde as camadas ficaram".
+
 ## Configurações / Rede: quem decide o TLS
 
 O painel "Criptografia entre nós" (`TlsPanel`, em `routes/NetworkSettings.tsx`)

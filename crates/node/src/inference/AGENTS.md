@@ -220,7 +220,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   quando há mais de uma GPU local. Se a criação do contexto falha com o KV na
   GPU, tenta novamente com `offload_kqv=false`, mantendo as mesmas camadas de
   peso na GPU e deixando o KV cache na RAM. `/health` mostra se o fit foi
-  aplicado, as camadas efetivas e `n_ubatch_effective`. O `n_batch` público
+  aplicado, as camadas efetivas e `n_ubatch_effective` - e, em `placement` e
+  `context_memory`, onde as camadas e o KV realmente foram parar. O `n_batch` público
   continua sendo o limite do pedaço de prompt, mas `fit_memory=true` limita o
   microbatch interno a 128 tokens para reduzir os temporários CUDA que só são
   reservados no primeiro grafo real; sem fit, o microbatch acompanha `n_batch`.
@@ -228,6 +229,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
   o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
   `pool` é a marca disso.
+- `LlmEngine::placement` / `LlmEngine::context_memory` - onde as camadas e o
+  cache KV ficaram **de fato**, do llama.cpp, por
+  `llama_rs_model_placement_json` e `llama_rs_context_memory_json`
+  (`vendor/llama-cpp-sys-2/wrapper_common.cpp`). Devolvem `Option`: falha da
+  ponte é `None`, e o `/health` publica `null` em vez de um mapa derivado de
+  `n_gpu_layers` - que mentiria sempre que um override de buffer type mandasse
+  parte de uma camada para a CPU. `json_from_wrapper` é quem chama e quem
+  libera a string (`llama_rs_string_free`, nunca `free` nem
+  `CString::from_raw`).
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
   Mutex global e disputava com decodes paralelos).

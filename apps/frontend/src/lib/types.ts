@@ -167,6 +167,76 @@ export interface PeerView {
   unreachable: string | null;
 }
 
+/** Quantos bytes de um grupo de tensores ficaram num buffer. */
+export interface BufferBytes {
+  buffer: string;
+  bytes: number;
+}
+
+/**
+ * Onde o llama.cpp pôs cada camada, medido depois da carga.
+ *
+ * `device` é o dispositivo que o llama.cpp atribuiu ao bloco; `buffers` é onde
+ * os pesos dele estão de fato. Os dois divergem quando um override de buffer
+ * type entra - o caso clássico é o `fit` mandando os experts de um MoE para a
+ * CPU numa camada cujo dispositivo continua sendo a GPU. Por isso a tela lê os
+ * buffers, não o dispositivo.
+ */
+export interface LayerPlacement {
+  layer: number;
+  device: string;
+  buffers: BufferBytes[];
+}
+
+export interface ModelPlacement {
+  n_layer: number;
+  /** O que o llama.cpp acabou usando, não o que foi pedido. */
+  n_gpu_layers: number;
+  has_tensor_overrides: boolean;
+  devices: Array<{ name: string; description: string }>;
+  layers: LayerPlacement[];
+  /** Embeddings, norma final e cabeça: tudo que não pertence a um bloco. */
+  output: { device: string; buffers: BufferBytes[] };
+  totals: BufferBytes[];
+}
+
+/**
+ * A memória do contexto por buffer. `context` é o cache KV - a resposta real
+ * para "o KV ficou na GPU?", que a flag `offload_kqv` só pede.
+ */
+export interface ContextMemoryBuffer {
+  buffer: string;
+  device: string;
+  model: number;
+  context: number;
+  compute: number;
+}
+
+/** O `/health` do servidor de inferência de uma máquina, como a tela o lê. */
+export interface PeerRuntimeHealth {
+  start_layer: number;
+  end_layer: number;
+  n_ctx_total: number;
+  n_ctx_per_session: number;
+  max_sessions: number;
+  offload_kqv: boolean;
+  fit_memory_applied: boolean;
+  n_gpu_layers_effective: number;
+  n_ubatch_effective: number;
+  mtp_ready: boolean;
+  /** `null` num nó cuja ponte de diagnóstico não respondeu. */
+  placement: ModelPlacement | null;
+  context_memory: { buffers: ContextMemoryBuffer[] } | null;
+}
+
+/** Resposta de `/api/ui/peer/:node_id/runtime`. */
+export interface PeerRuntime {
+  loaded: boolean;
+  /** Por que não há dados, quando `loaded` é falso. */
+  reason?: string;
+  health?: PeerRuntimeHealth;
+}
+
 export interface ModelCapability {
   model_id: string;
   start_layer: number;

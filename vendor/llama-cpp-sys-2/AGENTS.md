@@ -27,3 +27,31 @@ nesse caminho, e não na raiz: lá o checkout não cria symlink - materializa um
 arquivo de texto com o caminho dentro -, então repor a pasta na raiz não
 adiantaria. Ver `docs/subsystems/build-execucao.md`, "Release pelo GitHub
 Actions".
+
+## `wrapper_common.cpp` - o que é nosso dentro deste diretório
+
+`wrapper_common.{h,cpp}` e `wrapper_utils.h` são código **deste** repositório,
+não do fork: é a ponte `extern "C"` para o que o `llama.h` público não expõe. O
+`build.rs` os compila com os includes do fork (linhas ~628-635) e o bindgen lê
+as declarações do `.h`, então cada função nova aparece em `llama_cpp_sys_2::`
+sem mais nenhum passo.
+
+Duas delas incluem cabeçalhos **internos** do fork (`src/llama-model.h`,
+`src/llama-ext.h`), e é bom saber por quê antes de mexer:
+
+| Função | O que responde |
+|---|---|
+| `llama_rs_model_placement_json` | onde cada camada ficou de verdade, lendo o buffer de cada tensor em `tensors_by_name` mais `dev_layer(il)` |
+| `llama_rs_context_memory_json` | a memória do contexto por buffer (`llama_get_memory_breakdown`), cujo campo `context` é o cache KV |
+
+As duas devolvem JSON de `malloc` que **tem que** voltar por
+`llama_rs_string_free`; do lado Rust quem faz isso é `json_from_wrapper` em
+`crates/node/src/inference/llm.rs`, e é por isso que a liberação mora lá e não
+em cada chamador.
+
+O preço de usar cabeçalho interno é que uma atualização do fork pode mudar
+`llama_model` sem aviso. O sintoma é erro de compilação alto e na hora, nunca
+resultado errado em silêncio, e o conserto é reler o cabeçalho novo - a
+alternativa, derivar a colocação de `n_gpu_layers`, mente sempre que um override
+de buffer type entra. Ver `docs/subsystems/inferencia.md`, "Onde as camadas
+ficaram".

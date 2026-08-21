@@ -49,6 +49,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/models/delete", post(delete_model))
         .route("/api/ui/cluster", get(cluster))
         .route("/api/ui/cluster/models", get(cluster_models))
+        .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route(
@@ -1017,6 +1018,62 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         "candidate_edges": candidate_edges,
         "node": self_node,
     }))
+}
+
+/// Como uma máquina carregou o modelo: o `/health` do servidor de inferência
+/// dela, cru.
+///
+/// Fica fora do `/api/ui/cluster` de propósito. O Painel recarrega o cluster em
+/// ciclo curto, e isto é detalhe que só interessa com o card aberto: buscar por
+/// demanda evita pagar um `/health` por peer a cada atualização de tela, e um
+/// peer que não responde deixa de derrubar a listagem inteira.
+///
+/// **Vale para qualquer nó, inclusive este.** A entrada local do `all_peers`
+/// tem `inference_url` como as outras, e é o mesmo caminho que o
+/// `ready_for_pipeline` já percorre - um só código, então o card do nó local
+/// nunca mostra menos que o card de um remoto.
+async fn peer_runtime(
+    State(state): State<GatewayState>,
+    Path(node_id): Path<String>,
+) -> Response {
+    let Some(peer) = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|p| p.node_id == node_id)
+    else {
+        return (StatusCode::NOT_FOUND, "máquina desconhecida").into_response();
+    };
+
+    let Some(base) = peer.inference_url() else {
+        // O peer existe e não serve inferência: não é erro de rede, é o
+        // estado normal de uma máquina sem fatia implantada.
+        return Json(json!({ "loaded": false, "reason": "sem servidor de inferência" }))
+            .into_response();
+    };
+
+    let http = match state.peer_http.for_peer(&node_id) {
+        Ok(c) => c,
+        Err(e) => {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("sem cliente para {node_id}: {e}"),
+            )
+                .into_response()
+        }
+    };
+
+    let url = format!("{base}/health");
+    match tokio::time::timeout(PEER_TIMEOUT, http.get(&url).send()).await {
+        Ok(Ok(r)) if r.status().is_success() => match r.json::<serde_json::Value>().await {
+            Ok(v) => Json(json!({ "loaded": true, "health": v })).into_response(),
+            Err(e) => (StatusCode::BAD_GATEWAY, format!("resposta inválida: {e}")).into_response(),
+        },
+        Ok(Ok(r)) => Json(json!({ "loaded": false, "reason": format!("HTTP {}", r.status()) }))
+            .into_response(),
+        Ok(Err(e)) => Json(json!({ "loaded": false, "reason": e.to_string() })).into_response(),
+        Err(_) => Json(json!({ "loaded": false, "reason": "timeout" })).into_response(),
+    }
 }
 
 /// Each peer's installed models, so the setup screen can say who is missing what.
@@ -4678,5 +4735,70 @@ mod node_name_tests {
             outro["hostname"], "ksia",
             "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
         );
+    }
+}
+
+/// `/api/ui/peer/:node_id/runtime` - como aquela máquina carregou o modelo.
+#[cfg(test)]
+mod peer_runtime_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_with};
+
+    /// Um servidor de inferência que responde `/health` com a colocação.
+    async fn fake_inference() -> u16 {
+        let app = Router::new().route(
+            "/health",
+            get(|| async {
+                Json(json!({
+                    "status": "ok",
+                    "offload_kqv": true,
+                    "placement": { "n_layer": 1, "layers": [] },
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        port
+    }
+
+    #[tokio::test]
+    async fn unknown_machine_is_a_404_and_not_an_empty_answer() {
+        let state = state_with("eu", vec![]).await;
+        let r = peer_runtime(State(state), Path("ninguem".to_string())).await;
+        assert_eq!(r.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// Máquina na rede sem servidor de inferência não é falha de rede: é o
+    /// estado normal de quem não recebeu fatia. A tela precisa distinguir os
+    /// dois, então isto responde 200 dizendo que não há o que mostrar.
+    #[tokio::test]
+    async fn a_machine_without_an_inference_server_is_not_an_error() {
+        let state = state_with("eu", vec![peer("outro", "ksia", 9)]).await;
+        let r = peer_runtime(State(state), Path("outro".to_string())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_of(r).await;
+        assert_eq!(body["loaded"], false);
+        assert!(body["reason"].is_string(), "a tela precisa do motivo");
+    }
+
+    /// O `/health` do peer chega inteiro, sem passar por um tipo intermediário:
+    /// um campo novo no servidor de inferência aparece na tela sem que esta
+    /// rota mude.
+    #[tokio::test]
+    async fn the_peers_health_is_forwarded_whole() {
+        let port = fake_inference().await;
+        let mut p = peer("outro", "ksia", 9);
+        p.inference_port = Some(port);
+        let state = state_with("eu", vec![p]).await;
+
+        let r = peer_runtime(State(state), Path("outro".to_string())).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        let body = body_of(r).await;
+        assert_eq!(body["loaded"], true);
+        assert_eq!(body["health"]["offload_kqv"], true);
+        assert_eq!(body["health"]["placement"]["n_layer"], 1);
     }
 }

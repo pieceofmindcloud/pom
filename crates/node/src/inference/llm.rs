@@ -117,6 +117,38 @@ unsafe extern "C" fn capture_callback(
     true
 }
 
+// ── Ponte de diagnóstico ─────────────────────────────────────────────────────
+
+/// Chama uma função `llama_rs_*_json` e devolve o JSON já em `serde_json`.
+///
+/// Toda a família devolve `LLAMA_RS_STATUS_OK` mais uma string de `malloc` que
+/// **tem que** voltar por `llama_rs_string_free` - `free` de outra alocação, ou
+/// um `CString::from_raw`, é liberar com um alocador que não é o dono. Por isso
+/// a liberação mora aqui e não em cada chamador.
+///
+/// # Safety
+/// `f` tem que ser uma dessas funções, com os ponteiros do llama.cpp ainda
+/// vivos.
+unsafe fn json_from_wrapper(
+    f: impl FnOnce(*mut *mut std::os::raw::c_char) -> sys::llama_rs_status,
+) -> Option<serde_json::Value> {
+    let mut raw: *mut std::os::raw::c_char = ptr::null_mut();
+    let status = f(&mut raw);
+    if status != sys::LLAMA_RS_STATUS_OK || raw.is_null() {
+        warn!("diagnóstico do llama.cpp indisponível (status {status})");
+        return None;
+    }
+    let texto = CStr::from_ptr(raw).to_string_lossy().into_owned();
+    sys::llama_rs_string_free(raw);
+    match serde_json::from_str(&texto) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            warn!("diagnóstico do llama.cpp veio com JSON inválido: {e}");
+            None
+        }
+    }
+}
+
 // ── Configuration ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
@@ -744,6 +776,25 @@ impl LlmEngine {
 
     pub fn effective_n_ubatch(&self) -> u32 {
         self.effective_n_ubatch
+    }
+
+    /// Onde cada camada realmente ficou, do próprio llama.cpp.
+    ///
+    /// `None` quando a ponte falha, e aí o `/health` omite o campo em vez de
+    /// mostrar um mapa inventado: dizer "não sei" é a única resposta honesta
+    /// possível, porque nada em `EngineConfig` substitui o buffer real de um
+    /// tensor. Ver `llama_rs_model_placement_json` no `wrapper_common.cpp`.
+    pub fn placement(&self) -> Option<serde_json::Value> {
+        unsafe { json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out)) }
+    }
+
+    /// A memória deste contexto por buffer: pesos, cache KV e cálculo.
+    ///
+    /// É o que responde onde o cache KV ficou de verdade. `offload_kqv()` é o
+    /// que foi pedido; numa GPU cheia o llama.cpp recarrega com ele desligado
+    /// (ver `runtime.rs`), e só a repartição por buffer mostra isso.
+    pub fn context_memory(&self) -> Option<serde_json::Value> {
+        unsafe { json_from_wrapper(|out| sys::llama_rs_context_memory_json(self.ctx, out)) }
     }
 
     pub fn eos_token(&self) -> i32 {

@@ -98,7 +98,8 @@ rede.
 ### `/api/ui/*`
 
 O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
-`node`, `models`, `models/delete`, `cluster`, `cluster/models`, `paths`,
+`node`, `models`, `models/delete`, `cluster`, `cluster/models`,
+`peer/:node_id/runtime`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
 `requests` (o log de requisições, `reqlog::list_requests`), `network/rtt` (GET
@@ -141,8 +142,8 @@ log atribui cada geração a quem pagou por ela.
 
 **Rotas sem auth**: `/api/generate`, `/peers`, `/health` (o `/api/generate`
 loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
-`/api/ui` (`node`, `models`, `cluster`, `cluster/models`, `paths` GET, `jobs`,
-`jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
+`/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
+`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
@@ -198,8 +199,8 @@ nó de verdade sem sair anunciando, o equivalente em produção é `--no-discove
   `node_id` é a chave de `blocked_nodes`). Provar posse exige desafio assinado,
   ou seja, mudança de protocolo.
 - **DEFEITO ANOTADO (exposição): os GETs de leitura do `/api/ui` são abertos** -
-  `node`, `models`, `cluster`, `cluster/models`, `paths` (GET), `jobs` e
-  `jobs/:id` não têm `ConnectionAuth` (só os mutáveis exigem). `GET
+  `node`, `models`, `cluster`, `cluster/models`, `peer/:node_id/runtime`,
+  `paths` (GET), `jobs` e `jobs/:id` não têm `ConnectionAuth` (só os mutáveis exigem). `GET
   /api/ui/models` devolve os caminhos locais completos dos modelos, e
   `/api/ui/cluster` a tabela de peers, para qualquer cliente da rede sem
   credencial. Aceitável em LAN confiável, exposto fora dela não.

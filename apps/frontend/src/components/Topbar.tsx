@@ -18,6 +18,7 @@ import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { Confirm } from "./Confirm";
 import { Notifications } from "./Notifications";
+import { ProfileSwitcher } from "./ProfileSwitcher";
 import { SidebarContent } from "./Sidebar";
 import { Badge, Dot, Skeleton } from "./ui";
 
@@ -263,6 +264,8 @@ export function Topbar() {
         </div>
 
         <div className="flex shrink-0 items-center gap-2">
+          {/* Andaime de desenvolvimento, some sozinho quando desligado. */}
+          <ProfileSwitcher />
           <TlsChip />
           <Notifications />
           <NodeActions />

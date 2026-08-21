@@ -14,9 +14,13 @@ export interface MemStat {
   used_pct: number;
 }
 
+/** De quem é a placa. `GpuKind` descreve a máquina; isto, uma peça. */
+export type GpuVendor = "nvidia" | "amd" | "apple";
+
 export interface GpuStat {
   index: number;
   name: string;
+  vendor: GpuVendor;
   vram_total_mb: number | null;
   vram_used_mb: number | null;
   vram_used_pct: number | null;
@@ -30,7 +34,8 @@ export interface GpuProcess {
   used_mb: number;
 }
 
-export type GpuKind = "nvidia" | "unified" | "none";
+/** Resumo da máquina. `mixed` = placas de marcas diferentes juntas. */
+export type GpuKind = "nvidia" | "amd" | "mixed" | "unified" | "none";
 
 export interface DiskStat {
   total_mb: number;
@@ -222,6 +227,10 @@ export interface DiscoveredModel {
   model_label: string | null;
   /** A rodada que produziu esta parte. */
   pom_id: string | null;
+  /** Rank tensorial, quando a parte pertence a uma rodada TP. */
+  tp_rank?: number | null;
+  /** Tamanho do grupo tensorial, quando a parte pertence a uma rodada TP. */
+  tp_size?: number | null;
 }
 
 /** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
@@ -283,8 +292,14 @@ export interface ShardSet {
   total_layers: number | null;
   total_layers_inferred: boolean;
   shards: DiscoveredModel[];
+  /** Partes completas do modelo, uma por rank TP. */
+  tp_parts?: DiscoveredModel[];
   complete: boolean;
 }
+
+/** Lê a lista TP de respostas de catálogo sem derrubar a tela se ela faltar. */
+export const tpPartsOf = (set: { tp_parts?: DiscoveredModel[] }): DiscoveredModel[] =>
+  Array.isArray(set.tp_parts) ? set.tp_parts : [];
 
 export interface ScannedRoot {
   source: ModelSource;
@@ -360,6 +375,21 @@ export interface TransferJob {
   bytes_per_sec: number;
   eta_secs: number | null;
   detail: string;
+  /**
+   * De que modelo esta transferência é, e que camadas ela traz — do `.pom`.
+   *
+   * O `name` de uma parte é o sha256 dela, e hash não identifica nada que se
+   * leia. Ausentes quando o arquivo não é parte de fatiamento nenhum (um
+   * modelo inteiro) ou quando o nó é de versão anterior.
+   */
+  model_label?: string | null;
+  start_layer?: number | null;
+  end_layer?: number | null;
+  /**
+   * Quando o job entrou num estado terminal, em RFC 3339. Ausente enquanto
+   * corre, e também num nó de versão anterior, que não carimbava a hora.
+   */
+  finished_at?: string | null;
 }
 
 export interface TransferOffer {
@@ -379,6 +409,24 @@ export interface TransferOffer {
   md5: string;
   start_layer: number | null;
   end_layer: number | null;
+  /**
+   * O manifesto do fatiamento a que esta parte pertence, quando ela é uma.
+   *
+   * Viaja **junto com a oferta**, e não depois: é ele que diz de que modelo a
+   * parte é. Sem isto a notificação só tinha o `<sha256>.gguf` para mostrar.
+   */
+  pom?: OfferManifest | null;
+}
+
+/** `crate::pom::PomManifest`, na parte que a tela usa. */
+export interface OfferManifest {
+  pom_id: string;
+  model: {
+    name: string;
+    label: string;
+    total_layers: number;
+    quant?: string | null;
+  };
 }
 
 export interface AdminNode {
@@ -445,6 +493,7 @@ export interface SizedRange {
 
 /** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
 export interface SizePlan {
+  mode?: "pipeline";
   total_layers: number;
   model_bytes: number;
   ranges: SizedRange[];
@@ -455,6 +504,28 @@ export interface SizePlan {
   blocked: boolean;
   warnings: string[];
 }
+
+/** Um rank de um plano de fatiamento tensorial. */
+export interface TpSliceRank {
+  rank: number;
+  start_layer: number;
+  end_layer: number;
+}
+
+/** `src/backend/webui.rs` - plano de fatiamento Tensor Parallelism. */
+export interface TpSlicePlan {
+  mode: "tensor_parallel";
+  total_layers: number;
+  model_bytes: number;
+  tp_size: number;
+  ranks: TpSliceRank[];
+  complete: boolean;
+  blocked: boolean;
+  warnings: string[];
+}
+
+export type SliceMode = "pipeline" | "tensor_parallel";
+export type SlicePlan = SizePlan | TpSlicePlan;
 
 /** One peer in a memory-budget plan. `src/plan.rs` — `PlannedShard`. */
 export interface PlannedShard {
@@ -545,6 +616,28 @@ export interface DeployStep {
   /** The slices this step is assembled from, in layer order. Empty for a
    *  plain step. */
   parts: DeployStepPart[];
+}
+
+/** One pre-sliced tensor-parallel rank in a deploy plan. */
+export interface DeployTpTarget {
+  rank: number;
+  size: number;
+  start_layer: number;
+  end_layer: number;
+  total_layers: number | null;
+  name: string;
+  size_bytes: number;
+  target_node_id: string;
+  target_host: string;
+  ready: boolean;
+  source_node_id: string | null;
+  source_host: string | null;
+  source_path: string | null;
+  source_sha256: string | null;
+  target_path: string | null;
+  problem: string | null;
+  n_gpu_layers: number | null;
+  offload_kqv: boolean | null;
 }
 
 /** A range that exists somewhere in the cluster, selected or not. */
@@ -698,6 +791,8 @@ export interface DeployPlan {
    *  metadata. The deploy still runs; the screen has to say so. */
   total_layers_inferred: boolean;
   steps: DeployStep[];
+  /** TP ranks are alternatives, not additional pipeline stages. */
+  tp_targets?: DeployTpTarget[];
   complete: boolean;
   transfer_bytes: number;
   /** Set when the plan cannot be carried out at all, and why. */

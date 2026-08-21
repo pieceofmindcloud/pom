@@ -1,29 +1,69 @@
 /**
- * What this node is busy with right now.
+ * What this node is busy with right now — and what it has just finished.
  *
  * Everything listed here is read back from the node — slicing runs from
- * `GET /api/ui/jobs`, downloads from `GET /api/transfer/jobs`, pending offers
+ * `GET /api/ui/jobs`, transfers from `GET /api/transfer/jobs`, pending offers
  * from `GET /api/transfer/offers`. None of it is browser state, so reloading
  * the page in the middle of a 17-minute transfer shows the same bar at the same
  * percentage instead of losing it.
+ *
+ * O sino lista os **dois sentidos** e também o desfecho recente
+ * (`isWorthNotifying`). Antes ele mostrava só o que estava em andamento, e o
+ * resultado — concluída, falhada, recusada — sumia da tela no instante em que
+ * acontecia: quem recebia via a barra andar e depois nada, quem enviava não
+ * via aviso nenhum de que a outra ponta tinha aceitado ou recusado.
  */
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bell, Check, Download, Inbox, Scissors, X } from "lucide-react";
+import {
+  Bell,
+  Check,
+  CheckCircle2,
+  Download,
+  Inbox,
+  Scissors,
+  Upload,
+  X,
+} from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { bytes, duration, rate, since } from "../lib/format";
 import { useJobs, useOffers, useTransfers } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import { isActiveTransfer } from "../lib/transferStatus";
+import { isFinishedTransfer, isWorthNotifying } from "../lib/transferStatus";
+import { transferHash, transferTitle } from "../lib/transferLabel";
+import type { TransferJob } from "../lib/types";
 import { Badge, Button, Empty, Progress } from "./ui";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
 
+/** Ícone, tom e chave de estado de uma transferência, num lugar só. */
+function transferLook(job: TransferJob) {
+  if (job.state === "done") {
+    return { icon: <CheckCircle2 className="h-3.5 w-3.5" />, tone: "aqua" as const };
+  }
+  if (job.state === "failed") {
+    return { icon: <X className="h-3.5 w-3.5" />, tone: "rose" as const };
+  }
+  if (job.state === "cancelled") {
+    return { icon: <X className="h-3.5 w-3.5" />, tone: "amber" as const };
+  }
+  return {
+    icon:
+      job.direction === "sending" ? (
+        <Upload className="h-3.5 w-3.5" />
+      ) : (
+        <Download className="h-3.5 w-3.5" />
+      ),
+    tone: "aqua" as const,
+  };
+}
+
 function Row({
   icon,
   title,
+  aside,
   detail,
   progress,
   tone,
@@ -31,6 +71,8 @@ function Row({
 }: {
   icon: React.ReactNode;
   title: string;
+  /** Identificação secundária — o hash curto de uma fatia. */
+  aside?: string | null;
   detail?: string;
   progress?: number | null;
   tone?: "iris" | "aqua" | "amber" | "rose";
@@ -42,9 +84,16 @@ function Row({
         {icon}
       </div>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-[0.83rem] font-medium text-fg" title={title}>
-          {title}
-        </p>
+        <div className="flex items-baseline gap-2">
+          <p className="truncate text-[0.83rem] font-medium text-fg" title={title}>
+            {title}
+          </p>
+          {aside && (
+            <span className="shrink-0 font-mono text-[0.68rem] text-faint" title={aside}>
+              {aside}
+            </span>
+          )}
+        </div>
         {detail && (
           <p className="break-path mt-0.5 text-xs leading-relaxed text-muted">{detail}</p>
         )}
@@ -69,9 +118,11 @@ export function Notifications() {
   const offers = useOffers();
 
   const running = (jobs.data?.jobs ?? []).filter((j) => j.state === "running");
-  const downloads = (transfers.data?.jobs ?? []).filter((transfer) => isActiveTransfer(transfer.state));
+  // O que anda **e** o que acabou de terminar: o desfecho é a metade da
+  // notificação que faltava, nos dois sentidos.
+  const moving = (transfers.data?.jobs ?? []).filter((transfer) => isWorthNotifying(transfer));
   const waiting = offers.data?.offers ?? [];
-  const count = running.length + downloads.length + waiting.length;
+  const count = running.length + moving.length + waiting.length;
 
   useEffect(() => {
     if (!open) return;
@@ -159,35 +210,81 @@ export function Notifications() {
                 />
               ))}
 
-              {downloads.map((job) => (
-                <Row
-                  key={job.id}
-                  icon={<Download className="h-3.5 w-3.5" />}
-                  title={job.name}
-                  detail={t("notifications.downloadDetail", { host: job.peer_host, detail: job.detail })}
-                  progress={
-                    job.bytes_total > 0 ? (job.bytes_done / job.bytes_total) * 100 : null
-                  }
-                  tone="aqua"
-                  footer={
-                    <span className="font-mono text-[0.7rem] text-faint">
-                      {t("notifications.downloadProgress", {
-                        done: bytes(job.bytes_done),
-                        total: bytes(job.bytes_total),
-                        rate: rate(job.bytes_per_sec),
-                        remaining: job.eta_secs != null ? duration(job.eta_secs) : "",
-                      })}
-                    </span>
-                  }
-                />
-              ))}
+              {moving.map((job) => {
+                const look = transferLook(job);
+                const done = isFinishedTransfer(job.state);
+                return (
+                  <Row
+                    key={job.id}
+                    icon={look.icon}
+                    title={transferTitle(job)}
+                    aside={transferHash(job.name)}
+                    detail={[
+                      t(
+                        job.direction === "sending"
+                          ? "notifications.transferTo"
+                          : "notifications.transferFrom",
+                        { host: job.peer_host },
+                      ),
+                      // O motivo importa quando deu errado, e a etapa enquanto
+                      // corre. Num `done` o detalhe é o caminho de destino —
+                      // ruído para um resumo, e a tela de Transferências o tem.
+                      job.state === "done" ? "" : localizeServerText(locale, job.detail),
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                    // Uma transferência terminada não tem barra: ela não está
+                    // mais andando, e uma barra parada em 100% sugere que sim.
+                    progress={
+                      done
+                        ? undefined
+                        : job.bytes_total > 0
+                          ? (job.bytes_done / job.bytes_total) * 100
+                          : null
+                    }
+                    tone={look.tone}
+                    footer={
+                      <span className="font-mono text-[0.7rem] text-faint">
+                        {done
+                          ? t(`notifications.state.${job.state}`, {
+                              size: bytes(job.bytes_total),
+                            })
+                          : t("notifications.downloadProgress", {
+                              done: bytes(job.bytes_done),
+                              total: bytes(job.bytes_total),
+                              rate: rate(job.bytes_per_sec),
+                              remaining: job.eta_secs != null ? duration(job.eta_secs) : "",
+                            })}
+                      </span>
+                    }
+                  />
+                );
+              })}
 
               {waiting.map((o) => (
                 <Row
                   key={o.id}
                   icon={<Inbox className="h-3.5 w-3.5" />}
-                  title={t("notifications.offerTitle", { host: o.from_host, name: o.name })}
-                  detail={`${bytes(o.size_bytes)} · ${o.remote_path}`}
+                  // O que está sendo oferecido é o título; quem oferece e
+                  // quanto pesa são o subtítulo. Ao contrário, "atena quer
+                  // enviar qwen3:8b · L0–15" não cabe numa linha e a faixa de
+                  // camadas — a informação que decide — é justamente o que a
+                  // reticência come.
+                  title={transferTitle({
+                    name: o.name,
+                    model_label: o.pom?.model.label,
+                    start_layer: o.start_layer,
+                    end_layer: o.end_layer,
+                  })}
+                  aside={transferHash(o.name)}
+                  // O caminho completo na máquina de origem enchia cinco
+                  // linhas do painel e não ajuda a decidir. O tamanho, sim: é
+                  // o que se aceita gravar em disco. O caminho continua na
+                  // tela de Transferências, onde há largura para ele.
+                  detail={t("notifications.offerTitle", {
+                    host: o.from_host,
+                    size: bytes(o.size_bytes),
+                  })}
                   footer={
                     <>
                       <Button

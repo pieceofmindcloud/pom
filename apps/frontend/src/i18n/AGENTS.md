@@ -11,14 +11,17 @@ Two files carry all of it: a static message table and a small provider. Tests:
 
 ## Per-file
 
-- `locales.ts` - the `messages` dictionary (en block lines ~20-671, pt-BR block lines ~672-1363, 628 keys each) plus locale resolution and formatting functions.
+- `locales.ts` - the `messages` dictionary (the exact key count is checked in
+  `locales.test.ts`, en block first, pt-BR block second) plus locale resolution
+  and formatting functions. The slice screen has messages for pipeline and
+  tensor-parallel modes, including grouped `1ofN` rank labels.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured
 
 - `SUPPORTED_LOCALES = ["en", "pt-BR"]`, `Locale` is that literal union.
 - A `Message` is `(values, locale) => string`, not a template string: pluralization is computed with `Intl.PluralRules` (e.g. `cluster.peerCount` -> "1 node" / "2 nodes" / "1 nó" / "2 nós"). Values come in via `t("key", { count })`.
-- `messages` is `Record<Locale, Record<string, Message>>` with both locales side by side; keys are namespaced by screen (`topbar.*`, `nav.*`, `chat.*`, `deploy.knob.*`, ...). The destructive-action group `undeploy.*` (button, confirmation, per-machine report) and the per-machine exit `dashboard.leaveNode*` arrived together with the `LeaveNode`/`UndeployPipeline` components, plus the shared `common.close` used by the `Modal` footer. The panel rework in 5423852 added `dashboard.groupDeployed*` / `dashboard.groupOutside*` (the two details groups), `dashboard.noSlice*` and `dashboard.machineDetails` (the card and its window), `canvas.openDetails` (the double-click hint on the canvas card), and changed `dashboard.noMachines` from "Nenhuma máquina para detalhar" to "Nenhuma máquina na rede" because the tab now lists the whole network. The navigation keeps the model entries together, and `sidebar.collapse` / `sidebar.expand` label the persistent desktop menu toggle; `jobs.*` labels the embedded slicing progress panel.
+- `messages` is `Record<Locale, Record<string, Message>>` with both locales side by side; keys are namespaced by screen (`topbar.*`, `nav.*`, `chat.*`, `deploy.knob.*`, ...). The destructive-action group `undeploy.*` (button, confirmation, per-machine report) and the per-machine exit `dashboard.leaveNode*` arrived together with the `LeaveNode`/`UndeployPipeline` components, plus the shared `common.close` used by the `Modal` footer. The panel rework in 5423852 added `dashboard.groupDeployed*` / `dashboard.groupOutside*` (the two details groups), `dashboard.noSlice*` and `dashboard.machineDetails` (the card and its window), `canvas.openDetails` (the double-click hint on the canvas card), and changed `dashboard.noMachines` from "Nenhuma máquina para detalhar" to "Nenhuma máquina na rede" because the tab now lists the whole network. The navigation keeps the model entries together, and `sidebar.collapse` / `sidebar.expand` label the persistent desktop menu toggle; `jobs.*` labels the embedded slicing progress panel. `profile.*` nomeia os perfis (`profile.admin`, `profile.node`) e o seletor de desenvolvimento da barra superior, e `forbidden.*` é a tela que o perfil ativo não abre - `forbidden.detail` recebe o perfil já traduzido em `{profile}`.
 
 ## Key functions
 
@@ -27,7 +30,7 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - `resolveLocale(savedLocale, browserLocales)` - the saved value wins if valid; otherwise any `pt*` browser locale maps to `pt-BR`, any `en*` to `en`, default `en`. Saves nothing; the provider does.
 - `getActiveLocale()` / `setActiveLocale(locale)` - module-level locale for code outside React (error strings in `api.ts`, default chat titles in `chatStore.ts`); the provider syncs it on mount.
 - `isLocale(value)` - type guard.
-- `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language.
+- `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language. Antes do mapa fixo ele casa as frases que **carregam um nome de máquina** ("recusado por ksia", "cancelado por atena"): o nome não se traduz, o verbo sim, e o desfecho de uma transferência aparecia em português na tela em inglês.
 
 The chat telemetry additions live in both locale blocks: the execution
 diagnosis, TP collective table, AI-analysis action and initial-model mark must

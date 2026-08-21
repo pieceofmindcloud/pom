@@ -226,8 +226,7 @@ impl GatewayState {
                 // capability constants in routing/pipeline.rs.
                 inference_frame_capabilities: {
                     let mut caps = vec![
-                        "frame/v1-f16".into(),
-                        "frame/v2-zstd-f16".into(),
+                        crate::pipeline::CAP_FRAME_BATCH.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
@@ -235,6 +234,9 @@ impl GatewayState {
                     ];
                     if self.network.mtp_ready() {
                         caps.push("speculate/v1-mtp".into());
+                    }
+                    if self.network.batching_ready() {
+                        caps.push(crate::pipeline::CAP_FRAME_BATCH.into());
                     }
                     if self.network.libp2p_tunnel_ready() {
                         caps.push("transport/libp2p-tunnel-v1".into());
@@ -497,6 +499,15 @@ pub async fn generate_stream(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    // A sessão não pode trocar de réplica depois que o primeiro prefill criou
+    // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
+    // usada para revisar qualquer transformação futura da rota.
+    let route_affinity = crate::pipeline::RouteAffinity::from_plan(
+        deploy_id.unwrap_or_default(),
+        &session_id,
+        &plan,
+    );
+    debug_assert!(route_affinity.matches_plan(&plan));
 
     // Para onde a cauda entrega a resposta. `None` quando esta máquina não
     // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
@@ -1258,7 +1269,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         // trade first-token latency for bytes on exactly the path that
         // cares most about the former. Peer-to-peer tensor frames never pass
         // through this router (see inference/infer_server.rs), so there is
-        // no risk of compressing already-zstd-compressed payloads here.
+        // no risk of compressing binary inference frames here.
         .layer(tower_http::compression::CompressionLayer::new());
 
     // Both startup paths (with a model and gateway-only) come through here, so
@@ -1508,9 +1519,16 @@ mod budget_tests {
             n_gpu_layers: 99,
             n_ctx,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
             n_batch,
             max_sessions,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             max_new_tokens: max_new,
             temperature: 0.7,
@@ -1698,10 +1716,22 @@ pub(crate) mod testkit {
 
     /// Este nó, com `peers` já na tabela.
     pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
+        state_named(node_id, "", peers).await
+    }
+
+    /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
+    /// produz em `with_identity`, e o nome pelo qual o cluster inteiro chama
+    /// esta máquina. Distinto do hostname cru do sistema operacional.
+    pub(crate) async fn state_named(
+        node_id: &str,
+        hostname: &str,
+        peers: Vec<PeerInfo>,
+    ) -> GatewayState {
         let net = Arc::new(
             Network::new(node_id.into(), "pk".into(), 0, vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("socket UDP em porta efêmera")
+                .with_identity(String::new(), hostname.into()),
         );
         {
             let mut table = net.peers.write().await;
@@ -1722,6 +1752,9 @@ pub(crate) mod testkit {
             runtime: NodeRuntime::new(net, assignment),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
+                gpus: None,
+                cache_type_k: crate::config::KvCacheType::F16,
+                cache_type_v: crate::config::KvCacheType::F16,
                 role: Role::Node,
                 tls_required: false,
                 node_name: None,
@@ -1762,9 +1795,16 @@ pub(crate) mod testkit {
             n_gpu_layers: 0,
             n_ctx: 8192,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
             n_batch: 512,
             max_sessions: 1,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             max_new_tokens: 256,
             temperature: 0.7,

@@ -111,6 +111,10 @@ impl MemStat {
 pub struct GpuStat {
     pub index: u32,
     pub name: String,
+    /// De quem é esta placa. `gpu_kind` resume a máquina; isto identifica a
+    /// peça - é o que permite ao painel mostrar uma Radeon e uma NVIDIA lado a
+    /// lado sem adivinhar pelo nome.
+    pub vendor: GpuVendor,
     /// Dedicated VRAM. `None` on unified-memory machines, where the concept
     /// does not apply.
     pub vram_total_mb: Option<f64>,
@@ -128,11 +132,40 @@ pub struct GpuProcess {
     pub used_mb: f64,
 }
 
+/// O fabricante de uma placa específica.
+///
+/// Separado de `GpuKind` de propósito: `GpuKind` descreve a **máquina** (e por
+/// isso tem `None` e `Mixed`), enquanto isto descreve **uma placa**, onde essas
+/// duas variantes não fariam sentido.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum GpuVendor {
+    Nvidia,
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Amd,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    Apple,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum GpuKind {
     /// Discrete NVIDIA card with its own VRAM.
     Nvidia,
+    /// Discrete AMD card with its own VRAM, servida pelo backend Vulkan.
+    ///
+    /// Mesma observação da `Unified`: só o Linux constrói esta variante, mas ela
+    /// não pode sair por `cfg` porque `GpuKind` é serializado e um nó macOS
+    /// mostra no painel o estado de peers que rodam com Radeon.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Amd,
+    /// Placas de fabricantes diferentes na mesma máquina (NVIDIA + Radeon).
+    ///
+    /// Existe porque `gpu_kind` é um resumo, e resumir duas placas de marcas
+    /// diferentes como uma delas esconderia a outra de quem lê só este campo.
+    /// Quem precisa do detalhe lê `gpus[].vendor`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    Mixed,
     /// Apple Silicon: GPU and CPU share one memory pool.
     ///
     /// Só `read_gpu` no macOS constrói esta variante, então fora do macOS ela é
@@ -421,10 +454,45 @@ async fn vm_stat_used() -> Option<(f64, f64)> {
 // ── GPU ──────────────────────────────────────────────────────────────────────
 
 async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<GpuProcess>) {
-    if let Some((gpus, procs)) = nvidia_smi().await {
-        if !gpus.is_empty() {
-            return (GpuKind::Nvidia, None, gpus, procs);
+    // As duas famílias são somadas, não escolhidas: numa máquina com Radeon e
+    // NVIDIA juntas, reportar só uma esconderia metade do hardware de quem
+    // decide onde implantar. `gpu_kind` vira o resumo; cada placa carrega o
+    // próprio `vendor`.
+    // Só o ramo Linux abaixo estende a lista, então fora dele o `mut` sobra -
+    // e tirá-lo por `cfg` partiria a linha em duas versões do mesmo código.
+    let (mut gpus, procs) = nvidia_smi().await.unwrap_or_default();
+
+    #[cfg(target_os = "linux")]
+    {
+        // Índices continuam a contagem da NVIDIA para não haver dois `index: 0`
+        // - a interface usa esse número para falar de uma placa específica.
+        gpus.extend(amd_sysfs(gpus.len() as u32).await);
+    }
+
+    // O nó só reporta as placas que pode usar. Os índices originais são
+    // preservados de propósito: é por eles que a `pom.json` e o painel falam de
+    // uma placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
+    if let Ok(escolha) = SELECAO.read() {
+        if let Some(permitidas) = escolha.as_ref() {
+            gpus.retain(|g| permitidas.contains(&g.index));
         }
+    }
+    let nvidia = gpus.iter().filter(|g| g.vendor == GpuVendor::Nvidia).count();
+    let amd = gpus.iter().filter(|g| g.vendor == GpuVendor::Amd).count();
+
+    if !gpus.is_empty() {
+        let kind = match (nvidia, amd) {
+            (0, _) => GpuKind::Amd,
+            (_, 0) => GpuKind::Nvidia,
+            _ => GpuKind::Mixed,
+        };
+        let note = (amd > 0).then(|| {
+            "Radeon lida pelo sysfs do amdgpu e servida pelo backend Vulkan \
+             (compile com `--features vulkan`). Ao contrário do nvidia-smi, esse \
+             caminho não lista processos por GPU."
+                .to_string()
+        });
+        return (kind, note, gpus, procs);
     }
 
     #[cfg(target_os = "macos")]
@@ -444,6 +512,7 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
                 vec![GpuStat {
                     index: 0,
                     name,
+                    vendor: GpuVendor::Apple,
                     vram_total_mb: None,
                     vram_used_mb: None,
                     vram_used_pct: None,
@@ -507,6 +576,7 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
         gpus.push(GpuStat {
             index: f[0].parse().unwrap_or(0),
             name: f[1].to_string(),
+            vendor: GpuVendor::Nvidia,
             vram_total_mb: Some(total),
             vram_used_mb: Some(used),
             vram_used_pct: if total > 0.0 {
@@ -543,6 +613,101 @@ async fn nvidia_smi() -> Option<(Vec<GpuStat>, Vec<GpuProcess>)> {
     }
 
     Some((gpus, procs))
+}
+
+/// As Radeon desta máquina, lidas do sysfs do `amdgpu`.
+///
+/// Sem binário externo de propósito: o equivalente ao `nvidia-smi` seria o
+/// `rocm-smi`, que só existe se o ROCm inteiro estiver instalado - e o backend
+/// que usamos é o Vulkan, que não depende de ROCm. O `amdgpu` já publica tudo
+/// o que o painel mostra, e uma máquina sem Radeon simplesmente não tem os
+/// arquivos.
+///
+/// O driver proprietário da NVIDIA não usa este sysfs, então o filtro por
+/// `vendor == 0x1002` nunca confunde as duas placas de uma máquina mista.
+#[cfg(target_os = "linux")]
+async fn amd_sysfs(first_index: u32) -> Vec<GpuStat> {
+    /// Vendor PCI da AMD/ATI.
+    const AMD: &str = "0x1002";
+
+    let read = |p: std::path::PathBuf| async move {
+        tokio::fs::read_to_string(p)
+            .await
+            .ok()
+            .map(|v| v.trim().to_string())
+    };
+
+    let mut entries = match tokio::fs::read_dir("/sys/class/drm").await {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+
+    // `card0`, `card1`, ... sem os conectores (`card1-DP-2`), que apontam para o
+    // mesmo dispositivo e contariam a placa várias vezes.
+    let mut cards: Vec<String> = Vec::new();
+    while let Ok(Some(entry)) = entries.next_entry().await {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if name.starts_with("card") && !name[4..].contains('-') {
+            cards.push(name);
+        }
+    }
+    cards.sort();
+
+    let mut out = Vec::new();
+    for name in cards {
+        let dev = std::path::Path::new("/sys/class/drm").join(&name).join("device");
+        if read(dev.join("vendor")).await.as_deref() != Some(AMD) {
+            continue;
+        }
+
+        let mb = |bytes: Option<String>| {
+            bytes
+                .and_then(|v| v.parse::<f64>().ok())
+                .map(|b| b / 1024.0 / 1024.0)
+        };
+        let total = mb(read(dev.join("mem_info_vram_total")).await);
+        let used = mb(read(dev.join("mem_info_vram_used")).await);
+
+        out.push(GpuStat {
+            index: first_index + out.len() as u32,
+            vendor: GpuVendor::Amd,
+            // O sysfs não traz nome comercial: `product_name` só existe nas
+            // placas de datacenter. O id PCI é o que sempre está lá, e é o que
+            // identifica o modelo sem inventar tabela de nomes.
+            name: match read(dev.join("device")).await {
+                Some(id) => format!("AMD Radeon ({id})"),
+                None => "AMD Radeon".to_string(),
+            },
+            vram_total_mb: total,
+            vram_used_mb: used,
+            vram_used_pct: match (total, used) {
+                (Some(t), Some(u)) if t > 0.0 => Some(u / t * 100.0),
+                _ => None,
+            },
+            utilization_pct: read(dev.join("gpu_busy_percent"))
+                .await
+                .and_then(|v| v.parse::<f64>().ok()),
+            temperature_c: amd_temperature(&dev).await,
+        });
+    }
+    out
+}
+
+/// Temperatura da placa, em `hwmon/hwmon<N>/temp1_input` (milésimos de grau).
+///
+/// O `<N>` é atribuído na ordem em que os drivers registram, então varia entre
+/// arranques e não pode ser fixado - daí a varredura do diretório.
+#[cfg(target_os = "linux")]
+async fn amd_temperature(device: &std::path::Path) -> Option<f64> {
+    let mut hwmon = tokio::fs::read_dir(device.join("hwmon")).await.ok()?;
+    while let Ok(Some(entry)) = hwmon.next_entry().await {
+        if let Ok(raw) = tokio::fs::read_to_string(entry.path().join("temp1_input")).await {
+            if let Ok(milli) = raw.trim().parse::<f64>() {
+                return Some(milli / 1000.0);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(target_os = "macos")]
@@ -658,5 +823,219 @@ mod tests {
             .expect("printf should run");
         assert!(output.status.success());
         assert_eq!(output.stdout, b"ok");
+    }
+}
+
+/// Traduz a escolha de GPUs da `pom.json` para o que cada backend do ggml lê.
+///
+/// **Precisa rodar antes do primeiro `llama_backend_init`.** Os backends
+/// enumeram os dispositivos ao serem registrados, e a partir daí a lista está
+/// congelada: mexer nas variáveis depois não tira nem devolve placa nenhuma.
+///
+/// A tradução existe porque os índices vivem em espaços diferentes. O nó publica
+/// uma lista só (`system.gpus[]`, NVIDIA primeiro, Radeon depois) e é esse
+/// número que o operador vê no painel e escreve na config; já o CUDA numera só
+/// as placas NVIDIA e o Vulkan só as dele. Mandar o índice do nó direto para o
+/// backend selecionaria a placa errada assim que houvesse duas marcas.
+///
+/// Devolve o que aplicou, para o log dizer em que placas o nó vai rodar.
+/// A escolha de GPUs em vigor, para `read_gpu` filtrar o que reporta.
+///
+/// `None` = sem restrição, que cobre tanto "a config não pediu nada" quanto
+/// "a config pediu todas" - nos dois casos não há o que filtrar.
+static SELECAO: std::sync::RwLock<Option<Vec<u32>>> = std::sync::RwLock::new(None);
+
+pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> Vec<String> {
+    // Guardado antes de qualquer saída: o que o nó **reporta** tem que ser o que
+    // ele pode **usar**. Não é cosmética - `deploy::memory_capacity` soma a VRAM
+    // de `system.gpus[]` para decidir quantas camadas cabem, então um nó preso a
+    // uma placa que anunciasse as duas receberia trabalho que não cabe nele.
+    if let Ok(mut guarda) = SELECAO.write() {
+        *guarda = selection.map(|s| s.to_vec());
+    }
+
+    let Some(selection) = selection else {
+        // Ausente é "todas": não tocar nas variáveis é justamente o que deixa
+        // cada backend enxergar tudo o que existe.
+        return Vec::new();
+    };
+
+    // Índice do nó -> índice dentro do próprio fabricante.
+    let mut cuda = Vec::new();
+    let mut vulkan = Vec::new();
+    let (mut n_nvidia, mut n_amd) = (0u32, 0u32);
+    let mut escolhidas = Vec::new();
+
+    for gpu in detected {
+        let local = match gpu.vendor {
+            GpuVendor::Nvidia => {
+                let i = n_nvidia;
+                n_nvidia += 1;
+                i
+            }
+            GpuVendor::Amd => {
+                let i = n_amd;
+                n_amd += 1;
+                i
+            }
+            // Apple não tem seleção por dispositivo: o Metal serve a única GPU
+            // da máquina, e não há variável para restringir.
+            GpuVendor::Apple => continue,
+        };
+        if !selection.contains(&gpu.index) {
+            continue;
+        }
+        escolhidas.push(format!("{} (#{})", gpu.name, gpu.index));
+        match gpu.vendor {
+            GpuVendor::Nvidia => cuda.push(local.to_string()),
+            GpuVendor::Amd => vulkan.push(local.to_string()),
+            GpuVendor::Apple => {}
+        }
+    }
+
+    // Lista vazia é escolha explícita por CPU, então as variáveis vão vazias -
+    // que é como CUDA e Vulkan dizem "nenhum dispositivo".
+    std::env::set_var("CUDA_VISIBLE_DEVICES", cuda.join(","));
+    std::env::set_var("GGML_VK_VISIBLE_DEVICES", vulkan.join(","));
+
+    // Sem isto o índice de cima está errado, e erra em silêncio.
+    //
+    // `GGML_VK_VISIBLE_DEVICES` indexa a lista de dispositivos **do Vulkan**, e
+    // o Vulkan enumera a NVIDIA junto com a Radeon: o driver da NVIDIA também
+    // publica um ICD. Contamos o índice entre as AMD, então pedir a Radeon podia
+    // selecionar a NVIDIA - foi o que aconteceu na ksia, com o modelo indo para
+    // a placa errada enquanto o log dizia `Vulkan0`.
+    //
+    // Restringir o *loader* a um ICD é o que torna a conta certa por
+    // construção: com só a Radeon exposta, o índice entre as AMD **é** o índice
+    // do Vulkan. A NVIDIA não perde nada - quem a serve é o CUDA.
+    #[cfg(target_os = "linux")]
+    if !vulkan.is_empty() {
+        if let Some(icd) = icd_amd() {
+            std::env::set_var("VK_DRIVER_FILES", &icd);
+            // O nome antigo, para loaders anteriores ao 1.3.207.
+            std::env::set_var("VK_ICD_FILENAMES", &icd);
+        }
+    }
+
+    escolhidas
+}
+
+/// O ICD do Mesa/RADV, quando existe nesta máquina.
+///
+/// Caminho fixo porque é onde o Mesa instala em toda distribuição que empacota
+/// Vulkan; achar nada apenas deixa o loader com o comportamento padrão, que é o
+/// que já havia antes. O nome varia com a arquitetura (`radeon_icd.x86_64.json`),
+/// daí a varredura em vez de um nome literal.
+#[cfg(target_os = "linux")]
+fn icd_amd() -> Option<String> {
+    let dir = std::fs::read_dir("/usr/share/vulkan/icd.d").ok()?;
+    for entrada in dir.flatten() {
+        let nome = entrada.file_name().to_string_lossy().to_string();
+        if nome.starts_with("radeon_icd") && nome.ends_with(".json") {
+            return Some(entrada.path().to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod gpu_selection_tests {
+    use super::*;
+
+    /// As variáveis de ambiente são do processo inteiro, e o cargo roda os
+    /// testes em paralelo: sem este mutex um teste lê o que o outro acabou de
+    /// escrever. Serializar é o que torna o resultado determinístico.
+    static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn gpu(index: u32, vendor: GpuVendor) -> GpuStat {
+        GpuStat {
+            index,
+            name: format!("gpu{index}"),
+            vendor,
+            vram_total_mb: None,
+            vram_used_mb: None,
+            vram_used_pct: None,
+            utilization_pct: None,
+            temperature_c: None,
+        }
+    }
+
+    fn ambas() -> Vec<GpuStat> {
+        vec![
+            gpu(0, GpuVendor::Nvidia),
+            gpu(1, GpuVendor::Amd),
+            gpu(2, GpuVendor::Amd),
+        ]
+    }
+
+    /// Sem escolha na config, nada é restringido - é o padrão pedido: todas.
+    #[test]
+    fn ausente_nao_restringe_nada() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::remove_var("CUDA_VISIBLE_DEVICES");
+        std::env::remove_var("GGML_VK_VISIBLE_DEVICES");
+        assert!(apply_gpu_selection(None, &ambas()).is_empty());
+        assert!(std::env::var("CUDA_VISIBLE_DEVICES").is_err());
+        assert!(std::env::var("GGML_VK_VISIBLE_DEVICES").is_err());
+    }
+
+    /// O ponto todo da tradução: a segunda Radeon é `#2` para o nó e `1` para o
+    /// Vulkan. Mandar `2` selecionaria uma placa que não existe naquele backend.
+    #[test]
+    fn indice_do_no_vira_indice_do_backend() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[2]), &ambas());
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "1");
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    #[test]
+    fn escolher_a_nvidia_nao_libera_as_radeon() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[0]), &ambas());
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "0");
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    /// O nó tem que **reportar** o que pode **usar**.
+    ///
+    /// Não é cosmética de painel: `deploy::memory_capacity` soma o
+    /// `vram_total_mb` de `system.gpus[]` para decidir quantas camadas cabem num
+    /// nó. Um nó presa à Radeon de 4 GB que anunciasse as duas placas diria ter
+    /// 20 GB, e receberia trabalho que não cabe nele.
+    #[test]
+    fn o_que_o_no_reporta_e_so_o_que_ele_pode_usar() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[1]), &ambas());
+
+        let mut vistas = ambas();
+        if let Ok(escolha) = SELECAO.read() {
+            if let Some(permitidas) = escolha.as_ref() {
+                vistas.retain(|g| permitidas.contains(&g.index));
+            }
+        }
+        assert_eq!(vistas.len(), 1, "so a placa escolhida deve ser reportada");
+        // O indice original sobrevive: e por ele que a config e o painel falam
+        // desta placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
+        assert_eq!(vistas[0].index, 1);
+    }
+
+    /// Sem restricao nada e filtrado - o padrao continua mostrando tudo.
+    #[test]
+    fn sem_restricao_reporta_todas() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(None, &ambas());
+        let vistas = SELECAO.read().unwrap().clone();
+        assert!(vistas.is_none(), "sem escolha nao deve haver filtro");
+    }
+
+    /// Lista vazia é "só CPU", e não "não configurado".
+    #[test]
+    fn lista_vazia_desliga_as_duas_familias() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[]), &ambas());
+        assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "");
+        assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
     }
 }

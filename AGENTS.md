@@ -123,6 +123,12 @@ quebra o produto inteiro.
   operador: autentica `/admin/*`, `/api/ui/{plan,apply,launch}` e as rotas
   `/v1`. Sem `pom.json` o nó sobe em **modo setup**, que serve só a tela de
   escolha Principal/Nó e gera essa chave. → `api-http.md`, `web-ui.md`
+- **Política de primeira versão.** O produto ainda não foi lançado. Portanto,
+  não manter no runtime código de compatibilidade, adapters ou fallbacks para
+  versões antigas de protocolos - especialmente formatos de inferência v1/v2.
+  O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
+  uma obrigação de suportar um protocolo legado; mudanças futuras devem
+  evoluir esse contrato de forma explícita. → `inferencia.md`
 - **A ordem do pipeline é a ordem das camadas**, e um nó serve uma faixa (duas
   só com `merge`). Sobreposição é recusa; buraco é aviso. Quem fica com a camada
   0 processa o prompt inteiro de toda requisição. → `implantacao.md`

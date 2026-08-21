@@ -83,13 +83,17 @@ pub struct PipelineStep {
     pub inference_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
-    /// Advertised receiver capabilities. An absent v2 signal must remain on
-    /// the v1 f16 contract so rolling upgrades keep working.
+    /// Capabilities of the canonical inference frame and relay.
     pub inference_frame_capabilities: Vec<String>,
     /// This hop's libp2p `PeerId` (base58), when known — lets a caller reach
     /// it over the swarm as a NAT-traversal fallback when direct HTTP fails.
     #[serde(default)]
     pub libp2p_peer_id: Option<String>,
+    /// Endereços UDP anunciados pelo hop para reconstruir o túnel libp2p.
+    /// O plano leva estes endereços porque o processo que executa o hop pode
+    /// não ter recebido o mesmo anúncio na própria tabela de descoberta.
+    #[serde(default)]
+    pub libp2p_addr_candidates: Vec<String>,
 }
 
 /// Advertised when a node can continue a relay itself — see the `next_hops`
@@ -145,6 +149,11 @@ pub const CAP_SPECULATE_MTP_SLICED: &str = "speculate/v1-mtp-sliced";
 /// when it is unavailable or fails at the transport layer.
 pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 
+/// Advertised only while the local inference server has the validated
+/// multi-item scheduler active. It is the first and only inference frame
+/// contract; peers are never downgraded to an older wire format.
+pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
+
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
 /// The layer boundaries let observers attach the edge to the exact advertised
@@ -159,11 +168,7 @@ pub struct PipelineEdge {
 
 impl PipelineStep {
     pub fn frame_encoding(&self) -> FrameEncoding {
-        if self.supports("frame/v2-zstd-f16") {
-            FrameEncoding::ZstdF16
-        } else {
-            FrameEncoding::F16
-        }
+        FrameEncoding::F16
     }
 
     /// Whether this step's advertised `inference_frame_capabilities` list
@@ -182,6 +187,41 @@ pub struct PipelinePlan {
     pub steps: Vec<PipelineStep>,
     /// Handoffs selected by the same planner invocation as `steps`.
     pub edges: Vec<PipelineEdge>,
+}
+
+/// A rota escolhida para uma sessão. A lista é a afinidade por estágio, não
+/// uma lista de peers alternativos: depois que a sessão entra no KV de uma
+/// réplica, as rodadas seguintes precisam voltar para os mesmos node IDs.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RouteAffinity {
+    pub deployment_id: String,
+    pub session_id: String,
+    pub hop_replicas: Vec<String>,
+}
+
+#[allow(dead_code)]
+impl RouteAffinity {
+    pub fn from_plan(
+        deployment_id: impl Into<String>,
+        session_id: impl Into<String>,
+        plan: &PipelinePlan,
+    ) -> Self {
+        Self {
+            deployment_id: deployment_id.into(),
+            session_id: session_id.into(),
+            hop_replicas: plan.steps.iter().map(|step| step.node_id.clone()).collect(),
+        }
+    }
+
+    pub fn matches_plan(&self, plan: &PipelinePlan) -> bool {
+        self.hop_replicas.len() == plan.steps.len()
+            && self
+                .hop_replicas
+                .iter()
+                .zip(&plan.steps)
+                .all(|(node_id, step)| node_id == &step.node_id)
+    }
 }
 
 /// Translates transport-owned peer records into the stable routing-provider
@@ -431,6 +471,11 @@ pub async fn plan_pipeline_with_rtt(
             end_layer: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
+            libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
+                vec![chosen.addr.clone()]
+            } else {
+                chosen.addr_candidates.clone()
+            },
         });
 
         pos = chosen.end_layer + 1;
@@ -669,22 +714,45 @@ mod ipv6_tests {
             end_layer: 1,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
     }
 
     #[test]
-    fn peers_advertising_v2_receive_compressed_frames() {
-        let step = PipelineStep {
-            node_id: "new".into(),
-            inference_url: "http://127.0.0.1:8181".into(),
-            inference_candidates: Vec::new(),
-            start_layer: 0,
-            end_layer: 1,
-            inference_frame_capabilities: vec!["frame/v2-zstd-f16".into()],
-            libp2p_peer_id: None,
+    fn route_affinity_keeps_the_selected_replica_for_the_whole_session() {
+        let plan = PipelinePlan {
+            steps: vec![
+                PipelineStep {
+                    node_id: "replica-a".into(),
+                    inference_url: "http://127.0.0.1:8181".into(),
+                    inference_candidates: Vec::new(),
+                    start_layer: 0,
+                    end_layer: 7,
+                    inference_frame_capabilities: Vec::new(),
+                    libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
+                },
+                PipelineStep {
+                    node_id: "replica-b".into(),
+                    inference_url: "http://127.0.0.1:8182".into(),
+                    inference_candidates: Vec::new(),
+                    start_layer: 8,
+                    end_layer: 15,
+                    inference_frame_capabilities: Vec::new(),
+                    libp2p_peer_id: None,
+                    libp2p_addr_candidates: Vec::new(),
+                },
+            ],
+            edges: Vec::new(),
         };
-        assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::ZstdF16);
+        let affinity = RouteAffinity::from_plan("deploy-1", "session-1", &plan);
+        assert_eq!(affinity.hop_replicas, vec!["replica-a", "replica-b"]);
+        assert!(affinity.matches_plan(&plan));
+
+        let mut changed = plan.clone();
+        changed.steps[0].node_id = "replica-c".into();
+        assert!(!affinity.matches_plan(&changed));
     }
 
     fn step_com(candidatos: Vec<&str>, url: &str) -> PipelineStep {
@@ -696,6 +764,7 @@ mod ipv6_tests {
             end_layer: 9,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 
@@ -778,6 +847,7 @@ mod ipv6_tests {
             end_layer: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 

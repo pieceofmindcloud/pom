@@ -146,6 +146,8 @@ impl MtpDrafter {
         cparams.n_ubatch = cfg.n_batch;
         cparams.n_seq_max = cfg.max_sessions.max(1);
         cparams.ctx_type = sys::LLAMA_CONTEXT_TYPE_MTP;
+        cparams.offload_kqv = cfg.offload_kqv;
+        crate::llm::apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         // Sem instantâneos de estado recorrente: o bloco `nextn` é uma camada
         // de atenção comum, e o upstream zera este campo pelo mesmo motivo.
         cparams.n_rs_seq = 0;
@@ -477,6 +479,8 @@ mod tests {
         let cfg = crate::llm::EngineConfig {
             n_ctx: 4096,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: 99,

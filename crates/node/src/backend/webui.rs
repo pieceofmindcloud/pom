@@ -101,6 +101,12 @@ pub struct NodeInfo {
     pub role: String,
     pub connection_key: String,
     pub p2p_port: u16,
+    /// Endereços UDP anunciados pelo nó, necessários para o plano reconstruir
+    /// as multiaddresses TCP do túnel no processo que executar o hop.
+    pub addr_candidates: Vec<String>,
+    /// Identidade e capabilities do túnel libp2p anunciadas por este nó.
+    pub libp2p_peer_id: Option<String>,
+    pub inference_frame_capabilities: Vec<String>,
     pub gateway_port: u16,
     pub inference_port: Option<u16>,
     pub config: Option<NodeConfig>,
@@ -159,6 +165,27 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         role,
         connection_key: conn_key,
         p2p_port: state.network.bind_addr.port(),
+        addr_candidates: state.network.self_addr_candidates(),
+        libp2p_peer_id: state.network.libp2p_peer_id.clone(),
+        inference_frame_capabilities: {
+            let mut capabilities = vec![
+                crate::pipeline::CAP_FRAME_BATCH.to_string(),
+                "relay/v1-chain".to_string(),
+                "relay/v2-direct".to_string(),
+                "speculate/v1-lookup".to_string(),
+                "speculate/v1-mtp-sliced".to_string(),
+            ];
+            if state.network.mtp_ready() {
+                capabilities.push("speculate/v1-mtp".to_string());
+            }
+            if state.network.batching_ready() {
+                capabilities.push(crate::pipeline::CAP_FRAME_BATCH.to_string());
+            }
+            if state.network.libp2p_tunnel_ready() {
+                capabilities.push(crate::pipeline::CAP_LIBP2P_TUNNEL.to_string());
+            }
+            capabilities
+        },
         gateway_port: state.gateway_port,
         inference_port: state.network.inference_port,
         config,
@@ -574,9 +601,14 @@ async fn save_tls(
 
 async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     let catalog = local_catalog(&state).await;
-    let system = sysmon::sample().await;
     Json(json!({
-        "hostname": system.hostname,
+        // Não `sysmon`: aquele é o hostname cru do sistema operacional e
+        // ignora o `node_name` do pom.json. `network.hostname` é o nome que
+        // este nó anuncia aos peers, e é o que o resto da tela mostra - ver a
+        // nota gêmea em `node_info`. Quem lia daqui era o seletor "Enviar
+        // para..." da tela de fatias, e ele era o único lugar do aplicativo
+        // que chamava a máquina por outro nome.
+        "hostname": state.network.hostname,
         "node_id": state.network.node_id,
         "models": catalog.models,
         "shard_sets": catalog.shard_sets,
@@ -949,7 +981,8 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
     let peers = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let local = local_catalog(&state).await;
-    let local_host = sysmon::sample().await.hostname;
+    // O nome que este nó anuncia, não o hostname cru do SO. Ver `models`.
+    let local_host = state.network.hostname.clone();
 
     let futures: Vec<_> = peers
         .iter()
@@ -1005,8 +1038,17 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "shard_sets": v.get("shard_sets").cloned().unwrap_or(json!([])),
                 "scanned": v.get("scanned").cloned().unwrap_or(json!([])),
             })),
+            // Um peer que não respondeu continua sendo uma máquina com nome:
+            // a tabela local de peers guarda o que ele anunciou. Sem isto o
+            // objeto saía **sem `hostname`** e a tela caía no `node_id`, ou
+            // seja, um prefixo hexadecimal no lugar do nome.
             None => out.push(json!({
                 "node_id": node_id,
+                "hostname": peers
+                    .iter()
+                    .find(|p| p.node_id == node_id)
+                    .map(|p| p.hostname.clone())
+                    .filter(|h| !h.is_empty()),
                 "is_self": false,
                 "error": error,
                 "models": [],
@@ -1122,6 +1164,16 @@ pub struct RuntimeParams {
     /// context window; raising this value multiplies the KV-cache reservation.
     #[serde(default = "d_max_sessions")]
     pub max_sessions: u32,
+    #[serde(default = "d_batching_enabled")]
+    pub batching_enabled: bool,
+    #[serde(default = "d_max_queue_requests")]
+    pub max_queue_requests: u32,
+    #[serde(default = "d_batch_window_ms")]
+    pub batch_window_ms: u32,
+    #[serde(default = "d_max_batch_sequences")]
+    pub max_batch_sequences: u32,
+    #[serde(default = "d_max_batch_tokens")]
+    pub max_batch_tokens: u32,
     /// Prompt tokens per round trip through the pipeline.
     #[serde(default = "d_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
@@ -1175,6 +1227,21 @@ fn d_max_new() -> u32 {
 fn d_max_sessions() -> u32 {
     1
 }
+fn d_batching_enabled() -> bool {
+    true
+}
+fn d_max_queue_requests() -> u32 {
+    128
+}
+fn d_batch_window_ms() -> u32 {
+    4
+}
+fn d_max_batch_sequences() -> u32 {
+    u32::MAX
+}
+fn d_max_batch_tokens() -> u32 {
+    u32::MAX
+}
 fn d_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
 }
@@ -1219,6 +1286,11 @@ impl Default for RuntimeParams {
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
             max_sessions: d_max_sessions(),
+            batching_enabled: d_batching_enabled(),
+            max_queue_requests: d_max_queue_requests(),
+            batch_window_ms: d_batch_window_ms(),
+            max_batch_sequences: d_max_batch_sequences(),
+            max_batch_tokens: d_max_batch_tokens(),
             prefill_chunk_tokens: d_prefill_chunk(),
             temperature: d_temp(),
             top_p: d_top_p(),
@@ -1252,6 +1324,11 @@ impl From<&NodeConfig> for RuntimeParams {
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
             max_sessions: c.max_sessions,
+            batching_enabled: c.batching_enabled,
+            max_queue_requests: c.max_queue_requests,
+            batch_window_ms: c.batch_window_ms,
+            max_batch_sequences: c.max_batch_sequences,
+            max_batch_tokens: c.max_batch_tokens,
             prefill_chunk_tokens: c.prefill_chunk_tokens,
             temperature: c.temperature,
             top_p: c.top_p,
@@ -1569,7 +1646,7 @@ async fn apply(
 /// contra workers em meia largura. O `_tp0of2.gguf` nunca chegava a existir no
 /// disco, e o `_tp1of2.gguf` do worker era a única metade do grupo.
 fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity> {
-    req.tp.as_ref()
+    req.tp.as_ref().filter(|_| !req.skip_split)
 }
 
 async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
@@ -1605,7 +1682,7 @@ fn seal_single_part(
         is_last: req.is_last(),
         tp,
     };
-    let mut manifesto = crate::pom::PomManifest::new_for_source(
+    let mut manifesto = crate::pom::PomManifest::new(
         crate::pom::PomModel {
             name: req.base_name.clone(),
             label: model_label(req),
@@ -1805,10 +1882,16 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     match &req.tp {
         Some(tp) if tp.size > 1 && tp.rank0_url.is_some() => {
             let rank0 = tp.members.first();
-            crate::tp::register_tp_reduce(
+            crate::tp::register_tp_reduce_with_urls(
                 tp.rank,
                 tp.size,
                 tp.rank0_url.clone().unwrap(),
+                rank0
+                    .map(|member| member.url_candidates.clone())
+                    .unwrap_or_default(),
+                rank0
+                    .map(|member| member.addr_candidates.clone())
+                    .unwrap_or_default(),
                 tp.rank0_node_id.clone(),
                 rank0.and_then(|m| m.libp2p_peer_id.clone()),
                 rank0.is_some_and(|m| m.supports_tunnel),
@@ -1977,37 +2060,24 @@ async fn merge_parts(
     {
         anyhow::bail!("as fatias pertencem a modelos originais diferentes");
     }
-    let manifesto = if let Some(source_sha256) = source_sha256 {
-        let mut manifesto = crate::pom::PomManifest::new_for_source(
-            crate::pom::PomModel {
-                name: req.base_name.clone(),
-                label: model_label(req),
-                total_layers: req.total_layers,
-                quant: std::path::Path::new(&req.source_model_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .and_then(crate::catalog::parse_quant),
-            },
-            crate::pom::PomKind::Layers,
-            String::new(),
-            source_sha256,
-            Vec::new(),
-        );
-        manifesto.parts.push(parte);
-        manifesto
-    } else {
-        crate::pom::PomManifest::new(
-            crate::pom::PomModel {
-                name: req.base_name.clone(),
-                label: model_label(req),
-                total_layers: req.total_layers,
-                quant: None,
-            },
-            crate::pom::PomKind::Layers,
-            String::new(),
-            vec![parte],
-        )
-    };
+    let source_sha256 = source_sha256
+        .ok_or_else(|| anyhow::anyhow!("as fatias não têm manifesto do modelo original"))?;
+    let mut manifesto = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: req.base_name.clone(),
+            label: model_label(req),
+            total_layers: req.total_layers,
+            quant: std::path::Path::new(&req.source_model_path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .and_then(crate::catalog::parse_quant),
+        },
+        crate::pom::PomKind::Layers,
+        String::new(),
+        source_sha256,
+        Vec::new(),
+    );
+    manifesto.parts.push(parte);
     let pasta = crate::pom::finalize_run(&shard_dir, &out_dir, &manifesto)?;
     let final_path = crate::pom::part_path(&pasta, &sha)?;
 
@@ -2023,17 +2093,112 @@ async fn merge_parts(
 
 // ── Slicing a whole model, here, on demand ───────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceMode {
+    Pipeline,
+    TensorParallel,
+}
+
+impl Default for SliceMode {
+    fn default() -> Self {
+        Self::Pipeline
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TpSliceRank {
+    pub rank: u32,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TpSlicePlan {
+    pub mode: SliceMode,
+    pub model_bytes: u64,
+    pub total_layers: u32,
+    pub tp_size: u32,
+    pub ranks: Vec<TpSliceRank>,
+    pub complete: bool,
+    pub blocked: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Validate a TP cut once and give the UI a useful preview without writing
+/// any shard. Every rank contains the complete layer range; the tensor
+/// columns and rows, not the layers, are what differ between ranks.
+fn tensor_slice_plan(path: &std::path::Path, tp_size: u32) -> anyhow::Result<TpSlicePlan> {
+    if !(2..=64).contains(&tp_size) {
+        anyhow::bail!("escolha entre 2 e 64 ranks TP");
+    }
+    crate::splitter::validate_tensor_parallel(path, tp_size)?;
+    let layout = crate::gguf::read_layout(path)?;
+    let total_layers = layout.layer_count();
+    if total_layers == 0 {
+        anyhow::bail!("este arquivo não declara camadas");
+    }
+    Ok(TpSlicePlan {
+        mode: SliceMode::TensorParallel,
+        model_bytes: layout.total_bytes,
+        total_layers,
+        tp_size,
+        ranks: (0..tp_size)
+            .map(|rank| TpSliceRank {
+                rank,
+                start_layer: 0,
+                end_layer: total_layers - 1,
+            })
+            .collect(),
+        complete: true,
+        blocked: false,
+        warnings: Vec::new(),
+    })
+}
+
+fn tensor_slice_manifest(
+    base_name: String,
+    label: String,
+    total_layers: u32,
+    node_id: String,
+    source_sha256: String,
+    quant: Option<String>,
+    tp_parts: Vec<crate::pom::PomPart>,
+) -> crate::pom::PomManifest {
+    let mut manifest = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: base_name,
+            label,
+            total_layers,
+            quant,
+        },
+        crate::pom::PomKind::TensorParallel,
+        node_id,
+        source_sha256,
+        Vec::new(),
+    );
+    manifest.tp_parts = tp_parts;
+    manifest
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SliceRequest {
     /// Whole model on *this* machine.
     pub model_path: String,
     /// Target size of each slice, in order. A slice with no size takes what is
-    /// left of the model.
+    /// left of the model. Tensor Parallelism does not use this list.
+    #[serde(default)]
     pub slices: Vec<plan::SizedSlice>,
     /// Catalog name of the model, used to name the slices. Without it the name
     /// comes from the file, which for an Ollama blob is a digest.
     #[serde(default)]
     pub name: Option<String>,
+    /// Pipeline layers or tensor-parallel ranks.
+    #[serde(default)]
+    pub mode: SliceMode,
+    /// Number of TP ranks when `mode` is `tensor_parallel`.
+    #[serde(default)]
+    pub tp_size: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2045,6 +2210,10 @@ pub struct SlicePlanRequest {
     /// carrying its real size as the target.
     #[serde(default)]
     pub equal_parts: Option<u32>,
+    #[serde(default)]
+    pub mode: SliceMode,
+    #[serde(default)]
+    pub tp_size: Option<u32>,
 }
 
 /// Read the tensor table of a local model, once per file version.
@@ -2111,6 +2280,15 @@ async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckRequest>) -> Res
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.
 async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) -> Response {
+    if matches!(req.mode, SliceMode::TensorParallel) {
+        let Some(tp_size) = req.tp_size else {
+            return bad_request("informe o tamanho do grupo TP");
+        };
+        return match tensor_slice_plan(std::path::Path::new(&req.model_path), tp_size) {
+            Ok(plan) => Json(plan).into_response(),
+            Err(error) => bad_request(error.to_string()),
+        };
+    }
     let layout = match layout_of(std::path::Path::new(&req.model_path)).await {
         Ok(l) => l,
         Err(e) => return bad_request(e),
@@ -2144,10 +2322,10 @@ async fn slice_locally(
             req.model_path
         ));
     }
-    if req.slices.is_empty() {
+    if matches!(req.mode, SliceMode::Pipeline) && req.slices.is_empty() {
         return bad_request("nenhuma fatia na lista");
     }
-    if req.slices.len() > 64 {
+    if matches!(req.mode, SliceMode::Pipeline) && req.slices.len() > 64 {
         return bad_request("no máximo 64 fatias");
     }
 
@@ -2155,6 +2333,75 @@ async fn slice_locally(
         Ok(l) => l,
         Err(e) => return bad_request(e),
     };
+
+    if matches!(req.mode, SliceMode::TensorParallel) {
+        let Some(tp_size) = req.tp_size else {
+            return bad_request("informe o tamanho do grupo TP");
+        };
+        if let Err(error) = tensor_slice_plan(&source, tp_size) {
+            return bad_request(error.to_string());
+        }
+        let source_sha256 = match source_model_sha256(&source).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
+            }
+        };
+        let total_layers = layout.layer_count();
+        let base_name = req
+            .name
+            .as_deref()
+            .and_then(plan::base_name_from_label)
+            .unwrap_or_else(|| plan::base_name_of(&req.model_path));
+        let shard_dir = state.shard_dir().await;
+        let scratch = crate::pom::scratch_dir(&shard_dir);
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let label = req.name.clone().unwrap_or_else(|| base_name.clone());
+        jobs().write().await.insert(
+            id.clone(),
+            new_job(
+                &id,
+                "slice",
+                format!("Fatiando {base_name} em {tp_size} shards TP"),
+                "preparando",
+            ),
+        );
+        let job_id = id.clone();
+        let node_id = state.network.node_id.clone();
+        let raiz = shard_dir.clone();
+        tokio::spawn(async move {
+            match run_tp_slice(
+                state,
+                source,
+                shard_dir,
+                scratch,
+                base_name,
+                label,
+                total_layers,
+                node_id,
+                source_sha256,
+                tp_size,
+                &job_id,
+            )
+            .await
+            {
+                Ok(manifest) => {
+                    let msg = format!(
+                        "{} shards TP em {} · pom {}",
+                        manifest.tp_parts.len(),
+                        crate::pom::dir_for(&raiz, &manifest).display(),
+                        crate::pom::short_id(&manifest.pom_id)
+                    );
+                    set_job(&job_id, "done", "pronto", &msg).await;
+                }
+                Err(error) => {
+                    warn!("fatiamento TP falhou: {error:#}");
+                    set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+                }
+            }
+        });
+        return Json(json!({ "job_id": id })).into_response();
+    }
 
     // The screen previews with the same function, but the decision is remade
     // here: a stale preview must not become a slicing run nobody approved.
@@ -2250,7 +2497,81 @@ async fn slice_locally(
     Json(json!({ "job_id": id })).into_response()
 }
 
-/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no `.pom` v2.
+/// Extract every tensor-parallel rank from one local GGUF and seal the whole
+/// group in the source model's unified manifest.
+#[allow(clippy::too_many_arguments)]
+async fn run_tp_slice(
+    state: GatewayState,
+    source: std::path::PathBuf,
+    shard_dir: std::path::PathBuf,
+    scratch: std::path::PathBuf,
+    base_name: String,
+    label: String,
+    total_layers: u32,
+    node_id: String,
+    source_sha256: String,
+    tp_size: u32,
+    job_id: &str,
+) -> anyhow::Result<crate::pom::PomManifest> {
+    let source_path = source.to_string_lossy().into_owned();
+    let mut shards = Vec::with_capacity(tp_size as usize);
+
+    for rank in 0..tp_size {
+        set_job(
+            job_id,
+            "running",
+            "fatiando",
+            &format!("extraindo shard TP rank {}/{}", rank + 1, tp_size),
+        )
+        .await;
+
+        let progress_job = job_id.to_string();
+        let outcome =
+            plan::extract_tp_shard(&source_path, &scratch, None, tp_size, rank, move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            })
+            .await?;
+
+        shards.push(crate::pom::PomPart {
+            sha256: outcome.sha256.clone(),
+            bytes: outcome.bytes,
+            start_layer: 0,
+            end_layer: total_layers - 1,
+            is_first: true,
+            is_last: true,
+            tp: Some(crate::pom::PomTp {
+                rank,
+                size: tp_size,
+            }),
+        });
+        enforce_shard_storage(&state, &outcome.output_path).await?;
+
+        invalidate_catalog().await;
+        if let Some(job) = jobs().write().await.get_mut(job_id) {
+            job.outputs.push(outcome.output_path);
+        }
+    }
+
+    let manifest = tensor_slice_manifest(
+        base_name,
+        label,
+        total_layers,
+        node_id,
+        source_sha256,
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(crate::catalog::parse_quant),
+        shards,
+    );
+    let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifest)?;
+    info!("fatiamento TP guardado em {}", destination.display());
+    invalidate_catalog().await;
+    Ok(manifest)
+}
+
+/// Corta o modelo inteiro nas faixas pedidas e mescla as partes no manifesto v1.
 ///
 /// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
 /// próprio hash e o manifesto, escrito no fim, é o que diz de que modelo cada
@@ -2360,7 +2681,7 @@ async fn run_slice(
         .file_name()
         .and_then(|n| n.to_str())
         .and_then(crate::catalog::parse_quant);
-    let manifesto = crate::pom::PomManifest::new_for_source(
+    let manifesto = crate::pom::PomManifest::new(
         crate::pom::PomModel {
             name: base_name,
             label,
@@ -3758,12 +4079,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
-    /// Num grupo tensor-parallel o rank 0 fatia igual aos outros.
-    ///
-    /// Enquanto a decisão foi `role == "worker"`, o primary servia o GGUF
-    /// inteiro: largura cheia de um lado, meia largura do outro, e o
-    /// `_tp0of2.gguf` nunca existia. O `role` endereça a coletiva, não decide
-    /// quem corta.
+    /// Um alvo TP runtime extrai o próprio rank, mas um alvo que já aponta para
+    /// `tp_parts` usa o arquivo existente e não o fatia novamente.
     #[test]
     fn every_rank_of_a_tp_group_extracts_its_own_shard() {
         let req = |tp: Option<crate::network::TpIdentity>| ApplyRequest {
@@ -3780,7 +4097,7 @@ mod tests {
             peer_index: 0,
             primary: true,
             tp,
-            skip_split: true,
+            skip_split: false,
             merge: None,
             params: RuntimeParams::default(),
         };
@@ -3795,7 +4112,7 @@ mod tests {
         };
 
         let primary = req(Some(ident(0, "primary")));
-        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 também fatia");
+        let escolhido = tp_shard_to_extract(&primary).expect("o rank 0 runtime também fatia");
         assert_eq!(escolhido.rank, 0);
         assert_eq!(
             (escolhido.rank, escolhido.size),
@@ -3805,6 +4122,13 @@ mod tests {
 
         let worker = req(Some(ident(1, "worker")));
         assert_eq!(tp_shard_to_extract(&worker).unwrap().rank, 1);
+
+        let mut pre_sliced = req(Some(ident(0, "primary")));
+        pre_sliced.skip_split = true;
+        assert!(
+            tp_shard_to_extract(&pre_sliced).is_none(),
+            "rank TP já fatiado deve ser carregado diretamente"
+        );
 
         assert!(
             tp_shard_to_extract(&req(None)).is_none(),
@@ -3910,6 +4234,11 @@ mod tests {
         assert_eq!(p.n_gpu_layers, 99);
         assert_eq!(p.n_ctx, 8192);
         assert_eq!(p.n_batch, 512);
+        assert!(p.batching_enabled);
+        assert_eq!(p.max_queue_requests, 128);
+        assert_eq!(p.batch_window_ms, 4);
+        assert_eq!(p.max_batch_sequences, u32::MAX);
+        assert_eq!(p.max_batch_tokens, u32::MAX);
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
@@ -3951,6 +4280,7 @@ mod tests {
 
         let mut layer_req = req(0, 14, 32, 2);
         layer_req.source_model_path = "/models/original.gguf".into();
+        layer_req.base_name = "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into();
         std::fs::write(
             crate::pom::part_path(&scratch, &layer_sha256).unwrap(),
             b"layer",
@@ -3978,6 +4308,7 @@ mod tests {
 
         let mut tp_req = req(0, 31, 32, 1);
         tp_req.source_model_path = "/models/original.gguf".into();
+        tp_req.base_name = "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into();
         std::fs::create_dir_all(&scratch).unwrap();
         std::fs::write(crate::pom::part_path(&scratch, &tp_sha256).unwrap(), b"tp").unwrap();
         seal_single_part(
@@ -4001,6 +4332,10 @@ mod tests {
         .unwrap();
 
         let dir = crate::pom::locate_source_dir(&root, &source_sha256).unwrap();
+        assert_eq!(
+            dir.file_name().unwrap().to_string_lossy(),
+            "Llama-3.1-8B-Instruct-Q4_K_M-aaaaaaaa"
+        );
         let manifestos = crate::pom::load_dir(&dir);
         assert_eq!(manifestos.len(), 1);
         let manifest = &manifestos[0];
@@ -4010,6 +4345,83 @@ mod tests {
         assert_eq!(manifest.kind, crate::pom::PomKind::Combined);
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tensor_slice_plan_lists_one_full_model_range_per_rank() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-tp-plan-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(4)).unwrap();
+
+        let plan = tensor_slice_plan(&source, 2).unwrap();
+
+        assert_eq!(plan.mode, SliceMode::TensorParallel);
+        assert_eq!(plan.tp_size, 2);
+        assert_eq!(plan.total_layers, 4);
+        assert_eq!(plan.ranks.len(), 2);
+        assert_eq!(
+            plan.ranks
+                .iter()
+                .map(|rank| (rank.rank, rank.start_layer, rank.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 3), (1, 0, 3)]
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tensor_slice_request_does_not_require_pipeline_slices() {
+        let request: SliceRequest = serde_json::from_str(
+            r#"{"model_path":"/models/model.gguf","mode":"tensor_parallel","tp_size":2}"#,
+        )
+        .unwrap();
+
+        assert!(request.slices.is_empty());
+        assert_eq!(request.mode, SliceMode::TensorParallel);
+        assert_eq!(request.tp_size, Some(2));
+    }
+
+    #[test]
+    fn tensor_slice_manifest_keeps_all_ranks_in_tp_parts() {
+        let manifest = tensor_slice_manifest(
+            "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into(),
+            "Llama".into(),
+            32,
+            "node-a".into(),
+            "a".repeat(64),
+            None,
+            vec![
+                crate::pom::PomPart {
+                    sha256: "b".repeat(64),
+                    bytes: 10,
+                    start_layer: 0,
+                    end_layer: 31,
+                    is_first: true,
+                    is_last: true,
+                    tp: Some(crate::pom::PomTp { rank: 0, size: 2 }),
+                },
+                crate::pom::PomPart {
+                    sha256: "c".repeat(64),
+                    bytes: 11,
+                    start_layer: 0,
+                    end_layer: 31,
+                    is_first: true,
+                    is_last: true,
+                    tp: Some(crate::pom::PomTp { rank: 1, size: 2 }),
+                },
+            ],
+        );
+
+        assert_eq!(manifest.kind, crate::pom::PomKind::TensorParallel);
+        assert!(manifest.parts.is_empty());
+        assert_eq!(manifest.tp_parts.len(), 2);
+        manifest.validate().unwrap();
     }
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
@@ -4028,10 +4440,39 @@ mod tests {
             let root = std::env::temp_dir().join(format!("pom-webui-merge-{}", std::process::id()));
             let parts_dir = root.join("parts");
             std::fs::create_dir_all(&parts_dir).unwrap();
-            let a = parts_dir.join("m_0_15.gguf");
-            let b = parts_dir.join("m_16_31.gguf");
-            std::fs::write(&a, crate::splitter::test_gguf_bytes(16)).unwrap();
-            std::fs::write(&b, crate::splitter::test_gguf_bytes(16)).unwrap();
+            let source_sha256 = "d".repeat(64);
+            let write_part = |dir: &std::path::Path, start: u32, end: u32| {
+                std::fs::create_dir_all(dir).unwrap();
+                let tmp = dir.join("tmp");
+                std::fs::write(&tmp, crate::splitter::test_gguf_bytes(16)).unwrap();
+                let (sha256, bytes) = crate::pom::hash_file(&tmp).unwrap();
+                let path = crate::pom::part_path(dir, &sha256).unwrap();
+                std::fs::rename(&tmp, &path).unwrap();
+                let manifest = crate::pom::PomManifest::new(
+                    crate::pom::PomModel {
+                        name: "m".into(),
+                        label: "m".into(),
+                        total_layers: 32,
+                        quant: None,
+                    },
+                    crate::pom::PomKind::Layers,
+                    "test",
+                    source_sha256.clone(),
+                    vec![crate::pom::PomPart {
+                        sha256: sha256.clone(),
+                        bytes,
+                        start_layer: start,
+                        end_layer: end,
+                        is_first: start == 0,
+                        is_last: end == 31,
+                        tp: None,
+                    }],
+                );
+                crate::pom::write_atomic(dir, &manifest).unwrap();
+                path
+            };
+            let a = write_part(&parts_dir.join("a"), 0, 15);
+            let b = write_part(&parts_dir.join("b"), 16, 31);
 
             let req = req(0, 31, 32, 1);
             let parts = vec![
@@ -4130,5 +4571,69 @@ mod tests {
 
             std::fs::remove_dir_all(&root).ok();
         });
+    }
+}
+
+/// **A máquina tem um nome, e é um só.**
+///
+/// `node_name` do `pom.json` é como o operador batiza a máquina, e é o nome
+/// que o nó anuncia aos peers (`network.hostname`). O catálogo respondia com
+/// `sysmon`, o hostname cru do sistema operacional — e o seletor "Enviar
+/// para..." da tela de fatias, que lê daí, era o único lugar do aplicativo que
+/// chamava a máquina por outro nome. Numa máquina com dois nós era pior: os
+/// dois relatavam o mesmo hostname do SO, a tela via colisão e desempatava
+/// com o prefixo do `node_id`.
+#[cfg(test)]
+mod node_name_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, peer, state_named};
+
+    #[tokio::test]
+    async fn o_catalogo_local_se_apresenta_pelo_nome_do_no() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(models(State(state)).await.into_response()).await;
+
+        assert_eq!(
+            corpo["hostname"], "atena",
+            "o catálogo tem que dizer o nome do nó, não o hostname do SO"
+        );
+    }
+
+    #[tokio::test]
+    async fn o_catalogo_do_cluster_tambem() {
+        let state = state_named("eu", "atena", vec![]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let eu = &corpo["peers"][0];
+        assert_eq!(eu["is_self"], true);
+        assert_eq!(eu["hostname"], "atena");
+    }
+
+    /// Um peer que não respondeu continua sendo uma máquina com nome: o que
+    /// ele anunciou está na tabela local. Sem isto o objeto saía **sem
+    /// `hostname`** e a tela caía no `node_id` — um prefixo hexadecimal no
+    /// lugar do nome da máquina, que é o rótulo errado do relato.
+    #[tokio::test]
+    async fn um_peer_que_nao_respondeu_ainda_tem_nome() {
+        // A porta do peer falso não tem ninguém ouvindo: a consulta falha.
+        let mut mudo = peer("outro", "ksia", 1);
+        mudo.hostname = "ksia".into();
+        let state = state_named("eu", "atena", vec![mudo]).await;
+
+        let corpo = body_of(cluster_models(State(state)).await.into_response()).await;
+
+        let outro = corpo["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["node_id"] == "outro")
+            .expect("o peer entra na lista mesmo sem responder");
+        assert!(!outro["error"].is_null(), "e a falha continua reportada");
+        assert_eq!(
+            outro["hostname"], "ksia",
+            "sem nome a tela cai no node_id, que é um prefixo hexadecimal"
+        );
     }
 }

@@ -21,11 +21,11 @@
 use crate::infer_server::Speculate;
 use crate::infer_tunnel::TunnelOutboundSender;
 use crate::pipeline::PipelinePlan;
-use crate::wire::{self, FrameEncoding, WireDtype};
+use crate::wire::{FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -253,11 +253,81 @@ pub struct RequestTrace {
     pub complete: bool,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Phase {
     Prefill,
     Decode,
+}
+
+/// A request descriptor used before a hop is packed into `frame/v1-batch`.
+/// Only requests with the same routing key may share a frame.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRouteItem {
+    pub item_id: String,
+    pub session_id: String,
+    pub model: String,
+    pub deployment_id: String,
+    pub phase: Phase,
+    pub config_key: String,
+    pub next_hop_id: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BatchRouteKey {
+    model: String,
+    deployment_id: String,
+    phase: Phase,
+    config_key: String,
+    next_hop_id: String,
+}
+
+/// Compatible requests grouped for one particular next hop. Group order and
+/// item order follow the input order, which keeps streaming deterministic for
+/// each session and makes tests independent of hash-map iteration order.
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BatchRoute {
+    pub model: String,
+    pub deployment_id: String,
+    pub phase: Phase,
+    pub config_key: String,
+    pub next_hop_id: String,
+    pub items: Vec<BatchRouteItem>,
+}
+
+#[allow(dead_code)]
+impl BatchRoute {
+    pub fn group(items: impl IntoIterator<Item = BatchRouteItem>) -> Vec<Self> {
+        let mut groups: Vec<(BatchRouteKey, Vec<BatchRouteItem>)> = Vec::new();
+        for item in items {
+            let key = BatchRouteKey {
+                model: item.model.clone(),
+                deployment_id: item.deployment_id.clone(),
+                phase: item.phase,
+                config_key: item.config_key.clone(),
+                next_hop_id: item.next_hop_id.clone(),
+            };
+            if let Some((_, grouped)) = groups.iter_mut().find(|(existing, _)| *existing == key) {
+                grouped.push(item);
+            } else {
+                groups.push((key, vec![item]));
+            }
+        }
+        groups
+            .into_iter()
+            .map(|(key, items)| Self {
+                model: key.model,
+                deployment_id: key.deployment_id,
+                phase: key.phase,
+                config_key: key.config_key,
+                next_hop_id: key.next_hop_id,
+                items,
+            })
+            .collect()
+    }
 }
 
 const TRACE_ISSUE_LIMIT: usize = 32;
@@ -979,12 +1049,9 @@ pub async fn step(
         .await;
     }
 
-    // Nota: o laço hub abaixo (um POST por hop, sem retry) não passa pelo
-    // túnel — replica manualmente o encode/POST/decode de `relay::send_frame`
-    // em vez de reutilizá-lo, e essa duplicação está fora do escopo desta
-    // passagem. Decodificação em modo hub já é o caminho mais curto e mais
-    // sensível a latência por token; um fallback mais lento por hop deveria
-    // ser medido antes de entrar aqui, não assumido.
+    // O caminho hub também passa pelo relay comum. Além de manter pinning,
+    // credencial e telemetria iguais ao anel, isso permite agrupar chamadas
+    // concorrentes que chegam ao mesmo hop.
     let n_peers = plan.steps.len();
     let mut tensor: Option<(Vec<f32>, [usize; 2])> = None;
     let mut meta = serde_json::Value::Null;
@@ -1017,78 +1084,50 @@ pub async fn step(
         };
 
         let payload = tensor.take();
-        let as_ref = payload.as_ref().map(|(v, s)| (v.as_slice(), *s));
-        let encode_started = Instant::now();
-        let body = match (as_ref, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(&body_meta, Some(tensor), peer.frame_encoding())?
-            }
-            (tensor, dtype) => wire::encode(&body_meta, tensor, dtype)?,
-        };
-        let client_encode_ms = encode_started.elapsed().as_millis() as u64;
-
-        let url = format!("{}/v1/step", peer.inference_url);
-        let started = Instant::now();
-        let bytes_sent = body.len() as u64;
-        // Este caminho monta o POST à mão em vez de passar pelo `send_frame`
-        // (ver o comentário logo acima sobre o túnel), então a resolução do
-        // cliente pinado tem que ser feita aqui também.
-        let cliente = http.for_peer(&peer.node_id)?;
-        let request = cliente
-            .post(&url)
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(body)
-            .timeout(Duration::from_secs(600));
-        let resp = http
-            .authorize_inference_request(request)
-            .await
-            .send()
-            .await
-            .map_err(|e| {
-                routes.mark_failure(&peer.node_id, &peer.inference_url);
-                anyhow!("peer {} não respondeu: {e}", peer.node_id)
-            })?;
-        let response_headers_ms = started.elapsed().as_millis() as u64;
-
-        if !resp.status().is_success() {
-            let code = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("peer {} respondeu {code}: {text}", peer.node_id));
-        }
-        let response_body_started = Instant::now();
-        let bytes = resp.bytes().await?;
-        let response_body_ms = response_body_started.elapsed().as_millis() as u64;
-        let client_decode_started = Instant::now();
-        let (m, t) = wire::decode(&bytes)?;
-        let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
-        let processing_ms = m
+        let sent = crate::relay::send_frame_or_tunnel(
+            http,
+            peer,
+            tunnel,
+            "/v1/step",
+            &body_meta,
+            payload
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), *shape)),
+            dtype,
+            peer.frame_encoding(),
+            1,
+            &peer.node_id,
+            |_issue| {},
+        )
+        .await
+        .map_err(|error| {
+            routes.mark_failure(&peer.node_id, &peer.inference_url);
+            anyhow!("peer {} não respondeu: {error}", peer.node_id)
+        })?;
+        let processing_ms = sent
+            .meta
             .get("processing_ms")
             .and_then(|value| value.as_u64())
             .unwrap_or(0);
         trace.record_hop(
             i,
             Phase::Decode,
-            started.elapsed().as_millis() as u64,
+            sent.round_trip_ms,
             processing_ms,
-            bytes_sent,
-            bytes.len() as u64,
-            client_encode_ms,
-            response_headers_ms,
-            response_body_ms,
-            client_decode_ms,
-            // Este caminho monta o POST à mão em vez de usar o `send_frame`,
-            // então lê os dois do que ele mesmo fez e do que o peer reportou.
+            sent.bytes_sent,
+            sent.bytes_received,
+            sent.client_encode_ms,
+            sent.response_headers_ms,
+            sent.response_body_ms,
+            sent.client_decode_ms,
             TlsHop {
-                on: url.starts_with("https://"),
-                handshake_ms: m
-                    .get("tls_handshake_ms")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
+                on: sent.tls,
+                handshake_ms: sent.tls_handshake_ms,
             },
-            &m["node_timings"],
+            &sent.meta["node_timings"],
         );
-        meta = m;
-        tensor = t;
+        meta = sent.meta;
+        tensor = sent.tensor;
     }
 
     speculative_step_from_meta(&meta, trace)
@@ -1563,6 +1602,67 @@ fn speculative_step_from_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn route_item(
+        item_id: &str,
+        model: &str,
+        deployment_id: &str,
+        phase: Phase,
+        config_key: &str,
+        next_hop_id: &str,
+    ) -> BatchRouteItem {
+        BatchRouteItem {
+            item_id: item_id.into(),
+            session_id: format!("session-{item_id}"),
+            model: model.into(),
+            deployment_id: deployment_id.into(),
+            phase,
+            config_key: config_key.into(),
+            next_hop_id: next_hop_id.into(),
+        }
+    }
+
+    #[test]
+    fn batch_route_groups_only_items_with_the_same_hop_contract() {
+        let groups = BatchRoute::group([
+            route_item("a", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("b", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("c", "qwen", "deploy-1", Phase::Decode, "ctx-1", "peer-b"),
+            route_item("d", "qwen", "deploy-2", Phase::Decode, "ctx-1", "peer-a"),
+            route_item("e", "qwen", "deploy-1", Phase::Prefill, "ctx-1", "peer-a"),
+            route_item("f", "qwen", "deploy-1", Phase::Decode, "ctx-2", "peer-a"),
+        ]);
+
+        assert_eq!(groups.len(), 5);
+        assert_eq!(
+            groups[0]
+                .items
+                .iter()
+                .map(|item| item.item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        assert_eq!(groups[0].next_hop_id, "peer-a");
+        assert_eq!(groups[1].items[0].item_id, "c");
+        assert_eq!(groups[2].items[0].item_id, "d");
+        assert_eq!(groups[3].items[0].item_id, "e");
+        assert_eq!(groups[4].items[0].item_id, "f");
+    }
+
+    #[test]
+    fn batch_route_preserves_session_identity_inside_the_group() {
+        let item = route_item(
+            "request-1",
+            "qwen",
+            "deploy-1",
+            Phase::Decode,
+            "ctx",
+            "peer-a",
+        );
+        let session_id = item.session_id.clone();
+        let groups = BatchRoute::group([item]);
+        assert_eq!(groups[0].items[0].session_id, session_id);
+    }
 
     // O número de pedaços não é calculado em lugar nenhum: `run` avança até o
     // peer da cabeça dizer que não há mais (`more_chunks`), que é o único que

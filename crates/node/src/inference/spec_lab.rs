@@ -482,8 +482,11 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         );
     }
 
+    // This fixture exposes only the transports it actually implements. The
+    // fake hop serves one wire frame at a time, so advertising frame batching
+    // would route the request through BatchCoordinator without a batch-aware
+    // fake endpoint and make the fixture claim a capability it cannot honor.
     let mut caps = vec![
-        "frame/v1-f16".to_string(),
         crate::pipeline::CAP_RELAY_CHAIN.to_string(),
         crate::pipeline::CAP_SPECULATE_LOOKUP.to_string(),
     ];

@@ -28,12 +28,14 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex},
     time::Instant,
 };
 use tokio::net::TcpListener;
+use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tracing::{info, warn};
 
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
@@ -43,6 +45,7 @@ const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// small wire header. Keeping this limit explicit at 16 MiB allows the
 /// documented 8 MiB frame while still rejecting unbounded peer input.
 const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
 
 /// Timings measured on the inference node itself. The names deliberately name
 /// the boundary being measured instead of guessing whether a CUDA call is
@@ -120,6 +123,356 @@ struct TimedReply {
     timings: NodeTimings,
 }
 
+struct PrefillJob {
+    sid_key: String,
+    chunk_index: u32,
+    chunk_size: u32,
+    is_last: bool,
+    is_final_chunk: bool,
+    wire_dtype: WireDtype,
+    prompt: Option<String>,
+    tensor: Option<(Vec<f32>, [usize; 2])>,
+    chunk_tokens: Option<Vec<i32>>,
+    queued_at: Instant,
+}
+
+struct StepJob {
+    sid_key: String,
+    is_last: bool,
+    wire_dtype: WireDtype,
+    token_id: Option<i32>,
+    tensor: Option<(Vec<f32>, [usize; 2])>,
+    speculate: Option<Speculate>,
+    incoming_draft: Option<Vec<i32>>,
+    batch_tokens: Option<Vec<i32>>,
+    mtp_k: Option<u32>,
+    queued_at: Instant,
+}
+
+enum InferenceCommand {
+    Prefill {
+        job: PrefillJob,
+        reply: oneshot::Sender<Result<TimedReply>>,
+        _permit: OwnedSemaphorePermit,
+    },
+    Step {
+        job: StepJob,
+        reply: oneshot::Sender<Result<TimedReply>>,
+        _permit: OwnedSemaphorePermit,
+    },
+}
+
+impl InferenceCommand {
+    fn into_queue_item(self) -> crate::scheduler::QueueItem<Self> {
+        let (session_id, class, tokens, queued_at) = match &self {
+            Self::Prefill { job, .. } => (
+                job.sid_key.clone(),
+                if job.tensor.is_some() {
+                    crate::scheduler::WorkClass::PrefillHidden
+                } else {
+                    crate::scheduler::WorkClass::PrefillTokens
+                },
+                job.tensor
+                    .as_ref()
+                    .map(|(_, shape)| shape[0])
+                    .unwrap_or(job.chunk_size as usize)
+                    .max(1),
+                job.queued_at,
+            ),
+            Self::Step { job, .. } => (
+                job.sid_key.clone(),
+                if job.tensor.is_some() {
+                    crate::scheduler::WorkClass::DecodeHidden
+                } else {
+                    crate::scheduler::WorkClass::DecodeTokens
+                },
+                job.tensor
+                    .as_ref()
+                    .map(|(_, shape)| shape[0])
+                    .unwrap_or(1)
+                    .max(1),
+                job.queued_at,
+            ),
+        };
+        crate::scheduler::QueueItem {
+            session_id,
+            class,
+            tokens,
+            enqueued_at: queued_at,
+            payload: self,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum SchedulerSubmitError {
+    Full { limit: usize },
+    Closed,
+}
+
+#[derive(Clone)]
+struct SchedulerHandle {
+    tx: mpsc::Sender<InferenceCommand>,
+    limit: usize,
+    admission: Arc<Semaphore>,
+    stats: Arc<SchedulerStats>,
+    config: crate::scheduler::SchedulerConfig,
+}
+
+#[derive(Default)]
+struct SchedulerStats {
+    queue_depth: AtomicUsize,
+    last_batch_size: AtomicUsize,
+    last_batch_tokens: AtomicUsize,
+    total_batches: AtomicU64,
+    total_items: AtomicU64,
+}
+
+impl SchedulerStats {
+    fn json(&self, config: &crate::scheduler::SchedulerConfig) -> Value {
+        json!({
+            "enabled": config.enabled,
+            "queue_depth": self.queue_depth.load(Ordering::Relaxed),
+            "queue_limit": config.max_queue_requests,
+            "batch_window_ms": config.batch_window.as_millis(),
+            "max_batch_sequences": config.max_batch_sequences,
+            "max_batch_tokens": config.max_batch_tokens,
+            "last_batch_size": self.last_batch_size.load(Ordering::Relaxed),
+            "last_batch_tokens": self.last_batch_tokens.load(Ordering::Relaxed),
+            "total_batches": self.total_batches.load(Ordering::Relaxed),
+            "total_items": self.total_items.load(Ordering::Relaxed),
+        })
+    }
+}
+
+impl SchedulerHandle {
+    fn submit_prefill(
+        &self,
+        job: PrefillJob,
+    ) -> std::result::Result<oneshot::Receiver<Result<TimedReply>>, SchedulerSubmitError> {
+        let permit = self
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| SchedulerSubmitError::Full { limit: self.limit })?;
+        let (reply, receiver) = oneshot::channel();
+        self.tx
+            .try_send(InferenceCommand::Prefill {
+                job,
+                reply,
+                _permit: permit,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    SchedulerSubmitError::Full { limit: self.limit }
+                }
+                mpsc::error::TrySendError::Closed(_) => SchedulerSubmitError::Closed,
+            })?;
+        Ok(receiver)
+    }
+
+    fn submit_step(
+        &self,
+        job: StepJob,
+    ) -> std::result::Result<oneshot::Receiver<Result<TimedReply>>, SchedulerSubmitError> {
+        let permit = self
+            .admission
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| SchedulerSubmitError::Full { limit: self.limit })?;
+        let (reply, receiver) = oneshot::channel();
+        self.tx
+            .try_send(InferenceCommand::Step {
+                job,
+                reply,
+                _permit: permit,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Full(_) => {
+                    SchedulerSubmitError::Full { limit: self.limit }
+                }
+                mpsc::error::TrySendError::Closed(_) => SchedulerSubmitError::Closed,
+            })?;
+        Ok(receiver)
+    }
+}
+
+#[derive(Clone)]
+struct InferenceAppState {
+    state: SharedState,
+    scheduler: SchedulerHandle,
+    /// TP exposes one global decode/barrier identity per process. Serialize
+    /// complete inbound batches so a second request cannot replace that id
+    /// while the first batch is waiting for its workers.
+    tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
+}
+
+fn spawn_scheduler(state: SharedState, cfg: crate::scheduler::SchedulerConfig) -> SchedulerHandle {
+    let limit = cfg.max_queue_requests;
+    let (tx, rx) = mpsc::channel(limit);
+    let admission = Arc::new(Semaphore::new(limit));
+    let stats = Arc::new(SchedulerStats::default());
+    let handle = SchedulerHandle {
+        tx,
+        limit,
+        admission,
+        stats: stats.clone(),
+        config: cfg.clone(),
+    };
+    tokio::spawn(run_scheduler(rx, state, cfg, stats));
+    handle
+}
+
+async fn run_scheduler(
+    mut rx: mpsc::Receiver<InferenceCommand>,
+    state: SharedState,
+    cfg: crate::scheduler::SchedulerConfig,
+    stats: Arc<SchedulerStats>,
+) {
+    let mut queue = crate::scheduler::SchedulerQueue::new(cfg.clone());
+    loop {
+        if queue.is_empty() {
+            let Some(command) = rx.recv().await else {
+                return;
+            };
+            let _ = queue.try_push(command.into_queue_item());
+        }
+
+        while queue.len() < cfg.max_queue_requests {
+            let Ok(command) = rx.try_recv() else {
+                break;
+            };
+            if queue.try_push(command.into_queue_item()).is_err() {
+                unreachable!("a fila foi verificada antes de inserir o comando");
+            }
+        }
+        stats.queue_depth.store(queue.len(), Ordering::Relaxed);
+
+        if cfg.batch_window > std::time::Duration::ZERO && queue.len() < cfg.max_batch_sequences {
+            tokio::time::sleep(cfg.batch_window).await;
+            while queue.len() < cfg.max_queue_requests {
+                let Ok(command) = rx.try_recv() else {
+                    break;
+                };
+                if queue.try_push(command.into_queue_item()).is_err() {
+                    unreachable!("a fila foi verificada antes de inserir o comando");
+                }
+            }
+            stats.queue_depth.store(queue.len(), Ordering::Relaxed);
+        }
+
+        let Some(class) = queue.front_class() else {
+            continue;
+        };
+        let selection = queue.take_batch(Instant::now(), class);
+        if selection.items.is_empty() {
+            continue;
+        }
+        stats.queue_depth.store(queue.len(), Ordering::Relaxed);
+        stats
+            .last_batch_size
+            .store(selection.items.len(), Ordering::Relaxed);
+        stats
+            .last_batch_tokens
+            .store(selection.total_tokens, Ordering::Relaxed);
+        stats.total_batches.fetch_add(1, Ordering::Relaxed);
+        stats
+            .total_items
+            .fetch_add(selection.items.len() as u64, Ordering::Relaxed);
+        let state = state.clone();
+        let enabled = cfg.enabled;
+        let _ = tokio::task::spawn_blocking(move || {
+            execute_scheduled_batch(state, selection.items, enabled);
+        })
+        .await;
+    }
+}
+
+fn execute_scheduled_batch(
+    state: SharedState,
+    items: Vec<crate::scheduler::QueueItem<InferenceCommand>>,
+    enabled: bool,
+) {
+    if !enabled || items.len() == 1 {
+        for item in items {
+            execute_one_command(state.clone(), item.payload);
+        }
+        return;
+    }
+    let class = items[0].class;
+    match class {
+        crate::scheduler::WorkClass::PrefillTokens | crate::scheduler::WorkClass::PrefillHidden => {
+            let mut jobs = Vec::with_capacity(items.len());
+            for item in items {
+                match item.payload {
+                    InferenceCommand::Prefill { job, reply, .. } => jobs.push((job, reply)),
+                    InferenceCommand::Step { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "scheduler recebeu fase de inferência incompatível"
+                        )));
+                    }
+                }
+            }
+            for (reply, result) in prefill_batch_blocking(state, jobs) {
+                let _ = reply.send(result);
+            }
+        }
+        crate::scheduler::WorkClass::DecodeTokens | crate::scheduler::WorkClass::DecodeHidden => {
+            let mut jobs = Vec::with_capacity(items.len());
+            for item in items {
+                match item.payload {
+                    InferenceCommand::Step { job, reply, .. } => jobs.push((job, reply)),
+                    InferenceCommand::Prefill { reply, .. } => {
+                        let _ = reply.send(Err(anyhow::anyhow!(
+                            "scheduler recebeu fase de inferência incompatível"
+                        )));
+                    }
+                }
+            }
+            for (reply, result) in step_batch_blocking(state, jobs) {
+                let _ = reply.send(result);
+            }
+        }
+    }
+}
+
+fn execute_one_command(state: SharedState, command: InferenceCommand) {
+    match command {
+        InferenceCommand::Prefill { job, reply, .. } => {
+            let result = prefill_blocking(
+                state,
+                job.sid_key,
+                job.chunk_index,
+                job.chunk_size,
+                job.is_last,
+                job.is_final_chunk,
+                job.wire_dtype,
+                job.prompt,
+                job.tensor,
+                job.chunk_tokens,
+                job.queued_at,
+            );
+            let _ = reply.send(result);
+        }
+        InferenceCommand::Step { job, reply, .. } => {
+            let result = step_blocking(
+                state,
+                job.sid_key,
+                job.is_last,
+                job.wire_dtype,
+                job.token_id,
+                job.tensor,
+                job.speculate,
+                job.incoming_draft,
+                job.batch_tokens,
+                job.mtp_k,
+                job.queued_at,
+            );
+            let _ = reply.send(result);
+        }
+    }
+}
+
 fn inference_frame_body_limit() -> usize {
     INFERENCE_FRAME_BODY_LIMIT
 }
@@ -137,6 +490,20 @@ mod tests {
     async fn accept_frame(body: Bytes) -> StatusCode {
         assert_eq!(body.len(), 4 * 1024 * 1024);
         StatusCode::NO_CONTENT
+    }
+
+    #[test]
+    fn resposta_de_item_unico_preserva_identidade_do_batch() {
+        let request = json!({
+            "item_id": "request-item",
+            "batch_id": "request-batch",
+        });
+        let mut response = json!({"done": true});
+
+        preserve_batch_identity(&request, &mut response);
+
+        assert_eq!(response["item_id"], "request-item");
+        assert_eq!(response["batch_id"], "request-batch");
     }
 
     #[tokio::test]
@@ -244,8 +611,15 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
             max_sessions: 1,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
             max_new_tokens: 256,
@@ -273,6 +647,7 @@ mod tests {
             cfg,
             rx,
             0,
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
@@ -312,6 +687,7 @@ mod relay_tests {
             end_layer: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
             libp2p_peer_id: None,
+            libp2p_addr_candidates: Vec::new(),
         }
     }
 
@@ -670,6 +1046,7 @@ pub async fn run(
     mut stop_rx: tokio::sync::watch::Receiver<u64>,
     generation: u64,
     mtp_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
 ) -> Result<()> {
@@ -704,6 +1081,8 @@ pub async fn run(
     let engine_cfg = EngineConfig {
         n_ctx: crate::runtime::total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
+        cache_type_k: cfg.cache_type_k,
+        cache_type_v: cfg.cache_type_v,
         fit_memory: cfg.fit_memory && cfg.tp.is_none(),
         n_batch: cfg.n_batch,
         n_gpu_layers: cfg.n_gpu_layers as i32,
@@ -734,8 +1113,20 @@ pub async fn run(
     // que o reduce espera a soma. Ver `handle_tp_reduce`.
     let tp_barrier = crate::collective::ReduceBarrier::new();
     let tp_size = cfg.tp.as_ref().map(|t| t.size).unwrap_or(1);
+    let local_barrier_handle = crate::tp::set_local_barrier(tp_barrier.clone(), tp_size);
 
     let state: SharedState = Arc::new(Mutex::new(state_inner));
+    let scheduler_cfg = crate::scheduler::SchedulerConfig::from_node_config(&cfg);
+    // TP participates in the same canonical batch frame. The handler opens
+    // one shared decode id for the whole frame, broadcasts that frame to the
+    // workers and then submits all items to this local scheduler together.
+    batching_ready.store(scheduler_cfg.enabled, std::sync::atomic::Ordering::Relaxed);
+    let scheduler = spawn_scheduler(state.clone(), scheduler_cfg);
+    let app_state = InferenceAppState {
+        state,
+        scheduler,
+        tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
+    };
 
     if let Some(auth) = auth.clone() {
         http_client().set_auth_state(auth);
@@ -757,7 +1148,7 @@ pub async fn run(
     } else {
         inference_routes
     };
-    let inference_routes = inference_routes.with_state(state.clone());
+    let inference_routes = inference_routes.with_state(app_state.clone());
 
     let tp_routes = Router::new().route(
         "/v1/tp/reduce",
@@ -774,7 +1165,7 @@ pub async fn run(
         .merge(
             Router::new()
                 .route("/health", get(handle_health))
-                .with_state(state.clone()),
+                .with_state(app_state.clone()),
         )
         .merge(tp_routes);
 
@@ -804,6 +1195,10 @@ pub async fn run(
     })
     .await;
 
+    if let Some(handle) = local_barrier_handle {
+        crate::tp::clear_local_barrier(handle);
+    }
+
     // Explícito, e não pela contagem do `Arc`: uma cópia esquecida em qualquer
     // canto — foi o que as conexões desgarradas faziam — adiava o `Drop` para
     // sempre, e o `undeploy` respondia "pronto" com o modelo ainda na GPU.
@@ -811,7 +1206,8 @@ pub async fn run(
     // `into_inner` no envenenado: um handler que entrou em pânico deixa o
     // mutex marcado, e recusar a liberação por causa disso seria justamente
     // deixar a VRAM presa no caso em que ela mais precisa voltar.
-    state
+    app_state
+        .state
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .engine
@@ -819,6 +1215,7 @@ pub async fn run(
     info!("memória do modelo devolvida na porta {port}");
 
     resultado?;
+    batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -917,6 +1314,154 @@ fn last_handshake_ms(state: &SharedState) -> u64 {
         .unwrap_or(0)
 }
 
+async fn handle_prefill_batch(
+    app: InferenceAppState,
+    headers: axum::http::HeaderMap,
+    batch: wire::BatchFrame,
+) -> Response {
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_batch_guard = if tp_active {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let batch_body = match wire::encode_batch(&batch) {
+        Ok(body) => Bytes::from(body),
+        Err(error) => return err400(format!("batch inválido: {error}")),
+    };
+    open_tp_decode(&app.state, &headers, "/v1/prefill", &batch_body);
+    let calls = batch.items.iter().map(|item| {
+        let app = app.clone();
+        let mut headers = headers.clone();
+        headers.insert(
+            BATCH_CHILD_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        let body = wire::encode_batch_item(&batch, item);
+        async move {
+            match body {
+                Ok(body) => handle_prefill(State(app), headers, Bytes::from(body)).await,
+                Err(error) => err400(format!("item batch inválido: {error}")),
+            }
+        }
+    });
+    let responses = futures::future::join_all(calls).await;
+    let mut items = Vec::with_capacity(responses.len());
+    for (original, response) in batch.items.iter().zip(responses) {
+        if !response.status().is_success() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("item {} falhou no processamento do batch", original.item_id),
+            )
+                .into_response();
+        }
+        let bytes =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(bytes) => bytes,
+                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+            };
+        let decoded = match wire::decode_batch_items(&bytes) {
+            Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
+            Ok(_) => return err500("resposta de item não contém exatamente um item"),
+            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+        };
+        items.push(wire::BatchPayloadItem {
+            item_id: original.item_id.clone(),
+            session_id: original.session_id.clone(),
+            meta: decoded.meta,
+            tensor: decoded.tensor,
+            dtype: decoded.dtype,
+        });
+    }
+    match wire::encode_batch_items(batch.kind, batch.batch_id, &items) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            body,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
+async fn handle_step_batch(
+    app: InferenceAppState,
+    headers: axum::http::HeaderMap,
+    batch: wire::BatchFrame,
+) -> Response {
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_batch_guard = if tp_active {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let batch_body = match wire::encode_batch(&batch) {
+        Ok(body) => Bytes::from(body),
+        Err(error) => return err400(format!("batch inválido: {error}")),
+    };
+    open_tp_decode(&app.state, &headers, "/v1/step", &batch_body);
+    let calls = batch.items.iter().map(|item| {
+        let app = app.clone();
+        let mut headers = headers.clone();
+        headers.insert(
+            BATCH_CHILD_HEADER,
+            axum::http::HeaderValue::from_static("1"),
+        );
+        let body = wire::encode_batch_item(&batch, item);
+        async move {
+            match body {
+                Ok(body) => handle_step(State(app), headers, Bytes::from(body)).await,
+                Err(error) => err400(format!("item batch inválido: {error}")),
+            }
+        }
+    });
+    let responses = futures::future::join_all(calls).await;
+    let mut items = Vec::with_capacity(responses.len());
+    for (original, response) in batch.items.iter().zip(responses) {
+        if !response.status().is_success() {
+            return (
+                StatusCode::BAD_GATEWAY,
+                format!("item {} falhou no processamento do batch", original.item_id),
+            )
+                .into_response();
+        }
+        let bytes =
+            match axum::body::to_bytes(response.into_body(), INFERENCE_FRAME_BODY_LIMIT).await {
+                Ok(bytes) => bytes,
+                Err(error) => return err500(format!("resposta batch inválida: {error}")),
+            };
+        let decoded = match wire::decode_batch_items(&bytes) {
+            Ok((_, mut decoded)) if decoded.len() == 1 => decoded.remove(0),
+            Ok(_) => return err500("resposta de item não contém exatamente um item"),
+            Err(error) => return err500(format!("resposta de item inválida: {error}")),
+        };
+        items.push(wire::BatchPayloadItem {
+            item_id: original.item_id.clone(),
+            session_id: original.session_id.clone(),
+            meta: decoded.meta,
+            tensor: decoded.tensor,
+            dtype: decoded.dtype,
+        });
+    }
+    match wire::encode_batch_items(batch.kind, batch.batch_id, &items) {
+        Ok(body) => (
+            StatusCode::OK,
+            [("content-type", "application/octet-stream")],
+            body,
+        )
+            .into_response(),
+        Err(error) => err500(error),
+    }
+}
+
 fn err400(msg: impl std::fmt::Display) -> Response {
     (StatusCode::BAD_REQUEST, msg.to_string()).into_response()
 }
@@ -927,13 +1472,14 @@ fn err500(msg: impl std::fmt::Display) -> Response {
 
 // ── /health ───────────────────────────────────────────────────────────────────
 
-async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
+async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoResponse {
+    let scheduler = app.scheduler;
+    let state = app.state;
     let s = state.lock().unwrap();
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
-        "frame/v1-f16",
-        "frame/v2-zstd-f16",
+        crate::pipeline::CAP_FRAME_BATCH,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -941,6 +1487,9 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
     ];
     if s.engine.mtp_ready() {
         caps.push("speculate/v1-mtp");
+    }
+    if scheduler.config.enabled {
+        caps.push(crate::pipeline::CAP_FRAME_BATCH);
     }
     Json(json!({
         "status": "ok",
@@ -956,10 +1505,13 @@ async fn handle_health(State(state): State<SharedState>) -> impl IntoResponse {
         "n_ctx_total": s.engine.n_ctx(),
         "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
         "offload_kqv": s.engine.offload_kqv(),
+        "cache_type_k": s.engine.cache_type_k().as_str(),
+        "cache_type_v": s.engine.cache_type_v().as_str(),
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
         "inference_frame_capabilities": caps,
+        "scheduler": scheduler.stats.json(&scheduler.config),
         // Diagnóstico puro — `llama_memory_can_shift`, o K-shift do
         // `--ctx-shift` de referência do llama.cpp. Não decide mais se a
         // especulação roda (ver o doc de `should_draft`); mantido aqui
@@ -1091,7 +1643,7 @@ struct ReleaseRequest {
 }
 
 async fn handle_release(
-    State(state): State<SharedState>,
+    State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
 ) -> impl IntoResponse {
@@ -1100,8 +1652,8 @@ async fn handle_release(
     // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
     // fica segurando o slot para sempre e a requisição seguinte morre com
     // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
-    replicate_session_call(&state, &headers, "/v1/session/release", &req.session_id);
-    let mut s = state.lock().unwrap();
+    replicate_session_call(&app.state, &headers, "/v1/session/release", &req.session_id);
+    let mut s = app.state.lock().unwrap();
     let existed = s.sessions.contains_key(&req.session_id);
     s.finish(&req.session_id);
     let free = s.seq_pool.len();
@@ -1134,10 +1686,10 @@ struct RollbackRequest {
 /// best-effort ethos as `/v1/session/release`: an unknown or already-reaped
 /// `session_id` is not an error, just a no-op.
 async fn handle_rollback(
-    State(state): State<SharedState>,
+    State(app): State<InferenceAppState>,
     Json(req): Json<RollbackRequest>,
 ) -> impl IntoResponse {
-    let mut s = state.lock().unwrap();
+    let mut s = app.state.lock().unwrap();
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
         .get(&req.session_id)
@@ -1178,6 +1730,9 @@ async fn handle_rollback(
 /// recebe o cabeçalho é réplica: abre o decode com o id recebido e **não**
 /// retransmite, senão o grupo se multiplicaria a cada salto.
 fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &str, body: &Bytes) {
+    if headers.get(BATCH_CHILD_HEADER).is_some() {
+        return;
+    }
     let tp = {
         let s = state.lock().unwrap();
         s.tp.clone()
@@ -1203,10 +1758,34 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
 }
 
 async fn handle_prefill(
-    State(state): State<SharedState>,
+    State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Ok(batch) = wire::decode_batch(&body) {
+        if batch.items.len() > 1 {
+            return handle_prefill_batch(app, headers, batch).await;
+        }
+    }
+    // A one-item frame is still a batch frame: the gateway's
+    // `BatchCoordinator` deliberately sends it through the same path. TP has
+    // one decode id and one collective barrier per request, so keep the
+    // complete top-level request under the same gate as a multi-item batch.
+    // Fan-out children already hold the gate in `handle_prefill_batch` and
+    // mark themselves with `BATCH_CHILD_HEADER`, otherwise they would try to
+    // acquire the same non-reentrant mutex again.
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_request_guard = if tp_active && headers.get(BATCH_CHILD_HEADER).is_none() {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let state = app.state.clone();
+    let scheduler = app.scheduler.clone();
     let processing_started = Instant::now();
     open_tp_decode(&state, &headers, "/v1/prefill", &body);
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
@@ -1214,7 +1793,7 @@ async fn handle_prefill(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode(&body) {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -1224,7 +1803,7 @@ async fn handle_prefill(
         .get("session_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("__legacy__")
+        .unwrap_or("__session__")
         .to_string();
     let chunk_index = meta
         .get("chunk_index")
@@ -1286,22 +1865,31 @@ async fn handle_prefill(
     let sid_for_forward = sid_key.clone();
 
     let queued_at = Instant::now();
-    let result = tokio::task::spawn_blocking(move || {
-        prefill_blocking(
-            state,
-            sid_key,
-            chunk_index,
-            chunk_size,
-            is_last,
-            is_final_chunk,
-            wire_dtype,
-            prompt,
-            tensor,
-            chunk_tokens,
-            queued_at,
-        )
-    })
-    .await;
+    let result = match scheduler.submit_prefill(PrefillJob {
+        sid_key,
+        chunk_index,
+        chunk_size,
+        is_last,
+        is_final_chunk,
+        wire_dtype,
+        prompt,
+        tensor,
+        chunk_tokens,
+        queued_at,
+    }) {
+        Ok(receiver) => receiver.await,
+        Err(SchedulerSubmitError::Full { limit }) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                format!("fila de inferência cheia (limite {limit})"),
+            )
+                .into_response();
+        }
+        Err(SchedulerSubmitError::Closed) => {
+            return err500("scheduler de inferência encerrado");
+        }
+    };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
@@ -1332,6 +1920,7 @@ async fn handle_prefill(
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta — ver o bloco gêmeo em `handle_step`. A diferença é o
     // `prompt_progress`: no anel borbulhado a cabeça sobrescrevia
@@ -1380,6 +1969,7 @@ async fn handle_prefill(
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        preserve_batch_identity(&meta, &mut forward);
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
         }
@@ -1397,7 +1987,7 @@ async fn handle_prefill(
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
-        return match wire::encode(
+        return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
             WireDtype::F16,
@@ -1432,6 +2022,7 @@ async fn handle_prefill(
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
             }
+            preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
         },
         (&residual, shape),
@@ -1447,7 +2038,7 @@ async fn handle_prefill(
 
     overlay_head_authoritative_fields(&local_meta, &mut bubbled);
 
-    match wire::encode(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -1520,6 +2111,18 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
             if !value.is_null() {
                 result[field] = value.clone();
             }
+        }
+    }
+}
+
+/// Preserve the identity assigned by `BatchCoordinator` when a one-item
+/// frame takes the regular handler path. `encode_batch_single` cannot infer
+/// that identity from the scheduler reply, so dropping these fields makes the
+/// coordinator unable to match the response to its waiting request.
+pub(crate) fn preserve_batch_identity(request_meta: &Value, response_meta: &mut Value) {
+    for field in ["item_id", "batch_id"] {
+        if let Some(value) = request_meta.get(field) {
+            response_meta[field] = value.clone();
         }
     }
 }
@@ -1764,13 +2367,610 @@ fn prefill_blocking(
     Ok(TimedReply { bytes, timings })
 }
 
+struct PreparedPrefill {
+    sid_key: String,
+    seq_id: u32,
+    n_past: u32,
+    n_tokens: usize,
+    is_last: bool,
+    is_final_chunk: bool,
+    owns_tokens: bool,
+    tokens_for_chunk: Vec<i32>,
+    chunk_tokens: Option<Vec<i32>>,
+    input: PreparedPrefillInput,
+    wire_dtype: WireDtype,
+    queued_at: Instant,
+}
+
+enum PreparedPrefillInput {
+    Tokens(Vec<i32>),
+    Hidden(Vec<f32>),
+}
+
+fn prefill_batch_blocking(
+    state: SharedState,
+    jobs: Vec<(PrefillJob, oneshot::Sender<Result<TimedReply>>)>,
+) -> Vec<(oneshot::Sender<Result<TimedReply>>, Result<TimedReply>)> {
+    let mut replies = Vec::with_capacity(jobs.len());
+    let lock_started = Instant::now();
+    let mut s = state.lock().unwrap();
+    let lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    let mut prepared = Vec::with_capacity(jobs.len());
+
+    for (job, reply) in jobs {
+        let PrefillJob {
+            sid_key,
+            chunk_index,
+            chunk_size,
+            is_last,
+            is_final_chunk,
+            wire_dtype,
+            prompt,
+            tensor,
+            chunk_tokens,
+            queued_at,
+        } = job;
+
+        let result = (|| -> Result<PreparedPrefill> {
+            s.get_or_create(&sid_key, chunk_index == 0)?;
+            if let Some(text) = prompt.as_deref() {
+                if chunk_index == 0 {
+                    let formatted = if s.chat_template {
+                        s.engine
+                            .apply_chat_template(&[("user", text)], true, s.no_thinking)
+                    } else {
+                        text.to_string()
+                    };
+                    let tokens = s.engine.tokenize(&formatted, !s.chat_template, true);
+                    s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
+                }
+            }
+
+            let expected_pos = chunk_index
+                .checked_mul(chunk_size)
+                .ok_or_else(|| anyhow::anyhow!("posição do chunk excede o limite numérico"))?;
+            {
+                let session = s.sessions.get(&sid_key).unwrap();
+                if session.n_past > expected_pos {
+                    let seq_id = session.seq_id;
+                    if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
+                        bail!(
+                            "este modelo não aceita descartar posições do meio do cache, \
+                             então refazer o pedaço {chunk_index} corromperia a sessão"
+                        );
+                    }
+                    s.sessions.get_mut(&sid_key).unwrap().n_past = expected_pos;
+                } else if session.n_past < expected_pos {
+                    bail!(
+                        "chunk fora de ordem: recebi {chunk_index} (pos {expected_pos}) mas a sessão está em {}",
+                        session.n_past
+                    );
+                }
+            }
+
+            let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
+                let session = &s.sessions[&sid_key];
+                if let Some((hidden, shape)) = tensor {
+                    if shape[0] == 0 || shape[1] != s.engine.n_embd {
+                        bail!(
+                            "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
+                            sid_key,
+                            shape,
+                            s.engine.n_embd
+                        );
+                    }
+                    let n_tokens = shape[0];
+                    if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
+                        bail!(
+                            "hidden state de {} tem {} floats, esperado {}",
+                            sid_key,
+                            hidden.len(),
+                            n_tokens.saturating_mul(s.engine.n_embd)
+                        );
+                    }
+                    (
+                        session.seq_id,
+                        session.n_past,
+                        Vec::new(),
+                        PreparedPrefillInput::Hidden(hidden),
+                        n_tokens,
+                    )
+                } else {
+                    let start = expected_pos as usize;
+                    let end = start.saturating_add(chunk_size as usize);
+                    let tokens = session
+                        .prompt_tokens
+                        .get(start..end.min(session.prompt_tokens.len()))
+                        .unwrap_or(&[])
+                        .to_vec();
+                    if tokens.is_empty() {
+                        bail!("chunk {chunk_index} não tem tokens");
+                    }
+                    let n_tokens = tokens.len();
+                    (
+                        session.seq_id,
+                        session.n_past,
+                        tokens.clone(),
+                        PreparedPrefillInput::Tokens(tokens),
+                        n_tokens,
+                    )
+                }
+            };
+            let owns_tokens =
+                !prompt_tokens.is_empty() || !s.sessions[&sid_key].prompt_tokens.is_empty();
+
+            Ok(PreparedPrefill {
+                sid_key,
+                seq_id,
+                n_past,
+                n_tokens,
+                is_last,
+                is_final_chunk,
+                owns_tokens,
+                tokens_for_chunk: prompt_tokens,
+                chunk_tokens,
+                input,
+                wire_dtype,
+                queued_at,
+            })
+        })();
+
+        match result {
+            Ok(item) => prepared.push((reply, item)),
+            Err(error) => replies.push((reply, Err(error))),
+        }
+    }
+
+    if prepared.is_empty() {
+        return replies;
+    }
+
+    let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    let decode_result = match &prepared[0].1.input {
+        PreparedPrefillInput::Tokens(_) => {
+            let entries: Vec<crate::llm::TokenBatchEntry> = prepared
+                .iter()
+                .map(|(_, item)| crate::llm::TokenBatchEntry {
+                    descriptor: crate::llm::BatchEntry {
+                        item_id: item.sid_key.clone(),
+                        seq_id: item.seq_id,
+                        pos: item.n_past,
+                        tokens: item.n_tokens,
+                        want_logits: item.is_last,
+                    },
+                    tokens: match &item.input {
+                        PreparedPrefillInput::Tokens(tokens) => tokens.clone(),
+                        PreparedPrefillInput::Hidden(_) => Vec::new(),
+                    },
+                })
+                .collect();
+            s.engine.decode_tokens_batch(&entries, need_residual)
+        }
+        PreparedPrefillInput::Hidden(_) => {
+            let entries: Vec<crate::llm::HiddenBatchEntry> = prepared
+                .iter()
+                .map(|(_, item)| crate::llm::HiddenBatchEntry {
+                    descriptor: crate::llm::BatchEntry {
+                        item_id: item.sid_key.clone(),
+                        seq_id: item.seq_id,
+                        pos: item.n_past,
+                        tokens: item.n_tokens,
+                        want_logits: item.is_last,
+                    },
+                    hidden: match &item.input {
+                        PreparedPrefillInput::Hidden(hidden) => hidden.clone(),
+                        PreparedPrefillInput::Tokens(_) => Vec::new(),
+                    },
+                })
+                .collect();
+            s.engine.decode_hidden_batch(&entries, need_residual)
+        }
+    };
+
+    let (output, engine_timings) = match decode_result {
+        Ok(value) => value,
+        Err(error) => {
+            let message = error.to_string();
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+            }
+            return replies;
+        }
+    };
+
+    for (reply, item) in prepared {
+        let result = (|| -> Result<TimedReply> {
+            let session = s.sessions.get_mut(&item.sid_key).unwrap();
+            session.n_past = session.n_past.saturating_add(item.n_tokens as u32);
+            session.last_used = Instant::now();
+            let total_tokens = session.prompt_tokens.len() as u32;
+            let n_past_now = session.n_past;
+            let more = item.owns_tokens && n_past_now < total_tokens;
+            let mut is_final_chunk = item.is_final_chunk;
+            if item.owns_tokens && !more {
+                is_final_chunk = true;
+            }
+
+            let mut timings = NodeTimings {
+                queue_us: item.queued_at.elapsed().as_micros() as u64,
+                lock_wait_us: lock_wait_us,
+                decode_us: engine_timings.enqueue_us,
+                backend_completion_us: engine_timings.backend_completion_us,
+                residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
+                ..Default::default()
+            };
+
+            if item.is_last {
+                if !is_final_chunk {
+                    let started = Instant::now();
+                    let bytes = wire::encode(
+                        &json!({"done": false, "more_chunks": more}),
+                        None,
+                        item.wire_dtype,
+                    )?;
+                    timings.encode_us = started.elapsed().as_micros() as u64;
+                    return Ok(TimedReply { bytes, timings });
+                }
+
+                let logits_index = output
+                    .layout
+                    .range(&item.sid_key)
+                    .and_then(|range| range.logits_index)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                    })?;
+                let recent = s.sessions[&item.sid_key].recent_tokens.clone();
+                let logits = s.engine.logits_ith(logits_index as i32);
+                let (next_id, sampling_timing) =
+                    sample_token_profiled(logits, &recent, &s.sampling);
+                let text = s.engine.token_to_piece(next_id, false);
+                let done = next_id == s.engine.eos_token();
+                s.sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .recent_tokens
+                    .push(next_id);
+                if done && !crate::tp::is_replica() {
+                    s.finish(&item.sid_key);
+                }
+                timings.logits_clone_us = sampling_timing.logits_clone_us;
+                timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
+                timings.softmax_us = sampling_timing.softmax_us;
+                timings.top_k_us = sampling_timing.top_k_us;
+                timings.top_p_us = sampling_timing.top_p_us;
+                timings.selection_us = sampling_timing.selection_us;
+                timings.sampling_us = sampling_timing.logits_clone_us
+                    + sampling_timing.repetition_penalty_us
+                    + sampling_timing.softmax_us
+                    + sampling_timing.top_k_us
+                    + sampling_timing.top_p_us
+                    + sampling_timing.selection_us;
+                let token_text_started = Instant::now();
+                let bytes = wire::encode(
+                    &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
+                    None,
+                    item.wire_dtype,
+                )?;
+                timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
+                timings.encode_us = 0;
+                return Ok(TimedReply { bytes, timings });
+            }
+
+            let residual_started = Instant::now();
+            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            timings.residual_us = residual_started.elapsed().as_micros() as u64;
+            let mut meta = json!({
+                "done": false,
+                "more_chunks": more,
+                "n_prompt_tokens": total_tokens,
+                "owns_tokens": item.owns_tokens,
+            });
+            if item.owns_tokens {
+                meta["tokens"] = json!(item.tokens_for_chunk);
+            } else if let Some(tokens) = &item.chunk_tokens {
+                meta["tokens"] = json!(tokens);
+            }
+            let started = Instant::now();
+            let bytes = wire::encode(
+                &meta,
+                Some((&residual, [item.n_tokens, s.engine.n_embd])),
+                item.wire_dtype,
+            )?;
+            timings.encode_us = started.elapsed().as_micros() as u64;
+            Ok(TimedReply { bytes, timings })
+        })();
+        replies.push((reply, result));
+    }
+    replies
+}
+
+fn step_batch_blocking(
+    state: SharedState,
+    jobs: Vec<(StepJob, oneshot::Sender<Result<TimedReply>>)>,
+) -> Vec<(oneshot::Sender<Result<TimedReply>>, Result<TimedReply>)> {
+    if jobs.iter().any(|(job, _)| {
+        job.speculate.is_some() || job.incoming_draft.is_some() || job.mtp_k.is_some()
+    }) {
+        return jobs
+            .into_iter()
+            .map(|(job, reply)| {
+                let result = step_blocking(
+                    state.clone(),
+                    job.sid_key,
+                    job.is_last,
+                    job.wire_dtype,
+                    job.token_id,
+                    job.tensor,
+                    job.speculate,
+                    job.incoming_draft,
+                    job.batch_tokens,
+                    job.mtp_k,
+                    job.queued_at,
+                );
+                (reply, result)
+            })
+            .collect();
+    }
+
+    let mut replies = Vec::with_capacity(jobs.len());
+    let lock_started = Instant::now();
+    let mut s = state.lock().unwrap();
+    let lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    let mut prepared = Vec::with_capacity(jobs.len());
+
+    for (job, reply) in jobs {
+        let StepJob {
+            sid_key,
+            is_last,
+            wire_dtype,
+            token_id,
+            tensor,
+            queued_at,
+            ..
+        } = job;
+        let result = (|| -> Result<PreparedStep> {
+            let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
+                anyhow::anyhow!("sessão '{}' desconhecida - faça o prefill antes", sid_key)
+            })?;
+            session.last_used = Instant::now();
+            let seq_id = session.seq_id;
+            let n_past = session.n_past;
+            let input = if let Some((hidden, shape)) = tensor {
+                if shape[0] == 0 || shape[1] != s.engine.n_embd {
+                    bail!(
+                        "hidden state de {} tem shape {:?}, esperado [tokens, {}]",
+                        sid_key,
+                        shape,
+                        s.engine.n_embd
+                    );
+                }
+                let n_tokens = shape[0];
+                if hidden.len() != n_tokens.saturating_mul(s.engine.n_embd) {
+                    bail!(
+                        "hidden state de {} tem {} floats, esperado {}",
+                        sid_key,
+                        hidden.len(),
+                        n_tokens.saturating_mul(s.engine.n_embd)
+                    );
+                }
+                PreparedStepInput::Hidden { hidden, n_tokens }
+            } else {
+                let token =
+                    token_id.ok_or_else(|| anyhow::anyhow!("primeiro peer precisa de token_id"))?;
+                s.sessions
+                    .get_mut(&sid_key)
+                    .unwrap()
+                    .recent_tokens
+                    .push(token);
+                PreparedStepInput::Tokens { token }
+            };
+            let n_tokens = match &input {
+                PreparedStepInput::Tokens { .. } => 1,
+                PreparedStepInput::Hidden { n_tokens, .. } => *n_tokens,
+            };
+            Ok(PreparedStep {
+                sid_key,
+                seq_id,
+                n_past,
+                n_tokens,
+                is_last,
+                wire_dtype,
+                input,
+                queued_at,
+            })
+        })();
+        match result {
+            Ok(item) => prepared.push((reply, item)),
+            Err(error) => replies.push((reply, Err(error))),
+        }
+    }
+
+    if prepared.is_empty() {
+        return replies;
+    }
+    let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    let decode_result = match &prepared[0].1.input {
+        PreparedStepInput::Tokens { .. } => {
+            let entries: Vec<crate::llm::TokenBatchEntry> = prepared
+                .iter()
+                .map(|(_, item)| crate::llm::TokenBatchEntry {
+                    descriptor: crate::llm::BatchEntry {
+                        item_id: item.sid_key.clone(),
+                        seq_id: item.seq_id,
+                        pos: item.n_past,
+                        tokens: item.n_tokens,
+                        want_logits: item.is_last,
+                    },
+                    tokens: match &item.input {
+                        PreparedStepInput::Tokens { token } => vec![*token],
+                        PreparedStepInput::Hidden { .. } => Vec::new(),
+                    },
+                })
+                .collect();
+            s.engine.decode_tokens_batch(&entries, need_residual)
+        }
+        PreparedStepInput::Hidden { .. } => {
+            let entries: Vec<crate::llm::HiddenBatchEntry> = prepared
+                .iter()
+                .map(|(_, item)| crate::llm::HiddenBatchEntry {
+                    descriptor: crate::llm::BatchEntry {
+                        item_id: item.sid_key.clone(),
+                        seq_id: item.seq_id,
+                        pos: item.n_past,
+                        tokens: item.n_tokens,
+                        want_logits: item.is_last,
+                    },
+                    hidden: match &item.input {
+                        PreparedStepInput::Hidden { hidden, .. } => hidden.clone(),
+                        PreparedStepInput::Tokens { .. } => Vec::new(),
+                    },
+                })
+                .collect();
+            s.engine.decode_hidden_batch(&entries, need_residual)
+        }
+    };
+    let (output, engine_timings) = match decode_result {
+        Ok(value) => value,
+        Err(error) => {
+            let message = error.to_string();
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+            }
+            return replies;
+        }
+    };
+
+    for (reply, item) in prepared {
+        let result = (|| -> Result<TimedReply> {
+            let new_n_past = s.sessions[&item.sid_key]
+                .n_past
+                .saturating_add(item.n_tokens as u32);
+            s.sessions.get_mut(&item.sid_key).unwrap().n_past = new_n_past;
+            let mut timings = NodeTimings {
+                queue_us: item.queued_at.elapsed().as_micros() as u64,
+                lock_wait_us,
+                decode_us: engine_timings.enqueue_us,
+                backend_completion_us: engine_timings.backend_completion_us,
+                residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
+                ..Default::default()
+            };
+
+            if item.is_last {
+                let logits_index = output
+                    .layout
+                    .range(&item.sid_key)
+                    .and_then(|range| range.logits_index)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("batch não produziu logits para {}", item.sid_key)
+                    })?;
+                let recent = s.sessions[&item.sid_key].recent_tokens.clone();
+                let logits = s.engine.logits_ith(logits_index as i32);
+                let (next_id, sampling_timing) =
+                    sample_token_profiled(logits, &recent, &s.sampling);
+                let token_text_started = Instant::now();
+                let text = s.engine.token_to_piece(next_id, false);
+                let token_text_us = token_text_started.elapsed().as_micros() as u64;
+                let done = next_id == s.engine.eos_token();
+                s.sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .recent_tokens
+                    .push(next_id);
+                if done && !crate::tp::is_replica() {
+                    s.finish(&item.sid_key);
+                }
+                timings.logits_clone_us = sampling_timing.logits_clone_us;
+                timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
+                timings.softmax_us = sampling_timing.softmax_us;
+                timings.top_k_us = sampling_timing.top_k_us;
+                timings.top_p_us = sampling_timing.top_p_us;
+                timings.selection_us = sampling_timing.selection_us;
+                timings.token_text_us = token_text_us;
+                timings.sampling_us = sampling_timing.logits_clone_us
+                    + sampling_timing.repetition_penalty_us
+                    + sampling_timing.softmax_us
+                    + sampling_timing.top_k_us
+                    + sampling_timing.top_p_us
+                    + sampling_timing.selection_us
+                    + token_text_us;
+                let encode_started = Instant::now();
+                let bytes = wire::encode(
+                    &json!({"done": done, "token_id": next_id, "text": text}),
+                    None,
+                    item.wire_dtype,
+                )?;
+                timings.encode_us = encode_started.elapsed().as_micros() as u64;
+                return Ok(TimedReply { bytes, timings });
+            }
+
+            let residual_started = Instant::now();
+            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            timings.residual_us = residual_started.elapsed().as_micros() as u64;
+            let tokens = match &item.input {
+                PreparedStepInput::Tokens { token } => vec![*token],
+                PreparedStepInput::Hidden { .. } => Vec::new(),
+            };
+            let mut meta = json!({"done": false});
+            if !tokens.is_empty() {
+                meta["tokens"] = json!(tokens);
+            }
+            let encode_started = Instant::now();
+            let bytes = wire::encode(
+                &meta,
+                Some((&residual, [item.n_tokens, s.engine.n_embd])),
+                item.wire_dtype,
+            )?;
+            timings.encode_us = encode_started.elapsed().as_micros() as u64;
+            Ok(TimedReply { bytes, timings })
+        })();
+        replies.push((reply, result));
+    }
+    replies
+}
+
+struct PreparedStep {
+    sid_key: String,
+    seq_id: u32,
+    n_past: u32,
+    n_tokens: usize,
+    is_last: bool,
+    wire_dtype: WireDtype,
+    input: PreparedStepInput,
+    queued_at: Instant,
+}
+
+enum PreparedStepInput {
+    Tokens { token: i32 },
+    Hidden { hidden: Vec<f32>, n_tokens: usize },
+}
+
 // ── /v1/step ─────────────────────────────────────────────────────────────────
 
 async fn handle_step(
-    State(state): State<SharedState>,
+    State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     body: Bytes,
 ) -> Response {
+    if let Ok(batch) = wire::decode_batch(&body) {
+        if batch.items.len() > 1 {
+            return handle_step_batch(app, headers, batch).await;
+        }
+    }
+    // See the matching guard in `handle_prefill`: a one-item batch must not
+    // overwrite the decode/barrier state of another TP request while its
+    // ranks are still in the collective.
+    let tp_active = app
+        .state
+        .lock()
+        .map(|state| state.tp.as_ref().is_some_and(|tp| tp.size > 1))
+        .unwrap_or(false);
+    let _tp_request_guard = if tp_active && headers.get(BATCH_CHILD_HEADER).is_none() {
+        Some(app.tp_batch_gate.lock().await)
+    } else {
+        None
+    };
+    let state = app.state.clone();
+    let scheduler = app.scheduler.clone();
     open_tp_decode(&state, &headers, "/v1/step", &body);
     let processing_started = Instant::now();
     // Lido no começo porque `state` é consumido mais abaixo, e o valor é o
@@ -1778,7 +2978,7 @@ async fn handle_step(
     let tls_handshake_ms = last_handshake_ms(&state);
     let inbound_bytes = body.len();
     let frame_decode_started = Instant::now();
-    let (meta, tensor) = match wire::decode(&body) {
+    let (meta, tensor) = match wire::decode_inference_request(&body) {
         Ok(v) => v,
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
@@ -1788,7 +2988,7 @@ async fn handle_step(
         .get("session_id")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
-        .unwrap_or("__legacy__")
+        .unwrap_or("__session__")
         .to_string();
     // Present and non-empty only when the sender negotiated relay mode
     // (`PipelinePlan::supports_relay_chain`) — the ordered chain from *our*
@@ -1847,22 +3047,31 @@ async fn handle_step(
     let sid_for_forward = sid_key.clone();
 
     let queued_at = Instant::now();
-    let result = tokio::task::spawn_blocking(move || {
-        step_blocking(
-            state,
-            sid_key,
-            is_last,
-            wire_dtype,
-            token_id,
-            tensor,
-            speculate,
-            incoming_draft,
-            batch_tokens,
-            mtp_k,
-            queued_at,
-        )
-    })
-    .await;
+    let result = match scheduler.submit_step(StepJob {
+        sid_key,
+        is_last,
+        wire_dtype,
+        token_id,
+        tensor,
+        speculate,
+        incoming_draft,
+        batch_tokens,
+        mtp_k,
+        queued_at,
+    }) {
+        Ok(receiver) => receiver.await,
+        Err(SchedulerSubmitError::Full { limit }) => {
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                format!("fila de inferência cheia (limite {limit})"),
+            )
+                .into_response();
+        }
+        Err(SchedulerSubmitError::Closed) => {
+            return err500("scheduler de inferência encerrado");
+        }
+    };
 
     let mut reply = match result {
         Ok(Ok(reply)) => reply,
@@ -1893,6 +3102,7 @@ async fn handle_step(
     local_meta["processing_ms"] = json!(elapsed.as_millis() as u64);
     local_meta["node_timings"] = reply.timings.json();
     local_meta["tls_handshake_ms"] = json!(tls_handshake_ms);
+    preserve_batch_identity(&meta, &mut local_meta);
 
     // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
     // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
@@ -1935,6 +3145,7 @@ async fn handle_step(
             "session_id": sid_for_forward,
             "hop_timings": hop_timings,
         });
+        preserve_batch_identity(&meta, &mut forward);
         if let Some(draft) = local_meta.get("draft") {
             forward["draft"] = draft.clone();
         }
@@ -1954,7 +3165,7 @@ async fn handle_step(
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
     if !should_relay {
-        return match wire::encode(
+        return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
             WireDtype::F16,
@@ -1974,6 +3185,7 @@ async fn handle_step(
     let hops = next_hops.expect("should_relay implies next_hops is Some");
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
     let mut forward_meta = json!({"session_id": sid_for_forward});
+    preserve_batch_identity(&meta, &mut forward_meta);
     // Keep threading the draft toward the tail — absent entirely (not just
     // an empty array) when this round isn't speculative, same distinction
     // `incoming_draft` relies on above.
@@ -2004,7 +3216,7 @@ async fn handle_step(
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
-    match wire::encode(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -2115,7 +3327,7 @@ pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
 /// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
 /// [`crate::direct`].
 pub(crate) fn direct_ack() -> Response {
-    match wire::encode(&json!({"accepted": true}), None, WireDtype::F16) {
+    match wire::encode_batch_single(&json!({"accepted": true}), None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],

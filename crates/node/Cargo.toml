@@ -12,6 +12,10 @@ path = "src/main.rs"
 default = []
 cuda = ["llama-cpp-sys-2/cuda"]
 metal = ["llama-cpp-sys-2/metal"]
+# Backend portatil: e o caminho das placas AMD, e tambem roda em NVIDIA e
+# Intel. Pode ser combinado com `cuda` - o ggml carrega os dois backends e a
+# escolha de qual usar e feita em tempo de execucao.
+vulkan = ["llama-cpp-sys-2/vulkan"]
 
 [dependencies]
 llama-cpp-sys-2 = { version = "0.1.154", default-features = false, features = ["common"] }
@@ -53,7 +57,6 @@ libp2p = { version = "0.56", features = [
 pkarr = "6"
 async-trait = "0.1"
 mime_guess = "2"
-zstd = "0.13"
 tower-http = { version = "0.5", features = ["compression-full"] }
 routing-contract = { path = "../routing-contract" }
 

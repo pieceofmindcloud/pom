@@ -395,10 +395,10 @@ async fn spawn_gateway(gw: GatewaySite) -> String {
 // ── Cenário ───────────────────────────────────────────────────────────────────
 
 fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> PipelineStep {
-    let mut caps = vec![
-        "frame/v1-f16".to_string(),
-        crate::pipeline::CAP_RELAY_CHAIN.to_string(),
-    ];
+    // The fake endpoint below implements the single-frame wire contract. Do
+    // not advertise batching unless the fixture also implements the batch
+    // request and response envelope.
+    let mut caps = vec![crate::pipeline::CAP_RELAY_CHAIN.to_string()];
     if direct {
         caps.push(crate::pipeline::CAP_RELAY_DIRECT.to_string());
     }
@@ -410,6 +410,7 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
         end_layer: end,
         inference_frame_capabilities: caps,
         libp2p_peer_id: None,
+        libp2p_addr_candidates: Vec::new(),
     }
 }
 

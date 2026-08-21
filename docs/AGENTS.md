@@ -20,7 +20,9 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
-a leitura da telemetria correspondente.
+a leitura da telemetria correspondente. `implantacao.md` também documenta a
+seleção de `tp_parts`, os ranks `1ofN` e a transferência do `.pom` antes do
+arquivo de peso.
 
 ## superpowers/specs/
 
@@ -36,7 +38,9 @@ Par de specs notaveis: `2026-05-24-pkarr-discovery-design.md` e
 `2026-05-25-dcutr-nat-traversal-design.md` (descoberta pela internet, base do
 `pkarr_node.rs`/`discovery.rs`), `2026-08-07-principal-node-architecture-design.md`
 (modo setup e chave de conexao), `2026-08-12-transferencias-simetricas-e-exclusao-design.md`,
-`2026-08-12-request-telemetry-design.md`.
+`2026-08-12-request-telemetry-design.md` e
+`2026-08-20-batching-continuo-inferencia-distribuida-design.md` (scheduler local,
+frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 
 ## superpowers/plans/
 

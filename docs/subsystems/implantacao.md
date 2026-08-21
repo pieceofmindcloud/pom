@@ -84,7 +84,12 @@ quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
 
-## 1.2 Tensor parallel (caminho C): o grupo
+## 1.2 Tensor parallel: grupo de ranks
+
+O caminho TP prefere a rodada já fatiada em `shard_sets[].tp_parts`. Cada
+parte cobre o modelo inteiro e carrega `tp_rank` e `tp_size`; a interface agrupa
+por largura e mostra `1of2`, `2of2`, ou `1of4` até `4of4`. Essas partes não são
+etapas de pipeline e não podem virar uma única faixa `L0-31`.
 
 `kind: "tensor_parallel"` (`DeployKind::TensorParallel`) implanta um modelo num
 grupo de máquinas por tensor parallelism: um **primary** (dono do GGUF e hop do
@@ -93,15 +98,23 @@ cópia local). O pedido carrega `tp` (`TpLaunch`): `{size, primary_node_id,
 worker_node_ids}` - o operador escolhe o **primary** e os **workers** por
 node_id entre as máquinas no mapa (a tela oferece selects, não um campo de URL), e o nó deriva a
 `rank0_url` da porta de inferência anunciada pelo próprio primary
-(`Machine.inference_url`). A varredura lê o modelo inteiro do primary, e o
-`launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e
-cada worker com rank 1..size-1), todos apontando a mesma `rank0_url` para a
-coletiva.
+(`Machine.inference_url`) e preserva os demais candidatos de endereço. A
+Quando não há `tp_parts`, a varredura lê o modelo inteiro do primary, e o
+`launch_targets` expande o passo em **um alvo por rank** (o primary com rank 0 e cada worker com rank 1..size-1),
+todos apontando a mesma `rank0_url` e sua lista de candidatos para a coletiva.
+Quando há `tp_parts`, `survey` resolve cada alvo pela faixa, pelo rank e pelo
+tamanho do grupo. Se o rank já está no alvo, não há cópia; caso contrário o
+planner encontra a mesma parte em outro peer e transfere pelo `sha256`.
+Quando a seleção explícita também lista um worker como se fosse uma etapa de
+pipeline, o planejador remove essa linha antes de montar `steps`: worker é
+somente rank da coletiva e cada máquina entra uma vez em `launch_targets`.
+Se o túnel libp2p não puder discar, o rank tenta cada endereço HTTPS conhecido
+do destino, o que cobre peers atrás de NAT e containers no mesmo host.
 
 Antes de aceitar, o plano valida em duas camadas: `tp_group_checks` (tamanho,
-primary/workers no cluster e com o modelo inteiro, sem repetição, primary com
-URL de inferência) roda no próprio `plan`; e `tp_shardability_check` pergunta ao
-primary (rota `POST /api/ui/tp/check`) se o GGUF dele dá para partir - MoE/SSM/
+primary/workers no cluster, ranks disponíveis, sem repetição e URLs de
+inferência) roda no próprio `plan`; quando usa modelo inteiro,
+`tp_shardability_check` pergunta ao primary (rota `POST /api/ui/tp/check`) se o GGUF dele dá para partir - MoE/SSM/
 weight-tied ou dimensões que não dividem recusam o plano **na tela**, com um
 motivo que nomeia o tensor, em vez de deixar o job falhar no apply.
 
@@ -114,13 +127,12 @@ mandando o operador conferir versões com as duas máquinas no mesmo commit
 peer quando ele existe e só fala em binário antigo quando o corpo não explica
 nada.
 
-O lado de `apply` está pronto: `ApplyRequest.tp` (a `TpIdentity` de `network.rs`)
-faz **cada rank** extrair o próprio shard por `plan::extract_tp_shard` - o rank 0
-inclusive, porque `role` (`primary`/`worker`) endereça a coletiva e não decide
-quem corta. Enquanto essa condição foi `role == "worker"` (`tp_shard_to_extract`,
-17/08), o primary caía no ramo `skip_split` e servia o GGUF inteiro: largura
-cheia de um lado do all-reduce, meia largura do outro, e o `_tp0of2.gguf` nunca
-existia no disco. A `TpIdentity` carrega ainda `members` - todos os ranks em
+O lado de `apply` diferencia os dois formatos. Para `tp_parts`, o `.pom` é
+buscado e mesclado antes dos bytes, cada alvo aponta para o arquivo já existente
+e `skip_split: true` impede uma nova extração. Sem partes pré-fatiadas,
+`ApplyRequest.tp` (a `TpIdentity` de `network.rs`) faz **cada rank** extrair o
+próprio shard por `plan::extract_tp_shard`, inclusive o rank 0. A
+`TpIdentity` carrega ainda `members` - todos os ranks em
 ordem, com `node_id` e URL de inferência -, porque **o rank 0 precisa pôr os
 workers no mesmo decode**: TP só funciona em lockstep, e o gateway fala só com o
 rank 0. Membro sem porta de inferência anunciada é recusa no plano
@@ -129,10 +141,11 @@ rank 0. Membro sem porta de inferência anunciada é recusa no plano
 `docs/subsystems/fatiamento.md` (seção do shard por tensor) e
 `docs/subsystems/rede-p2p.md`.
 
-Cada membro também carrega o `PeerId` libp2p e a capability do túnel anunciada
-pelo servidor. Assim, o `broadcast_to` do rank 0 e o reduce da coletiva podem
-repetir a chamada pelo swarm quando as máquinas estão em redes sem rota HTTPS
-direta entre si.
+Cada membro também carrega o `PeerId` libp2p, os candidatos UDP anunciados e a
+capability do túnel pelo servidor. Assim, o `broadcast_to` do rank 0 e o reduce
+da coletiva podem reidratar o swarm mesmo quando o processo que executa o rank
+não recebeu o mesmo anúncio, e repetir a chamada pelo swarm quando as máquinas
+estão em redes sem rota HTTPS direta.
 
 `AddNodeRequest` também carrega `kind`: somar uma segunda máquina a um modelo
 inteiro já no ar é uma rota paralela, igual a somar uma máquina a uma fatia.
@@ -148,7 +161,8 @@ timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
 - `HeldShard` é uma fatia do conjunto naquela máquina, com `total_layers` como
   `Option` - `None` é o estado normal de fatia antiga (sem metadata `pom.*`),
   e fica `Option` até `model_size` porque "não sei" e "zero" são fatos
-  diferentes.
+  diferentes. Uma parte TP também carrega `tp_rank` e `tp_size`; partes com a
+  mesma faixa só são deduplicadas quando o rank e a largura também coincidem.
 - `mem_free_mb` é VRAM livre numa máquina com GPU discreta, RAM disponível em
   qualquer outra; `0` = a máquina não respondeu, e nada é inferido disso.
 - `disk_free_mb` é o espaço para o arquivo, que é o que uma cópia precisa e o que
@@ -166,8 +180,9 @@ timeout `PEER_TIMEOUT * 4`) e `GET /api/ui/node` (identidade/hostname, timeout
 - `label()` - hostname, ou os primeiros 12 caracteres do `node_id` quando o
   hostname é vazio ou repetido.
 
-`holds(start, end)` acha a fatia exata na máquina; `overlapping_layers` acha
-sobreposição entre uma faixa e a coleção de outra.
+`holds(start, end)` acha uma fatia comum e `holds_tp(start, end, rank, size)`
+acha o rank TP exato. `overlapping_layers` acha sobreposição entre uma faixa e
+a coleção de outra.
 
 ## 3. O plano (`plan`)
 
@@ -247,14 +262,16 @@ aparecem assim.
 1. `deploy_endpoint` re-varre (`survey`), re-planeja, recusa `blocked`/vazio,
    cria o job ("Implantar {deployment_name} em {n} nós") e spawna a execução.
 2. `run` monta a lista de `Pull`s - uma unidade de movimento por fatia que tem
-   que chegar a um alvo. Para passo fundido, um `Pull` por part faltante; a
-   máquina "tem" a unidade fundida quando já tem todas as partes, e aí o merge
-   roda localmente com nada cruzando a rede. Fatia que não tem de onde vir é erro
-   ("a fatia L{}-{} não tem de onde vir").
+   que chegar a um alvo. Para TP pré-fatiado, a unidade é cada `TpTarget` que
+   ainda não tem o rank no destino. Para passo fundido, é um `Pull` por part
+   faltante; a máquina "tem" a unidade fundida quando já tem todas as partes,
+   e aí o merge roda localmente com nada cruzando a rede. Um rank ou fatia que
+   não tem de onde vir é erro.
 3. Os bytes viajam pelo transporte de transferências (ver `transferencia.md`):
    HTTP `Range` com retomada por `.part`, MD5 conferido antes do arquivo tomar o
    nome final, progresso no sino vindo dos nós (fechar a aba não interrompe
-   nada). A checagem de disco da implantação conta a **união** das fatias mais o
+   nada). Para uma parte por hash, o receptor busca e mescla o `.pom` antes dos
+   bytes de peso. A checagem de disco da implantação conta a **união** das fatias mais o
    que falta - a máquina precisa de espaço para o modelo junto *e* para as partes.
 4. Cada alvo recebe o `ApplyRequest` via `apply`/`launch` (detalhe na seção 6).
 5. `done` = "o modelo está atendendo na rede"; erro vira job `failed`.

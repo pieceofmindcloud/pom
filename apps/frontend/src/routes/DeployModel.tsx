@@ -63,7 +63,7 @@ import { bytes, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
-import { wholeModelsOf } from "../lib/wholeModels";
+import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
 import {
   Badge,
   Button,
@@ -310,6 +310,7 @@ export function DeployModel() {
   const [inspectorOpen, setInspectorOpen] = useState(true);
   /** The whole model to deploy, when that is the question being asked. */
   const [wholeName, setWholeName] = useState("");
+  const [tensorGroupKey, setTensorGroupKey] = useState("");
   /** Tensor parallelism group, when that is the question being asked.
    *  `size` is derived (1 primary + workers), not a field the operator types. */
   const [tp, setTp] = useState<{ primary_node_id: string; worker_node_ids: string[] }>({
@@ -322,6 +323,7 @@ export function DeployModel() {
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
   const [params, setParams] = useState<RuntimeParams | null>(null);
+  const nodeParams = useRef<RuntimeParams | null>(null);
   /** `null` means "the node's default" — merged units off. */
   const [merge, setMerge] = useState<boolean | null>(null);
   /** Half-typed numbers, so clearing a field does not snap back to a digit. */
@@ -359,6 +361,10 @@ export function DeployModel() {
 
   /** Every un-sliced model anyone in the cluster holds, named once. */
   const wholes = useMemo(() => wholeModelsOf(cluster.data?.peers), [cluster.data]);
+  const tensorGroups = useMemo(
+    () => tensorParallelModelsOf(cluster.data?.peers),
+    [cluster.data],
+  );
 
   /**
    * Slices unless the operator says otherwise — except on a cluster that has
@@ -370,14 +376,23 @@ export function DeployModel() {
     pickedKind ?? (groups.length === 0 && wholes.length > 0 ? "whole" : "shards");
   const isWhole = kind === "whole";
   const isTp = kind === "tensor_parallel";
+  const tpGroup = useMemo(
+    () => tensorGroups.find((entry) => entry.key === tensorGroupKey) ?? tensorGroups[0],
+    [tensorGroupKey, tensorGroups],
+  );
+  const hasSlicedTp = isTp && !!tpGroup;
 
   useEffect(() => {
     setInspectorTab(kind === "shards" ? "machine" : "global");
   }, [kind]);
 
-  const chosen = isWhole || isTp
+  const chosen = isWhole
     ? wholeName || wholes[0]?.name || ""
-    : group || groups[0]?.key || "";
+    : isTp
+      ? hasSlicedTp
+        ? tpGroup?.group ?? ""
+        : wholeName || wholes[0]?.name || ""
+      : group || groups[0]?.key || "";
   const defaultDeploymentName = useRef("");
   useEffect(() => {
     if (!chosen) return;
@@ -392,16 +407,21 @@ export function DeployModel() {
   /** The whole model on screen, for the facts the plan does not carry. TP
    *  also picks a whole model (each rank holds its own copy), so it reads the
    *  same facts — architecture, holders — to build the primary/worker selects. */
-  const wholeModel = isWhole || isTp ? wholes.find((w) => w.name === chosen) : undefined;
+  const wholeModel = isWhole || (isTp && !hasSlicedTp)
+    ? wholes.find((w) => w.name === chosen)
+    : undefined;
   /** The TpLaunch the node expects: `size` is derived from the workers picked,
    *  never a free number — the select is the single source of truth. */
   const tpPayload = (): TpLaunch => ({
-    size: tp.worker_node_ids.length + 1,
+    size: tpGroup?.tp_size ?? tp.worker_node_ids.length + 1,
     // The first TP request must be able to produce the map that lets the
     // operator choose workers. Without a primary yet, use the first holder as
     // the provisional rank 0; workers still remain opt-in map members.
-    primary_node_id: tp.primary_node_id || wholeModel?.holders[0] || "",
-    worker_node_ids: tp.worker_node_ids,
+    primary_node_id: tp.primary_node_id
+      || tpGroup?.ranks.find((rank) => rank.rank === 0)?.holders[0]
+      || wholeModel?.holders[0]
+      || "",
+    worker_node_ids: tp.worker_node_ids.slice(0, Math.max(0, (tpGroup?.tp_size ?? tp.worker_node_ids.length + 1) - 1)),
   });
   /**
    * Where the last deploy of this is remembered.
@@ -411,7 +431,11 @@ export function DeployModel() {
    * the set is named after the model it was cut from), and one restoring the
    * other's machines would open the screen on a plan nobody chose.
    */
-  const memoryKey = isWhole ? `whole:${chosen}` : chosen;
+  const memoryKey = isWhole
+    ? `whole:${chosen}`
+    : isTp
+      ? `tensor:${chosen}:${tpGroup?.tp_size ?? tp.worker_node_ids.length + 1}`
+      : chosen;
 
   // Edits go to the node for validation, but not on every keystroke: the survey
   // behind this route talks to every peer, and the settings are typed digit by
@@ -462,6 +486,9 @@ export function DeployModel() {
   });
 
   const p = plan.data;
+  useEffect(() => {
+    if (p?.params && nodeParams.current == null) nodeParams.current = p.params;
+  }, [p]);
   /**
    * O plano é uma fotografia cara do catálogo. As métricas de capacidade vêm
    do cluster, que é atualizado a cada 5 s, para os cards não ficarem presos
@@ -546,11 +573,11 @@ export function DeployModel() {
     [preferredNodeIds, rows],
   );
   const tpCandidates = useMemo(
-    () => wholeModel?.holders.filter((nodeId) => mapNodeIds.has(nodeId)) ?? [],
-    [mapNodeIds, wholeModel],
+    () => tpGroup?.holders ?? wholeModel?.holders.filter((nodeId) => mapNodeIds.has(nodeId)) ?? [],
+    [mapNodeIds, tpGroup, wholeModel],
   );
   useEffect(() => {
-    if (!isTp || !wholeModel || wholeModel.holders.length === 0) return;
+    if (!isTp || (!wholeModel && !tpGroup)) return;
     const candidates = tpCandidates;
     if (candidates.length === 0) {
       setTp((current) => current.primary_node_id || current.worker_node_ids.length > 0
@@ -559,15 +586,23 @@ export function DeployModel() {
       return;
     }
     setTp((current) => {
-      const primary = candidates.includes(current.primary_node_id)
+      const primaryChoices = tpGroup?.ranks.find((rank) => rank.rank === 0)?.holders ?? candidates;
+      const primary = primaryChoices.includes(current.primary_node_id)
         ? current.primary_node_id
-        : candidates[0];
-      const workers = current.worker_node_ids.filter(
-        (nodeId) => nodeId !== primary && candidates.includes(nodeId),
-      );
-      const nextWorkers = workers.length > 0
-        ? workers
-        : candidates.filter((nodeId) => nodeId !== primary);
+        : primaryChoices.find((nodeId) => candidates.includes(nodeId)) ?? candidates[0];
+      const desiredWorkers = tpGroup?.tp_size
+        ? tpGroup.ranks.filter((rank) => rank.rank > 0).map((rank) => rank.holders)
+        : [candidates.filter((nodeId) => nodeId !== primary)];
+      const used = new Set([primary]);
+      const nextWorkers = desiredWorkers.flatMap((holders, index) => {
+        const remembered = current.worker_node_ids[index];
+        const nodeId = [remembered, ...holders, ...candidates].find(
+          (candidate) => !!candidate && candidate !== primary && candidates.includes(candidate) && !used.has(candidate),
+        );
+        if (!nodeId) return [];
+        used.add(nodeId);
+        return [nodeId];
+      });
       if (
         primary === current.primary_node_id &&
         nextWorkers.length === current.worker_node_ids.length &&
@@ -577,7 +612,7 @@ export function DeployModel() {
       }
       return { primary_node_id: primary, worker_node_ids: nextWorkers };
     });
-  }, [isTp, tpCandidates, wholeModel]);
+  }, [isTp, tpCandidates, tpGroup, wholeModel]);
   const canvasPlan = useMemo(() => {
     if (!displayPlan || selection == null) return displayPlan;
     const assigned = new Set(rows.map((row) => `${row.target_node_id}:${row.start_layer}-${row.end_layer}`));
@@ -622,6 +657,19 @@ export function DeployModel() {
 
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
+
+  const tpRankRows = useMemo(() => {
+    if (p?.tp_targets && p.tp_targets.length > 0) {
+      return p.tp_targets.slice().sort((a, b) => a.rank - b.rank);
+    }
+    if (!tpGroup) return [];
+    return tpGroup.ranks.map((rank) => ({
+      rank: rank.rank,
+      size: rank.size,
+      target_node_id: rank.rank === 0 ? tp.primary_node_id : tp.worker_node_ids[rank.rank - 1] ?? "",
+      ready: rank.holders.includes(rank.rank === 0 ? tp.primary_node_id : tp.worker_node_ids[rank.rank - 1] ?? ""),
+    }));
+  }, [p, tp, tpGroup]);
 
   /** The settings in force: the operator's edit, or the node's own defaults. */
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
@@ -679,11 +727,17 @@ export function DeployModel() {
     setSelection((current) => {
       const base = (current ?? rows).map((row) => ({ ...row }));
       const existing = base.find((row) => row.target_node_id === nodeId);
-      // Um peer no mapa representa uma faixa ativa por vez. Trocar a faixa
-      // deste peer não remove réplicas da mesma faixa em outros peers.
-      const withoutPeer = base.filter((row) => row.target_node_id !== nodeId);
+      const alreadyAssigned = base.some(
+        (row) =>
+          row.target_node_id === nodeId &&
+          row.start_layer === candidate.start_layer &&
+          row.end_layer === candidate.end_layer,
+      );
+      if (alreadyAssigned) return base;
+      // Atribuir uma faixa a outro peer cria uma réplica explícita. Nunca
+      // remova silenciosamente as faixas que o peer já serve.
       return [
-        ...withoutPeer,
+        ...base,
         {
           start_layer: candidate.start_layer,
           end_layer: candidate.end_layer,
@@ -748,6 +802,17 @@ export function DeployModel() {
     } finally {
       setRunning(false);
     }
+  }
+
+  function restoreNodePlan() {
+    setSelection(null);
+    const defaults = nodeParams.current ?? p?.params ?? null;
+    setParams(defaults);
+    setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
+    setMerge(p?.merge ?? null);
+    setPreferredNodeIds([]);
+    setTp({ primary_node_id: "", worker_node_ids: [] });
+    setDeploymentName(chosen);
   }
 
   function addPeerToDeployment(nodeId: string) {
@@ -874,16 +939,24 @@ export function DeployModel() {
             <div className="flex min-w-[15rem] flex-1 gap-2">
               <Select
                 aria-label="Modelo técnico"
-                value={chosen}
+                value={isTp && hasSlicedTp ? (tpGroup?.key ?? "") : chosen}
                 onChange={(event) => {
-                  if (isWhole || isTp) setWholeName(event.target.value);
+                  if (isWhole) setWholeName(event.target.value);
+                  else if (isTp && hasSlicedTp) setTensorGroupKey(event.target.value);
+                  else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
                   setSelection(null);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
               >
-                {isWhole || isTp
+                {isTp && hasSlicedTp
+                  ? tensorGroups.map((entry) => (
+                      <option key={entry.key} value={entry.key}>
+                        {entry.label} · TP {entry.tp_size}
+                      </option>
+                    ))
+                  : isWhole || isTp
                   ? wholes.map((item) => (
                       <option key={item.name} value={item.name}>{item.name}</option>
                     ))
@@ -925,6 +998,15 @@ export function DeployModel() {
                 </button>
               ))}
             </div>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              disabled={!p || running}
+              onClick={restoreNodePlan}
+            >
+              Voltar ao plano do nó
+            </Button>
             <Button
               variant="primary"
               size="sm"
@@ -1050,15 +1132,15 @@ export function DeployModel() {
               </div>
             </section>
 
-            {(isWhole || isTp) && wholeModel && (
+            {(isWhole || isTp) && (wholeModel || tpGroup) && (
               <section className="border-b border-line py-3">
-                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Modelo inteiro</p>
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">{isTp && hasSlicedTp ? "Grupo Tensor Parallelism" : "Modelo inteiro"}</p>
                 <dl className="grid grid-cols-3 gap-2 text-[0.6rem]">
-                  <div><dt className="text-faint">Quantização</dt><dd className="font-mono text-muted">{wholeModel.quant ?? "-"}</dd></div>
-                  <div><dt className="text-faint">Camadas</dt><dd className="font-mono text-muted">{wholeModel.total_layers ?? "-"}</dd></div>
-                  <div><dt className="text-faint">Tamanho</dt><dd className="font-mono text-muted">{bytes(wholeModel.size_bytes)}</dd></div>
+                  <div><dt className="text-faint">Quantização</dt><dd className="font-mono text-muted">{wholeModel?.quant ?? tpGroup?.quant ?? "-"}</dd></div>
+                  <div><dt className="text-faint">Camadas</dt><dd className="font-mono text-muted">{wholeModel?.total_layers ?? tpGroup?.total_layers ?? "-"}</dd></div>
+                  <div><dt className="text-faint">Tamanho</dt><dd className="font-mono text-muted">{bytes(wholeModel?.size_bytes ?? tpGroup?.size_bytes ?? 0)}</dd></div>
                 </dl>
-                <p className="mt-1.5 text-[0.6rem] text-faint"><span>Está em</span>{" "}<span>{wholeModel.holders.map(labelOf).join(", ") || "nenhuma máquina"}</span></p>
+                <p className="mt-1.5 text-[0.6rem] text-faint"><span>{isTp && hasSlicedTp ? "Ranks disponíveis em" : "Está em"}</span>{" "}<span>{(wholeModel?.holders ?? tpGroup?.holders ?? []).map(labelOf).join(", ") || "nenhuma máquina"}</span></p>
                 {isWhole && p && (
                   <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
                     <span className="truncate text-muted">Máquina que serve o modelo inteiro</span>
@@ -1076,6 +1158,20 @@ export function DeployModel() {
                 )}
                 {isWhole && p?.steps[0]?.source_host && p.steps[0]?.target_node_id !== p.steps[0]?.source_node_id && (
                   <p className="mt-1.5 text-[0.6rem] text-amber">copiar de {p.steps[0].source_host}</p>
+                )}
+                {isTp && hasSlicedTp && (
+                  <div className="mt-3 border-t border-line pt-2">
+                    <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Ranks do grupo TP</p>
+                    <div className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+                      {tpRankRows.map((rank) => (
+                        <div key={`${rank.rank}-${rank.size}`} className="flex items-center justify-between gap-2 rounded-md border border-aqua/20 bg-aqua/[0.04] px-2 py-1.5 text-[0.62rem]">
+                          <span className="font-mono text-aqua">{rank.rank + 1}of{rank.size}</span>
+                          <span className="truncate text-muted">{rank.target_node_id ? labelOf(rank.target_node_id) : "não atribuído"}</span>
+                          <Badge tone={rank.ready ? "aqua" : "amber"} className="px-1.5 py-0 text-[0.56rem]">{rank.ready ? "pronto" : "aguardando"}</Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
                 )}
               </section>
             )}
@@ -1120,7 +1216,7 @@ export function DeployModel() {
               )}
             </section>
 
-            {isTp && wholeModel && (
+            {isTp && (wholeModel || tpGroup) && (
               <section className="border-b border-line py-3">
                 <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Tensor paralelo</p>
                 <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
@@ -1159,7 +1255,7 @@ export function DeployModel() {
                     ))}
                   </Select>
                 </label>
-                <p className="mt-1.5 font-mono text-[0.58rem] text-faint">{tp.worker_node_ids.length + 1} ranks · modelo inteiro em cada peer</p>
+                <p className="mt-1.5 font-mono text-[0.58rem] text-faint">{tpPayload().size} ranks · {hasSlicedTp ? "partes TP pré-fatiadas" : "modelo inteiro em cada peer"}</p>
               </section>
             )}
             </> : <>
@@ -1184,35 +1280,59 @@ export function DeployModel() {
                     <div><dt className="text-faint">Disco livre</dt><dd className="font-mono text-muted">{machine.disk_free_mb > 0 ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
                     <div><dt className="text-faint">RTT local</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "-" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
                   </dl>
-                  <div className="mt-3 border-t border-line pt-2">
-                    <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Camadas nesta máquina</p>
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {taking.length > 0 ? taking.map((row) => (
-                        <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{layerRange(row.start_layer, row.end_layer)}</Badge>
-                      )) : <span className="text-[0.64rem] text-faint">Nenhuma camada atribuída</span>}
-                    </div>
-                  </div>
-                  <div className="mt-3 border-t border-aqua/15 pt-2">
-                    <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Camadas disponíveis neste peer</p>
-                    <div className="mt-1.5 flex flex-wrap gap-1">
-                      {availableForMachine.length > 0 ? availableForMachine.map((candidate) => {
-                        const assigned = rows.some((row) => row.start_layer === candidate.start_layer && row.end_layer === candidate.end_layer && row.target_node_id === machine.node_id);
-                        const range = layerRange(candidate.start_layer, candidate.end_layer);
-                        return (
-                          <button
-                            key={`${candidate.start_layer}-${candidate.end_layer}`}
-                            type="button"
-                            disabled={assigned}
-                            aria-label={`Atribuir ${range} a ${machine.label}`}
-                            onClick={() => assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id)}
-                            className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
-                          >
-                            {assigned ? `${range} ✓` : range}
-                          </button>
-                        );
-                      }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
-                    </div>
-                  </div>
+                  {isTp ? (
+                    <>
+                      <div className="mt-3 border-t border-line pt-2">
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Ranks nesta máquina</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {tpRankRows.filter((rank) => rank.target_node_id === machine.node_id).map((rank) => (
+                            <Badge key={`${rank.rank}-${rank.size}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
+                          ))}
+                          {!tpRankRows.some((rank) => rank.target_node_id === machine.node_id) && <span className="text-[0.64rem] text-faint">Nenhum rank atribuído</span>}
+                        </div>
+                      </div>
+                      <div className="mt-3 border-t border-aqua/15 pt-2">
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Ranks disponíveis neste peer</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {(tpGroup?.ranks.filter((rank) => rank.holders.includes(machine.node_id)) ?? []).map((rank) => (
+                            <Badge key={`${rank.rank}-${rank.size}-available`} tone="aqua" mono className="px-1.5 py-0 text-[0.62rem]">{rank.rank + 1}of{rank.size}</Badge>
+                          ))}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="mt-3 border-t border-line pt-2">
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Camadas nesta máquina</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {taking.length > 0 ? taking.map((row) => (
+                            <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">{layerRange(row.start_layer, row.end_layer)}</Badge>
+                          )) : <span className="text-[0.64rem] text-faint">Nenhuma camada atribuída</span>}
+                        </div>
+                      </div>
+                      <div className="mt-3 border-t border-aqua/15 pt-2">
+                        <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-aqua">Camadas disponíveis neste peer</p>
+                        <div className="mt-1.5 flex flex-wrap gap-1">
+                          {availableForMachine.length > 0 ? availableForMachine.map((candidate) => {
+                            const assigned = rows.some((row) => row.start_layer === candidate.start_layer && row.end_layer === candidate.end_layer && row.target_node_id === machine.node_id);
+                            const range = layerRange(candidate.start_layer, candidate.end_layer);
+                            return (
+                              <button
+                                key={`${candidate.start_layer}-${candidate.end_layer}`}
+                                type="button"
+                                disabled={assigned}
+                                aria-label={`Atribuir ${range} a ${machine.label}`}
+                                onClick={() => assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id)}
+                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                              >
+                                {assigned ? `${range} ✓` : range}
+                              </button>
+                            );
+                          }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
+                        </div>
+                      </div>
+                    </>
+                  )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
                       <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" /></label>
@@ -1367,6 +1487,7 @@ export function DeployModel() {
                   <span className="text-muted">{key === "n_ctx" ? "Contexto" : key === "max_new_tokens" ? "Máx. tokens" : "Sessões"}</span>
                   <Input
                     type="number"
+                    name={key}
                     value={drafts[key] ?? String(eff[key] ?? "")}
                     onChange={(event) => setKnob(key, event.target.value)}
                     className="h-7 text-right font-mono text-[0.68rem]"

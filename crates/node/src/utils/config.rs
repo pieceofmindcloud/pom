@@ -25,6 +25,46 @@ impl std::fmt::Display for Role {
     }
 }
 
+/// Tipos de dados aceitos pelo cache KV do llama.cpp desta instalação.
+///
+/// A lista acompanha `common/arg.cpp::kv_cache_types` do llama.cpp vendorizado
+/// e evita deixar uma string inválida chegar ao FFI. `f16` é o padrão upstream.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum KvCacheType {
+    F32,
+    F16,
+    Bf16,
+    Q8_0,
+    Q4_0,
+    Q4_1,
+    Iq4Nl,
+    Q5_0,
+    Q5_1,
+}
+
+impl Default for KvCacheType {
+    fn default() -> Self {
+        Self::F16
+    }
+}
+
+impl KvCacheType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::F32 => "f32",
+            Self::F16 => "f16",
+            Self::Bf16 => "bf16",
+            Self::Q8_0 => "q8_0",
+            Self::Q4_0 => "q4_0",
+            Self::Q4_1 => "q4_1",
+            Self::Iq4Nl => "iq4_nl",
+            Self::Q5_0 => "q5_0",
+            Self::Q5_1 => "q5_1",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ApiKey {
     pub key: String,
@@ -88,6 +128,29 @@ pub struct Config {
     /// Maximum disk space reserved for generated model slices, in GB.
     #[serde(default = "default_shard_max_gb")]
     pub shard_max_gb: f64,
+    /// Quais GPUs desta máquina a inferência pode usar, pelo `index` que o nó
+    /// publica em `system.gpus[]` - o mesmo número que o painel mostra.
+    ///
+    /// Três estados, e os três querem dizer coisas diferentes:
+    ///
+    /// - **ausente** (`None`): todas as placas disponíveis. É o padrão, e é o
+    ///   que uma `pom.json` antiga significa sem ter sido editada.
+    /// - **lista com itens**: só essas. Numa máquina com Radeon e NVIDIA, é
+    ///   assim que se reserva uma placa para outro uso.
+    /// - **lista vazia**: nenhuma - a inferência fica em CPU. Vazio é uma
+    ///   escolha explícita, não "não configurado", mesma regra do `model_dirs`.
+    ///
+    /// O índice é o do nó, não o do backend: `gpu_selection` traduz para o
+    /// `CUDA_VISIBLE_DEVICES` e o `GGML_VK_VISIBLE_DEVICES` que cada backend
+    /// entende, que numeram as placas em espaços separados.
+    #[serde(default)]
+    pub gpus: Option<Vec<u32>>,
+    /// Tipo numérico do cache K usado por todos os contextos desta instalação.
+    #[serde(default)]
+    pub cache_type_k: KvCacheType,
+    /// Tipo numérico do cache V usado por todos os contextos desta instalação.
+    #[serde(default)]
+    pub cache_type_v: KvCacheType,
     /// Human-readable name for this node shown in the dashboard and peer lists.
     /// Falls back to the OS hostname when absent.
     #[serde(default)]
@@ -341,6 +404,9 @@ mod tests {
     #[test]
     fn test_roundtrip_principal_config() {
         let cfg = Config {
+            gpus: None,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             role: Role::Principal,
             tls_required: false,
             connection_key: "test-key".into(),
@@ -365,6 +431,9 @@ mod tests {
     #[test]
     fn test_roundtrip_node_config() {
         let cfg = Config {
+            gpus: None,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             role: Role::Node,
             tls_required: false,
             connection_key: "node-key".into(),
@@ -397,6 +466,37 @@ mod tests {
         assert_eq!(cfg.model_dir_paths(), crate::catalog::default_model_dirs());
         assert_eq!(cfg.shard_dir_path(), default_shard_dir());
         assert_eq!(cfg.shard_max_gb(), 100.0);
+    }
+
+    #[test]
+    fn cache_types_are_persisted_as_installation_settings() {
+        let cfg: Config =
+            serde_json::from_str(r#"{"role":"node","cache_type_k":"q8_0","cache_type_v":"bf16"}"#)
+                .unwrap();
+        let json = serde_json::to_value(cfg).unwrap();
+
+        assert_eq!(json["cache_type_k"], "q8_0");
+        assert_eq!(json["cache_type_v"], "bf16");
+    }
+
+    #[test]
+    fn invalid_cache_type_is_rejected() {
+        let result: Result<Config, _> =
+            serde_json::from_str(r#"{"role":"node","cache_type_k":"not-a-type"}"#);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cache_type_defaults_to_f16_and_preserves_iq4_nl_spelling() {
+        let defaulted: Config = serde_json::from_str(r#"{"role":"node"}"#).unwrap();
+        assert_eq!(defaulted.cache_type_k, KvCacheType::F16);
+        assert_eq!(defaulted.cache_type_v, KvCacheType::F16);
+
+        let typed: Config =
+            serde_json::from_str(r#"{"role":"node","cache_type_k":"iq4_nl"}"#).unwrap();
+        assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
+        assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
     }
 
     /// Saving the list is the operator taking over: an empty list means "look
@@ -442,6 +542,9 @@ mod tests {
     #[test]
     fn test_active_api_key() {
         let cfg = Config {
+            gpus: None,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             role: Role::Principal,
             tls_required: false,
             connection_key: "k".into(),

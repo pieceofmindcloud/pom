@@ -1,5 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Navigate, Route, Routes, useLocation } from "react-router-dom";
+import { canAccessRoute } from "./lib/access";
+import { useProfile } from "./lib/profile";
 import { useIsSetupMode } from "./lib/queries";
 import { Setup } from "./routes/Setup";
 import { ErrorBoundary } from "./components/ErrorBoundary";
@@ -21,6 +23,7 @@ import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
 import { WholeModels } from "./routes/WholeModels";
 import { Documentation } from "./routes/Documentation";
+import { Forbidden } from "./routes/Forbidden";
 import { useI18n } from "./i18n/provider";
 
 /**
@@ -48,12 +51,25 @@ function Page({ children }: { children: React.ReactNode }) {
 export default function App() {
   const { t } = useI18n();
   const location = useLocation();
-  const isChat = location.pathname === "/chat";
+  const { profile } = useProfile();
+  /*
+   * O guarda de perfil fica aqui, e não dentro de cada rota, porque aqui ele
+   * é um só: `/chat` renderiza fora do `<Routes>` (ver abaixo), então um guarda
+   * por rota deixaria justamente essa de fora. Esconder o item no menu não
+   * basta - o endereço continua digitável.
+   *
+   * Quem decide é `lib/access.ts`, a mesma tabela que filtra o menu.
+   */
+  const allowed = canAccessRoute(location.pathname, profile);
+  const isChat = allowed && location.pathname === "/chat";
   // Screens that own the whole viewport and scroll inside themselves, instead
   // of sitting in the centred, padded column the other pages use.
   const isDashboard = location.pathname === "/";
+  // Barrada, a tela volta para a coluna central: o aviso é um cartão pequeno, e
+  // o layout de tela cheia não rola por dentro.
   const isFullBleed =
-    isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar";
+    allowed &&
+    (isDashboard || location.pathname === "/documentacao" || location.pathname === "/implantar");
   /*
    * A node with no `pom.json` runs a router carrying only `/api/setup/*`,
    * so `/api/ui/node` answers 404. That miss is the signal.
@@ -96,7 +112,13 @@ export default function App() {
               : "min-h-0 flex-1 overflow-y-auto overflow-x-hidden"
           }
         >
-          {isChat ? (
+          {!allowed ? (
+            <div className="mx-auto w-full max-w-[1400px] px-4 py-6 sm:px-6 lg:px-8">
+              <ErrorBoundary resetKey={location.pathname}>
+                <Page><Forbidden /></Page>
+              </ErrorBoundary>
+            </div>
+          ) : isChat ? (
             <ErrorBoundary resetKey={location.pathname}>
               <Chat />
             </ErrorBoundary>

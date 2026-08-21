@@ -30,20 +30,30 @@ behind an auth extractor.
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths and slice retention.
+  storage paths and slice retention. `slice/plan` and `slice` accept the
+  explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
+  and seals `tp_parts` in the same source-hash manifest used by pipeline
+  `parts`.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
+  rank e transfere pelo hash do arquivo original; o `apply` usa
+  `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
+  de runtime que extrai cada rank de um modelo inteiro.
   `route_options` liga somente máquinas selecionadas em estágios consecutivos;
   réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
   `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
-  preservando `parts` e `tp_parts` locais.
+  require `.gguf`. Manifestos v1 são mesclados por `pom_id` no peer receptor,
+  preservando `parts` e `tp_parts` locais. **O veredito volta para quem
+  ofereceu** (`receive_answer`), e todo desfecho passa por
+  `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
+  da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
 - `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
@@ -69,9 +79,11 @@ behind an auth extractor.
   `inference_url()/health` (10s timeout) before planning; `all_peers` appends
   the local node with `self_dial_host` (advertised > local IP > loopback) and
   advertises `relay/v2-direct` in the capability list alongside
-  `frame/v1-f16`, `frame/v2-zstd-f16`, `relay/v1-chain` and
-  `speculate/v1-lookup`; `speculate/v1-mtp-sliced` goes out unconditionally and
+  `inference/frame-v1-batch`, `relay/v1-chain` and `speculate/v1-lookup`;
+  `speculate/v1-mtp-sliced` goes out unconditionally and
   `speculate/v1-mtp` only when `mtp_ready` (the node has the `nextn` block);
+  `inference/frame-v1-batch` only when `network.batching_ready()` confirms
+  that the loaded local inference server has the multi-item scheduler active;
   `self_reply_hosts()` lists the addresses by which a
   peer reaches this node (`self_dial_host` first, then `self_addr_candidates`);
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
@@ -91,6 +103,9 @@ behind an auth extractor.
   (`!draft_sent && step.next_draft.is_none()`), then the gateway calls
   `prefill::step` (the direct reply) for the rest of the request - insisting
   would pin the chain to the bubbled ring (2N hops per token);
+  the gateway still chooses the pipeline replica per session. Continuous
+  batching is owned by the inference process at that replica, not by a global
+  gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
   /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
@@ -123,7 +138,8 @@ behind an auth extractor.
   parsed-and-ignored (serde drops unknown fields).
 - `webui.rs` - `CATALOG_TTL=20s`, `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
-  `models` (GET), `models/delete` (POST), `cluster` (GET), `cluster/models`
+  `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
+  `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
@@ -151,7 +167,8 @@ behind an auth extractor.
   varredura lê o modelo do primary, e a descoberta de workers fica junto do
   fork do llama.cpp. O pedido carrega `TpLaunch {size, primary_node_id,
   worker_node_ids}` - o operador escolhe primary/workers por node_id e o nó
-  deriva a `rank0_url` da `Machine.inference_url` (`tp_identity`). Validação em
+  deriva a `rank0_url` e seus candidatos da `Machine.inference_url` e
+  `Machine.inference_candidates` (`tp_identity`). Validação em
   duas camadas antes do deploy: `tp_group_checks` (tamanho, presença no
   cluster, modelo inteiro, sem repetição) dentro do `plan`, e
   `tp_shardability_check` (rota `POST /api/ui/tp/check`, handler
@@ -165,10 +182,12 @@ behind an auth extractor.
   `launch_targets` e o mesmo `launch` - não há segundo caminho. Só as recusas
   mudam de substantivo (`DeployKind::unit`). Ver
   `docs/subsystems/implantacao.md` §1.1 e §1.2.
-  O `survey` preserva o `PeerId` libp2p e a capability do túnel de cada
-  máquina; `tp_members` transfere esses dados para cada rank, permitindo que
-  `broadcast_to` e o reduce usem primeiro o túnel Noise, com cliente direto
-  pinado como fallback quando o túnel não está disponível.
+  O `survey` preserva o `PeerId`, os candidatos de endereço UDP e a capability
+  do túnel de cada máquina; os candidatos vêm do `/api/ui/node` do próprio
+  peer, e não somente do anúncio que o coordenador recebeu. `tp_members`
+  transfere esses dados e todos os candidatos de URL para cada rank, permitindo
+  que `broadcast_to` e o reduce reidratem o swarm no destino e tentem cada
+  endereço HTTPS alcançável quando o túnel não está disponível.
   O `register_tp_reduce` também recebe o tamanho do grupo. O nó publica esse
   tamanho e o snapshot de coletivas no campo `node_timings.tp`, sem misturar
   bytes ou esperas TP com a telemetria de pipeline.
@@ -220,8 +239,9 @@ behind an auth extractor.
   Routes: `GET /api/transfer/manifest`, `GET /api/transfer/download`,
   `POST /api/transfer/pull`, `POST /api/transfer/offer`, `GET
   /api/transfer/offers`, `POST /api/transfer/offers/:id/accept` +
-  `/:id/reject`, `GET /api/transfer/jobs`, `POST
-  /api/transfer/jobs/:id/cancel`, `POST /api/transfer/send`. Path safety is
+  `/:id/reject`, `POST /api/transfer/offers/answer`, `GET
+  /api/transfer/jobs`, `POST /api/transfer/jobs/:id/cancel`, `POST
+  /api/transfer/send`. Path safety is
   directional: `safe_model_path` confines the *pull* direction to `models/`
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF
@@ -238,14 +258,34 @@ behind an auth extractor.
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
   is a full read on a slow volume - and runs the disk-space check there too),
   then `run_download` writes a `.part` next to its destination - the model's
-  folder for a **part** (`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`,
-  `.pom` written first - the run id comes from the manifest, so two slicings of
-  one model never share a folder), `<shard_dir>/recebidos/` for anything that belongs to no manifest -
+  folder for a **part** (`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`,
+  `<modelo>-<hash curto do original>.pom` written first - pipeline and tensor
+  slicing of one model share the folder and manifest), `<shard_dir>/recebidos/`
+  for anything that belongs to no manifest -
   resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
   (anything else) before the rename, and cancels symmetrically on both
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet
   known). A manifest/download error becomes a job `failed` with the reason,
   never overwriting an operator's `cancel`.
+  **Os dois lados sabem o desfecho.** Todo estado terminal passa por
+  `TransferState::finish`, que grava `finished_at` e recusa reescrever um
+  terminal já posto - é ele que faz "cancelado por X" sobreviver a um "falhou"
+  anônimo, e é o carimbo que deixa o sino mostrar o que **acabou de** terminar.
+  Do lado que envia, `served_stream` fecha o job no **último byte** e não no
+  fim do stream: o hyper para de puxar quando o corpo satisfaz o
+  `Content-Length` e nunca pede o `None` do fim, então o job de envio ficava
+  `running` para sempre com `bytes_done` congelado. E o veredito do receptor
+  volta por `notify_offerer` → `POST /api/transfer/offers/answer`
+  (`receive_answer`), casado pelo `grant` guardado em `TransferState::offered`:
+  aceite vira job `sending` já em curso ("aceito; aguardando o início do
+  envio"), recusa vira `cancelled` com o nome de quem recusou. Um veredito de
+  um `node_id` que não é o destino registrado é 403.
+  **Um job diz de que modelo é.** `TransferJob` carrega `model_label`,
+  `start_layer` e `end_layer`, montados por `slice_label`/`slice_label_for_path`
+  a partir do `.pom` que está ao lado do arquivo - nunca deduzidos do nome, que
+  é o sha256 e não afirma nada sobre camada nenhuma. O manifesto já está no
+  lugar quando o job nasce nos dois sentidos: veio na oferta (push) ou foi
+  buscado em `/api/transfer/pom` (pull), sempre antes do primeiro byte de peso.
   `DEV_AUTO_ACCEPT_ENV` (`POM_DEV_AUTO_ACCEPT_TRANSFERS`, read once at
   startup via `dev_auto_accept`, the receiver's own variable) is OFF unless the
   receiver sets it; a sender cannot ask for it.
@@ -269,7 +309,9 @@ behind an auth extractor.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
   optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, and the connection key counts as operator
-  (`Caller::operator()`). `AuthRejection`: MissingHeader=401, InvalidKey=403.
+  (`Caller::operator()`). `inference_token` chooses the shared connection key,
+  falling back to the first active API key for internal inference calls.
+  `AuthRejection`: MissingHeader=401, InvalidKey=403.
 - `reqlog.rs` - `CAPACITY=500` in a `OnceLock<RwLock<VecDeque<Entry>>>`;
   `Caller { token_label, token_hint, token_node_id }` (built by the auth
   extractor, the only place that sees the credential); `Entry` carries

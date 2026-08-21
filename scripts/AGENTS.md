@@ -19,7 +19,10 @@ do codigo Python. Autoritativo: leia os arquivos; isto e um mapa.
   `bootstrap_nodes` para `127.0.0.1:42777`. Recusa gerar sem `connection_key`;
   `--force` sobrescreve config existente. Nunca gera a chave de conexao - herda
   da config base (`--base`, padrao `pom.json` na raiz) para nao partir um
-  cluster existente.
+  cluster existente. `--advertise-addr` atualiza somente o endereco anunciado
+  tambem em configs existentes, preservando os outros campos.
+- `test_gen_node_configs.py` - testes unitarios do override de
+  `advertise_addr`, incluindo a preservacao dos demais campos da config.
 - `run-docker.sh` - `docker compose down` + `docker compose up -d`. Nao recria
   a imagem; use `build-docker.sh` para isso.
 

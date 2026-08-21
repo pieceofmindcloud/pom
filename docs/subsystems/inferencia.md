@@ -19,13 +19,26 @@ soma matemática) e `ReduceBarrier` (a barreira que acumula os parciais de cada
 rank e devolve a soma a todos via `oneshot`, modelada no `ReplyInbox` de
 `direct.rs`). O transporte HTTP (`POST /v1/tp/reduce`) é uma camada fina por
 cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
-forward pass. `broadcast_to` e o reduce tentam primeiro o túnel libp2p quando o
-membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
-cliente direto pinado, com HTTPS quando a política TLS está ativa.
+forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
+workers enviam a parcial ao primary. `broadcast_to` mantém a URL base e a rota
+separadas para o túnel encaminhar a requisição ao path correto no loopback do
+worker. O broadcast e o reduce remoto tentam primeiro os candidatos HTTPS
+diretos pinados. Se nenhum endereço responde por falha de transporte, tentam o
+túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
+necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
+túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
-ativa. Ver
+ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
+key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
+`Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
+Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
+O callback nativo do llama.cpp roda em uma thread de `spawn_blocking`, fora do
+contexto local de uma task Tokio. Por isso o registro do grupo captura o
+`tokio::runtime::Handle` do servidor e o callback usa esse handle para aguardar
+o reduce; chamar `Handle::current()` dentro da thread nativa causa panic.
 
 A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
 um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
@@ -34,8 +47,8 @@ topologia.
 
 Cada execução também pode carregar `node_timings.tp`. Esse bloco registra
 reduces esperados e observados, espera total, p50/p95 da coletiva, bytes de
-request/response, broadcasts e o caminho direto ou túnel. A espera inclui a
-barreira síncrona e não é latência pura de pacote. Os bytes e waits TP ficam
+request/response, chamadas locais, broadcasts e o caminho direto ou túnel. A
+espera inclui a barreira síncrona e não é latência pura de pacote. Os bytes e waits TP ficam
 separados dos frames de hidden state do pipeline. Com 32 camadas e dois pontos
 row-parallel por camada, um decode de um token pode fazer 64 esperas coletivas;
 isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
@@ -52,6 +65,24 @@ cache passa para a memória RAM. A aplicação registra o fallback e `/health`
 mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
 pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
 modelo entre máquinas.
+
+O tipo numérico do cache é uma configuração da instalação, no `pom.json`, e não
+uma escolha por máquina dentro de uma implantação:
+
+```json
+{
+  "cache_type_k": "q8_0",
+  "cache_type_v": "bf16"
+}
+```
+
+Os valores aceitos são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`,
+`q5_0` e `q5_1`. Quando os campos faltam, ambos usam `f16`. O runtime aplica a
+mesma configuração ao contexto principal, ao contexto MTP e ao
+`llama_rs_fit_params`; `/health` expõe `cache_type_k` e `cache_type_v` depois
+da carga para confirmar o valor efetivo. A implantação continua podendo
+escolher `offload_kqv` por máquina, porque isso controla apenas a localização
+do cache, não o tipo numérico.
 
 Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
 fica ligado por padrão. Antes da carga real, a aplicação chama o
@@ -111,10 +142,19 @@ codificação em trânsito. Formato:
 - `dtype`/`shape` vão no JSON; o corpo é **binário** f16 (nunca base64, nunca
   f32 na rede). Precisão e codificação são parâmetro de `encode`/`decode`, não
   suposição.
-- `FrameEncoding::F16` é o contrato v1; `ZstdF16` (`frame_version=2`,
-  `ZSTD_LEVEL=6`) é opt-in: só é usado quando o receptor anuncia
-  `frame/v2-zstd-f16`. `PipelineStep::frame_encoding` escolhe por passo, o que
-  mantém rolling upgrade com nós velhos.
+- `frame_version=1` (`inference/frame-v1-batch`) é o primeiro e único contrato
+  oficial. Um header JSON carrega `batch_id` e itens `{item_id, session_id,
+  shape, dtype, offset, len, meta}`, seguido pelo payload concatenado. O
+  decoder valida versão, dtype, tamanho derivado do shape, limites e
+  sobreposição antes de expor qualquer tensor.
+- Uma requisição individual usa o mesmo frame por meio de
+  `encode_batch_single`. O relay mantém uma janela curta de 4 ms e agrupa
+  chamadas compatíveis para o mesmo próximo hop, modelo, implantação,
+  configuração, fase e rota. O peer receptor distribui os itens
+  concorrentemente para o scheduler local e devolve os resultados pelo
+  `item_id` original.
+- O produto ainda não foi lançado, portanto não há fallback, adapter ou
+  código de compatibilidade para formatos v1/v2 anteriores.
 - `MAX_FRAME_PAYLOAD_BYTES = 16 MiB` limita payload no decode; o handler axum
   aplica o mesmo teto no body (`INFERENCE_FRAME_BODY_LIMIT`).
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
@@ -153,6 +193,48 @@ decodificado na própria posição e o estado oculto viaja sozinho.
 - Só a cabeça tokeniza (tem o prompt), e é a única autoridade em
   `more_chunks`/`n_prompt_tokens`. O gateway sempre manda `is_final_chunk:
   false` e quem tokenizou corrige (ver `prompt_progress` na seção 4).
+
+### 3.1 Scheduler local e batching contínuo
+
+Cada processo de inferência possui um scheduler próprio para o contexto
+`llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,
+aplica backpressure antes de criar uma sessão e responde `429` com
+`Retry-After: 1` quando `max_queue_requests` foi atingido. O padrão é fila 128,
+janela de coleta de 4 ms, `max_batch_sequences` limitado por `max_sessions` e
+`max_batch_tokens` limitado por `n_batch`.
+
+Quando as entradas são compatíveis, o worker monta um único `llama_batch` com
+uma sequência física por sessão. Prefill e decode de tokens ficam em uma lane;
+hidden states ficam em outra. Uma sessão aparece no máximo uma vez por
+microbatch, e o `BatchLayout` usa `item_id` e o range global de linhas para
+associar cada residual e posição de logits à resposta correta. Especulação,
+rollback e Tensor Parallelism continuam no caminho individual até terem
+contratos de batch próprios.
+
+O scheduler é local ao peer. Duas réplicas que servem a mesma faixa possuem
+filas e KV independentes; o roteamento deve escolher uma réplica e preservar
+essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
+unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
+isso a execução multi-sequência ainda fica desabilitada no TP atual.
+
+No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
+frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
+frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode
+global enquanto os ranks ainda aguardam a coletiva. Os filhos fan-out de um
+batch já protegido usam `BATCH_CHILD_HEADER` para não tentar adquirir o mesmo
+lock novamente. Ao reencodar a resposta de um item único, os handlers
+preservam `item_id` e `batch_id`; sem isso o coordenador não consegue associar
+a resposta ao pedido que está aguardando.
+
+`prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
+transporte: modelo, deployment, fase, configuração relevante e próximo hop
+precisam coincidir para dois itens compartilharem um frame. A escolha efetiva
+das réplicas fica registrada por `pipeline::RouteAffinity`, que rejeita uma
+rota diferente no meio da mesma sessão.
+
+O endpoint `/health` expõe `scheduler.queue_depth`, os limites efetivos, o
+tamanho e os tokens do último lote, além dos contadores acumulados. Isso
+permite diferenciar fila local de tempo de rede e de tempo de decode.
 
 ## 4. Modo anel vs resposta direta
 
@@ -405,8 +487,9 @@ inteiro.
   `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
   (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
-  verdade - só o llama.cpp faz isso, ver o doc do módulo para o que mudou em
-  2026-08-16.
+  verdade. Como os hops falsos implementam frames unitários, o fixture só
+  anuncia capabilities compatíveis e não entra no `BatchCoordinator`; só o
+  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16.
 
 ## 9. Limite de prompt
 

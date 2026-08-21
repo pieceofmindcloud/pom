@@ -78,6 +78,12 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Tipo numérico do cache K, definido pela instalação inteira.
+    #[serde(default)]
+    pub cache_type_k: crate::config::KvCacheType,
+    /// Tipo numérico do cache V, definido pela instalação inteira.
+    #[serde(default)]
+    pub cache_type_v: crate::config::KvCacheType,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
@@ -85,6 +91,21 @@ pub struct NodeConfig {
     /// Concurrent generations; each one gets the full configured context.
     #[serde(default = "default_max_sessions")]
     pub max_sessions: u32,
+    /// Enable the in-process multi-sequence scheduler.
+    #[serde(default = "default_batching_enabled")]
+    pub batching_enabled: bool,
+    /// Maximum number of requests waiting before admission returns overload.
+    #[serde(default = "default_max_queue_requests")]
+    pub max_queue_requests: u32,
+    /// Time allowed for collecting a local microbatch.
+    #[serde(default = "default_batch_window_ms")]
+    pub batch_window_ms: u32,
+    /// Maximum active sequences in one llama batch. Clamped to max_sessions.
+    #[serde(default = "default_max_batch_sequences")]
+    pub max_batch_sequences: u32,
+    /// Maximum tokens in one llama batch. Clamped to n_batch.
+    #[serde(default = "default_max_batch_tokens")]
+    pub max_batch_tokens: u32,
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
@@ -166,10 +187,17 @@ impl NodeConfig {
             n_gpu_layers: p.n_gpu_layers,
             n_ctx: p.n_ctx,
             offload_kqv: p.offload_kqv,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: p.fit_memory && allow_fit_memory,
             n_batch: p.n_batch,
             max_new_tokens: p.max_new_tokens,
             max_sessions: p.max_sessions,
+            batching_enabled: p.batching_enabled,
+            max_queue_requests: p.max_queue_requests,
+            batch_window_ms: p.batch_window_ms,
+            max_batch_sequences: p.max_batch_sequences,
+            max_batch_tokens: p.max_batch_tokens,
             prefill_chunk_tokens: p.prefill_chunk_tokens,
             temperature: p.temperature,
             top_p: p.top_p,
@@ -198,7 +226,7 @@ impl NodeConfig {
     /// no pipeline (a cauda não exporta residual), então vem do que já estava
     /// aqui, e não do que o operador digitou.
     pub fn with_params(&self, p: &crate::webui::RuntimeParams) -> Self {
-        Self {
+        let mut next = Self {
             deploy_id: self.deploy_id.clone(),
             deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
@@ -214,12 +242,30 @@ impl NodeConfig {
             single_peer: self.single_peer,
             no_embeddings: self.no_embeddings,
             ..Self::from_params(p, self.tp.is_none())
-        }
+        };
+        next.cache_type_k = self.cache_type_k;
+        next.cache_type_v = self.cache_type_v;
+        next
     }
 }
 
 fn default_max_sessions() -> u32 {
     1
+}
+fn default_batching_enabled() -> bool {
+    true
+}
+fn default_max_queue_requests() -> u32 {
+    128
+}
+fn default_batch_window_ms() -> u32 {
+    4
+}
+fn default_max_batch_sequences() -> u32 {
+    u32::MAX
+}
+fn default_max_batch_tokens() -> u32 {
+    u32::MAX
 }
 fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
@@ -499,6 +545,7 @@ impl NodeRuntime {
         *self.assignment.write().await = None;
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
+        self.net.set_batching_ready(false);
 
         // Parar é decisão de quem operou. Esquecer a anotação é o que impede o
         // nó de voltar servindo no próximo arranque e desfazer essa decisão.
@@ -510,6 +557,12 @@ impl NodeRuntime {
     /// Switch this node to a new configuration: stop the current inference
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
+        let mut cfg = cfg;
+        if let Some(auth) = &self.auth {
+            let installation = auth.read().await;
+            cfg.cache_type_k = installation.cache_type_k;
+            cfg.cache_type_v = installation.cache_type_v;
+        }
         cfg.validate()?;
 
         let profile = ModelProfile::guess_from_name(&cfg.model_path);
@@ -592,6 +645,7 @@ impl NodeRuntime {
         // Só o motor sabe se o GGUF traz o bloco `nextn`; o anúncio lê daqui.
         // Ver `Network::mtp_ready`.
         let mtp_ready = self.net.mtp_ready_handle();
+        let batching_ready = self.net.batching_ready_handle();
         let auth = self.auth.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
@@ -662,6 +716,7 @@ impl NodeRuntime {
                     gen_rx.clone(),
                     generation,
                     mtp_ready.clone(),
+                    batching_ready.clone(),
                     tls.clone(),
                     auth.clone(),
                 )
@@ -671,11 +726,13 @@ impl NodeRuntime {
                         info!("servidor de inferência encerrado graciosamente");
                         append_log(port, "encerrado graciosamente");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
                     Err(e) => {
                         warn!("servidor de inferência encerrou com erro: {e}");
                         mtp_ready.store(false, std::sync::atomic::Ordering::Relaxed);
+                        batching_ready.store(false, std::sync::atomic::Ordering::Relaxed);
                         append_log(port, &format!("encerrou com erro: {e}"));
                         restarts += 1;
                         if restarts >= MAX_RESTARTS {
@@ -713,6 +770,7 @@ impl NodeRuntime {
             status: self.status_handle(),
         };
         let assignment = self.assignment.clone();
+        let net = self.net.clone();
         let gen_rx = self.generation.subscribe();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
@@ -774,6 +832,10 @@ impl NodeRuntime {
 
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
                 status.set_ready(reported).await;
+                let current_assignment = assignment.read().await.clone();
+                if let Err(e) = net.announce(current_assignment.as_ref()).await {
+                    warn!("announce de capability batch após readiness falhou: {e}");
+                }
                 return;
             }
         });
@@ -1102,6 +1164,8 @@ mod tests {
         let mut antes = cfg();
         antes.deploy_id = "d-4f2a91c3".into();
         antes.tp = None;
+        antes.cache_type_k = crate::config::KvCacheType::Q8_0;
+        antes.cache_type_v = crate::config::KvCacheType::Bf16;
 
         let mut p = crate::webui::RuntimeParams::default();
         p.n_ctx = 65536;
@@ -1130,6 +1194,8 @@ mod tests {
         assert_eq!(depois.inference_port, antes.inference_port);
         assert_eq!(depois.single_peer, antes.single_peer);
         assert_eq!(depois.no_embeddings, antes.no_embeddings);
+        assert_eq!(depois.cache_type_k, antes.cache_type_k);
+        assert_eq!(depois.cache_type_v, antes.cache_type_v);
     }
 
     /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e
@@ -1172,8 +1238,15 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
             max_sessions: 1,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
             n_batch: 512,
             max_new_tokens: 256,

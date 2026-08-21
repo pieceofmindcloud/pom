@@ -114,7 +114,10 @@ conveniência, não controle. Não precisa de reinício e pode ser virado quanta
 vezes o operador quiser - o efeito é imediato neste nó (cache de clientes,
 anúncio, recusa de texto claro remoto) e chega aos demais pela catraca, em um
 ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
-`tls_authority` (se **este** nó pode mudar). Ver `rede-p2p.md`, seção 5.
+`tls_authority` (se **este** nó pode mudar), além de `addr_candidates`,
+`libp2p_peer_id` e `inference_frame_capabilities` para que um plano de
+implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
+`rede-p2p.md`, seção 5.
 
 ## 3. Autenticação (`auth.rs`)
 
@@ -145,8 +148,10 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`,
 `/v1/session/release`, `/v1/session/rollback` e `/v1/tp/reduce`: aceita a
-`connection_key` compartilhada ou uma API key ativa. `/health` continua público
-para sondas de readiness. O transporte preferencial entre nós é o túnel
+`connection_key` compartilhada ou uma API key ativa. Nas chamadas internas
+entre peers, o nó envia a `connection_key` e, quando ela não existe, a primeira
+API key ativa. `/health` continua público para sondas de readiness. O transporte
+preferencial entre nós é o túnel
 libp2p/Noise; o cliente direto pinado é fallback quando o túnel não está
 disponível ou falha no transporte.
 

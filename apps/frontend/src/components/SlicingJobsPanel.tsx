@@ -1,7 +1,6 @@
-import { CheckCircle2, CircleDot, ListTree, XCircle } from "lucide-react";
+import { CheckCircle2, CircleDot, XCircle } from "lucide-react";
 import {
   Badge,
-  Empty,
   ErrorState,
   Panel,
   PanelHeader,
@@ -85,6 +84,7 @@ export function SlicingJobsPanel() {
 
   if (jobs.isError) return <ErrorState error={jobs.error} onRetry={() => void jobs.refetch()} />;
   if (jobs.isLoading) return <Skeleton className="h-40 w-full" />;
+  if (running.length === 0) return null;
 
   return (
     <Panel aria-label={t("jobs.title")}>
@@ -93,15 +93,9 @@ export function SlicingJobsPanel() {
         title={running.length ? t("jobs.runningCount", { count: running.length }) : t("jobs.nothingRunning")}
         subtitle={t("jobs.subtitle")}
       />
-      {list.length === 0 ? (
-        <Empty icon={<ListTree className="h-5 w-5" />} title={t("jobs.nothingRunning")}>
-          {t("jobs.emptyDetail")}
-        </Empty>
-      ) : (
-        <div className="divide-y divide-line">
-          {list.map((job) => <JobCard key={job.id} job={job} />)}
-        </div>
-      )}
+      <div className="divide-y divide-line">
+        {list.map((job) => <JobCard key={job.id} job={job} />)}
+      </div>
     </Panel>
   );
 }

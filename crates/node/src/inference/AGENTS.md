@@ -28,13 +28,22 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   tickets, `reply_to`, telemetria acumulada na ida.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
-  token para N=2,3,4 com o gateway na cabeça/meio/cauda.
-- `infer_server.rs` (2204) - axum server: `/v1/prefill`, `/v1/step`,
+  token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
+  somente capabilities que o endpoint falso implementa.
+- `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
-  e o branch de relay.
-- `llm.rs` (1466) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
-  residual capture, sampling, e o dono da cabeça de rascunho `nextn`
-  (`Option<MtpDrafter>`).
+  e o branch de relay. Os handlers decodificam o frame e entregam comandos a
+  uma fila local limitada; o worker seleciona uma entrada por sessão e pode
+  chamar o decode multi-sequência.
+- `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
+  residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
+  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `decode_tokens_batch` e
+  `decode_hidden_batch`
+  constroem um `llama_batch` com sequências independentes e devolvem o layout
+  para mapear logits e residuais por item.
+- `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
+  round robin. Cada processo cria sua própria fila; réplicas da mesma faixa não
+  compartilham scheduler, KV ou capacidade de fila.
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
   `observe`/`accept`/`draft` portado de `common_speculative_impl_draft_mtp` do
@@ -47,19 +56,26 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
   por requisição.
-- `relay.rs` (247) - `send_frame` para o próximo hop + `bubble_hop_timings`.
-- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, guarda o
+- `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
+  próximo hop, envia um frame único e distribui respostas por `item_id`;
+  `bubble_hop_timings` mantém a telemetria por salto.
+- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
+  cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
   anotação da fatia servida (Pending → Serving via `/health`).
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
-  como botão.
+  como botão. O fixture não anuncia batching, pois o endpoint falso atende
+  frames unitários.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
-  lê a parcial (f32), POSTa para o `/v1/tp/reduce` do primary (que soma na
-  `ReduceBarrier` do `infer_server`) e devolve a soma no buffer. O cliente é
+  lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
+  `/v1/tp/reduce` do primary quando é worker. O endpoint soma na
+  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O callback roda
+  em uma thread `spawn_blocking` do llama.cpp e usa o `Handle` Tokio capturado
+  no registro do grupo, nunca `Handle::current()` na thread nativa. O cliente é
   **pinado no `node_id` do primary** (`TpIdentity.rank0_node_id`): um
   `reqwest::Client` padrão recusa o certificado autoassinado do cluster e todo
   POST morria em 13 ms. O fork insere o op de reduce (`GGML_OP_CUSTOM`) depois
@@ -88,15 +104,23 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
-  `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
-  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
-  Noise falha, repete o POST pelo cliente direto pinado, usando HTTPS quando a
-  política TLS está ativa. O `TunnelRequest` leva os cabeçalhos da barreira,
-  do rank e da autorização.
+  `relay::send_bytes_or_tunnel` tenta primeiro os candidatos HTTPS diretos
+  pinados. Se nenhum endereço responde por falha de transporte, tenta o
+  `infer_tunnel` quando o membro anunciou `libp2p_peer_id` e
+  `transport/libp2p-tunnel-v1`. Essa ordem é importante no reduce TP: a chamada
+  fica dentro da barreira e um túnel indisponível não deve atrasar um endereço
+  HTTPS alcançável. `broadcast_to` mantém a URL base e a rota separadas, porque
+  o túnel encaminha a rota para o loopback do worker. O
+  plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
+  swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
+  tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
+  autorização interna usa a `connection_key` compartilhada e cai para a
+  primeira API key ativa quando a chave de conexão não existe.
 
   O snapshot `TpDecodeTelemetry`, anexado a `node_timings.tp`, separa
   reduces esperados e observados, espera total, p50/p95, bytes de
-  request/response, broadcasts e chamadas diretas, pelo túnel ou por fallback.
+  request/response, chamadas locais, broadcasts e chamadas diretas, pelo
+  túnel ou por fallback.
   Ele mede a espera da barreira síncrona, não uma latência pura de pacote. Em
   um modelo de 32 camadas, a arquitetura atual tem dois pontos de coletiva por
   camada, ou 64 esperas síncronas por `llama_decode` de um token; isso é TP e
@@ -108,6 +132,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Sem o repasse a sessão do worker segurava o único slot e a **segunda**
   requisição morria com "seq pool esgotado" (18/08).
 
+  Os handlers `handle_prefill` e `handle_step` também seguram
+  `tp_batch_gate` no caminho de um frame com um único item. O gateway envia
+  esse caso pelo `BatchCoordinator`, então o receptor precisa manter
+  `item_id`/`batch_id` no meta da resposta e impedir que outra requisição
+  altere o decode global enquanto a coletiva ainda espera todos os ranks. Os
+  filhos internos de um batch pulam o lock por meio de `BATCH_CHILD_HEADER`.
+
   **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
   Ele só é usado pela decodificação especulativa, que está desligada nas configs
   de TP hoje; ligar especulação num grupo TP deixaria o KV do worker à frente do
@@ -118,17 +149,25 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   derruba a requisição; e `decode_tokens` ainda compara `reduce_count()` antes e
   depois, porque "o callback nunca foi chamado" não tinha sintoma nenhum além do
   texto sem sentido (18/08).
-- `wire.rs` (574) - o único lugar que conhece o dtype/codificação do tensor
-  em trânsito.
+- `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
+  trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
 
 ## Funções-chave
 
 `infer_server.rs`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
-- `handle_prefill`/`handle_step` - dispatch para `prefill::run`/`run_ring`/
-  `run_direct` e `step_speculative`; `spawn_blocking` para os decodes não
-  travarem o runtime.
+- `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
+  scheduler local. O worker usa `prefill_batch_blocking` ou
+  `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
+  individual para especulação e compatibilidade.
+- `BatchRoute::group` - agrupa descritores somente quando modelo, deployment,
+  fase, configuração e próximo hop coincidem; `RouteAffinity` em
+  `pipeline.rs` preserva os node IDs das réplicas escolhidas durante a sessão.
+- `spawn_scheduler`/`run_scheduler` - worker único por contexto llama.cpp,
+  com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
+  a fila atingiu o limite. O `/health` expõe os limites e os últimos contadores
+  de lote.
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`
@@ -163,9 +202,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct` junto das outras capabilities e expõe
-  `kv_can_shift` (se o modelo permite deslocar o KV, condição de a cabeça
-  rascunhar).
+- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift` e também o snapshot
+  do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
   legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no
@@ -198,6 +236,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
+- `BatchLayout` - transforma a ordem física das linhas do `llama_batch` em
+  ranges por `item_id`; a posição global de logits nunca é inferida pelo índice
+  da sessão. Mistura de token e hidden state fica em lanes distintas.
 
 `prefill.rs`:
 - `run`/`step` - dispatch em três níveis: `run_direct`/`step_direct` quando
@@ -329,7 +370,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `runtime.rs`:
 - `NodeConfig` - tudo que define a fatia servida: model_path/label,
   start/end/total_layers, peer_count/index, primary, inference_port, n_gpu_layers,
-  n_ctx, offload_kqv, n_batch, max_sessions, prefill_chunk_tokens, max_new_tokens,
+  n_ctx, offload_kqv, n_batch, max_sessions, batching_enabled,
+  max_queue_requests, batch_window_ms, max_batch_sequences,
+  max_batch_tokens, prefill_chunk_tokens, max_new_tokens,
   sampling, no_thinking, single_peer, no_embeddings, speculative_decoding_enabled,
   speculative_k/lookup_window, mtp_enabled, mtp_draft_tokens,
   mtp_min_probability.
@@ -371,10 +414,17 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   retoma).
 
 `wire.rs`:
-- `encode`/`encode_with_encoding`/`decode` - `[4B BE len][JSON header][tensor cru]`;
-  dtype/shape no JSON, corpo binário f16 (nunca base64, nunca f32 na rede).
-- `FrameEncoding{F16, ZstdF16}` - zstd é opt-in (`frame_version=2`,
-  `ZSTD_LEVEL=6`); `WireDtype{F32, F16}` com `as_str`/`parse`/`bytes_per_value`.
+- `BatchFrame`/`BatchItem` - `frame_version=1`, vários itens nomeados no mesmo
+  payload concatenado; `encode_batch`/`decode_batch` rejeitam dtype desconhecido,
+  shape divergente, offsets fora do payload, sobreposição, item duplicado e
+  payload acima de 16 MiB.
+- `encode_batch_items`/`decode_batch_items` são o caminho distribuído; um
+  pedido de uma sessão usa o mesmo protocolo por meio de
+  `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
+  v1/v2 anteriores, pois o produto ainda não foi lançado.
+- `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
+  o fio oficial é sempre `inference/frame-v1-batch`. `WireDtype{F32, F16}`
+  continua com `as_str`/`parse`/`bytes_per_value`.
 - `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
 
 ## Predição multi-token (MTP) - `mtp.rs`

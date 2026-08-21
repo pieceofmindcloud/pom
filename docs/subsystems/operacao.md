@@ -27,6 +27,10 @@ medidas em campo.
   reduzir a janela individual (`n_ctx_total = n_ctx * max_sessions`, em
   `llm.rs`); o orçamento de prompt de cada requisição é `n_ctx` menos
   `--max-new-tokens` (ver `inferencia.md`, "Limite de prompt").
+- **Tipo do cache KV:** `cache_type_k` e `cache_type_v` ficam no `pom.json` de
+  cada instalação e valem para todos os contextos daquela instalação. O padrão
+  é `f16`; os tipos aceitos e a confirmação em `/health` estão em
+  `inferencia.md`. Eles não são escolhas por máquina no deploy.
 
 ## Subida (cluster de duas máquinas)
 

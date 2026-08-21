@@ -79,6 +79,8 @@ mod respawn;
 pub mod route;
 #[path = "inference/runtime.rs"]
 mod runtime;
+#[path = "inference/scheduler.rs"]
+mod scheduler;
 #[path = "backend/serve.rs"]
 mod serve;
 #[path = "backend/session.rs"]
@@ -331,6 +333,22 @@ async fn main() -> Result<()> {
     // ── Load existing config ─────────────────────────────────────────────────
     let app_config = config::Config::load()?;
     info!("Role: {}", app_config.role);
+
+    // Antes de qualquer coisa que possa carregar modelo: os backends do ggml
+    // enumeram os dispositivos ao serem registrados, e depois disso a lista está
+    // congelada. Aplicar a escolha mais tarde não tiraria nem devolveria placa.
+    {
+        let detected = sysmon::sample().await.gpus;
+        match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
+            _ if app_config.gpus.is_none() => {
+                info!("GPUs: todas as {} disponíveis (pom.json não restringe)", detected.len());
+            }
+            escolhidas if escolhidas.is_empty() => {
+                info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
+            }
+            escolhidas => info!("GPUs: {}", escolhidas.join(", ")),
+        }
+    }
     let p2p_port = app_config.p2p_port;
     let gateway_port = app_config.gateway_port;
     let inference_port = Some(
@@ -711,9 +729,16 @@ async fn main() -> Result<()> {
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             offload_kqv: !args.kv_cache_ram,
+            cache_type_k: config::KvCacheType::F16,
+            cache_type_v: config::KvCacheType::F16,
             fit_memory: true,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
+            batching_enabled: true,
+            max_queue_requests: 128,
+            batch_window_ms: 4,
+            max_batch_sequences: u32::MAX,
+            max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: args.prefill_chunk_tokens,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,
@@ -970,6 +995,11 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
     let config = Arc::new(RwLock::new(Config {
         role: Role::Principal,
         tls_required: false,
+        // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
+        // depois que a `pom.json` existir.
+        gpus: None,
+        cache_type_k: config::KvCacheType::F16,
+        cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
         gateway_port,
         p2p_port: 42777,

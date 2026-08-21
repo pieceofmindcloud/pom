@@ -20,47 +20,31 @@
 //!   costs no quality — unlike int8, which was considered and refused.
 
 use anyhow::{anyhow, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::{Cursor, Read};
-
-/// Nível de compressão do corpo f16, medido e não escolhido de memória
-/// (`zstd_level_ratio_versus_encode_time`, neste arquivo, macOS arm64,
-/// zstd 0.13, tensor sintético de hidden_dim 4096):
-///
-/// | regime | nível 3 | nível 6 | nível 9 |
-/// |---|---|---|---|
-/// | prefill 512x4096 compressível | 1,56x / 14,9 ms | 1,73x / 32,5 ms | 1,75x / 39,6 ms |
-/// | decode 1x4096 (alta entropia) | 1,08x / 0,025 ms | 1,08x / 0,056 ms | 1,08x / 0,144 ms |
-///
-/// Do 3 para o 6, no regime compressível: 268 KB a menos, que num enlace de
-/// 100 Mbps são **21,4 ms de rede economizados por 17,6 ms de CPU** — positivo,
-/// e cresce quanto mais estreito o enlace. Do 6 para o 9 são 31 KB (2,5 ms de
-/// rede) por 7 ms de CPU — negativo, por isso 9 e 12 foram recusados.
-///
-/// No decode, onde o estado oculto é praticamente incompressível, o nível **não
-/// muda um byte**: 7.570 bytes em 1, 3, 6, 9 e 12. O custo de subir ali é de
-/// 0,03 ms por token, ruído dentro de um orçamento de 60 ms de RTT. Ou seja, a
-/// premissa da spec ("subir o nível é a alavanca barata") só vale para o
-/// prefill; no decode não há nada para ganhar em nível nenhum.
-pub const ZSTD_LEVEL: i32 = 6;
-
+use std::collections::HashSet;
 /// Largest decoded tensor payload accepted from an inference peer. The Axum
 /// handlers apply the same body limit before this decoder sees the frame.
 pub const MAX_FRAME_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 
-/// Tensor representation selected by the sending peer for one frame.
-///
-/// `F16` is the established v1 wire contract. `ZstdF16` is deliberately
-/// opt-in: callers must use it only after the receiver advertised support.
+/// The first and only inference wire version. The frame already carries one
+/// or more independent items, so there is no separate single-item legacy
+/// format to negotiate.
+pub const BATCH_FRAME_VERSION: u32 = 1;
+
+const MAX_BATCH_HEADER_BYTES: usize = 1024 * 1024;
+
+/// Marker retained at call boundaries while all inference traffic uses the
+/// canonical batch frame. Compression negotiation is intentionally absent from
+/// the first public protocol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameEncoding {
     F16,
-    ZstdF16,
 }
 
 /// Precision a tensor takes on the wire. Adding one means adding a branch in
 /// `encode`/`decode` and nothing more.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum WireDtype {
     F32,
     F16,
@@ -90,88 +74,430 @@ impl WireDtype {
     }
 }
 
-/// Frame a header and an optional tensor.
-pub fn encode(
-    meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
-    dtype: WireDtype,
-) -> Result<Vec<u8>> {
-    if dtype != WireDtype::F16 {
-        return encode_raw(meta, tensor, dtype);
+/// One tensor region inside a [`BatchFrame`].
+///
+/// `offset` and `len` refer to the concatenated payload in the frame. The
+/// decoder validates that the region is in bounds, matches `shape` and
+/// `dtype`, and does not overlap another item before returning it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BatchItem {
+    pub item_id: String,
+    pub session_id: String,
+    pub shape: [usize; 2],
+    pub dtype: String,
+    pub offset: usize,
+    pub len: usize,
+    #[serde(default)]
+    pub meta: Value,
+}
+
+/// Versioned frame carrying independent tensors from one microbatch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BatchFrame {
+    pub version: u32,
+    pub kind: String,
+    pub batch_id: String,
+    pub items: Vec<BatchItem>,
+    pub payload: Vec<u8>,
+}
+
+/// An owned item used to build a request or response batch.
+///
+/// The tensor is kept as f32 until the final encoder pass. This makes the
+/// batch coordinator independent from the selected wire precision and avoids
+/// serialising an item twice while it waits in the coalescing window.
+#[derive(Debug, Clone)]
+pub struct BatchPayloadItem {
+    pub item_id: String,
+    pub session_id: String,
+    pub meta: Value,
+    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub dtype: WireDtype,
+}
+
+/// One decoded item, with its payload already converted to the f32 format used
+/// by the inference engine.
+#[derive(Debug, Clone)]
+pub struct DecodedBatchItem {
+    pub item_id: String,
+    pub meta: Value,
+    pub tensor: Option<(Vec<f32>, [usize; 2])>,
+    pub dtype: WireDtype,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct BatchHeader {
+    #[serde(rename = "frame_version")]
+    version: u32,
+    kind: String,
+    batch_id: String,
+    items: Vec<BatchItem>,
+}
+
+/// Encode a validated multi-item frame as
+/// `[4-byte header length][JSON header][concatenated payload]`.
+pub fn encode_batch(batch: &BatchFrame) -> Result<Vec<u8>> {
+    validate_batch(batch)?;
+    let header = serde_json::to_vec(&BatchHeader {
+        version: batch.version,
+        kind: batch.kind.clone(),
+        batch_id: batch.batch_id.clone(),
+        items: batch.items.clone(),
+    })?;
+    if header.len() > MAX_BATCH_HEADER_BYTES {
+        return Err(anyhow!(
+            "cabeçalho do batch excede o limite de {} bytes",
+            MAX_BATCH_HEADER_BYTES
+        ));
     }
-    encode_with_encoding(meta, tensor, FrameEncoding::F16)
+    frame_bytes(header, batch.payload.clone())
 }
 
-/// Frame a tensor with a negotiated f16 encoding.
-pub fn encode_with_encoding(
-    meta: &Value,
-    tensor: Option<(&[f32], [usize; 2])>,
-    encoding: FrameEncoding,
+/// Build a batch from independently owned inference items. Each item's
+/// metadata is copied into the header, while all tensors share one contiguous
+/// payload. The caller is responsible for grouping only compatible routes.
+pub fn encode_batch_items(
+    kind: impl Into<String>,
+    batch_id: impl Into<String>,
+    items: &[BatchPayloadItem],
 ) -> Result<Vec<u8>> {
-    let mut meta = meta.clone();
-    let payload = match tensor {
-        Some((values, shape)) => {
-            let expected = checked_tensor_bytes(shape, WireDtype::F16)?;
-            if values.len() * WireDtype::F16.bytes_per_value() != expected {
-                return Err(anyhow!(
-                    "tensor com {} valores não bate com shape {:?}",
-                    values.len(),
-                    shape
-                ));
-            }
-            meta["dtype"] = Value::from(WireDtype::F16.as_str());
-            meta["shape"] = Value::from(vec![shape[0], shape[1]]);
-            let raw: Vec<u8> = values
-                .iter()
-                .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
-                .collect();
-            match encoding {
-                FrameEncoding::F16 => raw,
-                FrameEncoding::ZstdF16 => {
-                    meta["frame_version"] = Value::from(2);
-                    meta["encoding"] = Value::from("zstd");
-                    meta["uncompressed_payload_bytes"] = Value::from(expected as u64);
-                    zstd::stream::encode_all(Cursor::new(raw), ZSTD_LEVEL)?
-                }
-            }
+    let kind = kind.into();
+    let batch_id = batch_id.into();
+    let mut payload = Vec::new();
+    let mut headers = Vec::with_capacity(items.len());
+    for item in items {
+        if item.item_id.trim().is_empty() {
+            return Err(anyhow!("batch item sem item_id"));
         }
-        None => Vec::new(),
-    };
-    frame(meta, payload)
+        if item.session_id.trim().is_empty() {
+            return Err(anyhow!("batch item {} sem session_id", item.item_id));
+        }
+        let (shape, bytes) = encode_tensor_payload(item.tensor.as_ref(), item.dtype)?;
+        let offset = payload.len();
+        payload.extend_from_slice(&bytes);
+        let mut meta = item.meta.clone();
+        if !meta.is_object() {
+            return Err(anyhow!(
+                "meta do item {} não é um objeto JSON",
+                item.item_id
+            ));
+        }
+        meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
+        meta["batch_id"] = Value::from(batch_id.clone());
+        meta["item_id"] = Value::from(item.item_id.clone());
+        headers.push(BatchItem {
+            item_id: item.item_id.clone(),
+            session_id: item.session_id.clone(),
+            shape,
+            dtype: item.dtype.as_str().into(),
+            offset,
+            len: bytes.len(),
+            meta,
+        });
+    }
+    encode_batch(&BatchFrame {
+        version: BATCH_FRAME_VERSION,
+        kind,
+        batch_id,
+        items: headers,
+        payload,
+    })
 }
 
-fn encode_raw(
+/// Decode and fully validate a multi-item frame before exposing any tensor
+/// region to inference code.
+pub fn decode_batch(buf: &[u8]) -> Result<BatchFrame> {
+    if buf.len() < 4 {
+        return Err(anyhow!("quadro batch curto demais: {} bytes", buf.len()));
+    }
+    let head_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if head_len > MAX_BATCH_HEADER_BYTES {
+        return Err(anyhow!(
+            "cabeçalho do batch excede o limite de {} bytes",
+            MAX_BATCH_HEADER_BYTES
+        ));
+    }
+    let head_end = 4usize
+        .checked_add(head_len)
+        .ok_or_else(|| anyhow!("tamanho do cabeçalho do batch inválido"))?;
+    if buf.len() < head_end {
+        return Err(anyhow!("cabeçalho do batch truncado"));
+    }
+    let header: BatchHeader = serde_json::from_slice(&buf[4..head_end])?;
+    let batch = BatchFrame {
+        version: header.version,
+        kind: header.kind,
+        batch_id: header.batch_id,
+        items: header.items,
+        payload: buf[head_end..].to_vec(),
+    };
+    validate_batch(&batch)?;
+    Ok(batch)
+}
+
+/// Decode every item in a validated frame. Validation happens before any
+/// tensor conversion, so a malformed item cannot partially touch inference
+/// state.
+pub fn decode_batch_items(buf: &[u8]) -> Result<(BatchFrame, Vec<DecodedBatchItem>)> {
+    let batch = decode_batch(buf)?;
+    let mut decoded = Vec::with_capacity(batch.items.len());
+    for item in &batch.items {
+        let (meta, tensor) = decode_batch_item(&batch, item)?;
+        decoded.push(DecodedBatchItem {
+            item_id: item.item_id.clone(),
+            meta,
+            tensor,
+            dtype: WireDtype::parse(&item.dtype)?,
+        });
+    }
+    Ok((batch, decoded))
+}
+
+/// Re-encode one item from a batch as a one-item batch. This is used by the
+/// receiver fan-out adapter: the local scheduler still receives independent
+/// commands, while the commands are submitted concurrently and therefore can
+/// form one local llama batch.
+pub fn encode_batch_item(batch: &BatchFrame, item: &BatchItem) -> Result<Vec<u8>> {
+    let end = item
+        .offset
+        .checked_add(item.len)
+        .ok_or_else(|| anyhow!("item excede o limite"))?;
+    if end > batch.payload.len() {
+        return Err(anyhow!("item aponta para fora do payload"));
+    }
+    encode_batch(&BatchFrame {
+        version: BATCH_FRAME_VERSION,
+        kind: batch.kind.clone(),
+        batch_id: batch.batch_id.clone(),
+        items: vec![BatchItem {
+            offset: 0,
+            ..item.clone()
+        }],
+        payload: batch.payload[item.offset..end].to_vec(),
+    })
+}
+
+/// Encode one request as a one-item batch. One-item requests and coalesced
+/// requests therefore share exactly the same protocol and validation path.
+pub fn encode_batch_single(
     meta: &Value,
     tensor: Option<(&[f32], [usize; 2])>,
     dtype: WireDtype,
 ) -> Result<Vec<u8>> {
-    let mut meta = meta.clone();
-    let payload = match tensor {
+    let (shape, payload) = match tensor {
         Some((values, shape)) => {
-            if values.len() != shape[0] * shape[1] {
+            let expected_values = shape[0]
+                .checked_mul(shape[1])
+                .ok_or_else(|| anyhow!("shape excede o limite"))?;
+            if values.len() != expected_values {
                 return Err(anyhow!(
                     "tensor com {} valores não bate com shape {:?}",
                     values.len(),
                     shape
                 ));
             }
-            meta["dtype"] = Value::from(dtype.as_str());
-            meta["shape"] = Value::from(vec![shape[0], shape[1]]);
-            match dtype {
+            let payload = match dtype {
                 WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
                 WireDtype::F16 => values
                     .iter()
                     .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
                     .collect(),
-            }
+            };
+            (shape, payload)
         }
-        None => Vec::new(),
+        None => ([0, 0], Vec::new()),
     };
-    frame(meta, payload)
+    let item_id = meta
+        .get("item_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("item-0");
+    let batch_id = meta
+        .get("batch_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .unwrap_or(item_id);
+    let session_id = meta
+        .get("session_id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .unwrap_or("__session__");
+    encode_batch(&BatchFrame {
+        version: BATCH_FRAME_VERSION,
+        kind: "inference".into(),
+        batch_id: batch_id.into(),
+        items: vec![BatchItem {
+            item_id: item_id.into(),
+            session_id: session_id.into(),
+            shape,
+            dtype: dtype.as_str().into(),
+            offset: 0,
+            len: payload.len(),
+            meta: meta.clone(),
+        }],
+        payload,
+    })
 }
 
-fn frame(meta: Value, payload: Vec<u8>) -> Result<Vec<u8>> {
-    let head = serde_json::to_vec(&meta)?;
+/// Decode a one-item frame for call sites that need the convenient historical
+/// `(meta, tensor)` shape. Multi-item receivers use `decode_batch_items`.
+pub fn decode_batch_single(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+    let batch = decode_batch(buf)?;
+    if batch.items.len() != 1 {
+        return Err(anyhow!(
+            "o endpoint de inferência ainda aceita um item por quadro batch"
+        ));
+    }
+    let item = &batch.items[0];
+    decode_batch_item(&batch, item)
+}
+
+/// Decode the canonical inference request. All inference traffic is a batch
+/// frame, including a request carrying only one item.
+pub fn decode_inference_request(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+    decode_batch_single(buf)
+}
+
+fn validate_batch(batch: &BatchFrame) -> Result<()> {
+    if batch.version != BATCH_FRAME_VERSION {
+        return Err(anyhow!(
+            "versão de batch inválida: {}, esperada {}",
+            batch.version,
+            BATCH_FRAME_VERSION
+        ));
+    }
+    if batch.kind.trim().is_empty() {
+        return Err(anyhow!("batch sem kind"));
+    }
+    if batch.batch_id.trim().is_empty() {
+        return Err(anyhow!("batch sem batch_id"));
+    }
+    if batch.items.is_empty() {
+        return Err(anyhow!("batch sem itens"));
+    }
+    if batch.payload.len() > MAX_FRAME_PAYLOAD_BYTES {
+        return Err(anyhow!(
+            "payload do batch excede limite de {} bytes",
+            MAX_FRAME_PAYLOAD_BYTES
+        ));
+    }
+
+    let mut item_ids = HashSet::with_capacity(batch.items.len());
+    let mut ranges = Vec::with_capacity(batch.items.len());
+    for item in &batch.items {
+        if item.item_id.trim().is_empty() {
+            return Err(anyhow!("item sem item_id"));
+        }
+        if item.session_id.trim().is_empty() {
+            return Err(anyhow!("item {} sem session_id", item.item_id));
+        }
+        if !item_ids.insert(&item.item_id) {
+            return Err(anyhow!("item_id duplicado: {}", item.item_id));
+        }
+        let dtype = WireDtype::parse(&item.dtype)?;
+        let expected_len = checked_tensor_bytes(item.shape, dtype)?;
+        if item.len != expected_len {
+            return Err(anyhow!(
+                "item {} declara {} bytes, esperado {} para shape {:?} em {}",
+                item.item_id,
+                item.len,
+                expected_len,
+                item.shape,
+                item.dtype
+            ));
+        }
+        let end = item
+            .offset
+            .checked_add(item.len)
+            .ok_or_else(|| anyhow!("offset do item {} excede o limite", item.item_id))?;
+        if end > batch.payload.len() {
+            return Err(anyhow!("item {} aponta para fora do payload", item.item_id));
+        }
+        ranges.push((item.offset, end, item.item_id.as_str()));
+    }
+
+    ranges.sort_unstable_by_key(|(offset, _, _)| *offset);
+    for pair in ranges.windows(2) {
+        if pair[1].0 < pair[0].1 {
+            return Err(anyhow!("itens {} e {} se sobrepõem", pair[0].2, pair[1].2));
+        }
+    }
+    Ok(())
+}
+
+fn encode_tensor_payload(
+    tensor: Option<&(Vec<f32>, [usize; 2])>,
+    dtype: WireDtype,
+) -> Result<([usize; 2], Vec<u8>)> {
+    let Some((values, shape)) = tensor else {
+        return Ok(([0, 0], Vec::new()));
+    };
+    let expected_values = shape[0]
+        .checked_mul(shape[1])
+        .ok_or_else(|| anyhow!("shape excede o limite"))?;
+    if values.len() != expected_values {
+        return Err(anyhow!(
+            "tensor com {} valores não bate com shape {:?}",
+            values.len(),
+            shape
+        ));
+    }
+    let payload = match dtype {
+        WireDtype::F32 => values.iter().flat_map(|v| v.to_le_bytes()).collect(),
+        WireDtype::F16 => values
+            .iter()
+            .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
+            .collect(),
+    };
+    checked_tensor_bytes(*shape, dtype)?;
+    Ok((*shape, payload))
+}
+
+fn decode_batch_item(
+    batch: &BatchFrame,
+    item: &BatchItem,
+) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+    let end = item
+        .offset
+        .checked_add(item.len)
+        .ok_or_else(|| anyhow!("item excede o limite"))?;
+    let mut meta = item.meta.clone();
+    if !meta.is_object() {
+        return Err(anyhow!("meta do item batch não é um objeto JSON"));
+    }
+    meta["dtype"] = Value::from(item.dtype.clone());
+    meta["shape"] = Value::from(vec![item.shape[0], item.shape[1]]);
+    meta["frame_version"] = Value::from(BATCH_FRAME_VERSION);
+    meta["batch_id"] = Value::from(batch.batch_id.clone());
+    meta["item_id"] = Value::from(item.item_id.clone());
+    decode_tensor_payload(&meta, &batch.payload[item.offset..end])
+}
+
+/// Canonical one-item encoder used by control responses and by the few
+/// internal paths that do not need to coalesce with another request.
+pub fn encode(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+) -> Result<Vec<u8>> {
+    encode_batch_single(meta, tensor, dtype)
+}
+
+/// The first public protocol has one tensor representation per item. Keep this
+/// small marker parameter at existing call boundaries while routing all bytes
+/// through `frame/v1-batch`.
+pub fn encode_with_encoding(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    _encoding: FrameEncoding,
+) -> Result<Vec<u8>> {
+    encode_batch_single(meta, tensor, WireDtype::F16)
+}
+
+fn frame_bytes(head: Vec<u8>, payload: Vec<u8>) -> Result<Vec<u8>> {
+    if head.len() > u32::MAX as usize {
+        return Err(anyhow!("cabeçalho excede o limite do protocolo"));
+    }
     let mut out = Vec::with_capacity(4 + head.len() + payload.len());
     out.extend_from_slice(&(head.len() as u32).to_be_bytes());
     out.extend_from_slice(&head);
@@ -179,20 +505,18 @@ fn frame(meta: Value, payload: Vec<u8>) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Inverse of [`encode`]. The tensor always comes back as f32 — reduced
+/// Inverse of [`encode`]. The tensor always comes back as f32 - reduced
 /// precision is a property of the wire, never of the maths.
 pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
-    if buf.len() < 4 {
-        return Err(anyhow!("quadro curto demais: {} bytes", buf.len()));
-    }
-    let head_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
-    if buf.len() < 4 + head_len {
-        return Err(anyhow!("cabeçalho truncado"));
-    }
-    let meta: Value = serde_json::from_slice(&buf[4..4 + head_len])?;
-    let payload = &buf[4 + head_len..];
-    if payload.is_empty() && meta.get("encoding").is_none() {
-        return Ok((meta, None));
+    decode_batch_single(buf)
+}
+
+fn decode_tensor_payload(
+    meta: &Value,
+    payload: &[u8],
+) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
+    if payload.is_empty() {
+        return Ok((meta.clone(), None));
     }
 
     let dtype = WireDtype::parse(meta.get("dtype").and_then(|v| v.as_str()).unwrap_or("f32"))?;
@@ -221,51 +545,19 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
         ));
     }
 
-    let decoded_payload = match meta.get("encoding").and_then(|v| v.as_str()) {
-        None => payload.to_vec(),
-        Some("zstd") => {
-            if meta.get("frame_version").and_then(|v| v.as_u64()) != Some(2) {
-                return Err(anyhow!("versão de quadro comprimido inválida"));
-            }
-            let declared = meta
-                .get("uncompressed_payload_bytes")
-                .and_then(|v| v.as_u64())
-                .ok_or_else(|| anyhow!("quadro comprimido sem tamanho declarado"))?
-                as usize;
-            if declared > MAX_FRAME_PAYLOAD_BYTES {
-                return Err(anyhow!(
-                    "payload descomprimido excede limite de {} bytes",
-                    MAX_FRAME_PAYLOAD_BYTES
-                ));
-            }
-            if declared != expected_bytes {
-                return Err(anyhow!("tamanho declarado não bate com o shape"));
-            }
-            let decoder = zstd::stream::read::Decoder::new(payload)?;
-            let mut output = Vec::with_capacity(expected_bytes);
-            decoder
-                .take((MAX_FRAME_PAYLOAD_BYTES + 1) as u64)
-                .read_to_end(&mut output)?;
-            if output.len() != expected_bytes {
-                return Err(anyhow!("payload zstd truncado ou maior que o declarado"));
-            }
-            output
-        }
-        Some(other) => return Err(anyhow!("encoding de fio desconhecido: {other}")),
-    };
-    if decoded_payload.len() != expected_bytes {
+    if payload.len() != expected_bytes {
         return Err(anyhow!(
             "payload tem {} bytes, esperado {expected_bytes}",
-            decoded_payload.len()
+            payload.len()
         ));
     }
 
     let values: Vec<f32> = match dtype {
-        WireDtype::F32 => decoded_payload
+        WireDtype::F32 => payload
             .chunks_exact(4)
             .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
             .collect(),
-        WireDtype::F16 => decoded_payload
+        WireDtype::F16 => payload
             .chunks_exact(2)
             .map(|c| f16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
             .collect(),
@@ -276,7 +568,7 @@ pub fn decode(buf: &[u8]) -> Result<(Value, Option<(Vec<f32>, [usize; 2])>)> {
             values.len()
         ));
     }
-    Ok((meta, Some((values, [shape[0], shape[1]]))))
+    Ok((meta.clone(), Some((values, [shape[0], shape[1]]))))
 }
 
 fn checked_tensor_bytes(shape: [usize; 2], dtype: WireDtype) -> Result<usize> {
@@ -376,140 +668,19 @@ fn f16_bits_to_f32(bits: u16) -> f32 {
 mod tests {
     use super::*;
 
-    /// Pseudo-random hidden state with the shape real activations have: mostly
-    /// unit-magnitude, roughly gaussian, a few large outliers. A constant
-    /// tensor would compress ~500x and teach nothing about the wire.
-    fn synthetic_hidden_state(rows: usize, dim: usize) -> Vec<f32> {
-        let mut state = 0x2545_F491_4F6C_DD1D_u64;
-        let mut next = || {
-            state ^= state << 13;
-            state ^= state >> 7;
-            state ^= state << 17;
-            state
-        };
-        (0..rows * dim)
-            .map(|i| {
-                // sum of 4 uniforms ≈ gaussian
-                let mut acc = 0.0f32;
-                for _ in 0..4 {
-                    acc += (next() >> 40) as f32 / 8_388_608.0 - 1.0;
-                }
-                let v = acc * 0.6;
-                if i % 4096 == 17 {
-                    v * 30.0
-                } else {
-                    v
-                }
-            })
-            .collect()
-    }
-
-    /// Measurement behind `--ignored`, kept in tree because the level chosen in
-    /// `encode_with_encoding` has to be re-justified whenever zstd or the
-    /// hidden dim changes. Run with:
-    ///
-    /// ```text
-    /// cargo test -p node --release zstd_level -- --ignored --nocapture
-    /// ```
     #[test]
-    #[ignore]
-    fn zstd_level_ratio_versus_encode_time() {
-        let decode_tensor = synthetic_hidden_state(1, 4096);
-        let prefill_tensor = synthetic_hidden_state(512, 4096);
-        // Narrow band: post-layernorm residual, where the f16 exponent byte
-        // repeats and zstd has something to find.
-        let narrow: Vec<f32> = decode_tensor.iter().map(|v| v * 0.05).collect();
-        let narrow_prefill: Vec<f32> = prefill_tensor.iter().map(|v| v * 0.05).collect();
-        // Baixa entropia: metade dos valores repetida de um conjunto pequeno,
-        // que é o regime onde a razão medida em campo (~1,8x) apareceria.
-        let repetitive: Vec<f32> = prefill_tensor
-            .iter()
-            .enumerate()
-            .map(|(i, v)| {
-                if i % 2 == 0 {
-                    (i % 7) as f32 * 0.125
-                } else {
-                    *v
-                }
-            })
-            .collect();
-        for (name, values) in [
-            ("decode 1x4096", &decode_tensor),
-            ("decode 1x4096 (banda estreita)", &narrow),
-            ("prefill 512x4096 (baixa entropia)", &repetitive),
-            ("prefill 512x4096", &prefill_tensor),
-            ("prefill 512x4096 (banda estreita)", &narrow_prefill),
-        ] {
-            let raw: Vec<u8> = values
-                .iter()
-                .flat_map(|v| f32_to_f16_bits(*v).to_le_bytes())
-                .collect();
-            println!("\n{name}: {} bytes crus", raw.len());
-            for level in [1, 3, 6, 9, 12] {
-                let reps = if raw.len() > 1 << 20 { 5 } else { 200 };
-                let start = std::time::Instant::now();
-                let mut out = Vec::new();
-                for _ in 0..reps {
-                    out = zstd::stream::encode_all(Cursor::new(&raw[..]), level).unwrap();
-                }
-                let per = start.elapsed().as_secs_f64() * 1000.0 / reps as f64;
-                println!(
-                    "  nivel {level:2}: {} bytes ({:.2}x) em {per:.3} ms  -> 100Mbps: {:.3} ms de rede",
-                    out.len(),
-                    raw.len() as f64 / out.len() as f64,
-                    out.len() as f64 * 8.0 / 100_000.0
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn compressed_f16_round_trip_is_bounded_and_preserves_the_tensor_shape() {
-        let values = vec![0.25_f32; 512 * 4096];
-        let meta = serde_json::json!({ "session_id": "compressed" });
-        let framed =
-            encode_with_encoding(&meta, Some((&values, [512, 4096])), FrameEncoding::ZstdF16)
-                .unwrap();
-
-        let (back_meta, tensor) = decode(&framed).unwrap();
-        let (back, shape) = tensor.unwrap();
-        assert_eq!(back_meta["frame_version"], 2);
-        assert_eq!(back_meta["encoding"], "zstd");
-        assert_eq!(shape, [512, 4096]);
-        assert_eq!(back.len(), values.len());
-    }
-
-    #[test]
-    fn compressed_frame_declaring_more_than_the_bounded_uncompressed_limit_is_refused() {
-        let meta = serde_json::json!({
-            "dtype": "f16",
-            "shape": [1, 1],
-            "frame_version": 2,
-            "encoding": "zstd",
-            "uncompressed_payload_bytes": MAX_FRAME_PAYLOAD_BYTES + 1,
-        });
-        let head = serde_json::to_vec(&meta).unwrap();
-        let mut framed = Vec::new();
-        framed.extend_from_slice(&(head.len() as u32).to_be_bytes());
-        framed.extend_from_slice(&head);
-        assert!(decode(&framed).unwrap_err().to_string().contains("limite"));
-    }
-
-    #[test]
-    fn malformed_compressed_frame_is_refused_without_decoding_a_tensor() {
-        let meta = serde_json::json!({
-            "dtype": "f16",
-            "shape": [512, 4096],
-            "frame_version": 2,
-            "encoding": "zstd",
-            "uncompressed_payload_bytes": 4 * 1024 * 1024,
-        });
-        let head = serde_json::to_vec(&meta).unwrap();
-        let mut framed = Vec::new();
-        framed.extend_from_slice(&(head.len() as u32).to_be_bytes());
-        framed.extend_from_slice(&head);
-        framed.extend_from_slice(&[0x28, 0xb5]);
-        assert!(decode(&framed).is_err());
+    fn one_item_and_multi_item_requests_use_the_same_first_protocol() {
+        let values = vec![0.25_f32; 8];
+        let single = encode_with_encoding(
+            &serde_json::json!({"session_id": "single"}),
+            Some((&values, [1, 8])),
+            FrameEncoding::F16,
+        )
+        .unwrap();
+        let batch = decode_batch(&single).unwrap();
+        assert_eq!(batch.version, BATCH_FRAME_VERSION);
+        assert_eq!(batch.items.len(), 1);
+        assert_eq!(batch.items[0].session_id, "single");
     }
 
     #[test]
@@ -576,5 +747,127 @@ mod tests {
         .unwrap();
         framed.truncate(framed.len() - 2);
         assert!(decode(&framed).is_err());
+    }
+
+    fn sample_batch() -> BatchFrame {
+        BatchFrame {
+            version: BATCH_FRAME_VERSION,
+            kind: "hidden-state".into(),
+            batch_id: "batch-001".into(),
+            items: vec![
+                BatchItem {
+                    item_id: "item-a".into(),
+                    session_id: "session-a".into(),
+                    shape: [1, 2],
+                    dtype: "f16".into(),
+                    offset: 0,
+                    len: 4,
+                    meta: serde_json::json!({"phase": "prefill"}),
+                },
+                BatchItem {
+                    item_id: "item-b".into(),
+                    session_id: "session-b".into(),
+                    shape: [1, 2],
+                    dtype: "f16".into(),
+                    offset: 4,
+                    len: 4,
+                    meta: serde_json::json!({"phase": "step", "token": 7}),
+                },
+            ],
+            payload: (0u8..8).collect(),
+        }
+    }
+
+    fn rewrite_batch_header(mut framed: Vec<u8>, rewrite: impl FnOnce(&mut Value)) -> Vec<u8> {
+        let head_len = u32::from_be_bytes([framed[0], framed[1], framed[2], framed[3]]) as usize;
+        let mut header: Value = serde_json::from_slice(&framed[4..4 + head_len]).unwrap();
+        rewrite(&mut header);
+        let payload = framed.split_off(4 + head_len);
+        let head = serde_json::to_vec(&header).unwrap();
+        let mut rewritten = Vec::with_capacity(4 + head.len() + payload.len());
+        rewritten.extend_from_slice(&(head.len() as u32).to_be_bytes());
+        rewritten.extend_from_slice(&head);
+        rewritten.extend_from_slice(&payload);
+        rewritten
+    }
+
+    #[test]
+    fn batch_frame_round_trip_preserves_items_and_payload() {
+        let original = sample_batch();
+        let framed = encode_batch(&original).unwrap();
+        let decoded = decode_batch(&framed).unwrap();
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn single_item_batch_is_accepted_by_the_rolling_upgrade_adapter() {
+        let meta = serde_json::json!({
+            "session_id": "session-single",
+            "chunk_index": 2,
+        });
+        let values = vec![0.5_f32, -1.25];
+        let framed = encode_batch_single(&meta, Some((&values, [1, 2])), WireDtype::F16).unwrap();
+        let (decoded_meta, decoded_tensor) = decode_inference_request(&framed).unwrap();
+        assert_eq!(decoded_meta["session_id"], "session-single");
+        assert_eq!(decoded_meta["frame_version"], BATCH_FRAME_VERSION);
+        let (decoded_values, shape) = decoded_tensor.unwrap();
+        assert_eq!(shape, [1, 2]);
+        assert!((decoded_values[0] - values[0]).abs() < 0.001);
+        assert!((decoded_values[1] - values[1]).abs() < 0.001);
+    }
+
+    #[test]
+    fn batch_frame_rejects_overlapping_offsets() {
+        let framed = encode_batch(&sample_batch()).unwrap();
+        let framed = rewrite_batch_header(framed, |header| {
+            header["items"][1]["offset"] = Value::from(2);
+        });
+        let error = decode_batch(&framed).unwrap_err().to_string();
+        assert!(error.contains("sobrepõem"), "erro inesperado: {error}");
+    }
+
+    #[test]
+    fn batch_frame_rejects_truncated_payload() {
+        let mut framed = encode_batch(&sample_batch()).unwrap();
+        framed.pop();
+        assert!(decode_batch(&framed).is_err());
+    }
+
+    #[test]
+    fn batch_frame_rejects_unknown_dtype() {
+        let framed = encode_batch(&sample_batch()).unwrap();
+        let framed = rewrite_batch_header(framed, |header| {
+            header["items"][0]["dtype"] = Value::from("int8");
+        });
+        let error = decode_batch(&framed).unwrap_err().to_string();
+        assert!(
+            error.contains("dtype de fio desconhecido"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn batch_frame_rejects_duplicate_item_ids() {
+        let framed = encode_batch(&sample_batch()).unwrap();
+        let framed = rewrite_batch_header(framed, |header| {
+            header["items"][1]["item_id"] = Value::from("item-a");
+        });
+        let error = decode_batch(&framed).unwrap_err().to_string();
+        assert!(
+            error.contains("item_id duplicado"),
+            "erro inesperado: {error}"
+        );
+    }
+
+    #[test]
+    fn batch_frame_rejects_payload_larger_than_the_wire_limit() {
+        let mut frame = sample_batch();
+        frame.items[0].shape = [1, MAX_FRAME_PAYLOAD_BYTES / 2 + 1];
+        frame.items[0].len = MAX_FRAME_PAYLOAD_BYTES + 2;
+        frame.items[1].offset = frame.items[0].len;
+        frame.items[1].len = 0;
+        frame.payload = vec![0; MAX_FRAME_PAYLOAD_BYTES + 2];
+        let error = encode_batch(&frame).unwrap_err().to_string();
+        assert!(error.contains("limite"), "erro inesperado: {error}");
     }
 }

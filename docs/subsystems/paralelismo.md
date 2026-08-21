@@ -24,6 +24,22 @@ travessia por fronteira de camada para cada token e não precisa de uma barreira
 global a cada operação interna. A ordem dos nós importa, e a máquina da camada
 0 deve ter memória suficiente para o prompt e o KV cache.
 
+### Réplicas e scheduler
+
+Duas máquinas que anunciam a mesma faixa são réplicas de um estágio, não dois
+saltos consecutivos da mesma requisição. Cada peer mantém seu próprio scheduler
+local, contexto `llama.cpp` e KV cache. O gateway escolhe uma réplica para cada
+sessão e preserva essa afinidade nas rodadas seguintes; as duas réplicas não
+compartilham fila nem scheduler global. Requisições independentes que chegam à
+mesma réplica podem formar um microbatch local.
+
+Esse batching local não transforma réplicas em um grupo TP. Para batching
+distribuído de pipeline, os peers ainda precisam negociar um frame multi-item e
+correlacionar cada estado oculto por sessão. No estado atual, a negociação e o
+fallback de frame continuam individuais entre hops. `RouteAffinity` registra
+os node IDs escolhidos por estágio, e `BatchRoute::group` só permite agrupar
+itens que compartilham o mesmo próximo hop e contrato de execução.
+
 ## Tensor parallelism
 
 No TP, todos os ranks carregam todas as camadas, mas alguns tensores de cada
@@ -33,8 +49,9 @@ contribuições de todos os ranks. A soma é um all-reduce e cada rank recebe o
 mesmo resultado antes de continuar a camada.
 
 O POM carimba cada shard TP com tamanho e rank. A coletiva HTTP em
-`POST /v1/tp/reduce` troca os parciais durante o forward pass e registra
-bytes, espera e percentis na telemetria. Em um modelo de 32 camadas com dois
+`POST /v1/tp/reduce` troca os parciais dos workers durante o forward pass; o
+primary contribui na barreira local. O sistema registra bytes, espera e
+percentis na telemetria. Em um modelo de 32 camadas com dois
 pontos row-parallel por camada, um decode faz 64 reduces por token. Esses
 reduces não podem ser adiados para o fim: a próxima operação da camada depende
 do resultado somado. Fazer um único reduce final mudaria a matemática do
@@ -60,12 +77,17 @@ tráfego de estado oculto único. O próprio parcial das projeções row-paralle
 precisa atravessar a rede antes que a camada seguinte possa rodar. Compressão
 de frame do pipeline não elimina essa dependência; são problemas diferentes.
 
+O scheduler de um grupo TP também não é uma fila compartilhada entre processos.
+O rank primário deve coordenar a mesma lista de itens, posições e shapes em
+todos os ranks antes de uma coletiva. Enquanto essa chave de batch não estiver
+ligada à barreira, o runtime mantém TP no caminho de uma sequência por decode.
+
 ## Telemetria
 
 Pipeline e TP aparecem em blocos separados. Pipeline mostra hops, fase,
 backend, transporte, bytes e o modo de resposta. TP mostra reduces esperados e
 observados, espera total, p50/p95, bytes de request e response e se o caminho
-foi direto ou túnel. Uma espera TP próxima de `reduces * RTT` indica que a
+foi local, direto ou túnel. Uma espera TP próxima de `reduces * RTT` indica que a
 topologia, e não apenas o kernel CUDA, está dominando a taxa de tokens.
 
 Para uma análise operacional, compare:

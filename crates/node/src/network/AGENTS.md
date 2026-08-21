@@ -21,13 +21,17 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   cliente direto pinado como fallback. `TunnelRequest` leva método, caminho,
   corpo e cabeçalhos, inclusive a credencial da porta de inferência;
   `serve_loopback` repassa POSTs para o servidor de inferência e GETs para a
-  sonda `/health`. `measure_rtt` mede a ida e volta pelo mesmo túnel Noise.
+  sonda `/health`. POSTs sem `Content-Type` recebem o padrão binário, mas um
+  `Content-Type` explícito, como `application/json` no ciclo de vida da sessão,
+  nunca é duplicado nem sobrescrito. `measure_rtt` mede a ida e volta pelo
+  mesmo túnel Noise.
 - `bitswap.rs` - codec libp2p request/response para um protocolo bitswap
   (manifesto + chunks com SHA256/MD5). Definido e ligado ao swarm, mas ninguém
   atende requisição (ver Defeitos).
 - `discovery.rs` - swarm libp2p: gossipsub, Kademlia, mDNS, identify, relay
   (cliente e servidor), DCuTR, AutoNAT, bitswap, túnel de inferência. Põe peers
-  no `Network` via `insert_peer`.
+  no `Network` via `insert_peer` e reidrata no swarm os endereços dos peers vivos
+  antes de enviar pelo túnel quando o anúncio chegou antes do registro de rota.
 - `identity.rs` - chave Ed25519 de longa duração e o `node_id` (SHA256 da
   pubkey). Vive em `<project_root>/.pom-node.key` (ou `$POM_NODE_KEY`).
 - `network.rs` - o coração do P2P UDP: `P2PMessage`, `PeerInfo`, socket
@@ -83,11 +87,16 @@ pertence a quem vai discar, não a quem anunciou (daí `addr_candidates` + `Rout
   segue a mesma ordem em UDP e gossip: fixação explícita, endereço público
   atual das interfaces com estável antes de temporário, endereço observado por
   `identify`, demais interfaces locais e o sentinela `0.0.0.0`. Bridges e pares
-  virtuais de container não entram nos candidatos automáticos.
+  virtuais de container não entram nos candidatos automáticos. A capability
+  `inference/frame-v1-batch` só entra quando o servidor de inferência carregou
+  um modelo e o scheduler multi-item está ativo; setup, TP, carregamento e
+  queda não anunciam capacidade de inferência. Não existe anúncio ou fallback
+  para formatos de frame anteriores, porque o produto ainda não foi lançado.
 - `TpIdentity` (`{role, group_id, size, rank}`) - identidade de tensor
   parallelism (caminho C) anunciada em `Announce.tp`/`PeerInfo.tp`
-  (`None` = nó sem TP). Cada `TpMember` leva o `PeerId` e a capacidade do
-  túnel libp2p preferencial entre redes. `set_tp`/`tp_identity` ligam/leem sem reiniciar;
+  (`None` = nó sem TP). Cada `TpMember` leva o `PeerId`, os candidatos de
+  endereço UDP e a capacidade do túnel libp2p preferencial entre redes.
+  `set_tp`/`tp_identity` ligam/leem sem reiniciar;
   `PeerInfo::is_tp_worker` é o predicado que o planejador usa para excluir
   workers da cadeia.
 

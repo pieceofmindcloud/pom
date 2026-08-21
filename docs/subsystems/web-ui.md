@@ -344,6 +344,9 @@ impressão digital é só modelo + conjunto de faixas.
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
   Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
+  no tab Globais, o inspetor também permite escolher `cache_type_k` e
+  `cache_type_v` para a instalação; o botão salva em `POST /api/ui/cache-types`,
+  separado dos overrides por máquina e do payload de um deploy;
   o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e

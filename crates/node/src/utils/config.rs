@@ -50,6 +50,18 @@ impl Default for KvCacheType {
 }
 
 impl KvCacheType {
+    pub const ALL: [Self; 9] = [
+        Self::F32,
+        Self::F16,
+        Self::Bf16,
+        Self::Q8_0,
+        Self::Q4_0,
+        Self::Q4_1,
+        Self::Iq4Nl,
+        Self::Q5_0,
+        Self::Q5_1,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::F32 => "f32",

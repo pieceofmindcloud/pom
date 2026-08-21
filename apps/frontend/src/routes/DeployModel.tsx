@@ -56,7 +56,7 @@ import {
   Sparkles,
 } from "lucide-react";
 import { api } from "../lib/api";
-import { useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
+import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes } from "../lib/format";
@@ -77,6 +77,8 @@ import type {
   DeployPlan,
   DeploySelection,
   DeployStrategy,
+  CacheTypesResponse,
+  KvCacheType,
   RuntimeParams,
   TpLaunch,
 } from "../lib/types";
@@ -108,6 +110,30 @@ const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?
   { key: "repeat_penalty", label: "Penalidade", step: "0.01" },
   { key: "repeat_last_n", label: "Janela repetição" },
 ];
+
+const DEFAULT_CACHE_TYPES: KvCacheType[] = [
+  "f32",
+  "f16",
+  "bf16",
+  "q8_0",
+  "q4_0",
+  "q4_1",
+  "iq4_nl",
+  "q5_0",
+  "q5_1",
+];
+
+const CACHE_TYPE_LABELS: Record<KvCacheType, string> = {
+  f32: "F32",
+  f16: "F16",
+  bf16: "BF16",
+  q8_0: "Q8_0",
+  q4_0: "Q4_0",
+  q4_1: "Q4_1",
+  iq4_nl: "IQ4_NL",
+  q5_0: "Q5_0",
+  q5_1: "Q5_1",
+};
 
 /** The plan on screen, in the shape the routes accept it back.
  *
@@ -330,10 +356,22 @@ export function DeployModel() {
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState(false);
   const [running, setRunning] = useState(false);
+  const [cacheTypeK, setCacheTypeK] = useState<KvCacheType>("f16");
+  const [cacheTypeV, setCacheTypeV] = useState<KvCacheType>("f16");
+  const [cacheTypesLoaded, setCacheTypesLoaded] = useState(false);
+  const [savingCacheTypes, setSavingCacheTypes] = useState(false);
   const [jobId, setJobId] = useState<string | null>(null);
   const toast = useToast();
   const invalidate = useInvalidate();
   const jobs = useJobs();
+  const cacheTypes = useCacheTypes();
+
+  useEffect(() => {
+    if (cacheTypesLoaded || !cacheTypes.data) return;
+    setCacheTypeK(cacheTypes.data.cache_type_k);
+    setCacheTypeV(cacheTypes.data.cache_type_v);
+    setCacheTypesLoaded(true);
+  }, [cacheTypes.data, cacheTypesLoaded]);
 
   /** Every slicing round anyone in the cluster holds, named once. */
   const groups = useMemo(() => {
@@ -804,6 +842,27 @@ export function DeployModel() {
     }
   }
 
+  async function saveCacheTypes() {
+    setSavingCacheTypes(true);
+    try {
+      const saved = await api.post<CacheTypesResponse>("/api/ui/cache-types", {
+        cache_type_k: cacheTypeK,
+        cache_type_v: cacheTypeV,
+      });
+      setCacheTypeK(saved.cache_type_k);
+      setCacheTypeV(saved.cache_type_v);
+      setCacheTypesLoaded(true);
+      toast.success(
+        "Cache KV salvo",
+        "A escolha é global para esta instalação e será usada no próximo carregamento do modelo.",
+      );
+    } catch (e) {
+      toast.fromError("Não foi possível salvar o cache KV", e);
+    } finally {
+      setSavingCacheTypes(false);
+    }
+  }
+
   function restoreNodePlan() {
     setSelection(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
@@ -896,6 +955,9 @@ export function DeployModel() {
             : rows.length === 0
               ? t("deploy.whyNotNoModel")
               : null;
+  const cacheTypeChoices = cacheTypes.data?.choices?.length
+    ? cacheTypes.data.choices
+    : DEFAULT_CACHE_TYPES;
 
   return (
     <>
@@ -1130,6 +1192,57 @@ export function DeployModel() {
                 <Switch checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
                 <Switch checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
               </div>
+            </section>
+
+            <section className="border-b border-aqua/20 bg-aqua/[0.035] px-2 py-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-aqua">Cache KV da instalação</p>
+                  <p className="mt-1 text-[0.6rem] leading-relaxed text-faint">Tipo aplicado a todos os contextos deste nó no próximo carregamento.</p>
+                </div>
+                <Badge tone="aqua" className="shrink-0 px-1.5 py-0 text-[0.56rem]">global</Badge>
+              </div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <label className="min-w-0 text-[0.62rem]">
+                  <span className="mb-1 block text-muted">Cache K</span>
+                  <Select
+                    aria-label="Cache K"
+                    value={cacheTypeK}
+                    disabled={cacheTypes.isLoading || savingCacheTypes}
+                    onChange={(event) => setCacheTypeK(event.target.value as KvCacheType)}
+                    className="h-7 px-1.5 text-[0.62rem]"
+                  >
+                    {cacheTypeChoices.map((choice) => (
+                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
+                    ))}
+                  </Select>
+                </label>
+                <label className="min-w-0 text-[0.62rem]">
+                  <span className="mb-1 block text-muted">Cache V</span>
+                  <Select
+                    aria-label="Cache V"
+                    value={cacheTypeV}
+                    disabled={cacheTypes.isLoading || savingCacheTypes}
+                    onChange={(event) => setCacheTypeV(event.target.value as KvCacheType)}
+                    className="h-7 px-1.5 text-[0.62rem]"
+                  >
+                    {cacheTypeChoices.map((choice) => (
+                      <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
+                    ))}
+                  </Select>
+                </label>
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                loading={savingCacheTypes}
+                disabled={cacheTypes.isLoading}
+                onClick={() => void saveCacheTypes()}
+                className="mt-2 w-full text-[0.65rem]"
+              >
+                Salvar cache KV
+              </Button>
             </section>
 
             {(isWhole || isTp) && (wholeModel || tpGroup) && (

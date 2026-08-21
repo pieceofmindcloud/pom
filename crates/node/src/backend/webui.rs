@@ -12,7 +12,7 @@
 
 use crate::auth::{AuthState, ConnectionAuth};
 use crate::catalog::{self, Catalog};
-use crate::config::Role;
+use crate::config::{KvCacheType, Role};
 use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
@@ -51,6 +51,10 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/network/rtt", get(network_rtt))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
+        .route(
+            "/api/ui/cache-types",
+            get(get_cache_types).post(save_cache_types),
+        )
         .route("/api/ui/network/advertise-addr", post(save_advertise_addr))
         .route("/api/ui/network/tls", post(save_tls))
         .route("/api/ui/plan", post(plan_split_endpoint))
@@ -386,6 +390,45 @@ async fn get_paths(State(state): State<GatewayState>) -> impl IntoResponse {
             .iter().map(|d| path_entry(d, None)).collect::<Vec<_>>(),
         "default_shard_dir": crate::config::default_shard_dir().to_string_lossy(),
     }))
+}
+
+/// The KV cache representation is an installation setting, not a deployment
+/// or machine override. The deploy screen reads this separately so it cannot
+/// accidentally put a global storage choice into one node's launch payload.
+async fn get_cache_types(State(state): State<GatewayState>) -> impl IntoResponse {
+    let cfg = state.auth.read().await;
+    Json(json!({
+        "cache_type_k": cfg.cache_type_k,
+        "cache_type_v": cfg.cache_type_v,
+        "choices": KvCacheType::ALL.iter().map(|kind| kind.as_str()).collect::<Vec<_>>(),
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SaveCacheTypesRequest {
+    pub cache_type_k: KvCacheType,
+    pub cache_type_v: KvCacheType,
+}
+
+async fn save_cache_types(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SaveCacheTypesRequest>,
+) -> Response {
+    {
+        let mut cfg = state.auth.write().await;
+        cfg.cache_type_k = req.cache_type_k;
+        cfg.cache_type_v = req.cache_type_v;
+        if let Err(e) = cfg.save() {
+            return bad_request(format!("não deu para gravar pom.json: {e}"));
+        }
+    }
+    info!(
+        cache_type_k = req.cache_type_k.as_str(),
+        cache_type_v = req.cache_type_v.as_str(),
+        "tipos do cache KV atualizados pela interface"
+    );
+    get_cache_types(State(state)).await.into_response()
 }
 
 #[derive(Debug, Deserialize)]

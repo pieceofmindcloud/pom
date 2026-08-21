@@ -28,6 +28,12 @@ vi.mock("../lib/api", () => ({
         ? Promise.resolve({ jobs: [] })
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
+          : url === "/api/ui/cache-types"
+            ? Promise.resolve({
+                cache_type_k: "f16",
+                cache_type_v: "f16",
+                choices: ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+              })
           : undefined,
     ),
     post: (...args: unknown[]) => post(...args),

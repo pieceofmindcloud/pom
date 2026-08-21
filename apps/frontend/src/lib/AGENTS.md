@@ -26,6 +26,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
+  `useCacheTypes` reads the installation-wide K/V cache representation from
+  `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
+  deployment inspector, not a per-machine launch parameter.
 - `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
   `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
   desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
@@ -87,7 +90,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### queries.ts
 - `useIsSetupMode()` - one-shot probe (`retry:false`, `staleTime:Infinity`): 404 on `/api/ui/node` means the node runs only the setup router. Its own query so the shell does not flip between setup and dashboard on poll errors.
 - `useNode()` - polls `/api/ui/node` every 4s, stores `connection_key`.
-- `useCluster()` 5s, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useJobs()` / `useTransfers()` 2s, `useOffers()` 2s, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
+- `useCluster()` 5s, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` / `useTransfers()` 2s, `useOffers()` 2s, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` polls at 2s (was 5s): an offer is a question waiting on a human, not a progress bar, and with the sender no longer hashing the file before offering (the digest moved to the receiver, after accept) an offer now lands in milliseconds - a 5s cadence only added waiting on top of a 5s poll.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.

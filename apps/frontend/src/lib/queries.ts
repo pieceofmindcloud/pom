@@ -12,6 +12,7 @@ import { ApiError, api, listDeployments, setConnectionKey } from "./api";
 import type {
   AdminNode,
   ApiKey,
+  CacheTypesResponse,
   CatalogResponse,
   ClusterView,
   Job,
@@ -45,6 +46,7 @@ export const keys = {
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
   paths: ["paths"] as const,
+  cacheTypes: ["cache-types"] as const,
   jobs: ["jobs"] as const,
   transfers: ["transfers"] as const,
   offers: ["offers"] as const,
@@ -133,6 +135,14 @@ export function usePaths() {
   return useQuery({
     queryKey: keys.paths,
     queryFn: () => api.get<PathsResponse>("/api/ui/paths", { auth: false }),
+    staleTime: 30_000,
+  });
+}
+
+export function useCacheTypes() {
+  return useQuery({
+    queryKey: keys.cacheTypes,
+    queryFn: () => api.get<CacheTypesResponse>("/api/ui/cache-types", { auth: false }),
     staleTime: 30_000,
   });
 }

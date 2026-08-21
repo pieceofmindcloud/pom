@@ -344,6 +344,23 @@ export interface PathsResponse {
   shard_max_gb: number;
 }
 
+export type KvCacheType =
+  | "f32"
+  | "f16"
+  | "bf16"
+  | "q8_0"
+  | "q4_0"
+  | "q4_1"
+  | "iq4_nl"
+  | "q5_0"
+  | "q5_1";
+
+export interface CacheTypesResponse {
+  cache_type_k: KvCacheType;
+  cache_type_v: KvCacheType;
+  choices: KvCacheType[];
+}
+
 /** A slicing or apply run. `src/webui.rs` — `Job`. */
 export interface Job {
   id: string;

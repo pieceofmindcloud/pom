@@ -26,6 +26,12 @@ vi.mock("../lib/api", () => ({
         ? Promise.resolve({ jobs: [] })
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
+          : url === "/api/ui/cache-types"
+            ? Promise.resolve({
+                cache_type_k: "f16",
+                cache_type_v: "f16",
+                choices: ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
+              })
           : undefined,
     ),
     post: (...args: unknown[]) => post(...args),
@@ -165,6 +171,38 @@ describe("DeployModel", () => {
     localStorage.clear();
   });
   afterEach(cleanup);
+
+  it("exibe e salva o tipo do cache KV no inspetor global da instalação", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/cache-types"
+        ? Promise.resolve({ cache_type_k: "q8_0", cache_type_v: "f16", choices: [] })
+        : Promise.resolve(p),
+    );
+    mount();
+
+    await waitFor(() => {
+      expect(screen.getByRole("tab", { name: "Globais" })).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+
+    expect(screen.getByText("Cache KV da instalação")).toBeTruthy();
+    const cacheK = screen.getByRole("combobox", { name: "Cache K" });
+    const cacheV = screen.getByRole("combobox", { name: "Cache V" });
+    expect((cacheK as HTMLSelectElement).value).toBe("f16");
+    expect((cacheV as HTMLSelectElement).value).toBe("f16");
+
+    fireEvent.change(cacheK, { target: { value: "q8_0" } });
+    fireEvent.click(screen.getByRole("button", { name: "Salvar cache KV" }));
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/cache-types", {
+        cache_type_k: "q8_0",
+        cache_type_v: "f16",
+      });
+    });
+  });
 
   it("explica a recusa mesmo quando o nó devolve os passos fora da ordem de camadas", async () => {
     post.mockResolvedValue(planOutOfLayerOrder());

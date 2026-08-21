@@ -184,8 +184,9 @@ offload no primeiro clique.
   `tests/fixtures/node-<N>` (nó 1 = principal, guarda `connection_key` e
   `api_keys`; demais = node com bootstrap para `127.0.0.1:42777`). Recusa
   gerar sem `connection_key` (herda da config base `--base`, nunca gera a
-  chave) e `--force` sobrescreve. As portas seguem a série: gateway 8080+,
-  p2p 42777+, inferência 8181+ (nó 1 herda a histórica 8092).
+  chave), `--force` sobrescreve e `--advertise-addr` atualiza apenas o
+  endereço anunciado mesmo em configs existentes. As portas seguem a série:
+  gateway 8080+, p2p 42777+, inferência 8181+ (nó 1 herda a histórica 8092).
 - `.dockerignore` corta `target/`, `.git/`, `venv/`, `models/`, `*.gguf`,
   `*.key`, `pom.json` e `docs/` do contexto de build - por isso o commit
   chega por variável e a config não entra na imagem.

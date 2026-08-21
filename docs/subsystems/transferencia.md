@@ -87,7 +87,36 @@ nas duas máquinas com direções opostas - é assim que os dois lados falam da
 mesma transferência. Estados do job: `running`, `verifying`, `done`, `failed`,
 `cancelled`; os campos de `TransferJob` são `id`, `name`, `direction`, `peer_host`
 (substitui `from_host`, que mentia no sentido de envio), `path`, `state`,
-`bytes_done`, `bytes_total`, `bytes_per_sec`, `eta_secs`, `detail`.
+`bytes_done`, `bytes_total`, `bytes_per_sec`, `eta_secs`, `detail`,
+`finished_at`, `model_label`, `start_layer` e `end_layer`.
+
+**Uma fatia se apresenta pelo modelo e pelas camadas, nunca pelo hash.** O
+`name` de uma parte é o sha256 dela, e hash não diz de que modelo é nem que
+pedaço dele traz - a notificação mostrava `df48d094c3d1023c0dab9e…` e o
+operador não tinha como decidir nada com isso. Quem sabe as duas coisas é o
+`.pom`, e ele **chega antes de qualquer byte de peso**: viaja dentro da oferta
+(`TransferOffer::pom`) no sentido push, e é pedido a `/api/transfer/pom` antes
+do download no sentido pull. Em ambos os casos ele já está gravado na pasta do
+modelo quando `spawn_download` registra o job, e é de lá que `slice_label_for_path`
+lê o rótulo. Do lado que envia, `download` faz a mesma leitura ao lado do
+arquivo servido. O hash continua na tela, como identificação secundária -
+é ele que nomeia o arquivo em disco e identifica a parte entre máquinas.
+
+**O envio fecha no último byte, não no fim do stream.** Quando o corpo satisfaz
+o `Content-Length` prometido, o hyper para de puxar e larga o stream sem nunca
+pedir o `None` que marcaria o fim - contar os bytes é o único sinal que sempre
+chega. Sem esse fecho o job do remetente ficava `running` para sempre, com
+`bytes_done` congelado no último relato de 500 ms (numa LAN rápida, zero): a
+máquina que mandou o arquivo mostrava no sino uma transferência eterna que já
+tinha terminado e sido verificada do outro lado.
+
+Todo desfecho passa por `TransferState::finish`, que grava o estado, o motivo e
+o `finished_at`, e **recusa reescrever um terminal já posto**. É o que faz
+"cancelado por ksia" - decisão de alguém - sobreviver ao "falhou" anônimo que o
+loop reporta logo depois ao ver o stream morrer. O carimbo de hora é o que
+permite ao sino mostrar o que **acabou de** terminar: antes dele a tela listava
+só o que estava em andamento, e concluída/falhada/recusada sumiam no instante
+em que aconteciam.
 
 ## 4. A oferta não carrega digest
 
@@ -129,6 +158,32 @@ Duas defesas, porque as duas são necessárias:
 E `fetch_manifest` confere o status **antes** de tentar ler JSON, repetindo a
 frase do outro lado. Erro de gateway costuma vir em texto puro; ler JSON em
 cima dele troca a explicação de quem sabe por uma mensagem que não ajuda.
+
+## 5.2 O veredito volta para quem ofereceu
+
+Bater na porta e nunca saber se abriram era metade do relato de campo: quem
+mandava uma fatia não recebia aviso nenhum de que a outra ponta tinha aceitado
+ou recusado. A oferta já viajava com um `grant`, e ele é o único id que as duas
+pontas compartilham antes de existir um job - `send_to_peer` guarda o que
+ofereceu em `TransferState::offered` (`grant` → destino, nome, caminho,
+tamanho) e o receptor devolve o veredito em
+`POST /api/transfer/offers/answer` (`notify_offerer` → `receive_answer`).
+
+- **Aceite** registra o job `sending` na hora, com o mesmo `job_id` que o
+  receptor cunhou, e detalhe "aceito; aguardando o início do envio". Isso
+  importa porque a distância entre o aceite e o primeiro byte é o tempo de o
+  receptor pedir o digest - minutos num volume lento -, e era silêncio puro na
+  tela de quem tinha oferecido.
+- **Recusa** vira um job `cancelled` com o nome de quem recusou. Recusa não é
+  falha: foi decisão de alguém, e a tela diz de quem.
+- **Aceite que não pôde começar** (fatia sem `.pom`, disco cheio) também avisa,
+  em vez de deixar o remetente esperando um download que nunca vem.
+
+O aviso é best-effort e sai numa task: o clique de quem decidiu não espera a
+outra máquina responder, e um remetente fora do ar não faz a recusa falhar na
+tela de quem recusou. Um veredito cujo `from_node_id` não é o destino
+registrado é recusado com 403 - descreve outra conversa. Uma oferta de peer
+anterior ao `grant` não gera aviso: não há id compartilhado para nomeá-lo.
 
 ## 6. Cancelamento simétrico
 
@@ -180,7 +235,8 @@ Todas atrás de `ConnectionAuth` (chave de conexão, ver `api-http.md`):
 | `POST /api/transfer/offer` | oferece | peer registra uma oferta nossa; nada baixa até aceitar |
 | `GET /api/transfer/offers` | recebe | lista as ofertas + `disk_free_mb` |
 | `POST /api/transfer/offers/:id/accept` | recebe | inicia o download (volta antes de o outro lado responder) |
-| `POST /api/transfer/offers/:id/reject` | recebe | descarta a oferta |
+| `POST /api/transfer/offers/:id/reject` | recebe | descarta a oferta e avisa quem ofereceu |
+| `POST /api/transfer/offers/answer` | oferece | o veredito do outro lado sobre uma oferta nossa (`grant`) |
 | `GET /api/transfer/jobs` | ambos | jobs em andamento, ordenados por nome |
 | `POST /api/transfer/jobs/:id/cancel` | ambos | cancela (idempotente, avisa o peer) |
 | `POST /api/transfer/send` | oferece | tela local envia `{to_node_id, filename}` para um peer |

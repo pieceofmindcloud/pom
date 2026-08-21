@@ -373,3 +373,16 @@ Nenhum outro em aberto nesta tela.
 - DEFEITO ANOTADO: `LeaveNode` reusa o rótulo do gatilho no botão de
   confirmar - a janela mostra dois botões com o mesmo texto ("Sair da rede").
   Cosmético, mas um usuário pode confundir o gatilho com a confirmação.
+
+## O nome de uma máquina é um só
+
+`node_name` do `pom.json` é como o operador batiza a máquina, e é o nome que o
+nó anuncia aos peers (`network.hostname`). Toda tela lê esse nome; o seletor
+"Enviar para..." de `/fatias` lia `sysmon`, o hostname cru do sistema
+operacional, e era o único lugar do aplicativo que chamava a máquina por outro
+nome. Numa máquina com dois nós era pior: os dois relatavam o mesmo hostname do
+SO, a lista via colisão e desempatava com o prefixo do `node_id`. `/api/ui/models`
+e `/api/ui/cluster/models` respondem o nome anunciado, e um peer que não
+respondeu ao levantamento ainda leva o nome que anunciou - sem ele a tela caía
+no `node_id`, um prefixo hexadecimal. A apresentação está em
+`lib/peerName.ts`.

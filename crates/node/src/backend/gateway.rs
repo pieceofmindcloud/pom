@@ -1714,10 +1714,22 @@ pub(crate) mod testkit {
 
     /// Este nó, com `peers` já na tabela.
     pub(crate) async fn state_with(node_id: &str, peers: Vec<PeerInfo>) -> GatewayState {
+        state_named(node_id, "", peers).await
+    }
+
+    /// O mesmo, com um **nome anunciado** — o que `node_name` do `pom.json`
+    /// produz em `with_identity`, e o nome pelo qual o cluster inteiro chama
+    /// esta máquina. Distinto do hostname cru do sistema operacional.
+    pub(crate) async fn state_named(
+        node_id: &str,
+        hostname: &str,
+        peers: Vec<PeerInfo>,
+    ) -> GatewayState {
         let net = Arc::new(
             Network::new(node_id.into(), "pk".into(), 0, vec![], None, None, None)
                 .await
-                .expect("socket UDP em porta efêmera"),
+                .expect("socket UDP em porta efêmera")
+                .with_identity(String::new(), hostname.into()),
         );
         {
             let mut table = net.peers.write().await;

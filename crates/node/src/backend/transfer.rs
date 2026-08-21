@@ -121,6 +121,11 @@ const TRANSFER_CANCELLED: &str = "cancelled";
 const TRANSFER_SENDING: &str = "sending";
 const TRANSFER_RECEIVING: &str = "receiving";
 
+/// Um estado do qual não se sai. A tela usa a mesma regra (`transferStatus.ts`).
+fn is_finished(state: &str) -> bool {
+    matches!(state, TRANSFER_DONE | TRANSFER_FAILED | TRANSFER_CANCELLED)
+}
+
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         // Serving side
@@ -133,6 +138,8 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/transfer/offers", get(list_offers))
         .route("/api/transfer/offers/:id/accept", post(accept_offer))
         .route("/api/transfer/offers/:id/reject", post(reject_offer))
+        // O veredito volta para quem ofereceu. Ver `receive_answer`.
+        .route("/api/transfer/offers/answer", post(receive_answer))
         .route("/api/transfer/jobs", get(list_jobs))
         .route("/api/transfer/jobs/:id/cancel", post(cancel_job))
         // Push direction, driven from this node's screen
@@ -159,6 +166,27 @@ pub struct TransferJob {
     pub bytes_per_sec: f64,
     pub eta_secs: Option<u64>,
     pub detail: String,
+    /// De que modelo esta transferência é, e que camadas ela traz.
+    ///
+    /// **O nome de uma parte é o sha256 dela**, e hash não diz de que modelo é
+    /// nem que pedaço dele traz. Quem sabe as duas coisas é o `.pom`, que já
+    /// viaja com a oferta e é gravado antes do primeiro byte; sem estes campos
+    /// a notificação só tinha o hash para mostrar. O `name` continua aqui como
+    /// identificação secundária - é ele que nomeia o arquivo em disco.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model_label: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_layer: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end_layer: Option<u32>,
+    /// Quando o job entrou num estado terminal, em RFC 3339.
+    ///
+    /// O sino lista transferência em andamento; sem esta marca ele não tem como
+    /// mostrar a que **acabou de** terminar, e o desfecho - concluída, falhada,
+    /// recusada - some da tela no instante em que acontece. Era esse o buraco:
+    /// o operador só reencontrava o resultado na tela de Transferências.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub finished_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -214,11 +242,70 @@ pub struct TransferState {
     /// aviso do outro lado pode chegar antes de o download começar, e sem isso
     /// a transferência arrancaria já cancelada e ninguém a pararia.
     cancelled: RwLock<HashSet<String>>,
+    /// O que esta máquina ofereceu e ainda não teve resposta: `grant` → oferta.
+    ///
+    /// Sem isto o remetente não tem como saber de que arquivo o outro lado
+    /// está falando quando o veredito chega - o `grant` é o único id que as
+    /// duas pontas compartilham antes de existir um job. Ver [`receive_answer`].
+    offered: RwLock<HashMap<String, OfferedFile>>,
+}
+
+/// Como uma fatia se apresenta na tela: o modelo e a faixa de camadas.
+///
+/// Sai do `.pom`, e só de lá. O nome do arquivo é o sha256 e não afirma nada
+/// sobre camada nenhuma - deduzir a faixa do nome foi um defeito real, e o
+/// manifesto é quem sabe.
+#[derive(Debug, Clone)]
+pub struct SliceLabel {
+    pub model_label: String,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+/// O descritor da parte `sha256` dentro de um manifesto, se ele a descreve.
+pub fn slice_label(m: &crate::pom::PomManifest, sha256: &str) -> Option<SliceLabel> {
+    m.parts
+        .iter()
+        .chain(m.tp_parts.iter())
+        .find(|p| p.sha256 == sha256)
+        .map(|p| SliceLabel {
+            model_label: m.model.label.clone(),
+            start_layer: p.start_layer,
+            end_layer: p.end_layer,
+        })
+}
+
+/// O descritor de um arquivo em disco, quando ele é parte de um fatiamento.
+///
+/// O que identifica a parte é o **caminho**: o `.pom` mora ao lado dela, e o
+/// nome com que alguém a está mandando não decide de que rodada ela é.
+fn slice_label_for_path(path: &Path) -> Option<SliceLabel> {
+    let sha = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| crate::pom::is_sha256_hex(s))?;
+    crate::pom::load_dir(path.parent()?)
+        .iter()
+        .find_map(|m| slice_label(m, sha))
+}
+
+/// Uma oferta que saiu daqui, guardada para dar nome ao veredito que voltar.
+#[derive(Debug, Clone)]
+pub struct OfferedFile {
+    pub to_node_id: String,
+    /// Nome legível do destino, para a notificação não falar em hash de nó.
+    pub to_host: String,
+    pub name: String,
+    pub path: String,
+    pub size_bytes: u64,
+    /// Modelo e camadas, para o veredito não voltar falando em hash.
+    pub fatia: Option<SliceLabel>,
 }
 
 impl TransferState {
     /// Registra uma transferência em curso. Chamado pelos dois lados, com o
     /// mesmo id.
+    #[allow(clippy::too_many_arguments)]
     pub async fn start_job(
         &self,
         id: &str,
@@ -227,6 +314,7 @@ impl TransferState {
         peer_host: &str,
         path: &str,
         bytes_total: u64,
+        fatia: Option<&SliceLabel>,
     ) {
         self.jobs.write().await.insert(
             id.to_string(),
@@ -242,8 +330,30 @@ impl TransferState {
                 bytes_per_sec: 0.0,
                 eta_secs: None,
                 detail: String::new(),
+                model_label: fatia.map(|f| f.model_label.clone()),
+                start_layer: fatia.map(|f| f.start_layer),
+                end_layer: fatia.map(|f| f.end_layer),
+                finished_at: None,
             },
         );
+    }
+
+    /// Fecha um job num estado terminal, carimbando a hora.
+    ///
+    /// Passa por aqui todo desfecho, e por uma razão só: um estado terminal
+    /// nunca é reescrito por outro. "Cancelado por ksia" é decisão de alguém e
+    /// não pode virar um "falhou" anônimo quando o loop percebe que o stream
+    /// morreu - eram dois lugares diferentes fazendo essa checagem à mão, e o
+    /// lado que envia não fazia nenhuma.
+    pub async fn finish(&self, id: &str, state: &str, detail: impl Into<String>) {
+        let mut jobs = self.jobs.write().await;
+        let Some(j) = jobs.get_mut(id) else { return };
+        if is_finished(&j.state) {
+            return;
+        }
+        j.state = state.to_string();
+        j.detail = detail.into();
+        j.finished_at = Some(chrono::Utc::now().to_rfc3339());
     }
 
     /// Progresso, com a mesma aritmética nos dois lados.
@@ -277,13 +387,8 @@ impl TransferState {
     /// de novo.
     pub async fn cancel(&self, id: &str, by: &str) {
         self.cancelled.write().await.insert(id.to_string());
-        let mut jobs = self.jobs.write().await;
-        if let Some(j) = jobs.get_mut(id) {
-            if j.state != TRANSFER_DONE {
-                j.state = TRANSFER_CANCELLED.into();
-                j.detail = format!("cancelado por {by}");
-            }
-        }
+        self.finish(id, TRANSFER_CANCELLED, format!("cancelado por {by}"))
+            .await;
     }
 }
 
@@ -638,6 +743,9 @@ async fn download(
     // para se perder, e o número continua certo com a tela do outro fechada.
     if let Some(job_id) = q.job.as_deref() {
         let peer_host = peer_label(&state, q.peer.as_deref()).await;
+        // O `.pom` está ao lado do arquivo: é dele que sai o "qwen3:8b · L0-15"
+        // que a tela mostra no lugar do hash.
+        let fatia = slice_label_for_path(&path);
         state
             .transfers
             .start_job(
@@ -649,13 +757,16 @@ async fn download(
                 &peer_host,
                 &path.to_string_lossy(),
                 total,
+                fatia.as_ref(),
             )
             .await;
     }
 
     let reader = tokio_util::io::ReaderStream::with_capacity(file, CHUNK);
     let body = match q.job.clone() {
-        Some(job_id) => Body::from_stream(served_stream(state.clone(), job_id, reader, start)),
+        Some(job_id) => {
+            Body::from_stream(served_stream(state.clone(), job_id, reader, start, total))
+        }
         None => Body::from_stream(reader),
     };
     let remaining = total - start;
@@ -703,11 +814,24 @@ async fn peer_label(state: &GatewayState, node_id: Option<&str>) -> String {
 
 /// Envolve o stream do arquivo para contar o que já saiu e para parar cedo
 /// quando o job é cancelado.
+///
+/// **É aqui que o lado que envia descobre que acabou.** Sem esse fecho o job do
+/// remetente ficava `running` para sempre, com `bytes_done` congelado no
+/// último relato de 500 ms - numa LAN rápida, zero - e o sino da máquina que
+/// mandou o arquivo mostrava uma transferência eterna que já tinha terminado
+/// do outro lado.
+///
+/// O fecho é o **último byte**, e não o fim do stream: quando o corpo satisfaz
+/// o `Content-Length` prometido, o hyper para de puxar e larga o stream sem
+/// nunca pedir o `None` que marcaria o fim. Contar os bytes é o único sinal
+/// que sempre chega. Cancelamento não passa por aqui: `cancel` já fechou o job
+/// com o nome de quem pediu, e `finish` respeita o que é terminal.
 fn served_stream(
     state: GatewayState,
     job_id: String,
     inner: tokio_util::io::ReaderStream<tokio::fs::File>,
     already: u64,
+    total: u64,
 ) -> impl futures::Stream<Item = std::io::Result<axum::body::Bytes>> {
     use futures::StreamExt;
 
@@ -722,7 +846,7 @@ fn served_stream(
             started,
             Instant::now(),
         ),
-        |(mut inner, state, job_id, mut done, already, started, mut last)| async move {
+        move |(mut inner, state, job_id, mut done, already, started, mut last)| async move {
             if state.transfers.is_cancelled(&job_id).await {
                 // Terminar o corpo aqui corta a transferência: o receptor vê o
                 // stream acabar antes do Content-Length prometido.
@@ -731,7 +855,8 @@ fn served_stream(
             let chunk = inner.next().await?;
             if let Ok(ref b) = chunk {
                 done += b.len() as u64;
-                if last.elapsed() >= Duration::from_millis(500) {
+                let acabou = done >= total;
+                if acabou || last.elapsed() >= Duration::from_millis(500) {
                     last = Instant::now();
                     state
                         .transfers
@@ -741,6 +866,12 @@ fn served_stream(
                             done.saturating_sub(already),
                             started.elapsed(),
                         )
+                        .await;
+                }
+                if acabou {
+                    state
+                        .transfers
+                        .finish(&job_id, TRANSFER_DONE, "enviado por inteiro")
                         .await;
                 }
             }
@@ -928,13 +1059,16 @@ async fn receive_offer(
         )
         .await
         {
-            Ok(job_id) => Json(json!({
-                "accepted_for_review": false,
-                "auto_accepted": true,
-                "offer_id": id,
-                "job_id": job_id,
-            }))
-            .into_response(),
+            Ok(job_id) => {
+                notify_offerer(&state, &offer, true, Some(job_id.clone()));
+                Json(json!({
+                    "accepted_for_review": false,
+                    "auto_accepted": true,
+                    "offer_id": id,
+                    "job_id": job_id,
+                }))
+                .into_response()
+            }
             // The offer still goes on the shelf: an auto-accept that could not
             // start is a transfer the operator can still take by hand, and
             // swallowing it would lose the file with only a log line to say so.
@@ -965,12 +1099,178 @@ async fn sysmon_disk_free_mb() -> u64 {
     crate::sysmon::sample().await.disk.free_mb
 }
 
+/// O veredito do outro lado sobre uma oferta que saiu daqui.
+///
+/// Bater na porta e nunca saber se abriram era metade do defeito: o operador
+/// mandava uma fatia e a tela dele não dizia mais nada - nem "aceitou", nem
+/// "recusou". O receptor agora responde, e o remetente registra o desfecho
+/// como um job, que é o vocabulário que o sino já lê.
+#[derive(Debug, Deserialize)]
+pub struct AnswerRequest {
+    /// A concessão que viajou na oferta. É o único id que as duas pontas
+    /// compartilham antes de existir um job.
+    pub grant: String,
+    /// Quem está respondendo. Confere com o destino registrado: um veredito
+    /// que não vem de quem recebeu a oferta descreve outra conversa.
+    #[serde(default)]
+    pub from_node_id: String,
+    pub accepted: bool,
+    /// O id que o receptor cunhou para o download, quando aceitou. Registrar o
+    /// mesmo id de um lado e do outro é o que faz o job do remetente ser a
+    /// mesma transferência, e não uma segunda linha na lista.
+    #[serde(default)]
+    pub job_id: Option<String>,
+    /// Por que recusou, quando há motivo além da vontade de quem decidiu.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+async fn receive_answer(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<AnswerRequest>,
+) -> Response {
+    // A oferta sai do registro em qualquer veredito: ela foi respondida.
+    let oferta = {
+        let mut registro = state.transfers.offered.write().await;
+        // Um `grant` que esta máquina não ofereceu não descreve nada que ela
+        // possa mostrar. Não é erro do outro lado - pode ser um reinício aqui.
+        let Some(o) = registro.get(&req.grant) else {
+            return (
+                StatusCode::NOT_FOUND,
+                Json(json!({ "error": "oferta desconhecida" })),
+            )
+                .into_response();
+        };
+        if !req.from_node_id.is_empty() && req.from_node_id != o.to_node_id {
+            warn!(
+                "veredito sobre {} veio de {} e não de {}",
+                o.name, req.from_node_id, o.to_node_id
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(json!({ "error": "esta oferta não foi feita a este nó" })),
+            )
+                .into_response();
+        }
+        registro.remove(&req.grant).expect("acabou de ser lida")
+    };
+
+    if req.accepted {
+        // O aceite chega **antes** do primeiro byte, e a distância entre os
+        // dois é o tempo de o receptor pedir o digest - minutos num volume
+        // lento. Registrar o job já aqui é o que tira a tela do remetente do
+        // silêncio nesse intervalo; quando os bytes começarem, `download`
+        // reescreve este mesmo id com o tamanho real.
+        let job_id = req
+            .job_id
+            .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+        info!("👍 {} aceitou {}", oferta.to_host, oferta.name);
+        state
+            .transfers
+            .start_job(
+                &job_id,
+                &oferta.name,
+                TRANSFER_SENDING,
+                &oferta.to_host,
+                &oferta.path,
+                oferta.size_bytes,
+                oferta.fatia.as_ref(),
+            )
+            .await;
+        set_detail(&state, &job_id, "aceito; aguardando o início do envio").await;
+        return Json(json!({ "noted": true, "job_id": job_id })).into_response();
+    }
+
+    // Recusa não é falha: foi decisão de alguém, e a tela precisa dizer de
+    // quem. `cancelled` é o estado que já carrega esse sentido.
+    let job_id = req
+        .job_id
+        .unwrap_or_else(|| uuid::Uuid::new_v4().simple().to_string());
+    info!("👎 {} recusou {}", oferta.to_host, oferta.name);
+    state
+        .transfers
+        .start_job(
+            &job_id,
+            &oferta.name,
+            TRANSFER_SENDING,
+            &oferta.to_host,
+            &oferta.path,
+            oferta.size_bytes,
+            oferta.fatia.as_ref(),
+        )
+        .await;
+    let motivo = match req.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+        Some(r) => format!("recusado por {}: {r}", oferta.to_host),
+        None => format!("recusado por {}", oferta.to_host),
+    };
+    state
+        .transfers
+        .finish(&job_id, TRANSFER_CANCELLED, motivo)
+        .await;
+    Json(json!({ "noted": true, "job_id": job_id })).into_response()
+}
+
+/// Conta a quem ofereceu o que foi decidido aqui.
+///
+/// Best-effort e em segundo plano: o clique de quem decidiu não pode esperar a
+/// outra máquina responder, e um remetente que saiu do ar não é motivo para a
+/// recusa falhar na tela de quem recusou.
+fn notify_offerer(state: &GatewayState, offer: &TransferOffer, accepted: bool, job_id: Option<String>) {
+    let Some(grant) = offer.grant.clone() else {
+        // Oferta de um peer anterior a `grant`: não há id compartilhado para
+        // nomear o veredito, e inventar um só produziria ruído do outro lado.
+        return;
+    };
+    let state = state.clone();
+    let from_node_id = offer.from_node_id.clone();
+    let base_url = normaliza_esquema(&offer.from_gateway);
+    let from_host = offer.from_host.clone();
+    tokio::spawn(async move {
+        let key = state.auth.read().await.connection_key.clone();
+        let cliente = match state.peer_http.for_peer(&from_node_id) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("sem cliente para avisar {from_host} do veredito: {e}");
+                return;
+            }
+        };
+        let body = json!({
+            "grant": grant,
+            "from_node_id": state.network.node_id,
+            "accepted": accepted,
+            "job_id": job_id,
+        });
+        match cliente
+            .post(format!("{base_url}/api/transfer/offers/answer"))
+            .bearer_auth(&key)
+            .json(&body)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => {}
+            Ok(r) => warn!("{from_host} respondeu {} ao veredito", r.status()),
+            Err(e) => warn!("não deu para avisar {from_host} do veredito: {e}"),
+        }
+    });
+}
+
 async fn reject_offer(
     _auth: ConnectionAuth,
     State(state): State<GatewayState>,
     AxumPath(id): AxumPath<String>,
 ) -> Response {
-    state.transfers.offers.write().await.retain(|o| o.id != id);
+    let recusada = {
+        let mut offers = state.transfers.offers.write().await;
+        offers
+            .iter()
+            .position(|o| o.id == id)
+            .map(|i| offers.remove(i))
+    };
+    if let Some(offer) = &recusada {
+        notify_offerer(&state, offer, false, None);
+    }
     Json(json!({ "rejected": true })).into_response()
 }
 
@@ -995,7 +1295,12 @@ async fn accept_offer(
 
     let alvo = match alvo_da_oferta(&state, &offer).await {
         Ok(a) => a,
-        Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+        Err(e) => {
+            // A oferta não pôde nem começar: quem ofereceu precisa saber, ou
+            // fica esperando um download que nunca vai acontecer.
+            notify_offerer(&state, &offer, false, None);
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response();
+        }
     };
     match spawn_download(
         state.clone(),
@@ -1006,8 +1311,14 @@ async fn accept_offer(
     )
     .await
     {
-        Ok(job_id) => Json(json!({ "started": true, "job_id": job_id })).into_response(),
-        Err(e) => (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response(),
+        Ok(job_id) => {
+            notify_offerer(&state, &offer, true, Some(job_id.clone()));
+            Json(json!({ "started": true, "job_id": job_id })).into_response()
+        }
+        Err(e) => {
+            notify_offerer(&state, &offer, false, None);
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": e }))).into_response()
+        }
     }
 }
 
@@ -1362,13 +1673,8 @@ async fn send_to_peer(
 
     // A faixa de camadas saía daqui lida do nome do arquivo. Agora sai do
     // manifesto, que é quem sabe; sem manifesto, não se inventa.
-    let shard: Option<(u32, u32)> = pom.as_ref().and_then(|m| {
-        m.parts
-            .iter()
-            .chain(m.tp_parts.iter())
-            .find(|p| p.sha256 == sha)
-            .map(|p| (p.start_layer, p.end_layer))
-    });
+    let fatia = pom.as_ref().and_then(|m| slice_label(m, sha));
+    let shard: Option<(u32, u32)> = fatia.as_ref().map(|f| (f.start_layer, f.end_layer));
 
     // Where the peer should come and fetch it from — our own gateway, on the
     // address the peer already reaches us at.
@@ -1383,6 +1689,26 @@ async fn send_to_peer(
         .write()
         .await
         .insert(grant.clone(), path.clone());
+
+    // Guardado antes de a oferta sair: o veredito pode voltar antes de esta
+    // função retornar, e sem o registro o remetente receberia um "aceitei" sem
+    // saber de qual arquivo. O nome do destino vem da tabela local de peers,
+    // que é quem sabe traduzir `node_id` em nome de máquina.
+    state.transfers.offered.write().await.insert(
+        grant.clone(),
+        OfferedFile {
+            to_node_id: req.to_node_id.clone(),
+            to_host: if peer.hostname.is_empty() {
+                peer.node_id[..12.min(peer.node_id.len())].to_string()
+            } else {
+                peer.hostname.clone()
+            },
+            name: name.clone(),
+            path: path.to_string_lossy().into_owned(),
+            size_bytes: size,
+            fatia: fatia.clone(),
+        },
+    );
 
     let body = json!({
         "from_node_id": state.network.node_id,
@@ -1707,6 +2033,14 @@ async fn spawn_download(
         .await
         .map_err(|e| format!("não deu para criar {}: {e}", dir.display()))?;
 
+    // **O `.pom` já está no lugar, e é dele que sai o nome da tela.** Quem
+    // chegou por oferta trouxe o manifesto junto e ele acabou de ser mesclado
+    // na pasta; quem puxa por hash pediu o dele à origem logo acima - nos dois
+    // casos antes de qualquer byte de peso. Ler daqui é o que troca o
+    // `<sha256>.gguf` da notificação por "qwen3:8b · L0-15".
+    let destino = dir.join(&name);
+    let fatia = slice_label_for_path(&destino);
+
     // `bytes_total` 0 até o manifesto responder — a barra fica indeterminada, o
     // que é a verdade: ainda não se sabe o tamanho.
     state
@@ -1716,8 +2050,9 @@ async fn spawn_download(
             &name,
             TRANSFER_RECEIVING,
             &from_host,
-            &dir.join(&name).to_string_lossy(),
+            &destino.to_string_lossy(),
             0,
+            fatia.as_ref(),
         )
         .await;
     set_detail(&state, &job_id, "conferindo o arquivo na origem").await;
@@ -1768,15 +2103,13 @@ async fn spawn_download(
             warn!("transferência de {name} falhou: {e}");
             // A partial file must never look like a usable slice.
             let _ = tokio::fs::remove_file(&part).await;
-            let mut jobs = task_state.transfers.jobs.write().await;
-            if let Some(j) = jobs.get_mut(&job_id) {
-                // `cancel` já rotulou este job com quem pediu; sobrescrever
-                // trocaria uma decisão de alguém por um "falhou" anônimo.
-                if j.state != TRANSFER_CANCELLED {
-                    j.state = TRANSFER_FAILED.into();
-                    j.detail = e;
-                }
-            }
+            // `finish` respeita o estado terminal que já estiver lá: `cancel`
+            // rotulou este job com quem pediu, e sobrescrever trocaria uma
+            // decisão de alguém por um "falhou" anônimo.
+            task_state
+                .transfers
+                .finish(&job_id, TRANSFER_FAILED, e)
+                .await;
         }
     });
 
@@ -2043,13 +2376,21 @@ async fn run_download(
         .await
         .map_err(|e| e.to_string())?;
 
-    let mut jobs = state.transfers.jobs.write().await;
-    if let Some(j) = jobs.get_mut(job_id) {
-        j.state = TRANSFER_DONE.into();
-        j.bytes_done = total;
-        j.eta_secs = Some(0);
-        j.detail = format!("MD5 conferido · {}", dest.display());
+    {
+        let mut jobs = state.transfers.jobs.write().await;
+        if let Some(j) = jobs.get_mut(job_id) {
+            j.bytes_done = total;
+            j.eta_secs = Some(0);
+        }
     }
+    state
+        .transfers
+        .finish(
+            job_id,
+            TRANSFER_DONE,
+            format!("MD5 conferido · {}", dest.display()),
+        )
+        .await;
     info!("✅ fatia recebida e verificada: {}", dest.display());
     Ok(())
 }
@@ -2094,6 +2435,11 @@ mod tests {
                 "ksia",
                 "/models/fatia_0_15.gguf",
                 4_096,
+                Some(&SliceLabel {
+                    model_label: "qwen3:8b".into(),
+                    start_layer: 0,
+                    end_layer: 15,
+                }),
             )
             .await;
 
@@ -2104,6 +2450,106 @@ mod tests {
         assert_eq!(job.bytes_total, 4_096);
         assert_eq!(job.state, TRANSFER_RUNNING);
         assert_eq!(job.path, "/models/fatia_0_15.gguf");
+        assert!(job.finished_at.is_none(), "ainda não terminou");
+        // E a tela tem o que mostrar além do nome do arquivo.
+        assert_eq!(job.model_label.as_deref(), Some("qwen3:8b"));
+        assert_eq!((job.start_layer, job.end_layer), (Some(0), Some(15)));
+    }
+
+    /// O descritor de uma parte sai do `.pom`, e só de lá.
+    ///
+    /// O nome do arquivo é o sha256 e não afirma nada sobre camada nenhuma;
+    /// deduzir a faixa dele foi um defeito real. Um hash que o manifesto não
+    /// descreve não ganha rótulo inventado.
+    #[test]
+    fn a_slice_describes_itself_through_its_manifest() {
+        use crate::pom::{PomKind, PomManifest, PomModel, PomPart};
+
+        let sha = "a".repeat(64);
+        let outro = "b".repeat(64);
+        let m = PomManifest::new(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 32,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            "no-1",
+            vec![PomPart {
+                sha256: sha.clone(),
+                bytes: 10,
+                start_layer: 16,
+                end_layer: 31,
+                is_first: false,
+                is_last: true,
+                tp: None,
+            }],
+        );
+
+        let f = slice_label(&m, &sha).expect("o manifesto descreve esta parte");
+        assert_eq!(f.model_label, "qwen3:8b");
+        assert_eq!((f.start_layer, f.end_layer), (16, 31));
+
+        assert!(
+            slice_label(&m, &outro).is_none(),
+            "parte que o manifesto não descreve não ganha rótulo inventado"
+        );
+    }
+
+    /// Um job que terminou carrega **quando** terminou.
+    ///
+    /// É o que deixa o sino mostrar o desfecho: sem a marca ele só sabe listar
+    /// o que está em andamento, e "concluída"/"recusada" sumia da tela no
+    /// instante em que acontecia - o operador reencontrava o resultado só na
+    /// tela de Transferências, que foi exatamente o relato.
+    #[tokio::test]
+    async fn a_finished_job_records_when_it_finished() {
+        let transfers = TransferState::default();
+        transfers
+            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10, None)
+            .await;
+
+        transfers.finish("job-1", TRANSFER_DONE, "MD5 conferido").await;
+
+        let jobs = transfers.jobs.read().await;
+        let job = jobs.get("job-1").unwrap();
+        assert_eq!(job.state, TRANSFER_DONE);
+        assert_eq!(job.detail, "MD5 conferido");
+        assert!(
+            job.finished_at.is_some(),
+            "sem a hora o sino não sabe que isto acabou de acontecer"
+        );
+    }
+
+    /// Estado terminal não é reescrito por outro.
+    ///
+    /// "Cancelado por ksia" foi decisão de alguém; o loop que percebe o stream
+    /// morto depois não pode trocar isso por um "falhou" anônimo.
+    #[tokio::test]
+    async fn a_finished_job_is_never_relabelled() {
+        let transfers = TransferState::default();
+        transfers
+            .start_job("job-1", "f.gguf", TRANSFER_SENDING, "ksia", "/m/f.gguf", 10, None)
+            .await;
+
+        transfers.cancel("job-1", "atena").await;
+        let quando = {
+            let jobs = transfers.jobs.read().await;
+            jobs.get("job-1").unwrap().finished_at.clone()
+        };
+        assert!(quando.is_some(), "cancelar também carimba a hora");
+
+        transfers
+            .finish("job-1", TRANSFER_FAILED, "conexão morreu")
+            .await;
+        transfers.finish("job-1", TRANSFER_DONE, "enviado").await;
+
+        let jobs = transfers.jobs.read().await;
+        let job = jobs.get("job-1").unwrap();
+        assert_eq!(job.state, TRANSFER_CANCELLED, "a decisão de alguém venceu");
+        assert!(job.detail.contains("atena"), "detail: {}", job.detail);
+        assert_eq!(job.finished_at, quando, "e a hora é a do cancelamento");
     }
 
     /// Cancelar é idempotente e não depende de o job existir: o aviso do outro
@@ -2119,6 +2565,7 @@ mod tests {
                 "ksia",
                 "/m/f.gguf",
                 10,
+                None,
             )
             .await;
 
@@ -3036,5 +3483,355 @@ mod pom_travels_tests {
             .any(|p| p.sha256 == remote_sha256));
 
         std::fs::remove_dir_all(&raiz).ok();
+    }
+}
+
+/// **O veredito volta para quem ofereceu, e o envio sabe quando termina.**
+///
+/// Duas metades do mesmo silêncio relatado em campo. Quem mandava uma fatia
+/// não recebia aviso nenhum: nem que o outro lado aceitou, nem que recusou, e
+/// o job de envio ficava `running` para sempre porque nada o fechava quando o
+/// corpo acabava de sair. Na prática o sino da máquina que enviou mostrava uma
+/// transferência eterna a 0 B, e a recusa não produzia sinal algum.
+#[cfg(test)]
+mod verdict_tests {
+    use super::*;
+    use crate::pom::{self, PomKind, PomManifest, PomModel, PomPart};
+
+    /// Um nó servindo o roteador de transferências numa porta efêmera.
+    ///
+    /// `gateway_port` é ajustado para a porta real: é ele que entra no
+    /// `from_gateway` da oferta, e é por esse endereço que o veredito volta.
+    /// Com o 8080 do testkit os dois lados discariam uma porta onde não há
+    /// ninguém.
+    async fn no_servindo(state: GatewayState, listener: tokio::net::TcpListener) -> GatewayState {
+        let app = routes().with_state(state.clone());
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        state
+    }
+
+    /// Um nó com uma parte em disco, servindo o roteador de transferências.
+    async fn no_com_parte(node_id: &str, raiz: &Path) -> (GatewayState, u16, PomManifest, String) {
+        let pasta = pom::scratch_dir(raiz);
+        std::fs::create_dir_all(&pasta).unwrap();
+
+        let bytes = crate::splitter::test_gguf_bytes(8);
+        let tmp = pasta.join("tmp");
+        std::fs::write(&tmp, &bytes).unwrap();
+        let (sha, n) = pom::hash_file(&tmp).unwrap();
+        std::fs::rename(&tmp, pom::part_path(&pasta, &sha).unwrap()).unwrap();
+
+        let m = PomManifest::new(
+            PomModel {
+                name: "qwen3-8b".into(),
+                label: "qwen3:8b".into(),
+                total_layers: 8,
+                quant: Some("Q4_K_M".into()),
+            },
+            PomKind::Layers,
+            node_id,
+            vec![PomPart {
+                sha256: sha.clone(),
+                bytes: n,
+                start_layer: 0,
+                end_layer: 7,
+                is_first: true,
+                is_last: true,
+                tp: None,
+            }],
+        );
+        pom::finalize_run(raiz, &pasta, &m).unwrap();
+
+        let mut state = crate::gateway::testkit::state_with(node_id, vec![]).await;
+        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let porta = listener.local_addr().unwrap().port();
+        state.gateway_port = porta;
+        let state = no_servindo(state, listener).await;
+        (state, porta, m, sha)
+    }
+
+    /// O outro lado: um nó vazio que já conhece `peer`, servindo o roteador.
+    async fn no_vazio(
+        node_id: &str,
+        raiz: &Path,
+        peer: crate::network::PeerInfo,
+    ) -> (GatewayState, u16) {
+        let mut state = crate::gateway::testkit::state_with(node_id, vec![peer]).await;
+        state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let porta = listener.local_addr().unwrap().port();
+        state.gateway_port = porta;
+        (no_servindo(state, listener).await, porta)
+    }
+
+    /// Espera o job chegar a um estado terminal, ou desiste.
+    async fn ate_terminar(state: &GatewayState, job_id: &str) -> TransferJob {
+        for _ in 0..200 {
+            if let Some(j) = state.transfers.jobs.read().await.get(job_id) {
+                if is_finished(&j.state) {
+                    return j.clone();
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        panic!("o job {job_id} nunca terminou");
+    }
+
+    /// Aceitar avisa quem ofereceu, e o envio fecha sozinho quando o último
+    /// byte sai.
+    #[tokio::test]
+    async fn accepting_tells_the_sender_and_the_send_completes() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
+        let raiz = std::env::temp_dir().join(format!("pom-vd-ok-{}", uuid::Uuid::new_v4().simple()));
+        let disco_a = raiz.join("atena");
+        let disco_b = raiz.join("ksia");
+        let (atena, porta_a, _m, sha) = no_com_parte("atena", &disco_a).await;
+
+        // O receptor precisa alcançar o remetente pelo roteador de verdade: é
+        // por ele que o veredito volta.
+        let (ksia, porta_b) = no_vazio(
+            "ksia",
+            &disco_b,
+            crate::gateway::testkit::peer("atena", "atena", porta_a),
+        )
+        .await;
+        // E o remetente precisa conhecer o destino, para nomeá-lo na tela.
+        atena
+            .network
+            .peers
+            .write()
+            .await
+            .insert("ksia".into(), crate::gateway::testkit::peer("ksia", "ksia", porta_b));
+
+        let resp = send_to_peer(
+            ConnectionAuth,
+            State(atena.clone()),
+            Json(SendRequest {
+                to_node_id: "ksia".into(),
+                filename: format!("{sha}.gguf"),
+            }),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK, "a oferta tem que sair");
+
+        // O remetente guardou a oferta para saber nomear o veredito.
+        assert_eq!(atena.transfers.offered.read().await.len(), 1);
+
+        let oferta_id = {
+            let offers = ksia.transfers.offers.read().await;
+            assert_eq!(offers.len(), 1, "a oferta chegou no destino");
+            offers[0].id.clone()
+        };
+
+        let resp = accept_offer(
+            ConnectionAuth,
+            State(ksia.clone()),
+            AxumPath(oferta_id),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // O download termina, e o **envio** também: era este segundo fecho que
+        // não existia, e por isso o sino de quem mandou nunca esvaziava.
+        let recebido = {
+            let id = ksia
+                .transfers
+                .jobs
+                .read()
+                .await
+                .keys()
+                .next()
+                .cloned()
+                .expect("o receptor registrou o job");
+            ate_terminar(&ksia, &id).await
+        };
+        assert_eq!(recebido.state, TRANSFER_DONE);
+        assert_eq!(recebido.direction, TRANSFER_RECEIVING);
+
+        let enviado = ate_terminar(&atena, &recebido.id).await;
+        assert_eq!(
+            enviado.direction, TRANSFER_SENDING,
+            "o mesmo id existe nos dois lados, com direções opostas"
+        );
+        assert_eq!(
+            enviado.state, TRANSFER_DONE,
+            "o envio ficava `running` para sempre: nada o fechava"
+        );
+        assert_eq!(enviado.peer_host, "ksia", "e a tela diz para quem foi");
+        assert!(
+            enviado.finished_at.is_some(),
+            "sem a hora o sino não mostra o desfecho"
+        );
+        assert_eq!(
+            enviado.bytes_done, enviado.bytes_total,
+            "e o número final é o arquivo inteiro, não o último relato de 500 ms"
+        );
+
+        // Respondida, a oferta sai do registro do remetente.
+        assert!(atena.transfers.offered.read().await.is_empty());
+
+        // **E os dois lados sabem dizer o que era, sem falar em hash.** O nome
+        // do arquivo é o sha256; quem diz de que modelo é e que camadas traz é
+        // o `.pom`, e ele viaja com a oferta e é gravado antes do primeiro byte.
+        for (quem, job) in [("recebido", &recebido), ("enviado", &enviado)] {
+            assert_eq!(
+                job.model_label.as_deref(),
+                Some("qwen3:8b"),
+                "{quem}: a tela precisa do modelo, não do hash"
+            );
+            assert_eq!(
+                (job.start_layer, job.end_layer),
+                (Some(0), Some(7)),
+                "{quem}: e da faixa de camadas"
+            );
+            // O hash continua disponível, como identificação secundária: é ele
+            // que nomeia o arquivo em disco.
+            assert_eq!(job.name, format!("{sha}.gguf"), "{quem}");
+        }
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Recusar também avisa - e era o caso que não produzia sinal nenhum.
+    #[tokio::test]
+    async fn rejecting_tells_the_sender_who_refused() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
+        crate::peer_client::set_tls_ativo(false);
+
+        let raiz =
+            std::env::temp_dir().join(format!("pom-vd-nao-{}", uuid::Uuid::new_v4().simple()));
+        let disco_a = raiz.join("atena");
+        let disco_b = raiz.join("ksia");
+        let (atena, porta_a, _m, sha) = no_com_parte("atena", &disco_a).await;
+
+        // O receptor precisa alcançar o remetente pelo roteador de verdade: é
+        // por ele que o veredito volta.
+        let (ksia, porta_b) = no_vazio(
+            "ksia",
+            &disco_b,
+            crate::gateway::testkit::peer("atena", "atena", porta_a),
+        )
+        .await;
+        atena
+            .network
+            .peers
+            .write()
+            .await
+            .insert("ksia".into(), crate::gateway::testkit::peer("ksia", "ksia", porta_b));
+
+        let _ = send_to_peer(
+            ConnectionAuth,
+            State(atena.clone()),
+            Json(SendRequest {
+                to_node_id: "ksia".into(),
+                filename: format!("{sha}.gguf"),
+            }),
+        )
+        .await;
+
+        let oferta_id = ksia.transfers.offers.read().await[0].id.clone();
+        let resp = reject_offer(
+            ConnectionAuth,
+            State(ksia.clone()),
+            AxumPath(oferta_id),
+        )
+        .await;
+        assert_eq!(resp.status(), StatusCode::OK);
+
+        // O remetente fica sabendo. Antes disto a recusa era um silêncio: nem
+        // job, nem linha de log, nem nada na tela de quem tinha oferecido.
+        let mut recusa = None;
+        for _ in 0..200 {
+            let jobs = atena.transfers.jobs.read().await;
+            if let Some(j) = jobs.values().next() {
+                recusa = Some(j.clone());
+                break;
+            }
+            drop(jobs);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let recusa = recusa.expect("a recusa tem que virar aviso no remetente");
+        assert_eq!(recusa.direction, TRANSFER_SENDING);
+        assert_eq!(
+            recusa.state, TRANSFER_CANCELLED,
+            "recusa é decisão de alguém, não falha"
+        );
+        assert!(
+            recusa.detail.contains("ksia"),
+            "a tela precisa dizer quem recusou: {}",
+            recusa.detail
+        );
+        assert!(recusa.finished_at.is_some());
+        // O aviso de recusa também fala em modelo, não em hash.
+        assert_eq!(recusa.model_label.as_deref(), Some("qwen3:8b"));
+        assert_eq!((recusa.start_layer, recusa.end_layer), (Some(0), Some(7)));
+
+        std::fs::remove_dir_all(&raiz).ok();
+    }
+
+    /// Um veredito sobre uma concessão que esta máquina não ofereceu não
+    /// descreve nada que ela possa mostrar.
+    #[tokio::test]
+    async fn an_answer_for_an_unknown_grant_is_refused() {
+        let state = crate::gateway::testkit::state_with("atena", vec![]).await;
+
+        let resp = receive_answer(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(AnswerRequest {
+                grant: "nao-existe".into(),
+                from_node_id: "ksia".into(),
+                accepted: true,
+                job_id: None,
+                reason: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert!(state.transfers.jobs.read().await.is_empty());
+    }
+
+    /// E um veredito que não vem de quem recebeu a oferta é outra conversa.
+    #[tokio::test]
+    async fn an_answer_from_the_wrong_node_is_refused() {
+        let state = crate::gateway::testkit::state_with("atena", vec![]).await;
+        state.transfers.offered.write().await.insert(
+            "g-1".into(),
+            OfferedFile {
+                to_node_id: "ksia".into(),
+                to_host: "ksia".into(),
+                name: "f.gguf".into(),
+                path: "/m/f.gguf".into(),
+                size_bytes: 10,
+                fatia: None,
+            },
+        );
+
+        let resp = receive_answer(
+            ConnectionAuth,
+            State(state.clone()),
+            Json(AnswerRequest {
+                grant: "g-1".into(),
+                from_node_id: "intruso".into(),
+                accepted: false,
+                job_id: None,
+                reason: None,
+            }),
+        )
+        .await;
+
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert!(state.transfers.jobs.read().await.is_empty());
+        assert_eq!(
+            state.transfers.offered.read().await.len(),
+            1,
+            "e a oferta continua de pé, esperando quem de direito"
+        );
     }
 }

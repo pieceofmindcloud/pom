@@ -11,7 +11,7 @@ Two files carry all of it: a static message table and a small provider. Tests:
 
 ## Per-file
 
-- `locales.ts` - the `messages` dictionary (en block lines ~20-671, pt-BR block lines ~672-1363, 628 keys each) plus locale resolution and formatting functions.
+- `locales.ts` - the `messages` dictionary (854 keys in each locale, en block first, pt-BR block second) plus locale resolution and formatting functions. `locales.test.ts` prova que os dois blocos têm exatamente as mesmas chaves.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured
@@ -27,7 +27,7 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - `resolveLocale(savedLocale, browserLocales)` - the saved value wins if valid; otherwise any `pt*` browser locale maps to `pt-BR`, any `en*` to `en`, default `en`. Saves nothing; the provider does.
 - `getActiveLocale()` / `setActiveLocale(locale)` - module-level locale for code outside React (error strings in `api.ts`, default chat titles in `chatStore.ts`); the provider syncs it on mount.
 - `isLocale(value)` - type guard.
-- `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language.
+- `localizeServerText(locale, text)` - maps known Portuguese strings a rolling-upgrade old binary might send ("pronto", "erro", "falhou", ...) to the UI language; heuristic regex detects untranslated Portuguese and falls back to a generic message rather than showing mixed language. Antes do mapa fixo ele casa as frases que **carregam um nome de máquina** ("recusado por ksia", "cancelado por atena"): o nome não se traduz, o verbo sim, e o desfecho de uma transferência aparecia em português na tela em inglês.
 
 The chat telemetry additions live in both locale blocks: the execution
 diagnosis, TP collective table, AI-analysis action and initial-model mark must

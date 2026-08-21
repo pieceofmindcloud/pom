@@ -62,11 +62,23 @@ Per-file list:
   (`POST /api/ui/leave`), each behind a `Confirm`. Mobile drawer renders
   `SidebarContent` inside an animated panel.
 - `Notifications.tsx` — The activity bell: counts running slicing jobs
-  (`useJobs`), active transfers (`useTransfers`) and pending offers
-  (`useOffers`), and shows progress bars inside the popover. Offers can be
-  accepted/rejected right there (`POST /api/transfer/offers/:id/accept|reject`).
-  All state is read back from the node, so a reload in the middle of a transfer
-  shows the same bar.
+  (`useJobs`), transfers worth notifying (`useTransfers` +
+  `isWorthNotifying`) and pending offers (`useOffers`), and shows progress bars
+  inside the popover. Offers can be accepted/rejected right there
+  (`POST /api/transfer/offers/:id/accept|reject`). All state is read back from
+  the node, so a reload in the middle of a transfer shows the same bar.
+  Lista os **dois sentidos** — ícone de subida para `sending`, de descida para
+  `receiving` — e também o **desfecho recente**: concluída, falhada e recusada
+  ficam no sino por `RECENTLY_FINISHED_MS`. Antes ela mostrava só o que estava
+  em andamento, e o resultado sumia no instante em que acontecia: quem recebia
+  via a barra andar e depois nada, quem enviava não via aviso de aceite nem de
+  recusa. Uma transferência terminada não desenha barra (uma barra parada em
+  100% sugere que ainda anda), e o `detail` do nó passa por
+  `localizeServerText`. O título de uma fatia é **modelo + faixa de camadas**
+  (`transferLabel`), com o sha256 curto como identificação secundária ao lado:
+  a notificação mostrava o hash, que não diz de que modelo é nem que pedaço
+  traz. Numa oferta, o que se oferece é o título e quem oferece é o subtítulo —
+  ao contrário, a faixa de camadas era justamente o que a reticência comia.
 - `PipelineRail.tsx` — The cluster as the path a request takes: `PipelineRail`
   draws peer cards in execution order connected by `Conduit` wires labelled
   with the layer boundary the hidden state crosses; `LayerRibbon` is one tick

@@ -8,13 +8,35 @@ import type { SystemLoad } from "../lib/types";
  * cluster is deliberately heterogeneous, so telling a laptop from a GPU box at
  * a glance is part of reading the pipeline.
  */
+/**
+ * O nome da placa como cabe num rótulo.
+ *
+ * O prefixo do fabricante sai porque ele já está no contexto e come a largura
+ * que interessa - o modelo. A Radeon vem do sysfs sem nome comercial (só o id
+ * PCI), então o que se pode limpar ali é diferente do que se limpa numa NVIDIA.
+ */
+export function gpuLabel(gpu: { name: string; vendor?: string }) {
+  if (gpu.vendor === "amd") return gpu.name.replace(/^AMD\s+/i, "");
+  return gpu.name.replace(/^NVIDIA\s+/i, "");
+}
+
 export function machineKind(system?: SystemLoad | null) {
   if (!system) return { label: "Desconhecida", icon: HelpCircle, accent: "faint" as const };
   const os = system.os.toLowerCase();
-  if (system.gpu_kind === "nvidia") {
-    const gpu = system.gpus[0]?.name?.replace(/^NVIDIA\s+/i, "");
+  if (system.gpu_kind === "nvidia" || system.gpu_kind === "amd" || system.gpu_kind === "mixed") {
+    // Numa máquina mista o rótulo conta quantas placas há, em vez de eleger
+    // uma: o número é o que muda a decisão de quem implanta.
+    if (system.gpu_kind === "mixed") {
+      return {
+        label: `${system.gpus.length} GPUs · NVIDIA + AMD`,
+        icon: Server,
+        accent: "lime" as const,
+      };
+    }
+    const marca = system.gpu_kind === "amd" ? "AMD" : "NVIDIA";
+    const gpu = system.gpus[0] ? gpuLabel(system.gpus[0]) : undefined;
     return {
-      label: gpu ? `NVIDIA · ${gpu}` : "NVIDIA",
+      label: gpu ? `${marca} · ${gpu}` : marca,
       icon: Server,
       accent: "lime" as const,
     };

@@ -17,7 +17,7 @@ import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Confirm, Modal } from "./Confirm";
-import { MachineIcon, machineKind } from "./MachineIcon";
+import { MachineIcon, gpuLabel, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
@@ -126,7 +126,10 @@ export function PeerDetailCard({
   const kind = machineKind(system);
   const cfg = n?.config;
   const serving = isServing(n?.status.state);
-  const gpu = system?.gpus[0];
+  // Só as que reportam VRAM: memória unificada cai no ramo `unified` abaixo,
+  // que mede outra coisa (wired), e uma barra sem valor viraria animação de
+  // "carregando" para sempre.
+  const vramGpus = (system?.gpus ?? []).filter((g) => g.vram_used_pct != null);
   const range = cardRange(peer);
 
   return (
@@ -215,16 +218,22 @@ export function PeerDetailCard({
                   : "—"
               }
             />
-            {system?.gpu_kind === "nvidia" && gpu ? (
-              <Meter
-                label={t("dashboard.vram", { name: gpu.name.replace(/^NVIDIA\s+/i, "") })}
-                value={gpu.vram_used_pct ?? null}
-                tone={(gpu.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
-                detail={t("dashboard.usedOf", {
-                  used: megabytes(gpu.vram_used_mb),
-                  total: megabytes(gpu.vram_total_mb),
-                })}
-              />
+            {vramGpus.length > 0 ? (
+              // Uma barra por placa: numa máquina com Radeon e NVIDIA juntas,
+              // mostrar só `gpus[0]` escondia metade do hardware de quem decide
+              // onde implantar.
+              vramGpus.map((g) => (
+                <Meter
+                  key={g.index}
+                  label={t("dashboard.vram", { name: gpuLabel(g) })}
+                  value={g.vram_used_pct ?? null}
+                  tone={(g.vram_used_pct ?? 0) > 88 ? "rose" : "lime"}
+                  detail={t("dashboard.usedOf", {
+                    used: megabytes(g.vram_used_mb),
+                    total: megabytes(g.vram_total_mb),
+                  })}
+                />
+              ))
             ) : system?.gpu_kind === "unified" ? (
               // Only macOS/Apple Silicon ever reports `wired_mb` — `sysmon.rs`
               // hardcodes it to `None` on every other platform. Gating this on

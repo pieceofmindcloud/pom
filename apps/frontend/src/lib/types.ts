@@ -14,9 +14,13 @@ export interface MemStat {
   used_pct: number;
 }
 
+/** De quem é a placa. `GpuKind` descreve a máquina; isto, uma peça. */
+export type GpuVendor = "nvidia" | "amd" | "apple";
+
 export interface GpuStat {
   index: number;
   name: string;
+  vendor: GpuVendor;
   vram_total_mb: number | null;
   vram_used_mb: number | null;
   vram_used_pct: number | null;
@@ -30,7 +34,8 @@ export interface GpuProcess {
   used_mb: number;
 }
 
-export type GpuKind = "nvidia" | "unified" | "none";
+/** Resumo da máquina. `mixed` = placas de marcas diferentes juntas. */
+export type GpuKind = "nvidia" | "amd" | "mixed" | "unified" | "none";
 
 export interface DiskStat {
   total_mb: number;

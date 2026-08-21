@@ -897,7 +897,46 @@ pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> V
     // que é como CUDA e Vulkan dizem "nenhum dispositivo".
     std::env::set_var("CUDA_VISIBLE_DEVICES", cuda.join(","));
     std::env::set_var("GGML_VK_VISIBLE_DEVICES", vulkan.join(","));
+
+    // Sem isto o índice de cima está errado, e erra em silêncio.
+    //
+    // `GGML_VK_VISIBLE_DEVICES` indexa a lista de dispositivos **do Vulkan**, e
+    // o Vulkan enumera a NVIDIA junto com a Radeon: o driver da NVIDIA também
+    // publica um ICD. Contamos o índice entre as AMD, então pedir a Radeon podia
+    // selecionar a NVIDIA - foi o que aconteceu na ksia, com o modelo indo para
+    // a placa errada enquanto o log dizia `Vulkan0`.
+    //
+    // Restringir o *loader* a um ICD é o que torna a conta certa por
+    // construção: com só a Radeon exposta, o índice entre as AMD **é** o índice
+    // do Vulkan. A NVIDIA não perde nada - quem a serve é o CUDA.
+    #[cfg(target_os = "linux")]
+    if !vulkan.is_empty() {
+        if let Some(icd) = icd_amd() {
+            std::env::set_var("VK_DRIVER_FILES", &icd);
+            // O nome antigo, para loaders anteriores ao 1.3.207.
+            std::env::set_var("VK_ICD_FILENAMES", &icd);
+        }
+    }
+
     escolhidas
+}
+
+/// O ICD do Mesa/RADV, quando existe nesta máquina.
+///
+/// Caminho fixo porque é onde o Mesa instala em toda distribuição que empacota
+/// Vulkan; achar nada apenas deixa o loader com o comportamento padrão, que é o
+/// que já havia antes. O nome varia com a arquitetura (`radeon_icd.x86_64.json`),
+/// daí a varredura em vez de um nome literal.
+#[cfg(target_os = "linux")]
+fn icd_amd() -> Option<String> {
+    let dir = std::fs::read_dir("/usr/share/vulkan/icd.d").ok()?;
+    for entrada in dir.flatten() {
+        let nome = entrada.file_name().to_string_lossy().to_string();
+        if nome.starts_with("radeon_icd") && nome.ends_with(".json") {
+            return Some(entrada.path().to_string_lossy().to_string());
+        }
+    }
+    None
 }
 
 #[cfg(test)]

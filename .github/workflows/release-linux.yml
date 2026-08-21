@@ -119,6 +119,17 @@ jobs:
         working-directory: apps/frontend
 
       - name: Compilar
+        # `CUDAARCHS` vazio de propósito, e não por esquecimento: sem ele o CMake
+        # do llama.cpp escolhe a lista larga (compute_50 até 121a), que é o que
+        # uma release precisa - o binário vai para máquinas que não são esta.
+        #
+        # A linha existe porque este job roda num runner **self-hosted**: a
+        # máquina é de desenvolvimento e pode ter `CUDAARCHS` no ambiente para
+        # encurtar o build local (o `pom-ksia.sh` faz isso). Herdar aquele valor
+        # aqui produziria, em silêncio, uma release que só roda na GPU de quem
+        # compilou. Limpar a variável é o que impede isso.
+        env:
+          CUDAARCHS: ''
         run: |
           if [ -n "${{ matrix.variante.features }}" ]; then
             cargo build --release --locked --features ${{ matrix.variante.features }}

@@ -335,6 +335,30 @@ num Apple Silicon; um `target/` deste projeto mede **~9 GB**, o que importa na
 ksia, onde o disco é o recurso apertado. O workflow de Linux avisa (sem falhar)
 quando sobram menos de 15 GB.
 
+### Arquiteturas de GPU: release larga, desenvolvimento estreita
+
+O CMake do llama.cpp compila **cada arquivo `.cu` para dez arquiteturas**
+(`compute_50` até `121a`). Medido na ksia: 186 objetos a ~3/min, mais de vinte
+minutos só nisso - e nove das dez arquiteturas são para placas que aquela
+máquina não tem.
+
+As duas situações querem coisas opostas, e por isso são configuradas em lugares
+diferentes:
+
+- **Release** (estes workflows): a lista larga, porque o binário vai rodar em
+  máquinas que não são a que compilou. O passo `Compilar` do workflow de Linux
+  força `CUDAARCHS: ''` - **não é esquecimento**. O job roda num runner
+  self-hosted, e uma máquina de desenvolvimento pode ter `CUDAARCHS` no ambiente
+  para encurtar o build local; herdar aquele valor produziria, em silêncio, uma
+  release que só funciona na GPU de quem compilou.
+- **Desenvolvimento** (`pom-ksia.sh`, fora do repositório): só a arquitetura da
+  máquina, via `CUDAARCHS`. O CMake ≥ 3.20 inicializa `CMAKE_CUDA_ARCHITECTURES`
+  a partir dessa variável de ambiente, então não é preciso tocar no `build.rs`.
+
+Note o sufixo `a` de `120a`/`121a` na lista do llama.cpp: ele liga instruções
+específicas da arquitetura. O CMake só aceita esse sufixo a partir da 3.30, então
+numa máquina com CMake mais antigo o valor possível é `120`, sem o `a`.
+
 ### O pacote
 
 Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI

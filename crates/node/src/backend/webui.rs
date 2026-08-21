@@ -2186,7 +2186,8 @@ pub struct SliceRequest {
     /// Whole model on *this* machine.
     pub model_path: String,
     /// Target size of each slice, in order. A slice with no size takes what is
-    /// left of the model.
+    /// left of the model. Tensor Parallelism does not use this list.
+    #[serde(default)]
     pub slices: Vec<plan::SizedSlice>,
     /// Catalog name of the model, used to name the slices. Without it the name
     /// comes from the file, which for an Ollama blob is a digest.
@@ -4369,6 +4370,18 @@ mod tests {
         );
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tensor_slice_request_does_not_require_pipeline_slices() {
+        let request: SliceRequest = serde_json::from_str(
+            r#"{"model_path":"/models/model.gguf","mode":"tensor_parallel","tp_size":2}"#,
+        )
+        .unwrap();
+
+        assert!(request.slices.is_empty());
+        assert_eq!(request.mode, SliceMode::TensorParallel);
+        assert_eq!(request.tp_size, Some(2));
     }
 
     #[test]

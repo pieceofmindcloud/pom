@@ -78,6 +78,12 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Tipo numérico do cache K, definido pela instalação inteira.
+    #[serde(default)]
+    pub cache_type_k: crate::config::KvCacheType,
+    /// Tipo numérico do cache V, definido pela instalação inteira.
+    #[serde(default)]
+    pub cache_type_v: crate::config::KvCacheType,
     /// Permite ao llama.cpp ajustar camadas/contexto à memória livre.
     #[serde(default = "default_fit_memory")]
     pub fit_memory: bool,
@@ -181,6 +187,8 @@ impl NodeConfig {
             n_gpu_layers: p.n_gpu_layers,
             n_ctx: p.n_ctx,
             offload_kqv: p.offload_kqv,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: p.fit_memory && allow_fit_memory,
             n_batch: p.n_batch,
             max_new_tokens: p.max_new_tokens,
@@ -218,7 +226,7 @@ impl NodeConfig {
     /// no pipeline (a cauda não exporta residual), então vem do que já estava
     /// aqui, e não do que o operador digitou.
     pub fn with_params(&self, p: &crate::webui::RuntimeParams) -> Self {
-        Self {
+        let mut next = Self {
             deploy_id: self.deploy_id.clone(),
             deployment_name: self.deployment_name.clone(),
             model_path: self.model_path.clone(),
@@ -234,7 +242,10 @@ impl NodeConfig {
             single_peer: self.single_peer,
             no_embeddings: self.no_embeddings,
             ..Self::from_params(p, self.tp.is_none())
-        }
+        };
+        next.cache_type_k = self.cache_type_k;
+        next.cache_type_v = self.cache_type_v;
+        next
     }
 }
 
@@ -546,6 +557,12 @@ impl NodeRuntime {
     /// Switch this node to a new configuration: stop the current inference
     /// server, re-announce the new layer range, start the new server.
     pub async fn apply(&self, cfg: NodeConfig) -> Result<()> {
+        let mut cfg = cfg;
+        if let Some(auth) = &self.auth {
+            let installation = auth.read().await;
+            cfg.cache_type_k = installation.cache_type_k;
+            cfg.cache_type_v = installation.cache_type_v;
+        }
         cfg.validate()?;
 
         let profile = ModelProfile::guess_from_name(&cfg.model_path);
@@ -1147,6 +1164,8 @@ mod tests {
         let mut antes = cfg();
         antes.deploy_id = "d-4f2a91c3".into();
         antes.tp = None;
+        antes.cache_type_k = crate::config::KvCacheType::Q8_0;
+        antes.cache_type_v = crate::config::KvCacheType::Bf16;
 
         let mut p = crate::webui::RuntimeParams::default();
         p.n_ctx = 65536;
@@ -1175,6 +1194,8 @@ mod tests {
         assert_eq!(depois.inference_port, antes.inference_port);
         assert_eq!(depois.single_peer, antes.single_peer);
         assert_eq!(depois.no_embeddings, antes.no_embeddings);
+        assert_eq!(depois.cache_type_k, antes.cache_type_k);
+        assert_eq!(depois.cache_type_v, antes.cache_type_v);
     }
 
     /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e
@@ -1217,6 +1238,8 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
             max_sessions: 1,
             batching_enabled: true,

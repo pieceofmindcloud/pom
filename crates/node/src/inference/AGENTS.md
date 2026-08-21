@@ -36,8 +36,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   uma fila local limitada; o worker seleciona uma entrada por sessão e pode
   chamar o decode multi-sequência.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
-  residual capture, sampling, e o dono da cabeça de rascunho `nextn`
-  (`Option<MtpDrafter>`). `decode_tokens_batch` e `decode_hidden_batch`
+  residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
+  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `decode_tokens_batch` e
+  `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
 - `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
@@ -58,7 +59,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.
-- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, guarda o
+- `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
+  cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
   supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
   anotação da fatia servida (Pending → Serving via `/health`).

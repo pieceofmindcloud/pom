@@ -729,6 +729,8 @@ async fn main() -> Result<()> {
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
             offload_kqv: !args.kv_cache_ram,
+            cache_type_k: config::KvCacheType::F16,
+            cache_type_v: config::KvCacheType::F16,
             fit_memory: true,
             n_batch: args.n_batch,
             max_sessions: args.max_sessions,
@@ -996,6 +998,8 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
+        cache_type_k: config::KvCacheType::F16,
+        cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
         gateway_port,
         p2p_port: 42777,

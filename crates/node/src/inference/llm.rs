@@ -19,6 +19,7 @@
 //! with two contexts decoding in parallel that became a race in which one
 //! request would carry the other's residual - no error, just a wrong answer.
 
+use crate::config::KvCacheType;
 use anyhow::{bail, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::ffi::{c_void, CStr, CString};
@@ -124,6 +125,8 @@ pub struct EngineConfig {
     /// por sessão por `max_sessions` antes de montar esta configuração.
     pub n_ctx: u32,
     pub offload_kqv: bool,
+    pub cache_type_k: KvCacheType,
+    pub cache_type_v: KvCacheType,
     pub fit_memory: bool,
     pub n_batch: u32,
     pub n_gpu_layers: i32,
@@ -148,6 +151,29 @@ pub struct EngineConfig {
     /// modelo comum. Ver `infer_server::should_draft` e
     /// `gateway::rollback_sessions`, que são o resto do mecanismo.
     pub rs_seq_window: u32,
+}
+
+pub(crate) fn apply_cache_types(
+    cparams: &mut sys::llama_context_params,
+    cache_type_k: KvCacheType,
+    cache_type_v: KvCacheType,
+) {
+    cparams.type_k = cache_type_to_ggml(cache_type_k);
+    cparams.type_v = cache_type_to_ggml(cache_type_v);
+}
+
+fn cache_type_to_ggml(cache_type: KvCacheType) -> sys::ggml_type {
+    match cache_type {
+        KvCacheType::F32 => sys::GGML_TYPE_F32,
+        KvCacheType::F16 => sys::GGML_TYPE_F16,
+        KvCacheType::Bf16 => sys::GGML_TYPE_BF16,
+        KvCacheType::Q8_0 => sys::GGML_TYPE_Q8_0,
+        KvCacheType::Q4_0 => sys::GGML_TYPE_Q4_0,
+        KvCacheType::Q4_1 => sys::GGML_TYPE_Q4_1,
+        KvCacheType::Iq4Nl => sys::GGML_TYPE_IQ4_NL,
+        KvCacheType::Q5_0 => sys::GGML_TYPE_Q5_0,
+        KvCacheType::Q5_1 => sys::GGML_TYPE_Q5_1,
+    }
 }
 
 // ── Engine ────────────────────────────────────────────────────────────────────
@@ -254,6 +280,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     cparams.n_ubatch = effective_n_ubatch(cfg);
     cparams.n_seq_max = cfg.max_sessions.max(1);
     cparams.offload_kqv = cfg.offload_kqv;
+    apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
     cparams.embeddings = cfg.need_embeddings;
     cparams.n_rs_seq = cfg.rs_seq_window;
 
@@ -336,6 +363,8 @@ pub struct LlmEngine {
     /// registrado no llama.cpp em `cb_eval_user_data` e não pode mudar.
     capture: Box<Mutex<CaptureSlot>>,
     offload_kqv: bool,
+    cache_type_k: KvCacheType,
+    cache_type_v: KvCacheType,
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
     effective_n_ubatch: u32,
@@ -554,6 +583,7 @@ impl LlmEngine {
         cparams.n_ubatch = effective_n_ubatch(cfg);
         cparams.n_seq_max = cfg.max_sessions.max(1);
         cparams.offload_kqv = cfg.offload_kqv;
+        apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = cfg.need_embeddings;
         cparams.n_rs_seq = cfg.rs_seq_window;
         if cfg.n_threads > 0 {
@@ -640,6 +670,8 @@ impl LlmEngine {
             capture_ok,
             capture,
             offload_kqv: cfg.offload_kqv,
+            cache_type_k: cfg.cache_type_k,
+            cache_type_v: cfg.cache_type_v,
             fit_memory_applied: false,
             effective_n_gpu_layers: cfg.n_gpu_layers,
             effective_n_ubatch: effective_n_ubatch(cfg),
@@ -692,6 +724,14 @@ impl LlmEngine {
         // configuration only during construction. Keep a copy visible through
         // `/health` rather than guessing from GPU utilisation.
         self.offload_kqv
+    }
+
+    pub fn cache_type_k(&self) -> KvCacheType {
+        self.cache_type_k
+    }
+
+    pub fn cache_type_v(&self) -> KvCacheType {
+        self.cache_type_v
     }
 
     pub fn fit_memory_applied(&self) -> bool {
@@ -1580,6 +1620,8 @@ mod pool_tests {
         EngineConfig {
             n_ctx: 120_320,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: true,
             n_batch: 512,
             n_gpu_layers: 99,
@@ -1899,6 +1941,16 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
 mod tests {
     use super::*;
 
+    #[test]
+    fn cache_types_map_to_the_llama_context_types() {
+        assert_eq!(cache_type_to_ggml(KvCacheType::F16), sys::GGML_TYPE_F16);
+        assert_eq!(cache_type_to_ggml(KvCacheType::Q8_0), sys::GGML_TYPE_Q8_0);
+        assert_eq!(
+            cache_type_to_ggml(KvCacheType::Iq4Nl),
+            sys::GGML_TYPE_IQ4_NL
+        );
+    }
+
     /// Characterisation tests: they pin the sampler's *current* choices so the
     /// O(V log V) → O(V) rewrite below can be proven not to change which token
     /// comes out. They are deliberately about behaviour, not speed.
@@ -2072,6 +2124,8 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
@@ -2113,6 +2167,8 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
@@ -2165,6 +2221,8 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: test_gpu_layers(),
@@ -2231,6 +2289,8 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: 0,

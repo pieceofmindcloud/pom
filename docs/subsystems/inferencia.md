@@ -66,6 +66,24 @@ mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
 pesos não couberem, ainda é necessário reduzir `n_gpu_layers` ou dividir o
 modelo entre máquinas.
 
+O tipo numérico do cache é uma configuração da instalação, no `pom.json`, e não
+uma escolha por máquina dentro de uma implantação:
+
+```json
+{
+  "cache_type_k": "q8_0",
+  "cache_type_v": "bf16"
+}
+```
+
+Os valores aceitos são `f32`, `f16`, `bf16`, `q8_0`, `q4_0`, `q4_1`, `iq4_nl`,
+`q5_0` e `q5_1`. Quando os campos faltam, ambos usam `f16`. O runtime aplica a
+mesma configuração ao contexto principal, ao contexto MTP e ao
+`llama_rs_fit_params`; `/health` expõe `cache_type_k` e `cache_type_v` depois
+da carga para confirmar o valor efetivo. A implantação continua podendo
+escolher `offload_kqv` por máquina, porque isso controla apenas a localização
+do cache, não o tipo numérico.
+
 Nos deployments de pipeline ou de modelo inteiro, `RuntimeParams.fit_memory=true`
 fica ligado por padrão. Antes da carga real, a aplicação chama o
 `common_fit_params` do llama.cpp, que pode reduzir `n_gpu_layers` para caber na

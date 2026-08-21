@@ -166,6 +166,8 @@ mod tests {
     fn inference_accepts_connection_key_or_active_api_key_only() {
         let cfg = crate::config::Config {
             gpus: None,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             role: crate::config::Role::Principal,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,
@@ -207,6 +209,8 @@ mod tests {
     fn internal_inference_token_prefers_connection_key_and_falls_back_to_active_api_key() {
         let mut cfg = crate::config::Config {
             gpus: None,
+            cache_type_k: crate::config::KvCacheType::F16,
+            cache_type_v: crate::config::KvCacheType::F16,
             role: crate::config::Role::Principal,
             connection_key: "cluster-secret".into(),
             gateway_port: 8080,

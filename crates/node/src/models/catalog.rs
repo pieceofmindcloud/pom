@@ -93,6 +93,11 @@ pub struct DiscoveredModel {
     /// True when the file is a Tensor Parallelism shard, not a layer slice.
     #[serde(default)]
     pub tensor_parallel: bool,
+    /// Rank metadata from the unified manifest, when this is a TP shard.
+    #[serde(default)]
+    pub tp_rank: Option<u32>,
+    #[serde(default)]
+    pub tp_size: Option<u32>,
 }
 
 impl DiscoveredModel {
@@ -122,7 +127,10 @@ pub struct ShardSet {
     /// True when the total came from the slices' own coverage rather than from
     /// `pom.original_block_count`. Old slices carry no such metadata.
     pub total_layers_inferred: bool,
+    /// Pipeline layer parts from the manifest's `parts` array.
     pub shards: Vec<DiscoveredModel>,
+    /// Tensor-parallel ranks from the manifest's `tp_parts` array.
+    pub tp_parts: Vec<DiscoveredModel>,
     /// True when the slices cover 0..total_layers with no gap or overlap.
     pub complete: bool,
 }
@@ -383,6 +391,8 @@ pub struct PartContext {
     /// O nome de uma parte é o hash, então não há de onde deduzi-la.
     pub quant: Option<String>,
     pub tensor_parallel: bool,
+    pub tp_rank: Option<u32>,
+    pub tp_size: Option<u32>,
 }
 
 impl PartContext {
@@ -493,6 +503,8 @@ fn describe(
         model_label: part.map(|c| c.model_label.clone()),
         pom_id: part.map(|c| c.pom_id.clone()),
         tensor_parallel: part.is_some_and(|c| c.tensor_parallel),
+        tp_rank: part.and_then(|c| c.tp_rank),
+        tp_size: part.and_then(|c| c.tp_size),
     })
 }
 
@@ -816,6 +828,8 @@ pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
                     ),
                     quant: m.model.quant.clone(),
                     tensor_parallel,
+                    tp_rank: parte.tp.map(|tp| tp.rank),
+                    tp_size: parte.tp.map(|tp| tp.size),
                 };
                 let chave = caminho.canonicalize().unwrap_or(caminho);
                 index.insert(chave, ctx);
@@ -842,54 +856,91 @@ fn identity_path(dir: &Path) -> PathBuf {
 /// Group slices by their shared base name and report whether the set covers the
 /// model end to end.
 fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
-    let mut groups: HashMap<String, Vec<DiscoveredModel>> = HashMap::new();
-    for m in models
-        .iter()
-        .filter(|m| m.is_shard() && !m.is_tensor_parallel())
-    {
+    let mut groups: HashMap<String, (Vec<DiscoveredModel>, Vec<DiscoveredModel>)> = HashMap::new();
+    for m in models.iter().filter(|m| m.is_shard()) {
         let key = m.shard_group.clone().unwrap_or_else(|| m.name.clone());
-        groups.entry(key).or_default().push(m.clone());
+        let entry = groups.entry(key).or_default();
+        if m.is_tensor_parallel() {
+            entry.1.push(m.clone());
+        } else {
+            entry.0.push(m.clone());
+        }
     }
 
     let mut sets: Vec<ShardSet> = groups
         .into_iter()
-        .map(|(group, mut shards)| {
+        .map(|(group, (mut shards, mut tp_parts))| {
             shards.sort_by_key(|s| s.shard_range.map(|r| r.0).unwrap_or(0));
+            // Keep alternative TP groups together first, then order each group
+            // by rank. The UI can render each group as 1ofN, 2ofN, etc.
+            tp_parts
+                .sort_by_key(|s| (s.tp_size.unwrap_or(u32::MAX), s.tp_rank.unwrap_or(u32::MAX)));
 
-            // How far the slices reach without a gap, starting from layer 0.
+            // How far at least one exact pipeline chain reaches without a gap.
+            // A source manifest can contain alternatives such as 0-15 and
+            // 0-19; stopping at the first sorted row would incorrectly call
+            // the aggregate incomplete even when 0-15 + 16-31 is complete.
             let mut contiguous_to = 0u32;
-            for s in &shards {
-                match s.shard_range {
-                    Some((start, end)) if start == contiguous_to => contiguous_to = end + 1,
-                    _ => break,
-                }
+            while let Some(end) = shards
+                .iter()
+                .filter_map(|s| match s.shard_range {
+                    Some((start, end)) if start == contiguous_to => Some(end),
+                    _ => None,
+                })
+                .max()
+            {
+                contiguous_to = end.saturating_add(1);
             }
 
             // Slices written by split_model.py record the original layer count.
             // Older ones do not, so fall back to what the set itself covers —
             // which is the honest reading: "these slices reach layer N".
-            let declared = shards.iter().find_map(|s| s.total_layers);
+            let declared = shards
+                .iter()
+                .chain(tp_parts.iter())
+                .find_map(|s| s.total_layers);
             let total_layers = declared.or(if contiguous_to > 0 {
                 Some(contiguous_to)
             } else {
                 None
             });
 
-            let complete = matches!(total_layers, Some(t) if t > 0 && contiguous_to >= t);
+            let pipeline_complete = matches!(total_layers, Some(t) if t > 0 && contiguous_to >= t);
+            let mut tp_sizes: Vec<u32> = tp_parts.iter().filter_map(|s| s.tp_size).collect();
+            tp_sizes.sort_unstable();
+            tp_sizes.dedup();
+            let tensor_complete = tp_sizes.into_iter().any(|size| {
+                let mut ranks: Vec<u32> = tp_parts
+                    .iter()
+                    .filter(|part| part.tp_size == Some(size))
+                    .filter_map(|part| part.tp_rank)
+                    .collect();
+                ranks.sort_unstable();
+                ranks.dedup();
+                ranks == (0..size).collect::<Vec<_>>()
+            });
+            let complete = if shards.is_empty() {
+                tensor_complete
+            } else {
+                pipeline_complete
+            };
 
             ShardSet {
                 model_label: shards
                     .iter()
+                    .chain(tp_parts.iter())
                     .find_map(|s| s.model_label.clone())
                     .unwrap_or_else(|| group.clone()),
                 pom_id: shards
                     .iter()
+                    .chain(tp_parts.iter())
                     .find_map(|s| s.pom_id.clone())
                     .unwrap_or_default(),
                 group,
                 total_layers,
                 total_layers_inferred: declared.is_none(),
                 shards,
+                tp_parts,
                 complete,
             }
         })
@@ -981,6 +1032,8 @@ mod tests {
             model_label: None,
             pom_id: None,
             tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -988,6 +1041,47 @@ mod tests {
 
         let with_gap = build_shard_sets(&[mk(0, 15, 32), mk(20, 31, 32)]);
         assert!(!with_gap[0].complete);
+    }
+
+    #[test]
+    fn shard_set_separates_pipeline_parts_from_tensor_parallel_parts() {
+        let mk = |id: &str, start: u32, end: u32, tensor_parallel: bool| {
+            let mut model = DiscoveredModel {
+                id: id.into(),
+                name: format!("{id}.gguf"),
+                source: ModelSource::Local,
+                source_label: "Local".into(),
+                path: format!("/tmp/{id}.gguf"),
+                size_bytes: 4096,
+                architecture: None,
+                total_layers: Some(32),
+                quant: None,
+                shard_range: Some((start, end)),
+                shard_group: Some("model-aaaa".into()),
+                sha256: Some(id.repeat(64 / id.len())),
+                model_label: Some("model".into()),
+                pom_id: Some("a".repeat(64)),
+                tensor_parallel,
+                tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
+                tp_size: tensor_parallel.then_some(2),
+            };
+            if tensor_parallel {
+                model.name = format!("{id}-tp.gguf");
+            }
+            model
+        };
+
+        let sets = build_shard_sets(&[
+            mk("a", 0, 15, false),
+            mk("b", 16, 31, false),
+            mk("c", 0, 31, true),
+            mk("d", 0, 31, true),
+        ]);
+
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].shards.len(), 2);
+        assert_eq!(sets[0].tp_parts.len(), 2);
+        assert!(sets[0].complete);
     }
 
     #[test]
@@ -1088,6 +1182,8 @@ mod tests {
             model_label: None,
             pom_id: None,
             tensor_parallel: false,
+            tp_rank: None,
+            tp_size: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));
@@ -1143,6 +1239,7 @@ mod part_naming_tests {
             },
             PomKind::Layers,
             "no-1",
+            "a".repeat(64),
             partes,
         );
         crate::pom::finalize_run(raiz, &pasta, &m).unwrap();
@@ -1192,8 +1289,8 @@ mod part_naming_tests {
         assert_eq!(cat.shard_sets.len(), 1);
         let set = &cat.shard_sets[0];
         assert!(set.complete);
-        // A chave do conjunto é a rodada, para duas fatiagens do mesmo modelo
-        // não virarem um amontoado só...
+        // A chave do conjunto é a fonte original, para todas as alternativas
+        // de pipeline e os shards TP do mesmo modelo compartilharem o grupo.
         assert_eq!(
             set.group,
             format!("qwen3-8b-{}", crate::pom::short_id(&_m.pom_id))
@@ -1205,15 +1302,10 @@ mod part_naming_tests {
         std::fs::remove_dir_all(&raiz).ok();
     }
 
-    /// O defeito da colisão: **o mesmo modelo, fatiado duas vezes**.
-    ///
-    /// Cortes diferentes produzem partes diferentes, que não têm nada a ver
-    /// umas com as outras. Numa pasta só elas se misturavam: o catálogo via um
-    /// amontoado de partes de duas rodadas, e apagar um fatiamento levava junto
-    /// a parte que a outra rodada por acaso também usava. Cada rodada tem a
-    /// própria pasta, com o id dela no nome.
+    /// O mesmo arquivo original, fatiado de duas formas, compartilha a pasta e
+    /// o manifesto; o catálogo preserva todas as alternativas de `parts`.
     #[test]
-    fn duas_fatiagens_do_mesmo_modelo_ficam_em_pastas_distintas() {
+    fn duas_fatiagens_do_mesmo_arquivo_ficam_na_mesma_pasta() {
         let raiz = std::env::temp_dir().join(format!("pom-col-{}", uuid::Uuid::new_v4().simple()));
 
         // Duas rodadas do mesmo modelo, com cortes diferentes.
@@ -1232,30 +1324,18 @@ mod part_naming_tests {
             &[(0, 19, 20), (20, 31, 9)],
         );
 
-        assert_ne!(
-            uma.pom_id, outra.pom_id,
-            "cortes diferentes, rodadas diferentes"
-        );
+        assert_eq!(uma.pom_id, outra.pom_id, "a fonte é a identidade do modelo");
         let pasta_uma = crate::pom::dir_for(&raiz, &uma);
         let pasta_outra = crate::pom::dir_for(&raiz, &outra);
-        assert_ne!(pasta_uma, pasta_outra, "e pastas diferentes");
-        assert!(pasta_uma.is_dir() && pasta_outra.is_dir());
+        assert_eq!(pasta_uma, pasta_outra, "um manifesto único por fonte");
+        assert!(pasta_uma.is_dir());
 
-        // As quatro partes aparecem, cada uma sabendo de que rodada é.
+        // As quatro partes aparecem no mesmo manifesto, cada uma com sua faixa.
         let cat = discover(&[], &raiz);
         assert_eq!(cat.models.len(), 4);
-        assert_eq!(cat.shard_sets.len(), 2, "dois conjuntos, não um amontoado");
-        for set in &cat.shard_sets {
-            assert!(set.complete, "cada rodada fecha o modelo por conta própria");
-            assert_eq!(set.shards.len(), 2);
-        }
-
-        // Apagar uma rodada é apagar a pasta dela, e a outra segue inteira.
-        std::fs::remove_dir_all(&pasta_uma).unwrap();
-        let depois = discover(&[], &raiz);
-        assert_eq!(depois.models.len(), 2);
-        assert_eq!(depois.shard_sets.len(), 1);
-        assert!(depois.shard_sets[0].complete);
+        assert_eq!(cat.shard_sets.len(), 1, "um conjunto por arquivo original");
+        assert!(cat.shard_sets[0].complete);
+        assert_eq!(cat.shard_sets[0].shards.len(), 4);
 
         std::fs::remove_dir_all(&raiz).ok();
     }
@@ -1298,6 +1378,7 @@ mod part_naming_tests {
             },
             crate::pom::PomKind::Layers,
             "no-1",
+            "a".repeat(64),
             partes,
         );
         crate::pom::finalize_run(raiz, &trabalho, &m).unwrap();

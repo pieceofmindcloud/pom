@@ -27,7 +27,8 @@
 //!
 //! * uma **parte** de um fatiamento vai para
 //!   `<pasta de fatias>/<modelo>-<hash curto do original>/`, com o nome sendo o
-//!   próprio sha256 e o `model.pom` gravado ao lado antes dos bytes. O id vem do
+//!   próprio sha256 e o manifesto nomeado como a pasta, gravado na mesma pasta
+//!   antes dos bytes. O id vem do
 //!   hash do modelo original, e novas alternativas são mescladas no manifesto;
 //!   É o hash pedido que confere o que chegou - não um digest que o remetente
 //!   declarou;
@@ -949,22 +950,14 @@ async fn alvo_da_oferta(state: &GatewayState, offer: &TransferOffer) -> Result<A
                 // O manifesto recebido é apenas conhecimento remoto. Mescle-o
                 // ao manifesto local para não apagar partes que este peer já
                 // tinha do mesmo modelo original.
-                let pasta = if m.pom_version == crate::pom::POM_VERSION {
-                    match crate::pom::merge_manifest(&shard_dir, m) {
-                        Ok((pasta, _)) => pasta,
-                        Err(e) => {
-                            return Err(format!(
-                                "não deu para mesclar o manifesto de {}: {e:#}",
-                                m.model.label
-                            ));
-                        }
+                let pasta = match crate::pom::merge_manifest(&shard_dir, m) {
+                    Ok((pasta, _)) => pasta,
+                    Err(e) => {
+                        return Err(format!(
+                            "não deu para mesclar o manifesto de {}: {e:#}",
+                            m.model.label
+                        ));
                     }
-                } else {
-                    let pasta = crate::pom::dir_for(&shard_dir, m);
-                    if let Err(e) = crate::pom::write_atomic(&pasta, m) {
-                        warn!("não deu para gravar o manifesto de {}: {e:#}", m.model.name);
-                    }
-                    pasta
                 };
                 info!(
                     "manifesto de {} guardado; a parte vai para {}",
@@ -1200,7 +1193,12 @@ async fn receive_answer(
             oferta.fatia.as_ref(),
         )
         .await;
-    let motivo = match req.reason.as_deref().map(str::trim).filter(|r| !r.is_empty()) {
+    let motivo = match req
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|r| !r.is_empty())
+    {
         Some(r) => format!("recusado por {}: {r}", oferta.to_host),
         None => format!("recusado por {}", oferta.to_host),
     };
@@ -1216,7 +1214,12 @@ async fn receive_answer(
 /// Best-effort e em segundo plano: o clique de quem decidiu não pode esperar a
 /// outra máquina responder, e um remetente que saiu do ar não é motivo para a
 /// recusa falhar na tela de quem recusou.
-fn notify_offerer(state: &GatewayState, offer: &TransferOffer, accepted: bool, job_id: Option<String>) {
+fn notify_offerer(
+    state: &GatewayState,
+    offer: &TransferOffer,
+    accepted: bool,
+    job_id: Option<String>,
+) {
     let Some(grant) = offer.grant.clone() else {
         // Oferta de um peer anterior a `grant`: não há id compartilhado para
         // nomear o veredito, e inventar um só produziria ruído do outro lado.
@@ -1986,25 +1989,14 @@ async fn spawn_download(
                     // Gravar o manifesto é parte da transferência, não um
                     // extra. O merge preserva partes que já existiam neste
                     // peer e adiciona apenas o conhecimento remoto que falta.
-                    let p = if m.pom_version == crate::pom::POM_VERSION {
-                        crate::pom::merge_manifest(&state.shard_dir().await, &m)
-                            .map(|(path, _)| path)
-                            .map_err(|e| {
-                                format!(
-                                    "não deu para mesclar o manifesto de {}: {e:#}",
-                                    m.model.label
-                                )
-                            })?
-                    } else {
-                        let path = crate::pom::dir_for(&state.shard_dir().await, &m);
-                        crate::pom::write_atomic(&path, &m).map_err(|e| {
+                    let p = crate::pom::merge_manifest(&state.shard_dir().await, &m)
+                        .map(|(path, _)| path)
+                        .map_err(|e| {
                             format!(
-                                "não deu para gravar o manifesto de {}: {e:#}",
+                                "não deu para mesclar o manifesto de {}: {e:#}",
                                 m.model.label
                             )
                         })?;
-                        path
-                    };
                     p
                 }
             };
@@ -2476,6 +2468,7 @@ mod tests {
             },
             PomKind::Layers,
             "no-1",
+            "a".repeat(64),
             vec![PomPart {
                 sha256: sha.clone(),
                 bytes: 10,
@@ -2507,10 +2500,20 @@ mod tests {
     async fn a_finished_job_records_when_it_finished() {
         let transfers = TransferState::default();
         transfers
-            .start_job("job-1", "f.gguf", TRANSFER_RECEIVING, "ksia", "/m/f.gguf", 10, None)
+            .start_job(
+                "job-1",
+                "f.gguf",
+                TRANSFER_RECEIVING,
+                "ksia",
+                "/m/f.gguf",
+                10,
+                None,
+            )
             .await;
 
-        transfers.finish("job-1", TRANSFER_DONE, "MD5 conferido").await;
+        transfers
+            .finish("job-1", TRANSFER_DONE, "MD5 conferido")
+            .await;
 
         let jobs = transfers.jobs.read().await;
         let job = jobs.get("job-1").unwrap();
@@ -2530,7 +2533,15 @@ mod tests {
     async fn a_finished_job_is_never_relabelled() {
         let transfers = TransferState::default();
         transfers
-            .start_job("job-1", "f.gguf", TRANSFER_SENDING, "ksia", "/m/f.gguf", 10, None)
+            .start_job(
+                "job-1",
+                "f.gguf",
+                TRANSFER_SENDING,
+                "ksia",
+                "/m/f.gguf",
+                10,
+                None,
+            )
             .await;
 
         transfers.cancel("job-1", "atena").await;
@@ -3254,6 +3265,7 @@ mod pom_travels_tests {
             },
             PomKind::Layers,
             "origem",
+            "a".repeat(64),
             vec![PomPart {
                 sha256: sha.clone(),
                 bytes: n,
@@ -3430,7 +3442,7 @@ mod pom_travels_tests {
             is_last: true,
             tp: None,
         };
-        let local_manifest = PomManifest::new_for_source(
+        let local_manifest = PomManifest::new(
             model.clone(),
             PomKind::Layers,
             "local",
@@ -3444,7 +3456,7 @@ mod pom_travels_tests {
 
         let state = crate::gateway::testkit::state_with("destino", vec![]).await;
         state.auth.write().await.shard_dir = Some(raiz.to_string_lossy().into());
-        let incoming = PomManifest::new_for_source(
+        let incoming = PomManifest::new(
             model,
             PomKind::Layers,
             "remote",
@@ -3532,6 +3544,7 @@ mod verdict_tests {
             },
             PomKind::Layers,
             node_id,
+            "a".repeat(64),
             vec![PomPart {
                 sha256: sha.clone(),
                 bytes: n,
@@ -3587,7 +3600,8 @@ mod verdict_tests {
         let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         crate::peer_client::set_tls_ativo(false);
 
-        let raiz = std::env::temp_dir().join(format!("pom-vd-ok-{}", uuid::Uuid::new_v4().simple()));
+        let raiz =
+            std::env::temp_dir().join(format!("pom-vd-ok-{}", uuid::Uuid::new_v4().simple()));
         let disco_a = raiz.join("atena");
         let disco_b = raiz.join("ksia");
         let (atena, porta_a, _m, sha) = no_com_parte("atena", &disco_a).await;
@@ -3601,12 +3615,10 @@ mod verdict_tests {
         )
         .await;
         // E o remetente precisa conhecer o destino, para nomeá-lo na tela.
-        atena
-            .network
-            .peers
-            .write()
-            .await
-            .insert("ksia".into(), crate::gateway::testkit::peer("ksia", "ksia", porta_b));
+        atena.network.peers.write().await.insert(
+            "ksia".into(),
+            crate::gateway::testkit::peer("ksia", "ksia", porta_b),
+        );
 
         let resp = send_to_peer(
             ConnectionAuth,
@@ -3628,12 +3640,7 @@ mod verdict_tests {
             offers[0].id.clone()
         };
 
-        let resp = accept_offer(
-            ConnectionAuth,
-            State(ksia.clone()),
-            AxumPath(oferta_id),
-        )
-        .await;
+        let resp = accept_offer(ConnectionAuth, State(ksia.clone()), AxumPath(oferta_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // O download termina, e o **envio** também: era este segundo fecho que
@@ -3717,12 +3724,10 @@ mod verdict_tests {
             crate::gateway::testkit::peer("atena", "atena", porta_a),
         )
         .await;
-        atena
-            .network
-            .peers
-            .write()
-            .await
-            .insert("ksia".into(), crate::gateway::testkit::peer("ksia", "ksia", porta_b));
+        atena.network.peers.write().await.insert(
+            "ksia".into(),
+            crate::gateway::testkit::peer("ksia", "ksia", porta_b),
+        );
 
         let _ = send_to_peer(
             ConnectionAuth,
@@ -3735,12 +3740,7 @@ mod verdict_tests {
         .await;
 
         let oferta_id = ksia.transfers.offers.read().await[0].id.clone();
-        let resp = reject_offer(
-            ConnectionAuth,
-            State(ksia.clone()),
-            AxumPath(oferta_id),
-        )
-        .await;
+        let resp = reject_offer(ConnectionAuth, State(ksia.clone()), AxumPath(oferta_id)).await;
         assert_eq!(resp.status(), StatusCode::OK);
 
         // O remetente fica sabendo. Antes disto a recusa era um silêncio: nem

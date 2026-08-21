@@ -237,16 +237,116 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |
 
-## Release (CI)
+## Release pelo GitHub Actions
 
-`.github/workflows/release.yml` publica só manualmente (`workflow_dispatch`
-com `version`/`prerelease`). O job `ui` builda a interface uma vez (a UI não é
-embutida no binário); a matriz de 4 alvos (macOS arm64 Metal, Linux x86_64
-CPU, Linux x86_64 CUDA 12.6, Windows x86_64 CPU experimental) usa
-`continue-on-error` + `fail-fast: false`, e o job `release` (`if: always()`)
-publica com o que compilou. O pacote = binário + `apps/frontend/dist` +
-README, para `project_root()` achar a UI a partir do diretório do executável.
-Windows empacota com 7z.
+Três workflows, um por sistema, todos só manuais (`workflow_dispatch`):
+
+| Arquivo | Alvo | Roda em | Entradas |
+|---|---|---|---|
+| `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, e CUDA opcional) | runner `ksia` | `version`, `cuda`, `prerelease` |
+| `.github/workflows/release-macos.yml` | macOS arm64, Metal | runner `macbook` | `version`, `prerelease` |
+| `.github/workflows/release-windows.yml` | Windows x86_64, CPU | hospedado (`windows-2022`) | `version`, `prerelease` |
+
+**São separados para poder rodar sozinhos.** Publicar só o macOS não deve
+custar um build de Windows, e um alvo que quebra não leva os outros junto. Cada
+workflow publica o próprio pacote **na mesma tag**: o primeiro a rodar cria a
+release, os seguintes anexam o arquivo deles. Rodar de novo só o de Linux não
+apaga o pacote de macOS que já estava lá.
+
+### O fork do llama.cpp é o passo que não pode faltar
+
+`vendor/llama-cpp-sys-2/llama.cpp` é um **symlink versionado** para a raiz do
+repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. Num
+checkout limpo - que é exatamente o que a CI faz - o symlink aponta para o
+vazio, e o build morre no `build.rs` do `llama-cpp-sys-2` com
+`Failed to obtain entry ... NotFound`, antes de compilar qualquer coisa do
+projeto. Por isso cada workflow tem um passo que clona o fork
+(`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, público) **por cima do
+symlink**, no caminho que o `build.rs` de fato lê (`<manifest_dir>/llama.cpp`).
+
+Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
+checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho
+dentro -, então repor a pasta na raiz não adiantaria.
+
+### A interface tem que ir no pacote
+
+A UI é lida do disco em tempo de execução (`config::ui_dist_dir`), não embutida
+no binário: sem `apps/frontend/dist` no pacote, o nó sobe e responde 500 na
+tela.
+
+Nos dois workflows self-hosted ela é compilada no próprio job, porque lá não há
+multiplicador de minuto e separá-la só acrescentaria uma ida e volta de artefato
+entre dois jobs que rodariam na mesma máquina de qualquer jeito - o runner
+atende um job por vez. No de Windows, que é hospedado, o job `ui` continua em
+`ubuntu-latest`: ali o minuto de Windows conta 2x e compilar a mesma interface
+lá custaria o dobro pelo mesmo `dist`.
+
+Os dois workflows self-hosted fixam o Node com `actions/setup-node` em vez de
+usar o do sistema. O runner grava um **retrato do PATH de quem o configurou**, e
+esse retrato envelhece: a ksia traz Node 18, e no macOS o Node vem do nvm, cujo
+caminho muda quando a versão padrão muda.
+
+### Runners self-hosted
+
+Linux e macOS rodam em máquinas próprias, então **não consomem cota**:
+
+| Runner | Máquina | Labels | Serviço |
+|---|---|---|---|
+| `ksia` | Ubuntu 24.04 x86_64, 8 núcleos, 46 GB | `self-hosted, Linux, X64, ksia, cuda` | systemd, usuário `github-runner` |
+| `macbook` | macOS arm64 | `self-hosted, macOS, ARM64, macbook, metal` | LaunchAgent, no login do usuário |
+
+**O runner da ksia roda como `github-runner`, sem sudo, e isso é deliberado.**
+Um runner self-hosted executa o que estiver no workflow de qualquer branch do
+repositório; como root, quem conseguisse abrir um branch aqui teria root na
+máquina. Sem sudo, o estrago fica limitado ao usuário do runner. Pelo mesmo
+motivo as dependências são provisionadas **uma vez na máquina** e o workflow só
+confere se estão lá, em vez de instalar a cada execução.
+
+No macOS o runner roda na conta do próprio usuário - inerente a self-hosted numa
+máquina pessoal: um workflow tem o mesmo acesso que o usuário logado. Vale
+enquanto quem pode empurrar branch neste repositório é confiável.
+
+Comandos de manutenção:
+
+```bash
+# ksia
+ssh root@ksia '/home/github-runner/actions-runner/svc.sh status'
+ssh root@ksia '/home/github-runner/actions-runner/svc.sh stop'
+# macbook
+~/actions-runner/svc.sh status
+```
+
+Se a máquina estiver desligada, o job **fica na fila** em vez de falhar.
+
+Para remover um runner: `./svc.sh uninstall` e depois `./config.sh remove
+--token <token de remoção>` (`gh api --method POST
+/repos/pereirajair/rdma-p2p/actions/runners/remove-token`).
+
+### Cota (só o workflow de Windows)
+
+Actions é gratuito e ilimitado em repositório **público**. Neste, que é privado,
+vale a cota mensal do plano (2.000 minutos no Free) com multiplicador por
+sistema: Linux 1x, Windows 2x, macOS 10x. Depois que Linux e macOS foram para
+runners próprios, só o de Windows consome cota - e é o único que ainda vale a
+pena vigiar.
+
+Um build limpo do zero - incluindo o llama.cpp nativo - foi medido em **3m33s**
+num Apple Silicon; um `target/` deste projeto mede **~9 GB**, o que importa na
+ksia, onde o disco é o recurso apertado. O workflow de Linux avisa (sem falhar)
+quando sobram menos de 15 GB.
+
+### O pacote
+
+Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI
+a partir do diretório do executável - a pasta descompactada funciona em qualquer
+lugar, sem `POM_HOME`. Além disso, por sistema: macOS leva o bundle `POM.app`
+(com uma segunda cópia do `dist` dentro, para o `.app` sobreviver a ser
+arrastado para `/Applications`), Linux leva `share/hicolor` e o `.desktop`, e o
+Windows não leva nada porque o ícone já está dentro do `.exe`. Unix empacota com
+`tar czf`, Windows com `7z`.
+
+**Windows é o alvo menos exercitado**: nunca foi compilado neste repositório e a
+inferência é só em CPU. Ele falha sozinho, sem afetar os outros dois.
 
 ## Defeitos anotados
 

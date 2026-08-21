@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { wholeModelsOf } from "./wholeModels";
+import { tensorParallelModelsOf, wholeModelsOf } from "./wholeModels";
 import type { DiscoveredModel, PeerCatalog } from "./types";
 
 function model(over: Partial<DiscoveredModel>): DiscoveredModel {
@@ -21,6 +21,18 @@ function model(over: Partial<DiscoveredModel>): DiscoveredModel {
 
 function peer(node_id: string, models: DiscoveredModel[]): PeerCatalog {
   return { node_id, hostname: node_id, is_self: false, models, shard_sets: [] };
+}
+
+function tpPart(rank: number, size = 2): DiscoveredModel {
+  return model({
+    id: `tp-${rank}`,
+    name: `qwen · L0-31 · rank ${rank}`,
+    path: `/shards/tp-${rank}.gguf`,
+    shard_range: [0, 31],
+    shard_group: "qwen-hash",
+    tp_rank: rank,
+    tp_size: size,
+  });
 }
 
 describe("wholeModelsOf", () => {
@@ -76,5 +88,27 @@ describe("wholeModelsOf", () => {
     ]);
     expect(out.map((w) => w.name)).toEqual(["alpaca", "zephyr"]);
     expect(wholeModelsOf(undefined)).toEqual([]);
+  });
+
+  it("mantém ranks TP separados do modelo inteiro e agrupa por largura", () => {
+    const out = tensorParallelModelsOf([
+      {
+        ...peer("ksia", []),
+        shard_sets: [{
+          group: "qwen-hash",
+          model_label: "qwen",
+          pom_id: "hash",
+          total_layers: 32,
+          total_layers_inferred: false,
+          shards: [],
+          tp_parts: [tpPart(1), tpPart(0)],
+          complete: true,
+        }],
+      },
+    ]);
+    expect(out).toHaveLength(1);
+    expect(out[0].key).toBe("qwen-hash:2");
+    expect(out[0].ranks.map((rank) => rank.rank)).toEqual([0, 1]);
+    expect(out[0].ranks.every((rank) => rank.holders.includes("ksia"))).toBe(true);
   });
 });

@@ -83,19 +83,21 @@ Per-file list:
   mode bar at the top and carried to the node as `kind`: **a set of shards**
   (below), **a whole model** (one model picker from `../lib/wholeModels`, one
   machine picker, no coverage ribbon/"included"/merge - a pipeline of one has a
-  single answer), or **tensor parallel** (`tensor_parallel`): one model picker
-  plus a `primary` select and a `workers` multi-select limited to whole-model
-  peers currently present on the deployment map;
-  `size` is derived (`workers.length + 1`) via `tpPayload`, never a typed number,
-  and the node derives the reduce URL from the primary's inference port (the
-  operator no longer types `rank0_url`). `tp` is in the plan queryKey so changing
-  primary/workers re-runs the node's shardability check. A plan with no `kind`
+  single answer), or **tensor parallel** (`tensor_parallel`): when the catalog
+  has `tp_parts`, the picker groups the round by TP width and the inspector
+  shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
+  whole-model runtime path. The primary select and workers multi-select are
+  limited to peers that hold the required ranks and participate in the map.
+  `size` is derived from the selected TP group or `workers.length + 1`, never a
+  typed number, and the node derives the reduce URL from the primary's
+  inference port (the operator no longer types `rank0_url`). `tp` is in the
+  plan queryKey so changing primary/workers re-runs validation. A plan with no `kind`
   is read as `"shards"` (`kindOf`), so an older peer mid-upgrade does not
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
-  On the first tensor request, `tpPayload` uses the first whole-model holder as
-  a provisional primary so the map can load; workers remain opt-in map members.
+  On the first tensor request, `tpPayload` uses the first rank-0 holder as a
+  provisional primary so the map can load; workers remain opt-in map members.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
@@ -112,6 +114,9 @@ Per-file list:
   a job shown through `useJobs`. Restores the last deploy from localStorage via
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
+- The TP inspector never offers pipeline layer buttons. It lists available and
+  selected ranks, while `DeployPlan.tp_targets` is the backend source of truth
+  for the exact pre-sliced file and rank destination.
 - `DeployModel` sends `deployment_name`, `strategy` and `preferred_node_ids` to
   the planner. The map is explanatory: capacity/load come from the live
   cluster and RTT comes from the directional survey in the plan;
@@ -125,7 +130,8 @@ Per-file list:
   consecutivos e alternativas com RTT direcional, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
   repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
   um peer disponível ao plano; a atribuição de uma faixa disponível edita
-  somente aquela seleção e volta ao backend para validação.
+  somente aquela seleção, preserva as faixas existentes no peer como réplicas
+  explícitas e volta ao backend para validação.
 - A lista de rodadas de fatias usa `ShardSet.group` como chave técnica e
   `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
   mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
@@ -151,6 +157,10 @@ Per-file list:
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
+- `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
+  endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e
+  manda trocar de perfil em vez de mandar procurar defeito de rota. Quem a
+  escolhe é o guarda em `../App.tsx`, pela tabela de `../lib/access.ts`.
 - `SendFile.tsx` - offers a `.gguf` from the local catalog via
   `POST /api/transfer/send` (`{to_node_id, filename}`). The UI displays the
   friendly name and full path, but sends only the basename; the backend resolves
@@ -160,18 +170,22 @@ Per-file list:
   `POST /api/setup/save`; the node writes config, respawns, and the screen
   reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
   the i18n provider.
-- `Shards.tsx` — "Fatias": every local slice always listed (the Nodes screen
-  only shows the difference), with who is missing it. Sends via
-  `POST /api/transfer/send`; deletes via `../lib/deleteModel`. `uniqueName`
-  disambiguates same-hostname peers with the node_id prefix.
-- `SliceModels.tsx` — "Fatiar": build a by-size slice plan (target GB per slice,
-  empty = "the rest"). Every keystroke POSTs `POST /api/ui/slice/plan`
-  (debounced 260 ms) and shows target vs actual range/size side by side; the
-  "divide in N equal parts" shortcut also goes through plan. `POST /api/ui/slice`
-  starts the job and keeps the operator on this screen, where
-  `SlicingJobsPanel` shows each job with progress/state/outputs. `asPlan`
-  validates the POST body shape so an old build/proxy cannot take the window
-  down. Only whole models (`isWholeModel`) can be sliced.
+- `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
+  only shows the difference), with who is missing it. Pipeline `parts` and TP
+  `tp_parts` are separate sections; TP groups are ordered by group size and
+  rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
+  rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
+  `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
+  the node_id prefix.
+- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing or
+  Tensor Parallelism. Pipeline builds a by-size plan (target GB per slice,
+  empty = "the rest"); TP chooses 2..64 ranks and previews one full layer
+  range per rank, labeled `1ofN`. Both modes use the debounced
+  `POST /api/ui/slice/plan` and start through `POST /api/ui/slice`; TP sends
+  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices`.
+  `SlicingJobsPanel` is shown only while at least one slicing job is running.
+  `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
+  can be sliced.
 - `Transfers.tsx` — Three panels: pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -215,8 +229,8 @@ Key logic carriers:
 - `DeployModel.deploy` (DeployModel.tsx:602) — posts the current rows/settings
   (from `rows`/`eff`, not the nullable edit state), remembers them via
   `rememberDeploy`, and tracks the returned job id.
-- `SliceModels.asPlan` (SliceModels.tsx:56) — shape guard on the `SizePlan`
-  response; the one screen rendering straight off a POST body.
+- `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
+  plan responses; the one screen rendering straight off a POST body.
 - `Setup.save` (Setup.tsx:56) — posts the role/key/bootstrap, then reloads; the
   node respawns itself, so there is no second response to wait for.
 - `ModelPaths.save` (ModelPaths.tsx:55) — trims/filters the folder list, posts,

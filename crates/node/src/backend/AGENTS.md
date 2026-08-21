@@ -30,19 +30,26 @@ behind an auth extractor.
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths and slice retention.
+  storage paths and slice retention. `slice/plan` and `slice` accept the
+  explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
+  and seals `tp_parts` in the same source-hash manifest used by pipeline
+  `parts`.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
+  rank e transfere pelo hash do arquivo original; o `apply` usa
+  `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
+  de runtime que extrai cada rank de um modelo inteiro.
   `route_options` liga somente máquinas selecionadas em estágios consecutivos;
   réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
   `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
   accept only a catalog basename in `filename`, resolve it server-side and
-  require `.gguf`. Manifestos v2 são mesclados por `pom_id` no peer receptor,
+  require `.gguf`. Manifestos v1 são mesclados por `pom_id` no peer receptor,
   preservando `parts` e `tp_parts` locais. **O veredito volta para quem
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
@@ -251,9 +258,10 @@ behind an auth extractor.
   `fetch_manifest` asks for size + MD5 (`MANIFEST_TIMEOUT` = 30 min - a digest
   is a full read on a slow volume - and runs the disk-space check there too),
   then `run_download` writes a `.part` next to its destination - the model's
-  folder for a **part** (`<shard_dir>/<modelo>-<id da rodada>/<sha256>.gguf`,
-  `.pom` written first - the run id comes from the manifest, so two slicings of
-  one model never share a folder), `<shard_dir>/recebidos/` for anything that belongs to no manifest -
+  folder for a **part** (`<shard_dir>/<modelo>-<hash curto do original>/<sha256>.gguf`,
+  `<modelo>-<hash curto do original>.pom` written first - pipeline and tensor
+  slicing of one model share the folder and manifest), `<shard_dir>/recebidos/`
+  for anything that belongs to no manifest -
   resumes with `Range`, verifies the sha256 it asked for (a part) or the MD5
   (anything else) before the rename, and cancels symmetrically on both
   sides (`cancel`/`notify_peer_cancel`, idempotent, works for jobs not yet

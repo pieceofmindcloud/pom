@@ -28,7 +28,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   tickets, `reply_to`, telemetria acumulada na ida.
 - `direct_lab.rs` (580, `#![cfg(test)]`) - a lei: hops falsos falando o
   protocolo real, rede emulada por sítio, exige o mínimo teórico de pernas por
-  token para N=2,3,4 com o gateway na cabeça/meio/cauda.
+  token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
+  somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
   e o branch de relay. Os handlers decodificam o frame e entregam comandos a
@@ -64,12 +65,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
-  como botão.
+  como botão. O fixture não anuncia batching, pois o endpoint falso atende
+  frames unitários.
 - `tp.rs` (novo) - registro do callback de tensor parallelism no llama.cpp
   (caminho C): `register_tp_reduce`/`unregister_tp_reduce` e o `extern "C"` que
   lê a parcial (f32), contribui localmente quando é o primary ou POSTa para o
   `/v1/tp/reduce` do primary quando é worker. O endpoint soma na
-  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O cliente é
+  `ReduceBarrier` do `infer_server` e devolve a soma no buffer. O callback roda
+  em uma thread `spawn_blocking` do llama.cpp e usa o `Handle` Tokio capturado
+  no registro do grupo, nunca `Handle::current()` na thread nativa. O cliente é
   **pinado no `node_id` do primary** (`TpIdentity.rank0_node_id`): um
   `reqwest::Client` padrão recusa o certificado autoassinado do cluster e todo
   POST morria em 13 ms. O fork insere o op de reduce (`GGML_OP_CUSTOM`) depois
@@ -98,11 +102,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o limite default de 2 MiB do axum com `413 Payload Too Large` na segunda
   requisição (18/08). Cru é 4x menor e não passa por parse.
 
-  `relay::send_bytes_or_tunnel` tenta primeiro o `infer_tunnel` quando o membro
-  anunciou `libp2p_peer_id` e `transport/libp2p-tunnel-v1`. Se o transporte
-  Noise falha, repete o POST pelos candidatos HTTPS diretos pinados, usando
-  HTTPS quando a política TLS está ativa. `broadcast_to` mantém a URL base e a
-  rota separadas, porque o túnel encaminha a rota para o loopback do worker. O
+  `relay::send_bytes_or_tunnel` tenta primeiro os candidatos HTTPS diretos
+  pinados. Se nenhum endereço responde por falha de transporte, tenta o
+  `infer_tunnel` quando o membro anunciou `libp2p_peer_id` e
+  `transport/libp2p-tunnel-v1`. Essa ordem é importante no reduce TP: a chamada
+  fica dentro da barreira e um túnel indisponível não deve atrasar um endereço
+  HTTPS alcançável. `broadcast_to` mantém a URL base e a rota separadas, porque
+  o túnel encaminha a rota para o loopback do worker. O
   plano também leva os candidatos UDP do peer para o `TunnelOutbound`, então o
   swarm pode reconstruir o endereço TCP mesmo que o anúncio não exista na
   tabela local. O `TunnelRequest` leva os cabeçalhos da barreira, do rank e da autorização. A
@@ -123,6 +129,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.
   Sem o repasse a sessão do worker segurava o único slot e a **segunda**
   requisição morria com "seq pool esgotado" (18/08).
+
+  Os handlers `handle_prefill` e `handle_step` também seguram
+  `tp_batch_gate` no caminho de um frame com um único item. O gateway envia
+  esse caso pelo `BatchCoordinator`, então o receptor precisa manter
+  `item_id`/`batch_id` no meta da resposta e impedir que outra requisição
+  altere o decode global enquanto a coletiva ainda espera todos os ranks. Os
+  filhos internos de um batch pulam o lock por meio de `BATCH_CHILD_HEADER`.
 
   **DEFEITO ANOTADO: `/v1/session/rollback` não é repassado às réplicas.**
   Ele só é usado pela decodificação especulativa, que está desligada nas configs

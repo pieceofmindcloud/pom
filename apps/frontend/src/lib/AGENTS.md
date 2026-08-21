@@ -20,18 +20,33 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; serializes the two telemetry tables for the AI analysis action.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
-- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
+- `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
 - `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
+- `profile.tsx` - o perfil de quem olha a tela (`admin`/`node`): tipo, provider,
+  `useProfile()` e a constante `PROFILE_SWITCHER_ENABLED`, que liga o seletor de
+  desenvolvimento da barra superior. **Não é autorização** - esconde e bloqueia
+  telas no navegador e nada mais; a credencial continua sendo a chave de conexão
+  verificada no nó.
+- `access.ts` - que rota cada perfil abre. `RESTRICTED` mapeia prefixo de rota
+  para a lista de perfis; rota ausente é livre. `canAccessRoute(path, profile)` é
+  lida pelo guarda em `../App.tsx` **e** por `navForProfile` em
+  `../components/nav.ts`, de propósito: duas listas dariam menu que oferece o que
+  a rota recusa. Testes em `access.test.ts`.
 - `theme.tsx` - dark/light theme provider backed by `data-theme` + `localStorage`.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
 - `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
+  `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
+  the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
+  `tp_size`, which the UI turns into one-based labels such as `1of4`.
+  `tpPartsOf` normalizes a missing optional wire field to an empty list before
+  catalog consumers iterate it.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -53,16 +68,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
-  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployPlan`,
+  `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
   `RuntimeParams`, `DeployCandidate`, `DeployMachine` are the deploy screen
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
   capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
   carries merged-slice steps, `primary` marks whoever holds layer 0.
+  `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
+  pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
   off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
-- `SizedRange` / `SizePlan` / `PlannedShard` / `SplitPlan` - size- and budget-driven slicing plans.
+- `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
+  size-, tensor- and budget-driven slicing plans.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 
@@ -89,6 +107,17 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.
 - `usableSelection(remembered, ranges, machineIds)` - prunes remembered rows against what the cluster still offers (deleted slices, left machines); returns `null` when nothing survives so the caller keeps the node's own suggestion.
+
+### profile.tsx / access.ts
+- `PROFILES` / `Profile` - `["admin", "node"]` e a união literal.
+- `DEFAULT_PROFILE` - `admin`. Abrir como `node` esconderia telas de quem sempre
+  as teve, sem a pessoa saber que existe perfil para trocar.
+- `ProfileProvider({ children, initialProfile })` - estado inicial de
+  `initialProfile` (usado pelos testes) ou do `localStorage` `pom.profile`;
+  valor desconhecido guardado cai no padrão. Escreve `<html data-profile>`.
+- `routeProfiles(path)` - os perfis que entram, ou `null` quando a rota é livre.
+  Casa por segmento (`/logs` cobre `/logs/ao-vivo`, e **não** `/logs-antigos`) e
+  a chave mais específica vence.
 
 ### theme.tsx
 - `ThemeProvider` / `useTheme` - reads the theme from `document.documentElement.dataset.theme` (index.html stamped it pre-paint), writes `data-theme` + `localStorage` `codai.theme`. Dark is the default; the system preference does not override.

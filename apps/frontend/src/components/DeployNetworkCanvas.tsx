@@ -133,7 +133,10 @@ function NodeCard({
           </span>
           <div className="min-w-0">
             <h3 className="truncate text-sm font-semibold text-fg">{machine.label}</h3>
-            <p className="truncate text-[10px] text-faint">{active ? "na implantação" : "disponível para o plano"}</p>
+            <p className="flex min-w-0 items-center gap-1 truncate text-[10px] text-faint">
+              <span className="truncate">{active ? "na implantação" : "disponível para o plano"}</span>
+              {machine.rtt_ms != null && <><span aria-hidden="true">·</span><span className="shrink-0">RTT {machine.rtt_ms.toFixed(1)} ms</span></>}
+            </p>
           </div>
         </div>
         <div className="flex items-center gap-1">

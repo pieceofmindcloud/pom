@@ -146,7 +146,7 @@ function mount() {
         hostname: "ksia",
         is_self: false,
         models: [],
-        shard_sets: [{ group: "qwen", shards: [] }],
+        shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
       },
     ],
   });

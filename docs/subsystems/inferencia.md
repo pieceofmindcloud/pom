@@ -22,9 +22,11 @@ cima, ligada junto com o fork do llama.cpp que chama a coletiva no meio do
 forward pass. O rank 0 contribui diretamente na `ReduceBarrier` local; os
 workers enviam a parcial ao primary. `broadcast_to` mantém a URL base e a rota
 separadas para o túnel encaminhar a requisição ao path correto no loopback do
-worker. O broadcast e o reduce remoto tentam primeiro o túnel libp2p quando o
-membro anunciou `PeerId` e capability. Se o transporte Noise falhar, usam o
-cliente direto pinado, com HTTPS quando a política TLS está ativa.
+worker. O broadcast e o reduce remoto tentam primeiro os candidatos HTTPS
+diretos pinados. Se nenhum endereço responde por falha de transporte, tentam o
+túnel libp2p quando o membro anunciou `PeerId` e capability. Essa ordem é
+necessária para a coletiva: a chamada fica aguardando dentro da barreira e um
+túnel indisponível não deve atrasar um endereço HTTPS alcançável.
 `TunnelRequest` preserva os cabeçalhos da barreira, do rank e da autorização.
 As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
@@ -32,6 +34,11 @@ key ativa quando a chave compartilhada não existe. O loopback do túnel mantém
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
+
+O callback nativo do llama.cpp roda em uma thread de `spawn_blocking`, fora do
+contexto local de uma task Tokio. Por isso o registro do grupo captura o
+`tokio::runtime::Handle` do servidor e o callback usa esse handle para aguardar
+o reduce; chamar `Handle::current()` dentro da thread nativa causa panic.
 
 A medição de RTT do mapa é separada do tempo de um frame: `measure_rtt` envia
 um GET vazio para `/health` pelo mesmo túnel libp2p, sem prefill, decode ou
@@ -191,6 +198,15 @@ filas e KV independentes; o roteamento deve escolher uma réplica e preservar
 essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
+
+No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
+frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
+frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode
+global enquanto os ranks ainda aguardam a coletiva. Os filhos fan-out de um
+batch já protegido usam `BATCH_CHILD_HEADER` para não tentar adquirir o mesmo
+lock novamente. Ao reencodar a resposta de um item único, os handlers
+preservam `item_id` e `batch_id`; sem isso o coordenador não consegue associar
+a resposta ao pedido que está aguardando.
 
 `prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
 transporte: modelo, deployment, fase, configuração relevante e próximo hop
@@ -453,8 +469,9 @@ inteiro.
   `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
   (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de
-  verdade - só o llama.cpp faz isso, ver o doc do módulo para o que mudou em
-  2026-08-16.
+  verdade. Como os hops falsos implementam frames unitários, o fixture só
+  anuncia capabilities compatíveis e não entra no `BatchCoordinator`; só o
+  llama.cpp faz isso, ver o doc do módulo para o que mudou em 2026-08-16.
 
 ## 9. Limite de prompt
 

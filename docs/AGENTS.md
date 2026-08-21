@@ -20,7 +20,9 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
-a leitura da telemetria correspondente.
+a leitura da telemetria correspondente. `implantacao.md` também documenta a
+seleção de `tp_parts`, os ranks `1ofN` e a transferência do `.pom` antes do
+arquivo de peso.
 
 ## superpowers/specs/
 

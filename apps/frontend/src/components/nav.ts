@@ -17,6 +17,8 @@ import {
   Upload,
   type LucideIcon,
 } from "lucide-react";
+import { canAccessRoute } from "../lib/access";
+import type { Profile } from "../lib/profile";
 
 export interface NavLeaf {
   labelKey: string;
@@ -87,3 +89,29 @@ export const NAV: NavSection[] = [
     ],
   },
 ];
+
+/**
+ * O menu como este perfil o vê.
+ *
+ * Uma seção que navega sozinha some quando a rota dela é fechada; uma seção com
+ * filhas some quando **nenhuma** filha sobra, e não quando alguma sai - a seção
+ * "Logs" inteira desaparece para o perfil `node` porque as duas filhas estão sob
+ * `/logs`, mas "Configurações" continuaria de pé se só uma filha fosse fechada.
+ *
+ * A decisão de quem entra onde não está aqui: está em `lib/access.ts`, a mesma
+ * tabela que o roteador consulta.
+ */
+export function navForProfile(profile: Profile): NavSection[] {
+  const visible: NavSection[] = [];
+  for (const section of NAV) {
+    if (section.to) {
+      if (canAccessRoute(section.to, profile)) visible.push(section);
+      continue;
+    }
+    const children = (section.children ?? []).filter((child) =>
+      canAccessRoute(child.to, profile),
+    );
+    if (children.length > 0) visible.push({ ...section, children });
+  }
+  return visible;
+}

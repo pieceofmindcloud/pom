@@ -1,0 +1,122 @@
+name: Release · macOS
+
+# Só roda quando você mandar, e roda no **runner self-hosted `macbook`** - não
+# consome cota nenhuma. Se o MacBook estiver desligado o job fica na fila em vez
+# de falhar. Ver `docs/subsystems/build-execucao.md`, "Release pelo GitHub
+# Actions".
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da release (ex.: v0.3.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publicar como prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
+  LLAMA_REF: pom-tensor-parallel
+
+jobs:
+  # Um job só. Em runner hospedado a interface era compilada à parte, num runner
+  # Linux, porque o minuto de macOS custava 10x; aqui não há multiplicador, e
+  # separar só acrescentaria uma ida e volta de artefato entre dois jobs que
+  # rodariam na mesma máquina de qualquer jeito - o runner atende um job por vez.
+  build:
+    name: macOS arm64 (Metal)
+    runs-on: [self-hosted, macOS, ARM64, macbook]
+    steps:
+      - uses: actions/checkout@v4
+
+      # O `vendor/llama-cpp-sys-2/llama.cpp` versionado é um symlink para a raiz
+      # do repositório, e a pasta que ele aponta está no `.gitignore`: num
+      # checkout limpo ele aponta para o vazio e o build morre no `build.rs` do
+      # llama-cpp-sys-2. Clonar por cima dele, no caminho que o `build.rs`
+      # realmente lê (`<manifest_dir>/llama.cpp`), resolve.
+      - name: Fork do llama.cpp
+        run: |
+          rm -rf vendor/llama-cpp-sys-2/llama.cpp
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Sem `Swatinem/rust-cache`: ele existe para devolver o `target/` a um
+      # runner que nasce vazio. Aqui o workspace é o mesmo entre execuções, o
+      # `target/` já está lá, e restaurar por cima só gastaria tempo e disco.
+
+      - name: Conferir dependências da máquina
+        run: |
+          # Num runner self-hosted as dependências são provisionadas uma vez na
+          # máquina, não instaladas a cada execução. Falhar aqui, nomeando o que
+          # falta, é melhor que morrer lá dentro do build do llama.cpp.
+          faltou=""
+          for p in cmake git; do command -v "$p" >/dev/null || faltou="$faltou $p"; done
+          if [ -n "$faltou" ]; then
+            echo "faltando na máquina:$faltou (instale com: brew install$faltou)" >&2
+            exit 1
+          fi
+          cmake --version | head -1
+
+      # Fixa o Node em vez de confiar no que a máquina tem no PATH: o runner
+      # self-hosted grava um retrato do PATH de quem o configurou, e a ksia traz
+      # Node 18. Aqui a versão é a mesma que o projeto usa em desenvolvimento,
+      # baixada para o cache de ferramentas do runner.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+
+      - name: Interface web
+        run: |
+          npm ci
+          npm run build
+        working-directory: apps/frontend
+
+      - name: Compilar
+        run: cargo build --release --locked --features metal
+
+      - name: Montar o pacote
+        run: |
+          nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
+          # O workspace persiste entre execuções neste runner: limpar a sobra da
+          # release anterior evita empacotar o pacote velho junto.
+          rm -rf pacote pom-*.tar.gz "$nome"
+          mkdir -p pacote/apps/frontend
+          cp -R apps/frontend/dist pacote/apps/frontend/dist
+          cp target/release/pom pacote/
+          cp README.md pacote/ 2>/dev/null || true
+
+          # Um executável Unix não carrega ícone: no macOS quem o mostra é o
+          # bundle .app. A interface vai **também** para dentro do bundle,
+          # ao lado do binário real, para o .app continuar funcionando depois de
+          # arrastado para /Applications.
+          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
+          mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
+          cp -R pacote/apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+
+          mv pacote "$nome"
+          tar czf "$nome.tar.gz" "$nome"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-macos
+          path: pom-*.tar.gz
+          if-no-files-found: error
+
+      # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow
+      # a rodar cria a release, os outros anexam o arquivo deles.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: pom-*.tar.gz

@@ -113,6 +113,14 @@ alvo pedido, a faixa que saiu e o tamanho real.
   `POST /api/ui/slice/plan` (a tela chama a cada tecla, com o layout em cache por
   arquivo).
 
+`POST /api/ui/slice/plan` também aceita `{ mode: "tensor_parallel", tp_size }`.
+Nesse caso a resposta é um `TpSlicePlan` com um item por rank, todos cobrindo
+`0..total_layers-1`. `POST /api/ui/slice` usa o mesmo modo para escrever todos
+os ranks de uma vez e selar `tp_parts` no manifesto unificado. O rank guardado
+no manifesto é zero-based; a interface mostra a identificação operacional
+one-based `1ofN`, `2ofN` etc. O arquivo físico continua endereçado pelo hash do
+conteúdo, conforme a regra de armazenamento por hash.
+
 ### O que a camada 0 significa
 
 Quem fica com a camada 0 processa o prompt inteiro de cada requisição, então essa
@@ -129,16 +137,16 @@ nome só se conhece no fim, porque o nome **é** o conteúdo. O sha256 sai do me
 passe que grava os bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
 
 No fim, `pom::finalize_run` guarda as partes em
-`<shard_dir>/<modelo>-<hash curto do original>/` e sela `model.pom` lá. No
-formato v2, `pom_id` é o sha256 completo do GGUF original, não o hash da lista
-de partes. Assim, fatiar novamente o mesmo modelo não cria outro manifesto:
-as partes novas são mescladas por `sha256`, inclusive quando cobrem faixas
-alternativas como `L0-7` e `L0-3`. O mesmo manifesto também pode conter
-`tp_parts`, reservado aos shards de Tensor Parallelism.
+`<shard_dir>/<modelo>-<hash curto do original>/` e sela
+`<modelo>-<hash curto do original>.pom` lá. No único formato v1, `pom_id` é o
+sha256 completo do GGUF original, não o hash da lista de partes. Assim, fatiar
+novamente o mesmo modelo não cria outra pasta nem outro manifesto: as partes
+novas são mescladas por `sha256`, inclusive quando cobrem faixas alternativas
+como `L0-7` e `L0-3`. O mesmo manifesto contém `parts` para pipeline e
+`tp_parts` para os shards de Tensor Parallelism.
 
 O merge é protegido por lock por `pom_id` e grava o manifesto atomicamente.
-Manifestos v1 continuam sendo lidos e gravados com a convenção antiga para
-compatibilidade, mas todos os fluxos novos usam v2.
+Não há compatibilidade com outro formato de manifesto.
 
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):

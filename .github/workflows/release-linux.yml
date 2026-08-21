@@ -1,0 +1,176 @@
+name: Release · Linux
+
+# Só roda quando você mandar. Nada dispara sozinho: o llama.cpp nativo é a
+# maior parte do tempo de build, e Actions em repositório privado consome uma
+# cota mensal - ver `docs/subsystems/build-execucao.md`, seção "Release pelo
+# GitHub Actions".
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da release (ex.: v0.3.0)'
+        required: true
+        type: string
+      cuda:
+        description: 'Compilar também a variante CUDA (soma ~20 min só de toolkit)'
+        required: false
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Publicar como prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  # O fork que substitui o llama.cpp da crates.io (ver `[patch.crates-io]` no
+  # Cargo.toml da raiz). Um lugar só para trocar de branch.
+  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
+  LLAMA_REF: pom-tensor-parallel
+
+jobs:
+  # A interface é lida do disco em tempo de execução (`config::ui_dist_dir`),
+  # não embutida no binário: sem ela o pacote sobe e responde 500 na tela.
+  # Fica no seu job em `ubuntu-latest` porque Linux é o runner de multiplicador
+  # 1x - o mesmo motivo vale nos workflows de macOS e Windows, onde o minuto
+  # custa 10x e 2x.
+  ui:
+    name: Interface web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - run: npm ci
+        working-directory: apps/frontend
+      - run: npm run build
+        working-directory: apps/frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist-linux
+          path: apps/frontend/dist
+          if-no-files-found: error
+
+  build:
+    name: Linux x86_64 (${{ matrix.variante.label }})
+    needs: ui
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        # A variante CUDA entra na matriz só quando pedida - o toolkit sozinho
+        # leva ~20 min e quase toda release é só CPU. Montar a matriz com
+        # `fromJSON` em vez de pular passos com `if:` é deliberado: em GitHub
+        # Actions a **string** "false" é verdadeira, então um `if: matrix.algo`
+        # alimentado por um input booleano roda sempre. Aqui a variante que não
+        # foi pedida simplesmente não existe.
+        variante: ${{ fromJSON(inputs.cuda && '[{"label":"CPU","features":"","suffix":"cpu"},{"label":"CUDA","features":"cuda","suffix":"cuda"}]' || '[{"label":"CPU","features":"","suffix":"cpu"}]') }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # O `vendor/llama-cpp-sys-2/llama.cpp` versionado é um symlink para a raiz
+      # do repositório, e a pasta que ele aponta está no `.gitignore`: num
+      # checkout limpo ele aponta para o vazio e o build morre no `build.rs` do
+      # llama-cpp-sys-2. Clonar **por cima do symlink**, no caminho que o
+      # `build.rs` realmente lê (`<manifest_dir>/llama.cpp`), resolve aqui e
+      # também no Windows, onde o checkout nem cria symlink.
+      - name: Fork do llama.cpp
+        run: |
+          rm -rf vendor/llama-cpp-sys-2/llama.cpp
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Sem a chave, CPU e CUDA compartilhariam cache e um sobrescreveria os
+          # artefatos nativos do outro.
+          key: ${{ matrix.variante.suffix }}
+
+      # `libclang` é o que o bindgen do llama-cpp-sys precisa. `mold` não é
+      # opcional: o `.cargo/config.toml` força `-fuse-ld=mold` no Linux, então
+      # sem o pacote o link falha.
+      - name: Dependências de build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev clang mold
+
+      # O toolkit do apt do Ubuntu é velho demais para GPUs recentes; este é o
+      # repositório oficial da NVIDIA.
+      - name: CUDA toolkit
+        # A matriz traz as duas variantes quando o CUDA foi pedido; só a
+        # variante `cuda` instala o toolkit.
+        if: matrix.variante.features == 'cuda'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        with:
+          cuda: '12.6.2'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas-dev"]'
+
+      - name: Compilar
+        run: |
+          if [ -n "${{ matrix.variante.features }}" ]; then
+            cargo build --release --locked --features ${{ matrix.variante.features }}
+          else
+            cargo build --release --locked
+          fi
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist-linux
+          path: pacote/apps/frontend/dist
+
+      # O binário fica na raiz do pacote com `apps/` ao lado: `project_root()`
+      # sobe a partir do diretório do executável, então o pacote funciona
+      # descompactado em qualquer lugar, sem `POM_HOME`.
+      - name: Montar o pacote
+        run: |
+          nome="pom-${{ inputs.version }}-x86_64-unknown-linux-gnu-${{ matrix.variante.suffix }}"
+          cp target/release/pom pacote/
+          cp README.md pacote/ 2>/dev/null || true
+          # Um executável Unix não carrega ícone: no Linux quem o mostra é o
+          # .desktop apontando para a árvore hicolor.
+          mkdir -p pacote/share
+          cp -R assets/brand/linux/hicolor pacote/share/
+          cp assets/brand/pom.desktop pacote/share/
+          mv pacote "$nome"
+          tar czf "$nome.tar.gz" "$nome"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-linux-${{ matrix.variante.suffix }}
+          path: pom-*.tar.gz
+          if-no-files-found: error
+
+  # Cada sistema publica o próprio pacote na mesma tag. O primeiro workflow a
+  # rodar cria a release, os outros anexam o arquivo deles - é isso que deixa os
+  # três independentes: rodar só o de Linux não apaga o pacote de macOS que já
+  # estava lá.
+  release:
+    name: Publicar
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: pacote-linux-*
+          merge-multiple: true
+          path: pacotes
+      - name: Conferir que sobrou alguma coisa
+        run: |
+          ls -la pacotes
+          test -n "$(ls -A pacotes)" || { echo "nenhum pacote foi produzido"; exit 1; }
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: pacotes/*

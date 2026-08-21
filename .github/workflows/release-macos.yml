@@ -1,0 +1,126 @@
+name: Release · macOS
+
+# Só roda quando você mandar. **Atenção à cota**: em repositório privado o
+# minuto de runner macOS conta 10x, então este é de longe o workflow mais caro
+# dos três. Ver `docs/subsystems/build-execucao.md`, seção "Release pelo GitHub
+# Actions", inclusive para trocar por um runner self-hosted.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da release (ex.: v0.3.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publicar como prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
+  LLAMA_REF: pom-tensor-parallel
+
+jobs:
+  # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
+  # e o minuto de Linux conta 1x. Compilá-la dentro do runner macOS custaria 10x
+  # pelo mesmo `dist`.
+  ui:
+    name: Interface web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - run: npm ci
+        working-directory: apps/frontend
+      - run: npm run build
+        working-directory: apps/frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist-macos
+          path: apps/frontend/dist
+          if-no-files-found: error
+
+  build:
+    name: macOS arm64 (Metal)
+    needs: ui
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      # O `vendor/llama-cpp-sys-2/llama.cpp` versionado é um symlink para a raiz
+      # do repositório, e a pasta que ele aponta está no `.gitignore`: num
+      # checkout limpo ele aponta para o vazio e o build morre no `build.rs` do
+      # llama-cpp-sys-2. Clonar por cima dele, no caminho que o `build.rs`
+      # realmente lê (`<manifest_dir>/llama.cpp`), resolve.
+      - name: Fork do llama.cpp
+        run: |
+          rm -rf vendor/llama-cpp-sys-2/llama.cpp
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # A imagem do runner já traz cmake e o clang da Apple (com os headers que
+      # o bindgen precisa); a linha existe para falhar com mensagem clara caso
+      # uma imagem futura deixe de trazê-lo.
+      - name: Dependências de build
+        run: cmake --version || brew install cmake
+
+      - name: Compilar
+        run: cargo build --release --locked --features metal
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist-macos
+          path: pacote/apps/frontend/dist
+
+      - name: Montar o pacote
+        run: |
+          nome="pom-${{ inputs.version }}-aarch64-apple-darwin"
+          cp target/release/pom pacote/
+          cp README.md pacote/ 2>/dev/null || true
+
+          # Um executável Unix não carrega ícone: no macOS quem o mostra é o
+          # bundle .app. A interface vai **também** para dentro do bundle,
+          # ao lado do binário real, para o .app continuar funcionando depois de
+          # arrastado para /Applications.
+          ./scripts/make-macos-app.sh target/release/pom "pacote/POM.app"
+          mkdir -p "pacote/POM.app/Contents/Resources/apps/frontend"
+          cp -R pacote/apps/frontend/dist "pacote/POM.app/Contents/Resources/apps/frontend/"
+
+          mv pacote "$nome"
+          tar czf "$nome.tar.gz" "$nome"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-macos
+          path: pom-*.tar.gz
+          if-no-files-found: error
+
+  # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
+  # rodar cria a release, os outros anexam o arquivo deles.
+  release:
+    name: Publicar
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pacote-macos
+          path: pacotes
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: pacotes/*

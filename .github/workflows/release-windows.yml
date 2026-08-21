@@ -1,0 +1,128 @@
+name: Release · Windows
+
+# Só roda quando você mandar. Em repositório privado o minuto de runner Windows
+# conta 2x. Ver `docs/subsystems/build-execucao.md`, seção "Release pelo GitHub
+# Actions".
+#
+# **Alvo novo.** Windows é o menos exercitado dos três: nunca foi compilado
+# neste repositório, e a inferência é só em CPU. Se falhar, falha sozinho - os
+# workflows de Linux e macOS não dependem deste.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Versão da release (ex.: v0.3.0)'
+        required: true
+        type: string
+      prerelease:
+        description: 'Publicar como prerelease'
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+env:
+  LLAMA_REPO: https://github.com/pereirajair/llama.cpp.git
+  LLAMA_REF: pom-tensor-parallel
+
+jobs:
+  # Em `ubuntu-latest` de propósito: a interface é a mesma para os três sistemas
+  # e o minuto de Linux conta 1x.
+  ui:
+    name: Interface web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: apps/frontend/package-lock.json
+      - run: npm ci
+        working-directory: apps/frontend
+      - run: npm run build
+        working-directory: apps/frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ui-dist-windows
+          path: apps/frontend/dist
+          if-no-files-found: error
+
+  build:
+    name: Windows x86_64 (CPU)
+    needs: ui
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      # No Windows isto não é só conveniência, é obrigatório: o
+      # `vendor/llama-cpp-sys-2/llama.cpp` versionado é um **symlink**, e o
+      # checkout do Windows não cria symlinks - ele materializa um arquivo de
+      # texto com o caminho dentro. Clonar por cima, no caminho que o `build.rs`
+      # realmente lê (`<manifest_dir>/llama.cpp`), é o que faz o build existir
+      # neste sistema.
+      - name: Fork do llama.cpp
+        shell: bash
+        run: |
+          rm -rf vendor/llama-cpp-sys-2/llama.cpp
+          git clone --depth 1 --branch "$LLAMA_REF" \
+            "$LLAMA_REPO" vendor/llama-cpp-sys-2/llama.cpp
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # O bindgen procura a libclang por conta própria e, quando não acha, o
+      # erro sai como "unable to find libclang" no meio do build do
+      # llama-cpp-sys. A imagem do runner traz o LLVM; apontar explicitamente
+      # tira essa variável do caminho.
+      - name: Apontar a libclang para o bindgen
+        shell: bash
+        run: echo "LIBCLANG_PATH=C:\Program Files\LLVM\bin" >> "$GITHUB_ENV"
+
+      - name: Compilar
+        run: cargo build --release --locked
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ui-dist-windows
+          path: pacote/apps/frontend/dist
+
+      # O binário fica na raiz do pacote com `apps/` ao lado: `project_root()`
+      # sobe a partir do diretório do executável, então a pasta descompactada
+      # funciona em qualquer lugar, sem `POM_HOME`. O ícone já viaja dentro do
+      # .exe (`crates/node/build.rs`), então aqui não há nada a copiar.
+      - name: Montar o pacote
+        shell: bash
+        run: |
+          nome="pom-${{ inputs.version }}-x86_64-pc-windows-msvc"
+          cp target/release/pom.exe pacote/
+          cp README.md pacote/ 2>/dev/null || true
+          mv pacote "$nome"
+          7z a -tzip "$nome.zip" "$nome"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pacote-windows
+          path: pom-*.zip
+          if-no-files-found: error
+
+  # Cada sistema publica o próprio pacote na mesma tag: o primeiro workflow a
+  # rodar cria a release, os outros anexam o arquivo deles.
+  release:
+    name: Publicar
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: pacote-windows
+          path: pacotes
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          prerelease: ${{ inputs.prerelease }}
+          files: pacotes/*

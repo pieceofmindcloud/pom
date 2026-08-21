@@ -236,16 +236,76 @@ versionado. O papel de "subir a ksia" hoje é do `old/scripts/run-p2.sh`.
 | `POM_BUILD_COMMIT` | Commit carimbado pelo `build.rs` (usado pelo build-docker.sh; `.dockerignore` corta `.git/`). |
 | `VITE_API_TARGET` | Alvo do proxy do dev server da UI (padrão `http://127.0.0.1:8080`). |
 
-## Release (CI)
+## Release pelo GitHub Actions
 
-`.github/workflows/release.yml` publica só manualmente (`workflow_dispatch`
-com `version`/`prerelease`). O job `ui` builda a interface uma vez (a UI não é
-embutida no binário); a matriz de 4 alvos (macOS arm64 Metal, Linux x86_64
-CPU, Linux x86_64 CUDA 12.6, Windows x86_64 CPU experimental) usa
-`continue-on-error` + `fail-fast: false`, e o job `release` (`if: always()`)
-publica com o que compilou. O pacote = binário + `apps/frontend/dist` +
-README, para `project_root()` achar a UI a partir do diretório do executável.
-Windows empacota com 7z.
+Três workflows, um por sistema, todos só manuais (`workflow_dispatch`):
+
+| Arquivo | Alvo | Entradas |
+|---|---|---|
+| `.github/workflows/release-linux.yml` | Linux x86_64 (CPU, e CUDA 12.6 opcional) | `version`, `cuda`, `prerelease` |
+| `.github/workflows/release-macos.yml` | macOS arm64, Metal | `version`, `prerelease` |
+| `.github/workflows/release-windows.yml` | Windows x86_64, CPU | `version`, `prerelease` |
+
+**São separados para poder rodar sozinhos.** Publicar só o macOS não deve
+custar um build de Windows, e um alvo que quebra não leva os outros junto. Cada
+workflow publica o próprio pacote **na mesma tag**: o primeiro a rodar cria a
+release, os seguintes anexam o arquivo deles. Rodar de novo só o de Linux não
+apaga o pacote de macOS que já estava lá.
+
+### O fork do llama.cpp é o passo que não pode faltar
+
+`vendor/llama-cpp-sys-2/llama.cpp` é um **symlink versionado** para a raiz do
+repositório, e a pasta que ele aponta (`/llama.cpp/`) está no `.gitignore`. Num
+checkout limpo - que é exatamente o que a CI faz - o symlink aponta para o
+vazio, e o build morre no `build.rs` do `llama-cpp-sys-2` com
+`Failed to obtain entry ... NotFound`, antes de compilar qualquer coisa do
+projeto. Por isso cada workflow tem um passo que clona o fork
+(`pereirajair/llama.cpp`, branch `pom-tensor-parallel`, público) **por cima do
+symlink**, no caminho que o `build.rs` de fato lê (`<manifest_dir>/llama.cpp`).
+
+Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
+checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho
+dentro -, então repor a pasta na raiz não adiantaria.
+
+### Por que a interface é buildada num runner Linux
+
+A UI é lida do disco em tempo de execução (`config::ui_dist_dir`), não embutida
+no binário: sem `apps/frontend/dist` no pacote, o nó sobe e responde 500 na
+tela. O `dist` é o mesmo para os três sistemas, então o job `ui` roda em
+`ubuntu-latest` mesmo nos workflows de macOS e Windows, e o job de build o baixa
+como artefato. Não é detalhe de estilo: em repositório privado o minuto de
+macOS conta **10x** e o de Windows **2x** - compilar a mesma interface lá
+custaria dez vezes pelo mesmo resultado.
+
+### Cota (repositório privado)
+
+Actions é gratuito e ilimitado em repositório **público**. Neste, que é privado,
+vale a cota mensal do plano (2.000 minutos no Free) com multiplicador por
+sistema: Linux 1x, Windows 2x, macOS 10x.
+
+Um build limpo do zero - incluindo o llama.cpp nativo - foi medido em **3m33s**
+num Apple Silicon local; os runners hospedados são mais lentos, e o CUDA soma
+~20 min só instalando o toolkit. Mesmo com folga, o multiplicador é o que pesa:
+é o macOS que consome a cota, dez minutos de cada minuto. Esse é o motivo de
+nenhum dos três disparar sozinho em push ou pull request.
+
+Para sair da cota, trocar `runs-on:` por um runner self-hosted (`runs-on:
+self-hosted`, ou um label próprio): minuto de máquina própria não é cobrado, e
+no caso do CUDA um runner com GPU de verdade ainda evita instalar o toolkit a
+cada execução.
+
+### O pacote
+
+Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI
+a partir do diretório do executável - a pasta descompactada funciona em qualquer
+lugar, sem `POM_HOME`. Além disso, por sistema: macOS leva o bundle `POM.app`
+(com uma segunda cópia do `dist` dentro, para o `.app` sobreviver a ser
+arrastado para `/Applications`), Linux leva `share/hicolor` e o `.desktop`, e o
+Windows não leva nada porque o ícone já está dentro do `.exe`. Unix empacota com
+`tar czf`, Windows com `7z`.
+
+**Windows é o alvo menos exercitado**: nunca foi compilado neste repositório e a
+inferência é só em CPU. Ele falha sozinho, sem afetar os outros dois.
 
 ## Defeitos anotados
 

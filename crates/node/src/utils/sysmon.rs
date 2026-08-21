@@ -460,9 +460,7 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
     // próprio `vendor`.
     // Só o ramo Linux abaixo estende a lista, então fora dele o `mut` sobra -
     // e tirá-lo por `cfg` partiria a linha em duas versões do mesmo código.
-    #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
     let (mut gpus, procs) = nvidia_smi().await.unwrap_or_default();
-    let nvidia = gpus.len();
 
     #[cfg(target_os = "linux")]
     {
@@ -470,7 +468,17 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
         // - a interface usa esse número para falar de uma placa específica.
         gpus.extend(amd_sysfs(gpus.len() as u32).await);
     }
-    let amd = gpus.len() - nvidia;
+
+    // O nó só reporta as placas que pode usar. Os índices originais são
+    // preservados de propósito: é por eles que a `pom.json` e o painel falam de
+    // uma placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
+    if let Ok(escolha) = SELECAO.read() {
+        if let Some(permitidas) = escolha.as_ref() {
+            gpus.retain(|g| permitidas.contains(&g.index));
+        }
+    }
+    let nvidia = gpus.iter().filter(|g| g.vendor == GpuVendor::Nvidia).count();
+    let amd = gpus.iter().filter(|g| g.vendor == GpuVendor::Amd).count();
 
     if !gpus.is_empty() {
         let kind = match (nvidia, amd) {
@@ -831,7 +839,21 @@ mod tests {
 /// backend selecionaria a placa errada assim que houvesse duas marcas.
 ///
 /// Devolve o que aplicou, para o log dizer em que placas o nó vai rodar.
+/// A escolha de GPUs em vigor, para `read_gpu` filtrar o que reporta.
+///
+/// `None` = sem restrição, que cobre tanto "a config não pediu nada" quanto
+/// "a config pediu todas" - nos dois casos não há o que filtrar.
+static SELECAO: std::sync::RwLock<Option<Vec<u32>>> = std::sync::RwLock::new(None);
+
 pub fn apply_gpu_selection(selection: Option<&[u32]>, detected: &[GpuStat]) -> Vec<String> {
+    // Guardado antes de qualquer saída: o que o nó **reporta** tem que ser o que
+    // ele pode **usar**. Não é cosmética - `deploy::memory_capacity` soma a VRAM
+    // de `system.gpus[]` para decidir quantas camadas cabem, então um nó preso a
+    // uma placa que anunciasse as duas receberia trabalho que não cabe nele.
+    if let Ok(mut guarda) = SELECAO.write() {
+        *guarda = selection.map(|s| s.to_vec());
+    }
+
     let Some(selection) = selection else {
         // Ausente é "todas": não tocar nas variáveis é justamente o que deixa
         // cada backend enxergar tudo o que existe.
@@ -935,6 +957,38 @@ mod gpu_selection_tests {
         apply_gpu_selection(Some(&[0]), &ambas());
         assert_eq!(std::env::var("CUDA_VISIBLE_DEVICES").unwrap(), "0");
         assert_eq!(std::env::var("GGML_VK_VISIBLE_DEVICES").unwrap(), "");
+    }
+
+    /// O nó tem que **reportar** o que pode **usar**.
+    ///
+    /// Não é cosmética de painel: `deploy::memory_capacity` soma o
+    /// `vram_total_mb` de `system.gpus[]` para decidir quantas camadas cabem num
+    /// nó. Um nó presa à Radeon de 4 GB que anunciasse as duas placas diria ter
+    /// 20 GB, e receberia trabalho que não cabe nele.
+    #[test]
+    fn o_que_o_no_reporta_e_so_o_que_ele_pode_usar() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(Some(&[1]), &ambas());
+
+        let mut vistas = ambas();
+        if let Ok(escolha) = SELECAO.read() {
+            if let Some(permitidas) = escolha.as_ref() {
+                vistas.retain(|g| permitidas.contains(&g.index));
+            }
+        }
+        assert_eq!(vistas.len(), 1, "so a placa escolhida deve ser reportada");
+        // O indice original sobrevive: e por ele que a config e o painel falam
+        // desta placa, e renumerar faria `gpus: [1]` aparecer como `#0`.
+        assert_eq!(vistas[0].index, 1);
+    }
+
+    /// Sem restricao nada e filtrado - o padrao continua mostrando tudo.
+    #[test]
+    fn sem_restricao_reporta_todas() {
+        let _guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        apply_gpu_selection(None, &ambas());
+        let vistas = SELECAO.read().unwrap().clone();
+        assert!(vistas.is_none(), "sem escolha nao deve haver filtro");
     }
 
     /// Lista vazia é "só CPU", e não "não configurado".

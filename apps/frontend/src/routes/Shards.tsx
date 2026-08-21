@@ -26,7 +26,7 @@ import { deleteModel } from "../lib/deleteModel";
 import { uniquePeerName } from "../lib/peerName";
 import { useClusterCatalog, useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
-import type { DiscoveredModel, PeerCatalog, ShardSet } from "../lib/types";
+import { tpPartsOf, type DiscoveredModel, type PeerCatalog, type ShardSet } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 function CoverageBar({ set }: { set: ShardSet }) {
@@ -166,8 +166,9 @@ function ShardCard({
   onDelete: (shard: DiscoveredModel) => void;
 }) {
   const { t } = useI18n();
+  const tpParts = tpPartsOf(set);
   const tpGroups = Array.from(
-    set.tp_parts.reduce((groups, part) => {
+    tpParts.reduce((groups, part) => {
       const key = part.tp_size ?? 0;
       const group = groups.get(key) ?? [];
       group.push(part);
@@ -182,8 +183,8 @@ function ShardCard({
         title={set.model_label || set.group}
         subtitle={
           set.total_layers != null
-            ? t("shards.setDetail", { count: set.shards.length + set.tp_parts.length, total: num(set.total_layers) })
-            : t("shards.setUnknown", { count: set.shards.length + set.tp_parts.length })
+            ? t("shards.setDetail", { count: set.shards.length + tpParts.length, total: num(set.total_layers) })
+            : t("shards.setUnknown", { count: set.shards.length + tpParts.length })
         }
         actions={
           <Badge tone={set.complete ? "aqua" : "amber"}>
@@ -238,7 +239,7 @@ export function Shards() {
     others.filter((p) => {
       const known = [
         ...(p.models ?? []),
-        ...(p.shard_sets ?? []).flatMap((s) => [...s.shards, ...s.tp_parts]),
+        ...(p.shard_sets ?? []).flatMap((s) => [...s.shards, ...tpPartsOf(s)]),
       ];
       return !known.some((m) => m.name === shard.name);
     });

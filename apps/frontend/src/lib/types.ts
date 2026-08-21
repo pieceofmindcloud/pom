@@ -288,9 +288,13 @@ export interface ShardSet {
   total_layers_inferred: boolean;
   shards: DiscoveredModel[];
   /** Partes completas do modelo, uma por rank TP. */
-  tp_parts: DiscoveredModel[];
+  tp_parts?: DiscoveredModel[];
   complete: boolean;
 }
+
+/** Lê a lista TP de respostas de catálogo sem derrubar a tela se ela faltar. */
+export const tpPartsOf = (set: { tp_parts?: DiscoveredModel[] }): DiscoveredModel[] =>
+  Array.isArray(set.tp_parts) ? set.tp_parts : [];
 
 export interface ScannedRoot {
   source: ModelSource;

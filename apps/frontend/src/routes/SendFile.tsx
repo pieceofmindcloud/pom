@@ -22,6 +22,7 @@ import { api } from "../lib/api";
 import { useCluster, useLocalCatalog } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
+import { tpPartsOf } from "../lib/types";
 
 export function SendFile() {
   const { t } = useI18n();
@@ -40,7 +41,7 @@ export function SendFile() {
   const peers = (cluster.data?.peers ?? []).filter((p) => !p.is_self);
   const local = [
     ...(catalog.data?.models ?? []),
-    ...(catalog.data?.shard_sets ?? []).flatMap((s) => [...s.shards, ...s.tp_parts]),
+    ...(catalog.data?.shard_sets ?? []).flatMap((s) => [...s.shards, ...tpPartsOf(s)]),
   ].filter((m) => /\.gguf$/i.test(m.path));
 
   async function send() {

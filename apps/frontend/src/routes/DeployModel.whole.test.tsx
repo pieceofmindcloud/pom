@@ -169,7 +169,7 @@ function mount() {
             shard_group: null,
           },
         ],
-        shard_sets: [{ group: "qwen", shards: [] }],
+        shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
       },
       ...["mac", "salem"].map((node_id, index) => ({
         node_id,
@@ -465,7 +465,7 @@ describe("DeployModel · MTP", () => {
               shard_group: null,
             },
           ],
-          shard_sets: [{ group: "qwen", shards: [] }],
+          shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
         },
       ],
     });
@@ -605,7 +605,7 @@ describe("DeployModel · MTP", () => {
           hostname: "ksia",
           is_self: false,
           models: [],
-          shard_sets: [{ group: "qwen", shards: [] }],
+          shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
         },
       ],
     });

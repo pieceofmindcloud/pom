@@ -54,8 +54,9 @@ Per-file list:
   screen reader. Plus the dark/light toggle (`../lib/theme`).
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
-  per job with state, progress and output paths. The former standalone jobs
-  route no longer exists.
+  per job with state, progress and output paths only while at least one job is
+  running. Completed history stays available to the notification system, but
+  does not leave an empty activity card on the slicing screen.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network

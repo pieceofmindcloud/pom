@@ -1,10 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
 
-const { post } = vi.hoisted(() => ({ post: vi.fn() }));
+const { post, jobsState } = vi.hoisted(() => ({
+  post: vi.fn(),
+  jobsState: { value: { jobs: [] as unknown[] } },
+}));
 
 vi.mock("../lib/api", () => ({
   api: { post },
@@ -37,22 +40,7 @@ vi.mock("../lib/queries", () => ({
   }),
   useInvalidate: () => vi.fn(),
   useJobs: () => ({
-    data: {
-      jobs: [
-        {
-          id: "job-slice-1",
-          state: "running",
-          step: "writing",
-          message: "writing shard 1 of 2",
-          progress: 42,
-          outputs: [],
-          started_at: "2026-08-20T12:00:00Z",
-          finished_at: null,
-          kind: "slice",
-          title: "qwen.gguf",
-        },
-      ],
-    },
+    data: jobsState.value,
     isLoading: false,
     isError: false,
     error: null,
@@ -72,6 +60,22 @@ import { SliceModels } from "./SliceModels";
 describe("SliceModels", () => {
   beforeEach(() => {
     post.mockReset();
+    jobsState.value = {
+      jobs: [
+        {
+          id: "job-slice-1",
+          state: "running",
+          step: "writing",
+          message: "writing shard 1 of 2",
+          progress: 42,
+          outputs: [],
+          started_at: "2026-08-20T12:00:00Z",
+          finished_at: null,
+          kind: "slice",
+          title: "qwen.gguf",
+        },
+      ],
+    };
     post.mockResolvedValue({
       total_layers: 10,
       model_bytes: 3_000_000_000,
@@ -137,6 +141,7 @@ describe("SliceModels", () => {
           "/api/ui/slice/plan",
           {
             model_path: "/models/qwen.gguf",
+            mode: "pipeline",
             slices: [{ target_mb: 4096 }, {}],
           },
         ],
@@ -159,5 +164,78 @@ describe("SliceModels", () => {
     expect(await screen.findByText("Fatiamentos em andamento")).toBeTruthy();
     expect(screen.getByText("42%")).toBeTruthy();
     expect(screen.getByRole("progressbar").getAttribute("aria-valuenow")).toBe("42");
+  });
+
+  it("does not render the slicing activity card when there is no active job", async () => {
+    jobsState.value = { jobs: [] };
+
+    render(
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => expect(screen.getAllByRole("textbox")).toHaveLength(1));
+    expect(screen.queryByText("Fatiamentos em andamento")).toBeNull();
+  });
+
+  it("plans tensor parallel shards from the mode checkbox and rank count", async () => {
+    post.mockImplementation(async (_url: string, body: Record<string, unknown>) => {
+      if (body.mode === "tensor_parallel") {
+        return {
+          mode: "tensor_parallel",
+          model_bytes: 3_000_000_000,
+          total_layers: 10,
+          tp_size: body.tp_size,
+          ranks: [
+            { rank: 0, start_layer: 0, end_layer: 9 },
+            { rank: 1, start_layer: 0, end_layer: 9 },
+          ],
+          complete: true,
+          blocked: false,
+          warnings: [],
+        };
+      }
+      return {
+        total_layers: 10,
+        model_bytes: 3_000_000_000,
+        ranges: [],
+        warnings: [],
+      };
+    });
+
+    render(
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
+        <LocaleProvider initialLocale="pt-BR">
+          <SliceModels />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByLabelText("Fatiar por Tensor Parallelism"));
+    fireEvent.change(screen.getByLabelText("Quantidade de ranks TP"), {
+      target: { value: "2" },
+    });
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        "/api/ui/slice/plan",
+        expect.objectContaining({
+          model_path: "/models/qwen.gguf",
+          mode: "tensor_parallel",
+          tp_size: 2,
+        }),
+      ),
+    );
+    expect(await screen.findByText("rank 0")).toBeTruthy();
+    expect(await screen.findByText("1of2")).toBeTruthy();
   });
 });

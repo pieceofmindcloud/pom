@@ -30,7 +30,10 @@ behind an auth extractor.
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
 - `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths and slice retention.
+  storage paths and slice retention. `slice/plan` and `slice` accept the
+  explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
+  and seals `tp_parts` in the same source-hash manifest used by pipeline
+  `parts`.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,

@@ -222,6 +222,10 @@ export interface DiscoveredModel {
   model_label: string | null;
   /** A rodada que produziu esta parte. */
   pom_id: string | null;
+  /** Rank tensorial, quando a parte pertence a uma rodada TP. */
+  tp_rank?: number | null;
+  /** Tamanho do grupo tensorial, quando a parte pertence a uma rodada TP. */
+  tp_size?: number | null;
 }
 
 /** A whole `.gguf`, as opposed to a slice of one. Slices carry `shard_range`. */
@@ -283,6 +287,8 @@ export interface ShardSet {
   total_layers: number | null;
   total_layers_inferred: boolean;
   shards: DiscoveredModel[];
+  /** Partes completas do modelo, uma por rank TP. */
+  tp_parts: DiscoveredModel[];
   complete: boolean;
 }
 
@@ -478,6 +484,7 @@ export interface SizedRange {
 
 /** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
 export interface SizePlan {
+  mode?: "pipeline";
   total_layers: number;
   model_bytes: number;
   ranges: SizedRange[];
@@ -488,6 +495,28 @@ export interface SizePlan {
   blocked: boolean;
   warnings: string[];
 }
+
+/** Um rank de um plano de fatiamento tensorial. */
+export interface TpSliceRank {
+  rank: number;
+  start_layer: number;
+  end_layer: number;
+}
+
+/** `src/backend/webui.rs` - plano de fatiamento Tensor Parallelism. */
+export interface TpSlicePlan {
+  mode: "tensor_parallel";
+  total_layers: number;
+  model_bytes: number;
+  tp_size: number;
+  ranks: TpSliceRank[];
+  complete: boolean;
+  blocked: boolean;
+  warnings: string[];
+}
+
+export type SliceMode = "pipeline" | "tensor_parallel";
+export type SlicePlan = SizePlan | TpSlicePlan;
 
 /** One peer in a memory-budget plan. `src/plan.rs` — `PlannedShard`. */
 export interface PlannedShard {

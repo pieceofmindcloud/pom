@@ -32,6 +32,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
+  `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
+  the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
+  `tp_size`, which the UI turns into one-based labels such as `1of4`.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions
@@ -62,7 +65,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
   off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
-- `SizedRange` / `SizePlan` / `PlannedShard` / `SplitPlan` - size- and budget-driven slicing plans.
+- `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
+  size-, tensor- and budget-driven slicing plans.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 

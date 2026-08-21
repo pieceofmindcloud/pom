@@ -40,7 +40,7 @@ export function SendFile() {
   const peers = (cluster.data?.peers ?? []).filter((p) => !p.is_self);
   const local = [
     ...(catalog.data?.models ?? []),
-    ...(catalog.data?.shard_sets ?? []).flatMap((s) => s.shards),
+    ...(catalog.data?.shard_sets ?? []).flatMap((s) => [...s.shards, ...s.tp_parts]),
   ].filter((m) => /\.gguf$/i.test(m.path));
 
   async function send() {

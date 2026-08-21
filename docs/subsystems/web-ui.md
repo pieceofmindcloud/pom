@@ -297,13 +297,14 @@ impressão digital é só modelo + conjunto de faixas.
 ## Fatiar, implantar e transferir na tela
 
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto"). Cada tecla posta `POST /api/ui/slice/plan` (debounce 260 ms) e
-  mostra alvo vs faixa/tamanho reais lado a lado; o atalho "dividir em N
-  iguais" passa pelo mesmo plano. `POST /api/ui/slice` roda o job e mantém a
-  tela aberta; `SlicingJobsPanel` mostra abaixo a barra de progresso, estado e
-  saídas de cada job consultado por `GET /api/ui/jobs`. `asPlan` valida o corpo
-  do POST para um build velho não derrubar a tela. Só modelos inteiros
-  (`isWholeModel`) podem ser fatiados.
+  "o resto") ou Tensor Parallelism. No modo TP, o operador escolhe 2..64 ranks
+  e a prévia mostra uma faixa completa por rank com a identificação `1of2`,
+  `2of2`, `1of4` etc. Cada alteração posta `POST /api/ui/slice/plan`
+  (debounce 260 ms); TP leva `mode: "tensor_parallel"` e `tp_size`, enquanto
+  pipeline leva `slices`. `POST /api/ui/slice` roda o job. O painel de atividade
+  só aparece enquanto existe um fatiamento em execução. A tela Fatias separa
+  `parts` e `tp_parts`, agrupa TP por tamanho e ordena os ranks dentro de cada
+  grupo. A transferência considera ambas as listas.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.

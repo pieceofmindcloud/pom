@@ -160,18 +160,22 @@ Per-file list:
   `POST /api/setup/save`; the node writes config, respawns, and the screen
   reloads itself after 4 s. Uses `../components/Logo` and `LanguageSelect` from
   the i18n provider.
-- `Shards.tsx` — "Fatias": every local slice always listed (the Nodes screen
-  only shows the difference), with who is missing it. Sends via
-  `POST /api/transfer/send`; deletes via `../lib/deleteModel`. `uniqueName`
-  disambiguates same-hostname peers with the node_id prefix.
-- `SliceModels.tsx` — "Fatiar": build a by-size slice plan (target GB per slice,
-  empty = "the rest"). Every keystroke POSTs `POST /api/ui/slice/plan`
-  (debounced 260 ms) and shows target vs actual range/size side by side; the
-  "divide in N equal parts" shortcut also goes through plan. `POST /api/ui/slice`
-  starts the job and keeps the operator on this screen, where
-  `SlicingJobsPanel` shows each job with progress/state/outputs. `asPlan`
-  validates the POST body shape so an old build/proxy cannot take the window
-  down. Only whole models (`isWholeModel`) can be sliced.
+- `Shards.tsx` - "Fatias": every local slice always listed (the Nodes screen
+  only shows the difference), with who is missing it. Pipeline `parts` and TP
+  `tp_parts` are separate sections; TP groups are ordered by group size and
+  rows use the one-based labels `1of2`, `2of2`, and so on, with the zero-based
+  rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
+  `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
+  the node_id prefix.
+- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing or
+  Tensor Parallelism. Pipeline builds a by-size plan (target GB per slice,
+  empty = "the rest"); TP chooses 2..64 ranks and previews one full layer
+  range per rank, labeled `1ofN`. Both modes use the debounced
+  `POST /api/ui/slice/plan` and start through `POST /api/ui/slice`; TP sends
+  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices`.
+  `SlicingJobsPanel` is shown only while at least one slicing job is running.
+  `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
+  can be sliced.
 - `Transfers.tsx` — Three panels: pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
@@ -215,8 +219,8 @@ Key logic carriers:
 - `DeployModel.deploy` (DeployModel.tsx:602) — posts the current rows/settings
   (from `rows`/`eff`, not the nullable edit state), remembers them via
   `rememberDeploy`, and tracks the returned job id.
-- `SliceModels.asPlan` (SliceModels.tsx:56) — shape guard on the `SizePlan`
-  response; the one screen rendering straight off a POST body.
+- `SliceModels.asPlan` (SliceModels.tsx:56) - shape guard on pipeline and TP
+  plan responses; the one screen rendering straight off a POST body.
 - `Setup.save` (Setup.tsx:56) — posts the role/key/bootstrap, then reloads; the
   node respawns itself, so there is no second response to wait for.
 - `ModelPaths.save` (ModelPaths.tsx:55) — trims/filters the folder list, posts,

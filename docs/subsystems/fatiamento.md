@@ -113,6 +113,14 @@ alvo pedido, a faixa que saiu e o tamanho real.
   `POST /api/ui/slice/plan` (a tela chama a cada tecla, com o layout em cache por
   arquivo).
 
+`POST /api/ui/slice/plan` também aceita `{ mode: "tensor_parallel", tp_size }`.
+Nesse caso a resposta é um `TpSlicePlan` com um item por rank, todos cobrindo
+`0..total_layers-1`. `POST /api/ui/slice` usa o mesmo modo para escrever todos
+os ranks de uma vez e selar `tp_parts` no manifesto unificado. O rank guardado
+no manifesto é zero-based; a interface mostra a identificação operacional
+one-based `1ofN`, `2ofN` etc. O arquivo físico continua endereçado pelo hash do
+conteúdo, conforme a regra de armazenamento por hash.
+
 ### O que a camada 0 significa
 
 Quem fica com a camada 0 processa o prompt inteiro de cada requisição, então essa

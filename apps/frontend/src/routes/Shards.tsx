@@ -51,59 +51,51 @@ function CoverageBar({ set }: { set: ShardSet }) {
   );
 }
 
-function ShardCard({
-  set,
+function PartRows({
+  parts,
+  tensorParallel,
+  heading,
   peersMissing,
   aloneInNetwork,
   onSend,
   onDelete,
 }: {
-  set: ShardSet;
+  parts: DiscoveredModel[];
+  tensorParallel: boolean;
+  heading: string;
   peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
-  /** No other machine is on the network at all — different from "everyone
-      already has this slice", and the label has to say so. */
   aloneInNetwork: boolean;
   onSend: (shard: DiscoveredModel, nodeId: string) => void;
   onDelete: (shard: DiscoveredModel) => void;
 }) {
   const { t } = useI18n();
+  if (parts.length === 0) return null;
   return (
-    <Panel>
-      <PanelHeader
-        eyebrow={t("shards.set")}
-        title={set.model_label || set.group}
-        subtitle={
-          set.total_layers != null
-            ? t("shards.setDetail", { count: set.shards.length, total: num(set.total_layers) })
-            : t("shards.setUnknown", { count: set.shards.length })
-        }
-        actions={
-          <Badge tone={set.complete ? "aqua" : "amber"}>
-            {set.complete ? t("shards.complete") : t("shards.incomplete")}
-          </Badge>
-        }
-      />
-      <div className="px-5 py-3">
-        <CoverageBar set={set} />
+    <section>
+      <div className="border-t border-line bg-raised/50 px-5 py-2 text-[0.7rem] font-medium uppercase tracking-[0.12em] text-muted">
+        {heading}
       </div>
-      <div className="divide-y divide-line border-t border-line">
-        {set.shards.map((s) => {
+      <div className="divide-y divide-line">
+        {parts.map((s) => {
           const missing = peersMissing(s);
+          const tensorLabel = tensorParallel && s.tp_rank != null
+            ? `${s.tp_rank + 1}of${s.tp_size ?? "?"}`
+            : null;
+          const label = tensorLabel ?? (s.shard_range
+            ? layerRange(s.shard_range[0], s.shard_range[1])
+            : t("shards.unknownRange"));
           return (
             <div
               key={s.id}
               className="flex flex-wrap items-center gap-x-4 gap-y-2 px-5 py-3"
             >
               <div className="min-w-[12rem] flex-1">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono text-sm text-iris">
-                    {s.shard_range
-                      ? layerRange(s.shard_range[0], s.shard_range[1])
-                      : t("shards.unknownRange")}
+                <div className="flex min-w-0 items-center gap-2">
+                  <span className="shrink-0 font-mono text-sm text-iris">
+                    {label}
+                    {tensorLabel && <span className="ml-2 text-[0.7rem] text-faint">rank {s.tp_rank}</span>}
                   </span>
                   <span className="truncate text-[0.82rem] text-fg">{s.name}</span>
-                  {/* O hash identifica a parte entre máquinas, mas não é nome
-                      de nada que se leia: fica ao lado, curto e discreto. */}
                   {s.sha256 && (
                     <span
                       className="shrink-0 font-mono text-[0.7rem] text-faint"
@@ -154,6 +146,77 @@ function ShardCard({
           );
         })}
       </div>
+    </section>
+  );
+}
+
+function ShardCard({
+  set,
+  peersMissing,
+  aloneInNetwork,
+  onSend,
+  onDelete,
+}: {
+  set: ShardSet;
+  peersMissing: (shard: DiscoveredModel) => PeerCatalog[];
+  /** No other machine is on the network at all — different from "everyone
+      already has this slice", and the label has to say so. */
+  aloneInNetwork: boolean;
+  onSend: (shard: DiscoveredModel, nodeId: string) => void;
+  onDelete: (shard: DiscoveredModel) => void;
+}) {
+  const { t } = useI18n();
+  const tpGroups = Array.from(
+    set.tp_parts.reduce((groups, part) => {
+      const key = part.tp_size ?? 0;
+      const group = groups.get(key) ?? [];
+      group.push(part);
+      groups.set(key, group);
+      return groups;
+    }, new Map<number, DiscoveredModel[]>()),
+  ).sort(([a], [b]) => a - b);
+  return (
+    <Panel>
+      <PanelHeader
+        eyebrow={t("shards.set")}
+        title={set.model_label || set.group}
+        subtitle={
+          set.total_layers != null
+            ? t("shards.setDetail", { count: set.shards.length + set.tp_parts.length, total: num(set.total_layers) })
+            : t("shards.setUnknown", { count: set.shards.length + set.tp_parts.length })
+        }
+        actions={
+          <Badge tone={set.complete ? "aqua" : "amber"}>
+            {set.complete ? t("shards.complete") : t("shards.incomplete")}
+          </Badge>
+        }
+      />
+      {set.shards.length > 0 && (
+        <div className="px-5 py-3">
+          <CoverageBar set={set} />
+        </div>
+      )}
+      <PartRows
+        parts={set.shards}
+        tensorParallel={false}
+        heading={t("shards.parts")}
+        peersMissing={peersMissing}
+        aloneInNetwork={aloneInNetwork}
+        onSend={onSend}
+        onDelete={onDelete}
+      />
+      {tpGroups.map(([size, parts]) => (
+        <PartRows
+          key={size}
+          parts={parts}
+          tensorParallel
+          heading={size > 0 ? t("shards.tpGroup", { size }) : t("shards.tpParts")}
+          peersMissing={peersMissing}
+          aloneInNetwork={aloneInNetwork}
+          onSend={onSend}
+          onDelete={onDelete}
+        />
+      ))}
     </Panel>
   );
 }
@@ -173,7 +236,10 @@ export function Shards() {
   /** A peer is missing a slice when nothing it reports has that filename. */
   const peersMissing = (shard: DiscoveredModel) =>
     others.filter((p) => {
-      const known = [...(p.models ?? []), ...(p.shard_sets ?? []).flatMap((s) => s.shards)];
+      const known = [
+        ...(p.models ?? []),
+        ...(p.shard_sets ?? []).flatMap((s) => [...s.shards, ...s.tp_parts]),
+      ];
       return !known.some((m) => m.name === shard.name);
     });
 

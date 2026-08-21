@@ -2093,6 +2093,94 @@ async fn merge_parts(
 
 // ── Slicing a whole model, here, on demand ───────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceMode {
+    Pipeline,
+    TensorParallel,
+}
+
+impl Default for SliceMode {
+    fn default() -> Self {
+        Self::Pipeline
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct TpSliceRank {
+    pub rank: u32,
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TpSlicePlan {
+    pub mode: SliceMode,
+    pub model_bytes: u64,
+    pub total_layers: u32,
+    pub tp_size: u32,
+    pub ranks: Vec<TpSliceRank>,
+    pub complete: bool,
+    pub blocked: bool,
+    pub warnings: Vec<String>,
+}
+
+/// Validate a TP cut once and give the UI a useful preview without writing
+/// any shard. Every rank contains the complete layer range; the tensor
+/// columns and rows, not the layers, are what differ between ranks.
+fn tensor_slice_plan(path: &std::path::Path, tp_size: u32) -> anyhow::Result<TpSlicePlan> {
+    if !(2..=64).contains(&tp_size) {
+        anyhow::bail!("escolha entre 2 e 64 ranks TP");
+    }
+    crate::splitter::validate_tensor_parallel(path, tp_size)?;
+    let layout = crate::gguf::read_layout(path)?;
+    let total_layers = layout.layer_count();
+    if total_layers == 0 {
+        anyhow::bail!("este arquivo não declara camadas");
+    }
+    Ok(TpSlicePlan {
+        mode: SliceMode::TensorParallel,
+        model_bytes: layout.total_bytes,
+        total_layers,
+        tp_size,
+        ranks: (0..tp_size)
+            .map(|rank| TpSliceRank {
+                rank,
+                start_layer: 0,
+                end_layer: total_layers - 1,
+            })
+            .collect(),
+        complete: true,
+        blocked: false,
+        warnings: Vec::new(),
+    })
+}
+
+fn tensor_slice_manifest(
+    base_name: String,
+    label: String,
+    total_layers: u32,
+    node_id: String,
+    source_sha256: String,
+    quant: Option<String>,
+    tp_parts: Vec<crate::pom::PomPart>,
+) -> crate::pom::PomManifest {
+    let mut manifest = crate::pom::PomManifest::new(
+        crate::pom::PomModel {
+            name: base_name,
+            label,
+            total_layers,
+            quant,
+        },
+        crate::pom::PomKind::TensorParallel,
+        node_id,
+        source_sha256,
+        Vec::new(),
+    );
+    manifest.tp_parts = tp_parts;
+    manifest
+}
+
 #[derive(Debug, Deserialize)]
 pub struct SliceRequest {
     /// Whole model on *this* machine.
@@ -2104,6 +2192,12 @@ pub struct SliceRequest {
     /// comes from the file, which for an Ollama blob is a digest.
     #[serde(default)]
     pub name: Option<String>,
+    /// Pipeline layers or tensor-parallel ranks.
+    #[serde(default)]
+    pub mode: SliceMode,
+    /// Number of TP ranks when `mode` is `tensor_parallel`.
+    #[serde(default)]
+    pub tp_size: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2115,6 +2209,10 @@ pub struct SlicePlanRequest {
     /// carrying its real size as the target.
     #[serde(default)]
     pub equal_parts: Option<u32>,
+    #[serde(default)]
+    pub mode: SliceMode,
+    #[serde(default)]
+    pub tp_size: Option<u32>,
 }
 
 /// Read the tensor table of a local model, once per file version.
@@ -2181,6 +2279,15 @@ async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckRequest>) -> Res
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.
 async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) -> Response {
+    if matches!(req.mode, SliceMode::TensorParallel) {
+        let Some(tp_size) = req.tp_size else {
+            return bad_request("informe o tamanho do grupo TP");
+        };
+        return match tensor_slice_plan(std::path::Path::new(&req.model_path), tp_size) {
+            Ok(plan) => Json(plan).into_response(),
+            Err(error) => bad_request(error.to_string()),
+        };
+    }
     let layout = match layout_of(std::path::Path::new(&req.model_path)).await {
         Ok(l) => l,
         Err(e) => return bad_request(e),
@@ -2214,10 +2321,10 @@ async fn slice_locally(
             req.model_path
         ));
     }
-    if req.slices.is_empty() {
+    if matches!(req.mode, SliceMode::Pipeline) && req.slices.is_empty() {
         return bad_request("nenhuma fatia na lista");
     }
-    if req.slices.len() > 64 {
+    if matches!(req.mode, SliceMode::Pipeline) && req.slices.len() > 64 {
         return bad_request("no máximo 64 fatias");
     }
 
@@ -2225,6 +2332,75 @@ async fn slice_locally(
         Ok(l) => l,
         Err(e) => return bad_request(e),
     };
+
+    if matches!(req.mode, SliceMode::TensorParallel) {
+        let Some(tp_size) = req.tp_size else {
+            return bad_request("informe o tamanho do grupo TP");
+        };
+        if let Err(error) = tensor_slice_plan(&source, tp_size) {
+            return bad_request(error.to_string());
+        }
+        let source_sha256 = match source_model_sha256(&source).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
+            }
+        };
+        let total_layers = layout.layer_count();
+        let base_name = req
+            .name
+            .as_deref()
+            .and_then(plan::base_name_from_label)
+            .unwrap_or_else(|| plan::base_name_of(&req.model_path));
+        let shard_dir = state.shard_dir().await;
+        let scratch = crate::pom::scratch_dir(&shard_dir);
+        let id = uuid::Uuid::new_v4().simple().to_string();
+        let label = req.name.clone().unwrap_or_else(|| base_name.clone());
+        jobs().write().await.insert(
+            id.clone(),
+            new_job(
+                &id,
+                "slice",
+                format!("Fatiando {base_name} em {tp_size} shards TP"),
+                "preparando",
+            ),
+        );
+        let job_id = id.clone();
+        let node_id = state.network.node_id.clone();
+        let raiz = shard_dir.clone();
+        tokio::spawn(async move {
+            match run_tp_slice(
+                state,
+                source,
+                shard_dir,
+                scratch,
+                base_name,
+                label,
+                total_layers,
+                node_id,
+                source_sha256,
+                tp_size,
+                &job_id,
+            )
+            .await
+            {
+                Ok(manifest) => {
+                    let msg = format!(
+                        "{} shards TP em {} · pom {}",
+                        manifest.tp_parts.len(),
+                        crate::pom::dir_for(&raiz, &manifest).display(),
+                        crate::pom::short_id(&manifest.pom_id)
+                    );
+                    set_job(&job_id, "done", "pronto", &msg).await;
+                }
+                Err(error) => {
+                    warn!("fatiamento TP falhou: {error:#}");
+                    set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+                }
+            }
+        });
+        return Json(json!({ "job_id": id })).into_response();
+    }
 
     // The screen previews with the same function, but the decision is remade
     // here: a stale preview must not become a slicing run nobody approved.
@@ -2318,6 +2494,80 @@ async fn slice_locally(
     });
 
     Json(json!({ "job_id": id })).into_response()
+}
+
+/// Extract every tensor-parallel rank from one local GGUF and seal the whole
+/// group in the source model's unified manifest.
+#[allow(clippy::too_many_arguments)]
+async fn run_tp_slice(
+    state: GatewayState,
+    source: std::path::PathBuf,
+    shard_dir: std::path::PathBuf,
+    scratch: std::path::PathBuf,
+    base_name: String,
+    label: String,
+    total_layers: u32,
+    node_id: String,
+    source_sha256: String,
+    tp_size: u32,
+    job_id: &str,
+) -> anyhow::Result<crate::pom::PomManifest> {
+    let source_path = source.to_string_lossy().into_owned();
+    let mut shards = Vec::with_capacity(tp_size as usize);
+
+    for rank in 0..tp_size {
+        set_job(
+            job_id,
+            "running",
+            "fatiando",
+            &format!("extraindo shard TP rank {}/{}", rank + 1, tp_size),
+        )
+        .await;
+
+        let progress_job = job_id.to_string();
+        let outcome =
+            plan::extract_tp_shard(&source_path, &scratch, None, tp_size, rank, move |pct| {
+                let id = progress_job.clone();
+                tokio::spawn(async move { set_job_progress(&id, pct).await });
+            })
+            .await?;
+
+        shards.push(crate::pom::PomPart {
+            sha256: outcome.sha256.clone(),
+            bytes: outcome.bytes,
+            start_layer: 0,
+            end_layer: total_layers - 1,
+            is_first: true,
+            is_last: true,
+            tp: Some(crate::pom::PomTp {
+                rank,
+                size: tp_size,
+            }),
+        });
+        enforce_shard_storage(&state, &outcome.output_path).await?;
+
+        invalidate_catalog().await;
+        if let Some(job) = jobs().write().await.get_mut(job_id) {
+            job.outputs.push(outcome.output_path);
+        }
+    }
+
+    let manifest = tensor_slice_manifest(
+        base_name,
+        label,
+        total_layers,
+        node_id,
+        source_sha256,
+        source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(crate::catalog::parse_quant),
+        shards,
+    );
+    let destination = crate::pom::finalize_run(&shard_dir, &scratch, &manifest)?;
+    info!("fatiamento TP guardado em {}", destination.display());
+    invalidate_catalog().await;
+    Ok(manifest)
 }
 
 /// Corta o modelo inteiro nas faixas pedidas e mescla as partes no manifesto v1.
@@ -4091,6 +4341,71 @@ mod tests {
         assert_eq!(manifest.kind, crate::pom::PomKind::Combined);
 
         std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tensor_slice_plan_lists_one_full_model_range_per_rank() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-webui-tp-plan-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(4)).unwrap();
+
+        let plan = tensor_slice_plan(&source, 2).unwrap();
+
+        assert_eq!(plan.mode, SliceMode::TensorParallel);
+        assert_eq!(plan.tp_size, 2);
+        assert_eq!(plan.total_layers, 4);
+        assert_eq!(plan.ranks.len(), 2);
+        assert_eq!(
+            plan.ranks
+                .iter()
+                .map(|rank| (rank.rank, rank.start_layer, rank.end_layer))
+                .collect::<Vec<_>>(),
+            vec![(0, 0, 3), (1, 0, 3)]
+        );
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn tensor_slice_manifest_keeps_all_ranks_in_tp_parts() {
+        let manifest = tensor_slice_manifest(
+            "Llama-3.1-8B-Instruct-Q4_K_M.gguf".into(),
+            "Llama".into(),
+            32,
+            "node-a".into(),
+            "a".repeat(64),
+            None,
+            vec![
+                crate::pom::PomPart {
+                    sha256: "b".repeat(64),
+                    bytes: 10,
+                    start_layer: 0,
+                    end_layer: 31,
+                    is_first: true,
+                    is_last: true,
+                    tp: Some(crate::pom::PomTp { rank: 0, size: 2 }),
+                },
+                crate::pom::PomPart {
+                    sha256: "c".repeat(64),
+                    bytes: 11,
+                    start_layer: 0,
+                    end_layer: 31,
+                    is_first: true,
+                    is_last: true,
+                    tp: Some(crate::pom::PomTp { rank: 1, size: 2 }),
+                },
+            ],
+        );
+
+        assert_eq!(manifest.kind, crate::pom::PomKind::TensorParallel);
+        assert!(manifest.parts.is_empty());
+        assert_eq!(manifest.tp_parts.len(), 2);
+        manifest.validate().unwrap();
     }
 
     fn block_on<F: std::future::Future>(f: F) -> F::Output {

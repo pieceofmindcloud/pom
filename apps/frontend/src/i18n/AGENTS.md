@@ -11,7 +11,10 @@ Two files carry all of it: a static message table and a small provider. Tests:
 
 ## Per-file
 
-- `locales.ts` - the `messages` dictionary (854 keys in each locale, en block first, pt-BR block second) plus locale resolution and formatting functions. `locales.test.ts` prova que os dois blocos têm exatamente as mesmas chaves.
+- `locales.ts` - the `messages` dictionary (the exact key count is checked in
+  `locales.test.ts`, en block first, pt-BR block second) plus locale resolution
+  and formatting functions. The slice screen has messages for pipeline and
+  tensor-parallel modes, including grouped `1ofN` rank labels.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured

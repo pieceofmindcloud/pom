@@ -15,7 +15,9 @@ transferência.
 é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e
 `tp_parts` reúne shards de Tensor Parallelism. Novas fatias do mesmo modelo são
 mescladas na mesma pasta e no mesmo manifesto nomeado como a pasta; o catálogo
-só expõe as partes cujo arquivo existe no disco.
+só expõe as partes cujo arquivo existe no disco. `catalog::ShardSet` mantém as
+duas listas separadas e preserva `tp_rank`/`tp_size` para a UI agrupar por
+tamanho e exibir `1ofN`.
 
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos

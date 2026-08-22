@@ -15,7 +15,7 @@ import {
   writePositions,
   type CanvasPosition,
 } from "../lib/networkLayout";
-import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../lib/types";
+import type { DeployMachine, DeployPlan, DeploySelection } from "../lib/types";
 import { edgeStyle, type EdgeState } from "./ModelNetworkCanvas";
 import { Badge, Button, Dot, Progress } from "./ui";
 
@@ -42,8 +42,33 @@ function edgeId(from: string, to: string) {
   return `${from}:${to}`;
 }
 
-function executionRange(step: DeployStep): [number, number] {
-  return [step.exec_start ?? step.start_layer, step.exec_end ?? step.end_layer];
+type Stage = {
+  start_layer: number;
+  end_layer: number;
+  nodeIds: string[];
+};
+
+function stagesOf(plan: DeployPlan): Stage[] {
+  const stages: Stage[] = [];
+  for (const step of plan.steps) {
+    const previous = stages[stages.length - 1];
+    if (
+      previous &&
+      previous.start_layer === step.start_layer &&
+      previous.end_layer === step.end_layer
+    ) {
+      if (step.target_node_id && !previous.nodeIds.includes(step.target_node_id)) {
+        previous.nodeIds.push(step.target_node_id);
+      }
+    } else {
+      stages.push({
+        start_layer: step.start_layer,
+        end_layer: step.end_layer,
+        nodeIds: step.target_node_id ? [step.target_node_id] : [],
+      });
+    }
+  }
+  return stages;
 }
 
 function machineBounds(rows: DeploySelection[], machine: DeployMachine) {
@@ -83,7 +108,7 @@ function CapacityBar({
 
 function NodeCard({
   machine,
-  steps,
+  rows,
   position,
   selected,
   dragging,
@@ -95,7 +120,7 @@ function NodeCard({
   onPointerUp,
 }: {
   machine: DeployMachine;
-  steps: DeployStep[];
+  rows: DeploySelection[];
   position: CanvasPosition;
   selected: boolean;
   dragging: boolean;
@@ -106,9 +131,7 @@ function NodeCard({
   onPointerMove: (event: PointerEvent<HTMLElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLElement>) => void;
 }) {
-  const taking = steps
-    .filter((step) => step.target_node_id === machine.node_id)
-    .sort((a, b) => a.start_layer - b.start_layer || a.end_layer - b.end_layer);
+  const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
   return (
     <article
@@ -166,20 +189,12 @@ function NodeCard({
           </button>
         </div>
       </div>
-      <div className="mt-3 space-y-1.5 rounded-lg border border-line bg-raised/90 px-2 py-1.5">
-        {active ? taking.map((step) => {
-          const [execStart, execEnd] = executionRange(step);
-          return (
-            <div key={`${step.start_layer}-${step.end_layer}-${execStart}-${execEnd}`} className="flex min-w-0 items-center justify-between gap-2">
-              <Badge tone="iris" mono className="min-w-0 truncate px-1.5 py-0 text-[0.62rem]">
-                carrega {layerRange(step.start_layer, step.end_layer)}
-              </Badge>
-              <span className="shrink-0 font-mono text-[0.62rem] text-aqua">
-                executa {layerRange(execStart, execEnd)}
-              </span>
-            </div>
-          );
-        }) : <span className="font-mono text-[10px] text-faint">solte aqui para incluir</span>}
+      <div className="mt-3 flex min-h-7 flex-wrap items-center gap-1 rounded-lg border border-line bg-raised/90 px-2 py-1.5">
+        {active ? taking.map((row) => (
+          <Badge key={`${row.start_layer}-${row.end_layer}`} tone="iris" mono className="px-1.5 py-0 text-[0.62rem]">
+            {layerRange(row.start_layer, row.end_layer)}
+          </Badge>
+        )) : <span className="font-mono text-[10px] text-faint">solte aqui para incluir</span>}
       </div>
       <div className="mt-3 space-y-2">
         <CapacityBar
@@ -287,18 +302,38 @@ export function DeployNetworkCanvas({
     });
   }
 
-  // O backend já devolve o grafo de execução: cada aresta representa duas
-  // sub-faixas contíguas. O canvas não reconstrói estágios pelas faixas
-  // carregadas, porque isso apagaria ramos quando o inventário se sobrepõe.
+  const stages = stagesOf(plan);
+  const bridgeIds = new Set<string>();
+  for (let index = 1; index < stages.length; index += 1) {
+    for (const from of stages[index - 1].nodeIds) {
+      for (const to of stages[index].nodeIds) bridgeIds.add(edgeId(from, to));
+    }
+  }
+  // O backend já limita as opções ao próximo estágio. Esta guarda no canvas
+  // mantém a regra visual mesmo enquanto um peer antigo ainda responde com a
+  // lista ampla anterior: nenhum salto por cima de uma camada aparece no mapa.
   const visibleRouteOptions = (plan.route_options ?? []).filter(
-    (route) => nodeIds.includes(route.from_node_id) && nodeIds.includes(route.to_node_id),
+    (route) => bridgeIds.has(edgeId(route.from_node_id, route.to_node_id)),
   );
   const selectedEdges = new Set(visibleRouteOptions.filter((route) => route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const candidateEdges = new Set(visibleRouteOptions.filter((route) => !route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
-  const allEdges = visibleRouteOptions;
-  const entryNodeIds = [...new Set(plan.steps
-    .filter((step) => step.target_node_id && executionRange(step)[0] === 0)
-    .map((step) => step.target_node_id))];
+  const edges = visibleRouteOptions.filter((route) => nodeIds.includes(route.from_node_id) && nodeIds.includes(route.to_node_id));
+  const principalEdges = stages.slice(1).flatMap((stage, stageIndex) => {
+    const previous = stages[stageIndex];
+    return previous.nodeIds.flatMap((from) => stage.nodeIds.map((to) => ({ from, to })));
+  }).filter((edge) => edge.from !== edge.to && !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
+  const allEdges = [
+    ...edges,
+    ...principalEdges.map((edge) => ({
+      from_node_id: edge.from,
+      to_node_id: edge.to,
+      // Sem uma opção explícita não há medição direcional para esta aresta.
+      // Nunca copie o RTT do destino, que seria a medição de outra origem.
+      rtt_ms: null,
+      selected: true,
+      note: "pipeline",
+    })),
+  ];
 
   return (
     <section
@@ -354,14 +389,12 @@ export function DeployNetworkCanvas({
             return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: geometry.labelX, top: geometry.labelY }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} machine={machine} steps={plan.steps} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
-          <div className="absolute bottom-3 left-4 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
-            <Sparkles className="h-3 w-3 shrink-0 text-aqua" />
-            <span className="uppercase tracking-[0.12em] text-faint">entrada</span>
-            {entryNodeIds.length > 0 ? entryNodeIds.map((nodeId) => <span key={nodeId} className="flex min-w-0 items-center gap-1 text-iris"><ArrowRight className="h-3 w-3 shrink-0 text-faint" /><span className="truncate">{labelOf(nodeId)}</span></span>) : <span className="text-amber">sem faixa em L0</span>}
-            <ArrowRight className="h-3 w-3 shrink-0 text-faint" /><span>execução contígua</span>
-            <ArrowRight className="h-3 w-3 shrink-0 text-faint" /><span>resposta</span>
+          <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
+            <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>
+            {nodeIds.map((nodeId, index) => <span key={nodeId} className="flex items-center gap-1"><ArrowRight className="h-3 w-3 text-faint" /><span className={index === 0 ? "text-iris" : "text-aqua"}>{labelOf(nodeId)}</span></span>)}
+            <ArrowRight className="h-3 w-3 text-faint" /><span>resposta</span>
           </div>
         </div>
       )}

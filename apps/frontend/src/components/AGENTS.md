@@ -248,13 +248,12 @@ Key logic carriers:
   ponteiro, zoom, Fit, Organizar e Redefinir. Cards já presentes no mapa não
   repetem a faixa inferior; arrastar ou dar duplo clique num peer disponível
   adiciona-o ao conjunto preferido e faz o card aparecer no mapa. O plano ainda é a fonte de
-  verdade: `route_options` é o grafo de handoffs por contiguidade das sub-faixas
-  efetivamente executadas, preservando ramos de entrada quando as faixas
-  carregadas se sobrepõem. Os cards distinguem `carrega` da faixa física e
-  `executa` da sub-faixa que participa da rota; as arestas exibem o RTT
-  direcional devolvido pelo planejador e não fabricam pontes a partir da ordem
-  visual dos cards. O canvas filtra apenas endpoints que estão visíveis, sem
-  reconstruir estágios ou apagar ramos. A faixa inferior continua
+  verdade: estágios são identificados pela faixa, não pelo nó, e `route_options`
+  desenha somente pontes entre estágios consecutivos, com caminhos
+  principal/paralelo/inativo e RTT direcional; a geometria ancora a origem e o
+  receptor nos lados que se encaram, inclusive quando o receptor está à esquerda;
+  o canvas também filtra
+  respostas antigas que tentem saltar um estágio. A faixa inferior continua
   aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
   e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
   deixa o RTT da aresta ausente em vez de copiar a medição do nó de destino; o
@@ -264,13 +263,13 @@ Key logic carriers:
   Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra
   indeterminada. A hidratação de posições preserva cards existentes quando um
   peer novo entra sem faixa, então a topologia não se reorganiza por causa de
-  uma inclusão ainda não configurada. A separação existe porque este grafo
+  uma inclusão ainda não configurada. Em viewport estreito, o mapa usa
+  rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
+  endpoints mesmo quando o conteúdo é mais largo que o painel. A separação existe porque este grafo
   representa uma implantação ainda não aplicada.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  mantém os ajustes por máquina fora do bloco global. Ao marcar MTP, preenche
-  `mtp_min_probability` com `0.75` como valor inicial, mas mantém o campo
-  editável e envia o valor alterado.
+  mantém os ajustes por máquina fora do bloco global.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /
@@ -303,3 +302,10 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET/POST /api/ui/release/candidate` + `/api/ui/release`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

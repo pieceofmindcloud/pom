@@ -30,26 +30,26 @@
 //!   prompt. "Choosing the order" is therefore the same act as choosing who
 //!   takes which range — there is no second knob, and pretending otherwise
 //!   would be a lie on screen.
-//! * **A node serves one range.** Two selected ranges on the same machine is a
-//!   refusal, not a warning — unless `merge` is on, in which case adjacent
-//!   ranges on the same machine become one *merged unit*: the machine joins
-//!   the slices into a single file (`splitter::merge`) and serves the union.
-//!   A merged step carries `parts`, one per slice, each with its own source.
+//! * **A node may serve multiple ranges.** Each selected range remains a
+//!   pipeline step, even when the same machine owns separated ranges. When
+//!   `merge` is on, adjacent ranges on the same machine become one *merged
+//!   unit*: the machine joins the slices into a single file (`splitter::merge`)
+//!   and serves the union. A merged step carries `parts`, one per slice, each
+//!   with its own source.
 //!   The same exact range on different machines is an allowed replica.
-//! * **The execution path owns overlap.** Different cuts may cover the same
-//!   loaded layer when they form alternative paths, such as `0-31` versus
-//!   `0-15 -> 16-31`. A request follows one path of contiguous execution
-//!   subranges, so it never runs those overlaps together. A *gap* is different:
-//!   it is a legitimate half-deploy and only stops the pipeline from planning,
-//!   so it warns.
+//! * **Overlap is not a preference.** Two different cuts covering the same
+//!   layer would make the pipeline ambiguous, so that overlap is refused. The
+//!   same exact range on different machines is an explicit parallel route. A
+//!   *gap* is different: it makes the global coverage incomplete and therefore
+//!   refuses the pipeline before launch.
 //!
 //! ## A whole model is the degenerate case, not a second path
 //!
 //! `kind: "whole"` deploys one un-sliced GGUF onto one machine. Everything
 //! above still applies, because the survey reads that file as a single held
 //! range covering layer 0 to the last one: the coverage arithmetic finds it
-//! complete by construction, the one-range-per-machine rule is trivially
-//! satisfied, and the transfer and launch phases are the ones the slice path
+//! complete by construction, and the transfer and launch phases are the ones
+//! the slice path
 //! already uses. What changes is the wording of the refusals — "a fatia L0-31"
 //! is not what an operator who picked a whole model is looking at.
 
@@ -452,9 +452,9 @@ pub struct DeployRequest {
     /// decides, and the screen shows the decision.
     #[serde(default)]
     pub selection: Option<Vec<SelectedSlice>>,
-    /// Join each machine's adjacent slices into a single file, so a node
-    /// serves the union of the ranges it already holds. `false` keeps the rule
-    /// that a node serves one range.
+    /// Join adjacent slices assigned to the same machine into a single file,
+    /// so that run becomes one pipeline step. `false` keeps each selected
+    /// range as its own pipeline step.
     #[serde(default)]
     pub merge: bool,
     /// Grupo de tensor parallelism (caminho C). Presente só com
@@ -1064,11 +1064,6 @@ pub struct Step {
     position: u32,
     start_layer: u32,
     end_layer: u32,
-    /// A faixa que este passo executa no caminho escolhido. Ela pode ser uma
-    /// alternativa à faixa de outro passo carregado, mas nunca é inferida a
-    /// partir da ordem visual da tela.
-    exec_start: u32,
-    exec_end: u32,
     /// The model size this step will be launched with — the plan's answer, not
     /// the file's, so every step of one deploy carries the same number.
     total_layers: Option<u32>,
@@ -1315,86 +1310,12 @@ fn nameless(candidates: &[Candidate]) -> String {
     out
 }
 
-/// Cobertura que o runtime pode executar, não a união física dos arquivos.
-///
-/// Um inventário pode conter `0-31` e também `0-15` + `16-31`: os arquivos se
-/// sobrepõem, mas são dois caminhos alternativos e nenhum pedido executa os
-/// dois ao mesmo tempo. Uma faixa só entra na cobertura se houver um caminho
-/// que começa em L0 e chega nela por contiguidade exata.
-fn execution_coverage(
-    execution_ranges: &[(u32, u32)],
-    total_layers: Option<u32>,
-) -> (Vec<[u32; 2]>, Vec<[u32; 2]>, bool) {
-    let mut ranges = execution_ranges.to_vec();
-    ranges.sort_unstable();
-    ranges.dedup();
-
-    let mut reachable = Vec::new();
-    loop {
-        let mut changed = false;
-        for range in &ranges {
-            let enters = range.0 == 0
-                || reachable
-                    .iter()
-                    .any(|(_, end): &(u32, u32)| end.saturating_add(1) == range.0);
-            if enters && !reachable.contains(range) {
-                reachable.push(*range);
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    let furthest = reachable.iter().map(|(_, end)| *end).max();
-    let mut missing = Vec::new();
-    if let Some(total) = total_layers.filter(|total| *total > 0) {
-        let mut next = 0u32;
-        for (start, end) in &ranges {
-            if *start >= total {
-                break;
-            }
-            if *start > next {
-                missing.push([next, (*start - 1).min(total - 1)]);
-            }
-            next = next.max(end.saturating_add(1));
-            if next >= total {
-                break;
-            }
-        }
-        if next < total {
-            missing.push([next, total - 1]);
-        }
-        // The physical union can be complete even when no execution edge can
-        // cross an overlap. Expose that executable gap instead of hiding it.
-        if missing.is_empty() && furthest.is_none_or(|end| end + 1 < total) {
-            missing.push([
-                furthest.map_or(0, |end| end.saturating_add(1)),
-                total - 1,
-            ]);
-        }
-    }
-
-    // Overlap between loaded files is intentional when the ranges belong to
-    // different reachable paths. Since a path only advances by `end + 1`, its
-    // execution subranges cannot overlap. The old file-union check is what
-    // incorrectly refused those alternative paths.
-    let overlap = Vec::new();
-    let complete = !reachable.is_empty()
-        && match total_layers {
-            Some(total) => furthest.is_some_and(|end| end + 1 >= total),
-            None => true,
-        };
-    (missing, overlap, complete)
-}
-
 /// The chain the node would pick on its own: start at layer 0 and always take
 /// the longest range that begins where the last one ended.
 ///
-/// Longest-first is not an aesthetic choice. A node serves one range, so the
-/// chain with the fewest slices is the one most likely to fit the cluster, and
-/// taking ranges only where the previous one ended makes overlap impossible by
+/// Longest-first is not an aesthetic choice. The chain with the fewest slices
+/// is the one most likely to fit the cluster, and taking ranges only where the
+/// previous one ended makes overlap impossible by
 /// construction — which matters the moment a model has been sliced twice with
 /// different cuts. When nothing continues the chain the sweep jumps to the next
 /// range that starts later, which leaves a hole and says so.
@@ -1507,12 +1428,10 @@ fn auto_assign(
 
     for (slot, &ci) in chain.iter().enumerate() {
         let c = &candidates[ci];
-        let mut possible: Vec<&Machine> = machines
-            .iter()
-            .filter(|m| !taken.contains(&m.node_id))
-            .collect();
+        let mut possible: Vec<&Machine> = machines.iter().collect();
         possible.sort_by_key(|m| {
             (
+                taken.contains(&m.node_id),
                 target_capacity_class(c, m),
                 !c.holders.contains(&m.node_id),
                 !preferred_node_ids.iter().any(|id| id == &m.node_id),
@@ -1532,7 +1451,9 @@ fn auto_assign(
             )
         });
         if let Some(m) = possible.first() {
-            taken.push(m.node_id.clone());
+            if !taken.contains(&m.node_id) {
+                taken.push(m.node_id.clone());
+            }
             targets[slot] = m.node_id.clone();
         }
     }
@@ -1767,20 +1688,28 @@ fn plan_with_rtt_options(
         );
     }
 
-    // ── Coverage: gaps warn, execution overlap refuses ─────────────────────
-    //
-    // The selected inventory may contain several routes. Validate the
-    // subranges a request can actually execute, not the union of loaded files:
-    // an overlapping whole-model copy and a contiguous pair of partial slices
-    // are alternatives, not two layers run in one request.
-    let execution_ranges: Vec<(u32, u32)> = chosen
-        .iter()
-        .map(|(i, ..)| {
-            let c = &available[*i];
-            (c.start_layer, c.end_layer)
-        })
-        .collect();
-    let (missing, overlap, complete) = execution_coverage(&execution_ranges, total_layers);
+    // ── Coverage: gaps and overlap refuse ───────────────────────────────────
+    let mut missing: Vec<[u32; 2]> = Vec::new();
+    let mut overlap: Vec<[u32; 2]> = Vec::new();
+    let mut next = 0u32;
+    let mut covered_exact: Option<(u32, u32)> = None;
+    for (i, ..) in &chosen {
+        let c = &available[*i];
+        if covered_exact == Some((c.start_layer, c.end_layer)) {
+            continue;
+        }
+        covered_exact = Some((c.start_layer, c.end_layer));
+        if c.start_layer > next {
+            missing.push([next, c.start_layer - 1]);
+        } else if c.start_layer < next {
+            overlap.push([c.start_layer, next.min(c.end_layer + 1) - 1]);
+        }
+        next = next.max(c.end_layer.saturating_add(1));
+    }
+    if let Some(total) = total_layers.filter(|t| next < *t) {
+        missing.push([next, total - 1]);
+    }
+    let complete = missing.is_empty() && overlap.is_empty() && !chosen.is_empty();
 
     if let Some(o) = overlap.first() {
         // Two peers running the same layers would run them twice and the answer
@@ -1791,44 +1720,49 @@ fn plan_with_rtt_options(
         ));
     }
     for m in &missing {
-        warnings.push(if m[0] == m[1] {
+        let message = if m[0] == m[1] {
             format!("a camada L{} não está em nenhuma fatia escolhida", m[0])
         } else {
             format!(
                 "as camadas L{}-{} não estão em nenhuma fatia escolhida",
                 m[0], m[1]
             )
-        });
+        };
+        blocked.get_or_insert(message.clone());
+        warnings.push(message);
     }
 
-    // ── One range per machine, or one merged unit per machine ───────────────
+    // ── Preserve the selected pipeline steps, optionally merging neighbours ─
     //
-    // A node serves one file, so two ranges on the same machine can only both
-    // come up when they are joined first. `merge` says that is what the
-    // operator wants: each machine's adjacent slices become a single step that
-    // merges them into one file on that machine. Without it, two ranges on one
-    // machine stay the refusal they always were.
+    // A node may serve several selected ranges. `merge` says that adjacent
+    // ranges on the same machine should become one step that joins them into a
+    // single file on that machine. Separated ranges remain independent steps,
+    // because contiguity is not a validity rule for the global pipeline.
     //
-    // "Sem máquina" is not a machine. An empty target id groups by string
-    // equality like any other, which lumped every unplaced range together as if
-    // one node had taken them all: the refusal came out naming a machine with
-    // no name ("` ficou com duas faixas`"), and the steps came back out of
-    // layer order. Each unplaced range keeps its own group and its own line.
+    // "Sem máquina" is not a machine. Each unplaced range keeps its own group
+    // and its own line, so it is named separately in the plan.
     let mut groups: Vec<Vec<(usize, String, PeerOverrides)>> = Vec::new();
     for entry in &chosen {
-        let existing = if entry.1.is_empty() {
-            None
+        let can_merge_with_previous = merge
+            && !entry.1.is_empty()
+            && groups.last().is_some_and(|group| {
+                group.last().is_some_and(|previous| {
+                    previous.1 == entry.1
+                        && available[entry.0].start_layer
+                            == available[previous.0].end_layer.saturating_add(1)
+                })
+            });
+        if can_merge_with_previous {
+            groups
+                .last_mut()
+                .expect("grupo anterior")
+                .push(entry.clone());
         } else {
-            groups.iter_mut().find(|g| g[0].1 == entry.1)
-        };
-        match existing {
-            Some(g) => g.push(entry.clone()),
-            None => groups.push(vec![entry.clone()]),
+            groups.push(vec![entry.clone()]);
         }
     }
-    // `chosen` is already in layer order, so each group is too; ordering the
-    // groups by their first range keeps the pipeline order intact.
-    groups.sort_by_key(|g| (available[g[0].0].start_layer, available[g[0].0].end_layer));
+    // `chosen` is already in layer order and groups are formed in that order,
+    // so the pipeline order is preserved without regrouping by machine.
 
     let mut transfer_bytes = 0u64;
     let mut steps: Vec<Step> = Vec::new();
@@ -1841,38 +1775,9 @@ fn plan_with_rtt_options(
         let start_layer = first.start_layer;
         let end_layer = last.end_layer;
 
-        // Adjacency is what makes a merge possible: `splitter::merge` joins a
-        // chain of neighbours and refuses anything else.
-        let adjacent = grp
-            .windows(2)
-            .all(|w| available[w[1].0].start_layer == available[w[0].0].end_layer + 1);
-        let merged = merge && grp.len() > 1 && adjacent;
-
-        if grp.len() > 1 && !merge {
-            blocked.get_or_insert(format!(
-                "{} ficou com duas faixas (L{}-{} e L{}-{}) — junte as fatias vizinhas na \
-                 tela, ou mova uma delas para outra máquina",
-                target
-                    .map(|m| m.label())
-                    .unwrap_or_else(|| target_id.clone()),
-                first.start_layer,
-                first.end_layer,
-                last.start_layer,
-                last.end_layer,
-            ));
-        } else if grp.len() > 1 && merge && !adjacent {
-            blocked.get_or_insert(format!(
-                "as fatias de {} não são vizinhas (L{}-{} e L{}-{}) — só dá para juntar \
-                 fatias adjacentes",
-                target
-                    .map(|m| m.label())
-                    .unwrap_or_else(|| target_id.clone()),
-                first.start_layer,
-                first.end_layer,
-                last.start_layer,
-                last.end_layer,
-            ));
-        }
+        // Groups contain only adjacent ranges for the merge path. A separated
+        // range has its own group and remains an ordinary pipeline step.
+        let merged = merge && grp.len() > 1;
 
         if merged {
             let mut parts: Vec<StepPart> = Vec::new();
@@ -1980,8 +1885,6 @@ fn plan_with_rtt_options(
                 position: 0,
                 start_layer,
                 end_layer,
-                exec_start: start_layer,
-                exec_end: end_layer,
                 total_layers,
                 // O que o operador lê. A identidade de verdade é o hash da
                 // parte, que viaja em `part_sha256`; um "qwen3-8b L0-15" aqui
@@ -2006,9 +1909,8 @@ fn plan_with_rtt_options(
                 parts,
             });
         } else {
-            // Plain steps: one range, one file. A group of more than one
-            // already set `blocked`; the steps are still listed so the screen
-            // can show which ranges are where.
+            // Plain steps: one range, one file. A separated range has its own
+            // group and remains an ordinary step in the pipeline.
             for (i, target_id, over) in &grp {
                 let c = &available[*i];
                 let target = machines.iter().find(|m| &m.node_id == target_id);
@@ -2088,8 +1990,6 @@ fn plan_with_rtt_options(
                     position: 0,
                     start_layer: c.start_layer,
                     end_layer: c.end_layer,
-                    exec_start: c.start_layer,
-                    exec_end: c.end_layer,
                     total_layers,
                     name: c.name.clone(),
                     size_bytes: c.size_bytes,
@@ -2124,13 +2024,8 @@ fn plan_with_rtt_options(
     //
     // The pipeline order *is* the layer order, so `position` is only honest in
     // layer order, and `run` reads the launch order straight off this list.
-    // Grouping by target machine builds the list in machine order instead: a
-    // machine holding two ranges emitted its second one immediately, ahead of
-    // every range in between. That never reached `run` - two ranges on one
-    // machine is a refusal - but it did reach the screen, which lines the plan
-    // up against rows it keeps in layer order and fell silent when they did not
-    // line up. Sorted here, once, so neither side has to know how the grouping
-    // walked.
+    // Groups are formed in layer order, and this final sort keeps the contract
+    // explicit even if a future grouping change walks a different collection.
     steps.sort_by_key(|s| (s.start_layer, s.end_layer));
     for (i, s) in steps.iter_mut().enumerate() {
         s.position = i as u32 + 1;
@@ -2172,10 +2067,10 @@ fn plan_with_rtt_options(
     }
 
     // The auto planner runs out of machines before it runs out of slices, and
-    // that reads better as a count than as "a fatia L16-31 está sem máquina".
+    // that reads better as a count than as one message per missing range.
     if auto && steps.iter().any(|s| s.target_node_id.is_empty()) {
         blocked = Some(format!(
-            "são {} fatias para {} {} — um nó serve uma faixa por vez",
+            "são {} fatias para {} {} - algumas fatias ficaram sem máquina",
             steps.len(),
             machines.len(),
             if machines.len() == 1 {
@@ -2237,64 +2132,67 @@ fn plan_with_rtt_options(
         })
         .collect();
 
-    // A route is a handoff between contiguous execution subranges. Two exact
-    // copies of L0-14 are one entry stage with two choices; treating them as
-    // L0-14 -> L0-14 would invent a backward hop. Unlike the old stage list,
-    // this graph is independent of the order in which overlapping ranges were
-    // selected and can expose more than one entry branch.
-    let mut execution_stages: Vec<((u32, u32), Vec<String>)> = Vec::new();
+    // Build edges between consecutive logical layer stages, not between every
+    // pair of machines in the plan. Two exact copies of L0-14 are one stage
+    // with two source choices; treating them as L0-14 -> L0-14 would invent a
+    // backward pipeline hop. A route option is only useful when its target is
+    // one of the selected machines serving the immediately next stage. A peer
+    // that merely has an inference endpoint, or serves a later stage, is not a
+    // bridge for this handoff.
+    let mut stage_ranges: Vec<(u32, u32)> = Vec::new();
     for step in &steps {
-        if step.target_node_id.is_empty() {
-            continue;
-        }
-        let range = (step.exec_start, step.exec_end);
-        if let Some((_, nodes)) = execution_stages
-            .iter_mut()
-            .find(|(known, _)| *known == range)
-        {
-            if !nodes.contains(&step.target_node_id) {
-                nodes.push(step.target_node_id.clone());
-            }
-        } else {
-            execution_stages.push((range, vec![step.target_node_id.clone()]));
+        let range = (step.start_layer, step.end_layer);
+        if !stage_ranges.contains(&range) {
+            stage_ranges.push(range);
         }
     }
-    execution_stages.sort_by_key(|(range, _)| *range);
-
     let mut route_options = Vec::new();
-    for (from_range, from_nodes) in &execution_stages {
-        for (to_range, to_nodes) in &execution_stages {
-            if to_range.0 != from_range.1.saturating_add(1) {
-                continue;
-            }
-            for from in from_nodes {
-                for to in to_nodes {
-                    if from == to {
-                        continue;
-                    }
-                    let Some(machine) = machines.iter().find(|machine| &machine.node_id == to)
-                    else {
-                        continue;
-                    };
-                    if machine.inference_url.is_none() {
-                        continue;
-                    }
-                    let rtt_ms = pairwise_rtt.get(from, to);
-                    route_options.push(RouteOption {
-                        from_node_id: from.clone(),
-                        to_node_id: to.clone(),
-                        rtt_ms,
-                        // The backend is exposing a graph of viable handoffs.
-                        // The request planner chooses one branch later, so
-                        // every edge here is viable.
-                        selected: true,
-                        note: if rtt_ms.is_some() {
-                            "rota contígua medida no peer de origem".to_string()
-                        } else {
-                            "rota contígua sem medição direcional de RTT".to_string()
-                        },
-                    });
+    for pair in stage_ranges.windows(2) {
+        let from_range = pair[0];
+        let to_range = pair[1];
+        let from_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == from_range && !step.target_node_id.is_empty()
+            })
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let to_nodes: Vec<String> = steps
+            .iter()
+            .filter(|step| {
+                (step.start_layer, step.end_layer) == to_range && !step.target_node_id.is_empty()
+            })
+            .map(|step| step.target_node_id.clone())
+            .collect();
+        let selected_from = from_nodes.first();
+        let selected_to = to_nodes.first();
+
+        for from in &from_nodes {
+            for to in &to_nodes {
+                if from == to {
+                    continue;
                 }
+                let Some(machine) = machines.iter().find(|machine| &machine.node_id == to) else {
+                    continue;
+                };
+                if machine.inference_url.is_none() {
+                    continue;
+                }
+                let selected = selected_from == Some(from) && selected_to == Some(to);
+                let rtt_ms = pairwise_rtt.get(from, to);
+                route_options.push(RouteOption {
+                    from_node_id: from.clone(),
+                    to_node_id: to.clone(),
+                    rtt_ms,
+                    selected,
+                    note: if selected {
+                        "rota escolhida".to_string()
+                    } else if rtt_ms.is_some() {
+                        "rota alternativa medida no peer de origem".to_string()
+                    } else {
+                        "rota alternativa sem medição direcional de RTT".to_string()
+                    },
+                });
             }
         }
     }
@@ -5313,10 +5211,11 @@ mod tests {
         );
     }
 
-    /// One machine holds both slices: the other has to be given one, and the
-    /// plan has to name who sends it.
+    /// An unused eligible peer is preferred for the second copy when it has
+    /// capacity, so the automatic plan can spread work without refusing when
+    /// a machine already holds every slice.
     #[test]
-    fn a_missing_slice_is_planned_as_a_copy() {
+    fn automatic_planning_can_copy_to_an_idle_peer() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 15), (16, 31)]),
             m("b", 200_000, &[]),
@@ -5324,11 +5223,22 @@ mod tests {
         let p = plan("m", &ms, None);
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
 
+        assert_eq!(p.steps.len(), 2);
         let copied: Vec<&Step> = p.steps.iter().filter(|s| !s.ready).collect();
         assert_eq!(copied.len(), 1, "só uma fatia precisa viajar");
         assert_eq!(copied[0].source_node_id.as_deref(), Some("a"));
         assert_eq!(copied[0].target_node_id, "b");
         assert_eq!(p.transfer_bytes, GIB);
+    }
+
+    #[test]
+    fn auto_plan_with_one_machine_can_cover_all_slices() {
+        let ms = build(vec![m("a", 100_000, &[(0, 15), (16, 31)])]);
+        let p = plan("m", &ms, None);
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 2);
+        assert!(p.steps.iter().all(|step| step.target_node_id == "a"));
     }
 
     /// Layer 0 runs every prompt, so it goes to the machine with the most room
@@ -5346,17 +5256,18 @@ mod tests {
         assert_eq!(first.position, 1);
     }
 
-    /// A node serves one range, so three slices onto two machines is a stop,
-    /// not a deploy that half works.
+    /// Fewer machines than ranges is valid when the selected coverage is
+    /// complete. The planner spreads to an idle peer, then reuses a peer.
     #[test]
-    fn more_slices_than_machines_is_refused() {
+    fn more_slices_than_machines_can_share_a_machine() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 9), (10, 19), (20, 31)]),
             m("b", 100_000, &[]),
         ]);
         let p = plan("m", &ms, None);
-        assert!(p.blocked.is_some());
-        assert!(p.blocked.unwrap().contains("3 fatias"));
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 3);
     }
 
     /// A gap in the set is reported as incomplete rather than deployed into a
@@ -5409,12 +5320,7 @@ mod tests {
     // three depends on the same promise, so it is asserted here rather than
     // left to fall out of the grouping loop.
 
-    /// Steps come back in layer order even when the plan is refused.
-    ///
-    /// Grouping by target machine reordered them: two ranges landing on the
-    /// same machine emitted the second one immediately, ahead of every range
-    /// between them. A blocked plan is exactly when the screen most needs to
-    /// line the answer up with its rows, so the order has to hold there too.
+    /// Steps come back in layer order when a machine takes two ranges.
     #[test]
     fn steps_stay_in_layer_order_when_a_machine_takes_two_ranges() {
         let ms = build(vec![
@@ -5429,7 +5335,8 @@ mod tests {
             pick(24, 31, "c"),
         ];
         let p = plan("m", &ms, Some(&sel));
-        assert!(p.blocked.is_some(), "duas faixas em 'a' continua recusa");
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
         let order: Vec<(u32, u32)> = p
             .steps
             .iter()
@@ -5440,14 +5347,10 @@ mod tests {
         assert_eq!(positions, vec![1, 2, 3, 4], "posição é o lugar no pipeline");
     }
 
-    /// The auto planner running out of machines still answers in layer order.
-    ///
-    /// This is the captain's screen: four cuts, two machines, so two ranges end
-    /// up with no machine at all. Lumping every unassigned range under the same
-    /// empty node id treated "nobody" as if it were one machine, which both
-    /// reordered the steps and produced a refusal naming an empty machine.
+    /// The auto planner reuses an eligible machine after all peers have been
+    /// considered and still answers in layer order.
     #[test]
-    fn ranges_left_without_a_machine_are_not_one_machine() {
+    fn auto_ranges_can_reuse_a_machine_without_empty_targets() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
             m("b", 100_000, &[(0, 7), (8, 15), (16, 23), (24, 31)]),
@@ -5460,32 +5363,9 @@ mod tests {
             .collect();
         assert_eq!(order, vec![(0, 7), (8, 15), (16, 23), (24, 31)]);
 
-        let blocked = p
-            .blocked
-            .expect("quatro fatias para duas máquinas é recusa");
-        assert!(blocked.contains("4 fatias"), "{blocked}");
-        assert!(
-            !blocked.contains("ficou com duas faixas"),
-            "sem máquina não é uma máquina com duas faixas: {blocked}"
-        );
-
-        // Each orphan range says so on its own line, so the screen can point at
-        // the row instead of at a machine with no name.
-        let sem_maquina: Vec<&Step> = p
-            .steps
-            .iter()
-            .filter(|s| s.target_node_id.is_empty())
-            .collect();
-        assert_eq!(sem_maquina.len(), 2);
-        for s in sem_maquina {
-            assert!(
-                s.problem
-                    .as_deref()
-                    .is_some_and(|p| p.contains("sem máquina")),
-                "{:?}",
-                s.problem
-            );
-        }
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert!(p.steps.iter().all(|step| !step.target_node_id.is_empty()));
     }
 
     /// Same thing from the operator's side: two ranges deliberately left
@@ -5565,19 +5445,19 @@ mod tests {
         assert_eq!(p.transfer_bytes, GIB);
     }
 
-    /// An overlapping selection is not executed as one path. It stays a valid
-    /// partial deployment only when a contiguous branch can be formed.
+    /// Mixing two slicings is exactly the thing that has to be refused: layers
+    /// 5-10 would run twice and the answer would be quietly wrong.
     #[test]
-    fn overlapping_selection_reports_the_executable_gap() {
+    fn overlapping_selection_is_refused() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 10), (5, 31)]),
             m("b", 100_000, &[(0, 10), (5, 31)]),
         ]);
         let p = plan("m", &ms, Some(&[pick(0, 10, "a"), pick(5, 31, "b")]));
-        assert!(p.blocked.is_none(), "{:?}", p.blocked);
-        assert!(p.overlap.is_empty());
+        assert_eq!(p.overlap, vec![[5, 10]]);
+        let blocked = p.blocked.expect("sobreposição tem que barrar");
+        assert!(blocked.contains("L5-10"), "{blocked}");
         assert!(!p.complete);
-        assert_eq!(p.missing, vec![[11, 31]]);
     }
 
     /// A mesma faixa em máquinas diferentes é uma réplica deliberada da rota,
@@ -5631,40 +5511,127 @@ mod tests {
         );
     }
 
-    /// A hole the operator left on purpose warns loudly but still deploys —
-    /// half a model on the network is a legitimate step, it just will not serve.
+    /// A hole in the selected coverage refuses the plan before any launch.
     #[test]
-    fn a_selection_with_a_hole_warns_without_blocking() {
+    fn a_selection_with_a_hole_is_refused() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 15), (20, 31)]),
             m("b", 100_000, &[(0, 15), (20, 31)]),
         ]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(20, 31, "b")]));
-        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        let blocked = p.blocked.expect("um gap não pode ser implantado");
+        assert!(blocked.contains("L16-19"), "{blocked}");
         assert!(!p.complete);
         assert_eq!(p.missing, vec![[16, 19]]);
     }
 
-    /// Choosing part of the model on purpose: one slice, and the rest reported
-    /// as missing rather than invented.
+    /// Choosing part of the model leaves a global gap and is refused before
+    /// launch, while still reporting the exact missing range.
     #[test]
     fn a_partial_selection_reports_what_is_left_out() {
         let ms = build(vec![m("a", 100_000, &[(0, 15), (16, 31)])]);
         let p = plan("m", &ms, Some(&[pick(0, 15, "a")]));
-        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        let blocked = p.blocked.expect("a cobertura incompleta é inválida");
+        assert!(blocked.contains("L16-31"), "{blocked}");
         assert_eq!(p.missing, vec![[16, 31]]);
         assert_eq!(p.steps.len(), 1);
     }
 
     #[test]
-    fn two_ranges_on_one_machine_is_refused() {
+    fn non_contiguous_ranges_on_one_machine_are_valid() {
         let ms = build(vec![
-            m("a", 100_000, &[(0, 15), (16, 31)]),
-            m("b", 100_000, &[]),
+            m("a", 100_000, &[(0, 3), (32, 35)]),
+            m(
+                "b",
+                100_000,
+                &[
+                    (4, 7),
+                    (8, 11),
+                    (12, 15),
+                    (16, 19),
+                    (20, 23),
+                    (24, 27),
+                    (28, 31),
+                ],
+            ),
         ]);
-        let p = plan("m", &ms, Some(&[pick(0, 15, "a"), pick(16, 31, "a")]));
-        let blocked = p.blocked.expect("um nó serve uma faixa");
-        assert!(blocked.contains("duas faixas"), "{blocked}");
+        let p = plan(
+            "m",
+            &ms,
+            Some(&[
+                pick(0, 3, "a"),
+                pick(4, 7, "b"),
+                pick(8, 11, "b"),
+                pick(12, 15, "b"),
+                pick(16, 19, "b"),
+                pick(20, 23, "b"),
+                pick(24, 27, "b"),
+                pick(28, 31, "b"),
+                pick(32, 35, "a"),
+            ]),
+        );
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert_eq!(
+            p.steps
+                .iter()
+                .map(|step| {
+                    (
+                        step.start_layer,
+                        step.end_layer,
+                        step.target_node_id.as_str(),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![
+                (0, 3, "a"),
+                (4, 7, "b"),
+                (8, 11, "b"),
+                (12, 15, "b"),
+                (16, 19, "b"),
+                (20, 23, "b"),
+                (24, 27, "b"),
+                (28, 31, "b"),
+                (32, 35, "a"),
+            ]
+        );
+    }
+
+    #[test]
+    fn all_ranges_on_one_machine_are_valid() {
+        let ms = build(vec![m(
+            "a",
+            100_000,
+            &[
+                (0, 3),
+                (4, 7),
+                (8, 11),
+                (12, 15),
+                (16, 19),
+                (20, 23),
+                (24, 27),
+                (28, 31),
+                (32, 35),
+            ],
+        )]);
+        let p = plan(
+            "m",
+            &ms,
+            Some(&[
+                pick(0, 3, "a"),
+                pick(4, 7, "a"),
+                pick(8, 11, "a"),
+                pick(12, 15, "a"),
+                pick(16, 19, "a"),
+                pick(20, 23, "a"),
+                pick(24, 27, "a"),
+                pick(28, 31, "a"),
+                pick(32, 35, "a"),
+            ]),
+        );
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 9);
     }
 
     // ── Merged units ─────────────────────────────────────────────────────────
@@ -5704,21 +5671,22 @@ mod tests {
         assert_eq!(a.taking, Some([0, 15]));
     }
 
-    /// Merging is what makes a machine with two files able to serve them both;
-    /// without the toggle the same two ranges stay the old refusal.
+    /// Without the toggle, adjacent ranges remain independent pipeline steps.
+    /// The machine is still allowed to serve both; only the file join is off.
     #[test]
-    fn the_toggle_is_what_allows_two_ranges_on_one_machine() {
+    fn without_merge_adjacent_ranges_remain_independent_steps() {
         let ms = build(vec![m("a", 100_000, &[(0, 7), (8, 15)])]);
-        let p = merged("m", &ms, &[pick(0, 7, "a"), pick(8, 15, "a")]);
+        let p = plan("m", &ms, Some(&[pick(0, 7, "a"), pick(8, 15, "a")]));
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
-        assert!(p.steps.len() == 1 && p.steps[0].merged);
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 2);
+        assert!(p.steps.iter().all(|step| !step.merged));
     }
 
-    /// `splitter::merge` only knows how to join neighbours, so a machine whose
-    /// two ranges are separated by a gap cannot serve both — the refusal names
-    /// the gap.
+    /// `splitter::merge` only joins neighbours. Separated ranges remain
+    /// independent steps even when the merge toggle is on.
     #[test]
-    fn merge_requires_adjacency() {
+    fn merge_only_joins_adjacent_ranges() {
         let ms = build(vec![
             m("a", 100_000, &[(0, 7), (9, 15)]),
             m("b", 100_000, &[(8, 8)]),
@@ -5728,8 +5696,10 @@ mod tests {
             &ms,
             &[pick(0, 7, "a"), pick(9, 15, "a"), pick(8, 8, "b")],
         );
-        let blocked = p.blocked.expect("fatias separadas não se juntam");
-        assert!(blocked.contains("vizinhas"), "{blocked}");
+        assert!(p.blocked.is_none(), "{:?}", p.blocked);
+        assert!(p.complete);
+        assert_eq!(p.steps.len(), 3);
+        assert!(p.steps.iter().all(|step| !step.merged));
     }
 
     /// A merged unit may need copies: each part that is missing has its own
@@ -5915,64 +5885,6 @@ mod tests {
         );
         let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
         assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
-    }
-
-    #[test]
-    fn overlapping_loaded_ranges_are_allowed_when_execution_has_alternative_paths() {
-        let mut ms = build(vec![
-            m("whole", 100_000, &[(0, 31)]),
-            m("head", 100_000, &[(0, 15)]),
-            m("tail", 100_000, &[(16, 31)]),
-        ]);
-        for machine in &mut ms {
-            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
-        }
-
-        let p = plan(
-            "qwen",
-            &ms,
-            Some(&[
-                pick(0, 31, "whole"),
-                pick(0, 15, "head"),
-                pick(16, 31, "tail"),
-            ]),
-        );
-
-        assert!(p.blocked.is_none(), "{:?}", p.blocked);
-        assert!(p.complete);
-        assert!(
-            p.overlap.is_empty(),
-            "faixas carregadas não são execução simultânea"
-        );
-    }
-
-    #[test]
-    fn route_options_follow_execution_contiguity_and_keep_entry_branches() {
-        let mut ms = build(vec![
-            m("whole", 100_000, &[(0, 31)]),
-            m("head", 100_000, &[(0, 15)]),
-            m("tail", 100_000, &[(16, 31)]),
-        ]);
-        for machine in &mut ms {
-            machine.inference_url = Some(format!("http://{}:8181", machine.node_id));
-        }
-
-        let p = plan(
-            "qwen",
-            &ms,
-            Some(&[
-                pick(0, 31, "whole"),
-                pick(0, 15, "head"),
-                pick(16, 31, "tail"),
-            ]),
-        );
-        let pairs: Vec<_> = p
-            .route_options
-            .iter()
-            .map(|route| (route.from_node_id.as_str(), route.to_node_id.as_str()))
-            .collect();
-
-        assert_eq!(pairs, vec![("head", "tail")]);
     }
 
     /// The machine list carries what the screen needs to explain a refusal.

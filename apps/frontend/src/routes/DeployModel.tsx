@@ -1240,7 +1240,7 @@ export function DeployModel() {
                     value={cacheTypeK}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeK(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
@@ -1254,7 +1254,7 @@ export function DeployModel() {
                     value={cacheTypeV}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeV(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>

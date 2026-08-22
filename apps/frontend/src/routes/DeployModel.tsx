@@ -59,8 +59,9 @@ import { api } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, layerRange, megabytes } from "../lib/format";
+import { bytes, layerRange, megabytes, num } from "../lib/format";
 import { Confirm } from "../components/Confirm";
+import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -1365,7 +1366,11 @@ export function DeployModel() {
               <div className="mt-2">
                 <Switch
                   checked={eff.mtp_enabled ?? false}
-                  onChange={(value) => setParams({ ...eff, mtp_enabled: value })}
+                  onChange={(value) => setParams({
+                    ...eff,
+                    mtp_enabled: value,
+                    ...(value ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
+                  })}
                   label="Predição multi-token (MTP)"
                 />
               </div>
@@ -1375,10 +1380,12 @@ export function DeployModel() {
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
                     <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  {/* Fixa ao marcar o MTP, então mostrada e não editável: um
+                      campo que só *começa* em 0,75 é outra coisa. */}
+                  <div className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
                     <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
-                  </label>
+                    <span className="pr-3 text-right font-mono text-[0.62rem] text-fg">{num(MTP_MIN_PROBABILITY, 2)}</span>
+                  </div>
                 </div>
               )}
             </section>

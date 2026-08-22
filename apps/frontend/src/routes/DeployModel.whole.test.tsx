@@ -604,6 +604,48 @@ describe("DeployModel · MTP", () => {
     });
   });
 
+  /**
+   * A probabilidade mínima do MTP é **fixa** em 0,75, decidida ao marcar.
+   *
+   * Não é um valor inicial sugerido: marcar o MTP grava o piso, e não há
+   * campo para mudá-lo depois. O teste guarda os dois lados, porque um sem o
+   * outro não é o contrato - um campo editável que só *começa* em 0,75 deixa
+   * o operador movê-lo, e gravar sem mostrar esconde o número que decide se o
+   * rascunho é aceito.
+   */
+  it("marcar o MTP fixa a probabilidade mínima em 0,75", async () => {
+    mountWhole();
+    chooseWhole();
+
+    const switchEl = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
+    });
+    fireEvent.click(switchEl);
+
+    // O número aparece na tela, mas não como campo: não há o que editar.
+    await waitFor(() => {
+      expect(screen.getByText("Probabilidade mínima do MTP")).toBeTruthy();
+      expect(screen.getByText("0,75")).toBeTruthy();
+    });
+    expect(
+      screen.queryByRole("spinbutton", { name: /Probabilidade mínima do MTP/ }),
+    ).toBeNull();
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      const deploys = post.mock.calls.filter(([url]) => url === "/api/ui/deploy");
+      expect(deploys).toHaveLength(1);
+      const body = deploys[0][1] as { params: RuntimeParams };
+      expect(body.params.mtp_enabled).toBe(true);
+      expect(body.params.mtp_min_probability).toBe(0.75);
+    });
+  });
+
   /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
   /// digitado.
   ///

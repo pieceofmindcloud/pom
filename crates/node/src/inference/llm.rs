@@ -111,10 +111,35 @@ unsafe extern "C" fn capture_callback(
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     if floats.len() == n_floats {
-        slot.buf = Some(floats);
+        accumulate_capture(&mut slot, floats);
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
+}
+
+/// Junta o `l_out` de mais um microlote ao residual deste decode.
+///
+/// **Acumula, não substitui.** Um decode não é um disparo: o llama.cpp parte o
+/// lote em microlotes de `n_ubatch` e chama a captura uma vez por microlote,
+/// cada uma com o `l_out` daquele pedaço.
+///
+/// Enquanto isto atribuía, o buffer terminava com o **último**
+/// microlote e o resto do chunk ia embora em silêncio - com `fit_memory=true`
+/// (padrão), que limita `n_ubatch` a 128, um chunk de 512 tokens perdia 3/4 e o
+/// peer seguinte recusava a requisição com "got 655360 floats, expected
+/// 2621440".
+///
+/// A ordem sai certa porque `split_simple` do llama.cpp fatia o lote em índices
+/// crescentes e contíguos, que é exatamente a ordem das linhas que
+/// `BatchLayout` usa para reencontrar cada item. Ver o defeito anotado sobre
+/// `max_sessions > 1` no `AGENTS.md` desta pasta: com vários streams o
+/// llama.cpp usa `split_equal`, que agrupa por sequência, e aí esta ordem
+/// deixa de valer.
+fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
+    match slot.buf.as_mut() {
+        Some(acumulado) => acumulado.extend_from_slice(&floats),
+        None => slot.buf = Some(floats),
+    }
 }
 
 // ── Ponte de diagnóstico ─────────────────────────────────────────────────────
@@ -1145,7 +1170,10 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        self.capture.lock().unwrap().copy_us = 0;
+        // Zera o buffer, e não só o cronômetro: agora que a captura
+        // acumula microlote a microlote, sobra do decode anterior seria
+        // residual de outra requisição concatenado ao desta.
+        self.reset_capture_slot();
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -1268,7 +1296,10 @@ impl LlmEngine {
         logits_all: bool,
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
-        self.capture.lock().unwrap().copy_us = 0;
+        // Zera o buffer, e não só o cronômetro: agora que a captura
+        // acumula microlote a microlote, sobra do decode anterior seria
+        // residual de outra requisição concatenado ao desta.
+        self.reset_capture_slot();
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -1713,6 +1744,59 @@ mod pool_tests {
         let mut disabled = cfg();
         disabled.fit_memory = false;
         assert!(!fit_can_adjust_layers(&disabled));
+    }
+
+    /// A regressão de 2026-08-21: prompt vindo de um cliente OpenAI externo
+    /// morria com "got 655360 floats, expected 2621440 (512x5120)".
+    ///
+    /// 655360 = 128 x 5120, e 128 e o `FIT_MAX_UBATCH`. O chunk de 512 tokens
+    /// virava quatro microlotes, a captura substituia a cada um, e sobrava so o
+    /// ultimo quarto. Pela UI passava despercebido porque prompt curto cabe num
+    /// microlote so - e por isso o teste abaixo usa mais de um.
+    #[test]
+    fn capture_accumulates_every_microbatch_of_one_decode() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            copy_us: 0,
+        };
+
+        let n_embd = 4;
+        let ubatch = 2;
+        let tokens = 6; // tres microlotes, como um chunk maior que `n_ubatch`
+        for micro in 0..(tokens / ubatch) {
+            let inicio = (micro * ubatch * n_embd) as f32;
+            let pedaco: Vec<f32> = (0..(ubatch * n_embd)).map(|i| inicio + i as f32).collect();
+            accumulate_capture(&mut slot, pedaco);
+        }
+
+        let capturado = slot.buf.expect("a captura tem que ter disparado");
+        assert_eq!(
+            capturado.len(),
+            tokens * n_embd,
+            "o residual do chunk inteiro, nao o do ultimo microlote"
+        );
+        let esperado: Vec<f32> = (0..(tokens * n_embd)).map(|i| i as f32).collect();
+        assert_eq!(
+            capturado, esperado,
+            "os microlotes entram na ordem em que o split_simple os produz"
+        );
+    }
+
+    /// Sem isto, o residual de uma requisicao entraria concatenado no da
+    /// proxima - o modo de falha que a acumulacao introduziria se o buffer
+    /// nao fosse zerado a cada decode.
+    #[test]
+    fn a_new_decode_starts_from_an_empty_capture() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            copy_us: 0,
+        };
+        accumulate_capture(&mut slot, vec![1.0, 2.0]);
+        slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
+        accumulate_capture(&mut slot, vec![3.0, 4.0]);
+        assert_eq!(slot.buf.expect("captura"), vec![3.0, 4.0]);
     }
 
     #[test]

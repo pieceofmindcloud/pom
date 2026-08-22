@@ -240,7 +240,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `CString::from_raw`).
 - captura residual - `ggml_backend_sched_eval_callback` no `l_out-<N>` antes do
   `output_norm`, com `CaptureSlot` por contexto via `cb_eval_user_data` (já foi
-  Mutex global e disputava com decodes paralelos).
+  Mutex global e disputava com decodes paralelos). `accumulate_capture` junta um
+  disparo por **microlote**: o llama.cpp parte o lote em pedaços de `n_ubatch` e
+  chama a captura uma vez por pedaço, então substituir em vez de acumular
+  guardava só o último - com `fit_memory=true` (padrão, `n_ubatch` limitado a
+  128), um chunk de 512 tokens perdia 3/4 e o peer seguinte recusava com "got
+  655360 floats, expected 2621440". Todo caminho de decode chama
+  `reset_capture_slot` antes, senão a sobra de uma requisição entraria
+  concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
+  anotados.
 - `profile_backend_sync` - perfil do backend síncrono, `POM_PROFILE_SYNC`
   (default ligado; "0"/"false" desliga).
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
@@ -532,4 +540,18 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-Nenhum em aberto nesta pasta.
+- **A captura do residual assume a ordem do `split_simple`, que só vale com
+  `max_sessions = 1`.** `capture_callback` acumula um microlote por disparo e
+  `BatchLayout` reencontra cada item por deslocamento de linha; isso casa
+  porque o llama.cpp fatia o lote em índices crescentes e contíguos. Mas ele só
+  usa `split_simple` quando o cache KV tem um stream só, e
+  `n_stream = kv_unified ? 1 : n_seq_max` - o projeto nunca liga `kv_unified`
+  (o padrão do `llama_context_default_params` é `false`), então **com
+  `max_sessions > 1` o llama.cpp passa a usar `split_equal`**, que agrupa por
+  sequência e concatena os grupos: a ordem das linhas capturadas deixa de ser a
+  do lote, e o residual de cada item sai trocado - sem erro, só resposta
+  errada. O padrão de `max_sessions` é `1` (`runtime.rs`,
+  `default_max_sessions`), então o caminho de hoje é o correto; quem for
+  levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
+  mapeando o microlote de volta às posições. Ver `split_equal` em
+  `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.

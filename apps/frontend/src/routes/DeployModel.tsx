@@ -1273,6 +1273,31 @@ export function DeployModel() {
                 Salvar cache KV
               </Button>
             </section>
+            {/*
+              * Duas faixas vizinhas na mesma máquina só passam quando são
+              * juntadas antes de subir: `split` renomeia os blocos de toda
+              * fatia para `blk.0..`, então duas não carregam lado a lado, e
+              * `splitter::merge` é o inverso disso. O planejador recusa o par
+              * sem esta flag, e a mensagem de recusa manda "juntar as fatias
+              * vizinhas na tela" - o controle tem que existir, ou a recusa
+              * aponta para lugar nenhum. Foi exatamente o que aconteceu quando
+              * a reescrita do canvas apagou este interruptor.
+              *
+              * Vive sob a mesma condição que decide se `merge` é enviado, e não
+              * outra: um controle que a requisição ignora, ou um valor enviado
+              * sem controle, é como ele se perdeu da primeira vez.
+              */}
+            {!isWhole && (
+              <section className="border-b border-line py-3">
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Fatias</p>
+                <Switch
+                  checked={effMerge}
+                  onChange={(value) => setMerge(value)}
+                  label={t("deploy.merge")}
+                  hint={t("deploy.mergeHint")}
+                />
+              </section>
+            )}
 
             {(isWhole || isTp) && (wholeModel || tpGroup) && (
               <section className="border-b border-line py-3">

@@ -473,6 +473,59 @@ describe("DeployModel", () => {
     });
   });
 
+  /**
+   * O defeito que estes testes guardam: o interruptor de juntar fatias vizinhas
+   * existia, foi apagado na reescrita do canvas (6340c49) e ninguém percebeu,
+   * porque tudo em volta dele sobreviveu - o estado `merge`, o campo da API e
+   * as strings dos dois idiomas. Sobrou uma recusa que manda o operador
+   * "juntar as fatias vizinhas na tela" apontando para um controle que não
+   * existia mais, e a capacidade do backend (`splitter::merge`) ficou
+   * inalcançável pela interface.
+   *
+   * Por isso o teste cobre os dois lados: que o controle está na tela e que
+   * ele chega ao nó. Um controle renderizado e desligado da requisição seria
+   * o mesmo defeito com outra cara.
+   */
+  it("oferece o interruptor de juntar fatias vizinhas na aba Globais", async () => {
+    const p = planOutOfLayerOrder();
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+
+    const toggle = screen.getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" });
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    // A recusa que o interruptor resolve fica visível junto dele.
+    expect(screen.getByText(/ksia ficou com duas faixas/)).toBeTruthy();
+  });
+
+  it("manda merge ao nó quando o operador liga juntar fatias vizinhas", async () => {
+    const p = planOutOfLayerOrder();
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" }));
+
+    await waitFor(() => {
+      expect(
+        post.mock.calls.some(
+          ([url, body]) =>
+            url === "/api/ui/deploy/plan" && (body as { merge?: boolean }).merge === true,
+        ),
+      ).toBe(true);
+    });
+    await waitFor(() => {
+      expect(
+        screen
+          .getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" })
+          .getAttribute("aria-checked"),
+      ).toBe("true");
+    });
+  });
+
   it("inclui no canvas um peer adicionado por duplo clique", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;

@@ -367,7 +367,16 @@ impressão digital é só modelo + conjunto de faixas.
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
-  inspetor também mostra as camadas que ela executará. Não existe uma segunda
+  inspetor também mostra as camadas que ela executará. Nas globais, a seção
+  **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
+  (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
+  o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque
+  `split` renomeia os blocos de toda fatia para `blk.0..` e duas não carregam
+  lado a lado. Sem ele o planejador recusa o par, e a recusa manda "juntar as
+  fatias vizinhas na tela" - o interruptor existe para essa frase ter destino.
+  Ele aparece sob a mesma condição que decide se `merge` vai na requisição
+  (`!isWhole`): controle sem envio, ou envio sem controle, foi exatamente como
+  ele se perdeu uma vez. Não existe uma segunda
   tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
   topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,

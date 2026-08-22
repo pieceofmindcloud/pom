@@ -197,6 +197,18 @@ pub fn infer_tunnel_behaviour() -> request_response::Behaviour<InferTunnelCodec>
 }
 
 static TUNNEL_SENDER: std::sync::OnceLock<TunnelOutboundSender> = std::sync::OnceLock::new();
+static LOCAL_NODE_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Registra a identidade de descoberta deste processo para que os chamadores
+/// de relay não tentem abrir um túnel para o próprio nó.
+pub fn set_local_node_id(node_id: String) {
+    let _ = LOCAL_NODE_ID.set(node_id);
+}
+
+/// True quando o destino é este processo, não um peer remoto.
+pub fn is_local_node(node_id: &str) -> bool {
+    LOCAL_NODE_ID.get().is_some_and(|local| local == node_id)
+}
 
 /// Set once, from `main.rs`, right after the channel is created (before
 /// `Discovery::new` is even called — see that call site's comment). The only

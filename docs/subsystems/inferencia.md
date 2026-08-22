@@ -33,8 +33,10 @@ ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
 key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
 Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
-relay não abre túnel libp2p: a capability de túnel só vale para destinos
-remotos, e o quadro segue pelo caminho local de inferência.
+relay despacha o quadro diretamente para o handler de inferência em processo.
+Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
+continua ativo para health checks e para peers remotos; nesses peers a ordem é
+túnel libp2p e fallback HTTP direto.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 

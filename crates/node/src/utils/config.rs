@@ -202,12 +202,22 @@ pub fn normalize_peer_addr(raw: &str) -> String {
         return String::new();
     }
     // Already valid — `[v6]:port`, `v4:port`.
-    if s.parse::<SocketAddr>().is_ok() {
-        return s.to_string();
+    if let Ok(socket) = s.parse::<SocketAddr>() {
+        return if socket.port() == 0 {
+            String::new()
+        } else {
+            s.to_string()
+        };
     }
     // An address and nothing else: supply the port it must have meant.
     if let Ok(ip) = s.parse::<IpAddr>() {
         return SocketAddr::new(ip, default_p2p_port()).to_string();
+    }
+    if s.rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+        == Some(0)
+    {
+        return String::new();
     }
     // Unbracketed IPv6 with a port: resolvable as typed, stored canonically.
     if let Some((host, port)) = s.rsplit_once(':') {
@@ -408,6 +418,8 @@ mod tests {
             "192.168.1.5:42777"
         );
         assert_eq!(normalize_peer_addr("ksia:42777"), "ksia:42777");
+        assert_eq!(normalize_peer_addr("192.168.1.5:0"), "");
+        assert_eq!(normalize_peer_addr("peer.example:0"), "");
         assert_eq!(normalize_peer_addr("  "), "");
     }
 

@@ -57,6 +57,8 @@ Tagged enum JSON (`serde(tag = "type")`) sobre UDP:
 1. **Bind:** `Network::new` monta um socket dual-stack `[::]:<porta>` à mão com
    `socket2`, desligando `IPV6_V6ONLY` **antes** do `bind` (depois não tem efeito;
    sem IPv6 no SO cai para `0.0.0.0`). Porta padrão `DISCOVERY_PORT` = 42777.
+   Se a configuração pedir porta `0`, o SO escolhe uma porta efêmera e o nó
+   conserva essa porta real no anúncio; o TCP libp2p também deriva dela.
 2. **Bootstrap:** `Network::start` chama `bootstrap_discovery` logo no início
    (envia `PeerRequest` a cada bootstrap configurado). `main.rs` então espera
    ~2 s juntando `Announce` antes de calcular a faixa de camadas.
@@ -102,6 +104,9 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
   LAN. O endereço fixado pelo operador (`--advertise-addr`) vem primeiro e não
   conta para o teto; sem fixação, os endereços públicos atuais vêm antes do
   observado por `identify` e dos demais endereços locais.
+- Porta `0` nunca é anunciada nem usada como destino: pins explícitos,
+  endereços observados e candidatos de peers com essa porta são descartados.
+  Um peer sem nenhum candidato discável não entra na tabela de destinos.
 - `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
   local com a porta de descoberta, o observado por `identify`, ou o literal
   `0.0.0.0:<porta>`.
@@ -170,8 +175,10 @@ DCuTR, AutoNAT e o behaviour de bitswap. Escuta em `/ip4/0.0.0.0/tcp/<udp+10000>
 e em `/ip6/::`.
 
 - **Bootstrap libp2p:** os mesmos nós bootstrap do UDP, convertidos por
-  `udp_to_libp2p_multiaddr` (IPv4/IPv6/hostname na porta TCP). Um bootstrap IPv6
-  colado em `/ip4/` falhava o parse e era dialado sem palavra no log.
+  `udp_to_libp2p_multiaddr` (IPv4/IPv6/hostname na porta TCP). A porta TCP é
+  `udp+10000` usando a porta UDP efetivamente ligada; porta UDP zero é recusada.
+  Um bootstrap IPv6 colado em `/ip4/` falhava o parse e era dialado sem palavra
+  no log.
 - **Relays:** por padrão diala os relays públicos do IPFS
   (`DEFAULT_RELAY_NODES`) e os de `--relay-peers` (resolvidos antes por pkarr,
   filtrando `is_relay`); `--no-default-relays` tira os públicos. Com
@@ -230,14 +237,14 @@ parar. A chave do pkarr é separada: `.pom.key` (ver Defeitos).
 
 Comportamento atual do código:
 
-1. **Endereço no gossipsub pode ser `0.0.0.0:<porta>`.** O `Announce` do
+1. **Endereço no gossipsub pode ser `0.0.0.0:<porta real>`.** O `Announce` do
    gossipsub leva `addr = announce_addr()` (literal `0.0.0.0` sem
    `--advertise-addr`). Hoje ele também carrega `addr_candidates`, e o
    `handle_event` do libp2p usa o primeiro candidato, então o `0.0.0.0` só
    sobrevive quando o peer não anunciou candidato nenhum (ex.: Windows, onde a
    enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem;
-   `insert_peer` (libp2p) não reescreve - um peer assim fica com
-   `inference_url` apontando para o próprio nó.
+   `insert_peer` (libp2p) não reescreve, mas ignora um anúncio que não tenha
+   nenhum endereço com porta diferente de zero.
 2. **O tráfego de inferência prefere libp2p por hop.** O gateway e os relays
    usam `network/infer_tunnel.rs` via `relay::send_frame_or_tunnel` quando o
    hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é

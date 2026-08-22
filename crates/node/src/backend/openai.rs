@@ -412,6 +412,12 @@ async fn chat_completions(
     let prompt = render_prompt(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
 
+    if let Some(cfg) = state.runtime.config().await {
+        if let Some(error) = crate::gateway::prompt_budget_error(&cfg, &prompt) {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
+        }
+    }
+
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
         req.stream,
@@ -1103,6 +1109,34 @@ mod tests {
             .expect("the chat request reached the inference head");
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
+    }
+
+    #[tokio::test]
+    async fn oversized_streaming_chat_is_rejected_before_sse_starts() {
+        let state = crate::gateway::testkit::state_with("eu", Vec::new()).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let response = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("lab".into()),
+                messages: vec![
+                    msg("system", &"agent instructions ".repeat(2_000)),
+                    msg("user", "hello"),
+                ],
+                stream: true,
+                max_tokens: Some(32_000),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[test]

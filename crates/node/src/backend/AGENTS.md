@@ -57,7 +57,10 @@ behind an auth extractor.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
-- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
+- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path;
+  streaming chat requests that exceed the configured prompt budget are rejected with
+  HTTP 413 before the SSE response starts, so clients such as OpenCode do not
+  hang on an error event inside an otherwise successful stream.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.

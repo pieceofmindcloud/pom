@@ -418,22 +418,8 @@ pub async fn generate_stream(
 ) {
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
     if let Some(cfg) = state.runtime.config().await {
-        let budget = prompt_budget(&cfg);
-        let estimated = estimate_tokens(&prompt);
-        if estimated > budget {
-            let _ = tx
-                .send(GenEvent::Failed(format!(
-                    "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-                     {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
-                     vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
-                     n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
-                     as requisições simultâneas.",
-                    cfg.n_ctx,
-                    cfg.max_new_tokens,
-                    prompt_chunk_tokens(&cfg),
-                    cfg.n_batch,
-                )))
-                .await;
+        if let Some(error) = prompt_budget_error(&cfg, &prompt) {
+            let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
     }
@@ -1094,6 +1080,24 @@ async fn rollback_sessions(
 /// Pessimistic token count for a prompt, used only by the size guard.
 fn estimate_tokens(prompt: &str) -> u32 {
     prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
+}
+
+pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
+    let budget = prompt_budget(cfg);
+    let estimated = estimate_tokens(prompt);
+    (estimated > budget).then(|| {
+        format!(
+            "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
+             {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
+             vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
+             n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
+             as requisições simultâneas.",
+            cfg.n_ctx,
+            cfg.max_new_tokens,
+            prompt_chunk_tokens(cfg),
+            cfg.n_batch,
+        )
+    })
 }
 
 fn rate(tokens: u32, secs: f64) -> f64 {

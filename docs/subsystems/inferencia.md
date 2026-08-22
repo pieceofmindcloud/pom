@@ -583,6 +583,12 @@ gateway mede o prompt
 prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
 valores como `n_ctx_total` e `n_ctx_per_session`.
 
+O adaptador OpenAI de chat faz essa mesma verificação antes de iniciar o SSE e responde
+HTTP 413 quando o orçamento foi excedido. Sem esse preflight, a geração emitia
+um evento de erro dentro de um HTTP 200; clientes como OpenCode aguardavam uma
+resposta válida e mostravam apenas uma execução sem resposta. Requisições que
+cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
+
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
   de o prefill ser fatiado, `n_batch` na fórmula capava todo prompt em 512
@@ -590,9 +596,11 @@ valores como `n_ctx_total` e `n_ctx_per_session`.
 - Por que o limite existe: passá-lo faz o llama.cpp abortar o **processo
   inteiro** com `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` - um prompt
   grande derruba o peer e todas as requisições em voo. Recusar cedo mantém o nó
-  de pé. Números medidos: o OpenCode manda ~2200 caracteres com um agente mínimo
-  e ~8000 no agente padrão; config que funcionou: `--n-ctx 32768 --n-batch 3072
-  --max-new-tokens 256` → orçamento de 3072 tokens.
+  de pé. Números medidos: o OpenCode 1.18.21 manda ~2200 caracteres na chamada
+  de título e ~54k no agente padrão, com `max_tokens: 32000`, ferramentas e
+  `stream_options.include_usage`. Config que fez funcionar para o agente padrão:
+  `--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32512
+  tokens; sem uma janela compatível o nó responde HTTP 413 antes do SSE.
 
 ## 10. O canal de cada salto na telemetria
 

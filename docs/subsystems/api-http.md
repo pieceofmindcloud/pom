@@ -74,9 +74,14 @@ haver chave.
 Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
 achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
 passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
-512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Todas as respostas
-levam a extensão `x_pom` (fora do schema) com a prova de execução
-distribuída. CORS `*` para harnesses de navegador.
+512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
+SSE em `/v1/chat/completions`, o adaptador faz a mesma guarda de orçamento de
+prompt do gateway e responde
+HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
+clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
+resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
+(fora do schema) com a prova de execução distribuída. CORS `*` para harnesses
+de navegador.
 
 ### Anthropic (`/v1/messages`)
 

@@ -433,6 +433,19 @@ pub struct RuntimeStatus {
     pub log_path: Option<String>,
     /// Layer count read back from the shard's GGUF metadata via `/health`.
     pub reported_total_layers: Option<u32>,
+    /// Quantas camadas o llama.cpp **de fato** pôs na GPU, lidas do mesmo
+    /// `/health`, no mesmo instante e pelo mesmo motivo que a linha acima: é o
+    /// motor relatando o que aconteceu, não o que foi pedido.
+    ///
+    /// A distinção é o valor inteiro do campo. `n_gpu_layers` da config é o
+    /// pedido, e o pedido costuma ser o sentinela 99 ("descarregue tudo"); com
+    /// `fit_memory`, o llama.cpp reduz esse número para caber na VRAM e é aqui
+    /// que o número escolhido aparece. Ler o pedido para dizer onde as camadas
+    /// estão responde "todas na GPU" justamente quando algumas não estão.
+    ///
+    /// Negativo significa "todas" na convenção do llama.cpp; quem lê deve
+    /// tratá-lo como a faixa inteira, e não como zero.
+    pub reported_gpu_layers: Option<i32>,
     pub changed_at: String,
 }
 
@@ -445,6 +458,7 @@ impl RuntimeStatus {
             restarts: 0,
             log_path: None,
             reported_total_layers: None,
+            reported_gpu_layers: None,
             changed_at: chrono::Utc::now().to_rfc3339(),
         }
     }
@@ -807,6 +821,13 @@ impl NodeRuntime {
                     .and_then(|v| v.as_u64())
                     .map(|v| v as u32);
 
+                // O mesmo `/health`, já buscado: quantas camadas foram parar na
+                // GPU depois do fit. Nenhuma chamada nova.
+                let reported_gpu = body
+                    .get("n_gpu_layers_effective")
+                    .and_then(|v| v.as_i64())
+                    .map(|v| v as i32);
+
                 // Shards written by split_model.py carry the real layer count;
                 // trust it over the name-based guess.
                 if let Some(total) = reported {
@@ -831,7 +852,7 @@ impl NodeRuntime {
                 }
 
                 append_log(port, "modelo carregado (/health respondeu model_loaded)");
-                status.set_ready(reported).await;
+                status.set_ready(reported, reported_gpu).await;
                 let current_assignment = assignment.read().await.clone();
                 if let Err(e) = net.announce(current_assignment.as_ref()).await {
                     warn!("announce de capability batch após readiness falhou: {e}");
@@ -1058,11 +1079,16 @@ impl StatusWriter {
         self.status.write().await.log_path = Some(path.to_string());
     }
 
-    async fn set_ready(&self, reported_total_layers: Option<u32>) {
+    async fn set_ready(
+        &self,
+        reported_total_layers: Option<u32>,
+        reported_gpu_layers: Option<i32>,
+    ) {
         let mut s = self.status.write().await;
         s.state = ServerState::Ready;
         s.detail = "modelo carregado".to_string();
         s.reported_total_layers = reported_total_layers;
+        s.reported_gpu_layers = reported_gpu_layers;
         s.changed_at = chrono::Utc::now().to_rfc3339();
     }
 }

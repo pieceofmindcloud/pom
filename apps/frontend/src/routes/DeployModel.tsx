@@ -59,8 +59,9 @@ import { api } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, layerRange, megabytes } from "../lib/format";
+import { bytes, layerRange, megabytes, num } from "../lib/format";
 import { Confirm } from "../components/Confirm";
+import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -794,6 +795,28 @@ export function DeployModel() {
     });
   }
 
+  /**
+   * Tira a faixa desta máquina - o inverso exato de `assignRangeToMachine`.
+   *
+   * Remove só a linha que o operador clicou (faixa **e** máquina), então as
+   * réplicas da mesma faixa em outras máquinas ficam onde estavam, pelo mesmo
+   * motivo que atribuir preserva as vizinhas. A máquina continua no canvas
+   * mesmo sem faixa nenhuma: um peer sem faixa ainda é uma possibilidade, e
+   * tirar uma camada não é o mesmo gesto que "Remover da implantação".
+   */
+  function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
+    edit((base) =>
+      base.filter(
+        (row) =>
+          !(
+            row.target_node_id === nodeId &&
+            row.start_layer === startLayer &&
+            row.end_layer === endLayer
+          ),
+      ),
+    );
+  }
+
   function assignWhole(nodeId: string) {
     const candidate = p?.available[0] ?? (
       wholeModel?.total_layers != null
@@ -1188,11 +1211,11 @@ export function DeployModel() {
             {inspectorTab === "global" ? <>
             <section className="border-b border-iris/20 bg-iris/[0.04] pb-3">
               <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
-              <div className="space-y-1.5 px-2 pt-2">
+              <div className="space-y-1 px-2 pt-2">
                 {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">{label}</span>
-                    <Input type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
                 <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
@@ -1217,7 +1240,7 @@ export function DeployModel() {
                     value={cacheTypeK}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeK(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
@@ -1231,7 +1254,7 @@ export function DeployModel() {
                     value={cacheTypeV}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeV(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
@@ -1251,6 +1274,31 @@ export function DeployModel() {
                 Salvar cache KV
               </Button>
             </section>
+            {/*
+              * Duas faixas vizinhas na mesma máquina só passam quando são
+              * juntadas antes de subir: `split` renomeia os blocos de toda
+              * fatia para `blk.0..`, então duas não carregam lado a lado, e
+              * `splitter::merge` é o inverso disso. O planejador recusa o par
+              * sem esta flag, e a mensagem de recusa manda "juntar as fatias
+              * vizinhas na tela" - o controle tem que existir, ou a recusa
+              * aponta para lugar nenhum. Foi exatamente o que aconteceu quando
+              * a reescrita do canvas apagou este interruptor.
+              *
+              * Vive sob a mesma condição que decide se `merge` é enviado, e não
+              * outra: um controle que a requisição ignora, ou um valor enviado
+              * sem controle, é como ele se perdeu da primeira vez.
+              */}
+            {!isWhole && (
+              <section className="border-b border-line py-3">
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Fatias</p>
+                <Switch
+                  checked={effMerge}
+                  onChange={(value) => setMerge(value)}
+                  label={t("deploy.merge")}
+                  hint={t("deploy.mergeHint")}
+                />
+              </section>
+            )}
 
             {(isWhole || isTp) && (wholeModel || tpGroup) && (
               <section className="border-b border-line py-3">
@@ -1268,7 +1316,7 @@ export function DeployModel() {
                       aria-label="Máquina que serve o modelo inteiro"
                       value={rows[0]?.target_node_id ?? p?.steps[0]?.target_node_id ?? ""}
                       onChange={(event) => assignWhole(event.target.value)}
-                      className="h-6 rounded-md px-1 text-[0.6rem]"
+                      compact
                     >
                       {machineOptions.map((machine) => (
                         <option key={machine.node_id} value={machine.node_id}>{machine.label}</option>
@@ -1305,33 +1353,39 @@ export function DeployModel() {
               />
               {eff.speculative_decoding_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
-                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Janela de busca</span>
-                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
                   </label>
                 </div>
               )}
               <div className="mt-2">
                 <Switch
                   checked={eff.mtp_enabled ?? false}
-                  onChange={(value) => setParams({ ...eff, mtp_enabled: value })}
+                  onChange={(value) => setParams({
+                    ...eff,
+                    mtp_enabled: value,
+                    ...(value ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
+                  })}
                   label="Predição multi-token (MTP)"
                 />
               </div>
               {eff.mtp_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  {/* Fixa ao marcar o MTP, então mostrada e não editável: um
+                      campo que só *começa* em 0,75 é outra coisa. */}
+                  <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
-                  </label>
+                    <span className="pr-1.5 text-right font-mono text-[0.62rem] text-fg">{num(MTP_MIN_PROBABILITY, 2)}</span>
+                  </div>
                 </div>
               )}
             </section>
@@ -1349,7 +1403,7 @@ export function DeployModel() {
                       primary_node_id: event.target.value,
                       worker_node_ids: current.worker_node_ids.filter((nodeId) => nodeId !== event.target.value),
                     }))}
-                    className="h-6 rounded-md px-1 text-[0.6rem]"
+                    compact
                   >
                     {tpCandidates.map((nodeId) => (
                       <option key={nodeId} value={nodeId}>{labelOf(nodeId)}</option>
@@ -1440,10 +1494,12 @@ export function DeployModel() {
                               <button
                                 key={`${candidate.start_layer}-${candidate.end_layer}`}
                                 type="button"
-                                disabled={assigned}
-                                aria-label={`Atribuir ${range} a ${machine.label}`}
-                                onClick={() => assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id)}
-                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                                aria-label={assigned ? `Remover ${range} de ${machine.label}` : `Atribuir ${range} a ${machine.label}`}
+                                title={assigned ? `Tirar ${range} de ${machine.label}` : `Dar ${range} a ${machine.label}`}
+                                onClick={() => (assigned
+                                  ? unassignRangeFromMachine(candidate.start_layer, candidate.end_layer, machine.node_id)
+                                  : assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id))}
+                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua hover:border-rose/50 hover:bg-rose/10 hover:text-rose" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
                               >
                                 {assigned ? `${range} ✓` : range}
                               </button>
@@ -1455,7 +1511,7 @@ export function DeployModel() {
                   )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" /></label>
+                      <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></label>
                       <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
                     </div>
                   )}

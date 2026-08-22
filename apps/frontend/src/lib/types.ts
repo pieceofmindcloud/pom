@@ -75,6 +75,10 @@ export interface RuntimeStatus {
   restarts: number;
   log_path: string | null;
   reported_total_layers: number | null;
+  /** Camadas que o llama.cpp de fato pôs na GPU, relatadas pelo motor depois de
+   *  carregar. Não confundir com `NodeConfig.n_gpu_layers`, que é o pedido.
+   *  Negativo é "todas", na convenção do llama.cpp. Ver `layerPlacement`. */
+  reported_gpu_layers: number | null;
   changed_at: string;
 }
 

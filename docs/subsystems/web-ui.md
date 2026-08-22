@@ -156,7 +156,8 @@ no Dashboard (`hidden`, para uma superfície futura).
   (painéis, botões, inputs, badges, meters, estados) em classes por token CSS,
   sem estilo em runtime. Visualizações do cluster: `ModelNetworkCanvas` (grafo
   SVG pan/zoom com RAM/VRAM/carga e arestas principal/paralela/inativa,
-  posições persistidas por fingerprint de implantação) e `PipelineRail` (o
+  posições persistidas por fingerprint de implantação; o card também resume
+  quantas camadas foram parar na GPU e quantas sobraram na CPU) e `PipelineRail` (o
   caminho que a requisição percorre). Guardas de ação remota/destrutiva:
   `Confirm`/`Modal`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
   `UndeployPipeline`, `AddNodeDialog`.
@@ -313,6 +314,30 @@ Ed25519 que os peers recebem - navegador não verifica Ed25519. Ver
 auto assinado e não há CA para validá-lo. É esperado; o operador aceita uma vez
 por máquina.
 
+## O card do Fluxo diz quanto do modelo coube na GPU
+
+Uma camada na CPU é ordens de grandeza mais lenta que na GPU, e esse é o
+primeiro motivo de uma inferência arrastada. O card do Fluxo mostra a divisão
+(`LayerPlacementMeter`, em `ModelNetworkCanvas.tsx`) na mesma forma dos medidores
+de VRAM e RAM, logo abaixo da faixa de camadas: barra âmbar e "12 GPU · 10 CPU"
+quando sobra camada na CPU, barra neutra e "22 na GPU" quando não sobra. O
+duplo clique continua abrindo o detalhe completo; isto é resumo, não
+substituição.
+
+O número **não** sai de `NodeConfig.n_gpu_layers`. Esse é o *pedido*, e o pedido
+quase sempre é o sentinela 99 ("descarregue tudo"); quem decide é o `fit` do
+llama.cpp, que baixa o número até caber na VRAM. Derivar a divisão do pedido
+responde "todas na GPU" exatamente quando algumas não estão - o único caso que
+o operador precisa enxergar. O que vale é `RuntimeStatus.reported_gpu_layers`,
+que o nó lê do `n_gpu_layers_effective` do próprio `/health` do servidor de
+inferência, no mesmo poll de 3s que já lhe dá `reported_total_layers`. Nenhuma
+chamada nova: o `/api/ui/cluster` já busca o `/api/ui/node` de cada peer.
+
+Sem relato do motor a linha não aparece. `layerPlacement` (`src/lib/layerPlacement.ts`)
+devolve `null`, e a tela cala em vez de chutar - dizer "tudo na GPU" sem saber
+seria pior que o silêncio. Negativo é "todas" na convenção do llama.cpp, e lido
+como zero diria que a máquina inteira roda na CPU.
+
 ## O canvas do Fluxo: arranjo por camadas
 
 `ModelNetworkCanvas` desenha a rede, e `lib/networkLayout.ts` decide onde cada
@@ -367,7 +392,16 @@ impressão digital é só modelo + conjunto de faixas.
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
-  inspetor também mostra as camadas que ela executará. Não existe uma segunda
+  inspetor também mostra as camadas que ela executará. Nas globais, a seção
+  **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
+  (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
+  o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque
+  `split` renomeia os blocos de toda fatia para `blk.0..` e duas não carregam
+  lado a lado. Sem ele o planejador recusa o par, e a recusa manda "juntar as
+  fatias vizinhas na tela" - o interruptor existe para essa frase ter destino.
+  Ele aparece sob a mesma condição que decide se `merge` vai na requisição
+  (`!isWhole`): controle sem envio, ou envio sem controle, foi exatamente como
+  ele se perdeu uma vez. Não existe uma segunda
   tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
   topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
@@ -377,7 +411,12 @@ impressão digital é só modelo + conjunto de faixas.
   pode ser recolhido pela borda esquerda, separa visualmente propriedades
   globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
   ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
-  peers é uma rota paralela válida, não uma troca. Peers que já estão no mapa
+  peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
+  atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A
+  saída remove só aquela faixa naquela máquina: as réplicas da mesma faixa em
+  outros peers ficam onde estão, e o peer continua no mapa mesmo sem faixa
+  nenhuma, porque tirar uma camada não é o mesmo gesto que "Remover da
+  implantação". Peers que já estão no mapa
   deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
   disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
   atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita

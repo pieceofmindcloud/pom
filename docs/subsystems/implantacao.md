@@ -43,10 +43,12 @@ Três regras saem da arquitetura, não do gosto:
   num arquivo só e serve a união. O passo fundido carrega `parts`, um por fatia.
   A mesma faixa exata em nós diferentes é uma réplica do mesmo estágio e forma
   uma rota paralela válida.
-- **Sobreposição parcial é recusa, buraco é aviso.** Duas faixas com cortes
-  diferentes sobre a mesma camada tornariam a resposta ambígua; cópias exatas
-  são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Um
-  buraco é meia-implantação legítima que só impede o pipeline de planejar.
+- **A guarda olha a execução, não só os arquivos carregados.** Faixas com cortes
+  diferentes podem sobrepor-se no inventário quando formam caminhos alternativos:
+  por exemplo, `0-31` ou `0-15 -> 16-31`. O plano só é completo quando existe
+  pelo menos um caminho que começa em L0 e avança por sub-faixas contíguas; um
+  mesmo caminho nunca executa duas sub-faixas sobrepostas. Um buraco continua
+  sendo meia-implantação legítima e só impede o pipeline de planejar.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
@@ -393,9 +395,9 @@ Usam o testkit de `gateway` (`crates/node/src/backend/gateway.rs`, ver
 axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
 
 - **Plano**: `merge_joins_adjacent_slices_on_one_machine` (a linha da máquina
-  fundida nomeia a união e não transfere bytes); um buraco no conjunto é
-  reportado; slicings sobrepostos não são empilhados pelo planejador; um conjunto
-  que ninguém tem é recusado.
+  fundida nomeia a união e não transfere bytes); caminhos contíguos alternativos
+  podem compartilhar camadas carregadas; um buraco no grafo de execução é
+  reportado; um conjunto que ninguém tem é recusado.
 - **Adicionar/remover**: `split_position` (máquina no meio não é a cauda; no fim
   é; trocar a mesma faixa mantém a contagem); sobreposição reportada mas não
   recusada; faixa que preenche um buraco não sobrepõe nada; sobreposição parcial

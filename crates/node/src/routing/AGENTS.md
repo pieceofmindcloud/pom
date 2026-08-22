@@ -1,9 +1,9 @@
 # routing/ - planejador do pipeline de inferência
 
-Único arquivo por ora. Decide a cadeia ordenada de peers que cobre
-`0..total_layers` de um modelo, mede a carga em voo de cada peer e escolhe o
-endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
-(`generate_stream`).
+Único arquivo por ora. Decide uma cadeia ordenada de peers que cobre
+`0..total_layers` por sub-faixas executáveis, mede a carga em voo e o RTT de
+entrada de cada peer e escolhe o endereço por hop. É a entrada de nível mais
+alto consumida pelo `gateway.rs` (`generate_stream`).
 
 ## Arquivos
 
@@ -14,12 +14,18 @@ endereço por hop. É a entrada de nível mais alto consumida pelo `gateway.rs`
 
 ## Funções-chave
 
-- `plan_pipeline` - varre de 0 até `total_layers`; em cada posição escolhe o
-  peer vivo com `inference_port` e `model` iguais que cubra a posição, com
-  score `layers_count * 100 - current_load * 10`. **Exclui workers de tensor
-  parallelism** (`PeerInfo::is_tp_worker`): só o primary de um grupo entra na
-  cadeia. Devolve `None` no primeiro buraco de cobertura - aí o gateway cai
-  para Ollama local / peer.
+- `plan_pipeline_with_rtt` - varre de 0 até `total_layers`; em cada posição
+  escolhe somente um peer cuja faixa carregada comece exatamente na posição.
+  Isso garante que `exec_start` não peça entrada no meio de uma fatia. O score
+  é `camadas_executadas * 100_000 - penalidade_de_rtt - carga * 10`, portanto o
+  RTT escolhe entre ramos equivalentes e a cobertura continua dominante.
+  Empates finais usam `node_id` para manter o plano determinístico. **Exclui
+  workers de tensor parallelism** (`PeerInfo::is_tp_worker`): só o primary de
+  um grupo entra na cadeia. Devolve `None` no primeiro buraco executável.
+- `plan_pipeline` - chama a variante acima sem medições de RTT.
+- `PipelineStep::exec_start`/`exec_end` - faixa que o hop executa, distinta da
+  faixa que ele carregou; `PipelineEdge` só existe quando essas sub-faixas são
+  contíguas.
 - `LoadTracker::acquire` - incrementa o contador e devolve `LoadGuard`, que
   decrementa no drop (RAII): o balanço de carga nunca fica preso num erro.
 - `PipelineStep::frame_encoding` - retorna o marcador `F16`; todos os bytes

@@ -291,6 +291,12 @@ invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
 também é recusado explicitamente, porque o motor atual sempre entra pelo
 primeiro bloco da fatia e não consegue pular a cabeça já carregada.
 
+Por isso o planejador só escolhe uma faixa que começa exatamente na posição
+executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
+mas cada caminho de uma requisição avança por sub-faixas contíguas. Quando há
+réplicas equivalentes na entrada, o gateway escolhe a de menor RTT medido a
+partir do nó que recebeu a requisição e mantém essa escolha na sessão.
+
 O relay de anel e a resposta direta escolhem a faixa do próximo `PipelineStep`
 ao montar o próximo quadro. Um microbatch com limites de captura diferentes é
 recusado, pois um único grafo não pode parar em dois blocos. Essa execução

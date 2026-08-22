@@ -43,8 +43,11 @@ behind an auth extractor.
   rank e transfere pelo hash do arquivo original; o `apply` usa
   `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
   de runtime que extrai cada rank de um modelo inteiro.
-  `route_options` liga somente máquinas selecionadas em estágios consecutivos;
-  réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
+  `route_options` forma um grafo das máquinas selecionadas cujas sub-faixas de
+  execução são contíguas; ele preserva mais de uma entrada quando há caminhos
+  alternativos e nunca inventa salto para uma camada posterior. Faixas
+  carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
+  a cobertura é validada pelo caminho executável, não pela união dos arquivos.
   `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes

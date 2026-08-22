@@ -791,6 +791,36 @@ impl LlmEngine {
         self.cache_type_v
     }
 
+    /// Quantos blocos esta fatia carregou.
+    pub fn n_layer(&self) -> u32 {
+        unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
+    }
+
+    /// Em qual bloco desta fatia a próxima decodificação deve parar.
+    ///
+    /// `None` volta ao normal: captura no último bloco, grafo inteiro. Com
+    /// `Some(k)` a captura passa a mirar `l_out-k`, e o retorno `false` do
+    /// callback na fase de compute **abandona o resto do grafo** - é isso que
+    /// faz a execução ser de fato parcial, e não o grafo inteiro com o
+    /// resultado de um bloco do meio.
+    ///
+    /// Vale só para a próxima decodificação porque quem a chama já segura o
+    /// mesmo lock que serializa as decodificações deste contexto.
+    pub fn set_capture_layer(&self, block_index: Option<u32>) -> Result<()> {
+        if !self.capture_ok {
+            bail!("esta fatia não exporta residual: não há captura para reposicionar");
+        }
+        let last = self.n_layer().saturating_sub(1);
+        let index = block_index.unwrap_or(last);
+        if index > last {
+            bail!("bloco {index} não existe nesta fatia (último é {last})");
+        }
+        let name = CString::new(format!("l_out-{index}"))
+            .map_err(|e| anyhow::anyhow!("nome de tensor inválido: {e}"))?;
+        self.capture.lock().unwrap().want = Some(name);
+        Ok(())
+    }
+
     pub fn fit_memory_applied(&self) -> bool {
         self.fit_memory_applied
     }
@@ -810,7 +840,9 @@ impl LlmEngine {
     /// possível, porque nada em `EngineConfig` substitui o buffer real de um
     /// tensor. Ver `llama_rs_model_placement_json` no `wrapper_common.cpp`.
     pub fn placement(&self) -> Option<serde_json::Value> {
-        unsafe { json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out)) }
+        unsafe {
+            json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out))
+        }
     }
 
     /// A memória deste contexto por buffer: pesos, cache KV e cálculo.
@@ -2461,6 +2493,8 @@ mod tests {
         let cfg = EngineConfig {
             n_ctx: 512,
             offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
             fit_memory: false,
             n_batch: 512,
             n_gpu_layers: 0,

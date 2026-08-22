@@ -1797,6 +1797,8 @@ mod tests {
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: if supports_tunnel {
                 vec![crate::pipeline::CAP_LIBP2P_TUNNEL.to_string()]
             } else {

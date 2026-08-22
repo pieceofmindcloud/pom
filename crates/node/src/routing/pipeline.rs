@@ -83,6 +83,19 @@ pub struct PipelineStep {
     pub inference_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
+    /// A sub-faixa que **este passo executa**, que nem sempre é a faixa que ele
+    /// carregou.
+    ///
+    /// `start_layer`/`end_layer` dizem o que o peer tem em disco; estes dizem o
+    /// que o remetente está mandando ele rodar agora. Os dois separados porque
+    /// um peer com L0-59 pode ser entrada de um ramo (executa L0-59) e cauda de
+    /// outro (executaria L40-59) - a faixa carregada é a mesma, o trabalho não.
+    ///
+    /// Quem manda decide, e manda sempre: sem isto o destinatário rodava a
+    /// fatia inteira que carregou, que é como uma sobreposição virava camada
+    /// executada duas vezes sem erro nenhum.
+    pub exec_start: u32,
+    pub exec_end: u32,
     /// Capabilities of the canonical inference frame and relay.
     pub inference_frame_capabilities: Vec<String>,
     /// This hop's libp2p `PeerId` (base58), when known — lets a caller reach
@@ -469,6 +482,12 @@ pub async fn plan_pipeline_with_rtt(
             inference_candidates: chosen.inference_candidates(),
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
+            // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
+            // os dois coincidem - o caso comum - nada muda; quando não, é aqui
+            // que fica registrado que o peer teria de entrar no meio da faixa,
+            // em vez de o destinatário descobrir isso tarde demais.
+            exec_start: pos,
+            exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
             libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
@@ -712,6 +731,8 @@ mod ipv6_tests {
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -729,6 +750,8 @@ mod ipv6_tests {
                     inference_candidates: Vec::new(),
                     start_layer: 0,
                     end_layer: 7,
+                    exec_start: 0,
+                    exec_end: 7,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
                     libp2p_addr_candidates: Vec::new(),
@@ -739,6 +762,8 @@ mod ipv6_tests {
                     inference_candidates: Vec::new(),
                     start_layer: 8,
                     end_layer: 15,
+                    exec_start: 8,
+                    exec_end: 15,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
                     libp2p_addr_candidates: Vec::new(),
@@ -762,6 +787,8 @@ mod ipv6_tests {
             inference_candidates: candidatos.into_iter().map(String::from).collect(),
             start_layer: 0,
             end_layer: 9,
+            exec_start: 0,
+            exec_end: 9,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -845,6 +872,8 @@ mod ipv6_tests {
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),

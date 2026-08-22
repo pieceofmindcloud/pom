@@ -718,6 +718,8 @@ async fn run_ring(
             chat_template,
         );
         head_meta["next_hops"] = json!(next_hops);
+        head_meta["exec_start"] = json!(head.exec_start);
+        head_meta["exec_end"] = json!(head.exec_end);
 
         let sent = crate::relay::send_frame_or_tunnel(
             http,
@@ -834,6 +836,8 @@ async fn run_direct(
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["reply_to"] = direct.reply_to(ticket.id());
+        head_meta["exec_start"] = json!(head.exec_start);
+        head_meta["exec_end"] = json!(head.exec_end);
 
         let dispatched = Instant::now();
         let ack = crate::relay::send_frame_or_tunnel(
@@ -1090,14 +1094,25 @@ pub async fn step(
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
         let body_meta = if i == 0 {
-            let mut m =
-                json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "token_id": token_id,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             if let Some(spec) = &speculate {
                 m["speculate"] = spec.to_meta();
             }
             m
         } else {
-            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "scale": 1.0,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             // Thread o que a cabeça decidiu na ida — o rascunho, a composição
             // do lote (`tokens`, para o `observe` da cauda) e a largura de
             // lote da próxima rodada (`mtp_k`).
@@ -1188,6 +1203,8 @@ async fn step_ring(
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
@@ -1254,6 +1271,8 @@ async fn step_direct(
         "token_id": token_id,
         "next_hops": next_hops,
         "reply_to": direct.reply_to(ticket.id()),
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
@@ -1424,9 +1443,17 @@ async fn step_speculative_hub(
                 "is_last": is_last,
                 "token_id": token_id,
                 "speculate": {"k": k, "m": m, "source": source.wire()},
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
             })
         } else {
-            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "scale": 1.0,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             // Keep threading whatever the head decided — see `step_blocking`'s
             // `draft`/`incoming_draft` doc comments for why absent vs. an
             // empty array mean different things here.
@@ -1510,6 +1537,8 @@ async fn step_speculative_ring(
         "token_id": token_id,
         "speculate": {"k": k, "m": m, "source": source.wire()},
         "next_hops": next_hops,
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
 
     let sent = crate::relay::send_frame_or_tunnel(

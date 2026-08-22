@@ -273,6 +273,29 @@ lock novamente. Ao reencodar a resposta de um item único, os handlers
 preservam `item_id` e `batch_id`; sem isso o coordenador não consegue associar
 a resposta ao pedido que está aguardando.
 
+### 3.2 Sub-faixa executada por hop
+
+`PipelineStep` separa a faixa que o peer carregou (`start_layer`/`end_layer`)
+da faixa que aquele passo deve executar (`exec_start`/`exec_end`). O planejador
+preenche a segunda com a cobertura que falta a partir da posição atual. Esses
+dois campos viajam no `meta` de cada item do frame, tanto no prefill quanto no
+decode de `/v1/step`; o envelope `frame/v1-batch` não muda. Sem os campos, o
+receptor mantém o comportamento de executar a fatia inteira.
+
+O handler confere a sub-faixa contra a faixa carregada antes de enfileirar o
+trabalho. Quando `exec_start` coincide com `start_layer`, `exec_end` menor que
+`end_layer` reposiciona a captura de residual para o bloco local correspondente
+e o callback do llama.cpp interrompe o grafo depois dele. Quando o pedido chega
+até `end_layer`, a captura normal da fatia inteira é usada. Uma sub-faixa
+invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
+também é recusado explicitamente, porque o motor atual sempre entra pelo
+primeiro bloco da fatia e não consegue pular a cabeça já carregada.
+
+O relay de anel e a resposta direta escolhem a faixa do próximo `PipelineStep`
+ao montar o próximo quadro. Um microbatch com limites de captura diferentes é
+recusado, pois um único grafo não pode parar em dois blocos. Essa execução
+parcial é uma capacidade do binário atual, não um fallback para peers antigos.
+
 `prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
 transporte: modelo, deployment, fase, configuração relevante e próximo hop
 precisam coincidir para dois itens compartilharem um frame. A escolha efetiva

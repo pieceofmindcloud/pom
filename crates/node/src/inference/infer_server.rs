@@ -127,6 +127,9 @@ struct PrefillJob {
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
+    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    capture_block: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
     wire_dtype: WireDtype,
@@ -143,6 +146,9 @@ struct StepJob {
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
+    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    capture_block: Option<u32>,
     speculate: Option<Speculate>,
     incoming_draft: Option<Vec<i32>>,
     batch_tokens: Option<Vec<i32>>,
@@ -467,6 +473,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.prompt,
                 job.chat_template,
                 job.tensor,
+                job.capture_block,
                 job.chunk_tokens,
                 job.queued_at,
             );
@@ -480,6 +487,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.wire_dtype,
                 job.token_id,
                 job.tensor,
+                job.capture_block,
                 job.speculate,
                 job.incoming_draft,
                 job.batch_tokens,
@@ -703,6 +711,8 @@ mod relay_tests {
             inference_candidates: Vec::new(),
             start_layer: 16,
             end_layer: 31,
+            exec_start: 16,
+            exec_end: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -868,6 +878,37 @@ mod relay_tests {
         let middle = json!({"owns_tokens": false, "more_chunks": false});
         assert!(is_final_chunk_for_forward(&middle, true));
         assert!(!is_final_chunk_for_forward(&middle, false));
+    }
+
+    #[test]
+    fn step_forward_meta_carries_the_next_hops_execution_range() {
+        let mut next = step("tail", "http://127.0.0.1:8182".into());
+        next.exec_start = 20;
+        next.exec_end = 27;
+        let local_meta = json!({
+            "draft": [11, 12],
+            "tokens": [10, 11, 12],
+            "mtp_k": 3,
+        });
+
+        let forwarded =
+            step_forward_meta("sess-1", &json!({"item_id": "item-1"}), &local_meta, &next);
+
+        assert_eq!(forwarded["session_id"], "sess-1");
+        assert_eq!(forwarded["item_id"], "item-1");
+        assert_eq!(forwarded["exec_start"], 20);
+        assert_eq!(forwarded["exec_end"], 27);
+        assert_eq!(forwarded["draft"], json!([11, 12]));
+        assert_eq!(forwarded["tokens"], json!([10, 11, 12]));
+        assert_eq!(forwarded["mtp_k"], 3);
+    }
+
+    #[test]
+    fn a_step_subrange_maps_to_the_local_capture_block() {
+        let capture = resolve_exec_range(&json!({"exec_start": 16, "exec_end": 23}), 16, 31)
+            .expect("a subrange at the slice start is executable");
+
+        assert_eq!(capture, Some(7));
     }
 }
 
@@ -1789,6 +1830,55 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
     crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
 }
 
+/// A sub-faixa que o remetente mandou executar, conferida contra a fatia que
+/// este nó carregou.
+///
+/// Quem manda decide qual pedaço roda; este nó só confere que consegue rodar
+/// exatamente aquilo. O que ele **não** faz é ajustar em silêncio: rodar a
+/// fatia inteira quando pediram um pedaço é exatamente o modo de falha que
+/// devolve resposta errada sem erro nenhum.
+///
+/// Devolve o índice do bloco local onde a decodificação deve parar, ou `None`
+/// quando o pedido cobre a fatia até o fim (o caso comum, grafo inteiro).
+fn resolve_exec_range(
+    meta: &Value,
+    slice_start: u32,
+    slice_end: u32,
+) -> std::result::Result<Option<u32>, String> {
+    let exec_start = meta.get("exec_start").and_then(|v| v.as_u64());
+    let exec_end = meta.get("exec_end").and_then(|v| v.as_u64());
+    let (Some(exec_start), Some(exec_end)) = (exec_start, exec_end) else {
+        // Sem instrução não há o que conferir: roda a fatia inteira, que é o
+        // contrato de quem só carrega uma faixa e é dono dela inteira.
+        return Ok(None);
+    };
+    let (exec_start, exec_end) = (exec_start as u32, exec_end as u32);
+    if exec_end < exec_start {
+        return Err(format!("sub-faixa invertida: L{exec_start}-{exec_end}"));
+    }
+    if exec_start < slice_start || exec_end > slice_end {
+        return Err(format!(
+            "sub-faixa L{exec_start}-{exec_end} sai da fatia carregada L{slice_start}-{slice_end}"
+        ));
+    }
+    if exec_start > slice_start {
+        // O limite que o captain conhece: o estado oculto entra pelo embedding
+        // do llama.cpp, que sempre cai no bloco 0 da fatia. Começar acima da
+        // camada inicial exigiria pular blocos da cabeça, e o motor não sabe
+        // fazer isso hoje. Recusar alto é o contrato; refazer L{slice_start}-
+        // L{exec_start} em silêncio seria a resposta errada sem erro.
+        return Err(format!(
+            "entrar no meio da faixa ainda não é possível: pediram começar em L{exec_start}, \
+             mas esta fatia começa em L{slice_start} e o motor sempre entra pelo primeiro bloco. \
+             Mande a sub-faixa a partir de L{slice_start}, ou dê esta parte a um peer que comece em L{exec_start}"
+        ));
+    }
+    if exec_end == slice_end {
+        return Ok(None);
+    }
+    Ok(Some(exec_end - slice_start))
+}
+
 async fn handle_prefill(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
@@ -1897,6 +1987,22 @@ async fn handle_prefill(
     // copy, taken before `sid_key` moves into the blocking closure below.
     let sid_for_forward = sid_key.clone();
 
+    // A sub-faixa que o remetente mandou executar. Recusa alta quando este nó
+    // não consegue rodar exatamente aquilo - nunca ajuste silencioso.
+    let capture_block = {
+        let (slice_start, slice_end) = {
+            let guard = state.lock().map_err(|_| ()).ok();
+            match guard {
+                Some(st) => (st.start_layer, st.end_layer),
+                None => return err500("estado de inferência indisponível"),
+            }
+        };
+        match resolve_exec_range(&meta, slice_start, slice_end) {
+            Ok(block) => block,
+            Err(motivo) => return err400(motivo),
+        }
+    };
+
     let queued_at = Instant::now();
     let result = match scheduler.submit_prefill(PrefillJob {
         sid_key,
@@ -1908,6 +2014,7 @@ async fn handle_prefill(
         prompt,
         chat_template,
         tensor,
+        capture_block,
         chunk_tokens,
         queued_at,
     }) {
@@ -2052,6 +2159,10 @@ async fn handle_prefill(
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
                 "is_final_chunk": is_final_chunk_for_forward,
+                // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
+                // que este recebeu a sua: quem manda é que decide o pedaço.
+                "exec_start": hops[0].exec_start,
+                "exec_end": hops[0].exec_end,
             });
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
@@ -2173,6 +2284,7 @@ fn prefill_blocking(
     prompt: Option<String>,
     chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
     // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
     // prompt; hops do meio ecoam): alimenta o `observe` da cabeça `nextn`
@@ -2260,6 +2372,15 @@ fn prefill_blocking(
         };
         (session.n_past, session.seq_id, toks)
     };
+
+    // Onde parar, quando o remetente pediu menos que a fatia inteira. Antes do
+    // decode e sob o mesmo lock, que é o que torna o ajuste válido só para
+    // esta decodificação.
+    if let Err(e) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            bail!("{e}");
+        }
+    }
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -2414,6 +2535,7 @@ struct PreparedPrefill {
     chunk_tokens: Option<Vec<i32>>,
     input: PreparedPrefillInput,
     wire_dtype: WireDtype,
+    capture_block: Option<u32>,
     queued_at: Instant,
 }
 
@@ -2443,6 +2565,7 @@ fn prefill_batch_blocking(
             prompt,
             chat_template,
             tensor,
+            capture_block,
             chunk_tokens,
             queued_at,
         } = job;
@@ -2548,6 +2671,7 @@ fn prefill_batch_blocking(
                 chunk_tokens,
                 input,
                 wire_dtype,
+                capture_block,
                 queued_at,
             })
         })();
@@ -2563,6 +2687,33 @@ fn prefill_batch_blocking(
     }
 
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    // Onde parar vale para o grafo inteiro, não por item: um lote com pedidos
+    // de sub-faixas diferentes não tem uma resposta certa. O agrupamento em
+    // lote é conveniência de desempenho; ele não pode decidir isto por conta.
+    let capture_block = prepared[0].1.capture_block;
+    if prepared
+        .iter()
+        .any(|(_, item)| item.capture_block != capture_block)
+    {
+        for (reply, _) in prepared {
+            replies.push((
+                reply,
+                Err(anyhow::anyhow!(
+                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                )),
+            ));
+        }
+        return replies;
+    }
+    if let Err(e) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!("{e}"))));
+            }
+            return replies;
+        }
+    }
+
     let decode_result = match &prepared[0].1.input {
         PreparedPrefillInput::Tokens(_) => {
             let entries: Vec<crate::llm::TokenBatchEntry> = prepared
@@ -2738,6 +2889,7 @@ fn step_batch_blocking(
                     job.wire_dtype,
                     job.token_id,
                     job.tensor,
+                    job.capture_block,
                     job.speculate,
                     job.incoming_draft,
                     job.batch_tokens,
@@ -2762,6 +2914,7 @@ fn step_batch_blocking(
             wire_dtype,
             token_id,
             tensor,
+            capture_block,
             queued_at,
             ..
         } = job;
@@ -2812,6 +2965,7 @@ fn step_batch_blocking(
                 n_tokens,
                 is_last,
                 wire_dtype,
+                capture_block,
                 input,
                 queued_at,
             })
@@ -2824,6 +2978,32 @@ fn step_batch_blocking(
 
     if prepared.is_empty() {
         return replies;
+    }
+    // Um único grafo não consegue parar em dois blocos diferentes. Recusar o
+    // lote é seguro; escolher um dos limites faria uma sessão executar mais
+    // ou menos camadas que o remetente pediu.
+    let capture_block = prepared[0].1.capture_block;
+    if prepared
+        .iter()
+        .any(|(_, item)| item.capture_block != capture_block)
+    {
+        for (reply, _) in prepared {
+            replies.push((
+                reply,
+                Err(anyhow::anyhow!(
+                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                )),
+            ));
+        }
+        return replies;
+    }
+    if let Err(error) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!(error.to_string()))));
+            }
+            return replies;
+        }
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
     let decode_result = match &prepared[0].1.input {
@@ -2972,6 +3152,7 @@ struct PreparedStep {
     n_tokens: usize,
     is_last: bool,
     wire_dtype: WireDtype,
+    capture_block: Option<u32>,
     input: PreparedStepInput,
     queued_at: Instant,
 }
@@ -3078,6 +3259,18 @@ async fn handle_step(
         None => None,
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
+    // A sub-faixa só é válida se este peer consegue executá-la exatamente.
+    // Sem os campos, o contrato antigo continua rodando a fatia inteira.
+    let capture_block = {
+        let (slice_start, slice_end) = match state.lock() {
+            Ok(st) => (st.start_layer, st.end_layer),
+            Err(_) => return err500("estado de inferência indisponível"),
+        };
+        match resolve_exec_range(&meta, slice_start, slice_end) {
+            Ok(block) => block,
+            Err(motivo) => return err400(motivo),
+        }
+    };
     // Neither of `step_blocking`'s replies echoes `session_id` back — a
     // relay branch that forwards to the next hop needs its own copy, taken
     // before `sid_key` moves into the blocking closure below.
@@ -3090,6 +3283,7 @@ async fn handle_step(
         wire_dtype,
         token_id,
         tensor,
+        capture_block,
         speculate,
         incoming_draft,
         batch_tokens,
@@ -3178,20 +3372,8 @@ async fn handle_step(
             return direct_ack();
         };
 
-        let mut forward = json!({
-            "session_id": sid_for_forward,
-            "hop_timings": hop_timings,
-        });
-        preserve_batch_identity(&meta, &mut forward);
-        if let Some(draft) = local_meta.get("draft") {
-            forward["draft"] = draft.clone();
-        }
-        if let Some(tokens) = local_meta.get("tokens") {
-            forward["tokens"] = tokens.clone();
-        }
-        if let Some(mtp_k) = local_meta.get("mtp_k") {
-            forward["mtp_k"] = mtp_k.clone();
-        }
+        let mut forward = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
+        forward["hop_timings"] = json!(hop_timings);
         tokio::spawn(forward_direct(
             hops, "/v1/step", forward, residual, shape,
             1, // a decode step has never retried — see relay_and_bubble's doc comment
@@ -3221,22 +3403,7 @@ async fn handle_step(
     // of the chain reached directly instead of relaying back through it.
     let hops = next_hops.expect("should_relay implies next_hops is Some");
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
-    let mut forward_meta = json!({"session_id": sid_for_forward});
-    preserve_batch_identity(&meta, &mut forward_meta);
-    // Keep threading the draft toward the tail — absent entirely (not just
-    // an empty array) when this round isn't speculative, same distinction
-    // `incoming_draft` relies on above.
-    if let Some(draft) = local_meta.get("draft") {
-        forward_meta["draft"] = draft.clone();
-    }
-    // Idem para `tokens`/`mtp_k` — o que mantém a cauda observando o lote e
-    // rascunhando a medida certa (ver os docs de `batch_tokens`/`mtp_k`).
-    if let Some(tokens) = local_meta.get("tokens") {
-        forward_meta["tokens"] = tokens.clone();
-    }
-    if let Some(mtp_k) = local_meta.get("mtp_k") {
-        forward_meta["mtp_k"] = mtp_k.clone();
-    }
+    let forward_meta = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
 
     let bubbled = match relay_and_bubble(
         http_client(),
@@ -3262,6 +3429,32 @@ async fn handle_step(
             .into_response(),
         Err(e) => err500(e),
     }
+}
+
+/// Monta o metadado que um hop de decode encaminha ao próximo peer.
+///
+/// A faixa carregada do próximo peer não basta para definir o que ele deve
+/// executar: uma mesma fatia pode ser usada por ramos diferentes. Por isso a
+/// sub-faixa é escolhida pelo `PipelineStep` do próximo hop e viaja em cada
+/// quadro `/v1/step`.
+fn step_forward_meta(
+    session_id: &str,
+    request_meta: &Value,
+    local_meta: &Value,
+    next: &PipelineStep,
+) -> Value {
+    let mut meta = json!({
+        "session_id": session_id,
+        "exec_start": next.exec_start,
+        "exec_end": next.exec_end,
+    });
+    preserve_batch_identity(request_meta, &mut meta);
+    for field in ["draft", "tokens", "mtp_k"] {
+        if let Some(value) = local_meta.get(field) {
+            meta[field] = value.clone();
+        }
+    }
+    meta
 }
 
 /// Relay a residual to `hops[0]` and bubble its reply back: the eventual
@@ -3299,6 +3492,8 @@ async fn relay_and_bubble(
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
+    base_meta["exec_start"] = json!(next.exec_start);
+    base_meta["exec_end"] = json!(next.exec_end);
 
     let mut last_issue_kind = None;
     let sent = crate::relay::send_frame_or_tunnel(
@@ -3396,6 +3591,8 @@ pub(crate) async fn forward_direct(
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
+    base_meta["exec_start"] = json!(next.exec_start);
+    base_meta["exec_end"] = json!(next.exec_end);
     base_meta["reply_to"] = reply_to.clone();
 
     let mut last_issue_kind = None;
@@ -3828,6 +4025,7 @@ fn step_blocking(
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    capture_block: Option<u32>,
     // Present only for the head — everyone else either forwards
     // `incoming_draft` untouched (not the tail) or verifies against it (the
     // tail). Ver `Speculate` para por que a fonte do rascunho viaja junto.
@@ -3880,6 +4078,13 @@ fn step_blocking(
     // nos hops do meio repassa o que chegou da wire. É como a cauda descobre a
     // largura de lote que o gateway quer na rodada seguinte.
     let mut mtp_k_echo: Option<u32> = None;
+    // O limite é por decodificação, não por sessão. O mesmo lock serializa
+    // esta troca e o decode que a consome.
+    if let Err(error) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            bail!("{error}");
+        }
+    }
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special

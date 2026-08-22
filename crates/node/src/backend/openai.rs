@@ -1256,6 +1256,10 @@ mod tests {
         assert_eq!(mk(r#"{"messages":[]}"#).max_tokens(), DEFAULT_MAX_TOKENS);
         assert_eq!(mk(r#"{"messages":[],"max_tokens":10}"#).max_tokens(), 10);
         assert_eq!(
+            mk(r#"{"messages":[],"max_tokens":2048}"#).max_tokens(),
+            2048
+        );
+        assert_eq!(
             mk(r#"{"messages":[],"max_completion_tokens":32}"#).max_tokens(),
             32
         );

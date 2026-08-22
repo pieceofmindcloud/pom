@@ -412,6 +412,7 @@ pub async fn generate_stream(
     state: GatewayState,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
@@ -594,6 +595,7 @@ pub async fn generate_stream(
             model,
             &session_id,
             &prompt,
+            chat_template,
             chunk_tokens,
             dtype,
             &state.peer_http,
@@ -1117,6 +1119,7 @@ pub fn spawn_logged_generation(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
@@ -1125,7 +1128,14 @@ pub fn spawn_logged_generation(
     let logged_model = model.clone();
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream(state, model, prompt, max_tokens, inner_tx));
+    tokio::spawn(generate_stream(
+        state,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        inner_tx,
+    ));
 
     tokio::spawn(async move {
         let started = Instant::now();
@@ -1213,10 +1223,20 @@ pub async fn generate_blocking(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
 ) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation(state, route, caller, model, prompt, max_tokens, tx);
+    spawn_logged_generation(
+        state,
+        route,
+        caller,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        tx,
+    );
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -1351,6 +1371,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         crate::reqlog::Caller::anonymous(),
         model,
         req.prompt,
+        true,
         DEFAULT_MAX_TOKENS,
     )
     .await

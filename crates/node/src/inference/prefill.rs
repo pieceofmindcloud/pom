@@ -499,12 +499,32 @@ fn percentile(samples: &[u64], percentile: u64) -> u64 {
 }
 
 /// Push the whole prompt through the pipeline, chunk by chunk.
+fn head_prefill_meta(
+    session_id: &str,
+    chunk_index: u32,
+    chunk_size: u32,
+    is_last: bool,
+    prompt: Option<&str>,
+    chat_template: bool,
+) -> serde_json::Value {
+    json!({
+        "session_id": session_id,
+        "chunk_index": chunk_index,
+        "chunk_size": chunk_size,
+        "is_last": is_last,
+        "is_final_chunk": false,
+        "prompt": prompt,
+        "chat_template": chat_template,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     plan: &PipelinePlan,
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -519,13 +539,32 @@ pub async fn run(
     }
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return run_direct(
-            plan, model, session_id, prompt, chunk_size, dtype, http, routes, direct, tunnel,
+            plan,
+            model,
+            session_id,
+            prompt,
+            chat_template,
+            chunk_size,
+            dtype,
+            http,
+            routes,
+            direct,
+            tunnel,
         )
         .await;
     }
     if plan.supports_relay_chain() {
         return run_ring(
-            plan, model, session_id, prompt, chunk_size, dtype, http, routes, tunnel,
+            plan,
+            model,
+            session_id,
+            prompt,
+            chat_template,
+            chunk_size,
+            dtype,
+            http,
+            routes,
+            tunnel,
         )
         .await;
     }
@@ -537,21 +576,14 @@ pub async fn run(
 
     loop {
         // ── First peer: it owns the tokenizer and decides whether more remain.
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": n_peers == 1,
-            // We cannot know whether this is the last chunk before the head
-            // peer — which owns the tokenizer — tells us how many tokens the
-            // prompt has. So we say false, and for a one-hop pipeline the head
-            // peer overrides it from its own token count; see the
-            // `hidden is None and not more` branch in inference_server.py.
-            // For longer pipelines the flag is recomputed below, once
-            // `more_chunks` has come back, and sent to the real tail.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-        });
+        let head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            n_peers == 1,
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
 
         let (mut meta, mut tensor) = send_chunk(
             http,
@@ -661,6 +693,7 @@ async fn run_ring(
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -676,18 +709,15 @@ async fn run_ring(
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": next_hops.is_empty(),
-            // Same reasoning as `run`'s identical comment: the head is the
-            // only one who can know this, and overrides it locally before
-            // relaying onward — we always say false here.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-            "next_hops": next_hops,
-        });
+        let mut head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            next_hops.is_empty(),
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
+        head_meta["next_hops"] = json!(next_hops);
 
         let sent = crate::relay::send_frame_or_tunnel(
             http,
@@ -776,6 +806,7 @@ async fn run_direct(
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -793,17 +824,16 @@ async fn run_direct(
 
     loop {
         let mut ticket = direct.ticket();
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": next_hops.is_empty(),
-            // Same reasoning as `run`'s identical comment.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-            "next_hops": next_hops,
-            "reply_to": direct.reply_to(ticket.id()),
-        });
+        let mut head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            next_hops.is_empty(),
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
+        head_meta["next_hops"] = json!(next_hops);
+        head_meta["reply_to"] = direct.reply_to(ticket.id());
 
         let dispatched = Instant::now();
         let ack = crate::relay::send_frame_or_tunnel(
@@ -1602,6 +1632,13 @@ fn speculative_step_from_meta(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_head_frame_delivers_prompt_with_template_mode() {
+        let meta = head_prefill_meta("session", 0, 512, true, Some("Oi, teste"), true);
+        assert_eq!(meta["prompt"], "Oi, teste");
+        assert_eq!(meta["chat_template"], true);
+    }
 
     fn route_item(
         item_id: &str,

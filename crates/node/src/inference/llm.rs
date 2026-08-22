@@ -2255,4 +2255,34 @@ mod tests {
             "a longer prompt must produce more tokens"
         );
     }
+
+    #[test]
+    fn chat_template_wraps_the_user_prompt_and_opens_assistant_turn() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            offload_kqv: true,
+            fit_memory: false,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: false,
+            rs_seq_window: 0,
+        };
+        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
+        assert!(formatted.contains("Oi, teste"));
+        assert!(!formatted.starts_with("Oi, teste"));
+        assert!(formatted.to_ascii_lowercase().contains("assistant"));
+        assert!(
+            engine.tokenize(&formatted, false, true).len()
+                > engine.tokenize("Oi, teste", true, true).len()
+        );
+    }
 }

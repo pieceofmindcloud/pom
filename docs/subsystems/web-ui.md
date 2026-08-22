@@ -398,6 +398,9 @@ impressão digital é só modelo + conjunto de faixas.
   (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. Nas globais, a seção
+  de execução separa a especulação por lookup do MTP; ao marcar MTP, a
+  probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
+  pelo operador e o valor alterado segue no deploy. A seção
   **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
   (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
   o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque

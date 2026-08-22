@@ -59,7 +59,7 @@ import { api } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
 import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemory";
 import { useToast } from "../lib/toast";
-import { bytes, layerRange, megabytes, num } from "../lib/format";
+import { bytes, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
 import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
@@ -1380,12 +1380,10 @@ export function DeployModel() {
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
                     <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  {/* Fixa ao marcar o MTP, então mostrada e não editável: um
-                      campo que só *começa* em 0,75 é outra coisa. */}
-                  <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <span className="pr-1.5 text-right font-mono text-[0.62rem] text-fg">{num(MTP_MIN_PROBABILITY, 2)}</span>
-                  </div>
+                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
+                  </label>
                 </div>
               )}
             </section>

@@ -102,7 +102,8 @@ Per-file list:
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
   repetition, fit-memory, execution toggles and the installation-wide KV cache
-  types; the machine section includes
+  types. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
+  then edit that probability before deploying. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is

@@ -16,7 +16,6 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
 import { Field, Input } from "./ui";
-import { num } from "../lib/format";
 import type { RuntimeParams } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -52,8 +51,8 @@ export const SPECULATIVE_KNOBS: Knob[] = [
 ];
 
 /**
- * O piso de confiança do MTP é **fixo**, não uma sugestão inicial: marcar o MTP
- * o grava, e não há campo para movê-lo depois. Fica aqui, ao lado dos outros
+ * O piso de confiança do MTP começa em 0,75 ao marcar o MTP, mas continua
+ * editável pelo operador. Fica aqui, ao lado dos outros
  * números do MTP, para que as duas telas que ligam o MTP gravem o mesmo valor -
  * duas constantes iguais em lugares diferentes é como elas passam a divergir.
  */
@@ -61,11 +60,12 @@ export const MTP_MIN_PROBABILITY = 0.75;
 
 /**
  * Só aparecem com o MTP ligado. `mtp_draft_tokens` tem o mesmo teto sensato da
- * largura do rascunho por lookup. `mtp_min_probability` saiu daqui por deixar
- * de ser editável: continua na tela, como número mostrado, não como campo.
+ * largura do rascunho por lookup; a probabilidade é um piso em [0,1] com passo
+ * de centésimo.
  */
 export const MTP_KNOBS: Knob[] = [
   { key: "mtp_draft_tokens", min: 1, max: 8 },
+  { key: "mtp_min_probability", min: 0, max: 1, step: 0.01 },
 ];
 
 /**
@@ -246,14 +246,6 @@ export function RuntimeParamsForm({
       {(value.mtp_enabled ?? false) && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k, true))}
-          <Field
-            label={t("deploy.knob.mtp_min_probability")}
-            hint={t("deploy.knob.mtp_min_probabilityHint")}
-          >
-            <span className="block font-mono text-sm text-muted">
-              {num(MTP_MIN_PROBABILITY, 2)}
-            </span>
-          </Field>
         </div>
       )}
     </div>

@@ -604,16 +604,7 @@ describe("DeployModel · MTP", () => {
     });
   });
 
-  /**
-   * A probabilidade mínima do MTP é **fixa** em 0,75, decidida ao marcar.
-   *
-   * Não é um valor inicial sugerido: marcar o MTP grava o piso, e não há
-   * campo para mudá-lo depois. O teste guarda os dois lados, porque um sem o
-   * outro não é o contrato - um campo editável que só *começa* em 0,75 deixa
-   * o operador movê-lo, e gravar sem mostrar esconde o número que decide se o
-   * rascunho é aceito.
-   */
-  it("marcar o MTP fixa a probabilidade mínima em 0,75", async () => {
+  it("marcar o MTP preenche 0,75 e permite editar a probabilidade mínima", async () => {
     mountWhole();
     chooseWhole();
 
@@ -622,14 +613,22 @@ describe("DeployModel · MTP", () => {
     });
     fireEvent.click(switchEl);
 
-    // O número aparece na tela, mas não como campo: não há o que editar.
     await waitFor(() => {
       expect(screen.getByText("Probabilidade mínima do MTP")).toBeTruthy();
-      expect(screen.getByText("0,75")).toBeTruthy();
+      expect(
+        (screen.getByRole("spinbutton", {
+          name: /Probabilidade mínima do MTP/,
+        }) as HTMLInputElement).value,
+      ).toBe("0.75");
     });
-    expect(
-      screen.queryByRole("spinbutton", { name: /Probabilidade mínima do MTP/ }),
-    ).toBeNull();
+
+    const probabilityInput = screen.getByRole("spinbutton", {
+      name: /Probabilidade mínima do MTP/,
+    });
+    fireEvent.change(probabilityInput, { target: { value: "0.42" } });
+    await waitFor(() =>
+      expect((probabilityInput as HTMLInputElement).value).toBe("0.42"),
+    );
 
     const button = screen.getByRole("button", { name: /^Implantar$/ });
     await waitFor(() =>
@@ -642,7 +641,7 @@ describe("DeployModel · MTP", () => {
       expect(deploys).toHaveLength(1);
       const body = deploys[0][1] as { params: RuntimeParams };
       expect(body.params.mtp_enabled).toBe(true);
-      expect(body.params.mtp_min_probability).toBe(0.75);
+      expect(body.params.mtp_min_probability).toBe(0.42);
     });
   });
 

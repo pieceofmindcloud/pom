@@ -307,6 +307,22 @@ struct InferenceAppState {
     tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[async_trait::async_trait]
+impl crate::relay::InProcessInference for InferenceAppState {
+    async fn dispatch(&self, path: &str, body: Bytes) -> Result<Response> {
+        let headers = axum::http::HeaderMap::new();
+        Ok(match path {
+            "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
+            "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "rota de inferência em processo desconhecida: {path}"
+                ))
+            }
+        })
+    }
+}
+
 fn spawn_scheduler(state: SharedState, cfg: crate::scheduler::SchedulerConfig) -> SchedulerHandle {
     let limit = cfg.max_queue_requests;
     let (tx, rx) = mpsc::channel(limit);
@@ -1123,6 +1139,7 @@ pub async fn run(
         scheduler,
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
+    crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 
     if let Some(auth) = auth.clone() {
         http_client().set_auth_state(auth);
@@ -1190,6 +1207,7 @@ pub async fn run(
         }
     })
     .await;
+    crate::relay::clear_local_inference(generation).await;
 
     if let Some(handle) = local_barrier_handle {
         crate::tp::clear_local_barrier(handle);

@@ -555,3 +555,20 @@ unidade mas **não** tem número medido de ponta a ponta.
   levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
   mapeando o microlote de volta às posições. Ver `split_equal` em
   `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.
+- **U+FFFD no stream do chat: `token_to_piece` converte por chamada e rasga
+  codepoint em pedaços (em aberto, causa raiz provada, fix pendente).**
+  `llm.rs::token_to_piece` aplica `String::from_utf8_lossy` a cada chamada, mas
+  o llama.cpp devolve bytes crus por token - token BYTE é um byte só
+  (`llama-vocab.cpp::token_to_piece`, ramo `LLAMA_TOKEN_ATTR_BYTE`) e um token
+  normal pode terminar no meio de um codepoint. Quando o modelo emite o
+  caractere quebrado entre dois tokens (byte-fallback), cada conversão nasce
+  U+FFFD independente e a palavra sai rasgada no delta do chat. Reproduzido
+  por análise contra o cluster real: o fio SSE chega UTF-8 válido
+  (`TextDecoder {stream:true}` no painel está correto; o U+FFFD já nasce no
+  servidor). Emissão por token acontece em cinco pontos de `infer_server.rs`
+  (2289, 2620, 2865, 3951, 4042) e todos precisam de um acumulador de UTF-8
+  por sessão. Os testes de regressão estão escritos em `llm.rs`
+  (`utf8_assembler_tests`) e falham porque `Utf8Assembler` ainda não existe -
+  fase RED do TDD cumprida; falta implementar o acumulador (`feed` emite só
+  caractere completo, `flush` drena o rabicho) e ligá-lo nos cinco pontos,
+  alimentando apenas as posições aceitas no caminho especulativo.

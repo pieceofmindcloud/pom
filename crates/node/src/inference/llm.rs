@@ -2515,3 +2515,50 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod utf8_assembler_tests {
+    use super::*;
+
+    /// Um token pode terminar no meio de um codepoint (byte-fallback) e o
+    /// pedaço seguinte completa a sequência. Converter cada chamada com
+    /// `from_utf8_lossy` nascia U+FFFD no meio da palavra - este é o
+    /// contrato de regressão: só caractere completo sai, e o rabinho fica.
+    #[test]
+    fn assembler_emite_so_caractere_completo_e_guarda_o_rabicho() {
+        let mut asm = Utf8Assembler::new();
+        // "ão" = c3 a3, quebrado entre dois tokens depois de "Jo".
+        assert_eq!(asm.feed(b"Jo\xc3"), "Jo");
+        assert_eq!(asm.feed(b"\xa3o "), "\u{e3}o ");
+        // Emoji de 4 bytes (🧠 = f0 9f a7 a0) quebrado em três feeds.
+        assert_eq!(asm.feed(&[0xf0]), "");
+        assert_eq!(asm.feed(&[0x9f, 0xa7]), "");
+        assert_eq!(asm.feed(&[0xa0, b'!']), "\u{1f9e0}!");
+        assert_eq!(asm.flush(), "");
+    }
+
+    #[test]
+    fn assembler_passa_ascii_inteiro_numa_so_chamada() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(asm.feed(b"Olá, ação, coração"), "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o");
+    }
+
+    /// Byte inválido de verdade (não é prefixo de nada): vira um U+FFFD na
+    /// hora e o stream continua - mesma semântica do from_utf8_lossy global,
+    /// sem esperar bytes que nunca vão completar sequência alguma.
+    #[test]
+    fn assembler_repassa_byte_invalido_como_um_fffd_e_segue() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(asm.feed(b"a\xffb"), "a\u{fffd}b");
+    }
+
+    /// Fim do stream com sequência truncada: o flush drena o resto como um
+    /// único replacement, e chamar de novo devolve vazio.
+    #[test]
+    fn flush_drena_rabicho_truncado_uma_vez() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(asm.feed(b"ok\xc3"), "ok");
+        assert_eq!(asm.flush(), "\u{fffd}");
+        assert_eq!(asm.flush(), "");
+    }
+}

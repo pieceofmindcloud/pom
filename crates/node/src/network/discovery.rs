@@ -54,6 +54,9 @@ fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
 
     let (host, port_str) = split_host_port(addr)?;
     let udp_port: u16 = port_str.parse().ok()?;
+    if udp_port == 0 {
+        return None;
+    }
     let tcp_port = udp_port.checked_add(10000)?;
 
     let ma = match host.parse::<IpAddr>() {
@@ -166,6 +169,9 @@ fn observed_host_port(addr: &Multiaddr) -> Option<String> {
         return None;
     }
     let udp_port = tcp_port.checked_sub(10000)?;
+    if udp_port == 0 {
+        return None;
+    }
     Some(format!("{host}:{udp_port}"))
 }
 
@@ -913,6 +919,19 @@ mod tests {
             observed_host_port(&"/ip4/203.0.113.5/tcp/80".parse().unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn a_tcp_port_at_the_udp_offset_is_refused() {
+        assert_eq!(
+            observed_host_port(&"/ip4/203.0.113.5/tcp/10000".parse().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zero_udp_port_is_not_a_dialable_multiaddr() {
+        assert!(udp_to_libp2p_multiaddr("[2001:db8::42]:0").is_none());
     }
 
     // ── Como o gossipsub distingue dois anúncios ────────────────────────────

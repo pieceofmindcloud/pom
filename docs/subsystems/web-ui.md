@@ -220,6 +220,19 @@ atualizar/reiniciar só quando o peer anuncia `dev_update`. Ao lado de
 "Adicionar nó" há `UndeployPipeline` quando há modelo no ar. `PipelineRail`
 ainda exporta `pipelinePeers`/`trackOf` usados pelo Dashboard e DeployModel.
 
+Numa máquina servindo, o card traz também **"Como o modelo foi carregado"**
+(`ModelPlacement.tsx`): uma tira com uma célula por camada - verde inteira na
+GPU, âmbar dividida, cinza na CPU -, os pesos de cada lado em bytes, onde o
+cache KV ficou e a cabeça de saída. É a resposta medida, não a configuração:
+uma camada conta pelos **bytes** dela em cada buffer, então os experts de um
+MoE empurrados para a CPU aparecem como camada dividida em vez de camada
+descarregada. Os dados vêm de `/api/ui/peer/:node_id/runtime`, que repassa o
+`/health` daquela máquina, e a busca só acontece com o card montado
+(`usePeerRuntime(nodeId, enabled)`) - o Painel recarrega em ciclo curto, e um
+`/health` por peer a cada ciclo seria caro por uma seção quase sempre fechada.
+Nó que não informa a colocação faz a seção dizer que não sabe. Ver
+`inferencia.md`, "Onde as camadas ficaram".
+
 ## Configurações / Rede: quem decide o TLS
 
 O painel "Criptografia entre nós" (`TlsPanel`, em `routes/NetworkSettings.tsx`)
@@ -344,6 +357,9 @@ impressão digital é só modelo + conjunto de faixas.
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.
   Todos os peers aparecem na faixa inferior e podem ser arrastados para o mapa;
+  no tab Globais, o inspetor também permite escolher `cache_type_k` e
+  `cache_type_v` para a instalação; o botão salva em `POST /api/ui/cache-types`,
+  separado dos overrides por máquina e do payload de um deploy;
   o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e

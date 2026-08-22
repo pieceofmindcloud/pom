@@ -12,12 +12,14 @@ import { ApiError, api, listDeployments, setConnectionKey } from "./api";
 import type {
   AdminNode,
   ApiKey,
+  CacheTypesResponse,
   CatalogResponse,
   ClusterView,
   Job,
   NodeInfo,
   PathsResponse,
   PeerCatalog,
+  PeerRuntime,
   RequestLogEntry,
   TransferJob,
   TransferOffer,
@@ -45,12 +47,14 @@ export const keys = {
   models: ["models"] as const,
   clusterModels: ["cluster-models"] as const,
   paths: ["paths"] as const,
+  cacheTypes: ["cache-types"] as const,
   jobs: ["jobs"] as const,
   transfers: ["transfers"] as const,
   offers: ["offers"] as const,
   adminNodes: ["admin-nodes"] as const,
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
+  peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
 };
@@ -109,6 +113,30 @@ export function useCluster() {
   });
 }
 
+/**
+ * Como uma máquina carregou o modelo, buscado só com o card aberto.
+ *
+ * `enabled` é o ponto: isto sai do `/health` do peer, e pedir por peer a cada
+ * ciclo do Painel seria um leque de chamadas por uma tela que quase sempre está
+ * fechada. Um nó antigo sem a rota devolve 404, e aí a seção some em vez de
+ * virar erro - mesmo critério do `optional` acima.
+ */
+export function usePeerRuntime(nodeId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: keys.peerRuntime(nodeId),
+    queryFn: () =>
+      optional(
+        api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
+          auth: false,
+        }),
+        { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+      ),
+    enabled,
+    refetchInterval: 15_000,
+    staleTime: 10_000,
+  });
+}
+
 export function useLocalCatalog() {
   return useQuery({
     queryKey: keys.models,
@@ -133,6 +161,14 @@ export function usePaths() {
   return useQuery({
     queryKey: keys.paths,
     queryFn: () => api.get<PathsResponse>("/api/ui/paths", { auth: false }),
+    staleTime: 30_000,
+  });
+}
+
+export function useCacheTypes() {
+  return useQuery({
+    queryKey: keys.cacheTypes,
+    queryFn: () => api.get<CacheTypesResponse>("/api/ui/cache-types", { auth: false }),
     staleTime: 30_000,
   });
 }

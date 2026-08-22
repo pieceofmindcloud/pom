@@ -22,6 +22,7 @@ import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
 import { RemoveNode } from "./RemoveNode";
 import { LeaveNode } from "./LeaveNode";
+import { ModelPlacementSection } from "./ModelPlacement";
 import { Badge, Button, Dot, Footnote, KeyValue, Meter } from "./ui";
 import { devUpdate } from "../lib/api";
 import {
@@ -33,7 +34,7 @@ import {
   serverStateTone,
 } from "../lib/format";
 import { hasSlice } from "../lib/networkPeers";
-import { useInvalidate } from "../lib/queries";
+import { useInvalidate, usePeerRuntime } from "../lib/queries";
 import { useToast } from "../lib/toast";
 import type { PeerView } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -90,6 +91,36 @@ function UpdateNode({
         }
       />
     </>
+  );
+}
+
+/**
+ * A seção de colocação, com a busca que a alimenta.
+ *
+ * Separada do card porque tem um ciclo de vida próprio: é a única parte que faz
+ * uma chamada extra, e ela só acontece com a seção montada. Enquanto a resposta
+ * não chega, a seção não existe - um esqueleto piscando num card que já está
+ * cheio de números seria ruído, e a informação aqui nunca é urgente.
+ */
+function PeerPlacement({
+  nodeId,
+  enabled,
+  kqvRequested,
+}: {
+  nodeId: string;
+  enabled: boolean;
+  kqvRequested: boolean;
+}) {
+  const { data } = usePeerRuntime(nodeId, enabled);
+  const health = data?.health;
+  if (!data || !health) return null;
+  return (
+    <ModelPlacementSection
+      placement={health.placement ?? null}
+      contextMemory={health.context_memory?.buffers ?? null}
+      offloadKqv={health.offload_kqv ?? kqvRequested}
+      fitApplied={health.fit_memory_applied ?? false}
+    />
   );
 }
 
@@ -399,6 +430,13 @@ export function PeerDetailCard({
                 isSelf={peer.is_self}
               />
             </div>
+          )}
+
+          {/* Só faz pergunta quem tem a quem perguntar: sem modelo carregado
+              não há colocação nenhuma a mostrar, e o `enabled` evita um
+              `/health` por card a cada ciclo do Painel. */}
+          {serving && (
+            <PeerPlacement nodeId={peer.node_id} enabled={serving} kqvRequested={cfg?.offload_kqv ?? true} />
           )}
 
           {system && system.gpu_processes.length > 0 && (

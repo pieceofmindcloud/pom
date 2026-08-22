@@ -127,7 +127,18 @@ Per-file list:
   range`). `cardRange` falls back to `node.config` when the peer has loaded a
   slice it has not announced yet. `UpdateNode` (update+restart, dev-only via
   `POM_DEV_UPDATE`), `RemoveNode`, `LeaveNode` and `ReleaseSlice` all
-  render from here now.
+  render from here now. `PeerPlacement` (interno) é a única parte do card que
+  faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
+  `usePeerRuntime` é o que impede um `/health` por card a cada ciclo do Painel.
+- `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
+  camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
+  os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.
+  Exporta `placementOf`, `isCpuBuffer` e `kvCacheBuffers`. A regra que importa
+  está em `placementOf`: uma camada é classificada pelos **bytes** dela em cada
+  buffer, nunca pelo `device` do bloco - com override de buffer type (experts
+  de um MoE na CPU) os dois divergem, e é justamente esse caso que a tela
+  existe para mostrar. Sem `placement` a seção diz que não sabe, em vez de
+  derivar de `n_gpu_layers`.
 - `AddNodeDialog.tsx` — "Add a machine to a live model" dialog:
   `POST /api/ui/deploy/node` applies to the target only (no redeploy of the
   cluster). Overlap is the point — it creates a parallel route — so it is
@@ -256,6 +267,10 @@ Key logic carriers:
   mantém os ajustes por máquina fora do bloco global.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
+- `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /
+  "mixed" / "unknown" pelos bytes de peso em cada buffer; `isCpuBuffer` é quem
+  reconhece o host (`CPU`, `CPU_Mapped`), e é por nome porque é assim que o
+  ggml batiza o buffer de cada backend.
 - `Sidebar.sectionHoldsPath` (Sidebar.tsx:49) — decides whether a section is
   "where you are" (`end` exact match vs prefix) so the active section opens
   itself and the current page is never hidden.

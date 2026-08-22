@@ -111,10 +111,67 @@ unsafe extern "C" fn capture_callback(
         .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
         .collect();
     if floats.len() == n_floats {
-        slot.buf = Some(floats);
+        accumulate_capture(&mut slot, floats);
     }
     slot.copy_us += copy_started.elapsed().as_micros() as u64;
     true
+}
+
+/// Junta o `l_out` de mais um microlote ao residual deste decode.
+///
+/// **Acumula, não substitui.** Um decode não é um disparo: o llama.cpp parte o
+/// lote em microlotes de `n_ubatch` e chama a captura uma vez por microlote,
+/// cada uma com o `l_out` daquele pedaço.
+///
+/// Enquanto isto atribuía, o buffer terminava com o **último**
+/// microlote e o resto do chunk ia embora em silêncio - com `fit_memory=true`
+/// (padrão), que limita `n_ubatch` a 128, um chunk de 512 tokens perdia 3/4 e o
+/// peer seguinte recusava a requisição com "got 655360 floats, expected
+/// 2621440".
+///
+/// A ordem sai certa porque `split_simple` do llama.cpp fatia o lote em índices
+/// crescentes e contíguos, que é exatamente a ordem das linhas que
+/// `BatchLayout` usa para reencontrar cada item. Ver o defeito anotado sobre
+/// `max_sessions > 1` no `AGENTS.md` desta pasta: com vários streams o
+/// llama.cpp usa `split_equal`, que agrupa por sequência, e aí esta ordem
+/// deixa de valer.
+fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
+    match slot.buf.as_mut() {
+        Some(acumulado) => acumulado.extend_from_slice(&floats),
+        None => slot.buf = Some(floats),
+    }
+}
+
+// ── Ponte de diagnóstico ─────────────────────────────────────────────────────
+
+/// Chama uma função `llama_rs_*_json` e devolve o JSON já em `serde_json`.
+///
+/// Toda a família devolve `LLAMA_RS_STATUS_OK` mais uma string de `malloc` que
+/// **tem que** voltar por `llama_rs_string_free` - `free` de outra alocação, ou
+/// um `CString::from_raw`, é liberar com um alocador que não é o dono. Por isso
+/// a liberação mora aqui e não em cada chamador.
+///
+/// # Safety
+/// `f` tem que ser uma dessas funções, com os ponteiros do llama.cpp ainda
+/// vivos.
+unsafe fn json_from_wrapper(
+    f: impl FnOnce(*mut *mut std::os::raw::c_char) -> sys::llama_rs_status,
+) -> Option<serde_json::Value> {
+    let mut raw: *mut std::os::raw::c_char = ptr::null_mut();
+    let status = f(&mut raw);
+    if status != sys::LLAMA_RS_STATUS_OK || raw.is_null() {
+        warn!("diagnóstico do llama.cpp indisponível (status {status})");
+        return None;
+    }
+    let texto = CStr::from_ptr(raw).to_string_lossy().into_owned();
+    sys::llama_rs_string_free(raw);
+    match serde_json::from_str(&texto) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            warn!("diagnóstico do llama.cpp veio com JSON inválido: {e}");
+            None
+        }
+    }
 }
 
 // ── Configuration ─────────────────────────────────────────────────────────────
@@ -746,6 +803,25 @@ impl LlmEngine {
         self.effective_n_ubatch
     }
 
+    /// Onde cada camada realmente ficou, do próprio llama.cpp.
+    ///
+    /// `None` quando a ponte falha, e aí o `/health` omite o campo em vez de
+    /// mostrar um mapa inventado: dizer "não sei" é a única resposta honesta
+    /// possível, porque nada em `EngineConfig` substitui o buffer real de um
+    /// tensor. Ver `llama_rs_model_placement_json` no `wrapper_common.cpp`.
+    pub fn placement(&self) -> Option<serde_json::Value> {
+        unsafe { json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out)) }
+    }
+
+    /// A memória deste contexto por buffer: pesos, cache KV e cálculo.
+    ///
+    /// É o que responde onde o cache KV ficou de verdade. `offload_kqv()` é o
+    /// que foi pedido; numa GPU cheia o llama.cpp recarrega com ele desligado
+    /// (ver `runtime.rs`), e só a repartição por buffer mostra isso.
+    pub fn context_memory(&self) -> Option<serde_json::Value> {
+        unsafe { json_from_wrapper(|out| sys::llama_rs_context_memory_json(self.ctx, out)) }
+    }
+
     pub fn eos_token(&self) -> i32 {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }
@@ -1094,7 +1170,10 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
-        self.capture.lock().unwrap().copy_us = 0;
+        // Zera o buffer, e não só o cronômetro: agora que a captura
+        // acumula microlote a microlote, sobra do decode anterior seria
+        // residual de outra requisição concatenado ao desta.
+        self.reset_capture_slot();
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -1217,7 +1296,10 @@ impl LlmEngine {
         logits_all: bool,
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
-        self.capture.lock().unwrap().copy_us = 0;
+        // Zera o buffer, e não só o cronômetro: agora que a captura
+        // acumula microlote a microlote, sobra do decode anterior seria
+        // residual de outra requisição concatenado ao desta.
+        self.reset_capture_slot();
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -1662,6 +1744,59 @@ mod pool_tests {
         let mut disabled = cfg();
         disabled.fit_memory = false;
         assert!(!fit_can_adjust_layers(&disabled));
+    }
+
+    /// A regressão de 2026-08-21: prompt vindo de um cliente OpenAI externo
+    /// morria com "got 655360 floats, expected 2621440 (512x5120)".
+    ///
+    /// 655360 = 128 x 5120, e 128 e o `FIT_MAX_UBATCH`. O chunk de 512 tokens
+    /// virava quatro microlotes, a captura substituia a cada um, e sobrava so o
+    /// ultimo quarto. Pela UI passava despercebido porque prompt curto cabe num
+    /// microlote so - e por isso o teste abaixo usa mais de um.
+    #[test]
+    fn capture_accumulates_every_microbatch_of_one_decode() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            copy_us: 0,
+        };
+
+        let n_embd = 4;
+        let ubatch = 2;
+        let tokens = 6; // tres microlotes, como um chunk maior que `n_ubatch`
+        for micro in 0..(tokens / ubatch) {
+            let inicio = (micro * ubatch * n_embd) as f32;
+            let pedaco: Vec<f32> = (0..(ubatch * n_embd)).map(|i| inicio + i as f32).collect();
+            accumulate_capture(&mut slot, pedaco);
+        }
+
+        let capturado = slot.buf.expect("a captura tem que ter disparado");
+        assert_eq!(
+            capturado.len(),
+            tokens * n_embd,
+            "o residual do chunk inteiro, nao o do ultimo microlote"
+        );
+        let esperado: Vec<f32> = (0..(tokens * n_embd)).map(|i| i as f32).collect();
+        assert_eq!(
+            capturado, esperado,
+            "os microlotes entram na ordem em que o split_simple os produz"
+        );
+    }
+
+    /// Sem isto, o residual de uma requisicao entraria concatenado no da
+    /// proxima - o modo de falha que a acumulacao introduziria se o buffer
+    /// nao fosse zerado a cada decode.
+    #[test]
+    fn a_new_decode_starts_from_an_empty_capture() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            copy_us: 0,
+        };
+        accumulate_capture(&mut slot, vec![1.0, 2.0]);
+        slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
+        accumulate_capture(&mut slot, vec![3.0, 4.0]);
+        assert_eq!(slot.buf.expect("captura"), vec![3.0, 4.0]);
     }
 
     #[test]

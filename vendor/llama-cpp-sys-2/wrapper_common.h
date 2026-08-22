@@ -60,6 +60,24 @@ int llama_rs_fit_params(
 
 void llama_rs_memory_breakdown_print(const struct llama_context * ctx);
 
+// Onde cada camada do modelo carregado realmente ficou, em JSON.
+//
+// Não é o `n_gpu_layers` pedido nem o efetivo: é o buffer em que cada tensor
+// de cada bloco foi mesmo alocado, lido de `tensors_by_name`. Só assim um
+// override de buffer type (o `fit` empurrando os experts de um MoE para a
+// CPU) aparece, em vez de uma camada contada como "na GPU" porque o
+// dispositivo dela é a GPU.
+//
+// O chamador é dono da string e a libera com `llama_rs_string_free`.
+llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, char ** out_json);
+
+// A memória do contexto por buffer, em JSON: pesos, contexto (o cache KV) e
+// buffers de cálculo. Responde onde o cache KV ficou de verdade - a flag
+// `offload_kqv` é o pedido, e o llama.cpp pode não atendê-lo numa GPU cheia.
+//
+// O chamador é dono da string e a libera com `llama_rs_string_free`.
+llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json);
+
 struct llama_rs_mtp_speculative * llama_rs_mtp_speculative_init(
     struct llama_context * ctx_tgt,
     struct llama_context * ctx_dft,

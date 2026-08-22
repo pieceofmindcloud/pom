@@ -1510,6 +1510,73 @@ impl LlmEngine {
     }
 }
 
+/// Monta peças de token em texto válido entre chamadas.
+///
+/// O vocabulário devolve bytes crus por token: um token BYTE é um byte só
+/// (`llama-vocab.cpp::token_to_piece`, ramo `LLAMA_TOKEN_ATTR_BYTE`) e um
+/// token normal pode terminar no meio de um codepoint. Converter cada peça
+/// com `from_utf8_lossy` por chamada nascia U+FFFD independente a cada
+/// fragmento e rasgava a palavra no delta do chat. O acumulador guarda o
+/// rabicho incompleto e só emite caractere completo; `flush` drena o resto
+/// no fim do stream.
+pub(crate) struct Utf8Assembler {
+    pending: Vec<u8>,
+}
+
+impl Utf8Assembler {
+    pub(crate) fn new() -> Self {
+        Self { pending: Vec::new() }
+    }
+
+    /// Acrescenta os bytes da peça e devolve o texto completo até aqui.
+    ///
+    /// Sequência incompleta no fim fica pendente para a peça seguinte;
+    /// sequência inválida de verdade vira um único U+FFFD na hora, a mesma
+    /// semântica de um `from_utf8_lossy` sobre o stream inteiro.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(s) => {
+                    out.push_str(s);
+                    self.pending.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    if valid > 0 {
+                        out.push_str(
+                            std::str::from_utf8(&self.pending[..valid])
+                                .expect("prefixo validado por from_utf8"),
+                        );
+                    }
+                    match e.error_len() {
+                        // Incompleta: o caractere pode completar na próxima peça.
+                        None => {
+                            self.pending.drain(..valid);
+                            break;
+                        }
+                        // Inválida: não vai completar nunca; repõe e segue.
+                        Some(n) => {
+                            self.pending.drain(..valid + n);
+                            out.push('\u{fffd}');
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Fim do stream: drena o rabicho que não virou caractere completo.
+    pub(crate) fn flush(&mut self) -> String {
+        let out = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        out
+    }
+}
+
 /// A configuração de um contexto do pool.
 ///
 /// Separada para poder ser conferida sem GPU: é ela que sustenta a promessa de
@@ -2540,7 +2607,7 @@ mod utf8_assembler_tests {
     #[test]
     fn assembler_passa_ascii_inteiro_numa_so_chamada() {
         let mut asm = Utf8Assembler::new();
-        assert_eq!(asm.feed(b"Olá, ação, coração"), "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o");
+        assert_eq!(asm.feed(b"Ol\xc3\xa1, a\xc3\xa7\xc3\xa3o, cora\xc3\xa7\xc3\xa3o"), "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o");
     }
 
     /// Byte inválido de verdade (não é prefixo de nada): vira um U+FFFD na

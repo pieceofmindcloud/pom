@@ -794,6 +794,28 @@ export function DeployModel() {
     });
   }
 
+  /**
+   * Tira a faixa desta máquina - o inverso exato de `assignRangeToMachine`.
+   *
+   * Remove só a linha que o operador clicou (faixa **e** máquina), então as
+   * réplicas da mesma faixa em outras máquinas ficam onde estavam, pelo mesmo
+   * motivo que atribuir preserva as vizinhas. A máquina continua no canvas
+   * mesmo sem faixa nenhuma: um peer sem faixa ainda é uma possibilidade, e
+   * tirar uma camada não é o mesmo gesto que "Remover da implantação".
+   */
+  function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
+    edit((base) =>
+      base.filter(
+        (row) =>
+          !(
+            row.target_node_id === nodeId &&
+            row.start_layer === startLayer &&
+            row.end_layer === endLayer
+          ),
+      ),
+    );
+  }
+
   function assignWhole(nodeId: string) {
     const candidate = p?.available[0] ?? (
       wholeModel?.total_layers != null
@@ -1440,10 +1462,12 @@ export function DeployModel() {
                               <button
                                 key={`${candidate.start_layer}-${candidate.end_layer}`}
                                 type="button"
-                                disabled={assigned}
-                                aria-label={`Atribuir ${range} a ${machine.label}`}
-                                onClick={() => assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id)}
-                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                                aria-label={assigned ? `Remover ${range} de ${machine.label}` : `Atribuir ${range} a ${machine.label}`}
+                                title={assigned ? `Tirar ${range} de ${machine.label}` : `Dar ${range} a ${machine.label}`}
+                                onClick={() => (assigned
+                                  ? unassignRangeFromMachine(candidate.start_layer, candidate.end_layer, machine.node_id)
+                                  : assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id))}
+                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua hover:border-rose/50 hover:bg-rose/10 hover:text-rose" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
                               >
                                 {assigned ? `${range} ✓` : range}
                               </button>

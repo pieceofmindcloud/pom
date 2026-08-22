@@ -377,7 +377,12 @@ impressão digital é só modelo + conjunto de faixas.
   pode ser recolhido pela borda esquerda, separa visualmente propriedades
   globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
   ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
-  peers é uma rota paralela válida, não uma troca. Peers que já estão no mapa
+  peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
+  atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A
+  saída remove só aquela faixa naquela máquina: as réplicas da mesma faixa em
+  outros peers ficam onde estão, e o peer continua no mapa mesmo sem faixa
+  nenhuma, porque tirar uma camada não é o mesmo gesto que "Remover da
+  implantação". Peers que já estão no mapa
   deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
   disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
   atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita

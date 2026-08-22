@@ -418,6 +418,61 @@ describe("DeployModel", () => {
     });
   });
 
+  /**
+   * O defeito que este teste guarda: no bloco "Camadas disponíveis neste peer"
+   * a faixa já atribuída virava um botão `disabled`. Selecionar era um caminho
+   * só de ida - o operador conseguia pôr duas faixas na mesma máquina e não
+   * conseguia mais tirar nenhuma delas. Só existia remoção por máquina inteira
+   * ("Remover da implantação"), nunca por faixa.
+   *
+   * A intenção original do guarda continua valendo: atribuir uma faixa a outro
+   * peer nunca remove *silenciosamente* o que o peer já serve. Um clique do
+   * operador na faixa marcada não é remoção silenciosa - é a ordem dele.
+   */
+  it("tira a seleção de uma camada já atribuída à máquina", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+
+    // L0-7 já é de ksia no plano: o botão tem que oferecer a saída, não estar cinza.
+    const selected = screen.getByRole("button", { name: "Remover L0–7 de ksia" });
+    expect((selected as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(selected);
+
+    await waitFor(() => {
+      const body = post.mock.calls
+        .map(([, body]) => body as { selection?: Array<{ start_layer: number; target_node_id: string }> })
+        .reverse()
+        .find((body) => Array.isArray(body.selection));
+      expect(body?.selection?.some((row) => row.start_layer === 0 && row.target_node_id === "ksia")).toBe(false);
+      // As faixas das outras máquinas ficam onde estavam.
+      expect(body?.selection?.some((row) => row.start_layer === 8 && row.target_node_id === "salem")).toBe(true);
+      expect(body?.selection?.some((row) => row.start_layer === 24 && row.target_node_id === "mac")).toBe(true);
+    });
+  });
+
+  /** Tirar e pôr de volta: o mesmo botão faz os dois sentidos. */
+  it("volta a atribuir a mesma camada depois de tirá-la", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount();
+
+    await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
+    fireEvent.click(screen.getByRole("button", { name: "Remover L0–7 de ksia" }));
+
+    const again = await screen.findByRole("button", { name: "Atribuir L0–7 a ksia" });
+    fireEvent.click(again);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Remover L0–7 de ksia" })).toBeTruthy();
+    });
+  });
+
   it("inclui no canvas um peer adicionado por duplo clique", async () => {
     const p = planOutOfLayerOrder();
     p.blocked = null;

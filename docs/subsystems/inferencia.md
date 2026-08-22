@@ -32,6 +32,9 @@ As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
 key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
+Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
+relay não abre túnel libp2p: a capability de túnel só vale para destinos
+remotos, e o quadro segue pelo caminho local de inferência.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 

@@ -1108,6 +1108,8 @@ struct P2pStack {
 /// deliberate: every caller of this function needs to always come up and
 /// serve its gateway, with or without libp2p.
 async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
+    infer_tunnel::set_local_node_id(args.node_id.clone());
+
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
             info!("🔑 Pkarr address: {}", n.public_key_uri());

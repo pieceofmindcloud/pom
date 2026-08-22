@@ -563,8 +563,12 @@ async fn send_batch_body(
         .libp2p_peer_id
         .as_deref()
         .and_then(|value| value.parse::<PeerId>().ok());
-    let can_use_tunnel =
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
         match send_batch_via_tunnel(
@@ -940,8 +944,12 @@ pub async fn send_frame_or_tunnel(
         .as_deref()
         .and_then(|s| s.parse::<PeerId>().ok());
 
-    let can_use_tunnel =
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
@@ -982,6 +990,18 @@ pub async fn send_frame_or_tunnel(
         on_issue,
     )
     .await
+}
+
+/// The tunnel is only a transport for another node. A local pipeline step is
+/// already served by this process and must use the ordinary local inference
+/// call, even when its announcement includes its own tunnel capability.
+fn tunnel_is_allowed_for_peer(
+    step_supports_tunnel: bool,
+    peer_id_known: bool,
+    tunnel_available: bool,
+    target_is_local: bool,
+) -> bool {
+    !target_is_local && step_supports_tunnel && peer_id_known && tunnel_available
 }
 
 /// Predicado mantido para os testes e para consumidores que ainda classificam
@@ -1342,6 +1362,12 @@ mod tests {
             !should_attempt_tunnel_fallback(kind, true, true, false),
             "the local swarm must actually be up"
         );
+    }
+
+    #[test]
+    fn the_local_peer_is_never_sent_through_the_tunnel() {
+        assert!(!tunnel_is_allowed_for_peer(true, true, true, true));
+        assert!(tunnel_is_allowed_for_peer(true, true, true, false));
     }
 
     /// `Result<SentFrame>::expect_err` would need `SentFrame: Debug`, which

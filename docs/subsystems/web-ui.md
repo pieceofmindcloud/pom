@@ -388,7 +388,12 @@ impressão digital é só modelo + conjunto de faixas.
   o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e
-  distribuição projetada de carga. O Tensor usa o modelo inteiro em todos os
+  distribuição projetada de carga. Cada card separa a faixa física carregada da
+  sub-faixa efetivamente executada. As arestas vêm do grafo de execução do
+  planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
+  entrada e mostram o RTT direcional usado para escolher entre eles. O canvas
+  não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
+  quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o

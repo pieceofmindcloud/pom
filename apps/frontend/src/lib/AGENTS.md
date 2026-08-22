@@ -76,7 +76,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   shapes. `DeployPlan` also carries the operational name, strategy, RTT route
   alternatives and projected load, while `DeployMachine` carries GPU/RAM
   capacity plus optional live GPU/RAM usage percentages. `DeployStep.parts`
-  carries merged-slice steps, `primary` marks whoever holds layer 0.
+  carries merged-slice steps, `primary` marks whoever holds layer 0, and the
+  optional `exec_start`/`exec_end` pair identifies the sub-range actually
+  executed by that step. `start_layer`/`end_layer` remain the physical range
+  loaded on disk, so old responses without the pair fall back to that range.
   `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized

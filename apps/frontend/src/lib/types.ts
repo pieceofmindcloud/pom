@@ -678,6 +678,9 @@ export interface DeployStep {
   position: number;
   start_layer: number;
   end_layer: number;
+  /** Faixa efetivamente executada; ausente em respostas antigas. */
+  exec_start?: number;
+  exec_end?: number;
   /** The plan's answer for the model size, `null` when nobody could say. */
   total_layers: number | null;
   name: string;

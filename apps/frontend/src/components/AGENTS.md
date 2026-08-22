@@ -248,9 +248,13 @@ Key logic carriers:
   ponteiro, zoom, Fit, Organizar e Redefinir. Cards já presentes no mapa não
   repetem a faixa inferior; arrastar ou dar duplo clique num peer disponível
   adiciona-o ao conjunto preferido e faz o card aparecer no mapa. O plano ainda é a fonte de
-  verdade: `route_options` desenha somente pontes entre estágios consecutivos,
-  com caminhos principal/paralelo/inativo e RTT direcional; o canvas também filtra
-  respostas antigas que tentem saltar um estágio. A faixa inferior continua
+  verdade: `route_options` é o grafo de handoffs por contiguidade das sub-faixas
+  efetivamente executadas, preservando ramos de entrada quando as faixas
+  carregadas se sobrepõem. Os cards distinguem `carrega` da faixa física e
+  `executa` da sub-faixa que participa da rota; as arestas exibem o RTT
+  direcional devolvido pelo planejador e não fabricam pontes a partir da ordem
+  visual dos cards. O canvas filtra apenas endpoints que estão visíveis, sem
+  reconstruir estágios ou apagar ramos. A faixa inferior continua
   aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
   e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
   deixa o RTT da aresta ausente em vez de copiar a medição do nó de destino; o

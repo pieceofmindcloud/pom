@@ -530,6 +530,7 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         state,
         "lab".into(),
         "um prompt qualquer para a bancada".into(),
+        true,
         max_tokens,
         tx,
     ));

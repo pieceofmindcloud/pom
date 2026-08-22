@@ -131,6 +131,7 @@ struct PrefillJob {
     is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
+    chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
     chunk_tokens: Option<Vec<i32>>,
     queued_at: Instant,
@@ -464,6 +465,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.is_final_chunk,
                 job.wire_dtype,
                 job.prompt,
+                job.chat_template,
                 job.tensor,
                 job.chunk_tokens,
                 job.queued_at,
@@ -921,6 +923,10 @@ struct InferState {
 
 type SharedState = Arc<Mutex<InferState>>;
 
+fn use_chat_template(requested: Option<bool>, configured_default: bool) -> bool {
+    requested.unwrap_or(configured_default)
+}
+
 /// A porta de inferência aceita a credencial compartilhada do cluster ou uma
 /// API key ativa. O gateway usa a connection_key nas chamadas internas; a
 /// alternativa de API key mantém o contrato dos clientes OpenAI/Anthropic.
@@ -974,7 +980,9 @@ impl InferState {
                 repeat_last_n: cfg.repeat_last_n as usize,
             },
             no_thinking: cfg.no_thinking,
-            chat_template: cfg.no_thinking, // --no-thinking implies --chat-template
+            // Mantém o comportamento dos chamadores antigos que não enviam a
+            // flag. O gateway atual sempre a explicita por endpoint.
+            chat_template: cfg.no_thinking,
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
@@ -1864,6 +1872,7 @@ async fn handle_prefill(
         .get("prompt")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
     // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
@@ -1897,6 +1906,7 @@ async fn handle_prefill(
         is_final_chunk,
         wire_dtype,
         prompt,
+        chat_template,
         tensor,
         chunk_tokens,
         queued_at,
@@ -2161,6 +2171,7 @@ fn prefill_blocking(
     is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
+    chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
     // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
@@ -2191,7 +2202,7 @@ fn prefill_blocking(
     // compute everything we need, store results, then re-borrow.
     if let Some(ref text) = prompt {
         if chunk_index == 0 {
-            let use_tmpl = s.chat_template;
+            let use_tmpl = use_chat_template(chat_template, s.chat_template);
             let no_think = s.no_thinking;
             let formatted = if use_tmpl {
                 s.engine
@@ -2430,6 +2441,7 @@ fn prefill_batch_blocking(
             is_final_chunk,
             wire_dtype,
             prompt,
+            chat_template,
             tensor,
             chunk_tokens,
             queued_at,
@@ -2439,13 +2451,14 @@ fn prefill_batch_blocking(
             s.get_or_create(&sid_key, chunk_index == 0)?;
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
-                    let formatted = if s.chat_template {
+                    let use_tmpl = use_chat_template(chat_template, s.chat_template);
+                    let formatted = if use_tmpl {
                         s.engine
                             .apply_chat_template(&[("user", text)], true, s.no_thinking)
                     } else {
                         text.to_string()
                     };
-                    let tokens = s.engine.tokenize(&formatted, !s.chat_template, true);
+                    let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
                     s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
                 }
             }
@@ -3608,6 +3621,18 @@ pub(crate) fn longest_match(sampled: &[i32], drafted: &[i32]) -> usize {
 /// nothing" rather than a panic or a wrapped position.
 fn rollback_from(n_past_after_batch: u32, batch_width: u32, accept_count: u32) -> u32 {
     n_past_after_batch.saturating_sub(batch_width.saturating_sub(accept_count))
+}
+
+#[cfg(test)]
+mod chat_template_tests {
+    use super::use_chat_template;
+
+    #[test]
+    fn request_mode_overrides_the_legacy_server_default() {
+        assert!(use_chat_template(Some(true), false));
+        assert!(!use_chat_template(Some(false), true));
+        assert!(use_chat_template(None, true));
+    }
 }
 
 #[cfg(test)]

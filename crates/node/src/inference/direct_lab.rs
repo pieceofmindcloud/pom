@@ -467,6 +467,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
         "lab",
         &session,
         "um prompt qualquer",
+        true,
         CHUNK,
         WireDtype::F16,
         &http,

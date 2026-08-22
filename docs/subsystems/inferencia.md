@@ -249,6 +249,21 @@ essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
 
+### 3.2 Template de conversa e completions
+
+O gateway distingue o formato do pedido antes de iniciar o prefill. Chat
+OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e
+`POST /api/generate` enviam `chat_template: true` no metadado do primeiro
+prefill. A cabeça, que é a única dona do tokenizer, aplica o
+`tokenizer.chat_template` do GGUF uma vez e abre o turno do assistente; os
+demais peers recebem somente o estado oculto e não reformatam o prompt.
+
+`/v1/completions` continua sendo completion cru e envia `chat_template: false`.
+Essa flag explícita tem precedência sobre o padrão legado do servidor, que
+existia para chamadas internas sem metadado. `no_thinking` controla apenas a
+abertura do bloco de raciocínio e não decide mais se o prompt é conversa. Assim
+o modo de pensamento e o enquadramento de conversa não podem se confundir.
+
 No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
 frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
 frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode

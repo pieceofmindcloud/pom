@@ -398,6 +398,7 @@ async fn blocking_response(
         caller,
         model.clone(),
         prompt,
+        true,
         max_tokens,
     )
     .await
@@ -452,6 +453,7 @@ fn stream_response(
         caller,
         model.clone(),
         prompt,
+        true,
         max_tokens,
         tx,
     );

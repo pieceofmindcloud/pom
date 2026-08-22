@@ -48,7 +48,7 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ['0']
               capabilities: [gpu]
 
   node-gpu2:
@@ -65,16 +65,16 @@ services:
         reservations:
           devices:
             - driver: nvidia
-              count: all
+              device_ids: ['1']
               capabilities: [gpu]
 
-  node-cpu-1:
-    <<: *node
-    container_name: pom-node-cpu-1
-    volumes:
-      - ./tests/fixtures/node-cpu-1:/data
-      - ./models:/data/models
-      - ./source-models:/data/source-models
+#  node-cpu-1:
+#    <<: *node
+#    container_name: pom-node-cpu-1
+#    volumes:
+#      - ./tests/fixtures/node-cpu-1:/data
+#      - ./models:/data/models
+#      - ./source-models:/data/source-models
 
 #  node-cpu-2:
 #    <<: *node

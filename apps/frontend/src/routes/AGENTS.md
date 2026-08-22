@@ -16,7 +16,9 @@ Per-file list:
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
   (`useCluster`, `useNode`, `useServableModels`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
-  connection key by `api`.
+  connection key by `api`. Its picker uses `../lib/chatModels` to hide
+  deployment-qualified ids from chat presentation only; deployment screens and
+  backend model resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

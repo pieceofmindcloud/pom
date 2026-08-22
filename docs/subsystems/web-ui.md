@@ -267,7 +267,9 @@ guarda além das falas:
   linhas de números por salto, embaixo de toda resposta; abrir é um clique.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
-  embaixo do campo de texto.
+  embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
+  com o seletor de implantação `@d-<deploy_id>`; o catálogo do backend e as
+  telas de gerenciamento de implantações continuam vendo os ids completos.
 - **O título se edita clicando nele** e fica gravado (`titled` impede a
   primeira mensagem de sobrescrever o nome escolhido).
 

@@ -16,6 +16,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   registry actions (`listDeployments`, `redeployDeployment`,
   `activateDeployment`).
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
+- `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including optional TP telemetry.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; serializes the two telemetry tables for the AI analysis action.

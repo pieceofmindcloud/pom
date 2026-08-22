@@ -40,6 +40,7 @@ import { bytes, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
 import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import { useCluster, useNode, useServableModels } from "../lib/queries";
+import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
@@ -571,7 +572,10 @@ export function Chat() {
   const toast = useToast();
 
   const available = useMemo(
-    () => Array.from(new Set([...(models.data ?? []).map((m) => m.id), ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? [])])).filter(Boolean).sort(),
+    () => chatModelOptions([
+      ...(models.data ?? []).map((m) => m.id),
+      ...(cluster.data?.model_inventory.filter((entry) => entry.complete).map((entry) => entry.model_id) ?? []),
+    ]),
     [cluster.data?.model_inventory, models.data],
   );
 

@@ -269,6 +269,23 @@ fn bare_host(host: &str) -> &str {
     host.trim_start_matches('[').trim_end_matches(']')
 }
 
+/// Destinations may be private or loopback when the cluster is local, but an
+/// unspecified, multicast, broadcast, or `0.0.0.0/8` address is never a peer.
+/// Hostnames remain valid here and are checked by `lookup_host` at send time.
+pub(crate) fn is_valid_destination(addr: &str) -> bool {
+    if !has_nonzero_port(addr) {
+        return false;
+    }
+    let host = bare_host(ip_host(addr));
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast() && ip.octets()[0] != 0
+        }
+        Ok(std::net::IpAddr::V6(ip)) => !ip.is_unspecified() && !ip.is_multicast(),
+        Err(_) => !host.is_empty(),
+    }
+}
+
 fn host_port(host: &str, port: u16) -> String {
     let host = bare_host(host);
     if host.contains(':') {
@@ -388,9 +405,9 @@ impl PeerInfo {
     pub fn dialable_addr(&self) -> Option<&str> {
         self.addr_candidates
             .iter()
-            .find(|addr| has_nonzero_port(addr))
+            .find(|addr| is_valid_destination(addr))
             .map(String::as_str)
-            .or_else(|| has_nonzero_port(&self.addr).then_some(self.addr.as_str()))
+            .or_else(|| is_valid_destination(&self.addr).then_some(self.addr.as_str()))
     }
 
     /// URLs do servidor de inferencia, uma por candidato.
@@ -407,6 +424,7 @@ impl PeerInfo {
             self.addr_candidates.iter().collect()
         };
         base.iter()
+            .filter(|a| is_valid_destination(a))
             .map(|a| {
                 format!(
                     "{}://{}:{}",
@@ -460,6 +478,7 @@ impl PeerInfo {
             self.addr_candidates.iter().collect()
         };
         base.iter()
+            .filter(|a| is_valid_destination(a))
             .map(|a| {
                 format!(
                     "{}://{}:{}",
@@ -943,6 +962,12 @@ impl Network {
     }
 
     async fn send_bytes(&self, data: &[u8], addr: &str) -> std::io::Result<()> {
+        if !is_valid_destination(addr) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "non-routable destination",
+            ));
+        }
         let resolved = tokio::net::lookup_host(addr)
             .await?
             .next()
@@ -2150,6 +2175,34 @@ mod tests {
         assert_eq!(
             peer.inference_candidates(),
             vec!["http://192.168.1.9:8181".to_string()]
+        );
+    }
+
+    #[test]
+    fn wildcard_addresses_are_not_destinations() {
+        for addr in [
+            "0.0.0.0:42778",
+            "[::]:42778",
+            "0.0.0.0:0",
+            "[::]:0",
+            "224.0.0.1:42778",
+            "255.255.255.255:42778",
+            "[ff02::1]:42778",
+        ] {
+            let mut peer = peer_com_candidatos(vec![]);
+            peer.addr = addr.into();
+            assert_eq!(peer.dialable_addr(), None, "{addr} must not be dialed");
+            assert!(
+                peer.inference_candidates().is_empty(),
+                "{addr} must not become a URL"
+            );
+        }
+
+        let peer = peer_com_candidatos(vec!["0.0.0.0:42778", "[2804:d55::1]:42778"]);
+        assert_eq!(peer.dialable_addr(), Some("[2804:d55::1]:42778"));
+        assert_eq!(
+            peer.inference_candidates(),
+            vec!["http://[2804:d55::1]:8181".to_string()]
         );
     }
 

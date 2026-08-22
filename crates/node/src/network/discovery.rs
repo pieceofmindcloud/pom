@@ -1,5 +1,5 @@
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
-use crate::network::{Network, P2PMessage, PeerInfo};
+use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
@@ -52,6 +52,9 @@ fn split_host_port(addr: &str) -> Option<(&str, &str)> {
 fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
     use std::net::IpAddr;
 
+    if !is_valid_destination(addr) {
+        return None;
+    }
     let (host, port_str) = split_host_port(addr)?;
     let udp_port: u16 = port_str.parse().ok()?;
     if udp_port == 0 {
@@ -932,6 +935,14 @@ mod tests {
     #[test]
     fn a_zero_udp_port_is_not_a_dialable_multiaddr() {
         assert!(udp_to_libp2p_multiaddr("[2001:db8::42]:0").is_none());
+    }
+
+    #[test]
+    fn wildcard_udp_addresses_are_not_tunnel_destinations() {
+        assert!(udp_to_libp2p_multiaddr("0.0.0.0:42778").is_none());
+        assert!(udp_to_libp2p_multiaddr("[::]:42778").is_none());
+        assert!(udp_to_libp2p_multiaddr("0.0.0.0:0").is_none());
+        assert!(udp_to_libp2p_multiaddr("[::]:0").is_none());
     }
 
     // ── Como o gossipsub distingue dois anúncios ────────────────────────────

@@ -110,6 +110,12 @@ a quebra parecia unilateral). Há teste que fala IPv4 de verdade
 - `Announce.addr` usa `announce_addr()`: o fixado, o primeiro endereço público
   local com a porta de descoberta, o observado por `identify`, ou o literal
   `0.0.0.0:<porta>`.
+- O literal curinga continua podendo aparecer no `Announce` como sentinel de
+  escuta quando o nó ainda não tem endereço anunciável. Antes de qualquer uso
+  como destino, `network::is_valid_destination` exige porta diferente de zero e
+  rejeita endereços não especificados, multicast e broadcast. Assim o sentinel
+  não vira destino UDP, URL HTTP de inferência ou multiaddr do túnel; candidatos
+  válidos seguintes continuam disponíveis.
 - `advertised_addr` normaliza o que o operador digita à mão em `host:port`
   (IPv6 puro precisa de colchetes para ganhar porta).
 - `self_announce` monta o `Announce`; anuncia zero camadas quando não há
@@ -242,9 +248,10 @@ Comportamento atual do código:
    `--advertise-addr`). Hoje ele também carrega `addr_candidates`, e o
    `handle_event` do libp2p usa o primeiro candidato, então o `0.0.0.0` só
    sobrevive quando o peer não anunciou candidato nenhum (ex.: Windows, onde a
-   enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem;
-   `insert_peer` (libp2p) não reescreve, mas ignora um anúncio que não tenha
-   nenhum endereço com porta diferente de zero.
+   enumeração é vazia). O caminho UDP reescreve `addr` com o IP de origem.
+   `insert_peer` (libp2p) não reescreve, mas a guarda de destino impede que esse
+   sentinel seja discado ou convertido em URL/multiaddr. Um candidato válido
+   observado ou anunciado continua sendo usado.
 2. **O tráfego de inferência prefere libp2p por hop.** O gateway e os relays
    usam `network/infer_tunnel.rs` via `relay::send_frame_or_tunnel` quando o
    hop anuncia `transport/libp2p-tunnel-v1` e um `PeerId` válido. O túnel é

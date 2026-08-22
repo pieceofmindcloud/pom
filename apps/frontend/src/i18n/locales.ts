@@ -871,6 +871,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "canvas.resetLayout": () => "Reset the arrangement, including what you dragged",
     "canvas.noModel": () => "No model deployed",
     "canvas.noCapacity": () => "No inference capacity announced yet.",
+    "canvas.layers": () => "layers",
+    "canvas.layersSplit": ({ gpu, cpu }) =>
+      String(gpu) + " GPU · " + String(cpu) + " CPU",
+    "canvas.layersAllGpu": ({ count }) => String(count) + " on GPU",
+    "canvas.layersOnCpu": ({ cpu }) =>
+      String(cpu) + " layer" + (Number(cpu) === 1 ? "" : "s") + " did not fit on the GPU",
     "canvas.meterUnknown": () => "unknown",
     "canvas.inFlight": ({ count }) => String(count) + " in flight",
     "canvas.memory": () => "Memory",
@@ -1806,6 +1812,12 @@ const messages: Record<Locale, Record<string, Message>> = {
     "canvas.resetLayout": () => "Redefinir o arranjo, inclusive o que você arrastou",
     "canvas.noModel": () => "Nenhum modelo implantado",
     "canvas.noCapacity": () => "Nenhuma capacidade de inferência anunciada ainda.",
+    "canvas.layers": () => "camadas",
+    "canvas.layersSplit": ({ gpu, cpu }) =>
+      String(gpu) + " GPU · " + String(cpu) + " CPU",
+    "canvas.layersAllGpu": ({ count }) => String(count) + " na GPU",
+    "canvas.layersOnCpu": ({ cpu }) =>
+      String(cpu) + " camada" + (Number(cpu) === 1 ? "" : "s") + " não coube" + (Number(cpu) === 1 ? "" : "ram") + " na GPU",
     "canvas.meterUnknown": () => "desconhecido",
     "canvas.inFlight": ({ count }) => String(count) + " em voo",
     "canvas.memory": () => "Memória",

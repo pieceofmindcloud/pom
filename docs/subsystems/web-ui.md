@@ -156,7 +156,8 @@ no Dashboard (`hidden`, para uma superfície futura).
   (painéis, botões, inputs, badges, meters, estados) em classes por token CSS,
   sem estilo em runtime. Visualizações do cluster: `ModelNetworkCanvas` (grafo
   SVG pan/zoom com RAM/VRAM/carga e arestas principal/paralela/inativa,
-  posições persistidas por fingerprint de implantação) e `PipelineRail` (o
+  posições persistidas por fingerprint de implantação; o card também resume
+  quantas camadas foram parar na GPU e quantas sobraram na CPU) e `PipelineRail` (o
   caminho que a requisição percorre). Guardas de ação remota/destrutiva:
   `Confirm`/`Modal`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
   `UndeployPipeline`, `AddNodeDialog`.
@@ -312,6 +313,30 @@ Ed25519 que os peers recebem - navegador não verifica Ed25519. Ver
 **O navegador avisa na primeira visita de cada máquina**, porque o certificado é
 auto assinado e não há CA para validá-lo. É esperado; o operador aceita uma vez
 por máquina.
+
+## O card do Fluxo diz quanto do modelo coube na GPU
+
+Uma camada na CPU é ordens de grandeza mais lenta que na GPU, e esse é o
+primeiro motivo de uma inferência arrastada. O card do Fluxo mostra a divisão
+(`LayerPlacementMeter`, em `ModelNetworkCanvas.tsx`) na mesma forma dos medidores
+de VRAM e RAM, logo abaixo da faixa de camadas: barra âmbar e "12 GPU · 10 CPU"
+quando sobra camada na CPU, barra neutra e "22 na GPU" quando não sobra. O
+duplo clique continua abrindo o detalhe completo; isto é resumo, não
+substituição.
+
+O número **não** sai de `NodeConfig.n_gpu_layers`. Esse é o *pedido*, e o pedido
+quase sempre é o sentinela 99 ("descarregue tudo"); quem decide é o `fit` do
+llama.cpp, que baixa o número até caber na VRAM. Derivar a divisão do pedido
+responde "todas na GPU" exatamente quando algumas não estão - o único caso que
+o operador precisa enxergar. O que vale é `RuntimeStatus.reported_gpu_layers`,
+que o nó lê do `n_gpu_layers_effective` do próprio `/health` do servidor de
+inferência, no mesmo poll de 3s que já lhe dá `reported_total_layers`. Nenhuma
+chamada nova: o `/api/ui/cluster` já busca o `/api/ui/node` de cada peer.
+
+Sem relato do motor a linha não aparece. `layerPlacement` (`src/lib/layerPlacement.ts`)
+devolve `null`, e a tela cala em vez de chutar - dizer "tudo na GPU" sem saber
+seria pior que o silêncio. Negativo é "todas" na convenção do llama.cpp, e lido
+como zero diria que a máquina inteira roda na CPU.
 
 ## O canvas do Fluxo: arranjo por camadas
 

@@ -17,6 +17,7 @@ import {
   type CanvasPosition,
 } from "../lib/networkLayout";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
+import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ClusterView, RoutingEdge } from "../lib/types";
 
 export type EdgeState = "principal" | "paralela" | "inativa";
@@ -61,6 +62,42 @@ function Meter({ label, used, total, unknown = false }: { label: string; used: n
 }
 
 /**
+ * Quanto do que esta máquina serve coube na GPU.
+ *
+ * O sinal que interessa é o inverso do resto do card: aqui **cheio é bom**. Uma
+ * camada na CPU é ordens de grandeza mais lenta que na GPU, e hoje isso só
+ * aparecia abrindo a máquina no duplo clique - o operador via a inferência
+ * arrastada sem nada na tela dizendo por quê.
+ *
+ * Por isso a barra fica âmbar só quando sobra camada na CPU, e neutra quando
+ * está tudo na GPU: o caso bom é a maioria, e um alarme permanente no card
+ * ensina a ignorar alarme. Sem relato do motor a linha não aparece - ver
+ * `layerPlacement`.
+ */
+function LayerPlacementMeter({ placement }: { placement: LayerPlacement }) {
+  const { t } = useI18n();
+  const { served, gpu, cpu } = placement;
+  const onCpu = cpu > 0;
+  const percent = Math.min(100, (gpu / served) * 100);
+  const value = onCpu
+    ? t("canvas.layersSplit", { gpu, cpu })
+    : t("canvas.layersAllGpu", { count: gpu });
+  return <div className="mt-2">
+    <div className="mb-1 flex justify-between gap-2 text-[9px] uppercase tracking-[0.12em] text-faint">
+      <span>{t("canvas.layers")}</span>
+      <span className={clsx("normal-case tracking-normal", onCpu ? "text-amber" : "text-muted")}>{value}</span>
+    </div>
+    <div
+      className="h-1.5 overflow-hidden rounded-full bg-line"
+      role="img"
+      aria-label={onCpu ? t("canvas.layersOnCpu", { cpu }) : `${t("canvas.layers")}: ${value}`}
+    >
+      <div className={clsx("h-full rounded-full", onCpu ? "bg-amber" : "bg-aqua")} style={{ width: `${percent}%` }} />
+    </div>
+  </div>;
+}
+
+/**
  * Um clique que veio de um controle não é um clique no card.
  *
  * O card do Fluxo não tem botões hoje, mas o duplo clique é o gesto de "abrir
@@ -83,6 +120,12 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
   const serving = isServing(range.node?.status.state);
   const unreachable = Boolean(range.unreachable);
   const kind = machineKind(system);
+  // Reaproveita o que o `/api/ui/cluster` já traz: nenhuma chamada nova.
+  const placement = layerPlacement(
+    range.start_layer,
+    range.end_layer,
+    range.node?.status.reported_gpu_layers,
+  );
   const { t } = useI18n();
   return <article
     onPointerDown={onPointerDown}
@@ -103,6 +146,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
       <span className="flex shrink-0 items-center gap-1.5 text-[11px] text-muted"><Dot tone={unreachable ? "rose" : serverStateTone(range.node?.status.state)} pulse={serving && !unreachable} />{unreachable ? "timeout" : serverStateLabel(range.node?.status.state)}</span>
     </div>
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
+    {placement && <LayerPlacementMeter placement={placement} />}
     <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
     <Meter label={t("canvas.load")} used={range.load} total={8} />

@@ -129,9 +129,10 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
-- **A ordem do pipeline é a ordem das camadas**, e um nó serve uma faixa (duas
-  só com `merge`). Sobreposição é recusa; buraco é aviso. Quem fica com a camada
-  0 processa o prompt inteiro de toda requisição. → `implantacao.md`
+- **A ordem do pipeline é a ordem das camadas**, e um nó pode servir várias
+  faixas. `merge` apenas junta faixas adjacentes no mesmo nó. Sobreposição e
+  buraco global são recusa. Quem fica com a camada 0 processa o prompt inteiro
+  de toda requisição. → `implantacao.md`
 - **Quantas camadas o modelo tem é `Option`, não número.** Fatia sem metadata
   `pom.*` não sabe o total; inventar zero foi um bug real. → `fatiamento.md`
 - **`<config>.last-slice.json` só vira `serving` pelo watcher do `/health`.**

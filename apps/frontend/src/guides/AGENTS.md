@@ -34,6 +34,9 @@ em `AGENTS.md - crates/routing-base/`.
    Quando os dois divergirem, o markdown (que acompanha o código) vence e este
    conteúdo é corrigido. Todo guia termina em links `deep` para a referência,
    em vez de duplicar o detalhe.
+   A tabela do guia de fatiar e implantar acompanha `docs/subsystems/implantacao.md`:
+   faixas válidas podem compartilhar uma máquina, mas gap global e sobreposição
+   continuam recusas.
 2. **A letra dentro de um diagrama é neutra de idioma** - letras de máquina,
    faixas de camada, `prompt`, `token`, contagem de bytes. A frase que explica a
    figura é a legenda, que é conteúdo localizado. É isso que faz um desenho só
@@ -51,3 +54,10 @@ em `AGENTS.md - crates/routing-base/`.
 ## Defeitos anotados
 
 Nenhum em aberto nesta pasta.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

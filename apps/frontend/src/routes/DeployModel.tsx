@@ -1143,7 +1143,7 @@ export function DeployModel() {
         )}
 
         <div className={`relative grid min-h-0 flex-1 ${inspectorOpen ? "lg:grid-cols-[minmax(0,1fr)_19rem]" : "lg:grid-cols-[minmax(0,1fr)_2rem]"}`}>
-          <div className="flex min-h-0 min-w-0 p-3 sm:p-4">
+          <div className="flex min-h-[24rem] min-w-0 p-3 sm:p-4 lg:min-h-0">
             {plan.isError ? (
               <div className="flex min-h-[22rem] flex-1 items-center justify-center rounded-xl border border-dashed border-rose/40 p-4">
                 <ErrorState error={plan.error} onRetry={() => void plan.refetch()} />

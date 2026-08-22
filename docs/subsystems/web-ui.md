@@ -443,11 +443,12 @@ impressão digital é só modelo + conjunto de faixas.
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os
   painéis de explicação renderizam sob `answered` (o nó respondeu sobre *estas*
-  linhas), nunca sob `validated`. Pendurar a explicação na comparação foi o
-  defeito de 2026-08-16: no estado em que o operador mais precisava do motivo -
-  duas faixas na mesma máquina - a tela ficava muda e o botão só cinza. `whyNot`
-  ainda põe a razão em uma linha ao lado do botão, inclusive nos dois casos sem
-  painel (nada selecionado, resposta a caminho).
+  linhas), nunca sob `validated`. O planner aceita várias faixas na mesma
+  máquina, mas mantém `blocked` para gaps globais, sobreposição e outros
+  problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
+  nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
+  mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
+  interna em viewport estreito para não cortar cards nem criar overflow na página.
 - **Transferir** (`Transfers`/`SendFile`/`Notifications`): ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
   ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")

@@ -11,6 +11,7 @@ import {
   fallbackPosition,
   mergePositions,
   readPositions,
+  routeGeometry,
   writePositions,
   type CanvasPosition,
 } from "../lib/networkLayout";
@@ -302,7 +303,7 @@ export function DeployNetworkCanvas({
   return (
     <section
       ref={canvas}
-      className="relative h-full min-h-0 w-full overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
+      className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
       style={{ backgroundSize: "18px 18px" }}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -336,15 +337,11 @@ export function DeployNetworkCanvas({
               if (fromIndex < 0 || toIndex < 0) return null;
               const from = positionOf(route.from_node_id, fromIndex);
               const to = positionOf(route.to_node_id, toIndex);
-              const x1 = from.left + CARD_WIDTH;
-              const y1 = from.top + CARD_HEIGHT / 2;
-              const x2 = to.left;
-              const y2 = to.top + CARD_HEIGHT / 2;
-              const bend = Math.max(60, Math.abs(x2 - x1) * 0.42);
+              const geometry = routeGeometry(from, to);
               const id = edgeId(route.from_node_id, route.to_node_id);
               const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
               const style = edgeStyle(state);
-              return <path key={`${id}-${index}`} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
+              return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
             })}
           </svg>
           {allEdges.map((route, index) => {
@@ -353,9 +350,8 @@ export function DeployNetworkCanvas({
             if (fromIndex < 0 || toIndex < 0) return null;
             const from = positionOf(route.from_node_id, fromIndex);
             const to = positionOf(route.to_node_id, toIndex);
-            const x = (from.left + CARD_WIDTH + to.left) / 2;
-            const y = (from.top + to.top + CARD_HEIGHT) / 2;
-            return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: x, top: y }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
+            const geometry = routeGeometry(from, to);
+            return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: geometry.labelX, top: geometry.labelY }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
           })}
           {machines.map((machine, index) => (
             <NodeCard key={machine.node_id} machine={machine} steps={plan.steps} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />

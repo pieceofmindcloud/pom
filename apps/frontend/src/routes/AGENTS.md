@@ -131,8 +131,11 @@ Per-file list:
   another machine remains as a replica. Removing a card deletes
   that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
   canvas do Painel, desenha nós por faixa, pontes somente entre estágios
-  consecutivos e alternativas com RTT direcional, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
-  repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
+  consecutivos e alternativas com RTT direcional, orienta a curva pelos lados
+  enfrentados dos cards, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
+  repete no rodapé peers já desenhados. Em viewport estreito, o mapa ganha
+  altura mínima e rolagem interna para não cortar cards nem criar overflow na
+  página. Arrastar ou dar duplo clique adiciona
   um peer disponível ao plano; a atribuição de uma faixa disponível edita
   somente aquela seleção, preserva as faixas existentes no peer como réplicas
   explícitas e volta ao backend para validação.
@@ -251,3 +254,10 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
 `/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

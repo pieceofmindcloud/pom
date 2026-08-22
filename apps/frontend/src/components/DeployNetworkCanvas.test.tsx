@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { CARD_HEIGHT, CARD_WIDTH, routeGeometry, type CanvasPosition } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../lib/types";
 import { DeployNetworkCanvas } from "./DeployNetworkCanvas";
 
@@ -108,5 +109,18 @@ describe("DeployNetworkCanvas", () => {
     expect(screen.getAllByText("executa L16–31").length).toBeGreaterThan(0);
     expect(screen.getByText("branch → tail · 4.5 ms")).toBeTruthy();
     expect(screen.getAllByText("RTT 4.5 ms").length).toBeGreaterThan(0);
+  });
+
+  it("anchors the RTT curve on the facing sides when the receiver is on the left", () => {
+    const from: CanvasPosition = { left: 600, top: 100 };
+    const to: CanvasPosition = { left: 100, top: 100 };
+    const geometry = routeGeometry(from, to);
+
+    expect(geometry.x1).toBe(from.left);
+    expect(geometry.y1).toBe(from.top + CARD_HEIGHT / 2);
+    expect(geometry.x2).toBe(to.left + CARD_WIDTH);
+    expect(geometry.y2).toBe(to.top + CARD_HEIGHT / 2);
+    expect(geometry.c1x).toBeLessThan(geometry.x1);
+    expect(geometry.c2x).toBeGreaterThan(geometry.x2);
   });
 });

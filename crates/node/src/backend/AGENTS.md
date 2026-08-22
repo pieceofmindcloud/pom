@@ -215,21 +215,19 @@ behind an auth extractor.
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
-  every prompt); one distinct range per node unless `merge` (adjacent ranges
-  joined via `splitter::merge`); the exact same range on different nodes is a
-  replica and a valid parallel route; the same whole model may likewise be
-  selected on multiple nodes for balancing; distinct overlapping cuts are refused,
-  and a gap only warns.
+  every prompt); one node may serve multiple distinct ranges, and `merge` only
+  joins adjacent ranges via `splitter::merge`; the exact same range on different
+  nodes is a replica and a valid parallel route; the same whole model may
+  likewise be selected on multiple nodes for balancing; distinct overlapping
+  cuts and global gaps are refused.
   **`steps` always comes back in layer order**, blocked plans included:
   `position` only means "place in the pipeline" in that order, `run` reads the
   launch order straight off the list, and the screen lines the plan up against
-  rows it keeps sorted by layer. The grouping loop walks by target machine, so
-  the sort is applied once at the end - without it, a machine holding two
-  ranges emitted its second one ahead of everything in between and the deploy
-  screen fell silent (2026-08-16). For the same reason an **empty
-  `target_node_id` never groups**: "no machine" is not a machine, and lumping
-  every unplaced range under one empty id produced a refusal naming a machine
-  with no name.
+  rows it keeps sorted by layer. The grouping loop walks in layer order and
+  only joins consecutive entries when `merge` is enabled, so separated ranges
+  on one machine remain independent steps. For the same reason an **empty
+  `target_node_id` never groups**: "no machine" is not a machine, and each
+  unplaced range keeps its own step and problem text.
   `undeploy_endpoint` re-surveys the cluster (never trusts the screen),
   resolves `UndeployRequest.group` via `resolve_group` (empty picks the only
   pipeline in the air; two pipelines is a 400 - never guess), then calls
@@ -384,3 +382,10 @@ behind an auth extractor.
   body (the doc comment spells out the Principal-only check) and update the
   test. The route still needs the connection key (`ConnectionAuth`), so the
   port is operator-gated, not anonymous.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

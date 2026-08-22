@@ -258,8 +258,9 @@ mostra o que ele decidiu. As regras, na ordem em que importam:
    máquinas necessárias, e pegar só o que continua a corrente torna sobreposição
    impossível por construção — o que passou a importar quando o mesmo modelo
    pode estar fatiado duas vezes com cortes diferentes.
-2. Um nó serve uma faixa por vez, então o conjunto precisa de pelo menos tantas
-   máquinas quantas fatias. Menos que isso é recusa, não implantação pela metade.
+2. Um nó pode servir várias faixas válidas, inclusive faixas separadas. O conjunto
+   precisa cobrir cada camada exigida exatamente uma vez; uma lacuna global é
+   recusa, não implantação pela metade.
 3. Máquina que já tem a fatia é preferida para ela — cada cópia evitada são ~17
    minutos a menos no enlace real.
 4. A camada 0 vai para a máquina com mais memória livre, porque quem fica com
@@ -293,12 +294,12 @@ Viabilidade, e o que é recusa e o que é aviso:
 | Situação | Resposta |
 |---|---|
 | Faixas escolhidas se sobrepõem | **Recusa.** As camadas rodariam duas vezes e a resposta sairia errada sem nada falhar. |
-| Duas faixas na mesma máquina | **Recusa** por padrão — a não ser que "juntar fatias vizinhas" esteja ligado: faixas **adjacentes** da mesma máquina são fundidas num arquivo só (`splitter::merge`) antes de subir, e a máquina passa a servir a união. Faixas não adjacentes são recusa mesmo com a junta ligada. |
+| Duas ou mais faixas na mesma máquina | **Aceitas** quando não se sobrepõem e a cobertura global é completa. Se "juntar fatias vizinhas" estiver ligado, apenas faixas **adjacentes** da mesma máquina são fundidas num arquivo só (`splitter::merge`); faixas separadas continuam etapas independentes. |
 | Faixa sem máquina, ou máquina que saiu do cluster | **Recusa.** |
 | Faixa que ninguém do cluster tem | **Recusa.** |
 | Disco insuficiente no destino de uma cópia | **Recusa** — o `transfer.rs` recusaria de qualquer jeito, melhor antes de mover byte. |
 | Memória apertada no destino | **Aviso**, com o número. É estimativa (VRAM livre onde há placa, RAM disponível no resto), e um bloqueio errado seria pior que uma linha em amarelo. |
-| Buraco na cobertura | **Aviso** + confirmação por diálogo. Subir meio modelo é um passo legítimo; ele só não vai atender até fechar. |
+| Buraco na cobertura | **Recusa.** A implantação precisa cobrir todas as camadas exigidas antes de formar o pipeline. |
 
 ### Ajustes avançados (execução)
 

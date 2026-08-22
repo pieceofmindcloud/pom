@@ -9,7 +9,9 @@ editing the UI only requires `npm run build` here. The Rust-side routes and
 config keep the `pom` name; the brand is UI-only.
 
 `README.md` in this folder is the authoritative dev walkthrough (serving model,
-dev proxy setup, routing on the axum side).
+dev proxy setup, routing on the axum side). Its deployment section mirrors the
+current planner contract: one machine may own several valid ranges, while a
+global gap or overlap blocks the plan.
 
 ## Build tooling
 
@@ -84,3 +86,10 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 ## Defeitos anotados
 
 - No root-level defects found in this pass. Known issues live in the subfolders: see `## Defeitos anotados` in `src/lib/AGENTS.md` (hardcoded pt-BR strings in `deleteModel.ts`/`toast.tsx`, unguarded `localStorage` writes in `networkLayout.ts`, dead `TransferState` export).
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

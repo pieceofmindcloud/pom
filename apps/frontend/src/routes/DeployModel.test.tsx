@@ -5,8 +5,8 @@
  * O defeito que estes testes guardam: `validated` comparava as linhas da tela
  * - que a tela mantém em ordem de camada - contra `plan.steps` posição a
  * posição, e o nó devolvia os passos agrupados por máquina de destino. Bastava
- * uma máquina ficar com duas faixas, ou duas faixas ficarem sem máquina, para
- * a ordem divergir. E como *todos* os painéis de explicação renderizavam sob
+ * uma máquina ficar com duas faixas para a ordem divergir. E como *todos* os
+ * painéis de explicação renderizavam sob
  * `validated`, o operador ficava exatamente com o que o captain relatou: botão
  * desabilitado e nenhuma explicação na tela.
  *
@@ -80,7 +80,8 @@ function step(
 
 /**
  * O plano como o nó o devolvia: agrupado por máquina, e por isso fora da ordem
- * de camadas. `ksia` fica com L0-7 e L16-23, então L16-23 vem antes de L8-15.
+ * de camadas. `ksia` fica com duas faixas, então a resposta chega fora da
+ * ordem do pipeline.
  */
 function planOutOfLayerOrder(): DeployPlan {
   const ranges: Array<[number, number]> = [
@@ -101,8 +102,7 @@ function planOutOfLayerOrder(): DeployPlan {
     ],
     complete: true,
     transfer_bytes: 0,
-    blocked:
-      "ksia ficou com duas faixas (L0-7 e L16-23) - junte as fatias vizinhas na tela, ou mova uma delas para outra máquina",
+    blocked: null,
     auto: true,
     merge: false,
     available: ranges.map(([a, b]) => ({
@@ -242,18 +242,33 @@ describe("DeployModel", () => {
     });
   });
 
-  it("explica a recusa mesmo quando o nó devolve os passos fora da ordem de camadas", async () => {
-    post.mockResolvedValue(planOutOfLayerOrder());
+  it("explica a recusa de um gap mesmo quando os passos chegam fora da ordem", async () => {
+    post.mockResolvedValue(planWithUnassignedMiddleRange());
     mount();
 
     // O motivo da recusa aparece - era exatamente ele que sumia.
     await waitFor(() => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
-    expect(screen.getByText(/ksia ficou com duas faixas/)).toBeTruthy();
+    expect(screen.getByText(/L23-26/)).toBeTruthy();
 
     const button = screen.getByRole("button", { name: /Implantar/ });
     expect((button as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("mantém a recusa de sobreposição no caminho do botão", async () => {
+    const invalid = planOutOfLayerOrder();
+    invalid.blocked = "as camadas L5-10 estão em duas fatias escolhidas ao mesmo tempo";
+    invalid.complete = false;
+    invalid.overlap = [[5, 10]];
+    post.mockResolvedValue(invalid);
+    mount();
+
+    await waitFor(() => {
+      expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
+    });
+    expect(screen.getByText(/L5-10/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("libera o botão quando o plano descreve as mesmas linhas em outra ordem", async () => {
@@ -265,6 +280,59 @@ describe("DeployModel", () => {
       step(8, 15, "salem", 3),
       step(24, 31, "mac2", 4),
     ];
+    post.mockResolvedValue(ok);
+    mount();
+
+    await waitFor(() => {
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it("libera uma máquina com faixas não contíguas quando a cobertura é válida", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.blocked = null;
+    ok.steps = [
+      step(0, 7, "ksia", 1),
+      step(8, 15, "salem", 2),
+      step(16, 23, "ksia", 3),
+      step(24, 31, "salem", 4),
+    ];
+    post.mockResolvedValue(ok);
+    mount();
+
+    await waitFor(() => {
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it("submete o plano válido ao handler real de implantação", async () => {
+    const ok = planOutOfLayerOrder();
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy"
+        ? Promise.resolve({ job_id: "job-valid" })
+        : Promise.resolve(ok),
+    );
+    mount();
+
+    const button = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy", expect.objectContaining({
+        group: "qwen",
+        kind: "shards",
+      }));
+    });
+  });
+
+  it("libera todas as faixas quando uma única máquina cobre o modelo", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.blocked = null;
+    ok.steps = [0, 8, 16, 24].map((start, index) => step(start, start + 7, "ksia", index + 1));
+    ok.machines = ok.machines.filter((machine) => machine.node_id === "ksia");
     post.mockResolvedValue(ok);
     mount();
 
@@ -294,6 +362,7 @@ describe("DeployModel", () => {
       expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
     });
     expect(screen.getAllByText(/está sem máquina/).length).toBeGreaterThan(0);
+    expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("desenha RTT entre os hops e mostra as camadas da máquina no inspetor", async () => {
@@ -496,8 +565,9 @@ describe("DeployModel", () => {
 
     const toggle = screen.getByRole("checkbox", { name: "Juntar fatias vizinhas na mesma máquina" });
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    // A recusa que o interruptor resolve fica visível junto dele.
-    expect(screen.getByText(/ksia ficou com duas faixas/)).toBeTruthy();
+    // Faixas não contíguas na mesma máquina agora são válidas sem merge.
+    expect(screen.queryByText(/ksia ficou com duas faixas/)).toBeNull();
+    expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("manda merge ao nó quando o operador liga juntar fatias vizinhas", async () => {

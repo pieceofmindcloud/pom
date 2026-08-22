@@ -179,9 +179,9 @@ const ptBR: Guide[] = [
         head: ["Regra", "Por quê"],
         rows: [
           ["A ordem do pipeline é a ordem das camadas", "quem fica com a camada 0 recebe o prompt inteiro de cada requisição; escolher a ordem e escolher as faixas são o mesmo ato"],
-          ["Duas faixas na mesma máquina só com fusão", "com fusão ligada, faixas vizinhas viram um arquivo só e a máquina serve a união"],
+          ["Várias faixas na mesma máquina são válidas", "desde que não se sobreponham e a cobertura global seja completa; a fusão só junta faixas vizinhas"],
           ["Sobreposição é recusa", "a mesma camada rodando duas vezes corrompe a resposta"],
-          ["Buraco é aviso, não erro", "implantar meio modelo é legítimo; ele só não forma pipeline até fechar"],
+          ["Buraco é recusa", "todas as camadas exigidas precisam estar cobertas antes de formar o pipeline"],
         ],
       },
       {

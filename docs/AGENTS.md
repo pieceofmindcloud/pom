@@ -21,8 +21,10 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
 a leitura da telemetria correspondente. `implantacao.md` também documenta a
-seleção de `tp_parts`, os ranks `1ofN` e a transferência do `.pom` antes do
-arquivo de peso.
+seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
+arquivo de peso e a regra de várias faixas por máquina com cobertura global
+completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e
+como o mapa apresenta hops e RTTs direcionais.
 
 ## superpowers/specs/
 
@@ -81,3 +83,10 @@ commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 Nenhum em aberto. O `README.md` da raiz foi reconciliado com o codigo em
 2026-08-15, mas continua sendo apresentacao: para arquitetura valem o
 `AGENTS.md` da raiz e os `docs/subsystems/*`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

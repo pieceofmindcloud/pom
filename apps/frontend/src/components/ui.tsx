@@ -132,14 +132,29 @@ export function Button({
   );
 }
 
+/**
+ * O tamanho é escolhido aqui, por `compact`, e não acrescentado pelo chamador.
+ *
+ * `clsx` concatena, não resolve conflito de Tailwind: quando duas utilitárias
+ * da mesma propriedade caem na mesma classe, quem vence é a ordem da folha de
+ * estilo, não a ordem do argumento. Os campos do inspetor pediam
+ * `h-6 px-1.5 text-[0.62rem]` e renderizavam `h-9 px-3 text-sm` — o painel
+ * inteiro saía em tamanho cheio e as classes passadas eram letra morta. Uma
+ * variante troca as utilitárias em vez de empilhá-las, então o pedido do
+ * chamador é o que aparece.
+ */
 export function Input({
   className,
+  compact,
   ...rest
-}: React.InputHTMLAttributes<HTMLInputElement>) {
+}: React.InputHTMLAttributes<HTMLInputElement> & { compact?: boolean }) {
   return (
     <input
       className={clsx(
-        "h-9 w-full min-w-0 rounded-lg border border-line bg-ink px-3 text-sm text-fg",
+        compact
+          ? "h-6 rounded-md px-1.5 text-[0.62rem]"
+          : "h-9 rounded-lg px-3 text-sm",
+        "w-full min-w-0 border border-line bg-ink text-fg",
         "placeholder:text-faint transition-colors duration-150",
         "hover:border-line-strong focus:border-iris focus:outline-none focus:ring-2 focus:ring-iris/25",
         className,
@@ -149,15 +164,21 @@ export function Input({
   );
 }
 
+/** Mesma variante do `Input`, e pelo mesmo motivo: os dois vivem lado a lado no
+ *  inspetor, e um encolher sem o outro deixa a coluna desalinhada. */
 export function Select({
   className,
+  compact,
   children,
   ...rest
-}: React.SelectHTMLAttributes<HTMLSelectElement>) {
+}: React.SelectHTMLAttributes<HTMLSelectElement> & { compact?: boolean }) {
   return (
     <select
       className={clsx(
-        "h-9 w-full min-w-0 rounded-lg border border-line bg-ink px-2.5 text-sm text-fg",
+        compact
+          ? "h-6 rounded-md px-1 text-[0.62rem]"
+          : "h-9 rounded-lg px-2.5 text-sm",
+        "w-full min-w-0 border border-line bg-ink text-fg",
         "transition-colors duration-150 hover:border-line-strong",
         "focus:border-iris focus:outline-none focus:ring-2 focus:ring-iris/25",
         className,

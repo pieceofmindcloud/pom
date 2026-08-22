@@ -1211,11 +1211,11 @@ export function DeployModel() {
             {inspectorTab === "global" ? <>
             <section className="border-b border-iris/20 bg-iris/[0.04] pb-3">
               <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
-              <div className="space-y-1.5 px-2 pt-2">
+              <div className="space-y-1 px-2 pt-2">
                 {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">{label}</span>
-                    <Input type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
                 <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
@@ -1316,7 +1316,7 @@ export function DeployModel() {
                       aria-label="Máquina que serve o modelo inteiro"
                       value={rows[0]?.target_node_id ?? p?.steps[0]?.target_node_id ?? ""}
                       onChange={(event) => assignWhole(event.target.value)}
-                      className="h-6 rounded-md px-1 text-[0.6rem]"
+                      compact
                     >
                       {machineOptions.map((machine) => (
                         <option key={machine.node_id} value={machine.node_id}>{machine.label}</option>
@@ -1353,13 +1353,13 @@ export function DeployModel() {
               />
               {eff.speculative_decoding_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
-                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Janela de busca</span>
-                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
                   </label>
                 </div>
               )}
@@ -1376,15 +1376,15 @@ export function DeployModel() {
               </div>
               {eff.mtp_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
                   </label>
                   {/* Fixa ao marcar o MTP, então mostrada e não editável: um
                       campo que só *começa* em 0,75 é outra coisa. */}
-                  <div className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <div className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <span className="pr-3 text-right font-mono text-[0.62rem] text-fg">{num(MTP_MIN_PROBABILITY, 2)}</span>
+                    <span className="pr-1.5 text-right font-mono text-[0.62rem] text-fg">{num(MTP_MIN_PROBABILITY, 2)}</span>
                   </div>
                 </div>
               )}
@@ -1403,7 +1403,7 @@ export function DeployModel() {
                       primary_node_id: event.target.value,
                       worker_node_ids: current.worker_node_ids.filter((nodeId) => nodeId !== event.target.value),
                     }))}
-                    className="h-6 rounded-md px-1 text-[0.6rem]"
+                    compact
                   >
                     {tpCandidates.map((nodeId) => (
                       <option key={nodeId} value={nodeId}>{labelOf(nodeId)}</option>
@@ -1511,7 +1511,7 @@ export function DeployModel() {
                   )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" /></label>
+                      <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></label>
                       <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
                     </div>
                   )}

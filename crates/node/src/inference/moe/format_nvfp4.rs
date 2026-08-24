@@ -46,8 +46,12 @@ pub enum Nvfp4ExecuteError {
     Cache(CacheError),
     Format(Nvfp4Error),
     Source(Q4LoadError),
+    #[cfg(feature = "cuda")]
     Cuda(String),
-    HiddenWidth { expected: usize, actual: usize },
+    HiddenWidth {
+        expected: usize,
+        actual: usize,
+    },
 }
 
 impl fmt::Display for Nvfp4ExecuteError {
@@ -56,6 +60,7 @@ impl fmt::Display for Nvfp4ExecuteError {
             Self::Cache(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
+            #[cfg(feature = "cuda")]
             Self::Cuda(error) => write!(formatter, "executor CUDA NVFP4 falhou: {error}"),
             Self::HiddenWidth { expected, actual } => {
                 write!(
@@ -811,8 +816,18 @@ pub struct Nvfp4Executor {
     cache: Arc<ExpertCache>,
     hidden: usize,
     intermediate: usize,
-    #[cfg(feature = "cuda")]
-    cuda: super::cuda::Nvfp4CudaExecutor,
+    backend: Nvfp4Backend,
+}
+
+#[cfg(feature = "cuda")]
+enum Nvfp4Backend {
+    Cpu,
+    Cuda(super::cuda::Nvfp4CudaExecutor),
+}
+
+#[cfg(not(feature = "cuda"))]
+enum Nvfp4Backend {
+    Cpu,
 }
 
 impl Nvfp4Executor {
@@ -822,12 +837,26 @@ impl Nvfp4Executor {
         intermediate: usize,
     ) -> Result<Self, Nvfp4Error> {
         Nvfp4Expert::packed_bytes(hidden, intermediate)?;
+        let cpu_requested = std::env::var("POM_MOE_NVFP4_BACKEND")
+            .map(|value| value.eq_ignore_ascii_case("cpu"))
+            .unwrap_or(false);
+        #[cfg(feature = "cuda")]
+        let backend = if cpu_requested {
+            Nvfp4Backend::Cpu
+        } else {
+            Nvfp4Backend::Cuda(super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate))
+        };
+        #[cfg(not(feature = "cuda"))]
+        let backend = {
+            let _ = cpu_requested;
+            Nvfp4Backend::Cpu
+        };
+
         Ok(Self {
             cache,
             hidden,
             intermediate,
-            #[cfg(feature = "cuda")]
-            cuda: super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate),
+            backend,
         })
     }
 
@@ -866,19 +895,17 @@ impl Nvfp4Executor {
                 .admit(key, load()?)
                 .map_err(Nvfp4ExecuteError::Cache)?,
         };
-        let expert = Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?;
-
-        #[cfg(feature = "cuda")]
-        {
-            let _ = expert;
-            return self
-                .cuda
+        match &self.backend {
+            Nvfp4Backend::Cpu => {
+                let expert =
+                    Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?;
+                expert.run(hidden)
+            }
+            #[cfg(feature = "cuda")]
+            Nvfp4Backend::Cuda(executor) => executor
                 .run(lease.bytes(), hidden)
-                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string())),
         }
-
-        #[cfg(not(feature = "cuda"))]
-        expert.run(hidden)
     }
 }
 
@@ -918,6 +945,12 @@ mod tests {
             Nvfp4Expert::packed_bytes(32, 64),
             Err(Nvfp4Error::Geometry(_))
         ));
+    }
+
+    #[test]
+    fn nvfp4_rejeita_payload_truncado_antes_do_forward() {
+        let result = Nvfp4Expert::from_payload(64, 64, &[0u8; 16]);
+        assert!(matches!(result, Err(Nvfp4Error::PayloadLength { .. })));
     }
 
     #[test]

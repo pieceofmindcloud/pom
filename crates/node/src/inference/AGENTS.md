@@ -92,9 +92,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `format_legacy_quants.rs` implementa Q4_1/Q5_0/Q5_1/Q8_0,
   `format_low_bits.rs` implementa MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
   `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
-  implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M e
-  `format_nvfp4.rs` implementa o decoder NVFP4
-  em CPU. K-quants e IQ-quants validam a convenção GGUF
+  implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
+  `format_nvfp4.rs` implementa o decoder NVFP4 em CPU e `cuda.rs` mais
+  `cuda_kernels.cu` fornecem o primeiro executor NVFP4 CUDA quando a feature
+  `cuda` está ligada. K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
   linkadas, enquanto cache, router e mat-vec permanecem no executor próprio.
@@ -102,9 +103,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
   dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
-  nos caminhos unitário e batch. Não há executor GPU próprio nem perfil medido
-  carregado, portanto a co-execução CPU/GPU da Fase 5 ainda não está ativa. O
-  wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
+  nos caminhos unitário e batch. O executor CUDA ainda não tem perfil de banda,
+  double buffer ou medição de prefill carregados, portanto a co-execução
+  CPU/GPU da Fase 5 ainda não está declarada pronta. O wire continua em f16 e
+  nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
   No NVFP4, o parser respeita a ordem GGUF `[input, output, experts]`: gate/up
   são `[hidden, intermediate, experts]` e down é

@@ -7,6 +7,7 @@
 pub mod admission;
 pub mod block;
 pub mod cache;
+#[cfg(feature = "cuda")]
 pub(crate) mod cuda;
 pub mod format_iq_quants;
 pub mod format_k_quants;

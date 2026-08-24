@@ -1,5 +1,7 @@
 //! Ponte Rust -> CUDA para o executor NVFP4 dos experts.
 
+#![cfg(feature = "cuda")]
+
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use std::fmt;
 
@@ -9,7 +11,6 @@ pub enum CudaMoeError {
     Payload(String),
     PayloadLength { expected: usize, actual: usize },
     HiddenWidth { expected: usize, actual: usize },
-    Unavailable,
     Launch(i32),
 }
 
@@ -28,7 +29,6 @@ impl fmt::Display for CudaMoeError {
                     "hidden CUDA NVFP4 tem {actual}, esperado {expected}"
                 )
             }
-            Self::Unavailable => formatter.write_str("executor CUDA NVFP4 indisponível"),
             Self::Launch(code) => write!(formatter, "kernel CUDA NVFP4 falhou (código {code})"),
         }
     }
@@ -71,33 +71,23 @@ impl Nvfp4CudaExecutor {
         }
         Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
 
-        #[cfg(feature = "cuda")]
-        {
-            let mut output = vec![0.0f32; self.hidden];
-            let status = unsafe {
-                pom_moe_nvfp4_forward(
-                    payload.as_ptr(),
-                    payload.len(),
-                    hidden.as_ptr(),
-                    hidden.len(),
-                    output.as_mut_ptr(),
-                    output.len(),
-                    self.hidden,
-                    self.intermediate,
-                )
-            };
-            if status != 0 {
-                return Err(CudaMoeError::Launch(status));
-            }
-            return Ok(output);
+        let mut output = vec![0.0f32; self.hidden];
+        let status = unsafe {
+            pom_moe_nvfp4_forward(
+                payload.as_ptr(),
+                payload.len(),
+                hidden.as_ptr(),
+                hidden.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                self.hidden,
+                self.intermediate,
+            )
+        };
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
         }
-
-        #[cfg(not(feature = "cuda"))]
-        {
-            let _ = payload;
-            let _ = hidden;
-            Err(CudaMoeError::Unavailable)
-        }
+        Ok(output)
     }
 }
 
@@ -119,7 +109,6 @@ unsafe extern "C" {
 mod tests {
     use super::*;
 
-    #[cfg(feature = "cuda")]
     fn packed_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
         let row_size = columns / 64 * 36;
         let mut output = vec![0u8; rows * row_size];
@@ -132,7 +121,6 @@ mod tests {
         output
     }
 
-    #[cfg(feature = "cuda")]
     fn payload(hidden: usize, intermediate: usize) -> Vec<u8> {
         let gate_up = packed_rows(2 * intermediate, hidden, 0x22);
         let down = packed_rows(hidden, intermediate, 0x22);
@@ -147,14 +135,6 @@ mod tests {
         payload
     }
 
-    #[test]
-    fn executor_cuda_recusa_payload_nvfp4_truncado_antes_do_dispatch() {
-        let executor = Nvfp4CudaExecutor::new(64, 64);
-        let error = executor.run(&[0u8; 16], &[1.0; 64]).unwrap_err();
-        assert!(matches!(error, CudaMoeError::PayloadLength { .. }));
-    }
-
-    #[cfg(feature = "cuda")]
     #[test]
     fn executor_cuda_nvfp4_preserva_o_forward_do_decoder_cpu() {
         let hidden = 64;

@@ -389,8 +389,13 @@ publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
 
 Esta retomada substitui o estado anterior de “Fase 5 ainda não ativa”. Antes
 de qualquer kernel, o desenho e esses alvos devem ser publicados no status do
-goal. Até a F5.1, o executor CPU existente continua sendo a única execução
-MoE afirmada.
+goal. A F5.1 já tem a primeira entrega de código: `cuda.rs` faz o dispatch
+Rust e `cuda_kernels.cu` executa gate/up/down NVFP4 em CUDA, compilados pelo
+`build.rs` somente com a feature `cuda`. `POM_MOE_NVFP4_BACKEND=cpu` é o
+fallback explícito para comparação; uma falha do kernel CUDA não cai em CPU
+silenciosamente. O build CUDA foi validado na ksia, mas a comparação numérica
+do kernel e a medição de prefill ainda aguardam uma janela sem disputa de GPU.
+Até essa prova, nenhuma melhoria de desempenho é afirmada.
 
 ## Goal: executor MoE para todos os dtypes GGUF
 

@@ -27,6 +27,8 @@ O levantamento de reuso da fase de UI está em
 O relatório de entrega da fase de UI está em
 `rdma-hf-provider-ui-relatorio.md` e descreve o painel de status, os modelos
 gated e a licença antes do download.
+- `subsystems/freetoken-moe.md` - método, medições e invariantes do goal que
+  adiciona o caminho MoE próprio ao lado do caminho denso.
 
 ## subsystems/
 

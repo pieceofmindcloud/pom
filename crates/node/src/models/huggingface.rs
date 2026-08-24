@@ -316,10 +316,10 @@ impl ModelProvider for HuggingFaceProvider {
             .iter()
             .map(|file| file.path.clone())
             .collect::<Vec<_>>();
-        let total_bytes = files.iter().map(|file| file.size_bytes).sum();
+        let total_bytes: u64 = files.iter().map(|file| file.size_bytes).sum();
         let duration_ms = started.elapsed().as_millis() as u64;
         let speed = (total_bytes > 0 && duration_ms > 0)
-            .then_some(total_bytes.saturating_mul(1000) / duration_ms);
+            .then(|| total_bytes.saturating_mul(1000) / duration_ms);
         Self::emit(
             &progress,
             DownloadProgress {

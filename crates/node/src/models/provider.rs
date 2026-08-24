@@ -119,8 +119,8 @@ impl fmt::Display for HfError {
 impl std::error::Error for HfError {}
 
 /// Redige tokens sem registrar stdout/stderr brutos.
-pub(crate) fn redact_sensitive(text: &str) -> String {
-    let mut out = text.to_string();
+pub(crate) fn redact_sensitive<T: AsRef<str>>(text: T) -> String {
+    let mut out = text.as_ref().to_string();
     for marker in [
         "hf_",
         "HF_TOKEN=",
@@ -547,6 +547,15 @@ mod tests {
     fn rejects_directory_parent_component() {
         assert!(validate_directory(Path::new("cache/../outside"), "cache_dir").is_err());
         assert!(validate_directory(Path::new("/var/lib/pom-cache"), "cache_dir").is_ok());
+    }
+
+    #[test]
+    fn redact_sensitive_accepts_owned_text_without_leaking_secrets() {
+        let text = redact_sensitive(String::from(
+            "HF_TOKEN=hf_owned_secret path=/Users/alice/private-model.gguf",
+        ));
+        assert!(!text.contains("hf_owned_secret"));
+        assert!(text.contains("[REDACTED]"));
     }
 
     #[test]

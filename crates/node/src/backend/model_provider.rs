@@ -9,7 +9,7 @@ use crate::gateway::GatewayState;
 use crate::model_provider::{
     validate_filename, validate_repo_id, validate_revision, DownloadOptions, DownloadProgress,
     DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfError, ManifestFile, ModelFile,
-    ModelLicense, ModelSummary,
+    ModelLicense,
 };
 use crate::webui::{self, Job};
 use axum::{
@@ -394,6 +394,7 @@ async fn start_download(
         .files
         .iter()
         .find(|file| file.filename == identity.filename)
+        .cloned()
     else {
         return provider_error(HfError::HfRepositoryNotFound);
     };
@@ -516,7 +517,6 @@ async fn retry_download(
         filename: job.filename.unwrap_or_default(),
         quantization: job.quantization,
     };
-    drop(job);
     let body = start_download(ConnectionAuth, State(state), Json(request)).await;
     body
 }
@@ -948,7 +948,7 @@ async fn is_installed_file(
     let sidecar = hex::encode(Sha256::digest(key.as_bytes()));
     tokio::task::spawn_blocking(move || {
         directories.into_iter().any(|directory| {
-            directory.join(filename).is_file()
+            directory.join(&filename).is_file()
                 && directory
                     .join(".pom-hf")
                     .join(format!("{sidecar}.json"))

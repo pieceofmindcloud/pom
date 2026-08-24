@@ -16,6 +16,11 @@ transferência.
 - `huggingface.rs` - implementação `HuggingFaceProvider` sobre o runner do
   CLI, com validação de entradas, cache externo e manifesto local.
 
+Mensagens internas de `HfError` continuam passando por `redact_sensitive`, que
+aceita texto emprestado ou possuído sem alterar a redação de tokens, headers de
+autorização e `HF_TOKEN`. O teste de owned text fica em `provider.rs`; a suíte
+também cobre que erros públicos não devolvem detalhes do provider.
+
 O provider usa `hf --version`, `hf auth whoami`, `hf models ls/info/card` e
 `hf download` por argumentos separados. O resultado do download enumera apenas
 arquivos locais regulares, calcula SHA-256 com o mesmo `pom::hash_file` usado

@@ -32,6 +32,9 @@ behind an auth extractor.
   remotos. Injeta `DynModelProvider`, usa `webui::Job` como estado persistente,
   `CancellationToken` por download e semáforo de dois processos; não monta
   comandos nem expõe token, stderr ou caminho local.
+  O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
+  empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
+  arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention. `slice/plan` and `slice` accept the

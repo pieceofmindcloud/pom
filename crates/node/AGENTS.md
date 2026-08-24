@@ -32,6 +32,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
   descobre um peer com binário velho sem shell na máquina.
+- O build nativo também exige o fork local de `llama.cpp`: em um worktree novo,
+  preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
+  rodar `cargo build -p node`. O procedimento completo está em
+  `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
 
 ## src/main.rs - fluxo de arranque e CLI
 

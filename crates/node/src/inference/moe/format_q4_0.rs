@@ -1247,10 +1247,17 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn dtype_nao_suportado_informa_id_e_nome() {
-        let error = Q4LoadError::UnsupportedTensorType(40).to_string();
-        assert!(error.contains("40"));
-        assert!(error.contains("NVFP4"));
+    fn dtype_desconhecido_informa_id_e_nome() {
+        let error = Q4LoadError::UnsupportedTensorType(999).to_string();
+        assert!(error.contains("999"));
+        assert!(error.contains("desconhecido"));
+    }
+
+    #[test]
+    fn dtype_ativo_sem_decoder_informa_id_e_nome() {
+        let error = Q4LoadError::UnsupportedTensorType(9).to_string();
+        assert!(error.contains("9"));
+        assert!(error.contains("Q8_1"));
     }
 
     #[test]

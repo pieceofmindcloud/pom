@@ -386,6 +386,66 @@ histórica da enumeração, mas o `llama.cpp` marca-os como removidos de arquivo
 GGUF. O loader deve rejeitá-los como dtype removido, com o ID e o nome na
 mensagem, em vez de tratá-los como um dos formatos ativos.
 
+### Quadro final de cobertura dos dtypes ativos
+
+Este quadro é o fechamento honesto desta rodada, conferido contra
+`GGML_TYPE_COUNT` e a enumeração de `llama.cpp/ggml/include/ggml.h`. Cada linha
+é individual para não transformar uma fixture em prova de modelo. A única prova
+física registrada é o Gemma4 NVFP4; não há arquivo GGUF local para repetir uma
+prova E2E dos K-quants ou IQ-quants da ksia neste worktree, e nenhum acesso
+remoto foi feito nesta validação.
+
+| ID | dtype | estado |
+|---:|---|---|
+| 0 | F32 | implementado e NÃO PROVADO |
+| 1 | F16 | implementado e NÃO PROVADO |
+| 2 | Q4_0 | implementado e NÃO PROVADO |
+| 3 | Q4_1 | implementado e NÃO PROVADO |
+| 6 | Q5_0 | implementado e NÃO PROVADO |
+| 7 | Q5_1 | implementado e NÃO PROVADO |
+| 8 | Q8_0 | implementado e NÃO PROVADO |
+| 9 | Q8_1 | não coberto |
+| 10 | Q2_K | implementado e NÃO PROVADO |
+| 11 | Q3_K | implementado e NÃO PROVADO |
+| 12 | Q4_K | implementado e NÃO PROVADO |
+| 13 | Q5_K | implementado e NÃO PROVADO |
+| 14 | Q6_K | implementado e NÃO PROVADO |
+| 15 | Q8_K | implementado e NÃO PROVADO |
+| 16 | IQ2_XXS | implementado e NÃO PROVADO |
+| 17 | IQ2_XS | implementado e NÃO PROVADO |
+| 18 | IQ3_XXS | implementado e NÃO PROVADO |
+| 19 | IQ1_S | implementado e NÃO PROVADO |
+| 20 | IQ4_NL | implementado e NÃO PROVADO |
+| 21 | IQ3_S | implementado e NÃO PROVADO |
+| 22 | IQ2_S | implementado e NÃO PROVADO |
+| 23 | IQ4_XS | implementado e NÃO PROVADO |
+| 24 | I8 | não coberto |
+| 25 | I16 | não coberto |
+| 26 | I32 | não coberto |
+| 27 | I64 | não coberto |
+| 28 | F64 | não coberto |
+| 29 | IQ1_M | implementado e NÃO PROVADO |
+| 30 | BF16 | implementado e NÃO PROVADO |
+| 34 | TQ1_0 | implementado e NÃO PROVADO |
+| 35 | TQ2_0 | implementado e NÃO PROVADO |
+| 39 | MXFP4 | implementado e NÃO PROVADO |
+| 40 | NVFP4 | implementado e PROVADO com arquivo real |
+| 41 | Q1_0 | implementado e NÃO PROVADO |
+| 42 | Q2_0 | implementado e NÃO PROVADO |
+
+O dispatcher continua recusando tanto um dtype ativo sem decoder quanto um ID
+fora da enumeração antes de ler o payload. `Q4LoadError::UnsupportedTensorType`
+renderiza `dtype=<id> (<nome>)`; para um ID desconhecido, o nome é
+`desconhecido`. Os testes `dtype_desconhecido_informa_id_e_nome` e
+`dtype_ativo_sem_decoder_informa_id_e_nome` cobrem, respectivamente, os casos
+999 e Q8_1. Portanto a lacuna é observável e nomeada, nunca uma interpretação
+silenciosa como outro formato.
+
+O quadro deixa seis dtypes ativos sem decoder próprio: Q8_1, I8, I16, I32, I64
+e F64. Eles permanecem trabalho futuro explícito; o fechamento não os declara
+implementados. Os 29 dtypes restantes têm decoder e testes locais, mas somente
+o ID 40 tem prova E2E com arquivo GGUF real.
+
 ## Fase 0: baseline local
 
 ### Método reproduzível

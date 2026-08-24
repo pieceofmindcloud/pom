@@ -501,6 +501,16 @@ mod tests {
     }
 
     #[test]
+    fn parses_license_metadata_without_inventing_a_default() {
+        let license = parse_license(r#"{"license":"custom-license"}"#).unwrap();
+        assert!(license.detected);
+        assert_eq!(license.id.as_deref(), Some("custom-license"));
+
+        let unknown = parse_license(r#"{"tags":["library:llama.cpp"]}"#).unwrap();
+        assert!(!unknown.detected);
+    }
+
+    #[test]
     fn download_path_is_last_nonempty_line() {
         assert_eq!(
             last_nonempty_line("progress\n\n/tmp/model.gguf\n"),

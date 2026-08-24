@@ -624,6 +624,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reports_authenticated_cli_username() {
+        let fake = FakeRunner::with_outputs(vec![
+            output("hf version 1.2.3"),
+            output(r#"{"name":"alice"}"#),
+        ]);
+        let provider = HuggingFaceProvider::with_runner(Arc::new(fake));
+        let status = provider.check_authentication().await.unwrap();
+        assert!(status.installed);
+        assert!(status.authenticated);
+        assert_eq!(status.username.as_deref(), Some("alice"));
+    }
+
+    #[tokio::test]
     async fn searches_with_json_arguments() {
         let fake = FakeRunner::with_outputs(vec![output(
             r#"[{"id":"owner/model","downloads":7,"tags":["gguf"]}]"#,
@@ -690,6 +703,16 @@ mod tests {
         );
         assert!(fake.commands()[0].args.contains(&"download".into()));
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn emits_optional_percent_progress_from_cli_text() {
+        let (sender, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+        let observer = progress_observer(Some(sender));
+        observer(OutputStream::Stderr, "download 42.5% 1.2MB/s".into());
+        let progress = receiver.recv().await.unwrap();
+        assert_eq!(progress.status, DownloadStatus::Downloading);
+        assert_eq!(progress.percent, Some(42.5));
     }
 
     #[tokio::test]

@@ -1,0 +1,138 @@
+# Relatório de entrega: provider Hugging Face
+
+Data: 2026-08-24
+Branch: `fm/rdma-hf-provider`
+Especificação: `/Users/jairpereira/Sites/firstmate/data/rdma-hf-provider/spec.md`
+
+## 1. Arquitetura implementada
+
+O subsistema novo separa o contrato `ModelProvider` da implementação
+`HuggingFaceProvider`. O contrato concentra descoberta, inspeção, licença,
+autenticação, download, progresso, manifesto e storage, sem mencionar o CLI.
+
+`hf_cli.rs` isola montagem de argumentos, execução assíncrona com stdout/stderr
+separados, cancelamento do processo, parsing JSON, caminho final do download e
+classificação de erros. `huggingface.rs` adapta esses resultados ao contrato,
+valida entradas e calcula o manifesto local. `LocalModelStorage` reutiliza o
+hash SHA-256 já usado por `models/pom.rs`.
+
+O resultado é somente armazenamento, enumeração e hashing. Nenhum conteúdo
+baixado é executado, nenhum token é aceito como argumento e nenhuma opção de
+execução remota é enviada.
+
+## 2. Arquivos criados
+
+- `crates/node/src/models/provider.rs`
+- `crates/node/src/models/hf_cli.rs`
+- `crates/node/src/models/huggingface.rs`
+- `docs/rdma-hf-provider-reuso.md`
+- `docs/rdma-hf-provider-relatorio.md`
+- `docs/superpowers/specs/2026-08-24-rdma-hf-provider-design.md`
+- `docs/superpowers/plans/2026-08-24-rdma-hf-provider.md`
+
+## 3. Arquivos alterados
+
+- `crates/node/src/main.rs`: declaração dos três módulos novos.
+- `crates/node/src/models/AGENTS.md`: responsabilidades e limites dos novos
+  módulos.
+- `crates/node/AGENTS.md`: mapa do subsistema `models` atualizado.
+- `docs/AGENTS.md`: ponteiros para o levantamento e este relatório.
+
+## 4. Decisões técnicas importantes
+
+- O CLI é uma implementação substituível de `ModelProvider`, não uma
+  dependência da UI.
+- O runner aceita `CommandSpec` com `Vec<String>` e usa `.args(...)`; não há
+  shell nem concatenação de entrada do usuário.
+- O `hf` gerencia a credencial. O POM apenas consulta `hf auth whoami` e nunca
+  chama `hf auth token`, registra token, envia token para telemetria ou inclui
+  saída bruta em erro.
+- `repo_id`, revisão, arquivo, filtros e caminhos são validados antes de
+  formar comandos ou manifestos. Revisões aceitam barras internas para
+  branches, mas recusam componentes de traversal.
+- Consultas estruturadas preferem `--format json`. O download usa somente o
+  caminho final impresso pelo CLI e interpreta progresso textual como dados
+  opcionais.
+- GGUF reutiliza `catalog::parse_quant`; quantização, tamanho e nome base
+  ficam ausentes quando o nome não permite determinação segura. Licença
+  desconhecida retorna `detected: false`.
+- A telemetria usa `tracing` com provider, repositório, revisão, bytes,
+  duração, status e tipo de erro, sem stdout, stderr ou credenciais.
+- Não foi adicionada rota HTTP ou tela nesta etapa, para evitar alterar
+  `gateway.rs`/`webui.rs` durante trabalho paralelo. A camada interna já está
+  pronta para uma integração posterior de jobs e UI por `ProgressSender`.
+
+## 5. Comandos para teste manual
+
+Com o checkout completo do `llama.cpp` disponível no caminho esperado:
+
+```bash
+hf --version
+hf auth whoami
+hf models ls --search qwen --format json
+hf models info owner/model --format json
+hf models ls owner/model --revision main --format json
+hf models card owner/model --metadata --format json
+hf download owner/model model-Q4_K_M.gguf --revision main --cache-dir ./hf-cache
+```
+
+Os comandos de domínio do POM são:
+
+```bash
+rtk cargo test -p node hf_cli::tests -- --nocapture
+rtk cargo test -p node huggingface::tests -- --nocapture
+```
+
+## 6. Testes adicionados
+
+- Validação de `repo_id`, revisão e nome de arquivo contra traversal.
+- Detecção de quantização GGUF e ausência de metadado inventado.
+- Licença desconhecida com `detected: false`.
+- Manifesto local com tamanho e SHA-256.
+- Parsing de versão, autenticação, busca, arquivos, licença, caminho final e
+  progresso do CLI.
+- Classificação de autenticação ausente, repositório inexistente, limite de
+  requisições e falha de download.
+- Runner fake para CLI ausente, busca, GGUF, sucesso, falha e cancelamento.
+- Verificação de argumentos separados e ausência de token em erros/debug.
+
+Resultado verificável no ambiente desta execução:
+
+- `rtk cargo test --workspace --exclude node`: passou, 13 testes em 6 suítes.
+- `rtk cargo fmt --all -- --check`: passou.
+- `rtk git diff --check`: passou.
+- `rtk cargo metadata --no-deps --format-version 1`: passou.
+
+Os testes do crate `node` não chegaram a compilar os módulos novos por causa
+da falha nativa descrita na seção seguinte.
+
+## 7. Limitações conhecidas
+
+- `vendor/llama-cpp-sys-2/llama.cpp` é um symlink quebrado neste worktree. As
+  tentativas de `cargo test -p node`, `cargo test --workspace` e
+  `cargo build --release -p node` falharam antes da compilação Rust com:
+  `vendor/llama-cpp-sys-2/build.rs:440:27: Failed to obtain entry ...
+  Os { code: 2, kind: NotFound, message: "No such file or directory" }`.
+  Portanto não é possível afirmar que a suíte do `node` ou o binário nativo
+  estão verdes neste ambiente.
+- O progresso depende das linhas textuais fornecidas pelo CLI; bytes totais,
+  arquivo atual e velocidade permanecem opcionais quando não puderem ser
+  determinados com segurança.
+- Ainda não existe endpoint ou tela que consuma o provider. A integração
+  interna evita espalhar `hf`, mas a próxima camada precisa ligar seus jobs ao
+  canal de progresso existente.
+- O parser aceita mais de uma forma provável de JSON, mas mudanças futuras no
+  schema do CLI devem ser cobertas por fixtures antes de trocar o backend.
+
+## 8. Próximos passos
+
+1. Restaurar o checkout de `llama.cpp` e executar os testes focalizados do
+   `node`, a suíte completa e o build release.
+2. Criar uma camada de job no backend que consuma `ModelProvider` e encaminhe
+   `DownloadProgress` para `webui::set_job_progress`, sem expor `hf` à UI.
+3. Adicionar uma tela/API autenticada para busca, inspeção, escolha de GGUF e
+   download, preservando os tipos do contrato.
+4. Registrar o `ModelManifest` no catálogo local e conectá-lo ao fluxo de
+   fatiamento/implantação, sem distribuir pesos automaticamente nesta fase.
+5. Acrescentar fixtures para versões do CLI e testar também Windows/macOS em
+   CI quando o crate `node` puder ser compilado nessas plataformas.

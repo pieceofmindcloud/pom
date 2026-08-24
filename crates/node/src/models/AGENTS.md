@@ -16,6 +16,13 @@ transferência.
 - `huggingface.rs` - implementação `HuggingFaceProvider` sobre o runner do
   CLI, com validação de entradas, cache externo e manifesto local.
 
+O provider usa `hf --version`, `hf auth whoami`, `hf models ls/info/card` e
+`hf download` por argumentos separados. O resultado do download enumera apenas
+arquivos locais regulares, calcula SHA-256 com o mesmo `pom::hash_file` usado
+pelos manifestos POM e não executa conteúdo remoto. A integração ainda não é
+ligada a uma rota HTTP ou tela; callers internos devem consumir
+`ModelProvider`/`ProgressSender`, nunca montar `hf` diretamente.
+
 `pom.rs` mantém o manifesto por modelo original: no único formato v1, `pom_id`
 é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e
 `tp_parts` reúne shards de Tensor Parallelism. Novas fatias do mesmo modelo são

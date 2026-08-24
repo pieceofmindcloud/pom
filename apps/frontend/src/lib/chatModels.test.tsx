@@ -11,6 +11,8 @@ vi.mock("./queries", () => ({
   useCluster: () => ({ data: undefined }),
   useNode: () => ({ data: undefined }),
   useServableModels: () => ({ data: [{ id: deploymentModel }, { id: baseModel }] }),
+  useChatTelemetryNetwork: () => ({ data: undefined, isLoading: false, isError: false }),
+  usePeerRuntimes: () => [],
 }));
 
 vi.mock("./chatStore", async () => {

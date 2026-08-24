@@ -295,19 +295,88 @@ gerados, `input_tokens=22`, `complete=true`, 6,42 tok/s, e prefill/decode com
 do parser de nomes separados e da telemetria continuam cobrindo as fronteiras
 locais; a validação física confirma a costura NVFP4 no modelo real.
 
-### Fase 5: co-execução CPU/GPU ainda não ativa
+### Goal retomado: executor CUDA e co-execução CPU/GPU
 
-A investigação dos warnings mostrou que a política de banda e o double buffer
-existiam apenas como scaffolding de testes: não havia perfil medido carregado
-no runtime e não havia executor GPU para os pesos Q4_0 do motor próprio. O
-`llama.cpp` tem seu próprio backend GPU para o transformer, mas não expõe uma
-lane que execute os experts Q4_0 mmapados por `MoeRuntime`.
+Este é o novo goal formal da Fase 5, decidido pelo captain depois da medição
+na ksia com Gemma4 NVFP4 na mesma GPU. O caminho CPU atual mede cerca de
+`54 ms/token` no prefill e `80 ms/token` no decode; a referência FreeToken mede
+`3,1 ms/token` e `18,8 ms/token`, respectivamente. A diferença observada é de
+aproximadamente `17,4x` no prefill e `4,3x` no decode. Mais de 90% do tempo do
+nosso caminho fica fora de `llama_decode`, no decodificador de referência em
+CPU. O fato de o FreeToken manter experts em CPU/RAM elimina offload como
+explicação suficiente: o gargalo é o cálculo do expert.
 
-Esse scaffolding foi removido do binário para não sugerir que a co-execução
-acontece. O caminho MoE que existe hoje é CPU para router e experts, com cache
-LRU global; a fase 5 só poderá ser retomada quando houver um executor GPU
-concreto e uma fonte de medições simultâneas CPU/transferência. Nenhum ganho de
-desempenho ou sobreposição CPU/GPU é afirmado.
+O objetivo é reimplementar a abordagem de cálculo do FreeToken na plataforma
+Rust, com kernels CUDA próprios e chamadas feitas pelo host Rust. Python,
+Triton e o FreeToken como motor externo estão fora do escopo. O FreeToken é
+somente fonte de desenho e algoritmo; nenhum código é copiado. O caminho denso
+continua em `llama.cpp` sem alteração de seleção ou de comportamento.
+
+O executor GPU reutilizará o `ExpertCache` LRU global existente. A entrada
+canônica continua residente em CPU/RAM e com lease por requisição; os buffers
+CUDA são staging temporário por camada e expert, com capacidade determinada
+pelo orçamento medido, sem transformar a rede ou o cache em transporte de
+pesos. O router e a política de admissão continuam no Rust. Cada forward
+publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
+`buffer_index`, tempo de sobreposição e o motivo de qualquer fallback.
+
+### Fases do goal CUDA
+
+1. **F5.0, perfil de referência reproduzível.** Reexecutar na ksia o mesmo
+   Gemma4, GPU, prompt e configuração que produziram os números do captain,
+   separando router, espera do LRU, dequantização, H2D, kernel, D2H e o
+   restante de `llama_decode`. O alvo desta fase é reproduzir `54 ms/token` de
+   prefill e `80 ms/token` de decode dentro de uma faixa de `+/-10%`, com a
+   fração fora de `llama_decode` ainda acima de 90%. Sem essa concordância o
+   número novo não é comparável.
+
+2. **F5.1, executor CUDA mínimo para prefill.** Implementar em CUDA o
+   mat-vec dos experts e a soma gate/up/down, com dispatch, leases e cópia dos
+   slices controlados pelo Rust. O primeiro caminho cobre o Gemma4 NVFP4 já
+   provado e mantém o decoder CPU somente como fallback explícito. Pronto
+   quando 100% dos forwards de expert do prefill da carga de referência
+   publicarem `gpu_expert_calls`, `cpu_expert_calls=0`, a saída passar a
+   comparação numérica com o decoder CPU e o prefill não piorar o baseline de
+   `54 ms/token`. A distância até o alvo FreeToken de `3,1 ms/token` deve ser
+   medida, não estimada.
+
+3. **F5.2, perfil de banda e double buffer reais.** Medir H2D e D2H na mesma
+   GPU, para os tamanhos de tokens e experts da carga, persistir o perfil
+   efetivo e selecionar a política CPU/GPU pelo tempo medido. Substituir o
+   andaime de testes por dois buffers CUDA realmente alternados, de modo que
+   enquanto um buffer é calculado o outro possa ser transferido. Pronto quando
+   o runtime carregar o perfil medido, registrar os dois índices em uso e, em
+   100 iterações aquecidas por ponto de carga, o tempo combinado satisfizer
+   `T_total <= 1,10 * max(T_compute, T_transfer)`. O alvo de segurança é não
+   regredir o prefill medido na F5.1.
+
+4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
+   operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto
+   somente quando a média de prefill, com a mesma definição da referência,
+   for `<= 3,1 ms/token` na ksia, com erro numérico dentro da tolerância da
+   F5.1, `engine_mismatch=false`, sem fallback CPU e decode ainda `<= 80
+   ms/token` durante a medição.
+
+5. **F5.4, decode e co-execução completa.** Aplicar a mesma lane ao decode de
+   um token, sobrepondo roteamento, transferência e cálculo entre requests e
+   preservando leases do LRU. Pronto quando o decode atingir `<= 18,8
+   ms/token` na mesma carga e GPU, o prefill permanecer `<= 3,1 ms/token`, e
+   a telemetria de cada hop mostrar `executed_engine=MoE`, sem mistura ou
+   divergência. Um fallback deve falhar nominalmente ou aparecer com seu
+   motivo, nunca ser contado como GPU.
+
+6. **F5.5, prova final e regressão.** Repetir os pontos F5.0 a F5.4 em pelo
+   menos três execuções independentes na ksia, anexar mediana e dispersão dos
+   tempos, e rodar a suíte densa completa. O goal só fecha se os limites
+   `3,1 ms/token` e `18,8 ms/token` forem atingidos na carga de referência,
+   sem regressão funcional ou de desempenho observada no caminho denso. Caso
+   uma fase não alcance seu número, registrar o valor real e a evidência, sem
+   declarar verde por suite unitária.
+
+Esta retomada substitui o estado anterior de “Fase 5 ainda não ativa”. Antes
+de qualquer kernel, o desenho e esses alvos devem ser publicados no status do
+goal. Até a F5.1, o executor CPU existente continua sendo a única execução
+MoE afirmada.
 
 ## Goal: executor MoE para todos os dtypes GGUF
 

@@ -93,8 +93,10 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
   Reconfiguração compatível mantém os pesos no `ModelCache`; troca de fatia ou
   de carregamento limpa esse cache. Falha de rebuild não pode deixar a nova
   geração anunciada como pronta.
-- Cancelamento é cooperativo e idempotente. Um prefill cancelado libera sessão
-  e os peers não podem continuar avançando um pedido morto.
+- Cancelamento é cooperativo e idempotente. O fechamento do stream interrompe
+  a chamada do gateway em voo e impede o próximo chunk ou hop; um frame que já
+  foi aceito pelo peer pode terminar. O cleanup libera a sessão em todos os
+  peers alcançados.
 - O motor novo nunca é selecionado por nome heurístico ou por falha do
   `llama.cpp`; a arquitetura GGUF precisa declarar MoE e a configuração pode
   forçar o caminho denso enquanto o caminho novo estiver em validação.

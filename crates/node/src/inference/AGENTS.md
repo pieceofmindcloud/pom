@@ -59,7 +59,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `crates/node/build.rs`.
 - `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
-  por requisição.
+  por requisição. `Cancellation` cancela a operação do gateway quando o
+  consumidor desaparece, antes do próximo chunk ou hop e também durante a
+  espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.

@@ -130,7 +130,10 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
+  /`Failed`; `generate_blocking` collapses it. When the stream receiver closes,
+  `generate_stream` cancels the prefill's local HTTP future and prevents the
+  next retry, hop or chunk; already accepted peer frames are cleaned up by the
+  normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), and `POST /v1/relay-result`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, deliberately no auth -

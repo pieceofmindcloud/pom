@@ -523,6 +523,39 @@ pub async fn generate_stream(
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
+    let cancellation = crate::prefill::Cancellation::new();
+    let monitor_cancel = cancellation.clone();
+    let monitor_tx = tx.clone();
+    let monitor = tokio::spawn(async move {
+        monitor_tx.closed().await;
+        monitor_cancel.cancel();
+    });
+
+    generate_stream_inner(
+        state,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        tx,
+        cancellation,
+    )
+    .await;
+    monitor.abort();
+}
+
+async fn generate_stream_inner(
+    state: GatewayState,
+    model: String,
+    prompt: String,
+    chat_template: bool,
+    max_tokens: u32,
+    tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+) {
+    if cancellation.is_cancelled() {
+        return;
+    }
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = prompt_budget_error(&cfg, &prompt) {
@@ -695,6 +728,7 @@ pub async fn generate_stream(
             &state.network.routes,
             direct.as_ref(),
             state.tunnel_tx.as_ref(),
+            &cancellation,
         )
         .await
         {
@@ -706,6 +740,10 @@ pub async fn generate_stream(
                     gen_start.elapsed().as_secs_f64(),
                 );
                 o
+            }
+            Err(e) if crate::prefill::is_cancelled(&e) => {
+                info!("cliente desconectou durante o prefill; cancelando pipeline");
+                return;
             }
             Err(e) => {
                 let _ = tx
@@ -759,6 +797,9 @@ pub async fn generate_stream(
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
             while tokens_generated < max_tokens {
+                if cancellation.is_cancelled() {
+                    return;
+                }
                 let draft_sent = especulando && sliced_mtp && stored_draft.is_some();
                 let res = if especulando {
                     if sliced_mtp {

@@ -476,6 +476,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
         &routes,
         reply.as_ref(),
         None,
+        &crate::prefill::Cancellation::new(),
     )
     .await
     .expect("prefill");

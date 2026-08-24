@@ -265,7 +265,22 @@ essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
 
-### 3.2 Template de conversa e completions
+### 3.2 Telemetria do nó
+
+O servidor de inferência acumula os cronômetros internos em microssegundos em
+`NodeTimings`. Ao montar o metadado `node_timings`, os campos públicos
+`*_ms` usam milissegundos fracionários (`us / 1000.0`) para não perder uma
+etapa menor que 1 ms. Isso vale para a chamada de decode, a conclusão medida
+por `llama_synchronize`, captura D2H, logits, amostragem, fila e os demais
+limites do bloco.
+
+`POM_PROFILE_SYNC` fica ligado por padrão e controla se a barreira de
+diagnóstico é executada. `backend_completion_ms` é uma duração: zero pode
+representar uma duração nula ou uma medição pequena demais apenas se um
+consumidor antigo ainda tiver truncado o número, e não deve ser usado para
+deduzir sozinho o estado da configuração do peer.
+
+### 3.3 Template de conversa e completions
 
 O gateway distingue o formato do pedido antes de iniciar o prefill. Chat
 OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e

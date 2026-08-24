@@ -97,39 +97,39 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
-    pub node_frame_decode_ms: u64,
-    pub node_input_prepare_ms: u64,
-    pub node_queue_ms: u64,
+    pub node_frame_decode_ms: f64,
+    pub node_input_prepare_ms: f64,
+    pub node_queue_ms: f64,
     /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
     /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
-    pub node_lock_wait_ms: u64,
-    pub node_setup_ms: u64,
-    pub node_decode_ms: u64,
+    pub node_lock_wait_ms: f64,
+    pub node_setup_ms: f64,
+    pub node_decode_ms: f64,
     /// Time to hand the batch to the backend — not the time it ran.
-    pub node_backend_enqueue_ms: u64,
+    pub node_backend_enqueue_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
     /// `llama_synchronize`. Zero unless the peer runs with
     /// `POM_PROFILE_SYNC` (on by default; `=0` turns it off); it is a
     /// diagnostic boundary, not kernel time.
-    pub node_backend_completion_ms: u64,
+    pub node_backend_completion_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
-    pub node_residual_capture_d2h_sync_ms: u64,
-    pub node_residual_ms: u64,
-    pub node_logits_access_ms: u64,
-    pub node_logits_clone_ms: u64,
-    pub node_repetition_penalty_ms: u64,
-    pub node_softmax_ms: u64,
-    pub node_top_k_ms: u64,
-    pub node_top_p_ms: u64,
-    pub node_selection_ms: u64,
-    pub node_token_text_ms: u64,
-    pub node_sampling_ms: u64,
-    pub node_encode_ms: u64,
+    pub node_residual_capture_d2h_sync_ms: f64,
+    pub node_residual_ms: f64,
+    pub node_logits_access_ms: f64,
+    pub node_logits_clone_ms: f64,
+    pub node_repetition_penalty_ms: f64,
+    pub node_softmax_ms: f64,
+    pub node_top_k_ms: f64,
+    pub node_top_p_ms: f64,
+    pub node_selection_ms: f64,
+    pub node_token_text_ms: f64,
+    pub node_sampling_ms: f64,
+    pub node_encode_ms: f64,
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
-    pub node_p50_ms: u64,
-    pub node_p95_ms: u64,
+    pub node_p50_ms: f64,
+    pub node_p95_ms: f64,
     #[serde(skip)]
-    node_samples_ms: Vec<u64>,
+    node_samples_ms: Vec<f64>,
 }
 
 impl PhaseTrace {
@@ -146,7 +146,7 @@ impl PhaseTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
-        let node_ms = |key: &str| node[key].as_u64().unwrap_or(0);
+        let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
 
         self.processing_ms += processing_ms;
@@ -488,12 +488,12 @@ impl RequestTrace {
     }
 }
 
-fn percentile(samples: &[u64], percentile: u64) -> u64 {
+fn percentile(samples: &[f64], percentile: u64) -> f64 {
     if samples.is_empty() {
-        return 0;
+        return 0.0;
     }
     let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let index = ((sorted.len() - 1) * percentile as usize + 50) / 100;
     sorted[index]
 }
@@ -1784,8 +1784,32 @@ mod tests {
             &json!({"decode_ms": 34, "lock_wait_ms": 194}),
         );
 
-        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194);
-        assert_eq!(trace.hops[0].decode.node_decode_ms, 34);
+        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194.0);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 34.0);
+    }
+
+    #[test]
+    fn hop_trace_preserva_fracao_dos_tempos_do_no() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 2,
+                "processing_ms": 1,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "decode_ms": 0.999,
+                    "backend_completion_ms": 0.999,
+                },
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
+        assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array
@@ -1868,15 +1892,15 @@ mod tests {
         let hop = &request.hops[0];
         assert_eq!(hop.decode.calls, 1);
         assert_eq!(hop.decode.client_encode_ms, 2);
-        assert_eq!(hop.decode.node_decode_ms, 11);
-        assert_eq!(hop.decode.node_residual_ms, 4);
-        assert_eq!(hop.decode.node_top_p_ms, 3);
-        assert_eq!(hop.decode.node_backend_completion_ms, 9);
-        assert_eq!(hop.decode.node_p50_ms, 11);
-        assert_eq!(hop.decode.node_p95_ms, 11);
+        assert_eq!(hop.decode.node_decode_ms, 11.0);
+        assert_eq!(hop.decode.node_residual_ms, 4.0);
+        assert_eq!(hop.decode.node_top_p_ms, 3.0);
+        assert_eq!(hop.decode.node_backend_completion_ms, 9.0);
+        assert_eq!(hop.decode.node_p50_ms, 11.0);
+        assert_eq!(hop.decode.node_p95_ms, 11.0);
         // A decode-only trace must leave prefill untouched.
         assert_eq!(hop.prefill.calls, 0);
-        assert_eq!(hop.prefill.node_decode_ms, 0);
+        assert_eq!(hop.prefill.node_decode_ms, 0.0);
     }
 
     #[test]

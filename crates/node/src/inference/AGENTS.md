@@ -254,7 +254,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
   anotados.
 - `profile_backend_sync` - perfil do backend síncrono, `POM_PROFILE_SYNC`
-  (default ligado; "0"/"false" desliga).
+  (default ligado; "0"/"false" desliga). `NodeTimings` mantém os contadores
+  em microssegundos e serializa os campos `*_ms` de diagnóstico como
+  milissegundos fracionários, então uma medição sub-milisegundo não vira zero
+  no wire. `backend_completion_ms` é uma duração medida, não uma fonte de
+  verdade sobre o estado da flag.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
@@ -303,7 +307,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `speculate.draft` presente bastam.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
-- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
+- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; os campos
+  derivados de `NodeTimings` preservam frações de milissegundo, e o campo
   `node_lock_wait_ms` separa "nó lento" de "nó ocupado".
 
 `relay.rs`:

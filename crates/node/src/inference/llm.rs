@@ -2438,10 +2438,11 @@ mod tests {
     }
 
     /// Mudança 6 do spec de 2026-08-12: `node_logits_access_ms` marcava ~4,9 ms
-    /// por token no nó da LM head, com `backend_completion_ms` em zero porque o
-    /// `llama_synchronize` de diagnóstico está desligado por padrão. A hipótese
-    /// é que esses milissegundos são a GPU terminando o trabalho, cobrados na
-    /// etapa errada — o primeiro toque de CPU nos logits é quem espera.
+    /// por token no nó da LM head, com `backend_completion_ms` em zero quando o
+    /// `llama_synchronize` de diagnóstico está desligado pela configuração. A
+    /// hipótese é que esses milissegundos são a GPU terminando o trabalho,
+    /// cobrados na etapa errada - o primeiro toque de CPU nos logits é quem
+    /// espera.
     ///
     /// Este teste decide isso sem precisar de duas máquinas: decodifica um
     /// token na mesma fatia duas vezes, uma com `POM_PROFILE_SYNC`

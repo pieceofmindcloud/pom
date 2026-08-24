@@ -87,8 +87,9 @@ impl NodeTimings {
     fn json(&self) -> Value {
         // Counters are kept in microseconds so a stage costing less than a
         // millisecond is not truncated to zero on every call and lost in the
-        // sum. The wire stays in milliseconds, which is what the screen reads.
-        let ms = |us: u64| us / 1_000;
+        // sum. The wire stays in milliseconds, with a fraction preserved for
+        // the diagnostic fields the screen reads.
+        let ms = |us: u64| us as f64 / 1_000.0;
         json!({
             "frame_decode_ms": ms(self.frame_decode_us),
             "input_prepare_ms": ms(self.input_prepare_us),
@@ -530,6 +531,25 @@ mod tests {
 
         assert_eq!(response["item_id"], "request-item");
         assert_eq!(response["batch_id"], "request-batch");
+    }
+
+    #[test]
+    fn serializacao_de_timing_preserva_submilissegundos() {
+        let timings = NodeTimings {
+            frame_decode_us: 999,
+            backend_completion_us: 999,
+            residual_us: 1_234,
+            sampling_us: 1,
+            ..Default::default()
+        };
+
+        let json = timings.json();
+
+        assert_eq!(json["frame_decode_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
+        assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
+        assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
     }
 
     #[tokio::test]

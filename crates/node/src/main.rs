@@ -402,6 +402,7 @@ async fn main() -> Result<()> {
             app_config.clone(),
             args.ollama_url,
             args.no_discovery,
+            args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
         )
@@ -1267,11 +1268,16 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
 /// Start the gateway with real routes but without model/network binding.
 /// The dashboard, admin, and handshake routes all work so the user can
 /// configure the model through the web UI.
+fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
+    !no_default_relays
+}
+
 async fn start_gateway_only(
     gateway_port: u16,
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
+    no_default_relays: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
 ) -> Result<()> {
@@ -1308,7 +1314,7 @@ async fn start_gateway_only(
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
         serve_relay: false,
-        use_default_relays: true,
+        use_default_relays: gateway_only_use_default_relays(no_default_relays),
         no_discovery,
     })
     .await?;
@@ -1407,6 +1413,12 @@ async fn start_gateway_only(
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn gateway_only_honors_the_default_relay_switch() {
+        assert!(gateway_only_use_default_relays(false));
+        assert!(!gateway_only_use_default_relays(true));
+    }
 
     /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está
     /// marcada como deprecated porque todo nó já serve a API, e enquanto o

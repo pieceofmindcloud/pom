@@ -148,6 +148,10 @@ Per-file list:
   `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
   mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
   backend.
+- O fechamento do inspetor é uma barra visual de 3px em altura total, com uma
+  área de clique e foco maior e invisível. Ela fica fora do scroll do conteúdo,
+  então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
+  o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão" e permite reimplantar só
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.

@@ -187,8 +187,9 @@ e em `/ip6/::`.
   no log.
 - **Relays:** por padrão diala os relays públicos do IPFS
   (`DEFAULT_RELAY_NODES`) e os de `--relay-peers` (resolvidos antes por pkarr,
-  filtrando `is_relay`); `--no-default-relays` tira os públicos. Com
-  `--serve-relay` o servidor de relay aceita reservas (128 slots, 4 por peer,
+  filtrando `is_relay`); `--no-default-relays` tira os públicos, inclusive no
+  caminho gateway-only sem modelo. Com `--serve-relay` o servidor de relay
+  aceita reservas (128 slots, 4 por peer,
   1 h de reserva, circuitos de 120 s / 128 kB); sem ele, `max_reservations: 0`.
 - **Gossipsub:** `main.rs` publica o `Announce` a cada 5 s, com ou sem
   assignment, e o quadro é o mesmo do UDP (`Network::gossip_announce_bytes` ->

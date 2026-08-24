@@ -431,7 +431,10 @@ describe("DeployModel", () => {
     expect(screen.getByRole("button", { name: "Ajustar ao canvas" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Organizar máquinas" })).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Ocultar inspetor" }));
+    const hideInspector = screen.getByRole("button", { name: "Ocultar inspetor" });
+    expect(hideInspector.className).toContain("w-6");
+    expect(hideInspector.className).toContain("inset-y-0");
+    fireEvent.click(hideInspector);
     expect(screen.queryByText("Camadas nesta máquina")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Mostrar inspetor" }));
 

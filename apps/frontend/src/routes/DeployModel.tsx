@@ -48,7 +48,6 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
   Check,
   ChevronLeft,
-  ChevronRight,
   Rocket,
   ServerCog,
 } from "lucide-react";
@@ -1214,16 +1213,8 @@ export function DeployModel() {
             )}
           </div>
 
-          {inspectorOpen ? <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
-            <button
-              type="button"
-              aria-label="Ocultar inspetor"
-              title="Ocultar inspetor"
-              onClick={() => setInspectorOpen(false)}
-              className="absolute -left-3 top-1/2 z-30 flex h-12 w-5 -translate-y-1/2 items-center justify-center border border-line bg-surface text-faint shadow-panel hover:text-fg"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
+          {inspectorOpen ? <>
+            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
             <div className="mb-3 flex items-center justify-between gap-2 border-b border-line pb-2">
               <div>
                 <p className="eyebrow">Inspetor</p>
@@ -1568,7 +1559,20 @@ export function DeployModel() {
               );
             })()}
             </>}
-          </aside> : (
+            </aside>
+            <button
+              type="button"
+              aria-label="Ocultar inspetor"
+              title="Ocultar inspetor"
+              onClick={() => setInspectorOpen(false)}
+              className="group absolute inset-y-0 right-0 z-30 w-6 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-1 focus-visible:ring-offset-surface lg:right-[19rem]"
+            >
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-0 right-0 w-[3px] bg-line transition-colors duration-150 group-hover:bg-muted group-focus-visible:bg-muted"
+              />
+            </button>
+          </> : (
             <button
               type="button"
               aria-label="Mostrar inspetor"

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { LocaleProvider } from "../i18n/provider";
@@ -23,6 +23,7 @@ import { Sidebar } from "./Sidebar";
 describe("Sidebar", () => {
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     window.localStorage.clear();
   });
 
@@ -41,6 +42,45 @@ describe("Sidebar", () => {
     expect(screen.getByRole("button", { name: "Modelos" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Fatiar modelos" })).toBeTruthy();
     expect(window.localStorage.getItem("pom.sidebar.collapsed")).toBe("true");
+  });
+
+  it("reabre pelo clique na logo quando o menu está minimizado", () => {
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Minimizar menu" }));
+    const logo = screen.getByRole("button", { name: "Expandir menu" });
+
+    expect(logo.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(logo);
+    expect(screen.getByRole("button", { name: "Minimizar menu" }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("fecha pelo hover da logo somente depois de um pequeno atraso", () => {
+    vi.useFakeTimers();
+    render(
+      <MemoryRouter initialEntries={["/"]}>
+        <LocaleProvider initialLocale="pt-BR">
+          <Sidebar />
+        </LocaleProvider>
+      </MemoryRouter>,
+    );
+
+    const logo = screen.getByRole("button", { name: "Minimizar menu" });
+    fireEvent.mouseEnter(logo);
+
+    expect(screen.getByRole("button", { name: "Minimizar menu" })).toBeTruthy();
+    act(() => vi.advanceTimersByTime(219));
+    expect(screen.getByRole("button", { name: "Minimizar menu" })).toBeTruthy();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.getByRole("button", { name: "Expandir menu" })).toBeTruthy();
   });
 
   /**

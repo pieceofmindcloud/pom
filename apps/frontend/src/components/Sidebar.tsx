@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronDown, Moon, PanelLeftClose, PanelLeftOpen, Sun } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, Moon, Sun } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { LogoFull, LogoMark } from "./Logo";
 import { brand } from "../lib/brand";
@@ -12,12 +12,10 @@ import { useNode } from "../lib/queries";
 import { useTheme } from "../lib/theme";
 
 /**
- * O cabeçalho da barra: só a marca, ocupando a faixa inteira.
- *
- * A arte precisa de fundo claro para o slogan não sumir no tema escuro (ver
- * `LogoFull`), e um cartão arredondado dentro de uma coluna já delimitada era
- * caixa dentro de caixa. A faixa vai de borda a borda e a linha de baixo faz o
- * mesmo papel que o cartão fazia: separar a marca do menu.
+ * Cabeçalho da barra. Quando recebe o toggle da Sidebar desktop, a própria
+ * logo vira o controle acessível: clique alterna o estado e o hover de mouse
+ * recolhe a barra após um pequeno atraso. No drawer mobile ela permanece uma
+ * marca passiva, pois o Topbar controla a abertura por fora.
  */
 function SidebarBrand({
   collapsed,
@@ -27,6 +25,29 @@ function SidebarBrand({
   onToggle?: () => void;
 }) {
   const { t } = useI18n();
+  const closeTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    };
+  }, []);
+
+  function cancelHoverClose() {
+    if (closeTimer.current === null) return;
+    window.clearTimeout(closeTimer.current);
+    closeTimer.current = null;
+  }
+
+  function scheduleHoverClose(pointerType?: string) {
+    if (!onToggle || collapsed || (pointerType && pointerType !== "mouse")) return;
+    cancelHoverClose();
+    closeTimer.current = window.setTimeout(() => {
+      closeTimer.current = null;
+      onToggle();
+    }, 220);
+  }
+
   return (
     <div
       className={clsx(
@@ -34,21 +55,29 @@ function SidebarBrand({
         collapsed ? "h-[68px]" : "h-[92px]",
       )}
     >
-      {collapsed ? <LogoMark size={34} /> : <LogoFull width={104} variant="band" />}
       {onToggle && (
         <button
           type="button"
-          onClick={onToggle}
+          aria-expanded={!collapsed}
+          onClick={() => {
+            cancelHoverClose();
+            onToggle();
+          }}
+          onPointerEnter={(event) => scheduleHoverClose(event.pointerType)}
+          onPointerLeave={cancelHoverClose}
+          onMouseEnter={() => scheduleHoverClose("mouse")}
+          onMouseLeave={cancelHoverClose}
           aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           title={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           className={clsx(
-            "absolute flex h-7 w-7 items-center justify-center rounded-md border border-line bg-surface text-muted transition-colors hover:border-line-strong hover:text-fg",
-            collapsed ? "bottom-1.5 right-1/2 translate-x-1/2" : "right-2 top-2",
+            "flex shrink-0 items-center justify-center rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-2 focus-visible:ring-offset-surface",
+            collapsed ? "h-12 w-12" : "h-20 w-36",
           )}
         >
-          {collapsed ? <PanelLeftOpen className="h-3.5 w-3.5" /> : <PanelLeftClose className="h-3.5 w-3.5" />}
+          {collapsed ? <LogoMark size={34} /> : <LogoFull width={104} variant="card" />}
         </button>
       )}
+      {!onToggle && (collapsed ? <LogoMark size={34} /> : <LogoFull width={104} variant="band" />)}
     </div>
   );
 }

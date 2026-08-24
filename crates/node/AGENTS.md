@@ -61,7 +61,9 @@ como `primary` na config de inferência montada pela linha de comando),
    modelo; restaura a fatia anotada (`lastslice::take()`) **se** a anotação
    estiver `Serving` (a única que o `/health` do servidor viu carregada) e
    serve. `NeverLoaded` → `note_unloadable_slice` (o nó sobe vazio e diz por
-   quê). É o caminho normal do produto.
+   quê). É o caminho normal do produto. O flag `--no-default-relays` também é
+   respeitado neste caminho ao montar a rede, evitando que um gateway local de
+   teste disque relays públicos por engano.
 6. **Com `--model`**: exige `--memory` (a menos que `--inference-port` esteja
    setado). Resolução do perfil, nesta ordem: `ModelProfile::find` (nome do
    arquivo, depois nome cru) → Ollama `/api/tags` (perfil por tamanho real,

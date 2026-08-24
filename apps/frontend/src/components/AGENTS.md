@@ -44,10 +44,11 @@ Per-file list:
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and hover/focus flyout menus for
-  sections with children. `SidebarBrand` is
-  the header and holds **only the lockup** (`LogoFull variant="band"`), filling
-  the strip edge to edge with a divider under it; the menu below it keeps a 5px
-  top gap so the first item does not touch that line - the hash sits **on the identity** because in
+  sections with children. `SidebarBrand` is the header and, on desktop, the
+  lockup itself is the accessible expand/collapse button: click or touch toggles
+  it, while a deliberate mouse hover closes an open sidebar after a short delay.
+  In the mobile drawer it remains a passive lockup. The menu below it keeps a
+  5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
   shell, and a peer on an old binary looks healthy until inference.
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives

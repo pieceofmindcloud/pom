@@ -33,8 +33,6 @@ mod display;
 mod gateway;
 #[path = "models/gguf.rs"]
 mod gguf;
-#[path = "models/hf_cli.rs"]
-mod hf_cli;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]

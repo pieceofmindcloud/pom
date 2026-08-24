@@ -35,6 +35,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow.workspace = true
 reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls-manual-roots"] }
+url = "2"
 axum = "0.7"
 # TLS entre peers: certificado auto assinado derivado da identidade do nó.
 # Ver `network/tls.rs` para por que não há CA nem arquivo de certificado.

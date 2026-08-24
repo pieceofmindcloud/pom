@@ -15,8 +15,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   com `POM_CUDA_GRAPHS=1` exige reconstruir o binário e VRAM livre adicional.
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
-  `axum` 0.7, `reqwest` (json+stream), `tokio` full, `clap` 4 (derive),
+  `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `routing-contract` (path).
+- O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
+  runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
 
 ## build.rs
@@ -109,8 +111,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
-  agnóstico de provider), `hf_cli.rs` (processo e parser isolado) e
-  `huggingface.rs` (`HuggingFaceProvider`).
+  agnóstico de provider) e `huggingface.rs` (`HuggingFaceProvider` HTTP
+  nativo).
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),

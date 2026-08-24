@@ -1015,16 +1015,15 @@ async fn remove_cancellation(service: &ModelService, id: &str) {
 
 fn provider_error(error: HfError) -> Response {
     let (status, code) = match error {
-        HfError::HfCliNotInstalled => (StatusCode::SERVICE_UNAVAILABLE, "cli_not_installed"),
         HfError::HfAuthenticationRequired => (StatusCode::UNAUTHORIZED, "authentication_required"),
         HfError::HfRepositoryNotFound => (StatusCode::NOT_FOUND, "repository_not_found"),
+        HfError::HfFileNotFound => (StatusCode::NOT_FOUND, "file_not_found"),
         HfError::HfAccessDenied => (StatusCode::FORBIDDEN, "access_denied"),
         HfError::HfRateLimited => (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
         HfError::InvalidInput { .. } => (StatusCode::BAD_REQUEST, "invalid_input"),
         HfError::Cancelled => (StatusCode::CONFLICT, "cancelled"),
         HfError::HfDownloadFailed { .. } => (StatusCode::BAD_GATEWAY, "download_failed"),
         HfError::HfInvalidResponse { .. } => (StatusCode::BAD_GATEWAY, "invalid_response"),
-        HfError::ProcessFailed { .. } => (StatusCode::BAD_GATEWAY, "process_failed"),
         HfError::Io { .. } => (StatusCode::INTERNAL_SERVER_ERROR, "io_error"),
     };
     let message = public_error_message_code(code);
@@ -1053,15 +1052,14 @@ fn not_found(message: &'static str) -> Response {
 
 fn error_code(error: &HfError) -> &'static str {
     match error {
-        HfError::HfCliNotInstalled => "cli_not_installed",
         HfError::HfAuthenticationRequired => "authentication_required",
         HfError::HfRepositoryNotFound => "repository_not_found",
+        HfError::HfFileNotFound => "file_not_found",
         HfError::HfAccessDenied => "access_denied",
         HfError::HfRateLimited => "rate_limited",
         HfError::HfDownloadFailed { .. } => "download_failed",
         HfError::HfInvalidResponse { .. } => "invalid_response",
         HfError::InvalidInput { .. } => "invalid_input",
-        HfError::ProcessFailed { .. } => "process_failed",
         HfError::Io { .. } => "io_error",
         HfError::Cancelled => "cancelled",
     }
@@ -1073,9 +1071,9 @@ fn public_error_message(error: &HfError) -> String {
 
 fn public_error_message_code(code: &str) -> &'static str {
     match code {
-        "cli_not_installed" => "o suporte ao provedor não está instalado neste nó",
         "authentication_required" => "autenticação do provedor necessária",
         "repository_not_found" => "modelo não encontrado",
+        "file_not_found" => "arquivo do modelo não encontrado",
         "access_denied" => "você não possui acesso a este modelo",
         "rate_limited" => "o provedor recusou a requisição por limite de uso",
         "insufficient_space" => "espaço insuficiente para baixar este modelo",
@@ -1083,6 +1081,12 @@ fn public_error_message_code(code: &str) -> &'static str {
         "download_in_progress" => "este modelo já está sendo baixado",
         "model_installed" => "este modelo já está instalado",
         "destination_unavailable" => "nenhuma pasta de modelos está disponível",
+        "download_failed" => {
+            "não foi possível concluir o download; verifique a conexão e tente novamente"
+        }
+        "invalid_response" => {
+            "o Hugging Face não respondeu corretamente; verifique a conexão e tente novamente"
+        }
         _ => "não foi possível concluir a operação do modelo",
     }
 }

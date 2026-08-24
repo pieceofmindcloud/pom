@@ -36,6 +36,7 @@ export interface TpTelemetry {
 /** One hop's totals inside a single phase. Prefill and decode never mix. */
 export interface PhaseTrace {
   processing_ms: number;
+  round_trip_ms: number;
   network_ms: number;
   bytes_sent: number;
   bytes_received: number;
@@ -65,7 +66,7 @@ export interface PhaseTrace {
   node_setup_ms: number;
   node_decode_ms: number;
   node_backend_enqueue_ms: number;
-  /** Zero only when the peer runs with POM_PROFILE_SYNC=0. */
+  /** Backend completion timing. Never infer POM_PROFILE_SYNC from this value. */
   node_backend_completion_ms: number;
   node_residual_capture_d2h_sync_ms: number;
   node_residual_ms: number;

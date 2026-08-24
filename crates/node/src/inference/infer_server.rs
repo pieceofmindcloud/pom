@@ -1661,6 +1661,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
+        "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
         // Onde as camadas e o cache KV ficaram de verdade, direto do
         // llama.cpp. `null` quando a ponte não respondeu - a interface diz
         // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que

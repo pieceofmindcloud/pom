@@ -76,6 +76,14 @@ isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
 camadas completas por nó troca um frame de hidden state entre blocos e evita
 essas coletivas TP.
 
+O `PhaseTrace` também preserva `round_trip_ms`, a soma das idas e voltas
+observadas das chamadas daquela fase. Esse campo segue no `x_pom` do stream
+para a tela do Chat e não entra no frame entre peers nem no planejador. O Chat
+usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
+arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
+por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
+`node_backend_completion_ms` nunca é usado para deduzir essa flag.
+
 ### Cache KV e fallback de VRAM
 
 `n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta

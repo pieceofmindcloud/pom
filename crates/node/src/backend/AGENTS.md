@@ -28,7 +28,7 @@ behind an auth extractor.
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
-- `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
+- `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
@@ -154,7 +154,9 @@ behind an auth extractor.
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
-  `requests` (GET ->
+  `network/rtt` (GET autenticado, relatório direcional deste nó),
+  `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
+  peers selecionados para o trace e não altera o planner), `requests` (GET ->
   `crate::reqlog::list_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's

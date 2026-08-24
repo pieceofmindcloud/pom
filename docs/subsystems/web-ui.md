@@ -263,8 +263,9 @@ harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
 guarda além das falas:
 
-- **A telemetria da execução chega fechada** (`ExecutionTelemetry`): quatro
-  linhas de números por salto, embaixo de toda resposta; abrir é um clique.
+- **A telemetria da execução chega fechada** (`ExecutionTelemetry`): a tabela
+  de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
+  abrir é um clique.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -275,6 +276,15 @@ guarda além das falas:
 
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
+Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
+os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
+do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
+aresta com o rótulo origem -> destino, capacidade e configuração pedida,
+colocação efetiva por buffers GPU/CPU/mistos e `POM_PROFILE_SYNC` individual de
+cada peer. A colocação não é derivada de `n_gpu_layers`, e o estado de sync não
+é deduzido de um tempo zero. Se a coleta falhar, a tela diz indisponível ou não
+medido em vez de preencher com zero. Em uma pipeline de uma máquina, ela
+explica que não existem arestas entre peers.
 
 ## Documentação: dois públicos na mesma rota
 

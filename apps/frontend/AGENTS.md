@@ -71,7 +71,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, telemetry diagnosis, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
-- `src/routes/` - one screen per route, including the chat telemetry tables, diagnosis card, AI analysis action and initial-model mark. See `src/routes/AGENTS.md`.
+- `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action and initial-model mark. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
@@ -79,7 +79,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, jobs, requests, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `openai.rs`, `devupdate.rs`).
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, jobs, requests, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `openai.rs`, `devupdate.rs`).
 - Auth: `api.ts` signs requests with the cluster connection key (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the Rust `auth.rs`.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 

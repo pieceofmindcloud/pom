@@ -7,7 +7,7 @@
  * refetching while the tab is hidden, which keeps an open panel from loading a
  * node nobody is watching.
  */
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, api, listDeployments, setConnectionKey } from "./api";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
@@ -15,6 +15,7 @@ import type {
   ApiKey,
   CacheTypesResponse,
   CatalogResponse,
+  ChatTelemetryNetwork,
   ClusterView,
   Job,
   NodeInfo,
@@ -56,6 +57,7 @@ export const keys = {
   apiKeys: ["api-keys"] as const,
   requests: ["requests"] as const,
   peerRuntime: (nodeId: string) => ["peer-runtime", nodeId] as const,
+  chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
 };
@@ -135,6 +137,37 @@ export function usePeerRuntime(nodeId: string, enabled: boolean) {
     enabled,
     refetchInterval: 15_000,
     staleTime: 10_000,
+  });
+}
+
+/** Snapshot de saúde dos peers que acabaram de participar de uma execução. */
+export function usePeerRuntimes(nodeIds: string[], enabled: boolean, executionId?: string) {
+  return useQueries({
+    queries: nodeIds.map((nodeId) => ({
+      queryKey: ["peer-runtime-snapshot", executionId ?? "idle", nodeId] as const,
+      queryFn: () =>
+        optional(
+          api.get<PeerRuntime>(`/api/ui/peer/${encodeURIComponent(nodeId)}/runtime`, {
+            auth: false,
+          }),
+          { loaded: false, reason: "rota indisponível neste nó" } as PeerRuntime,
+        ),
+      enabled,
+      retry: false,
+      staleTime: 10_000,
+    })),
+  });
+}
+
+/** RTT direcional das arestas da execução, consultado apenas após o stream. */
+export function useChatTelemetryNetwork(nodeIds: string[], enabled: boolean, executionId?: string) {
+  return useQuery({
+    queryKey: keys.chatTelemetry(executionId, nodeIds),
+    queryFn: () =>
+      api.post<ChatTelemetryNetwork>("/api/ui/chat/telemetry", { node_ids: nodeIds }),
+    enabled: enabled && nodeIds.length > 1,
+    retry: false,
+    staleTime: Infinity,
   });
 }
 

@@ -77,6 +77,9 @@ pub struct TlsHop {
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
     pub processing_ms: u64,
+    /// Sum of the observed call round trips for this phase, including peer
+    /// processing. The frontend uses this for the execution RTT total.
+    pub round_trip_ms: u64,
     /// Round trip minus what the peer claimed: the residual HTTP time.
     pub network_ms: u64,
     pub bytes_sent: u64,
@@ -108,9 +111,9 @@ pub struct PhaseTrace {
     /// Time to hand the batch to the backend — not the time it ran.
     pub node_backend_enqueue_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
-    /// `llama_synchronize`. Zero unless the peer runs with
-    /// `POM_PROFILE_SYNC` (on by default; `=0` turns it off); it is a
-    /// diagnostic boundary, not kernel time.
+    /// `llama_synchronize`. A zero value means no completion duration was
+    /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
+    /// by `/health` and must never be inferred from this timing.
     pub node_backend_completion_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
@@ -150,6 +153,7 @@ impl PhaseTrace {
         let node_decode_ms = node_ms("decode_ms");
 
         self.processing_ms += processing_ms;
+        self.round_trip_ms += round_trip_ms;
         self.network_ms += round_trip_ms.saturating_sub(processing_ms);
         self.bytes_sent += bytes_sent;
         self.bytes_received += bytes_received;
@@ -189,6 +193,7 @@ impl PhaseTrace {
 
     fn merge(&mut self, next: &PhaseTrace) {
         self.processing_ms += next.processing_ms;
+        self.round_trip_ms += next.round_trip_ms;
         self.network_ms += next.network_ms;
         self.bytes_sent += next.bytes_sent;
         self.bytes_received += next.bytes_received;
@@ -1937,6 +1942,27 @@ mod tests {
 
         assert_eq!(trace.hops[0].prefill.network_ms, 4);
         assert_eq!(trace.hops[0].decode.network_ms, 11);
+    }
+
+    #[test]
+    fn hop_trace_keeps_the_observed_round_trip_for_execution_summary() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            100,
+            200,
+            1,
+            8,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.round_trip_ms, 18);
     }
 
     // ── As duas formas legítimas de resposta a uma rodada especulativa ──────

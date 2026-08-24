@@ -108,7 +108,9 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
 `requests` (o log de requisições, `reqlog::list_requests`), `network/rtt` (GET
-autenticado, snapshot direcional deste nó), `dev/update` +
+autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
+recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
+peers solicitados), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
@@ -140,6 +142,14 @@ troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
 somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
 continuam invalidando a versão. `x-state-version` é monotônico para snapshots
 alterados.
+**`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
+execução do Chat. O gateway inclui a medição local e consulta o
+`GET /api/ui/network/rtt` autenticado de cada peer solicitado, aceitando o
+relatório somente quando `source_node_id` coincide com o peer que respondeu.
+Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
+é da origem da aresta até o destino e não é o RTT do card que um gateway mediu
+até um peer. Ausência de uma medida fica ausente na resposta; não há zero de
+fallback.
 
 ## 3. Autenticação (`auth.rs`)
 
@@ -166,6 +176,9 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
 `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
+
+`POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige
+`ConnectionAuth` porque repassa relatórios internos de RTT entre peers.
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`,

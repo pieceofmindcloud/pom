@@ -206,7 +206,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift` e também o snapshot
+- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
+  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`) e também o snapshot
   do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
@@ -253,12 +254,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `reset_capture_slot` antes, senão a sobra de uma requisição entraria
   concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
   anotados.
-- `profile_backend_sync` - perfil do backend síncrono, `POM_PROFILE_SYNC`
-  (default ligado; "0"/"false" desliga). `NodeTimings` mantém os contadores
-  em microssegundos e serializa os campos `*_ms` de diagnóstico como
-  milissegundos fracionários, então uma medição sub-milisegundo não vira zero
-  no wire. `backend_completion_ms` é uma duração medida, não uma fonte de
-  verdade sobre o estado da flag.
+- `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
+  (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
+  `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
+  campos `*_ms` de diagnóstico como milissegundos fracionários, então uma
+  medição sub-milisegundo não vira zero no wire. `backend_completion_ms` é uma
+  duração medida, não uma fonte de verdade sobre o estado da flag; a telemetria
+  do Chat não deduz esse estado de um timing zero.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
@@ -307,9 +309,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `speculate.draft` presente bastam.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
-- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; os campos
-  derivados de `NodeTimings` preservam frações de milissegundo, e o campo
-  `node_lock_wait_ms` separa "nó lento" de "nó ocupado".
+- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; `round_trip_ms`
+  conserva a ida e volta observada de cada chamada para a soma do RTT da execução,
+  enquanto `node_lock_wait_ms` separa "nó lento" de "nó ocupado". Os campos
+  derivados de `NodeTimings` preservam frações de milissegundo. Isso é telemetria
+  do gateway/SSE e não muda o frame entre peers.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;

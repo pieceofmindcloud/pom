@@ -227,6 +227,8 @@ export interface PeerRuntimeHealth {
   fit_memory_applied: boolean;
   n_gpu_layers_effective: number;
   n_ubatch_effective: number;
+  /** Real backend setting on this peer, not inferred from a zero timing. */
+  profile_sync_enabled?: boolean;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
@@ -239,6 +241,18 @@ export interface PeerRuntime {
   /** Por que não há dados, quando `loaded` é falso. */
   reason?: string;
   health?: PeerRuntimeHealth;
+}
+
+/** RTT direcional medido entre dois peers da execução exibida no chat. */
+export interface ChatTelemetryRtt {
+  from_node_id: string;
+  to_node_id: string;
+  rtt_ms: number;
+  transport: string;
+}
+
+export interface ChatTelemetryNetwork {
+  measurements: ChatTelemetryRtt[];
 }
 
 export interface ModelCapability {

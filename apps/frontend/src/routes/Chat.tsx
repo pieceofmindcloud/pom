@@ -26,7 +26,14 @@ import { Badge, Button, Empty } from "../components/ui";
 import { ApiError, streamSse } from "../lib/api";
 import { isNearBottom } from "../lib/chatScroll";
 import { consumeChatDelta, emptyChatStream, finishChatStream } from "../lib/chatStream";
-import { analyzeTelemetry, buildTelemetryAnalysisPrompt } from "../lib/telemetryAnalysis";
+import {
+  analyzeTelemetry,
+  buildTelemetryAnalysisPrompt,
+  effectivePlacementCounts,
+  executionPipelineEdges,
+  executionNetworkMs,
+  executionRttMs,
+} from "../lib/telemetryAnalysis";
 import {
   emptySession,
   newId,
@@ -39,11 +46,18 @@ import {
 import { bytes, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
 import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
-import { useCluster, useNode, useServableModels } from "../lib/queries";
+import {
+  useChatTelemetryNetwork,
+  useCluster,
+  useNode,
+  usePeerRuntimes,
+  useServableModels,
+} from "../lib/queries";
 import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
+import type { ChatTelemetryNetwork, ClusterView, PeerRuntime } from "../lib/types";
 
 /**
  * Something that happened to the conversation, on the line where it happened.
@@ -76,16 +90,183 @@ function ModelIntroMark({ model }: { model: string }) {
   return <EventMark message={{ id: "model-at-start", role: "event", content: t("chat.modelAtStart", { model }), at: "" }} />;
 }
 
+export interface ExecutionTelemetryEnvironment {
+  snapshotCaptured: boolean;
+  cluster?: ClusterView | null;
+  network?: ChatTelemetryNetwork;
+  networkLoading?: boolean;
+  networkError?: boolean;
+  runtimes: Record<string, PeerRuntime | undefined>;
+  runtimesLoading?: boolean;
+}
+
+function memoryLabel(value: number | undefined, locale: string) {
+  if (!Number.isFinite(value) || !value || value < 0) return null;
+  if (value >= 1024) {
+    return `${new Intl.NumberFormat(locale === "pt-BR" ? "pt-BR" : "en-US", { maximumFractionDigits: 1 }).format(value / 1024)} GB`;
+  }
+  return `${new Intl.NumberFormat(locale === "pt-BR" ? "pt-BR" : "en-US").format(Math.round(value))} MB`;
+}
+
+function rttLabel(value: number, locale: string) {
+  if (!Number.isFinite(value)) return null;
+  return `${new Intl.NumberFormat(locale === "pt-BR" ? "pt-BR" : "en-US", { maximumFractionDigits: 1 }).format(value)} ms`;
+}
+
+function ExecutionNetwork({
+  trace,
+  environment,
+}: {
+  trace: RequestTrace;
+  environment: ExecutionTelemetryEnvironment;
+}) {
+  const { t, locale } = useI18n();
+  const edges = executionPipelineEdges(trace);
+  const measurements = environment.network?.measurements ?? [];
+  return (
+    <section className="mt-3 rounded-lg border border-line/70 bg-surface/30 px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-medium text-fg">{t("chat.telemetry.pipelineTitle")}</h3>
+        <span className="text-[0.66rem] text-faint">{t("chat.telemetry.pipelineRttTitle")}</span>
+      </div>
+      <p className="mt-1 text-[0.68rem] leading-relaxed text-faint">{t("chat.telemetry.pipelineRttExplain")}</p>
+      {edges.length === 0 ? (
+        <p className="mt-2 text-[0.72rem] text-muted">{t("chat.telemetry.noEdges")}</p>
+      ) : environment.networkLoading ? (
+        <p className="mt-2 text-[0.72rem] text-muted">{t("chat.telemetry.networkLoading")}</p>
+      ) : environment.networkError || !environment.network ? (
+        <p className="mt-2 text-[0.72rem] text-muted">{t("chat.telemetry.networkUnavailable")}</p>
+      ) : (
+        <div className="mt-2 grid min-w-0 gap-1.5">
+          {edges.map((edge) => {
+            const measurement = measurements.find(
+              (item) => item.from_node_id === edge.from_node_id && item.to_node_id === edge.to_node_id,
+            );
+            return (
+              <div key={`${edge.from_node_id}:${edge.to_node_id}`} className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-md border border-line/50 px-2.5 py-1.5">
+                <span className="min-w-0 truncate font-mono text-[0.68rem] text-fg">
+                  {edge.from_node_id.slice(0, 10)} <span className="text-faint">-&gt;</span> {edge.to_node_id.slice(0, 10)}
+                </span>
+                <span className="shrink-0 font-mono text-[0.68rem] text-muted">
+                  {(measurement && rttLabel(measurement.rtt_ms, locale)) || t("chat.telemetry.noMeasurement")}
+                </span>
+                {measurement && <span className="w-full text-[0.64rem] text-faint">{t("chat.telemetry.transportValue", { value: measurement.transport })}</span>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ExecutionEnvironment({
+  trace,
+  environment,
+}: {
+  trace: RequestTrace;
+  environment: ExecutionTelemetryEnvironment;
+}) {
+  const { t, locale } = useI18n();
+  const nodeIds = Array.from(new Set(trace.hops.map((hop) => hop.node_id)));
+  const hasTp = trace.hops.some((hop) => isPhasedHop(hop) && (hop.prefill.tp?.enabled || hop.decode.tp?.enabled));
+  return (
+    <section className="mt-3 rounded-lg border border-line/70 bg-surface/30 px-3 py-2.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h3 className="font-medium text-fg">{t("chat.telemetry.environmentTitle")}</h3>
+        <span className="text-[0.66rem] text-faint">{t("chat.telemetry.machineCount", { count: nodeIds.length })}</span>
+      </div>
+      {!environment.snapshotCaptured ? (
+        <p className="mt-2 text-[0.72rem] text-muted">{t("chat.telemetry.snapshotMissing")}</p>
+      ) : (
+        <>
+          {hasTp && <p className="mt-2 text-[0.68rem] leading-relaxed text-faint">{t("chat.telemetry.tpMachineScope")}</p>}
+          <div className="mt-2 grid min-w-0 gap-2 lg:grid-cols-2">
+            {nodeIds.map((nodeId) => {
+            const peer = environment.cluster?.peers.find((candidate) => candidate.node_id === nodeId);
+            const node = peer?.node;
+            const runtime = environment.runtimes[nodeId];
+            const health = runtime?.loaded ? runtime.health : undefined;
+            const system = node?.system;
+            const config = node?.config;
+            const gpuNames = system?.gpus?.map((gpu) => gpu.name).filter(Boolean) ?? [];
+            const gpuValue = gpuNames.length > 0 ? gpuNames.join(", ") : system?.gpu_kind || null;
+            const placement = health?.placement;
+            const counts = placement ? effectivePlacementCounts(placement.layers) : null;
+            const syncState = typeof health?.profile_sync_enabled === "boolean"
+              ? health.profile_sync_enabled
+                ? t("chat.telemetry.profileSyncActive")
+                : t("chat.telemetry.profileSyncOff")
+              : t("chat.telemetry.profileSyncUnknown");
+            return (
+              <article key={nodeId} className="min-w-0 rounded-md border border-line/60 bg-raised/40 px-3 py-2.5">
+                <div className="flex min-w-0 items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <h4 className="truncate font-medium text-fg">{node?.hostname || peer?.short_id || nodeId.slice(0, 10)}</h4>
+                    <p className="truncate font-mono text-[0.64rem] text-faint">{nodeId}</p>
+                  </div>
+                  <span className="shrink-0 rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.profileSync", { state: syncState })}</span>
+                </div>
+                <div className="mt-2 grid min-w-0 gap-2 text-[0.68rem] sm:grid-cols-2">
+                  <div className="min-w-0">
+                    <p className="mb-1 font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.capacity")}</p>
+                    <p>{system?.cpu_count != null ? t("chat.telemetry.cpu", { count: system.cpu_count }) : t("chat.telemetry.notInformed")}</p>
+                    <p>{system?.ram ? t("chat.telemetry.ram", { available: memoryLabel(system.ram.available_mb, locale) ?? t("chat.telemetry.notInformed"), total: memoryLabel(system.ram.total_mb, locale) ?? t("chat.telemetry.notInformed") }) : t("chat.telemetry.ram", { available: t("chat.telemetry.notInformed"), total: t("chat.telemetry.notInformed") })}</p>
+                    <p className="break-words">{t("chat.telemetry.gpu", { value: gpuValue ?? t("chat.telemetry.notInformed") })}</p>
+                  </div>
+                  <div className="min-w-0">
+                    <p className="mb-1 font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.configIntent")}</p>
+                    {config ? (
+                      <div className="space-y-0.5">
+                        <p>{t("chat.telemetry.requestedGpuLayers", { count: config.n_gpu_layers })}</p>
+                        <p>{t("chat.telemetry.nCtx", { count: config.n_ctx })} · {t("chat.telemetry.nBatch", { count: config.n_batch })}</p>
+                        <p>{t("chat.telemetry.fitMemory", { value: config.fit_memory ? t("chat.telemetry.profileSyncActive") : t("chat.telemetry.profileSyncOff") })} · {t("chat.telemetry.offloadKqv", { value: config.offload_kqv ? t("chat.telemetry.profileSyncActive") : t("chat.telemetry.profileSyncOff") })}</p>
+                        <p>{t("chat.telemetry.sessions", { count: config.max_sessions })}</p>
+                      </div>
+                    ) : <p>{t("chat.telemetry.notInformed")}</p>}
+                  </div>
+                </div>
+                <div className="mt-2 border-t border-line/50 pt-2 text-[0.68rem]">
+                  <p className="mb-1 font-medium uppercase tracking-[0.1em] text-faint">{t("chat.telemetry.effectivePlacement")}</p>
+                  {environment.runtimesLoading && !runtime ? (
+                    <p className="text-muted">{t("chat.telemetry.runtimeLoading")}</p>
+                  ) : !runtime ? (
+                    <p className="text-muted">{t("chat.telemetry.notInformed")}</p>
+                  ) : !runtime.loaded ? (
+                    <p className="text-muted">{t("chat.telemetry.runtimeNotLoaded", { reason: runtime.reason ?? t("chat.telemetry.notInformed") })}</p>
+                  ) : !placement || !counts ? (
+                    <p className="text-muted">{t("chat.telemetry.placementMissing")}</p>
+                  ) : (
+                    <div className="grid gap-0.5 sm:grid-cols-2">
+                      <p>{t("chat.telemetry.gpuBackedLayers", { count: counts.gpu })}</p>
+                      <p>{t("chat.telemetry.cpuBackedLayers", { count: counts.cpu })}</p>
+                      <p>{t("chat.telemetry.mixedLayers", { count: counts.mixed })}</p>
+                      {counts.unknown > 0 && <p>{t("chat.telemetry.unknownLayers", { count: counts.unknown })}</p>}
+                    </div>
+                  )}
+                </div>
+              </article>
+            );
+            })}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function Bubble({
   message,
   streaming,
   onAnalyze,
   analysisDisabled = false,
+  telemetryEnvironment,
 }: {
   message: ChatMessage;
   streaming: boolean;
   onAnalyze?: (trace: RequestTrace) => void;
   analysisDisabled?: boolean;
+  telemetryEnvironment?: ExecutionTelemetryEnvironment;
 }) {
   const { t, locale } = useI18n();
   if (message.role === "event") return <EventMark message={message} />;
@@ -126,14 +307,17 @@ function Bubble({
           {message.tokensPerSecond != null && (
             <div className="mt-2 flex flex-wrap items-center gap-2 font-mono text-[0.68rem] text-faint">
               <span>{message.tokensPerSecond.toFixed(1)} {t("chat.speedUnit")}{message.tokensGenerated != null && ` · ${message.tokensGenerated} ${t("chat.tokensUnit")}`}{message.durationMs != null && ` · ${(message.durationMs / 1000).toFixed(1)} ${t("chat.timeUnit")}`}</span>
-              {message.trace && (
-                <ExecutionTelemetry
-                  trace={message.trace}
-                  source={message.source}
-                  onAnalyze={onAnalyze}
-                  analyzeDisabled={analysisDisabled || streaming}
-                />
-              )}
+            </div>
+          )}
+          {message.trace && (
+            <div className="mt-2">
+              <ExecutionTelemetry
+                trace={message.trace}
+                source={message.source}
+                environment={telemetryEnvironment}
+                onAnalyze={onAnalyze}
+                analyzeDisabled={analysisDisabled || streaming}
+              />
             </div>
           )}
         </div>
@@ -150,11 +334,13 @@ function Bubble({
 export function ExecutionTelemetry({
   trace,
   source,
+  environment,
   onAnalyze,
   analyzeDisabled = false,
 }: {
   trace: RequestTrace;
   source?: string;
+  environment?: ExecutionTelemetryEnvironment;
   onAnalyze?: (trace: RequestTrace) => void;
   analyzeDisabled?: boolean;
 }) {
@@ -167,10 +353,12 @@ export function ExecutionTelemetry({
       { hop, label: t("chat.telemetry.decode"), phase: hop.decode },
     ].filter((row) => row.phase.tp?.enabled);
   });
+  const rttTotalMs = executionRttMs(trace);
+  const networkTotalMs = executionNetworkMs(trace);
 
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span><span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span><span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -221,6 +409,8 @@ export function ExecutionTelemetry({
       </table>
     </div>
     {tpRows.length > 0 && <TpTable rows={tpRows} />}
+    {environment && <ExecutionNetwork trace={trace} environment={environment} />}
+    {environment && <ExecutionEnvironment trace={trace} environment={environment} />}
     <p className="mt-2 text-faint">{t("chat.telemetry.footnote")}</p>
   </details>;
 }
@@ -582,10 +772,54 @@ export function Chat() {
   const [session, setSession] = useState<ChatSession>(() => sessions[0] ?? emptySession(null));
   const [draft, setDraft] = useState("");
   const [streaming, setStreaming] = useState(false);
+  const [telemetryCapture, setTelemetryCapture] = useState<{
+    messageId: string;
+    trace: RequestTrace;
+    cluster: ClusterView | null;
+  } | null>(null);
+  const [telemetrySnapshots, setTelemetrySnapshots] = useState<Record<string, ExecutionTelemetryEnvironment>>({});
   const abort = useRef<AbortController | null>(null);
   const thread = useRef<HTMLDivElement>(null);
   const autoFollow = useRef(true);
   const composer = useRef<HTMLTextAreaElement>(null);
+
+  const telemetryNodeIds = useMemo(
+    () => Array.from(new Set(telemetryCapture?.trace.hops.map((hop) => hop.node_id) ?? [])).sort(),
+    [telemetryCapture],
+  );
+  const telemetryNetwork = useChatTelemetryNetwork(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
+  const runtimeQueries = usePeerRuntimes(telemetryNodeIds, telemetryCapture != null, telemetryCapture?.messageId);
+  const runtimeByNode = useMemo(
+    () => Object.fromEntries(telemetryNodeIds.map((nodeId, index) => [nodeId, runtimeQueries[index]?.data])) as Record<string, PeerRuntime | undefined>,
+    [runtimeQueries, telemetryNodeIds],
+  );
+  const telemetryEnvironment: ExecutionTelemetryEnvironment | undefined = telemetryCapture
+    ? {
+        snapshotCaptured: true,
+        cluster: telemetryCapture.cluster,
+        network: telemetryNetwork.data,
+        networkLoading: telemetryNetwork.isLoading,
+        networkError: telemetryNetwork.isError,
+        runtimes: runtimeByNode,
+        runtimesLoading: runtimeQueries.some((query) => query.isLoading),
+      }
+    : undefined;
+
+  useEffect(() => {
+    if (!telemetryCapture || !telemetryEnvironment) return;
+    setTelemetrySnapshots((previous) => {
+      const current = previous[telemetryCapture.messageId];
+      if (
+        current?.cluster === telemetryEnvironment.cluster &&
+        current?.network === telemetryEnvironment.network &&
+        current?.runtimes === telemetryEnvironment.runtimes &&
+        current?.networkLoading === telemetryEnvironment.networkLoading &&
+        current?.networkError === telemetryEnvironment.networkError &&
+        current?.runtimesLoading === telemetryEnvironment.runtimesLoading
+      ) return previous;
+      return { ...previous, [telemetryCapture.messageId]: telemetryEnvironment };
+    });
+  }, [telemetryCapture, telemetryEnvironment]);
 
   // A session with no model yet takes whatever the network is serving.
   const model = session.model && available.includes(session.model) ? session.model : available[0] ?? cluster.data?.active_model ?? "";
@@ -639,6 +873,7 @@ export function Chat() {
     };
     setSession(live);
     setDraft("");
+    setTelemetryCapture(null);
     setStreaming(true);
     autoFollow.current = true;
     window.requestAnimationFrame(grow);
@@ -701,6 +936,9 @@ export function Chat() {
       }
       streamed = finishChatStream(streamed);
       patchReply({ content: streamed.content, reasoning: streamed.reasoning || undefined });
+      if (streamed.trace) {
+        setTelemetryCapture({ messageId: reply.id, trace: streamed.trace, cluster: cluster.data ?? null });
+      }
       if (!streamed.content && !streamed.reasoning) {
         patchReply({
           error:
@@ -778,11 +1016,21 @@ export function Chat() {
     abort.current?.abort();
     setSession(emptySession(model || null));
     setDraft("");
+    setTelemetryCapture(null);
   }
 
   function deleteSession(id: string) {
     remove(id);
-    if (id === session.id) setSession(emptySession(model || null));
+    setTelemetrySnapshots((previous) => {
+      if (!(id in previous)) return previous;
+      const next = { ...previous };
+      delete next[id];
+      return next;
+    });
+    if (id === session.id) {
+      setSession(emptySession(model || null));
+      setTelemetryCapture(null);
+    }
   }
 
   const noModel = available.length === 0 && !cluster.data?.active_model;
@@ -797,6 +1045,7 @@ export function Chat() {
         onPick={(s) => {
           abort.current?.abort();
           setSession(s);
+          setTelemetryCapture(null);
         }}
         onNew={startNew}
         onDelete={deleteSession}
@@ -856,6 +1105,7 @@ export function Chat() {
                       streaming={streaming && m.id === session.messages[session.messages.length - 1]?.id}
                       onAnalyze={analyzeTrace}
                       analysisDisabled={streaming || !model}
+                      telemetryEnvironment={telemetryCapture?.messageId === m.id ? telemetryEnvironment : telemetrySnapshots[m.id]}
                     />
                   ))}
                 </AnimatePresence>

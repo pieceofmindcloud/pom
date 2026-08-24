@@ -14,11 +14,17 @@ Per-file list:
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
   `../lib/chatStream` (SSE delta + metrics parsing), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
-  (`useCluster`, `useNode`, `useServableModels`), `../components/Markdown`,
+  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
+  `useServableModels`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
-  connection key by `api`. Its picker uses `../lib/chatModels` to hide
-  deployment-qualified ids from chat presentation only; deployment screens and
-  backend model resolution retain those ids.
+  connection key by `api`. When the stream finishes, it captures the cluster
+  snapshot, directional RTT for each adjacent execution pair and each peer's
+  inference health. `ExecutionEnvironment` keeps requested configuration
+  separate from effective layer placement and shows `POM_PROFILE_SYNC` only
+  from the explicit per-peer health field. Missing snapshots stay visible as
+  missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  ids from chat presentation only; deployment screens and backend model
+  resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG

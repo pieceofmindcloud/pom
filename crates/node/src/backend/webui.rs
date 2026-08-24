@@ -128,6 +128,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
+        .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route(
             "/api/ui/cache-types",
@@ -737,7 +738,7 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     }))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RttReport {
     source_node_id: String,
     measurements: Vec<crate::route::RttMeasurement>,
@@ -747,15 +748,114 @@ struct RttReport {
 /// porque o relatório faz parte da telemetria interna usada para escolher
 /// rotas de inferência.
 async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+    let mut measurements = local_rtt_measurements(&state);
+    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+
+    Json(RttReport {
+        source_node_id: state.network.node_id.clone(),
+        measurements,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatTelemetryRequest {
+    #[serde(default)]
+    node_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ChatTelemetryMeasurement {
+    from_node_id: String,
+    to_node_id: String,
+    rtt_ms: f64,
+    transport: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatTelemetryResponse {
+    measurements: Vec<ChatTelemetryMeasurement>,
+}
+
+/// Combina a sonda local com os relatórios direcionais dos próprios peers.
+///
+/// A tela de implantação já usa esta mesma fonte para as arestas do plano,
+/// mas o chat precisa de uma consulta sob demanda para a execução recém
+/// terminada. Cada relatório é aceito somente quando o `source_node_id` bate
+/// com o peer que respondeu: sem essa verificação, um gateway intermediário
+/// poderia fazer uma medida parecer ser de outra máquina.
+async fn chat_telemetry(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<ChatTelemetryRequest>,
+) -> Json<ChatTelemetryResponse> {
+    let requested: std::collections::HashSet<String> = request
+        .node_ids
+        .into_iter()
+        .filter(|node_id| !node_id.is_empty())
+        .collect();
+    if requested.len() < 2 {
+        return Json(ChatTelemetryResponse {
+            measurements: Vec::new(),
+        });
+    }
+
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+    let connection_key = state.auth.read().await.connection_key.clone();
+    let mut measurements = Vec::new();
+
+    append_chat_telemetry_measurements(
+        &mut measurements,
+        &self_id,
+        RttReport {
+            source_node_id: self_id.clone(),
+            measurements: local_rtt_measurements(&state),
+        },
+        &requested,
+    );
+
+    for peer in peers {
+        if peer.node_id == self_id || !requested.contains(&peer.node_id) {
+            continue;
+        }
+        let Some(base) = peer.gateway_url() else {
+            continue;
+        };
+        let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
+            continue;
+        };
+        let response = http
+            .get(format!("{base}/api/ui/network/rtt"))
+            .timeout(PEER_TIMEOUT)
+            .bearer_auth(&connection_key)
+            .send()
+            .await;
+        let Ok(response) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(report) = response.json::<RttReport>().await else {
+            continue;
+        };
+        append_chat_telemetry_measurements(&mut measurements, &peer.node_id, report, &requested);
+    }
+
+    measurements.sort_by(|a, b| {
+        a.from_node_id
+            .cmp(&b.from_node_id)
+            .then_with(|| a.to_node_id.cmp(&b.to_node_id))
+    });
+    Json(ChatTelemetryResponse { measurements })
+}
+
+fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
     let mut measurements = state.network.rtts.snapshot();
     let measured_targets: std::collections::HashSet<String> = measurements
         .iter()
         .map(|measurement| measurement.target_node_id.clone())
         .collect();
-
-    // Peers antigos não têm o probe libp2p. O RTT HTTP local continua sendo
-    // uma informação útil para compatibilidade, mas nunca substitui uma
-    // medição libp2p já existente para o mesmo destino.
     for (node_id, route) in state.network.routes.snapshot() {
         if !measured_targets.contains(&node_id) {
             measurements.push(crate::route::RttMeasurement {
@@ -765,12 +865,33 @@ async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -
             });
         }
     }
-    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+    measurements
+}
 
-    Json(RttReport {
-        source_node_id: state.network.node_id.clone(),
-        measurements,
-    })
+fn append_chat_telemetry_measurements(
+    output: &mut Vec<ChatTelemetryMeasurement>,
+    expected_source: &str,
+    report: RttReport,
+    requested: &std::collections::HashSet<String>,
+) {
+    if report.source_node_id != expected_source {
+        return;
+    }
+    output.extend(
+        report
+            .measurements
+            .into_iter()
+            .filter(|measurement| {
+                requested.contains(&measurement.target_node_id)
+                    && measurement.target_node_id != expected_source
+            })
+            .map(|measurement| ChatTelemetryMeasurement {
+                from_node_id: expected_source.to_string(),
+                to_node_id: measurement.target_node_id,
+                rtt_ms: measurement.rtt_ms,
+                transport: measurement.transport,
+            }),
+    );
 }
 
 // ── Cluster view ─────────────────────────────────────────────────────────────
@@ -5028,6 +5149,61 @@ mod state_transport_tests {
                 .unwrap()
                 .is_empty(),
             "304 não pode remandar o JSON"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn directional_report_is_kept_only_for_verified_sources_and_requested_targets() {
+        let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
+        let mut output = Vec::new();
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "wrong-source".into(),
+                measurements: vec![crate::route::RttMeasurement {
+                    target_node_id: "b".into(),
+                    rtt_ms: 12.5,
+                    transport: "libp2p".into(),
+                }],
+            },
+            &requested,
+        );
+        assert!(output.is_empty(), "a resposta não pode trocar a origem");
+
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "a".into(),
+                measurements: vec![
+                    crate::route::RttMeasurement {
+                        target_node_id: "b".into(),
+                        rtt_ms: 12.5,
+                        transport: "libp2p".into(),
+                    },
+                    crate::route::RttMeasurement {
+                        target_node_id: "outside-pipeline".into(),
+                        rtt_ms: 99.0,
+                        transport: "libp2p".into(),
+                    },
+                ],
+            },
+            &requested,
+        );
+        assert_eq!(
+            output,
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "a".into(),
+                to_node_id: "b".into(),
+                rtt_ms: 12.5,
+                transport: "libp2p".into(),
+            }]
         );
     }
 }

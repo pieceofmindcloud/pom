@@ -460,10 +460,14 @@ pub struct DecodeTimings {
 /// dizia que o gargalo era "acesso aos logits" quando era a GPU terminando.
 /// Foi essa conta errada que a Mudança 6 do spec de 2026-08-12 pedia para
 /// fechar.
-fn profile_backend_sync() -> bool {
-    std::env::var("POM_PROFILE_SYNC")
+fn profile_backend_sync_value(value: Option<&str>) -> bool {
+    value
         .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
+}
+
+pub fn profile_backend_sync_enabled() -> bool {
+    profile_backend_sync_value(std::env::var("POM_PROFILE_SYNC").ok().as_deref())
 }
 
 // SAFETY: We serialise all GPU calls behind a `Mutex<LlmEngine>` in the HTTP
@@ -1183,7 +1187,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -1311,7 +1315,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -1420,7 +1424,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -2181,6 +2185,14 @@ fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_sync_defaults_on_and_accepts_explicit_off_values() {
+        assert!(profile_backend_sync_value(None));
+        assert!(profile_backend_sync_value(Some("1")));
+        assert!(!profile_backend_sync_value(Some("0")));
+        assert!(!profile_backend_sync_value(Some("false")));
+    }
 
     #[test]
     fn cache_types_map_to_the_llama_context_types() {

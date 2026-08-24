@@ -160,6 +160,28 @@ duplicar os codebooks oficiais em Rust. Fixtures locais cobrem IQ3_S, IQ2_S e
 IQ4_XS, os dois nomes de gate/up e a execução ponta a ponta do runtime. Um
 dtype diferente de 21, 22 ou 23 continua recusado pelo dispatch com ID e nome.
 
+### Fase 4A: F32, F16 e BF16
+
+Os dtypes escalares `F32` (0), `F16` (1) e `BF16` (30) agora têm decoder CPU
+próprio em `format_plain.rs`. O loader valida rank 3, ordem lógica
+`[columns, rows, experts]`, todas as dimensões, dtype e limites do mmap antes
+de copiar um expert para o cache. As convenções fundida
+`ffn_gate_up_exps.weight` e separada `ffn_gate_exps.weight` mais
+`ffn_up_exps.weight` são aceitas; o down continua exigindo
+`ffn_down_exps.weight`. O router escalar pode ser F32, F16 ou BF16 e é
+decodificado pelo dtype declarado no próprio tensor.
+
+O bloco próprio aplica o mesmo top-k, cache LRU e contrato de hidden state dos
+demais formatos. Um dtype quantizado entregue a esse decoder recusa com o ID e
+nome GGML, e o dispatcher geral agora encaminha 0, 1 e 30 para essa família em
+vez de tentar Q4_0.
+
+Não há um GGUF MoE F32, F16 ou BF16 disponível neste worktree para prova física.
+Os fixtures sintéticos cobrem os três dtypes, as duas convenções de nomes, o
+forward com cache e a recusa nominal, portanto estes formatos estão
+**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
+afirmado.
+
 Não há número de desempenho nesta fase. A validação nativa foi executada com o
 symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato
 não entra no commit e não substitui a prova ponta a ponta com um modelo real.

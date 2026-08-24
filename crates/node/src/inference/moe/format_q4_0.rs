@@ -18,6 +18,8 @@ const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpertFormat {
+    F32,
+    F16,
     Q4_0,
     Q4K,
     Q6K,
@@ -25,6 +27,7 @@ pub enum ExpertFormat {
     Iq2S,
     Iq4XS,
     Nvfp4,
+    Bf16,
 }
 
 pub fn ggml_type_name(dtype: u32) -> &'static str {
@@ -330,6 +333,9 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
     }
     match dtype {
         2 => Ok(ExpertFormat::Q4_0),
+        0 => Ok(ExpertFormat::F32),
+        1 => Ok(ExpertFormat::F16),
+        30 => Ok(ExpertFormat::Bf16),
         12 => Ok(ExpertFormat::Q4K),
         14 => Ok(ExpertFormat::Q6K),
         21 => Ok(ExpertFormat::Iq3S),

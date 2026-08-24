@@ -12,6 +12,7 @@ use super::format_k_quants::{
     KQuantError, KQuantExecuteError, KQuantExecutor, KQuantFormat, KQuantSource,
 };
 use super::format_nvfp4::{Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
+use super::format_plain::{PlainExecuteError, PlainExecutor, PlainFormat, PlainSource};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{dispatch_top_k, DispatchError, RouteError};
 use std::fmt;
@@ -55,6 +56,63 @@ impl From<KQuantExecuteError> for MoeBlockError {
 impl From<IqQuantExecuteError> for MoeBlockError {
     fn from(error: IqQuantExecuteError) -> Self {
         Self::Executor(error.to_string())
+    }
+}
+
+impl From<PlainExecuteError> for MoeBlockError {
+    fn from(error: PlainExecuteError) -> Self {
+        Self::Executor(error.to_string())
+    }
+}
+
+/// Forward de um bloco MoE escalar F32, F16 ou BF16 para uma camada GGUF.
+pub struct PlainMoeBlock {
+    model: String,
+    layer: u32,
+    top_k: usize,
+    format: PlainFormat,
+    executor: PlainExecutor,
+}
+
+impl PlainMoeBlock {
+    pub fn new(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: PlainFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: PlainExecutor::new(cache, format, hidden, intermediate)
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub fn forward_from_source(
+        &self,
+        source: &PlainSource,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let logits = source
+            .router_logits(self.layer, hidden)
+            .map_err(PlainExecuteError::Source)?;
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        let output = dispatch_top_k(&logits, self.top_k, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
+        });
+        output.map_err(|error| match error {
+            DispatchError::Route(error) => MoeBlockError::Route(error),
+            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
     }
 }
 

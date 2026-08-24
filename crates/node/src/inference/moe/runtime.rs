@@ -388,11 +388,25 @@ impl MoeRuntime {
                     blocks,
                 })
             }
-            ExpertFormat::Iq3S | ExpertFormat::Iq2S | ExpertFormat::Iq4XS => {
+            ExpertFormat::Iq2XXS
+            | ExpertFormat::Iq2XS
+            | ExpertFormat::Iq3XXS
+            | ExpertFormat::Iq1S
+            | ExpertFormat::Iq4NL
+            | ExpertFormat::Iq3S
+            | ExpertFormat::Iq2S
+            | ExpertFormat::Iq4XS
+            | ExpertFormat::Iq1M => {
                 let format = match detected {
+                    ExpertFormat::Iq2XXS => IqQuantFormat::Iq2XXS,
+                    ExpertFormat::Iq2XS => IqQuantFormat::Iq2XS,
+                    ExpertFormat::Iq3XXS => IqQuantFormat::Iq3XXS,
+                    ExpertFormat::Iq1S => IqQuantFormat::Iq1S,
+                    ExpertFormat::Iq4NL => IqQuantFormat::Iq4NL,
                     ExpertFormat::Iq3S => IqQuantFormat::Iq3S,
                     ExpertFormat::Iq2S => IqQuantFormat::Iq2S,
                     ExpertFormat::Iq4XS => IqQuantFormat::Iq4XS,
+                    ExpertFormat::Iq1M => IqQuantFormat::Iq1M,
                     _ => unreachable!("detect_expert_format mudou após a seleção IQ-quant"),
                 };
                 let source = IqQuantSource::open_infer(&path, experts)?;
@@ -545,12 +559,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_iq3_s_iq2_s_e_iq4_xs() {
-        for (dtype, format) in [
-            (21u32, IqQuantFormat::Iq3S),
-            (22u32, IqQuantFormat::Iq2S),
-            (23u32, IqQuantFormat::Iq4XS),
+    fn runtime_carrega_e_executa_iq_quants() {
+        for format in [
+            IqQuantFormat::Iq2XXS,
+            IqQuantFormat::Iq2XS,
+            IqQuantFormat::Iq3XXS,
+            IqQuantFormat::Iq1S,
+            IqQuantFormat::Iq4NL,
+            IqQuantFormat::Iq3S,
+            IqQuantFormat::Iq2S,
+            IqQuantFormat::Iq4XS,
+            IqQuantFormat::Iq1M,
         ] {
+            let dtype = format.dtype();
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-iq-runtime-{dtype}-{}.gguf",
                 std::process::id()

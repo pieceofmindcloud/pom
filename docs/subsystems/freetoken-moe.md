@@ -235,6 +235,21 @@ os seis K-quants. Não há GGUF MoE real K-quant disponível neste worktree;
 estes formatos estão **implementados, mas não provados em GGUF real**. Nenhum
 número de desempenho é afirmado.
 
+### Fase 4E: IQ-quants restantes
+
+`format_iq_quants.rs` agora cobre `IQ2_XXS` (16), `IQ2_XS` (17), `IQ3_XXS`
+(18), `IQ1_S` (19), `IQ4_NL` (20) e `IQ1_M` (29), além de `IQ3_S`, `IQ2_S` e
+`IQ4_XS`. O executor seleciona a estrutura packed e a rotina de
+dequantização C correspondente a cada dtype do GGML; nenhum codebook de um
+IQ é usado para outro. Parser, mmap, validação de geometria, cache, router e
+top-k permanecem no motor Rust próprio.
+
+Os testes cobrem os nove IQ-quants ativos, payload truncado, recusa de dtype
+fora da enumeração, gate/up fundidos e separados e forward do `MoeRuntime`.
+Não há GGUF MoE real IQ disponível neste worktree; os seis formatos novos estão
+**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
+afirmado.
+
 ### Ligação e telemetria do hop
 
 `infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é

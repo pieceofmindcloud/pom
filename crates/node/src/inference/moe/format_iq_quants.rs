@@ -18,42 +18,72 @@ const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IqQuantFormat {
+    Iq2XXS,
+    Iq2XS,
+    Iq3XXS,
+    Iq1S,
+    Iq4NL,
     Iq3S,
     Iq2S,
     Iq4XS,
+    Iq1M,
 }
 
 impl IqQuantFormat {
     pub fn from_dtype(dtype: u32) -> Result<Self, Q4LoadError> {
         match dtype {
+            16 => Ok(Self::Iq2XXS),
+            17 => Ok(Self::Iq2XS),
+            18 => Ok(Self::Iq3XXS),
+            19 => Ok(Self::Iq1S),
+            20 => Ok(Self::Iq4NL),
             21 => Ok(Self::Iq3S),
             22 => Ok(Self::Iq2S),
             23 => Ok(Self::Iq4XS),
+            29 => Ok(Self::Iq1M),
             other => Err(Q4LoadError::UnsupportedTensorType(other)),
         }
     }
 
     pub fn dtype(self) -> u32 {
         match self {
+            Self::Iq2XXS => 16,
+            Self::Iq2XS => 17,
+            Self::Iq3XXS => 18,
+            Self::Iq1S => 19,
+            Self::Iq4NL => 20,
             Self::Iq3S => 21,
             Self::Iq2S => 22,
             Self::Iq4XS => 23,
+            Self::Iq1M => 29,
         }
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Self::Iq2XXS => "iq2_xxs",
+            Self::Iq2XS => "iq2_xs",
+            Self::Iq3XXS => "iq3_xxs",
+            Self::Iq1S => "iq1_s",
+            Self::Iq4NL => "iq4_nl",
             Self::Iq3S => "iq3_s",
             Self::Iq2S => "iq2_s",
             Self::Iq4XS => "iq4_xs",
+            Self::Iq1M => "iq1_m",
         }
     }
 
     fn block_bytes(self) -> usize {
         match self {
+            Self::Iq2XXS => 66,
+            Self::Iq2XS => 74,
+            Self::Iq3XXS => 98,
+            Self::Iq1S => 50,
+            Self::Iq4NL => 18,
             Self::Iq3S => 110,
             Self::Iq2S => 82,
             Self::Iq4XS => 136,
+            Self::Iq1M => 56,
         }
     }
 }
@@ -760,6 +790,45 @@ fn mat_vec(
 }
 
 #[repr(C)]
+struct BlockIq2XXS {
+    d: u16,
+    qs: [u16; 32],
+}
+
+#[repr(C)]
+struct BlockIq2XS {
+    d: u16,
+    qs: [u16; 32],
+    scales: [u8; 8],
+}
+
+#[repr(C)]
+struct BlockIq3XXS {
+    d: u16,
+    qs: [u8; 96],
+}
+
+#[repr(C)]
+struct BlockIq1S {
+    d: u16,
+    qs: [u8; 32],
+    qh: [u16; 8],
+}
+
+#[repr(C)]
+struct BlockIq4NL {
+    d: u16,
+    qs: [u8; 16],
+}
+
+#[repr(C)]
+struct BlockIq1M {
+    qs: [u8; 32],
+    qh: [u8; 16],
+    scales: [u8; 8],
+}
+
+#[repr(C)]
 struct BlockIq2S {
     d: u16,
     qs: [u8; 64],
@@ -785,7 +854,13 @@ struct BlockIq4Xs {
 }
 
 unsafe extern "C" {
+    fn dequantize_row_iq2_xxs(x: *const BlockIq2XXS, y: *mut f32, k: i64);
+    fn dequantize_row_iq2_xs(x: *const BlockIq2XS, y: *mut f32, k: i64);
     fn dequantize_row_iq2_s(x: *const BlockIq2S, y: *mut f32, k: i64);
+    fn dequantize_row_iq3_xxs(x: *const BlockIq3XXS, y: *mut f32, k: i64);
+    fn dequantize_row_iq1_s(x: *const BlockIq1S, y: *mut f32, k: i64);
+    fn dequantize_row_iq1_m(x: *const BlockIq1M, y: *mut f32, k: i64);
+    fn dequantize_row_iq4_nl(x: *const BlockIq4NL, y: *mut f32, k: i64);
     fn dequantize_row_iq3_s(x: *const BlockIq3S, y: *mut f32, k: i64);
     fn dequantize_row_iq4_xs(x: *const BlockIq4Xs, y: *mut f32, k: i64);
 }
@@ -807,7 +882,37 @@ pub fn dequantize_row(format: IqQuantFormat, packed: &[u8]) -> Result<Vec<f32>, 
     // 256 f32 values per block, matching GGML's dequantizer contract.
     unsafe {
         match format {
+            IqQuantFormat::Iq2XXS => dequantize_row_iq2_xxs(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
+            IqQuantFormat::Iq2XS => dequantize_row_iq2_xs(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
+            IqQuantFormat::Iq3XXS => dequantize_row_iq3_xxs(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
+            IqQuantFormat::Iq1S => dequantize_row_iq1_s(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
+            IqQuantFormat::Iq4NL => dequantize_row_iq4_nl(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
             IqQuantFormat::Iq2S => dequantize_row_iq2_s(
+                packed.as_ptr().cast(),
+                output.as_mut_ptr(),
+                i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
+            ),
+            IqQuantFormat::Iq1M => dequantize_row_iq1_m(
                 packed.as_ptr().cast(),
                 output.as_mut_ptr(),
                 i64::try_from(elements).map_err(|_| IqQuantError::Geometry("k excede i64"))?,
@@ -851,9 +956,15 @@ pub(crate) mod tests {
     #[test]
     fn cada_iq_priorizado_tem_bloco_e_dequantizacao_determinados() {
         for (format, bytes) in [
+            (IqQuantFormat::Iq2XXS, 66usize),
+            (IqQuantFormat::Iq2XS, 74usize),
+            (IqQuantFormat::Iq3XXS, 98usize),
+            (IqQuantFormat::Iq1S, 50usize),
+            (IqQuantFormat::Iq4NL, 18usize),
             (IqQuantFormat::Iq3S, 110usize),
             (IqQuantFormat::Iq2S, 82usize),
             (IqQuantFormat::Iq4XS, 136usize),
+            (IqQuantFormat::Iq1M, 56usize),
         ] {
             let values = dequantize_row(format, &vec![0; bytes]).unwrap();
             assert_eq!(values.len(), BLOCK_ELEMENTS);
@@ -864,9 +975,15 @@ pub(crate) mod tests {
     #[test]
     fn formatos_iq_rejeitam_payload_truncado() {
         for format in [
+            IqQuantFormat::Iq2XXS,
+            IqQuantFormat::Iq2XS,
+            IqQuantFormat::Iq3XXS,
+            IqQuantFormat::Iq1S,
+            IqQuantFormat::Iq4NL,
             IqQuantFormat::Iq3S,
             IqQuantFormat::Iq2S,
             IqQuantFormat::Iq4XS,
+            IqQuantFormat::Iq1M,
         ] {
             assert!(dequantize_row(format, &vec![0; format.block_bytes() - 1]).is_err());
         }
@@ -874,18 +991,25 @@ pub(crate) mod tests {
 
     #[test]
     fn dtype_iq_fora_da_fase_recusa_com_id_e_nome() {
-        let error = IqQuantFormat::from_dtype(20).unwrap_err().to_string();
-        assert!(error.contains("20"));
-        assert!(error.contains("IQ4_NL"));
+        let error = IqQuantFormat::from_dtype(24).unwrap_err().to_string();
+        assert!(error.contains("24"));
+        assert!(error.contains("I8"));
     }
 
     #[test]
     fn source_carrega_iq3_s_iq2_s_e_iq4_xs_fundidos_e_separados() {
-        for (dtype, format) in [
-            (21u32, IqQuantFormat::Iq3S),
-            (22u32, IqQuantFormat::Iq2S),
-            (23u32, IqQuantFormat::Iq4XS),
+        for format in [
+            IqQuantFormat::Iq2XXS,
+            IqQuantFormat::Iq2XS,
+            IqQuantFormat::Iq3XXS,
+            IqQuantFormat::Iq1S,
+            IqQuantFormat::Iq4NL,
+            IqQuantFormat::Iq3S,
+            IqQuantFormat::Iq2S,
+            IqQuantFormat::Iq4XS,
+            IqQuantFormat::Iq1M,
         ] {
+            let dtype = format.dtype();
             for split in [false, true] {
                 let path = std::env::temp_dir().join(format!(
                     "pom-ftk-iq-source-{dtype}-{split}-{}.gguf",

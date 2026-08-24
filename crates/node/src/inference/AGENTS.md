@@ -92,7 +92,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `format_legacy_quants.rs` implementa Q4_1/Q5_0/Q5_1/Q8_0,
   `format_low_bits.rs` implementa MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
   `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
-  implementa IQ3_S/IQ2_S/IQ4_XS e `format_nvfp4.rs` implementa o decoder NVFP4
+  implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M e
+  `format_nvfp4.rs` implementa o decoder NVFP4
   em CPU. K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML

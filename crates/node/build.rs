@@ -17,7 +17,65 @@ fn main() {
 
     emit_build_id(&root);
     build_mtp_shim();
+    build_moe_cuda();
     embed_windows_icon(&root);
+}
+
+/// Compila os kernels do executor MoE próprio quando o binário usa CUDA.
+///
+/// O host continua em Rust e só chama a ABI C mínima exportada pelo arquivo
+/// CUDA. Não há Python, Triton ou processo externo no caminho de inferência.
+fn build_moe_cuda() {
+    if std::env::var_os("CARGO_FEATURE_CUDA").is_none() {
+        return;
+    }
+
+    let source = Path::new("src/inference/moe/cuda_kernels.cu");
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
+    let object = out_dir.join("pom_moe_cuda.o");
+    let library = out_dir.join("libpom_moe_cuda.a");
+    println!("cargo:rerun-if-changed={}", source.display());
+
+    let nvcc = std::env::var_os("CUDACXX")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("CUDA_PATH")
+                .map(PathBuf::from)
+                .map(|path| path.join("bin/nvcc"))
+        })
+        .unwrap_or_else(|| PathBuf::from("nvcc"));
+    let mut compile = Command::new(&nvcc);
+    compile.args([
+        "-c",
+        source.to_str().expect("caminho CUDA UTF-8"),
+        "-o",
+        object.to_str().expect("objeto CUDA UTF-8"),
+        "-O3",
+        "--std=c++17",
+    ]);
+    if let Some(arch) = std::env::var_os("CUDAARCHS") {
+        let arch = arch.to_string_lossy();
+        let arch = arch.split(';').next().unwrap_or_default();
+        if !arch.is_empty() {
+            compile.arg(format!("-arch=sm_{arch}"));
+        }
+    }
+    let status = compile
+        .status()
+        .unwrap_or_else(|error| panic!("não foi possível executar {}: {error}", nvcc.display()));
+    assert!(status.success(), "nvcc falhou ao compilar cuda_kernels.cu");
+
+    let status = Command::new("ar")
+        .args([
+            "crus",
+            library.to_str().expect("biblioteca CUDA UTF-8"),
+            object.to_str().expect("objeto CUDA UTF-8"),
+        ])
+        .status()
+        .expect("não foi possível executar ar para a biblioteca CUDA");
+    assert!(status.success(), "ar falhou ao empacotar os kernels CUDA");
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=pom_moe_cuda");
 }
 
 /// Compila a ponte C para as entradas NextN/MTP do llama.cpp.

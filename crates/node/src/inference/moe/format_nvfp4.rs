@@ -46,6 +46,7 @@ pub enum Nvfp4ExecuteError {
     Cache(CacheError),
     Format(Nvfp4Error),
     Source(Q4LoadError),
+    Cuda(String),
     HiddenWidth { expected: usize, actual: usize },
 }
 
@@ -55,6 +56,7 @@ impl fmt::Display for Nvfp4ExecuteError {
             Self::Cache(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
+            Self::Cuda(error) => write!(formatter, "executor CUDA NVFP4 falhou: {error}"),
             Self::HiddenWidth { expected, actual } => {
                 write!(
                     formatter,
@@ -809,6 +811,8 @@ pub struct Nvfp4Executor {
     cache: Arc<ExpertCache>,
     hidden: usize,
     intermediate: usize,
+    #[cfg(feature = "cuda")]
+    cuda: super::cuda::Nvfp4CudaExecutor,
 }
 
 impl Nvfp4Executor {
@@ -822,6 +826,8 @@ impl Nvfp4Executor {
             cache,
             hidden,
             intermediate,
+            #[cfg(feature = "cuda")]
+            cuda: super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate),
         })
     }
 
@@ -861,6 +867,17 @@ impl Nvfp4Executor {
                 .map_err(Nvfp4ExecuteError::Cache)?,
         };
         let expert = Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?;
+
+        #[cfg(feature = "cuda")]
+        {
+            let _ = expert;
+            return self
+                .cuda
+                .run(lease.bytes(), hidden)
+                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+        }
+
+        #[cfg(not(feature = "cuda"))]
         expert.run(hidden)
     }
 }

@@ -16,7 +16,7 @@ fi
 export POM_BUILD_COMMIT="$commit"
 echo "build commit: $POM_BUILD_COMMIT"
 
-pushd apps/frontend
-npm run build
-popd
+#pushd apps/frontend
+#npm run build
+#popd
 docker compose build

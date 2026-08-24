@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
+ARG CUDA_VERSION=13.2.1
 
-# ── Stage 1: builder ────────────────────────────────────────────────────────
-FROM nvidia/cuda:13.0.3-devel-ubuntu24.04 as builder
+FROM nvidia/cuda:${CUDA_VERSION}-devel-ubuntu24.04 as builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -48,6 +48,7 @@ RUN cd apps/frontend && npm run build
 # reads it and passes it in — see `scripts/build-docker.sh`.
 ARG POM_BUILD_COMMIT=""
 ENV POM_BUILD_COMMIT=$POM_BUILD_COMMIT
+ENV CMAKE_CUDA_ARCHITECTURES="86;120"
 
 # Cache mounts persist the registry, git checkouts, and incremental build
 # artifacts across builds, so unchanged dependencies aren't recompiled.
@@ -58,13 +59,14 @@ RUN --mount=type=cache,target=/root/.cargo/registry \
     cp target/release/pom /build/pom
 
 # ── Stage 2: runtime ──────────────────────────────────────────────────────────
-FROM nvidia/cuda:13.0.3-base-ubuntu24.04
+FROM nvidia/cuda:${CUDA_VERSION}-base-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libstdc++6 \
     libgomp1 \
+    nvidia-utils-595 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /build/pom /usr/local/bin/pom

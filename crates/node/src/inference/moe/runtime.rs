@@ -7,6 +7,7 @@
 
 use super::block::{MoeBlockError, Nvfp4MoeBlock, Q4_0MoeBlock};
 use super::cache::{CacheError, ExpertCache};
+use super::format_k_quants::{KQuantFormat, KQuantSource};
 use super::format_nvfp4::Nvfp4Source;
 use super::format_q4_0::{detect_expert_format, ExpertFormat};
 use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
@@ -85,6 +86,7 @@ impl From<MoeBlockError> for MoeRuntimeError {
 
 enum MoeSource {
     Q4(Q4_0Source),
+    K(KQuantSource),
     Nvfp4(Nvfp4Source),
 }
 
@@ -92,6 +94,7 @@ impl MoeSource {
     fn hidden(&self) -> usize {
         match self {
             Self::Q4(source) => source.hidden(),
+            Self::K(source) => source.hidden(),
             Self::Nvfp4(source) => source.hidden(),
         }
     }
@@ -99,6 +102,7 @@ impl MoeSource {
 
 enum MoeBlock {
     Q4(Q4_0MoeBlock),
+    K(super::block::KQuantMoeBlock),
     Nvfp4(Nvfp4MoeBlock),
 }
 
@@ -119,7 +123,8 @@ impl MoeRuntime {
     ) -> Result<Self, MoeRuntimeError> {
         let cache = ExpertCache::measured_system(weights_bytes, 0, 0)?;
         let model = model.into();
-        match detect_expert_format(&path)? {
+        let detected = detect_expert_format(&path)?;
+        match detected {
             ExpertFormat::Q4_0 => {
                 let source = Q4_0Source::open_infer(&path, experts)?;
                 if !source.has_router() {
@@ -181,6 +186,47 @@ impl MoeRuntime {
                     blocks,
                 })
             }
+            ExpertFormat::Q4K | ExpertFormat::Q6K => {
+                let format = match detected {
+                    ExpertFormat::Q4K => KQuantFormat::Q4K,
+                    ExpertFormat::Q6K => KQuantFormat::Q6K,
+                    _ => unreachable!("detect_expert_format mudou após a seleção K-quant"),
+                };
+                let source = KQuantSource::open_infer(&path, experts)?;
+                if source.format() != format {
+                    return Err(MoeRuntimeError::FormatMismatch);
+                }
+                if !source.has_router() {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
+                        "blk.<layer>.ffn_gate_inp.weight".into(),
+                    )));
+                }
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::K(
+                        super::block::KQuantMoeBlock::new(
+                            Arc::clone(&cache),
+                            &model,
+                            layer,
+                            top_k,
+                            format,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                        .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
+                    ));
+                }
+                Ok(Self {
+                    source: MoeSource::K(source),
+                    blocks,
+                })
+            }
         }
     }
 
@@ -222,6 +268,9 @@ impl MoeRuntime {
                 (MoeSource::Q4(source), MoeBlock::Q4(block)) => {
                     block.forward_from_source(source, token_hidden)?
                 }
+                (MoeSource::K(source), MoeBlock::K(block)) => {
+                    block.forward_from_source(source, token_hidden)?
+                }
                 (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) => {
                     block.forward_from_source(source, token_hidden)?
                 }
@@ -235,6 +284,7 @@ impl MoeRuntime {
 
 #[cfg(test)]
 mod tests {
+    use super::super::format_k_quants::tests::write_k_source;
     use super::super::format_q4_0::tests::write_q4_source;
     use super::*;
 
@@ -248,5 +298,29 @@ mod tests {
         assert_eq!(output.len(), hidden * 2);
         assert!(runtime.forward_batch(1, &[1.0; 32], 1).is_err());
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn runtime_carrega_e_executa_q4_k_e_q6_k() {
+        for (dtype, expected) in [(12u32, "q4_k"), (14u32, "q6_k")] {
+            let path = std::env::temp_dir().join(format!(
+                "pom-ftk-k-runtime-{dtype}-{}.gguf",
+                std::process::id()
+            ));
+            write_k_source(
+                &path,
+                dtype,
+                if dtype == 12 {
+                    super::super::format_k_quants::KQuantFormat::Q4K
+                } else {
+                    super::super::format_k_quants::KQuantFormat::Q6K
+                },
+            );
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            assert_eq!(runtime.layers(), 1, "formato {expected}");
+            let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
+            assert_eq!(output.len(), 512, "formato {expected}");
+            std::fs::remove_file(path).unwrap();
+        }
     }
 }

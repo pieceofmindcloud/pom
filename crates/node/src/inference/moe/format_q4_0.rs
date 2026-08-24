@@ -19,6 +19,8 @@ const PAYLOAD_HEADER_BYTES: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpertFormat {
     Q4_0,
+    Q4K,
+    Q6K,
     Nvfp4,
 }
 
@@ -325,6 +327,8 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
     }
     match dtype {
         2 => Ok(ExpertFormat::Q4_0),
+        12 => Ok(ExpertFormat::Q4K),
+        14 => Ok(ExpertFormat::Q6K),
         40 => Ok(ExpertFormat::Nvfp4),
         other => Err(Q4LoadError::UnsupportedTensorType(other)),
     }
@@ -1096,6 +1100,24 @@ pub(crate) mod tests {
         (hidden, intermediate)
     }
 
+    fn write_expert_dtype_source(path: &Path, dtype: u32) {
+        let mut file = Vec::new();
+        file.extend_from_slice(&0x4655_4747u32.to_le_bytes());
+        file.extend_from_slice(&2u32.to_le_bytes());
+        file.extend_from_slice(&1u64.to_le_bytes());
+        file.extend_from_slice(&0u64.to_le_bytes());
+        gguf_tensor_dtype(
+            &mut file,
+            "blk.0.ffn_gate_up_exps.weight",
+            &[32, 64, 1],
+            0,
+            dtype,
+        );
+        let data_start = (file.len() + 31) / 32 * 32;
+        file.resize(data_start, 0);
+        File::create(path).unwrap().write_all(&file).unwrap();
+    }
+
     fn write_q4_split_source(path: &Path) -> (usize, usize) {
         let hidden = 32;
         let intermediate = 64;
@@ -1179,6 +1201,22 @@ pub(crate) mod tests {
         let error = Q4LoadError::UnsupportedTensorType(40).to_string();
         assert!(error.contains("40"));
         assert!(error.contains("NVFP4"));
+    }
+
+    #[test]
+    fn detecta_q4_k_e_q6_k_como_formatos_de_expert_suportaveis() {
+        for dtype in [12u32, 14u32] {
+            let path = std::env::temp_dir().join(format!(
+                "pom-ftk-detect-k-{dtype}-{}.gguf",
+                std::process::id()
+            ));
+            write_expert_dtype_source(&path, dtype);
+            assert!(
+                detect_expert_format(&path).is_ok(),
+                "dtype {dtype} deveria entrar no dispatch K-quant"
+            );
+            std::fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]

@@ -129,13 +129,23 @@ limitando-os pelo espaço restante do arquivo em vez de um teto arbitrário.
 O runtime HTTP agora detecta o dtype dos bancos de experts, abre o decoder
 próprio correspondente e calcula os logits do router antes de aplicar o bloco
 ao hidden state recebido ou ao residual que será encaminhado. Q4_0 e NVFP4
-compartilham a mesma fronteira de cache e dispatch, mas cada decoder valida sua
-própria geometria. O frame continua em f16 e não leva pesos.
+compartilham a mesma fronteira de cache e dispatch, e Q4_K (12) e Q6_K (14)
+agora também passam por essa seleção. O decoder K-quant valida a ordem GGUF
+`[columns, rows, experts]`, os blocos de 256 elementos e a convenção fundida ou
+separada dos bancos gate/up antes de copiar um expert. O frame continua em f16
+e não leva pesos.
 Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
 bloco costurado e a amostragem final do token; portanto esta entrega não
 afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
 ponta com um modelo real e fará essa validação fora deste ambiente, sem
 alterar o caminho denso.
+
+O bloco K-quant foi validado localmente com fixtures Q4_K e Q6_K, nas duas
+convenções de nomes, e com `MoeRuntime::open` seguido de `forward_batch`. A
+falha inicial era uma inversão no validator: GGUF declara a dimensão de
+colunas em `dims[0]`, enquanto o contrato do mat-vec recebe `rows, columns`.
+O validator agora checa as duas dimensões e o eixo de experts antes do forward.
+Não há ainda uma prova física de Qwen3.6 na ksia neste worktree.
 
 Não há número de desempenho nesta fase. A validação nativa foi executada com o
 symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato

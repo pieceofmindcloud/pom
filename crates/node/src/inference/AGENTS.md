@@ -85,7 +85,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
   `format_q4_0.rs` compartilha o parser GGUF, o inventário de dtypes e o
-  decoder Q4_0, enquanto `format_nvfp4.rs` implementa o decoder NVFP4 em CPU.
+  decoder Q4_0, `format_k_quants.rs` implementa Q4_K/Q6_K e
+  `format_nvfp4.rs` implementa o decoder NVFP4 em CPU. Os K-quants validam a
+  convenção GGUF `[columns, rows, experts]` e aceitam bancos gate/up fundidos
+  ou separados antes de entregar o payload ao cache.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o

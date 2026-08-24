@@ -21,6 +21,9 @@ pub enum ExpertFormat {
     Q4_0,
     Q4K,
     Q6K,
+    Iq3S,
+    Iq2S,
+    Iq4XS,
     Nvfp4,
 }
 
@@ -329,6 +332,9 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
         2 => Ok(ExpertFormat::Q4_0),
         12 => Ok(ExpertFormat::Q4K),
         14 => Ok(ExpertFormat::Q6K),
+        21 => Ok(ExpertFormat::Iq3S),
+        22 => Ok(ExpertFormat::Iq2S),
+        23 => Ok(ExpertFormat::Iq4XS),
         40 => Ok(ExpertFormat::Nvfp4),
         other => Err(Q4LoadError::UnsupportedTensorType(other)),
     }

@@ -5,6 +5,9 @@
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
 use super::cache::{ExpertCache, ExpertKey};
+use super::format_iq_quants::{
+    IqQuantError, IqQuantExecuteError, IqQuantExecutor, IqQuantFormat, IqQuantSource,
+};
 use super::format_k_quants::{
     KQuantError, KQuantExecuteError, KQuantExecutor, KQuantFormat, KQuantSource,
 };
@@ -46,6 +49,61 @@ impl From<Nvfp4ExecuteError> for MoeBlockError {
 impl From<KQuantExecuteError> for MoeBlockError {
     fn from(error: KQuantExecuteError) -> Self {
         Self::Executor(error.to_string())
+    }
+}
+
+impl From<IqQuantExecuteError> for MoeBlockError {
+    fn from(error: IqQuantExecuteError) -> Self {
+        Self::Executor(error.to_string())
+    }
+}
+
+/// Forward de um bloco MoE IQ3_S, IQ2_S ou IQ4_XS para uma camada GGUF.
+pub struct IqQuantMoeBlock {
+    model: String,
+    layer: u32,
+    top_k: usize,
+    format: IqQuantFormat,
+    executor: IqQuantExecutor,
+}
+
+impl IqQuantMoeBlock {
+    pub fn new(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, IqQuantError> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: IqQuantExecutor::new(cache, format, hidden, intermediate)?,
+        })
+    }
+
+    pub fn forward_from_source(
+        &self,
+        source: &IqQuantSource,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let logits = source
+            .router_logits(self.layer, hidden)
+            .map_err(IqQuantExecuteError::Source)?;
+        let model = &self.model;
+        let layer = self.layer;
+        let output = dispatch_top_k(&logits, self.top_k, |expert| {
+            let key = ExpertKey::new(model, layer, expert, self.format.name());
+            self.executor.run_from_source(source, key, layer, hidden)
+        });
+        output.map_err(|error| match error {
+            DispatchError::Route(error) => MoeBlockError::Route(error),
+            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
     }
 }
 

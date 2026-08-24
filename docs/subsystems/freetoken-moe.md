@@ -112,9 +112,12 @@ local usa `MemAvailable` no Linux, `vm_stat` no macOS e
 mesma trait sem mudar a política.
 
 O primeiro formato é Q4_0 packed em CPU. `format_q4_0.rs` valida a geometria
-GGML, mmapa o GGUF, copia somente os dois bancos do expert solicitado para o
-cache, decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e
-down. `router.rs` escolhe top-k de forma determinística e renormaliza os pesos;
+GGML, mmapa o GGUF, copia somente os bancos do expert solicitado para o cache,
+decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down. O
+loader aceita tanto `ffn_gate_up_exps.weight` fundido quanto
+`ffn_gate_exps.weight` + `ffn_up_exps.weight` separados, recombinando estes
+últimos no payload interno do executor. `router.rs` escolhe top-k de forma
+determinística e renormaliza os pesos;
 `block.rs` conecta essa seleção ao `Q4_0Executor`, usando uma chave global por
 modelo, camada, expert e formato. Nenhuma linha do FreeToken foi copiada.
 
@@ -155,8 +158,12 @@ peer antigo, uma entrada sem campo ou chamadas divergentes no mesmo hop ficam
 em `desconhecido`. Uma delegação explícita `moe/llama.cpp-delegated` é
 classificada como `llama.cpp`.
 
-O primeiro ponto esperado de quebra na prova real é o layout/nome do tensor de
-router no GGUF da fatia. Depois vêm geometria Q4_0 incompatível ou camada fora
+O Gemma4 real inspecionado na ksia usa os nomes separados, com dimensões
+`[2816, 704, 128]` para gate/up, `dtype=40` (NVFP4), e 100 camadas. A costura
+de nomes separados está coberta para Q4_0 (`dtype=2`); o executor Q4_0 ainda
+não executa o dtype NVFP4 desse arquivo. O primeiro ponto esperado de quebra
+na prova real depois da seleção de nomes é, portanto, o formato de
+quantização. Depois vêm geometria Q4_0 incompatível ou camada fora
 da faixa, e por fim a qualidade numérica da costura parcial, que ainda não
 substitui todas as operações do transformer. Os testes puros do executor e da
 telemetria estão escritos; a suíte nativa já foi executada. A prova física

@@ -225,19 +225,27 @@ struct TensorSpec {
     offset: u64,
 }
 
+enum GateUpTensors {
+    Fused(Vec<TensorSpec>),
+    Split {
+        gate: Vec<TensorSpec>,
+        up: Vec<TensorSpec>,
+    },
+}
+
 /// Fonte mmap de experts Q4_0 em GGUF.
 ///
 /// O arquivo permanece mapeado e cada miss copia apenas os dois bancos do
-/// expert solicitado para o payload admitido pelo LRU. O parser aceita a
-/// convenção Gemma4/Q4_0 usada no estudo: `ffn_gate_up_exps.weight` e
-/// `ffn_down_exps.weight` por bloco.
+/// expert solicitado para o payload admitido pelo LRU. O parser aceita tanto
+/// a convenção fundida `ffn_gate_up_exps.weight` quanto a separada
+/// `ffn_gate_exps.weight` + `ffn_up_exps.weight`, além de `ffn_down_exps.weight`.
 pub struct Q4_0Source {
     mmap: Mmap,
     data_start: usize,
     experts: u32,
     hidden: usize,
     intermediate: usize,
-    gate_up: Vec<TensorSpec>,
+    gate_up: GateUpTensors,
     down: Vec<TensorSpec>,
     router: Vec<TensorSpec>,
 }
@@ -260,12 +268,21 @@ impl Q4_0Source {
         let mmap =
             unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
         let (data_start, tensors) = parse_tensor_table(&mmap)?;
-        let mut gate_up = Vec::new();
+        let mut fused = Vec::new();
+        let mut gate = Vec::new();
+        let mut up = Vec::new();
         let mut down = Vec::new();
         let mut router = Vec::new();
         for tensor in tensors {
             if tensor.name.starts_with("blk.") && tensor.name.ends_with("ffn_gate_up_exps.weight") {
-                gate_up.push(tensor);
+                fused.push(tensor);
+            } else if tensor.name.starts_with("blk.")
+                && tensor.name.ends_with("ffn_gate_exps.weight")
+            {
+                gate.push(tensor);
+            } else if tensor.name.starts_with("blk.") && tensor.name.ends_with("ffn_up_exps.weight")
+            {
+                up.push(tensor);
             } else if tensor.name.starts_with("blk.")
                 && tensor.name.ends_with("ffn_down_exps.weight")
             {
@@ -276,11 +293,26 @@ impl Q4_0Source {
                 router.push(tensor);
             }
         }
-        if gate_up.is_empty() || down.is_empty() {
+        if down.is_empty() {
             return Err(Q4LoadError::MissingTensor(
-                "blk.<layer>.ffn_gate_up_exps.weight ou ffn_down_exps.weight".into(),
+                "blk.<layer>.ffn_down_exps.weight".into(),
             ));
         }
+        let gate_up = if !fused.is_empty() {
+            if !gate.is_empty() || !up.is_empty() {
+                return Err(Q4LoadError::InvalidTensor(
+                    "convenções fundida e separada de experts misturadas",
+                ));
+            }
+            GateUpTensors::Fused(fused)
+        } else if gate.is_empty() || up.is_empty() {
+            return Err(Q4LoadError::MissingTensor(
+                "blk.<layer>.ffn_gate_up_exps.weight ou ffn_gate_exps.weight + ffn_up_exps.weight"
+                    .into(),
+            ));
+        } else {
+            GateUpTensors::Split { gate, up }
+        };
         Ok(Self {
             mmap,
             data_start,
@@ -305,28 +337,60 @@ impl Q4_0Source {
         let mmap =
             unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
         let (_, tensors) = parse_tensor_table(&mmap)?;
-        let tensor = tensors
+        let fused = tensors
             .iter()
-            .find(|tensor| tensor.name.ends_with("ffn_gate_up_exps.weight"))
-            .ok_or_else(|| Q4LoadError::MissingTensor("ffn_gate_up_exps.weight".into()))?;
-        if tensor.dtype != 2 || tensor.dims.len() != 3 {
+            .find(|tensor| tensor.name.ends_with("ffn_gate_up_exps.weight"));
+        let (hidden, intermediate, tensor_experts) = if let Some(tensor) = fused {
+            if tensor.dtype != 2 || tensor.dims.len() != 3 {
+                return Err(Q4LoadError::InvalidTensor(
+                    "gate_up precisa ser um tensor Q4_0 de rank 3",
+                ));
+            }
+            let hidden = usize::try_from(tensor.dims[0])
+                .map_err(|_| Q4LoadError::InvalidTensor("hidden excede usize"))?;
+            let two_intermediate = usize::try_from(tensor.dims[1])
+                .map_err(|_| Q4LoadError::InvalidTensor("intermediate excede usize"))?;
+            let tensor_experts = u32::try_from(tensor.dims[2])
+                .map_err(|_| Q4LoadError::InvalidTensor("experts excede u32"))?;
+            if two_intermediate == 0 || !two_intermediate.is_multiple_of(2) {
+                return Err(Q4LoadError::InvalidTensor(
+                    "geometria gate_up não corresponde aos metadados MoE",
+                ));
+            }
+            (hidden, two_intermediate / 2, tensor_experts)
+        } else {
+            let gate = tensors
+                .iter()
+                .find(|tensor| tensor.name.ends_with("ffn_gate_exps.weight"))
+                .ok_or_else(|| Q4LoadError::MissingTensor("ffn_gate_exps.weight".into()))?;
+            let up = tensors
+                .iter()
+                .find(|tensor| tensor.name.ends_with("ffn_up_exps.weight"))
+                .ok_or_else(|| Q4LoadError::MissingTensor("ffn_up_exps.weight".into()))?;
+            if gate.dtype != 2 || up.dtype != 2 || gate.dims.len() != 3 || up.dims.len() != 3 {
+                return Err(Q4LoadError::InvalidTensor(
+                    "gate e up precisam ser tensores Q4_0 de rank 3",
+                ));
+            }
+            if gate.dims != up.dims {
+                return Err(Q4LoadError::InvalidTensor(
+                    "gate e up têm geometrias diferentes",
+                ));
+            }
+            let intermediate = usize::try_from(gate.dims[0])
+                .map_err(|_| Q4LoadError::InvalidTensor("intermediate excede usize"))?;
+            let hidden = usize::try_from(gate.dims[1])
+                .map_err(|_| Q4LoadError::InvalidTensor("hidden excede usize"))?;
+            let tensor_experts = u32::try_from(gate.dims[2])
+                .map_err(|_| Q4LoadError::InvalidTensor("experts excede u32"))?;
+            (hidden, intermediate, tensor_experts)
+        };
+        if tensor_experts != experts {
             return Err(Q4LoadError::InvalidTensor(
-                "gate_up precisa ser um tensor Q4_0 de rank 3",
+                "quantidade de experts não corresponde aos metadados MoE",
             ));
         }
-        let hidden = usize::try_from(tensor.dims[0])
-            .map_err(|_| Q4LoadError::InvalidTensor("hidden excede usize"))?;
-        let two_intermediate = usize::try_from(tensor.dims[1])
-            .map_err(|_| Q4LoadError::InvalidTensor("intermediate excede usize"))?;
-        let tensor_experts = u32::try_from(tensor.dims[2])
-            .map_err(|_| Q4LoadError::InvalidTensor("experts excede u32"))?;
-        if tensor_experts != experts || two_intermediate == 0 || !two_intermediate.is_multiple_of(2)
-        {
-            return Err(Q4LoadError::InvalidTensor(
-                "geometria gate_up não corresponde aos metadados MoE",
-            ));
-        }
-        Self::open(path, experts, hidden, two_intermediate / 2)
+        Self::open(path, experts, hidden, intermediate)
     }
 
     pub fn hidden(&self) -> usize {
@@ -342,7 +406,11 @@ impl Q4_0Source {
     }
 
     pub fn layer_count(&self) -> u32 {
-        self.gate_up
+        let tensors = match &self.gate_up {
+            GateUpTensors::Fused(tensors) => tensors,
+            GateUpTensors::Split { gate, .. } => gate,
+        };
+        tensors
             .iter()
             .filter_map(|tensor| {
                 tensor
@@ -364,24 +432,50 @@ impl Q4_0Source {
                 count: self.experts,
             });
         }
-        let gate = self.tensor_for_layer(&self.gate_up, layer, "ffn_gate_up_exps.weight")?;
         let down = self.tensor_for_layer(&self.down, layer, "ffn_down_exps.weight")?;
-        validate_tensor(gate, self.experts, 2 * self.intermediate, self.hidden)?;
         validate_tensor(down, self.experts, self.hidden, self.intermediate)?;
-        let gate_row = row_bytes(self.hidden).map_err(|_| Q4LoadError::InvalidTensor("gate_up"))?;
         let down_row =
             row_bytes(self.intermediate).map_err(|_| Q4LoadError::InvalidTensor("down"))?;
-        let gate_per_expert = 2usize
-            .checked_mul(self.intermediate)
-            .and_then(|rows| rows.checked_mul(gate_row))
-            .ok_or(Q4LoadError::InvalidTensor("overflow em gate_up"))?;
         let down_per_expert = self
             .hidden
             .checked_mul(down_row)
             .ok_or(Q4LoadError::InvalidTensor("overflow em down"))?;
-        let gate = self.expert_slice(gate, expert, gate_per_expert)?;
         let down = self.expert_slice(down, expert, down_per_expert)?;
-        pack_payload(gate, down).map_err(|_| Q4LoadError::InvalidTensor("payload Q4_0"))
+        let gate_up = match &self.gate_up {
+            GateUpTensors::Fused(tensors) => {
+                let gate = self.tensor_for_layer(tensors, layer, "ffn_gate_up_exps.weight")?;
+                validate_tensor(gate, self.experts, 2 * self.intermediate, self.hidden)?;
+                let gate_row =
+                    row_bytes(self.hidden).map_err(|_| Q4LoadError::InvalidTensor("gate_up"))?;
+                let gate_per_expert = 2usize
+                    .checked_mul(self.intermediate)
+                    .and_then(|rows| rows.checked_mul(gate_row))
+                    .ok_or(Q4LoadError::InvalidTensor("overflow em gate_up"))?;
+                self.expert_slice(gate, expert, gate_per_expert)?.to_vec()
+            }
+            GateUpTensors::Split {
+                gate: gates,
+                up: ups,
+            } => {
+                let gate = self.tensor_for_layer(gates, layer, "ffn_gate_exps.weight")?;
+                let up = self.tensor_for_layer(ups, layer, "ffn_up_exps.weight")?;
+                validate_tensor(gate, self.experts, self.intermediate, self.hidden)?;
+                validate_tensor(up, self.experts, self.intermediate, self.hidden)?;
+                let gate_row =
+                    row_bytes(self.hidden).map_err(|_| Q4LoadError::InvalidTensor("gate"))?;
+                let bank_per_expert = self
+                    .intermediate
+                    .checked_mul(gate_row)
+                    .ok_or(Q4LoadError::InvalidTensor("overflow em gate/up"))?;
+                let gate = self.expert_slice(gate, expert, bank_per_expert)?;
+                let up = self.expert_slice(up, expert, bank_per_expert)?;
+                let mut gate_up = Vec::with_capacity(gate.len() + up.len());
+                gate_up.extend_from_slice(gate);
+                gate_up.extend_from_slice(up);
+                gate_up
+            }
+        };
+        pack_payload(&gate_up, down).map_err(|_| Q4LoadError::InvalidTensor("payload Q4_0"))
     }
 
     /// Calcula os logits do router local para uma ativação.
@@ -905,6 +999,62 @@ pub(crate) mod tests {
         (hidden, intermediate)
     }
 
+    fn write_q4_split_source(path: &Path) -> (usize, usize) {
+        let hidden = 32;
+        let intermediate = 64;
+        let experts = 2;
+        let gate = packed_rows(experts * intermediate, hidden, 9);
+        let up = packed_rows(experts * intermediate, hidden, 10);
+        let down = packed_rows(experts * hidden, intermediate, 11);
+        let mut router = Vec::with_capacity(experts * hidden * 4);
+        for expert in 0..experts {
+            for _ in 0..hidden {
+                router.extend_from_slice(&((expert + 1) as f32).to_le_bytes());
+            }
+        }
+        let mut file = Vec::new();
+        file.extend_from_slice(&0x4655_4747u32.to_le_bytes());
+        file.extend_from_slice(&2u32.to_le_bytes());
+        file.extend_from_slice(&4u64.to_le_bytes());
+        file.extend_from_slice(&1u64.to_le_bytes());
+        gguf_string(&mut file, "general.alignment");
+        file.extend_from_slice(&4u32.to_le_bytes());
+        file.extend_from_slice(&32u32.to_le_bytes());
+        gguf_tensor(
+            &mut file,
+            "blk.0.ffn_gate_exps.weight",
+            &[intermediate as u64, hidden as u64, experts as u64],
+            0,
+        );
+        gguf_tensor(
+            &mut file,
+            "blk.0.ffn_up_exps.weight",
+            &[intermediate as u64, hidden as u64, experts as u64],
+            gate.len() as u64,
+        );
+        gguf_tensor(
+            &mut file,
+            "blk.0.ffn_down_exps.weight",
+            &[hidden as u64, intermediate as u64, experts as u64],
+            (gate.len() + up.len()) as u64,
+        );
+        gguf_tensor_dtype(
+            &mut file,
+            "blk.0.ffn_gate_inp.weight",
+            &[hidden as u64, experts as u64],
+            (gate.len() + up.len() + down.len()) as u64,
+            0,
+        );
+        let data_start = (file.len() + 31) / 32 * 32;
+        file.resize(data_start, 0);
+        file.extend_from_slice(&gate);
+        file.extend_from_slice(&up);
+        file.extend_from_slice(&down);
+        file.extend_from_slice(&router);
+        File::create(path).unwrap().write_all(&file).unwrap();
+        (hidden, intermediate)
+    }
+
     #[test]
     fn parser_aceita_array_gguf_maior_que_limite_arbitrario() {
         let count = 100_001u64;
@@ -994,7 +1144,7 @@ pub(crate) mod tests {
             std::thread::current().name().unwrap_or("test")
         ));
         let (hidden, intermediate) = write_q4_source(&path);
-        let source = Q4_0Source::open(&path, 2, hidden, intermediate).unwrap();
+        let source = Q4_0Source::open_infer(&path, 2).unwrap();
         let expert = source.load_expert(0, 1).unwrap();
         let expected = Q4_0Expert::packed_bytes(hidden, intermediate).unwrap();
         assert_eq!(expert.len(), expected);
@@ -1010,6 +1160,26 @@ pub(crate) mod tests {
                 count: 2
             })
         ));
+        drop(source);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn source_mmap_aceita_gate_e_up_em_tensores_separados() {
+        let path = std::env::temp_dir().join(format!(
+            "pom-ftk-q4-split-source-{}-{}.gguf",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let (hidden, intermediate) = write_q4_split_source(&path);
+        let source = Q4_0Source::open_infer(&path, 2).unwrap();
+        let expert = source.load_expert(0, 1).unwrap();
+        let expected = Q4_0Expert::packed_bytes(hidden, intermediate).unwrap();
+        assert_eq!(expert.len(), expected);
+        let bank_len = intermediate * row_bytes(hidden).unwrap();
+        assert_eq!(expert[PAYLOAD_HEADER_BYTES + 2], 0x99);
+        assert_eq!(expert[PAYLOAD_HEADER_BYTES + bank_len + 2], 0xaa);
+        Q4_0Expert::from_payload(hidden, intermediate, &expert).unwrap();
         drop(source);
         std::fs::remove_file(path).unwrap();
     }

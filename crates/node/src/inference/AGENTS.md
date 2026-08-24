@@ -82,7 +82,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
   `format_q4_0.rs` mmapa bancos Q4_0 do GGUF e executa gate-up, SiLU gated e
-  down em CPU; `router.rs` e `block.rs` fazem top-k e soma ponderada no bloco
+  down em CPU. O loader aceita tanto `ffn_gate_up_exps.weight` fundido quanto
+  `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
+  `block.rs` fazem top-k e soma ponderada no bloco
   MoE. `runtime.rs` abre o router local e liga o bloco Q4_0 ao hidden state nos
   caminhos unitário e batch. Não há executor GPU próprio nem perfil medido
   carregado, portanto a co-execução CPU/GPU da Fase 5 ainda não está ativa. O

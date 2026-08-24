@@ -1,9 +1,8 @@
 //! Bloco esparso que conecta router, cache e executor Q4_0.
 //!
 //! O bloco recebe uma ativação e os logits produzidos pela camada de router.
-//! A atenção e a projeção do router continuam no runtime que o integrar; esta
-//! fronteira já executa a parte específica de experts sem passar pelo
-//! `llama.cpp`.
+//! A projeção do router pode vir do tensor GGUF local, sem mudar o wire entre
+//! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
 use super::bandwidth::{BandwidthError, BandwidthProfile};
 use super::cache::{ExpertCache, ExpertKey};
@@ -109,6 +108,17 @@ impl Q4_0MoeBlock {
             DispatchError::Route(error) => MoeBlockError::Route(error),
             DispatchError::Expert(error) => MoeBlockError::Executor(error),
         })
+    }
+
+    pub fn forward_from_source(
+        &self,
+        source: &Q4_0Source,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let logits = source
+            .router_logits(self.layer, hidden)
+            .map_err(Q4ExecuteError::Source)?;
+        self.forward(source, hidden, &logits)
     }
 
     /// Forward com misses divididos pela banda medida entre CPU e GPU.
@@ -232,8 +242,8 @@ mod tests {
         );
         let block =
             Q4_0MoeBlock::new(cache.clone(), "fixture", 0, 1, hidden, intermediate).unwrap();
-        let first = block.forward(&source, &[1.0; 32], &[2.0, 1.0]).unwrap();
-        let second = block.forward(&source, &[1.0; 32], &[2.0, 1.0]).unwrap();
+        let first = block.forward_from_source(&source, &[1.0; 32]).unwrap();
+        let second = block.forward_from_source(&source, &[1.0; 32]).unwrap();
         assert_eq!(first, second);
         assert_eq!(cache.stats().admissions, 1);
         assert_eq!(cache.stats().hits, 1);

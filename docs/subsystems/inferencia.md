@@ -307,12 +307,14 @@ denso ou com metadados ausentes permanece em `dense/llama.cpp`. O ambiente
 derivado da marca `POM_INFERENCE_MODE` pode forçar `dense` ou exigir `moe`; o
 último recusa um GGUF denso com erro explícito.
 
-O caminho MoE atual aparece como `moe/llama.cpp-delegated` no `/health`, mas
-continua delegando ao `LlmEngine`. Isso mantém a bifurcação observável e
-reversível sem alterar o comportamento do caminho denso. O motor próprio da
-Fase 4 vive em `inference/moe/`: o bloco Q4_0 mmapa experts do GGUF, faz
-roteamento top-k e usa o LRU global; a ligação ao runtime de transformer ainda
-precisa entregar hidden states e logits de router a esse bloco. A Fase 5
+O caminho MoE atual aparece como `moe/q4_0` no `/health` e abre o runtime
+próprio em `inference/moe/`: o bloco Q4_0 mmapa experts do GGUF, calcula o
+router top-k e usa o LRU global. Hidden states recebidos são transformados
+antes do decode local; residuals produzidos a partir de tokens passam pela
+mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
+peso é transportado. Atenção, operações restantes e sampling final ainda
+delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
+transformer MoE completo. A Fase 5
 também fornece divisão de misses por banda medida, execução concorrente das
 duas lanes e double buffer com orçamento explícito, sem assumir um backend GPU
 ou uma largura de banda constante.

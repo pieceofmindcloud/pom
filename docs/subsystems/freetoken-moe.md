@@ -86,10 +86,12 @@ segue explicitamente para `dense/llama.cpp`.
 
 O override `POM_INFERENCE_MODE` aceita `auto`, `dense` ou `moe`. `dense` força o
 caminho existente mesmo para um GGUF MoE. `moe` recusa um modelo sem
-`expert_count > 1`, em vez de desviar silenciosamente. O caminho MoE desta fase
-é `moe/llama.cpp-delegated`: ele ainda usa `LlmEngine`, mas a escolha fica
-registrada no estado e em `/health`, deixando o ponto de substituição para o
-executor próprio da Fase 4. Os testes de classificação cobrem denso, MoE,
+`expert_count > 1`, em vez de desviar silenciosamente. O caminho MoE desta
+fase foi inicialmente `moe/llama.cpp-delegated`, uma delegação temporária ao
+`LlmEngine`. A costura posterior da Fase 4 substituiu essa seleção operacional
+por `moe/q4_0`; a referência à delegação permanece somente para explicar o
+estado histórico e o teste de telemetria que garante que uma delegação nunca
+seja rotulada como motor MoE. Os testes de classificação cobrem denso, MoE,
 override e metadados ausentes.
 Os testes isolados de GGUF e executor passaram em um harness `rustc` com 15
 casos. A suíte `cargo test -p node` continua sem alcançar a compilação Rust
@@ -118,17 +120,48 @@ down. `router.rs` escolhe top-k de forma determinística e renormaliza os pesos;
 `block.rs` conecta essa seleção ao `Q4_0Executor`, usando uma chave global por
 modelo, camada, expert e formato. Nenhuma linha do FreeToken foi copiada.
 
-O harness isolado passou com 17 testes, incluindo parser GGUF sintético,
-forward do bloco, cache hit, eviction global, memória medida, leases ativos e
-rejeições de geometria. Isso prova as fronteiras puras do motor, não um modelo
-completo. O caminho HTTP ainda reporta `moe/llama.cpp-delegated` até que o
-runtime de transformer entregue os hidden states e logits do router ao bloco
-próprio. O captain assumiu a prova ponta a ponta com um modelo real e fará essa
-validação fora deste ambiente, sem alterar o caminho denso.
+O harness isolado passou com 28 testes, incluindo parser GGUF sintético,
+router F32, forward do bloco, cache hit, eviction global, memória medida,
+leases ativos e rejeições de geometria. Isso prova as fronteiras puras do
+motor, não um modelo completo. O runtime HTTP agora abre o banco Q4_0 local,
+calcula os logits do router e aplica o bloco ao hidden state recebido ou ao
+residual que será encaminhado. O frame continua em f16 e não leva pesos.
+Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
+bloco costurado e a amostragem final do token; portanto esta entrega não
+afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
+ponta com um modelo real e fará essa validação fora deste ambiente, sem
+alterar o caminho denso.
 
 Não há número de desempenho nesta fase. O build nativo continua sem execução
 neste worktree porque `vendor/llama-cpp-sys-2/llama.cpp` não existe; não foi
 criado workaround para mascarar essa falha.
+
+### Ligação e telemetria do hop
+
+`infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é
+MoE, `MoeRuntime` é aberto somente para esse caminho e o router local escolhe
+os experts Q4_0. No prefill e no decode, um hidden state recebido é transformado
+antes do decode local; quando o pedido entrou como tokens, o residual capturado
+é transformado antes de seguir para o próximo hop. Os caminhos unitário e batch
+passam pela mesma ponte. O wire permanece o estado oculto f16 já existente,
+sem peso na rede. O limite atual é explícito: atenção, operações restantes e
+sampling final continuam no `LlmEngine`.
+
+Cada resposta de inferência inclui `node_timings.engine`, produzido pelo estado
+do backend, e `/health` publica o mesmo `execution_engine`. O gateway agrega o
+campo por fase de cada hop, sem deduzi-lo do nome do modelo, da arquitetura ou
+de tempos. A interface mostra `llama.cpp`, `motor MoE` ou `desconhecido`; um
+peer antigo, uma entrada sem campo ou chamadas divergentes no mesmo hop ficam
+em `desconhecido`. Uma delegação explícita `moe/llama.cpp-delegated` é
+classificada como `llama.cpp`.
+
+O primeiro ponto esperado de quebra na prova real é o layout/nome do tensor de
+router no GGUF da fatia. Depois vêm geometria Q4_0 incompatível ou camada fora
+da faixa, e por fim a qualidade numérica da costura parcial, que ainda não
+substitui todas as operações do transformer. Os testes puros do executor e da
+telemetria estão escritos; a suíte nativa não roda neste worktree porque o
+build de `llama-cpp-sys-2` para antes da compilação ao não encontrar
+`vendor/llama-cpp-sys-2/llama.cpp`.
 
 ### Fase 5: co-execução CPU/GPU
 

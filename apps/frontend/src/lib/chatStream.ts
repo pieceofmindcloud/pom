@@ -1,3 +1,7 @@
+import type { ExecutionEngine } from "./types";
+
+export type { ExecutionEngine } from "./types";
+
 export interface StreamMetrics {
   tokens_per_sec?: number;
   tokens_generated?: number;
@@ -82,6 +86,8 @@ export interface PhaseTrace {
   node_encode_ms: number;
   node_p50_ms: number;
   node_p95_ms: number;
+  /** O executor informado pelo backend; ausente significa desconhecido. */
+  engine?: ExecutionEngine;
   tp?: TpTelemetry | null;
 }
 
@@ -127,6 +133,8 @@ export interface LegacyHopTrace {
   node_encode_ms: number;
   node_decode_p50_ms: number;
   node_decode_p95_ms: number;
+  /** Peers antigos normalmente não informam este campo. */
+  engine?: ExecutionEngine;
 }
 
 export type HopTrace = PhasedHopTrace | LegacyHopTrace;

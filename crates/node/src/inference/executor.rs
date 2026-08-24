@@ -1,9 +1,9 @@
 //! Seleção do caminho de inferência a partir do cabeçalho GGUF.
 //!
 //! A seleção é deliberadamente pequena: o caminho denso continua sendo o
-//! `llama.cpp` existente, e o caminho MoE hoje usa o mesmo motor como delegação
-//! reversível. A bifurcação registrada aqui é o ponto que a Fase 4 substituirá
-//! pelo executor próprio, sem permitir que um modelo denso caia nele.
+//! `llama.cpp` existente, e o caminho MoE entra no runtime próprio de experts
+//! Q4_0. A atenção e as operações que ainda não são próprias continuam no
+//! contexto local, mas o FFN roteado não é delegado silenciosamente.
 
 use anyhow::{bail, Result};
 
@@ -44,19 +44,62 @@ impl InferenceMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InferencePath {
     DenseLlamaCpp,
-    MoeLlamaCppDelegated,
+    MoeQ4_0,
+}
+
+/// O motor que de fato executou um hop, separado do caminho selecionado.
+///
+/// Este valor vai para a telemetria por hop. `Unknown` é deliberado: um peer
+/// antigo ou uma resposta sem o campo não autoriza a interface a adivinhar
+/// que foi llama.cpp ou o runtime MoE.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize)]
+pub enum ExecutionEngine {
+    #[serde(rename = "llama.cpp")]
+    LlamaCpp,
+    #[serde(rename = "moe")]
+    Moe,
+    #[serde(rename = "unknown")]
+    #[default]
+    Unknown,
+}
+
+impl ExecutionEngine {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::LlamaCpp => "llama.cpp",
+            Self::Moe => "moe",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_telemetry(value: &str) -> Self {
+        match value {
+            "llama.cpp" | "moe/llama.cpp-delegated" => Self::LlamaCpp,
+            "moe" => Self::Moe,
+            _ => Self::Unknown,
+        }
+    }
 }
 
 impl InferencePath {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::DenseLlamaCpp => "dense/llama.cpp",
-            Self::MoeLlamaCppDelegated => "moe/llama.cpp-delegated",
+            Self::MoeQ4_0 => "moe/q4_0",
         }
     }
 
     pub fn is_moe(self) -> bool {
-        matches!(self, Self::MoeLlamaCppDelegated)
+        matches!(self, Self::MoeQ4_0)
+    }
+
+    /// Retorna o executor real desta seleção. Não deve ser reconstruído na
+    /// interface a partir de `as_str()` ou da arquitetura do modelo.
+    pub fn execution_engine(self) -> ExecutionEngine {
+        match self {
+            Self::DenseLlamaCpp => ExecutionEngine::LlamaCpp,
+            Self::MoeQ4_0 => ExecutionEngine::Moe,
+        }
     }
 }
 
@@ -65,9 +108,9 @@ pub fn select(mode: InferenceMode, info: Option<&crate::gguf::GgufInfo>) -> Resu
         .map(crate::gguf::GgufInfo::model_architecture)
         .is_some_and(|architecture| architecture.is_moe());
     match mode {
-        InferenceMode::Auto if detected_moe => Ok(InferencePath::MoeLlamaCppDelegated),
+        InferenceMode::Auto if detected_moe => Ok(InferencePath::MoeQ4_0),
         InferenceMode::Auto | InferenceMode::Dense => Ok(InferencePath::DenseLlamaCpp),
-        InferenceMode::Moe if detected_moe => Ok(InferencePath::MoeLlamaCppDelegated),
+        InferenceMode::Moe if detected_moe => Ok(InferencePath::MoeQ4_0),
         InferenceMode::Moe => {
             bail!("modo moe exige metadados GGUF com expert_count > 1; modelo denso recusado")
         }
@@ -100,13 +143,19 @@ mod tests {
         let path = select(InferenceMode::Auto, Some(&dense())).unwrap();
         assert_eq!(path, InferencePath::DenseLlamaCpp);
         assert!(!path.is_moe());
+        assert_eq!(
+            path.execution_engine(),
+            ExecutionEngine::LlamaCpp,
+            "telemetria deve refletir o executor denso"
+        );
     }
 
     #[test]
     fn auto_selects_moe_only_from_expert_metadata() {
         let path = select(InferenceMode::Auto, Some(&moe())).unwrap();
-        assert_eq!(path, InferencePath::MoeLlamaCppDelegated);
+        assert_eq!(path, InferencePath::MoeQ4_0);
         assert!(path.is_moe());
+        assert_eq!(path.execution_engine(), ExecutionEngine::Moe);
     }
 
     #[test]
@@ -126,6 +175,18 @@ mod tests {
         assert_eq!(
             select(InferenceMode::Auto, None).unwrap(),
             InferencePath::DenseLlamaCpp
+        );
+    }
+
+    #[test]
+    fn telemetry_keeps_delegated_moe_on_llama_cpp_and_missing_unknown() {
+        assert_eq!(
+            ExecutionEngine::from_telemetry("moe/llama.cpp-delegated"),
+            ExecutionEngine::LlamaCpp
+        );
+        assert_eq!(
+            ExecutionEngine::from_telemetry("peer-antigo-sem-campo"),
+            ExecutionEngine::Unknown
         );
     }
 }

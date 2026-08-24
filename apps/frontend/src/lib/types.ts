@@ -68,6 +68,9 @@ export interface SystemLoad {
  */
 export type ServerState = "disabled" | "starting" | "ready" | "failed";
 
+/** Motor que o backend afirma ter executado, sem inferência da interface. */
+export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
+
 export interface RuntimeStatus {
   state: ServerState;
   detail: string;
@@ -229,6 +232,8 @@ export interface PeerRuntimeHealth {
   n_ubatch_effective: number;
   /** Real backend setting on this peer, not inferred from a zero timing. */
   profile_sync_enabled?: boolean;
+  /** Motor efetivo informado pelo próprio servidor; ausente em peers antigos. */
+  execution_engine?: ExecutionEngine;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;

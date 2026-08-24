@@ -47,12 +47,12 @@ const trace: RequestTrace = {
       prefill: phase({
         processing_ms: 880, round_trip_ms: 920, network_ms: 40, calls: 5, bytes_sent: 4_096, bytes_received: 512_000,
         client_encode_ms: 3, client_decode_ms: 4, node_decode_ms: 810, node_residual_ms: 45,
-        node_sampling_ms: 0, node_encode_ms: 12, node_p50_ms: 160, node_p95_ms: 210,
+        node_sampling_ms: 0, node_encode_ms: 12, node_p50_ms: 160, node_p95_ms: 210, engine: "llama.cpp",
       }),
       decode: phase({
         processing_ms: 300, round_trip_ms: 420, network_ms: 120, calls: 34, bytes_sent: 3_400, bytes_received: 278_000,
         client_encode_ms: 8, client_decode_ms: 9, node_decode_ms: 240, node_residual_ms: 30,
-        node_sampling_ms: 0, node_encode_ms: 14, node_p50_ms: 7, node_p95_ms: 11,
+        node_sampling_ms: 0, node_encode_ms: 14, node_p50_ms: 7, node_p95_ms: 11, engine: "moe",
       }),
     },
   ],
@@ -98,7 +98,7 @@ const environment: ExecutionTelemetryEnvironment = {
   } as unknown as ExecutionTelemetryEnvironment["cluster"],
   network: { measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: 12.5, transport: "libp2p" }] },
   runtimes: {
-    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, placement: { layers: [
+    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, execution_engine: "moe", placement: { layers: [
       { layer: 0, device: "CUDA0", buffers: [{ buffer: "CUDA0", bytes: 10 }] },
       { layer: 1, device: "CUDA0", buffers: [{ buffer: "CPU", bytes: 10 }, { buffer: "CUDA0", bytes: 10 }] },
     ] } } as never },
@@ -142,6 +142,20 @@ describe("ExecutionTelemetry", () => {
     expect(within(decode!).getByText("34")).toBeTruthy();
   });
 
+  it("shows the backend engine beside each phase", () => {
+    mount(<ExecutionTelemetry trace={trace} />);
+
+    expect(screen.getByText("motor")).toBeTruthy();
+    expect(screen.getByText("llama.cpp")).toBeTruthy();
+    expect(screen.getByText("motor MoE")).toBeTruthy();
+  });
+
+  it("shows unknown when a hop has no engine field", () => {
+    mount(<ExecutionTelemetry trace={twoPeerTrace} />);
+
+    expect(screen.getAllByText("desconhecido").length).toBe(2);
+  });
+
   it("shows the observed aggregate RTT of the execution", () => {
     mount(<ExecutionTelemetry trace={trace} />);
     expect(screen.getByText(/RTT agregado da execução: 1340 ms/)).toBeTruthy();
@@ -172,6 +186,8 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/Ajuste à memória: desligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
     expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
+    expect(screen.getByText("motor: motor MoE")).toBeTruthy();
+    expect(screen.getByText("motor: desconhecido")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();
   });

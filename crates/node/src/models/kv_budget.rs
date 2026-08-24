@@ -29,12 +29,12 @@ pub(crate) struct KvLayerGeometry {
 /// inválida ou overflow.
 pub(crate) fn kv_bytes(input: &KvBudgetInput) -> Result<u64> {
     for (name, value) in [
-        ("context_tokens", input.context_tokens),
-        ("max_sessions", input.max_sessions),
-        ("layers", input.layers),
-        ("kv_heads", input.kv_heads),
-        ("key_head_dim", input.key_head_dim),
-        ("value_head_dim", input.value_head_dim),
+        ("contexto", input.context_tokens),
+        ("sessões", input.max_sessions),
+        ("camadas", input.layers),
+        ("cabeças KV", input.kv_heads),
+        ("dimensão K", input.key_head_dim),
+        ("dimensão V", input.value_head_dim),
     ] {
         if value == 0 {
             bail!("geometria KV inválida: {name} é zero");

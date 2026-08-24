@@ -62,7 +62,7 @@ mod model_provider;
 #[path = "backend/model_provider.rs"]
 mod model_provider_backend;
 #[path = "inference/moe/mod.rs"]
-mod moe;
+pub(crate) mod moe;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]

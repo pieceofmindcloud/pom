@@ -206,10 +206,7 @@ impl fmt::Display for Q4LoadError {
             Self::Io(error) => write!(formatter, "falha ao ler GGUF: {error}"),
             Self::InvalidGguf(reason) => write!(formatter, "GGUF inválido: {reason}"),
             Self::UnsupportedTensorType(kind) => {
-                write!(
-                    formatter,
-                    "tensor de expert usa tipo GGML não suportado: {kind}"
-                )
+                write!(formatter, "tensor MoE usa tipo GGML não suportado: {kind}")
             }
             Self::MissingTensor(name) => write!(formatter, "tensor de expert ausente: {name}"),
             Self::InvalidTensor(reason) => write!(formatter, "tensor de expert inválido: {reason}"),
@@ -244,6 +241,7 @@ pub struct Q4_0Source {
     intermediate: usize,
     gate_up: Vec<TensorSpec>,
     down: Vec<TensorSpec>,
+    router: Vec<TensorSpec>,
 }
 
 impl Q4_0Source {
@@ -266,6 +264,7 @@ impl Q4_0Source {
         let (data_start, tensors) = parse_tensor_table(&mmap)?;
         let mut gate_up = Vec::new();
         let mut down = Vec::new();
+        let mut router = Vec::new();
         for tensor in tensors {
             if tensor.name.starts_with("blk.") && tensor.name.ends_with("ffn_gate_up_exps.weight") {
                 gate_up.push(tensor);
@@ -273,6 +272,10 @@ impl Q4_0Source {
                 && tensor.name.ends_with("ffn_down_exps.weight")
             {
                 down.push(tensor);
+            } else if tensor.name.starts_with("blk.")
+                && tensor.name.ends_with("ffn_gate_inp.weight")
+            {
+                router.push(tensor);
             }
         }
         if gate_up.is_empty() || down.is_empty() {
@@ -288,7 +291,75 @@ impl Q4_0Source {
             intermediate,
             gate_up,
             down,
+            router,
         })
+    }
+
+    /// Infere a geometria Q4_0 a partir do primeiro banco de experts.
+    ///
+    /// GGUF guarda as dimensões lógicas `[hidden, 2*intermediate, experts]`,
+    /// embora os bytes de cada linha sejam Q4_0 packed. O tamanho é validado
+    /// novamente por `open`, portanto uma tabela truncada não vira geometria
+    /// inventada.
+    pub fn open_infer(path: impl AsRef<Path>, experts: u32) -> Result<Self, Q4LoadError> {
+        let file = File::open(path.as_ref()).map_err(|error| Q4LoadError::Io(error.to_string()))?;
+        // SAFETY: the file descriptor stays alive until the mmap is created.
+        let mmap =
+            unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
+        let (_, tensors) = parse_tensor_table(&mmap)?;
+        let tensor = tensors
+            .iter()
+            .find(|tensor| tensor.name.ends_with("ffn_gate_up_exps.weight"))
+            .ok_or_else(|| Q4LoadError::MissingTensor("ffn_gate_up_exps.weight".into()))?;
+        if tensor.dtype != 2 || tensor.dims.len() != 3 {
+            return Err(Q4LoadError::InvalidTensor(
+                "gate_up precisa ser um tensor Q4_0 de rank 3",
+            ));
+        }
+        let hidden = usize::try_from(tensor.dims[0])
+            .map_err(|_| Q4LoadError::InvalidTensor("hidden excede usize"))?;
+        let two_intermediate = usize::try_from(tensor.dims[1])
+            .map_err(|_| Q4LoadError::InvalidTensor("intermediate excede usize"))?;
+        let tensor_experts = u32::try_from(tensor.dims[2])
+            .map_err(|_| Q4LoadError::InvalidTensor("experts excede u32"))?;
+        if tensor_experts != experts || two_intermediate == 0 || two_intermediate % 2 != 0 {
+            return Err(Q4LoadError::InvalidTensor(
+                "geometria gate_up não corresponde aos metadados MoE",
+            ));
+        }
+        Self::open(path, experts, hidden, two_intermediate / 2)
+    }
+
+    pub fn hidden(&self) -> usize {
+        self.hidden
+    }
+
+    pub fn intermediate(&self) -> usize {
+        self.intermediate
+    }
+
+    pub fn experts(&self) -> u32 {
+        self.experts
+    }
+
+    pub fn has_router(&self) -> bool {
+        !self.router.is_empty()
+    }
+
+    pub fn layer_count(&self) -> u32 {
+        self.gate_up
+            .iter()
+            .filter_map(|tensor| {
+                tensor
+                    .name
+                    .strip_prefix("blk.")?
+                    .split('.')
+                    .next()?
+                    .parse::<u32>()
+                    .ok()
+            })
+            .max()
+            .map_or(0, |last| last.saturating_add(1))
     }
 
     pub fn load_expert(&self, layer: u32, expert: u32) -> Result<Vec<u8>, Q4LoadError> {
@@ -316,6 +387,57 @@ impl Q4_0Source {
         let gate = self.expert_slice(gate, expert, gate_per_expert)?;
         let down = self.expert_slice(down, expert, down_per_expert)?;
         pack_payload(gate, down).map_err(|_| Q4LoadError::InvalidTensor("payload Q4_0"))
+    }
+
+    /// Calcula os logits do router local para uma ativação.
+    ///
+    /// No GGUF Gemma4 o tensor lógico é `[hidden, experts]`, que corresponde
+    /// a uma linha contiguous por expert na representação de bytes. O router
+    /// é mantido pequeno e residente; só os experts passam pelo LRU.
+    pub fn router_logits(&self, layer: u32, hidden: &[f32]) -> Result<Vec<f32>, Q4LoadError> {
+        if hidden.len() != self.hidden {
+            return Err(Q4LoadError::InvalidTensor(
+                "hidden não corresponde à largura do router",
+            ));
+        }
+        let tensor = self.tensor_for_layer(&self.router, layer, "ffn_gate_inp.weight")?;
+        let elements = (self.experts as u64)
+            .checked_mul(self.hidden as u64)
+            .ok_or(Q4LoadError::InvalidTensor("overflow no router"))?;
+        let declared = tensor
+            .dims
+            .iter()
+            .try_fold(1u64, |total, dimension| total.checked_mul(*dimension))
+            .ok_or(Q4LoadError::InvalidTensor(
+                "overflow nas dimensões do router",
+            ))?;
+        if declared != elements || tensor.dims.len() != 2 {
+            return Err(Q4LoadError::InvalidTensor(
+                "dimensões do router não correspondem ao modelo",
+            ));
+        }
+        let element_bytes = match tensor.dtype {
+            0 => 4,
+            1 | 30 => 2,
+            kind => return Err(Q4LoadError::UnsupportedTensorType(kind)),
+        };
+        let total_bytes = usize::try_from(elements)
+            .ok()
+            .and_then(|count| count.checked_mul(element_bytes))
+            .ok_or(Q4LoadError::InvalidTensor("tamanho do router excede usize"))?;
+        let raw = self.tensor_bytes(tensor, total_bytes)?;
+        let mut logits = Vec::with_capacity(self.experts as usize);
+        for expert in 0..self.experts as usize {
+            let row = &raw
+                [expert * self.hidden * element_bytes..(expert + 1) * self.hidden * element_bytes];
+            let value = row
+                .chunks_exact(element_bytes)
+                .zip(hidden)
+                .map(|(encoded, &input)| decode_scalar(encoded, tensor.dtype) * input)
+                .sum();
+            logits.push(value);
+        }
+        Ok(logits)
     }
 
     fn tensor_for_layer<'a>(
@@ -365,6 +487,38 @@ impl Q4_0Source {
             return Err(Q4LoadError::InvalidTensor("tensor excede o arquivo"));
         }
         Ok(&self.mmap[offset..end])
+    }
+
+    fn tensor_bytes<'a>(
+        &'a self,
+        tensor: &TensorSpec,
+        total_bytes: usize,
+    ) -> Result<&'a [u8], Q4LoadError> {
+        let offset = usize::try_from(tensor.offset)
+            .ok()
+            .and_then(|value| self.data_start.checked_add(value))
+            .ok_or(Q4LoadError::InvalidTensor("offset GGUF inválido"))?;
+        let end = offset
+            .checked_add(total_bytes)
+            .ok_or(Q4LoadError::InvalidTensor("tamanho do tensor excede usize"))?;
+        self.mmap
+            .get(offset..end)
+            .ok_or(Q4LoadError::InvalidTensor("tensor excede o arquivo"))
+    }
+}
+
+fn decode_scalar(encoded: &[u8], dtype: u32) -> f32 {
+    match dtype {
+        0 => f32::from_le_bytes(encoded.try_into().expect("F32 tem quatro bytes")),
+        1 => f16_to_f32(u16::from_le_bytes(
+            encoded.try_into().expect("F16 tem dois bytes"),
+        )),
+        30 => f32::from_bits(
+            u32::from(u16::from_le_bytes(
+                encoded.try_into().expect("BF16 tem dois bytes"),
+            )) << 16,
+        ),
+        _ => 0.0,
     }
 }
 
@@ -708,12 +862,16 @@ pub(crate) mod tests {
     }
 
     fn gguf_tensor(output: &mut Vec<u8>, name: &str, dims: &[u64], offset: u64) {
+        gguf_tensor_dtype(output, name, dims, offset, 2);
+    }
+
+    fn gguf_tensor_dtype(output: &mut Vec<u8>, name: &str, dims: &[u64], offset: u64, dtype: u32) {
         gguf_string(output, name);
         output.extend_from_slice(&(dims.len() as u32).to_le_bytes());
         for dimension in dims {
             output.extend_from_slice(&dimension.to_le_bytes());
         }
-        output.extend_from_slice(&2u32.to_le_bytes());
+        output.extend_from_slice(&dtype.to_le_bytes());
         output.extend_from_slice(&offset.to_le_bytes());
     }
 
@@ -723,10 +881,16 @@ pub(crate) mod tests {
         let experts = 2;
         let gate_up = packed_rows(experts * 2 * intermediate, hidden, 9);
         let down = packed_rows(experts * hidden, intermediate, 9);
+        let mut router = Vec::with_capacity(experts * hidden * 4);
+        for expert in 0..experts {
+            for _ in 0..hidden {
+                router.extend_from_slice(&((expert + 1) as f32).to_le_bytes());
+            }
+        }
         let mut file = Vec::new();
         file.extend_from_slice(&0x4655_4747u32.to_le_bytes());
         file.extend_from_slice(&2u32.to_le_bytes());
-        file.extend_from_slice(&2u64.to_le_bytes());
+        file.extend_from_slice(&3u64.to_le_bytes());
         file.extend_from_slice(&1u64.to_le_bytes());
         gguf_string(&mut file, "general.alignment");
         file.extend_from_slice(&4u32.to_le_bytes());
@@ -743,10 +907,18 @@ pub(crate) mod tests {
             &[intermediate as u64, hidden as u64, experts as u64],
             gate_up.len() as u64,
         );
+        gguf_tensor_dtype(
+            &mut file,
+            "blk.0.ffn_gate_inp.weight",
+            &[hidden as u64, experts as u64],
+            (gate_up.len() + down.len()) as u64,
+            0,
+        );
         let data_start = (file.len() + 31) / 32 * 32;
         file.resize(data_start, 0);
         file.extend_from_slice(&gate_up);
         file.extend_from_slice(&down);
+        file.extend_from_slice(&router);
         File::create(path).unwrap().write_all(&file).unwrap();
         (hidden, intermediate)
     }
@@ -821,6 +993,10 @@ pub(crate) mod tests {
         let expected = Q4_0Expert::packed_bytes(hidden, intermediate).unwrap();
         assert_eq!(expert.len(), expected);
         Q4_0Expert::from_payload(hidden, intermediate, &expert).unwrap();
+        assert_eq!(
+            source.router_logits(0, &[1.0; 32]).unwrap(),
+            vec![32.0, 64.0]
+        );
         assert!(matches!(
             source.load_expert(0, 2),
             Err(Q4LoadError::ExpertOutOfRange {

@@ -33,9 +33,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
-  `moe/llama.cpp-delegated` e o branch de relay. Os handlers decodificam o
-  frame e entregam comandos a uma fila local limitada; o worker seleciona uma
-  entrada por sessão e pode chamar o decode multi-sequência. Cada `Session`
+  `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
+  decode local ou transforma o residual que vai para o próximo hop; atenção,
+  demais operações e amostragem final continuam no `LlmEngine`. Os handlers
+  também publicam `node_timings.engine` e `/health.execution_engine`, sempre a
+  partir do estado do backend. Os handlers decodificam o frame e entregam
+  comandos a uma fila local limitada; o worker seleciona uma entrada por
+  sessão e pode chamar o decode multi-sequência. Cada `Session`
   mantém seu próprio
   `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
@@ -81,11 +85,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   down em CPU; `router.rs` e `block.rs` fazem top-k e soma ponderada no bloco
   MoE; `bandwidth.rs` calcula a divisão de misses a partir de medições
   simultâneas e `coexecution.rs` inicia as lanes CPU/GPU com double buffer sob
-  orçamento explícito. O runtime HTTP ainda delega o caminho selecionado ao
-  llama.cpp até conectar hidden states e logits de router a esse bloco.
+  orçamento explícito. `runtime.rs` abre o router local e liga o bloco Q4_0 ao
+  hidden state nos caminhos unitário e batch. O wire continua em f16 e nenhum
+  peso trafega; a costura não substitui ainda atenção, demais camadas ou a
+  amostragem do `LlmEngine`.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
-  `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. Nesta fase ambos os
-  caminhos delegam ao `LlmEngine`; o nome do caminho é exposto no `/health`.
+  `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. O caminho denso fica
+  em `LlmEngine`, e o MoE seleciona o runtime Q4_0. `ExecutionEngine` é a
+  fonte única do rótulo que sai na telemetria; ausente em peer antigo vira
+  desconhecido na interface.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.
@@ -240,8 +248,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
 - `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
-  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`) e também o snapshot
-  do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
+  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`),
+  `execution_engine` e também o snapshot do scheduler (`queue_depth`, limites,
+  tamanho e tokens do último lote). O mesmo motor sai por `node_timings.engine`
+  em cada hop do prefill/decode e é agregado no `RequestTrace` sem inferência
+  da tela.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
   legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no

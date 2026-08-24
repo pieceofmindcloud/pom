@@ -201,8 +201,12 @@ pub struct PhaseTrace {
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
+    /// Motor que o backend informou ter executado esta fase.
+    pub engine: crate::executor::ExecutionEngine,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
+    #[serde(skip)]
+    engine_seen: bool,
 }
 
 impl PhaseTrace {
@@ -221,6 +225,11 @@ impl PhaseTrace {
     ) {
         let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
+        let engine = node
+            .get("engine")
+            .and_then(|value| value.as_str())
+            .map(crate::executor::ExecutionEngine::from_telemetry)
+            .unwrap_or_default();
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -258,7 +267,19 @@ impl PhaseTrace {
         self.node_encode_ms += node_ms("encode_ms");
 
         self.node_samples_ms.push(node_decode_ms);
+        self.observe_engine(engine);
         self.refresh_percentiles();
+    }
+
+    fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
+        if self.engine_seen {
+            if self.engine != next {
+                self.engine = crate::executor::ExecutionEngine::Unknown;
+            }
+        } else {
+            self.engine = next;
+            self.engine_seen = true;
+        }
     }
 
     fn merge(&mut self, next: &PhaseTrace) {
@@ -296,6 +317,9 @@ impl PhaseTrace {
         self.node_encode_ms += next.node_encode_ms;
         self.node_samples_ms
             .extend_from_slice(&next.node_samples_ms);
+        if next.engine_seen {
+            self.observe_engine(next.engine);
+        }
         self.refresh_percentiles();
     }
 
@@ -1981,6 +2005,94 @@ mod tests {
         let phase = &trace.hops[0].decode;
         assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
         assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hop_trace_publica_o_motor_real_e_nao_inventa_o_de_peer_antigo() {
+        let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
+        moe.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({"engine": "moe"}),
+        );
+        assert_eq!(
+            moe.hops[0].decode.engine,
+            crate::executor::ExecutionEngine::Moe
+        );
+
+        let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
+        delegated.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({"engine": "moe/llama.cpp-delegated"}),
+        );
+        assert_eq!(
+            delegated.hops[0].decode.engine,
+            crate::executor::ExecutionEngine::LlamaCpp
+        );
+
+        let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
+        old.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        assert_eq!(
+            old.hops[0].decode.engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+    }
+
+    #[test]
+    fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
+        let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
+        for engine in ["llama.cpp", "moe"] {
+            trace.record_hop(
+                0,
+                Phase::Prefill,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({"engine": engine}),
+            );
+        }
+        assert_eq!(
+            trace.hops[0].prefill.engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array

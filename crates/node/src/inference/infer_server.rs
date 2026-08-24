@@ -81,6 +81,7 @@ struct NodeTimings {
     token_text_us: u64,
     sampling_us: u64,
     encode_us: u64,
+    engine: crate::executor::ExecutionEngine,
     tp: Option<crate::tp::TpDecodeTelemetry>,
 }
 
@@ -112,6 +113,7 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "engine": self.engine.as_str(),
             "tp": self
                 .tp
                 .as_ref()
@@ -713,6 +715,8 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
+            Arc::new(ModelCache::new()),
+            false,
         )
         .await
         .expect_err("porta ocupada devia falhar");
@@ -1052,6 +1056,7 @@ mod session_text_tests {
 
 struct InferState {
     engine: LlmEngine,
+    moe: Option<crate::moe::runtime::MoeRuntime>,
     sessions: HashMap<String, Session>,
     seq_pool: Vec<u32>,
     max_sessions: u32,
@@ -1122,12 +1127,14 @@ impl InferState {
         engine: LlmEngine,
         cfg: &NodeConfig,
         inference_path: crate::executor::InferencePath,
+        moe: Option<crate::moe::runtime::MoeRuntime>,
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         Self {
             tls_handshake_ms: None,
             engine,
+            moe,
             sessions: HashMap::new(),
             seq_pool,
             max_sessions,
@@ -1149,6 +1156,28 @@ impl InferState {
             mtp_min_probability: cfg.mtp_min_probability,
             tp: cfg.tp.clone(),
         }
+    }
+
+    fn apply_moe_hidden(
+        &self,
+        hidden: Vec<f32>,
+        n_tokens: usize,
+        capture_block: Option<u32>,
+    ) -> Result<Vec<f32>> {
+        let Some(moe) = &self.moe else {
+            return Ok(hidden);
+        };
+        let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
+        moe.forward_batch(layer, &hidden, n_tokens)
+            .map_err(|error| anyhow::anyhow!("forward MoE Q4_0 falhou: {error}"))
+    }
+
+    fn mark_execution_engine(&self, timings: &mut NodeTimings) {
+        timings.engine = if self.moe.is_some() {
+            crate::executor::ExecutionEngine::Moe
+        } else {
+            crate::executor::ExecutionEngine::LlamaCpp
+        };
     }
 
     fn alloc_seq(&mut self) -> Option<u32> {
@@ -1315,7 +1344,32 @@ pub async fn run(
     // configuração. Ver `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
-    let mut state_inner = InferState::new(engine, &cfg, inference_path);
+    let moe = if inference_path.is_moe() {
+        let info = model_info.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("caminho MoE exige metadados GGUF para preparar o router")
+        })?;
+        let experts = info
+            .expert_count
+            .ok_or_else(|| anyhow::anyhow!("caminho MoE exige expert_count no GGUF"))?;
+        let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
+        let weights_bytes = std::fs::metadata(&cfg.model_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        Some(
+            crate::moe::runtime::MoeRuntime::open(
+                &cfg.model_path,
+                cfg.model_label.clone(),
+                experts,
+                top_k,
+                weights_bytes,
+            )
+            .map_err(|error| anyhow::anyhow!("runtime MoE Q4_0 indisponível: {error}"))?,
+        )
+    } else {
+        None
+    };
+
+    let mut state_inner = InferState::new(engine, &cfg, inference_path, moe);
     state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
     state_inner.original_block_count = model_info
         .as_ref()
@@ -1713,6 +1767,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
         "inference_path": s.inference_path.as_str(),
+        "execution_engine": s.inference_path.execution_engine().as_str(),
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,
@@ -2664,6 +2719,15 @@ fn prefill_blocking(
         }
     }
 
+    let input_was_hidden = tensor.is_some();
+    let tensor = if let Some((hidden, shape)) = tensor {
+        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block)?;
+        s.mark_execution_engine(&mut timings);
+        Some((hidden, shape))
+    } else {
+        None
+    };
+
     let n_tokens;
     let decode_started = Instant::now();
     let engine_timing;
@@ -2685,6 +2749,9 @@ fn prefill_blocking(
         engine_timing = s
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
+    }
+    if timings.engine == crate::executor::ExecutionEngine::Unknown {
+        timings.engine = crate::executor::ExecutionEngine::LlamaCpp;
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.tp = crate::tp::take_decode_telemetry();
@@ -2785,7 +2852,11 @@ fn prefill_blocking(
     }
 
     let residual_started = Instant::now();
-    let residual = s.engine.take_residual(n_tokens)?;
+    let mut residual = s.engine.take_residual(n_tokens)?;
+    if !input_was_hidden {
+        residual = s.apply_moe_hidden(residual, n_tokens, capture_block)?;
+        s.mark_execution_engine(&mut timings);
+    }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let n_embd = s.engine.n_embd;
@@ -3045,6 +3116,26 @@ fn prefill_batch_blocking(
         }
     }
 
+    let mut transform_error = None;
+    for (_, item) in &mut prepared {
+        if let PreparedPrefillInput::Hidden(hidden) = &mut item.input {
+            match s.apply_moe_hidden(std::mem::take(hidden), item.n_tokens, capture_block) {
+                Ok(transformed) => *hidden = transformed,
+                Err(error) => {
+                    transform_error = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(error) = transform_error {
+        let message = error.to_string();
+        for (reply, _) in prepared {
+            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+        }
+        return replies;
+    }
+
     let decode_result = match &prepared[0].1.input {
         PreparedPrefillInput::Tokens(_) => {
             let entries: Vec<crate::llm::TokenBatchEntry> = prepared
@@ -3116,6 +3207,13 @@ fn prefill_batch_blocking(
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
+                engine: if s.moe.is_some()
+                    && (matches!(&item.input, PreparedPrefillInput::Hidden(_)) || !item.is_last)
+                {
+                    crate::executor::ExecutionEngine::Moe
+                } else {
+                    crate::executor::ExecutionEngine::LlamaCpp
+                },
                 ..Default::default()
             };
 
@@ -3201,7 +3299,11 @@ fn prefill_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden(_));
+            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            if !input_was_hidden {
+                residual = s.apply_moe_hidden(residual, item.n_tokens, item.capture_block)?;
+            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
@@ -3363,6 +3465,25 @@ fn step_batch_blocking(
             return replies;
         }
     }
+    let mut transform_error = None;
+    for (_, item) in &mut prepared {
+        if let PreparedStepInput::Hidden { hidden, n_tokens } = &mut item.input {
+            match s.apply_moe_hidden(std::mem::take(hidden), *n_tokens, capture_block) {
+                Ok(transformed) => *hidden = transformed,
+                Err(error) => {
+                    transform_error = Some(error);
+                    break;
+                }
+            }
+        }
+    }
+    if let Some(error) = transform_error {
+        let message = error.to_string();
+        for (reply, _) in prepared {
+            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+        }
+        return replies;
+    }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
     let decode_result = match &prepared[0].1.input {
         PreparedStepInput::Tokens { .. } => {
@@ -3427,6 +3548,13 @@ fn step_batch_blocking(
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
+                engine: if s.moe.is_some()
+                    && (matches!(&item.input, PreparedStepInput::Hidden { .. }) || !item.is_last)
+                {
+                    crate::executor::ExecutionEngine::Moe
+                } else {
+                    crate::executor::ExecutionEngine::LlamaCpp
+                },
                 ..Default::default()
             };
 
@@ -3492,7 +3620,11 @@ fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedStepInput::Hidden { .. });
+            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            if !input_was_hidden {
+                residual = s.apply_moe_hidden(residual, item.n_tokens, item.capture_block)?;
+            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],
@@ -4456,6 +4588,14 @@ fn step_blocking(
             bail!("{error}");
         }
     }
+    let input_was_hidden = tensor.is_some();
+    let tensor = if let Some((hidden, shape)) = tensor {
+        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block)?;
+        s.mark_execution_engine(&mut timings);
+        Some((hidden, shape))
+    } else {
+        None
+    };
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -4543,6 +4683,9 @@ fn step_blocking(
         if let Some(k) = mtp_k_hint.or(mtp_k) {
             mtp_k_echo = Some(k);
         }
+    }
+    if timings.engine == crate::executor::ExecutionEngine::Unknown {
+        timings.engine = crate::executor::ExecutionEngine::LlamaCpp;
     }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.backend_enqueue_us += engine_timing.enqueue_us;
@@ -4765,7 +4908,11 @@ fn step_blocking(
     }
 
     let residual_started = Instant::now();
-    let residual = s.engine.take_residual(n_tokens)?;
+    let mut residual = s.engine.take_residual(n_tokens)?;
+    if !input_was_hidden {
+        residual = s.apply_moe_hidden(residual, n_tokens, capture_block)?;
+        s.mark_execution_engine(&mut timings);
+    }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let mut reply_meta = json!({"done": false});
     // Whoever called us needs this to keep threading it toward the tail —

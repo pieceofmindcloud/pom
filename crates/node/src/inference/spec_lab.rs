@@ -236,6 +236,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 "session_id": inc.meta["session_id"].clone(),
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
+                "reuse_prefix": inc.meta["reuse_prefix"].clone(),
                 "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
                 "prompt_progress": crate::infer_server::prompt_progress_for_forward(&inc.meta, &local),
                 "hop_timings": hop_timings,
@@ -264,6 +265,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         "session_id": inc.meta["session_id"].clone(),
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
+        "reuse_prefix": inc.meta["reuse_prefix"].clone(),
         "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
     });
     match bubble(&inc.next_hops, "/v1/prefill", base, (&residual, shape)).await {

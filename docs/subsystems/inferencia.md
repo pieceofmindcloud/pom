@@ -271,13 +271,41 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
   libera as sessões dos peers alcançados.
 
+### 3.1 Cache de prefixo entre turnos
+
+O gateway mantém um `PrefixCache` global com leases por sessão. A chave combina
+modelo e sequência de hops, e o cache guarda apenas texto, identidade da sessão
+e contagem de tokens, nunca pesos ou tensors. Uma entrada hit fica ocupada
+durante a geração; entradas ociosas seguem LRU dentro da capacidade configurada.
+Leases ocupados não são despejados, mesmo que o total passe temporariamente a
+capacidade nominal.
+Em um miss, uma entrada ociosa pode ser reciclada antes do prefill novo, o que
+mantém o caminho compatível com `max_sessions=1` sem compartilhar entrada
+ocupada.
+
+Depois de um prefill bem-sucedido, `/v1/session/rewind` remove em cada peer o
+sufixo gerado e exige a confirmação do `n_past` igual ao tamanho do prompt. Se
+qualquer hop falhar, o gateway invalida o lease inteiro e libera a sessão. No
+turno seguinte, o primeiro frame leva `reuse_prefix`; a cabeça compara os
+tokens do novo prompt com os tokens guardados na sessão, remove do KV qualquer
+sufixo que deixou de ser comum e responde com `start_pos`/`next_pos`. O gateway
+usa essa posição no chunk seguinte, e o relay preserva os campos até cada hop.
+Assim, um peer que só recebe estado oculto não precisa tokenizar, mas também não
+pode começar numa posição diferente da cabeça.
+
+O cache é uma otimização interna. O envelope binário `frame/v1-batch` e as APIs
+públicas não mudaram. `prefix_cache_lab.rs` compara cada operação com uma
+referência e contém um proxy propositalmente quebrado que precisa disparar a
+bateria. Não há número de desempenho nesta fase: o captain fará a medição
+posterior usando o método da Fase 0.
+
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
 prefixo de uma parada, remove a própria parada da saída e encerra a geração com
 `finish_reason=stop` e a sequência correspondente. Sem stop strings o caminho
 continua emitindo os eventos como antes.
 
-### 3.1 Scheduler local e batching contínuo
+### 3.2 Scheduler local e batching contínuo
 
 Cada processo de inferência possui um scheduler próprio para o contexto
 `llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,

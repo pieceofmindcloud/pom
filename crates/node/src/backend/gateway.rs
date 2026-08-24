@@ -101,6 +101,9 @@ pub struct GatewayState {
     pub local_assignment: Arc<tokio::sync::RwLock<Option<LayerAssignment>>>,
     /// Tracks in-flight inference requests per peer (for pipeline load balancing).
     pub loads: Arc<LoadTracker>,
+    /// Prefixos de conversas que continuam vivos entre turnos. A entrada só
+    /// guarda uma sessão KV já existente, nunca pesos ou estado oculto.
+    pub prefix_cache: Arc<crate::prefix_cache::PrefixCache>,
     /// Clientes HTTP de saída, **um por peer**, com o certificado do destino
     /// fixado pelo node_id (`peer_client::PeerClients`).
     ///
@@ -790,10 +793,6 @@ async fn generate_stream_inner(
         .map(|p| p.total_layers)
         .unwrap_or(32);
 
-    // Each request gets a unique session_id passed to every inference server
-    // call, so parallel requests keep isolated KV cache state.
-    let session_id = Uuid::new_v4().to_string();
-
     let route_rtt = state
         .network
         .routes
@@ -831,6 +830,27 @@ async fn generate_stream_inner(
                 crate::pipeline::resolve_step_url(step, &state.network.routes, &mut fixadas);
         }
     }
+    let prefix_key = crate::prefix_cache::PrefixRouteKey::new(
+        format!(
+            "{}|deployment={}|chat_template={chat_template}",
+            model,
+            deploy_id.unwrap_or("<default>")
+        ),
+        plan.steps.iter().map(|step| {
+            format!(
+                "{}@{}:{}-{}",
+                step.node_id, step.inference_url, step.exec_start, step.exec_end
+            )
+        }),
+    );
+    // A hit reuses the peer session that was rewound to the end of the prior
+    // prompt. A miss gets a fresh id and is published only after this turn has
+    // completed its prefill, so an incomplete session cannot enter the cache.
+    let prefix_lease = state
+        .prefix_cache
+        .acquire(prefix_key, &prompt, Uuid::new_v4().to_string());
+    let session_id = prefix_lease.session_id().to_string();
+    let cache_prompt = prompt.clone();
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
     // usada para revisar qualquer transformação futura da rota.
@@ -840,6 +860,7 @@ async fn generate_stream_inner(
         &plan,
     );
     debug_assert!(route_affinity.matches_plan(&plan));
+    let reuse_prefix = prefix_lease.is_hit();
 
     // Para onde a cauda entrega a resposta. `None` quando esta máquina não
     // sabe nenhum endereço de si mesma — aí a cadeia volta a borbulhar, que é
@@ -872,6 +893,7 @@ async fn generate_stream_inner(
     let gen_start = Instant::now();
     let mut tokens_generated: u32 = 0;
     let max_tokens = max_tokens.max(1);
+    let mut retained_prefix_tokens: Option<u32> = None;
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
@@ -936,6 +958,7 @@ async fn generate_stream_inner(
             direct.as_ref(),
             state.tunnel_tx.as_ref(),
             &cancellation,
+            reuse_prefix,
         )
         .await
         {
@@ -946,6 +969,7 @@ async fn generate_stream_inner(
                     o.chunks,
                     gen_start.elapsed().as_secs_f64(),
                 );
+                retained_prefix_tokens = Some(o.prompt_tokens);
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
@@ -1382,7 +1406,76 @@ async fn generate_stream_inner(
     }
     .await;
 
+    if let Some(prompt_tokens) = retained_prefix_tokens {
+        if rewind_sessions(&plan, &session_id, prompt_tokens, &state.peer_http).await {
+            prefix_lease.commit(cache_prompt, prompt_tokens);
+            return;
+        }
+        warn!(
+            "não foi possível preservar o prefixo da sessão {}; liberando KV",
+            &session_id[..8.min(session_id.len())]
+        );
+    }
+    prefix_lease.discard();
     release_sessions(&plan, &session_id, &state.peer_http).await;
+}
+
+/// Remove os tokens produzidos depois do prompt, deixando cada peer pronto
+/// para estender a mesma sessão no próximo turno. Falha em um hop invalida a
+/// entrada inteira: manter só parte da cadeia criaria um buraco silencioso.
+async fn rewind_sessions(
+    plan: &PipelinePlan,
+    session_id: &str,
+    prompt_tokens: u32,
+    clients: &crate::peer_client::PeerClients,
+) -> bool {
+    let mut all_ok = true;
+    for step in &plan.steps {
+        let url = format!("{}/v1/session/rewind", step.inference_url);
+        let Ok(http) = clients.for_peer(&step.node_id) else {
+            all_ok = false;
+            continue;
+        };
+        let request = http
+            .post(&url)
+            .json(&serde_json::json!({
+                "session_id": session_id,
+                "n_tokens": prompt_tokens,
+            }))
+            .timeout(Duration::from_secs(10));
+        match clients
+            .authorize_inference_request(request)
+            .await
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<serde_json::Value>().await {
+                    Ok(body)
+                        if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
+                            && body.get("n_past").and_then(|v| v.as_u64())
+                                == Some(prompt_tokens as u64) => {}
+                    Ok(body) => {
+                        warn!("rewind recusado por {}: {}", step.node_id, body);
+                        all_ok = false;
+                    }
+                    Err(error) => {
+                        warn!("resposta ilegível no rewind de {}: {error}", step.node_id);
+                        all_ok = false;
+                    }
+                }
+            }
+            Ok(response) => {
+                warn!("rewind em {} respondeu {}", step.node_id, response.status());
+                all_ok = false;
+            }
+            Err(error) => {
+                warn!("rewind em {} falhou: {error}", step.node_id);
+                all_ok = false;
+            }
+        }
+    }
+    all_ok
 }
 
 /// Hand every peer in the plan its KV slot back. Best effort: a peer that is
@@ -2315,6 +2408,7 @@ pub(crate) mod testkit {
             default_model: String::new(),
             local_assignment: assignment.clone(),
             loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: Arc::new(crate::peer_client::PeerClients::new(
                 std::time::Duration::from_secs(600),
             )),

@@ -581,6 +581,8 @@ fn head_prefill_meta(
     is_last: bool,
     prompt: Option<&str>,
     chat_template: bool,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
 ) -> serde_json::Value {
     json!({
         "session_id": session_id,
@@ -590,6 +592,8 @@ fn head_prefill_meta(
         "is_final_chunk": false,
         "prompt": prompt,
         "chat_template": chat_template,
+        "reuse_prefix": reuse_prefix,
+        "start_pos": start_pos,
     })
 }
 
@@ -607,6 +611,7 @@ pub async fn run(
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     let chunk_size = chunk_size.max(1);
@@ -628,6 +633,7 @@ pub async fn run(
             direct,
             tunnel,
             cancellation,
+            reuse_prefix,
         )
         .await;
     }
@@ -644,12 +650,14 @@ pub async fn run(
             routes,
             tunnel,
             cancellation,
+            reuse_prefix,
         )
         .await;
     }
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
@@ -663,6 +671,8 @@ pub async fn run(
             n_peers == 1,
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
 
         let (mut meta, mut tensor) = send_chunk(
@@ -690,6 +700,14 @@ pub async fn run(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_start_pos = meta
+            .get("start_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or((chunk_index * chunk_size) as u64) as u32;
+        let chunk_next_pos =
+            meta.get("next_pos")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(chunk_start_pos as u64 + chunk_size as u64) as u32;
 
         // ── The rest of the pipeline, carrying this chunk's hidden state.
         for (i, step) in plan.steps.iter().enumerate().skip(1) {
@@ -707,6 +725,8 @@ pub async fn run(
                 "chunk_size": chunk_size,
                 "is_last": is_last,
                 "is_final_chunk": is_final_chunk,
+                "reuse_prefix": reuse_prefix && chunk_index == 0,
+                "start_pos": chunk_start_pos,
                 "scale": 1.0,
             });
             if let Some(tokens) = meta.get("tokens") {
@@ -760,6 +780,7 @@ pub async fn run(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -783,12 +804,14 @@ async fn run_ring(
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
@@ -801,6 +824,8 @@ async fn run_ring(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
@@ -846,6 +871,12 @@ async fn run_ring(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_next_pos = sent
+            .meta
+            .get("next_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
+            as u32;
 
         if is_final_chunk {
             let token_id = sent
@@ -881,6 +912,7 @@ async fn run_ring(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -906,12 +938,14 @@ async fn run_direct(
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
@@ -925,6 +959,8 @@ async fn run_direct(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["reply_to"] = direct.reply_to(ticket.id());
@@ -962,6 +998,11 @@ async fn run_direct(
         if let Some(error) = direct_failure(plan, routes, &meta) {
             return Err(error);
         }
+        let chunk_next_pos = meta
+            .get("next_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
+            as u32;
 
         record_direct_hops(
             &mut trace,
@@ -1007,6 +1048,7 @@ async fn run_direct(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -1784,7 +1826,16 @@ mod tests {
 
     #[test]
     fn chat_head_frame_delivers_prompt_with_template_mode() {
-        let meta = head_prefill_meta("session", 0, 512, true, Some("Oi, teste"), true);
+        let meta = head_prefill_meta(
+            "session",
+            0,
+            512,
+            true,
+            Some("Oi, teste"),
+            true,
+            false,
+            None,
+        );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
     }

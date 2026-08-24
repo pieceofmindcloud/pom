@@ -79,6 +79,11 @@ mod plan;
 mod pom;
 #[path = "inference/prefill.rs"]
 mod prefill;
+#[path = "inference/prefix_cache.rs"]
+mod prefix_cache;
+#[cfg(test)]
+#[path = "inference/prefix_cache_lab.rs"]
+mod prefix_cache_lab;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -796,6 +801,7 @@ async fn main() -> Result<()> {
             default_model: profile.name.clone(),
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             gateway_port,
@@ -1402,6 +1408,7 @@ async fn start_gateway_only(
         default_model: String::new(),
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
+        prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         gateway_port,

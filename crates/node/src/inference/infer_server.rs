@@ -6,6 +6,7 @@
 //!   POST /v1/step             — one autoregressive token step (optionally
 //!                                speculative — see `step_blocking`)
 //!   POST /v1/session/release  — free a session's KV slot
+//!   POST /v1/session/rewind   - keep the prompt and discard generated suffix
 //!   POST /v1/session/rollback — discard an unconfirmed speculative batch
 //!   GET  /health              — readiness probe
 //!
@@ -128,6 +129,8 @@ struct PrefillJob {
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
     /// Bloco local onde parar, quando o remetente pediu menos que a fatia
     /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
     capture_block: Option<u32>,
@@ -322,6 +325,17 @@ impl crate::relay::InProcessInference for InferenceAppState {
         Ok(match path {
             "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
             "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            "/v1/session/rewind" => {
+                let request = serde_json::from_slice(&body)
+                    .map_err(|e| anyhow::anyhow!("rewind inválido: {e}"))?;
+                handle_rewind(
+                    State(self.clone()),
+                    axum::http::HeaderMap::new(),
+                    Json(request),
+                )
+                .await
+                .into_response()
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "rota de inferência em processo desconhecida: {path}"
@@ -468,6 +482,8 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.sid_key,
                 job.chunk_index,
                 job.chunk_size,
+                job.reuse_prefix,
+                job.start_pos,
                 job.is_last,
                 job.is_final_chunk,
                 job.wire_dtype,
@@ -860,6 +876,8 @@ mod relay_tests {
             "owns_tokens": true,
             "more_chunks": true,
             "n_prompt_tokens": 900,
+            "start_pos": 640,
+            "next_pos": 1152,
         });
         // What actually bubbled back from a tail that isn't the head.
         let mut bubbled = json!({"done": false, "more_chunks": false, "hop_timings": []});
@@ -868,6 +886,8 @@ mod relay_tests {
 
         assert_eq!(bubbled["more_chunks"], true);
         assert_eq!(bubbled["n_prompt_tokens"], 900);
+        assert_eq!(bubbled["start_pos"], 640);
+        assert_eq!(bubbled["next_pos"], 1152);
     }
 
     /// A middle hop (never the head) must leave the bubbled response alone —
@@ -898,6 +918,25 @@ mod relay_tests {
         let middle = json!({"owns_tokens": false, "more_chunks": false});
         assert!(is_final_chunk_for_forward(&middle, true));
         assert!(!is_final_chunk_for_forward(&middle, false));
+    }
+
+    #[test]
+    fn direct_prompt_progress_preserves_the_continuation_position() {
+        let inbound = json!({
+            "prompt_progress": {
+                "more_chunks": true,
+                "n_prompt_tokens": 1200,
+                "start_pos": 640,
+                "next_pos": 1152,
+            }
+        });
+        let mut result = json!({"done": false});
+
+        apply_prompt_progress(&inbound, &mut result);
+
+        assert_eq!(result["start_pos"], 640);
+        assert_eq!(result["next_pos"], 1152);
+        assert_eq!(result["n_prompt_tokens"], 1200);
     }
 
     #[test]
@@ -1296,6 +1335,7 @@ pub async fn run(
             post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
         )
         .route("/v1/session/release", post(handle_release))
+        .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
@@ -1797,6 +1837,34 @@ fn replicate_session_call(
     );
 }
 
+fn replicate_session_rewind(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    session_id: &str,
+    n_tokens: u32,
+) {
+    if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
+        return;
+    }
+    let tp = {
+        let s = state.lock().unwrap();
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
+        return;
+    };
+    let body = json!({ "session_id": session_id, "n_tokens": n_tokens })
+        .to_string()
+        .into_bytes();
+    crate::tp::broadcast_to(
+        &tp.members,
+        "/v1/session/rewind",
+        "session",
+        body,
+        Some("application/json"),
+    );
+}
+
 // ── /v1/session/release ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1826,6 +1894,53 @@ async fn handle_release(
         "free_slots": free,
         "max_sessions": max,
     }))
+}
+
+// ── /v1/session/rewind ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RewindRequest {
+    session_id: String,
+    n_tokens: u32,
+}
+
+/// Keep a completed prompt session alive while discarding only the generated
+/// suffix. The next turn can then match its full tokenized prompt against the
+/// retained prefix without copying a llama sequence.
+async fn handle_rewind(
+    State(app): State<InferenceAppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<RewindRequest>,
+) -> impl IntoResponse {
+    let mut state = app.state.lock().unwrap();
+    let Some((seq_id, n_past)) = state
+        .sessions
+        .get(&req.session_id)
+        .map(|session| (session.seq_id, session.n_past))
+    else {
+        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" }));
+    };
+    if req.n_tokens > n_past {
+        return Json(json!({
+            "rewound": false,
+            "reason": format!("prompt maior que a sessão: {} > {}", req.n_tokens, n_past),
+        }));
+    }
+    if req.n_tokens < n_past && !state.engine.kv_remove(seq_id, req.n_tokens as i32, -1) {
+        return Json(json!({
+            "rewound": false,
+            "reason": "este modelo não aceita recuar a sessão para o prompt",
+        }));
+    }
+    if let Some(session) = state.sessions.get_mut(&req.session_id) {
+        session.n_past = req.n_tokens;
+        session.recent_tokens.clear();
+        let _ = session.finish_token_stream();
+        session.last_used = Instant::now();
+    }
+    drop(state);
+    replicate_session_rewind(&app.state, &headers, &req.session_id, req.n_tokens);
+    Json(json!({ "rewound": true, "n_past": req.n_tokens }))
 }
 
 // ── /v1/session/rollback ─────────────────────────────────────────────────────
@@ -2024,6 +2139,14 @@ async fn handle_prefill(
         .get("chunk_size")
         .and_then(|v| v.as_u64())
         .unwrap_or(512) as u32;
+    let reuse_prefix = meta
+        .get("reuse_prefix")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let start_pos = meta
+        .get("start_pos")
+        .and_then(|v| v.as_u64())
+        .map(|value| value as u32);
     // Same next_hops-derives-is_last rule as handle_step — see its comment.
     let next_hops: Option<Vec<PipelineStep>> = meta
         .get("next_hops")
@@ -2097,6 +2220,8 @@ async fn handle_prefill(
         sid_key,
         chunk_index,
         chunk_size,
+        reuse_prefix,
+        start_pos,
         is_last,
         is_final_chunk,
         wire_dtype,
@@ -2195,10 +2320,16 @@ async fn handle_prefill(
             "session_id": sid_for_forward,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
+            "reuse_prefix": reuse_prefix && chunk_index == 0,
             "is_final_chunk": is_final_chunk_for_forward(&local_meta, is_final_chunk),
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        for field in ["start_pos", "next_pos"] {
+            if let Some(value) = local_meta.get(field) {
+                forward[field] = value.clone();
+            }
+        }
         preserve_batch_identity(&meta, &mut forward);
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
@@ -2247,6 +2378,7 @@ async fn handle_prefill(
                 "session_id": sid_for_forward,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
+                "reuse_prefix": reuse_prefix && chunk_index == 0,
                 "is_final_chunk": is_final_chunk_for_forward,
                 // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
                 // que este recebeu a sua: quem manda é que decide o pedaço.
@@ -2255,6 +2387,11 @@ async fn handle_prefill(
             });
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
+            }
+            for field in ["start_pos", "next_pos"] {
+                if let Some(value) = local_meta.get(field) {
+                    relay_meta[field] = value.clone();
+                }
             }
             preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
@@ -2311,8 +2448,9 @@ fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool)
 /// truncate every multi-chunk prompt on a ring pipeline after one chunk.
 pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
     if owns_tokens(local_meta) {
-        bubbled["more_chunks"] = local_meta["more_chunks"].clone();
-        bubbled["n_prompt_tokens"] = local_meta["n_prompt_tokens"].clone();
+        for field in ["more_chunks", "n_prompt_tokens", "start_pos", "next_pos"] {
+            bubbled[field] = local_meta[field].clone();
+        }
     }
 }
 
@@ -2325,6 +2463,8 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
         return json!({
             "more_chunks": local_meta["more_chunks"].clone(),
             "n_prompt_tokens": local_meta["n_prompt_tokens"].clone(),
+            "start_pos": local_meta["start_pos"].clone(),
+            "next_pos": local_meta["next_pos"].clone(),
         });
     }
     inbound_meta
@@ -2340,7 +2480,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
     let Some(progress) = inbound_meta.get("prompt_progress") else {
         return;
     };
-    for field in ["more_chunks", "n_prompt_tokens"] {
+    for field in ["more_chunks", "n_prompt_tokens", "start_pos", "next_pos"] {
         if let Some(value) = progress.get(field) {
             if !value.is_null() {
                 result[field] = value.clone();
@@ -2367,6 +2507,8 @@ fn prefill_blocking(
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
     wire_dtype: WireDtype,
@@ -2396,7 +2538,7 @@ fn prefill_blocking(
     // ── Session setup ────────────────────────────────────────────────────────
 
     let setup_started = Instant::now();
-    s.get_or_create(&sid_key, chunk_index == 0)?;
+    s.get_or_create(&sid_key, chunk_index == 0 && !reuse_prefix)?;
 
     // First peer: tokenize the prompt on chunk 0.
     // We must not hold a &mut Session borrow while calling engine methods, so
@@ -2413,13 +2555,43 @@ fn prefill_blocking(
             };
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
+            if reuse_prefix {
+                let (common, old_n_past, seq_id) = {
+                    let session = s.sessions.get(&sid_key).unwrap();
+                    (
+                        session
+                            .prompt_tokens
+                            .iter()
+                            .zip(&tokens)
+                            .take_while(|(old, new)| old == new)
+                            .count() as u32,
+                        session.n_past,
+                        session.seq_id,
+                    )
+                };
+                if old_n_past < common {
+                    bail!(
+                        "prefixo cacheado maior que a sessão {}: {} < {} tokens",
+                        sid_key,
+                        old_n_past,
+                        common
+                    );
+                }
+                if old_n_past > common && !s.engine.kv_remove(seq_id, common as i32, -1) {
+                    bail!(
+                        "este modelo não aceita recuar o prefixo da sessão {}",
+                        sid_key
+                    );
+                }
+                s.sessions.get_mut(&sid_key).unwrap().n_past = common;
+            }
             s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
         }
     }
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
-    let expected_pos = chunk_index * chunk_size;
+    let expected_pos = start_pos.unwrap_or_else(|| chunk_index * chunk_size);
     {
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
@@ -2576,7 +2748,14 @@ fn prefill_blocking(
         timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
         let bytes = wire::encode(
-            &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
+            &json!({
+                "done": done,
+                "token_id": next_id,
+                "text": text,
+                "more_chunks": false,
+                "start_pos": expected_pos,
+                "next_pos": expected_pos + n_tokens as u32,
+            }),
             None,
             wire_dtype,
         )?;
@@ -2593,6 +2772,8 @@ fn prefill_blocking(
         "done": false,
         "more_chunks": more,
         "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": expected_pos,
+        "next_pos": n_past_now,
         // Only meaningful when true: whether *this* peer is the one that
         // tokenized the prompt, i.e. whether `more_chunks`/`n_prompt_tokens`
         // above are its own authoritative determination rather than the
@@ -2625,6 +2806,7 @@ struct PreparedPrefill {
     seq_id: u32,
     n_past: u32,
     n_tokens: usize,
+    start_pos: u32,
     is_last: bool,
     is_final_chunk: bool,
     owns_tokens: bool,
@@ -2656,6 +2838,8 @@ fn prefill_batch_blocking(
             sid_key,
             chunk_index,
             chunk_size,
+            reuse_prefix,
+            start_pos,
             is_last,
             is_final_chunk,
             wire_dtype,
@@ -2668,7 +2852,7 @@ fn prefill_batch_blocking(
         } = job;
 
         let result = (|| -> Result<PreparedPrefill> {
-            s.get_or_create(&sid_key, chunk_index == 0)?;
+            s.get_or_create(&sid_key, chunk_index == 0 && !reuse_prefix)?;
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
                     let use_tmpl = use_chat_template(chat_template, s.chat_template);
@@ -2679,13 +2863,41 @@ fn prefill_batch_blocking(
                         text.to_string()
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
+                    if reuse_prefix {
+                        let (common, old_n_past, seq_id) = {
+                            let session = s.sessions.get(&sid_key).unwrap();
+                            (
+                                session
+                                    .prompt_tokens
+                                    .iter()
+                                    .zip(&tokens)
+                                    .take_while(|(old, new)| old == new)
+                                    .count() as u32,
+                                session.n_past,
+                                session.seq_id,
+                            )
+                        };
+                        if old_n_past < common {
+                            bail!(
+                                "prefixo cacheado maior que a sessão {}: {} < {} tokens",
+                                sid_key,
+                                old_n_past,
+                                common
+                            );
+                        }
+                        if old_n_past > common && !s.engine.kv_remove(seq_id, common as i32, -1) {
+                            bail!(
+                                "este modelo não aceita recuar o prefixo da sessão {}",
+                                sid_key
+                            );
+                        }
+                        s.sessions.get_mut(&sid_key).unwrap().n_past = common;
+                    }
                     s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
                 }
             }
 
-            let expected_pos = chunk_index
-                .checked_mul(chunk_size)
-                .ok_or_else(|| anyhow::anyhow!("posição do chunk excede o limite numérico"))?;
+            let expected_pos = start_pos.unwrap_or_else(|| chunk_index.saturating_mul(chunk_size));
             {
                 let session = s.sessions.get(&sid_key).unwrap();
                 if session.n_past > expected_pos {
@@ -2761,6 +2973,7 @@ fn prefill_batch_blocking(
                 seq_id,
                 n_past,
                 n_tokens,
+                start_pos: expected_pos,
                 is_last,
                 is_final_chunk,
                 owns_tokens,
@@ -2889,7 +3102,12 @@ fn prefill_batch_blocking(
                 if !is_final_chunk {
                     let started = Instant::now();
                     let bytes = wire::encode(
-                        &json!({"done": false, "more_chunks": more}),
+                        &json!({
+                            "done": false,
+                            "more_chunks": more,
+                            "start_pos": item.start_pos,
+                            "next_pos": item.start_pos + item.n_tokens as u32,
+                        }),
                         None,
                         item.wire_dtype,
                     )?;
@@ -2945,7 +3163,14 @@ fn prefill_batch_blocking(
                     + sampling_timing.selection_us;
                 let token_text_started = Instant::now();
                 let bytes = wire::encode(
-                    &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
+                    &json!({
+                        "done": done,
+                        "token_id": next_id,
+                        "text": text,
+                        "more_chunks": false,
+                        "start_pos": item.start_pos,
+                        "next_pos": item.start_pos + item.n_tokens as u32,
+                    }),
                     None,
                     item.wire_dtype,
                 )?;
@@ -2961,6 +3186,8 @@ fn prefill_batch_blocking(
                 "done": false,
                 "more_chunks": more,
                 "n_prompt_tokens": total_tokens,
+                "start_pos": item.start_pos,
+                "next_pos": n_past_now,
                 "owns_tokens": item.owns_tokens,
             });
             if item.owns_tokens {

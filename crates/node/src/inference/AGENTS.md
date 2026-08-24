@@ -31,10 +31,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
   somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
-  `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
-  e o branch de relay. Os handlers decodificam o frame e entregam comandos a
-  uma fila local limitada; o worker seleciona uma entrada por sessão e pode
-  chamar o decode multi-sequência. Cada `Session` mantém seu próprio
+  `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
+  `/health`; estado das sessões e o branch de relay. Os handlers decodificam o
+  frame e entregam comandos a uma fila local limitada; o worker seleciona uma
+  entrada por sessão e pode chamar o decode multi-sequência. Cada `Session`
+  mantém seu próprio
   `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
   limpeza de erro/cancelamento.
@@ -62,6 +63,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   por requisição. `Cancellation` cancela a operação do gateway quando o
   consumidor desaparece, antes do próximo chunk ou hop e também durante a
   espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
+  O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
+  `start_pos`/`next_pos` nos chunks seguintes, para que os peers que recebem
+  hidden state mantenham a mesma posição KV da cabeça.
+- `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
+  ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
+  contém peso, tensor ou transporte de arquivo.
+- `prefix_cache_lab.rs` - autoteste diferencial da política do cache. A
+  referência acompanha lookup, insert, busy, release e eviction; o proxy
+  propositalmente quebra `cached_tokens` e a bateria precisa registrar a
+  divergência.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.
@@ -139,6 +150,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   porque o gateway só fala com o rank 0 e a réplica não encerra sessão sozinha.
   Sem o repasse a sessão do worker segurava o único slot e a **segunda**
   requisição morria com "seq pool esgotado" (18/08).
+
+  `/v1/session/rewind` segue a mesma regra de réplica, mas preserva a sessão:
+  remove somente o sufixo gerado e atualiza `n_past` em todos os ranks. O
+  gateway só publica o prefixo no cache depois de confirmar a resposta de cada
+  hop.
 
   Os handlers `handle_prefill` e `handle_step` também seguram
   `tp_batch_gate` no caminho de um frame com um único item. O gateway envia
@@ -575,3 +591,10 @@ unidade mas **não** tem número medido de ponta a ponta.
   levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
   mapeando o microlote de volta às posições. Ver `split_equal` em
   `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.
+
+## Manutenção deste arquivo
+
+Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface
+de inferência ou uma invariável de sessão, atualize aqui e o README do
+subsistema no mesmo commit. Mantenha detalhes de implementação no código ou
+em `docs/subsystems/inferencia.md`, para que este índice continue curto.

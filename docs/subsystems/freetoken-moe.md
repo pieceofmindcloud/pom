@@ -39,6 +39,43 @@ Modelos densos devem continuar no caminho existente. A seleção do caminho MoE
 será uma decisão explícita baseada em metadados GGUF, com teste que proíbe um
 modelo denso de entrar no motor novo.
 
+### Fase 2: S1, cache de prefixo entre turnos
+
+Mesmo sem o baseline de desempenho, conforme a decisão registrada pelo captain,
+o cache de prefixo foi implementado por segurança de estado e reaproveitamento
+de trabalho. `PrefixCache` é global ao gateway, com capacidade nominal de 32
+entradas e LRU entre entradas ociosas. Leases ocupados não são despejados, então
+o total pode exceder a capacidade até uma geração terminar. A política não
+guarda pesos nem tensors: cada entrada guarda somente a chave do modelo e dos
+hops, o texto do prompt, o
+`session_id` e a quantidade de tokens confirmada pela cabeça. Um lease marca a
+sessão como ocupada para impedir que duas gerações usem o mesmo KV.
+
+Em um miss, uma entrada ociosa pode ser reciclada para que o cache não exija
+um segundo slot de KV quando `max_sessions=1`; o prefill novo reseta essa
+sequência antes de decodificar. Entradas ocupadas nunca são compartilhadas.
+
+Ao terminar o prefill com sucesso, o gateway envia `/v1/session/rewind` a todos
+os peers do plano. Cada peer remove do KV o sufixo gerado e confirma o
+`n_past` resultante. Só depois de todas as confirmações o lease entra no cache;
+qualquer falha descarta a entrada e libera a sessão. No turno seguinte, um hit
+mantém a rota e a sessão, sinaliza `reuse_prefix` no primeiro chunk e a cabeça
+tokeniza o novo prompt. Ela calcula o maior prefixo de tokens comum, recua o KV
+para essa posição e propaga `start_pos`/`next_pos` nos chunks seguintes. Os
+peers que não tokenizam recebem apenas o estado oculto, mas executam na posição
+explícita, evitando buracos silenciosos entre estágios.
+
+Os campos são metadados adicionais do frame de inferência existente; o envelope
+binário e as APIs públicas não mudaram. O autoteste diferencial de
+`prefix_cache_lab.rs` executa operações contra uma referência simples e exige
+que um proxy que altera `cached_tokens` seja detectado. O teste puro do cache
+também cobre maior prefixo, leases ocupados e eviction LRU. A suíte nativa não
+foi executada porque `vendor/llama-cpp-sys-2/llama.cpp` não existe neste
+worktree. A execução isolada dos quatro testes do cache e do laboratório
+diferencial passou; ela não substitui a suíte nativa. Nenhum ganho de
+desempenho é afirmado; os números ficam para a
+medição posterior pelo captain.
+
 ## Fase 0: baseline local
 
 ### Método reproduzível

@@ -15,6 +15,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
   `locales.test.ts`, en block first, pt-BR block second) plus locale resolution
   and formatting functions. The slice screen has messages for pipeline and
   tensor-parallel modes, including grouped `1ofN` rank labels.
+- O grupo `remoteModels.*` cobre busca, detalhes, licença desconhecida,
+  confirmação, fila, progresso, cancelamento, retry e erros do provider nas
+  duas línguas. Não coloque texto do CLI ou caminho local nesses valores.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured

@@ -463,6 +463,99 @@ export interface Job {
   kind?: string;
   /** Human label for the notification list. */
   title?: string;
+  /** Campos presentes quando `kind === "model_download"`. */
+  repo_id?: string;
+  revision?: string | null;
+  filename?: string;
+  quantization?: string | null;
+  download_status?: RemoteDownloadStatus;
+  bytes_downloaded?: number | null;
+  total_bytes?: number | null;
+  speed_bytes_per_sec?: number | null;
+  eta_seconds?: number | null;
+  local_path?: string | null;
+  error?: string | null;
+}
+
+export type RemoteDownloadStatus =
+  | "queued"
+  | "starting"
+  | "downloading"
+  | "verifying"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface RemoteModelSummary {
+  repo_id: string;
+  author: string | null;
+  description: string | null;
+  downloads: number | null;
+  likes: number | null;
+  private: boolean | null;
+  gated: boolean | null;
+  tags: string[];
+  last_modified: string | null;
+  has_gguf: boolean | null;
+  installed: boolean;
+  downloading: boolean;
+}
+
+export interface RemoteModelSearchResponse {
+  models: RemoteModelSummary[];
+  total: number;
+  page: number;
+  page_size: number;
+  has_next: boolean;
+}
+
+export interface RemoteModelFile {
+  filename: string;
+  size_bytes: number | null;
+  sha256: string | null;
+  lfs: boolean | null;
+  installed: boolean;
+  downloading: boolean;
+  download_id: string | null;
+}
+
+export interface RemoteGgufFile {
+  filename: string;
+  size_bytes: number | null;
+  quantization: string | null;
+  parameter_size: string | null;
+  base_name: string | null;
+  installed: boolean;
+  downloading: boolean;
+  download_id: string | null;
+}
+
+export interface RemoteStorage {
+  available_bytes: number | null;
+  destination_available: boolean;
+}
+
+export interface RemoteModelDetails {
+  repo_id: string;
+  description: string | null;
+  last_modified: string | null;
+  revision: string | null;
+  sha: string | null;
+  downloads: number | null;
+  likes: number | null;
+  private: boolean | null;
+  gated: boolean | null;
+  tags: string[];
+  license: {
+    id: string | null;
+    name: string | null;
+    url: string | null;
+    raw_value: string | null;
+    detected: boolean;
+  };
+  files: RemoteModelFile[];
+  gguf_files: RemoteGgufFile[];
+  storage: RemoteStorage;
 }
 
 export interface TransferJob {

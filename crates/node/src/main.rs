@@ -55,6 +55,8 @@ mod messages;
 mod model;
 #[path = "models/provider.rs"]
 mod model_provider;
+#[path = "backend/model_provider.rs"]
+mod model_provider_backend;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]
@@ -801,6 +803,9 @@ async fn main() -> Result<()> {
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
+                huggingface::HuggingFaceProvider::new(),
+            ))),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1408,6 +1413,9 @@ async fn start_gateway_only(
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+        model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
+            huggingface::HuggingFaceProvider::new(),
+        ))),
     };
 
     info!(

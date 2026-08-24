@@ -343,7 +343,7 @@ fn spawn_refresh(roots: CatalogRoots) {
 /// Ask for a fresh walk without throwing away what we can already answer with —
 /// after slicing, after the directories change. A slice that exists must not
 /// need a restart to show up.
-async fn invalidate_catalog() {
+pub(crate) async fn invalidate_catalog() {
     let roots = {
         let mut guard = catalog_cache().lock().await;
         match guard.as_mut() {
@@ -1851,6 +1851,30 @@ pub struct Job {
     pub outputs: Vec<String>,
     pub started_at: String,
     pub finished_at: Option<String>,
+    /// Campos opcionais usados por downloads de modelos remotos. Jobs de
+    /// fatiamento e aplicação permanecem com estes campos ausentes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filename: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quantization: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub download_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_downloaded: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_bytes_per_sec: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eta_seconds: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 pub(crate) fn jobs() -> &'static RwLock<HashMap<String, Job>> {
@@ -1870,6 +1894,64 @@ pub(crate) fn new_job(id: &str, kind: &'static str, title: impl Into<String>, st
         outputs: Vec::new(),
         started_at: chrono::Utc::now().to_rfc3339(),
         finished_at: None,
+        repo_id: None,
+        revision: None,
+        filename: None,
+        quantization: None,
+        download_status: None,
+        bytes_downloaded: None,
+        total_bytes: None,
+        speed_bytes_per_sec: None,
+        eta_seconds: None,
+        local_path: None,
+        error: None,
+    }
+}
+
+/// Atualiza o estado rico de um download sem criar outro armazenamento de
+/// progresso. O semáforo e o token vivem no serviço do provider; este job é a
+/// fonte de verdade que a UI consulta com ETag.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn set_model_download_progress(
+    id: &str,
+    status: &'static str,
+    progress: Option<f64>,
+    bytes_downloaded: Option<u64>,
+    total_bytes: Option<u64>,
+    speed_bytes_per_sec: Option<u64>,
+    eta_seconds: Option<u64>,
+    local_path: Option<String>,
+    error: Option<String>,
+) {
+    let terminal = matches!(status, "completed" | "cancelled" | "failed");
+    let state = match status {
+        "completed" => "done",
+        "cancelled" | "failed" => "failed",
+        _ => "running",
+    };
+    let mut map = jobs().write().await;
+    if let Some(job) = map.get_mut(id) {
+        job.state = state;
+        job.download_status = Some(status);
+        job.progress = progress.map(|pct| pct.clamp(0.0, 100.0));
+        job.bytes_downloaded = bytes_downloaded;
+        job.total_bytes = total_bytes;
+        job.speed_bytes_per_sec = speed_bytes_per_sec;
+        job.eta_seconds = eta_seconds;
+        if local_path.is_some() {
+            job.local_path = local_path;
+        }
+        if error.is_some() {
+            job.error = error.clone();
+            job.message = error.unwrap_or_default();
+        }
+        job.step = status.to_string();
+        if terminal {
+            job.finished_at = Some(chrono::Utc::now().to_rfc3339());
+            if status == "completed" {
+                job.progress = Some(100.0);
+            }
+        }
     }
 }
 

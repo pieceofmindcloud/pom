@@ -47,7 +47,8 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
 
 - `/` -> Dashboard
 - `/chat` -> Chat (rendered outside the `<Routes>`/transition because it owns a live stream and scroll position; unmounting to animate would drop tokens)
-- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels, que também
+- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels (busca,
+  detalhes e downloads persistidos no nó); `/modelos/fatiar` -> SliceModels, que também
   mostra os jobs de fatiamento e suas barras de progresso
 - `/fatias` -> Shards; `/fatias/implantar` -> redirects to `/implantar` (kept for old links)
 - `/implantar` -> DeployModel (first-level entry for putting models in service,
@@ -71,7 +72,7 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 - `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, telemetry diagnosis, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
-- `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action and initial-model mark. See `src/routes/AGENTS.md`.
+- `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
 - `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.

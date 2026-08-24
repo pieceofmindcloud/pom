@@ -28,6 +28,10 @@ behind an auth extractor.
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
+- `model_provider.rs` - API agnóstica de busca, detalhes, espaço e downloads
+  remotos. Injeta `DynModelProvider`, usa `webui::Job` como estado persistente,
+  `CancellationToken` por download e semáforo de dois processos; não monta
+  comandos nem expõe token, stderr ou caminho local.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention. `slice/plan` and `slice` accept the

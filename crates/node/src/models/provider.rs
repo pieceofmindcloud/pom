@@ -148,6 +148,8 @@ pub(crate) fn redact_sensitive(text: &str) -> String {
 pub struct ModelSummary {
     pub repo_id: String,
     pub author: Option<String>,
+    pub description: Option<String>,
+    pub last_modified: Option<String>,
     pub downloads: Option<u64>,
     pub likes: Option<u64>,
     pub private: Option<bool>,
@@ -158,6 +160,8 @@ pub struct ModelSummary {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelInfo {
     pub repo_id: String,
+    pub description: Option<String>,
+    pub last_modified: Option<String>,
     pub sha: Option<String>,
     pub downloads: Option<u64>,
     pub likes: Option<u64>,

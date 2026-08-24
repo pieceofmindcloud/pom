@@ -12,7 +12,14 @@
 
 import { getActiveLocale } from "../i18n/locales";
 import { storageKey } from "./brand";
-import type { Deployment, RuntimeParams } from "./types";
+import { modelSearchPath, type ModelSearchPathOptions } from "./modelProvider";
+import type {
+  Deployment,
+  RemoteModelDetails,
+  RemoteModelSearchResponse,
+  RemoteStorage,
+  RuntimeParams,
+} from "./types";
 
 const KEY_STORAGE = storageKey("connectionKey");
 
@@ -166,6 +173,57 @@ export const api = {
   del: <T>(path: string, opts?: RequestOptions) =>
     request<T>(path, { ...opts, method: "DELETE" }),
 };
+
+export interface RemoteModelSearchOptions extends ModelSearchPathOptions {}
+
+export function searchRemoteModels(
+  options: RemoteModelSearchOptions,
+  signal?: AbortSignal,
+) {
+  return api.get<RemoteModelSearchResponse>(modelSearchPath(options), { signal });
+}
+
+export function getRemoteModelDetails(
+  repoId: string,
+  revision?: string,
+  signal?: AbortSignal,
+) {
+  const params = new URLSearchParams({ repo_id: repoId });
+  if (revision) params.set("revision", revision);
+  return api.get<RemoteModelDetails>(`/api/ui/model-provider/details?${params}`, { signal });
+}
+
+export function getRemoteModelStorage(signal?: AbortSignal) {
+  return api.get<RemoteStorage>("/api/ui/model-provider/storage", { signal });
+}
+
+export interface RemoteModelDownloadRequest {
+  repoId: string;
+  revision?: string;
+  filename: string;
+  quantization?: string;
+}
+
+export function startRemoteModelDownload(request: RemoteModelDownloadRequest) {
+  return api.post<{ download_id: string }>("/api/ui/model-provider/downloads", {
+    repo_id: request.repoId,
+    revision: request.revision ?? null,
+    filename: request.filename,
+    quantization: request.quantization ?? null,
+  });
+}
+
+export function cancelRemoteModelDownload(downloadId: string) {
+  return api.post<{ download_id: string; status: string }>(
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/cancel`,
+  );
+}
+
+export function retryRemoteModelDownload(downloadId: string) {
+  return api.post<{ download_id: string }>(
+    `/api/ui/model-provider/downloads/${encodeURIComponent(downloadId)}/retry`,
+  );
+}
 
 /**
  * Atualiza e reinicia uma máquina do cluster.

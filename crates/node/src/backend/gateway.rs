@@ -137,6 +137,8 @@ pub struct GatewayState {
     pub tls_server: Option<crate::serve::TlsServer>,
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
+    /// Provider de modelos remotos e seus jobs de download.
+    pub model_service: Arc<crate::model_provider_backend::ModelService>,
 }
 
 #[cfg(test)]
@@ -1383,6 +1385,7 @@ pub async fn start_gateway(state: GatewayState, port: u16) -> Result<()> {
         .merge(crate::openai::routes())
         .merge(crate::messages::routes())
         .merge(crate::webui::routes())
+        .merge(crate::model_provider_backend::routes())
         .merge(crate::deploy::routes())
         .merge(crate::transfer::routes())
         .merge(crate::devupdate::router())
@@ -1905,6 +1908,9 @@ pub(crate) mod testkit {
             tunnel_tx: None,
             tls_server: None,
             cluster_cache: Arc::new(Mutex::new(Default::default())),
+            model_service: Arc::new(crate::model_provider_backend::ModelService::new(Arc::new(
+                crate::huggingface::HuggingFaceProvider::new(),
+            ))),
         }
     }
 

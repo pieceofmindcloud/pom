@@ -7,6 +7,7 @@ describe("navigation structure", () => {
 
     expect(models?.children?.map((child) => child.to)).toEqual([
       "/modelos",
+      "/modelos/remotos",
       "/modelos/fatiar",
       "/fatias",
     ]);
@@ -41,6 +42,7 @@ describe("navForProfile", () => {
     const models = sections.find((s) => s.labelKey === "nav.models");
     expect(models?.children?.map((c) => c.to)).toEqual([
       "/modelos",
+      "/modelos/remotos",
       "/modelos/fatiar",
       "/fatias",
     ]);

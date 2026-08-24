@@ -21,6 +21,10 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
 
 O relatório de entrega desta integração está em
 `rdma-hf-provider-relatorio.md`.
+O levantamento de reuso da fase de UI está em
+`rdma-hf-provider-ui-reuso.md`.
+O relatório de entrega da fase de UI está em
+`rdma-hf-provider-ui-relatorio.md`.
 
 ## subsystems/
 

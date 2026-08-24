@@ -214,6 +214,8 @@ pub fn parse_model_summaries(text: &str) -> Result<Vec<ModelSummary>, HfError> {
             .ok_or_else(|| invalid_json("modelo sem id"))?;
         result.push(ModelSummary {
             author: string_field(object, &["author", "owner"]),
+            description: string_field(object, &["description"]),
+            last_modified: string_field(object, &["lastModified", "last_modified"]),
             downloads: integer_field(object, &["downloads", "downloadsAllTime"]),
             likes: integer_field(object, &["likes"]),
             private: bool_field(object, &["private"]),
@@ -264,6 +266,8 @@ pub fn parse_model_info(text: &str, fallback_repo_id: &str) -> Result<ModelInfo,
     };
     Ok(ModelInfo {
         sha: string_field(object, &["sha", "sha256"]),
+        description: string_field(object, &["description"]),
+        last_modified: string_field(object, &["lastModified", "last_modified"]),
         downloads: integer_field(object, &["downloads"]),
         likes: integer_field(object, &["likes"]),
         private: bool_field(object, &["private"]),
@@ -498,6 +502,27 @@ mod tests {
         assert_eq!(files[0].filename, "Qwen-Q4_K_M.gguf");
         assert_eq!(files[0].size_bytes, Some(123));
         assert_eq!(files[0].sha256.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn parses_public_model_metadata_when_present() {
+        let models = parse_model_summaries(
+            r#"[{"id":"owner/model","description":"A GGUF model","lastModified":"2026-08-24T10:00:00Z"}]"#,
+        )
+        .unwrap();
+        assert_eq!(models[0].description.as_deref(), Some("A GGUF model"));
+        assert_eq!(
+            models[0].last_modified.as_deref(),
+            Some("2026-08-24T10:00:00Z")
+        );
+
+        let info = parse_model_info(
+            r#"{"id":"owner/model","description":"Details","lastModified":"2026-08-24T10:00:00Z"}"#,
+            "owner/model",
+        )
+        .unwrap();
+        assert_eq!(info.description.as_deref(), Some("Details"));
+        assert_eq!(info.last_modified.as_deref(), Some("2026-08-24T10:00:00Z"));
     }
 
     #[test]

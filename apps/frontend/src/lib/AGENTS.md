@@ -51,6 +51,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `toast.tsx` - toast context (success/error/warning/info) with auto-dismiss.
 - `transferStatus.ts` - predicates over `TransferJob` for the transfers UI and for the bell.
 - `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
+- `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
+  calcula a cadência derivada e só calcula percentual quando o backend conhece
+  o total de bytes.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is

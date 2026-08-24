@@ -309,11 +309,8 @@ impl Nvfp4Source {
                     "gate e up NVFP4 têm geometrias diferentes",
                 ));
             }
-            (
-                dimension(gate, 1, "hidden")?,
-                dimension(gate, 0, "intermediate")?,
-                dimension_u32(gate, 2, "experts")?,
-            )
+            let (hidden, intermediate) = split_geometry(gate)?;
+            (hidden, intermediate, dimension_u32(gate, 2, "experts")?)
         };
         if tensor_experts != experts {
             return Err(Q4LoadError::InvalidTensor(
@@ -434,7 +431,9 @@ impl Nvfp4Source {
             });
         }
         let down = self.tensor_for_layer(&self.down, layer, "ffn_down_exps.weight")?;
-        validate_tensor(down, self.experts, self.hidden, self.intermediate)?;
+        // GGUF stores matrix dimensions as [input, output, experts]. The
+        // down projection is therefore [intermediate, hidden, experts].
+        validate_tensor(down, self.experts, self.intermediate, self.hidden)?;
         let down_per_expert = self
             .hidden
             .checked_mul(
@@ -446,7 +445,7 @@ impl Nvfp4Source {
         let (gate_bytes, up_bytes, gate_tensor, up_tensor) = match &self.gate_up {
             GateUpTensors::Fused(tensors) => {
                 let tensor = self.tensor_for_layer(tensors, layer, "ffn_gate_up_exps.weight")?;
-                validate_tensor(tensor, self.experts, 2 * self.intermediate, self.hidden)?;
+                validate_tensor(tensor, self.experts, self.hidden, 2 * self.intermediate)?;
                 let bytes = (2 * self.intermediate)
                     .checked_mul(row_bytes(self.hidden).map_err(|_| {
                         Q4LoadError::InvalidTensor("geometria da linha gate_up NVFP4")
@@ -458,8 +457,8 @@ impl Nvfp4Source {
             GateUpTensors::Split { gate, up } => {
                 let gate = self.tensor_for_layer(gate, layer, "ffn_gate_exps.weight")?;
                 let up = self.tensor_for_layer(up, layer, "ffn_up_exps.weight")?;
-                validate_tensor(gate, self.experts, self.intermediate, self.hidden)?;
-                validate_tensor(up, self.experts, self.intermediate, self.hidden)?;
+                validate_tensor(gate, self.experts, self.hidden, self.intermediate)?;
+                validate_tensor(up, self.experts, self.hidden, self.intermediate)?;
                 let bytes =
                     self.intermediate
                         .checked_mul(row_bytes(self.hidden).map_err(|_| {
@@ -695,6 +694,19 @@ fn dimension_u32(
         .and_then(|value| u32::try_from(value).map_err(|_| Q4LoadError::InvalidTensor(name)))
 }
 
+fn split_geometry(gate: &TensorSpec) -> Result<(usize, usize), Q4LoadError> {
+    if gate.dims.len() != 3 {
+        return Err(Q4LoadError::InvalidTensor("gate NVFP4 precisa ser rank 3"));
+    }
+    // GGUF/ggml matrix weights use [input, output, experts]. In Gemma4 the
+    // real tensors are [2816, 704, 128], so hidden is dims[0] and the FFN
+    // intermediate width is dims[1].
+    Ok((
+        dimension(gate, 0, "hidden")?,
+        dimension(gate, 1, "intermediate")?,
+    ))
+}
+
 fn row_bytes(columns: usize) -> Result<usize, Nvfp4Error> {
     if !columns.is_multiple_of(BLOCK_ELEMENTS) {
         return Err(Nvfp4Error::Geometry("linha não fecha bloco de 64"));
@@ -889,5 +901,17 @@ mod tests {
             Nvfp4Expert::packed_bytes(32, 64),
             Err(Nvfp4Error::Geometry(_))
         ));
+    }
+
+    #[test]
+    fn nvfp4_split_usa_a_ordem_de_dimensoes_do_gguf() {
+        let gate = TensorSpec {
+            name: "blk.0.ffn_gate_exps.weight".into(),
+            dims: vec![2816, 704, 128],
+            dtype: 40,
+            offset: 0,
+        };
+
+        assert_eq!(split_geometry(&gate).unwrap(), (2816, 704));
     }
 }

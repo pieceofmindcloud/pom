@@ -307,16 +307,18 @@ denso ou com metadados ausentes permanece em `dense/llama.cpp`. O ambiente
 derivado da marca `POM_INFERENCE_MODE` pode forçar `dense` ou exigir `moe`; o
 último recusa um GGUF denso com erro explícito.
 
-O caminho MoE atual aparece como `moe/q4_0` no `/health` e abre o runtime
-próprio em `inference/moe/`: o bloco Q4_0 mmapa experts do GGUF, calcula o
-router top-k e usa o LRU global. Hidden states recebidos são transformados
+O caminho MoE atual aparece como `moe/q4_0` no `/health` quando o seletor
+escolhe esse modo e abre o runtime próprio em `inference/moe/`: o dispatcher
+detecta o dtype do GGUF, calcula o router top-k e usa o LRU global. Hidden states recebidos são transformados
 antes do decode local; residuals produzidos a partir de tokens passam pela
 mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
 peso é transportado. Atenção, operações restantes e sampling final ainda
 delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
-transformer MoE completo. A Fase 5 ainda não está ativa: não há executor GPU
-para os experts Q4_0 mmapados nem perfil medido carregado no runtime. O caminho
-atual é CPU para router e experts; não afirma sobreposição CPU/GPU.
+transformer MoE completo. NVFP4, K-quants e IQ-quants usam loaders próprios
+com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fase
+5 ainda não está ativa: não há executor GPU próprio nem perfil medido carregado
+no runtime. O caminho atual é CPU para router e experts; não afirma
+sobreposição CPU/GPU.
 
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
@@ -370,6 +372,10 @@ OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e
 prefill. A cabeça, que é a única dona do tokenizer, aplica o
 `tokenizer.chat_template` do GGUF uma vez e abre o turno do assistente; os
 demais peers recebem somente o estado oculto e não reformatam o prompt.
+Para Gemma4, o renderer lê o template do GGUF e aplica `enable_thinking` e
+`add_generation_prompt` no fluxo suportado pelo modelo, sem inserir marcadores
+de outro formato. A cauda encerra em EOS ou no fim de turno tokenizado pelo
+vocabulário do mesmo GGUF, sem enviar esse marcador ao cliente.
 
 `/v1/completions` continua sendo completion cru e envia `chat_template: false`.
 Essa flag explícita tem precedência sobre o padrão legado do servidor, que

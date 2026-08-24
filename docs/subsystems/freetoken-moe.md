@@ -135,6 +135,11 @@ decoder K-quant valida a ordem GGUF
 `[columns, rows, experts]`, os blocos de 256 elementos e a convenção fundida ou
 separada dos bancos gate/up antes de copiar um expert. O frame continua em f16
 e não leva pesos.
+O decoder NVFP4 aplica a mesma regra de dimensões: no GGUF, uma matriz de peso
+é `[input, output, experts]`. Portanto gate/up usam
+`[hidden, intermediate, experts]` e down usa
+`[intermediate, hidden, experts]`; inverter esses eixos produz um runtime com
+hidden errado e recusa no primeiro forward, em vez de truncar o residual.
 Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
 bloco costurado e a amostragem final do token; portanto esta entrega não
 afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
@@ -165,13 +170,13 @@ não entra no commit e não substitui a prova ponta a ponta com um modelo real.
 MoE, `MoeRuntime` é aberto somente para esse caminho e o router local escolhe
 os experts do decoder selecionado. O ownership do bloco de fronteira é
 explícito: um hidden recebido ou um residual destinado ao próximo hop só é
-entregue ao runtime MoE quando o caminho selecionado é MoE; o resultado do
-forward é registrado depois de retornar com sucesso. Em um hop final que
-recebe tokens, o decode real e os logits continuam no `LlmEngine`, que é
-registrado como tal, em vez de o objeto carregado ser contado como execução.
-Os caminhos unitário e batch passam pela mesma ponte. O wire permanece o
-estado oculto f16 já existente, sem peso na rede. Atenção, operações restantes
-e sampling final continuam no `LlmEngine`.
+entregue ao runtime MoE quando o caminho selecionado é MoE; no hop terminal a
+captura do residual também chama o runtime antes da amostragem. O executor é
+registrado somente depois de o forward retornar com sucesso, portanto uma
+seleção MoE sem chamada real continua aparecendo como divergência. O wire
+permanece o estado oculto f16 já existente, sem peso na rede. Atenção, logits e
+operações restantes continuam no `LlmEngine`, que fornece a fronteira de
+cálculo restante ao redor do bloco próprio.
 
 Cada resposta de inferência publica `selected_path`, `executed_engine`, a lista
 `executed_engines` e as flags `engine_mismatch`/`mixed_execution`. O primeiro
@@ -183,20 +188,25 @@ interface mostra o caminho selecionado e o motor observado; mistura e
 divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótulo
 único.
 
-O renderer de emergência não usa mais marcadores Qwen. Gemma4 é reconhecido
-por `general.architecture` e usa seus tokens `<bos>`, `<|turn>`, `<|think|>` e
-`<|channel>thought`; `no_thinking` é aplicado ao token de controle correto.
-Arquiteturas sem renderer explícito cujo template falhe são recusadas com o
-retorno do `llama_chat_apply_template` e o nome da arquitetura.
+O renderer Gemma4 lê `tokenizer.chat_template` do próprio GGUF, valida os
+marcadores `<bos>`, `<|turn>`, `<turn|>`, `<|think|>`, `<|channel>` e
+`<channel|>`, e reproduz o controle `enable_thinking` e
+`add_generation_prompt`. Não há fallback Qwen nem sistema inventado quando o
+template não pede um bloco system. Um template Gemma4 que não contenha os
+marcadores esperados é recusado nominalmente. A geração termina por EOS ou pela
+sequência de fim de turno tokenizada pelo mesmo vocabulário; o marcador de
+controle não é enviado ao cliente. O teste ignorado
+`gemma4_hello_world_request_uses_moe_and_stops_on_its_turn` exercita a rota
+`/api/generate` real quando `POM_FTK_E2E_URL` aponta para um gateway Gemma4.
 
 O Gemma4 real inspecionado na ksia usa os nomes separados, com dimensões
-`[2816, 704, 128]` para gate/up, `dtype=40` (NVFP4), e 100 camadas. A costura
-de nomes separados e o decoder NVFP4 CPU estão cobertos por fixtures locais;
-o primeiro teste físico desse formato será feito pelo captain na ksia. Depois
-da abertura, os riscos restantes são sidecars de escala, geometria por camada
-e a qualidade numérica da costura parcial, que ainda não substitui todas as
-operações do transformer. Os testes puros do executor e da telemetria estão
-escritos; a suíte nativa já foi executada.
+`[2816, 704, 128]` para gate/up, `[704, 2816, 128]` para down,
+`dtype=40` (NVFP4), 30 camadas, 128 experts e top-k 8. A mesma requisição
+`Escreva hello world 10 vezes.` foi validada na rota real: HTTP 200, 55 tokens
+gerados, `input_tokens=22`, `complete=true`, 6,42 tok/s, e prefill/decode com
+`executed_engine=moe`, sem divergência ou mistura. Os testes puros do executor,
+do parser de nomes separados e da telemetria continuam cobrindo as fronteiras
+locais; a validação física confirma a costura NVFP4 no modelo real.
 
 ### Fase 5: co-execução CPU/GPU ainda não ativa
 

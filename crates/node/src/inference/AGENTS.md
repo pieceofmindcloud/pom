@@ -35,8 +35,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
   decode local ou transforma o residual que vai para o próximo hop somente
-  quando o caminho selecionado é MoE; o forward é marcado depois de retornar.
-  Atenção, demais operações e amostragem final continuam no `LlmEngine`. Os
+  quando o caminho selecionado é MoE; no hop terminal a captura do residual
+  também chama o bloco MoE antes de amostrar a resposta. O forward é marcado
+  depois de retornar. Atenção, logits e demais operações continuam no
+  `LlmEngine`, que fornece a fronteira de cálculo restante. Os
   handlers publicam `selected_path`, `executed_engine`, `executed_engines` e as
   flags `engine_mismatch`/`mixed_execution` em `node_timings`; `/health`
   publica apenas o caminho selecionado, pois não representa uma requisição.
@@ -48,7 +50,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
   limpeza de erro/cancelamento.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
-  residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
+  residual capture, sampling, parada por EOS ou fim de turno do template GGUF,
+  renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
   `decode_tokens_batch` e `decode_hidden_batch`
@@ -99,6 +102,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   carregado, portanto a co-execução CPU/GPU da Fase 5 ainda não está ativa. O
   wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
+  No NVFP4, o parser respeita a ordem GGUF `[input, output, experts]`: gate/up
+  são `[hidden, intermediate, experts]` e down é
+  `[intermediate, hidden, experts]`. A inversão desses eixos faz o runtime
+  recusar o residual com largura incompatível.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
   `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. O caminho denso fica
   em `LlmEngine`, e o MoE seleciona o runtime próprio por dtype. `ExecutionEngine` é a

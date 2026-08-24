@@ -643,6 +643,31 @@ mod tests {
         assert!(value["mixed_execution"].as_bool().unwrap());
     }
 
+    #[test]
+    fn hop_terminal_moe_so_publica_moe_depois_do_forward_real() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+
+        record_terminal_engine(&mut timings, crate::executor::InferencePath::MoeQ4_0, true);
+
+        let value = timings.json();
+        assert_eq!(value["executed_engine"], "moe");
+        assert_eq!(value["executed_engines"], serde_json::json!(["moe"]));
+        assert!(!value["engine_mismatch"].as_bool().unwrap());
+        assert!(!value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn resposta_terminal_carrega_a_contagem_de_tokens_do_prompt() {
+        let value = terminal_prefill_meta(33, 7, 8, false);
+
+        assert_eq!(value["n_prompt_tokens"], 33);
+        assert_eq!(value["start_pos"], 7);
+        assert_eq!(value["next_pos"], 8);
+    }
+
     #[tokio::test]
     async fn prefill_route_accepts_a_default_f16_frame_larger_than_axums_two_mib_default() {
         let app = Router::new()
@@ -1160,6 +1185,33 @@ fn use_chat_template(requested: Option<bool>, configured_default: bool) -> bool 
     requested.unwrap_or(configured_default)
 }
 
+fn record_terminal_engine(
+    timings: &mut NodeTimings,
+    path: crate::executor::InferencePath,
+    moe_forwarded: bool,
+) {
+    if path.is_moe() && moe_forwarded {
+        timings.record_engine(crate::executor::ExecutionEngine::Moe);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
+}
+
+fn terminal_prefill_meta(
+    n_prompt_tokens: usize,
+    start_pos: u32,
+    next_pos: u32,
+    done: bool,
+) -> Value {
+    json!({
+        "done": done,
+        "more_chunks": false,
+        "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": start_pos,
+        "next_pos": next_pos,
+    })
+}
+
 /// A porta de inferência aceita a credencial compartilhada do cluster ou uma
 /// API key ativa. O gateway usa a connection_key nas chamadas internas; a
 /// alternativa de API key mantém o contrato dos clientes OpenAI/Anthropic.
@@ -1241,8 +1293,11 @@ impl InferState {
         // A runtime object is not ownership. Only the explicitly selected MoE
         // path may claim the boundary block; a dense model must never execute
         // the sidecar merely because one was accidentally constructed.
-        let Some(moe) = self.moe.as_ref().filter(|_| self.inference_path.is_moe()) else {
+        if !self.inference_path.is_moe() {
             return Ok(hidden);
+        }
+        let Some(moe) = self.moe.as_ref() else {
+            bail!("caminho MoE selecionado sem runtime MoE carregado");
         };
         let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
         let output = moe
@@ -1388,7 +1443,10 @@ pub async fn run(
         inference_mode
     );
 
-    let need_embeddings = cfg.needs_residual_export();
+    // The terminal MoE hop also needs the captured boundary residual so its
+    // own executor can run before the response is sampled. Dense single-peer
+    // contexts keep the old fast path without installing the callback.
+    let need_embeddings = cfg.needs_residual_export() || inference_path.is_moe();
     // Maior largura de lote especulativo que este nó pode receber, dos dois
     // mecanismos (lookup e MTP) - é o que `cparams.n_rs_seq` precisa cobrir
     // para um modelo híbrido/recorrente aceitar desfazer um rascunho
@@ -2796,8 +2854,11 @@ fn prefill_blocking(
     }
 
     let input_was_hidden = tensor.is_some();
+    let selected_moe = s.inference_path.is_moe();
+    let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
+        moe_forwarded = selected_moe;
         Some((hidden, shape))
     } else {
         None
@@ -2825,7 +2886,16 @@ fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
-    timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    if is_last && selected_moe && !moe_forwarded {
+        let residual = s.engine.take_residual(n_tokens)?;
+        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        moe_forwarded = true;
+    }
+    if is_last {
+        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_enqueue_us += engine_timing.enqueue_us;
@@ -2851,7 +2921,6 @@ fn prefill_blocking(
 
     // ── Sampling / residual ──────────────────────────────────────────────────
     let sampling = s.sampling.clone();
-    let eos = s.engine.eos_token();
 
     if is_last {
         if !is_final_chunk {
@@ -2869,15 +2938,18 @@ fn prefill_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
-        let piece = s.engine.token_to_piece_bytes(next_id, false);
-        let mut text = s
-            .sessions
-            .get_mut(&sid_key)
-            .unwrap()
-            .feed_token_piece(&piece);
+        let mut text = if done {
+            String::new()
+        } else {
+            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            s.sessions
+                .get_mut(&sid_key)
+                .unwrap()
+                .feed_token_piece(&piece)
+        };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
-        let done = next_id == eos;
         if done {
             text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
         }
@@ -2908,18 +2980,16 @@ fn prefill_blocking(
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
-        let bytes = wire::encode(
-            &json!({
-                "done": done,
-                "token_id": next_id,
-                "text": text,
-                "more_chunks": false,
-                "start_pos": expected_pos,
-                "next_pos": expected_pos + n_tokens as u32,
-            }),
-            None,
-            wire_dtype,
-        )?;
+        let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
+        let mut reply = terminal_prefill_meta(
+            n_prompt_tokens,
+            expected_pos,
+            expected_pos + n_tokens as u32,
+            done,
+        );
+        reply["token_id"] = json!(next_id);
+        reply["text"] = json!(text);
+        let bytes = wire::encode(&reply, None, wire_dtype)?;
         timings.encode_us += encode_started.elapsed().as_micros() as u64;
         return Ok(TimedReply { bytes, timings });
     }
@@ -4688,8 +4758,11 @@ fn step_blocking(
         }
     }
     let input_was_hidden = tensor.is_some();
+    let selected_moe = s.inference_path.is_moe();
+    let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
+        moe_forwarded = selected_moe;
         Some((hidden, shape))
     } else {
         None
@@ -4782,7 +4855,16 @@ fn step_blocking(
             mtp_k_echo = Some(k);
         }
     }
-    timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    if is_last && selected_moe && !moe_forwarded {
+        let residual = s.engine.take_residual(n_tokens)?;
+        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        moe_forwarded = true;
+    }
+    if is_last {
+        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
@@ -4818,12 +4900,16 @@ fn step_blocking(
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
                 recent.push(id);
-                pieces.push(s.engine.token_to_piece_bytes(id, false));
-                let is_eos = id == eos;
+                let is_stop = s.engine.is_generation_stop(&recent[..recent.len() - 1], id);
+                pieces.push(if is_stop {
+                    Vec::new()
+                } else {
+                    s.engine.token_to_piece_bytes(id, false)
+                });
                 sampled.push(id);
-                if is_eos {
-                    // Nothing past EOS is worth sampling — generation is over
-                    // regardless of what the rest of the draft guessed.
+                if is_stop {
+                    // Nothing past a model EOS or turn terminator is worth
+                    // sampling, regardless of what the rest of the draft guessed.
                     break;
                 }
             }
@@ -4839,7 +4925,12 @@ fn step_blocking(
 
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
-            let done = accepted_ids.last().copied() == Some(eos);
+            let done = accepted_ids.last().is_some_and(|id| {
+                *id == eos
+                    || (sampled.last() == Some(id)
+                        && s.engine
+                            .is_generation_stop(&recent[..recent.len() - 1], *id))
+            });
             // Only accepted positions may advance the session's byte stream.
             // Feeding rejected draft positions would leave their UTF-8 tail
             // in the next request even though those tokens never reached the
@@ -4927,15 +5018,18 @@ fn step_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
-        let piece = s.engine.token_to_piece_bytes(next_id, false);
-        let mut text = s
-            .sessions
-            .get_mut(&sid_key)
-            .unwrap()
-            .feed_token_piece(&piece);
+        let mut text = if done {
+            String::new()
+        } else {
+            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            s.sessions
+                .get_mut(&sid_key)
+                .unwrap()
+                .feed_token_piece(&piece)
+        };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
-        let done = next_id == eos;
         if done {
             text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
         }

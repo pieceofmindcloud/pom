@@ -1525,7 +1525,9 @@ pub(crate) struct Utf8Assembler {
 
 impl Utf8Assembler {
     pub(crate) fn new() -> Self {
-        Self { pending: Vec::new() }
+        Self {
+            pending: Vec::new(),
+        }
     }
 
     /// Acrescenta os bytes da peça e devolve o texto completo até aqui.
@@ -2607,7 +2609,10 @@ mod utf8_assembler_tests {
     #[test]
     fn assembler_passa_ascii_inteiro_numa_so_chamada() {
         let mut asm = Utf8Assembler::new();
-        assert_eq!(asm.feed(b"Ol\xc3\xa1, a\xc3\xa7\xc3\xa3o, cora\xc3\xa7\xc3\xa3o"), "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o");
+        assert_eq!(
+            asm.feed(b"Ol\xc3\xa1, a\xc3\xa7\xc3\xa3o, cora\xc3\xa7\xc3\xa3o"),
+            "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o"
+        );
     }
 
     /// Byte inválido de verdade (não é prefixo de nada): vira um U+FFFD na

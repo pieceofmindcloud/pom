@@ -2,7 +2,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { routeGeometry, type CanvasPosition } from "../lib/networkLayout";
+import { CARD_HEIGHT, CARD_WIDTH, routeGeometry, type CanvasPosition } from "../lib/networkLayout";
 import type { DeployMachine, DeployPlan, DeploySelection, DeployStep } from "../lib/types";
 import { DeployNetworkCanvas } from "./DeployNetworkCanvas";
 
@@ -185,11 +185,11 @@ describe("DeployNetworkCanvas", () => {
     const from: CanvasPosition = { left: 600, top: 100 };
     const to: CanvasPosition = { left: 100, top: 100 };
     const geometry = routeGeometry(from, to);
-    expect(geometry.x1).toBe(600);
-    expect(geometry.y1).toBe(201);
-    expect(geometry.x2).toBe(364);
-    expect(geometry.y2).toBe(201);
-    expect(`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`)
-      .toMatch(/^M 600 201 .* 364 201$/);
+    expect(geometry.x1).toBe(from.left);
+    expect(geometry.y1).toBe(100 + CARD_HEIGHT / 2);
+    expect(geometry.x2).toBe(100 + CARD_WIDTH);
+    expect(geometry.y2).toBe(100 + CARD_HEIGHT / 2);
+    expect(geometry.c1x).toBeLessThan(geometry.x1);
+    expect(geometry.c2x).toBeGreaterThan(geometry.x2);
   });
 });

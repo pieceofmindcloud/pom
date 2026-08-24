@@ -5675,11 +5675,18 @@ mod tests {
     /// The machine is still allowed to serve both; only the file join is off.
     #[test]
     fn without_merge_adjacent_ranges_remain_independent_steps() {
-        let ms = build(vec![m("a", 100_000, &[(0, 7), (8, 15)])]);
-        let p = plan("m", &ms, Some(&[pick(0, 7, "a"), pick(8, 15, "a")]));
+        let ms = build(vec![
+            m("a", 100_000, &[(0, 7), (8, 15)]),
+            m("b", 100_000, &[(16, 31)]),
+        ]);
+        let p = plan(
+            "m",
+            &ms,
+            Some(&[pick(0, 7, "a"), pick(8, 15, "a"), pick(16, 31, "b")]),
+        );
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         assert!(p.complete);
-        assert_eq!(p.steps.len(), 2);
+        assert_eq!(p.steps.len(), 3);
         assert!(p.steps.iter().all(|step| !step.merged));
     }
 
@@ -5690,15 +5697,21 @@ mod tests {
         let ms = build(vec![
             m("a", 100_000, &[(0, 7), (9, 15)]),
             m("b", 100_000, &[(8, 8)]),
+            m("c", 100_000, &[(16, 31)]),
         ]);
         let p = merged(
             "m",
             &ms,
-            &[pick(0, 7, "a"), pick(9, 15, "a"), pick(8, 8, "b")],
+            &[
+                pick(0, 7, "a"),
+                pick(8, 8, "b"),
+                pick(9, 15, "a"),
+                pick(16, 31, "c"),
+            ],
         );
         assert!(p.blocked.is_none(), "{:?}", p.blocked);
         assert!(p.complete);
-        assert_eq!(p.steps.len(), 3);
+        assert_eq!(p.steps.len(), 4);
         assert!(p.steps.iter().all(|step| !step.merged));
     }
 

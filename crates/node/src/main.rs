@@ -341,7 +341,10 @@ async fn main() -> Result<()> {
         let detected = sysmon::sample().await.gpus;
         match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
             _ if app_config.gpus.is_none() => {
-                info!("GPUs: todas as {} disponíveis (pom.json não restringe)", detected.len());
+                info!(
+                    "GPUs: todas as {} disponíveis (pom.json não restringe)",
+                    detected.len()
+                );
             }
             escolhidas if escolhidas.is_empty() => {
                 info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");

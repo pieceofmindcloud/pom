@@ -1032,10 +1032,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
 /// tem `inference_url` como as outras, e é o mesmo caminho que o
 /// `ready_for_pipeline` já percorre - um só código, então o card do nó local
 /// nunca mostra menos que o card de um remoto.
-async fn peer_runtime(
-    State(state): State<GatewayState>,
-    Path(node_id): Path<String>,
-) -> Response {
+async fn peer_runtime(State(state): State<GatewayState>, Path(node_id): Path<String>) -> Response {
     let Some(peer) = state
         .all_peers()
         .await

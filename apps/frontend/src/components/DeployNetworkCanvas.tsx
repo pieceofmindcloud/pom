@@ -28,11 +28,11 @@ type DeployNetworkCanvasProps = {
   onRemovePeer: (nodeId: string) => void;
   onDropPeer: (nodeId: string) => void;
   labelOf: (nodeId: string) => string;
-  extraNodeIds?: string[];
-  showAllMachines?: boolean;
+  mapNodeIds?: string[];
+  primaryCandidateIds?: string[];
+  primaryNodeId?: string;
+  onTogglePrimary?: (nodeId: string) => void;
 };
-
-const EMPTY_NODE_IDS: string[] = [];
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
   return rows.filter((row) => row.target_node_id === nodeId).sort((a, b) => a.start_layer - b.start_layer);
@@ -118,6 +118,8 @@ function NodeCard({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  primaryNodeId,
+  onTogglePrimary,
 }: {
   machine: DeployMachine;
   rows: DeploySelection[];
@@ -130,6 +132,8 @@ function NodeCard({
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLElement>) => void;
+  primaryNodeId?: string;
+  onTogglePrimary?: () => void;
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
@@ -173,6 +177,29 @@ function NodeCard({
         </div>
         <div className="flex items-center gap-1">
           <Dot tone={active ? "aqua" : "neutral"} pulse={active} />
+          {onTogglePrimary && (
+            <button
+              type="button"
+              aria-label={`${primaryNodeId === machine.node_id ? "Desmarcar" : "Marcar"} ${machine.label} como primary`}
+              aria-pressed={primaryNodeId === machine.node_id}
+              title={primaryNodeId === machine.node_id ? "Desmarcar primary" : "Marcar como primary"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTogglePrimary();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              className={clsx(
+                "flex h-5 items-center gap-1 rounded-md px-1 text-[9px] font-semibold uppercase tracking-[0.08em]",
+                primaryNodeId === machine.node_id
+                  ? "bg-aqua/12 text-aqua"
+                  : "text-faint hover:bg-aqua/10 hover:text-aqua",
+              )}
+            >
+              <Sparkles className="h-3 w-3" />
+              <span className="sr-only">primary</span>
+            </button>
+          )}
           <button
             type="button"
             aria-label={`Remover ${machine.label} da implantação`}
@@ -229,8 +256,10 @@ export function DeployNetworkCanvas({
   onRemovePeer,
   onDropPeer,
   labelOf,
-  extraNodeIds = EMPTY_NODE_IDS,
-  showAllMachines = false,
+  mapNodeIds,
+  primaryCandidateIds,
+  primaryNodeId,
+  onTogglePrimary,
 }: DeployNetworkCanvasProps) {
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -238,15 +267,15 @@ export function DeployNetworkCanvas({
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
 
+  const visibleMapNodeIds = useMemo(
+    () => mapNodeIds ?? plan.machines.map((machine) => machine.node_id),
+    [mapNodeIds, plan.machines],
+  );
   const machines = useMemo(() => {
-    const ids = new Set(rows.map((row) => row.target_node_id).filter(Boolean));
-    for (const step of plan.steps) if (step.target_node_id) ids.add(step.target_node_id);
-    if (showAllMachines) for (const machine of plan.machines) ids.add(machine.node_id);
-    for (const nodeId of extraNodeIds) ids.add(nodeId);
-    return [...ids]
+    return visibleMapNodeIds
       .map((nodeId) => plan.machines.find((machine) => machine.node_id === nodeId))
       .filter((machine): machine is DeployMachine => Boolean(machine));
-  }, [extraNodeIds, plan.machines, plan.steps, rows, showAllMachines]);
+  }, [plan.machines, visibleMapNodeIds]);
   const nodeIds = useMemo(() => machines.map((machine) => machine.node_id), [machines]);
   const layoutKey = useMemo(
     () => deploymentLayoutKey(plan.deployment_name || plan.group, machines.map((machine) => ({ node_id: machine.node_id, ...machineBounds(rows, machine) }))),
@@ -389,7 +418,7 @@ export function DeployNetworkCanvas({
             return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: geometry.labelX, top: geometry.labelY }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>

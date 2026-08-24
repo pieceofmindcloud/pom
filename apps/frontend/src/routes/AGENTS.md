@@ -86,8 +86,12 @@ Per-file list:
   single answer), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
   shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
-  whole-model runtime path. The primary select and workers multi-select are
-  limited to peers that hold the required ranks and participate in the map.
+  whole-model runtime path. Canvas membership is canonical: rows plus preferred
+  peers, with every live peer added by the Complete strategy. Tensor selectors
+  reuse those map cards; pre-sliced TP accepts any mapped peer because the node
+  can transfer the needed rank, while whole-model TP filters mapped cards to
+  peers that hold the local GGUF. Eligible Tensor cards expose the accessible
+  primary toggle, which removes that node from workers.
   `size` is derived from the selected TP group or `workers.length + 1`, never a
   typed number, and the node derives the reduce URL from the primary's
   inference port (the operator no longer types `rank0_url`). `tp` is in the
@@ -124,8 +128,9 @@ Per-file list:
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
   in whole-model mode, adding a peer also appends an explicit full-model replica;
-  in tensor mode, adding a peer makes it eligible for a rank but never adds an
-  off-map peer implicitly;
+  in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
+  without a local rank file, while whole-model tensor mode still requires the
+  local GGUF; neither path adds an off-map peer implicitly;
   assigning a range is what validates a new selection. Choosing a range removes
   an empty placeholder for that same range, while an already assigned copy on
   another machine remains as a replica. Removing a card deletes

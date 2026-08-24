@@ -260,6 +260,11 @@ Key logic carriers:
   card ainda pode mostrar o RTT local anunciado pela própria máquina. Réplicas exatas podem aparecer empilhadas na
   mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
   explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.
+  O `DeployModel` calcula `mapNodeIds` uma vez e passa essa mesma população
+  para os cards e para os seletores primary/workers; TP pré-fatiado aceita
+  worker mapeado sem o rank local, enquanto TP de modelo inteiro exige o GGUF
+  local. O card Tensor expõe a ação acessível de marcar primary, removendo o
+  mesmo nó dos workers.
   Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra
   indeterminada. A hidratação de posições preserva cards existentes quando um
   peer novo entra sem faixa, então a topologia não se reorganiza por causa de

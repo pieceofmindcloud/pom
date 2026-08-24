@@ -383,8 +383,8 @@ describe("DeployModel", () => {
     mount();
 
     await waitFor(() => expect(screen.getByText("Camadas nesta máquina")).toBeTruthy());
-    expect(screen.getAllByText("1.2 ms").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("2.8 ms").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/RTT 1\.2 ms/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/RTT 2\.8 ms/).length).toBeGreaterThan(0);
     expect(screen.getByText("Camadas nesta máquina")).toBeTruthy();
     expect(screen.getAllByText("L0–7").length).toBeGreaterThan(0);
   });

@@ -271,6 +271,12 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
   libera as sessões dos peers alcançados.
 
+Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
+stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
+prefixo de uma parada, remove a própria parada da saída e encerra a geração com
+`finish_reason=stop` e a sequência correspondente. Sem stop strings o caminho
+continua emitindo os eventos como antes.
+
 ### 3.1 Scheduler local e batching contínuo
 
 Cada processo de inferência possui um scheduler próprio para o contexto

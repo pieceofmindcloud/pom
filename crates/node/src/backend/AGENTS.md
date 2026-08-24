@@ -22,8 +22,9 @@ behind an auth extractor.
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
-- `gateway.rs` (1542) - `GatewayState`, `start_gateway`, `generate_stream` /
-  `generate_blocking` / `spawn_logged_generation`, prompt-budget math, the
+- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream` /
+  `generate_blocking` / `spawn_logged_generation`, o `StopMatcher` incremental,
+  prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
@@ -153,15 +154,15 @@ behind an auth extractor.
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
-  `x_pom` extension with source/tps/duration/partial/trace),
+  `x_pom` extension with source/tps/duration/partial/trace/finish_reason/stop_sequence),
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
   `POST /v1/messages/count_tokens`; its own `render_prompt` (system/messages/
   tools split), `content_blocks` for tool_use/tool_result, `stop_reason`
-  (end_turn / max_tokens / tool_use), `blocking_response` and `stream_response`
-  with the Anthropic SSE event names. `tool_choice` and `stop_sequences` are
-  parsed-and-ignored (serde drops unknown fields).
+  (end_turn / max_tokens / tool_use / stop_sequence), `blocking_response` and
+  `stream_response` with the Anthropic SSE event names. `tool_choice` is
+  parsed-and-ignored; `stop_sequences` is applied by the gateway matcher.
 - `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),

@@ -80,16 +80,20 @@ prompt do gateway e responde
 HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
 clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
 resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
-(fora do schema) com a prova de execução distribuída. CORS `*` para harnesses
+(fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
+(string ou lista) passa pelo matcher incremental do gateway: um sufixo que
+ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
+enviada ao cliente. CORS `*` para harnesses
 de navegador.
 
 ### Anthropic (`/v1/messages`)
 
 Mesmo caminho de geração, próprio `render_prompt` (system/messages/tools
 separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
-(`end_turn`/`max_tokens`/`tool_use`), SSE com os nomes de evento Anthropic.
-`tool_choice` e `stop_sequences` são parseados e ignorados (serde descarta
-campos desconhecidos). `x_pom` vai na resposta não-streaming.
+(`end_turn`/`max_tokens`/`tool_use`/`stop_sequence`), SSE com os nomes de
+evento Anthropic. `stop_sequences` usa o mesmo matcher incremental e
+`stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
+parseado e ignorado. `x_pom` vai na resposta não-streaming.
 
 ### `/admin/*`
 

@@ -20,6 +20,21 @@ O goal será entregue em fases coesas:
 4. motor MoE próprio com um formato de quantização por vez e cache LRU global;
 5. co-execução CPU/GPU baseada em banda medida.
 
+### Fase 1: S9 entregue
+
+O gateway agora aceita `stop` no formato OpenAI e `stop_sequences` no formato
+Anthropic, além do campo equivalente em `/api/generate`. Todos passam por um
+`StopMatcher` incremental comum. Ele só libera texto quando o próximo sufixo
+não pode mais completar nenhuma parada; ao casar, descarta a parada e o texto
+posterior, encerra a geração e propaga `finish_reason=stop` mais
+`stop_sequence`. O protocolo entre peers não mudou.
+
+Os testes unitários cobrem parada dividida entre eventos, prefixo pendente,
+UTF-8, duplicatas e múltiplas paradas. A suíte nativa ainda não executou esses
+testes neste worktree porque o build script de `llama-cpp-sys-2` falha antes da
+compilação ao não encontrar `vendor/llama-cpp-sys-2/llama.cpp`; ver a lacuna
+registrada na Fase 0.
+
 Modelos densos devem continuar no caminho existente. A seleção do caminho MoE
 será uma decisão explícita baseada em metadados GGUF, com teste que proíbe um
 modelo denso de entrar no motor novo.

@@ -25,9 +25,9 @@
 //! fine-tuned on. This has real, bounded failure modes a grammar-constrained
 //! backend wouldn't: a malformed or nameless `<tool_call>` degrades to plain
 //! text (see `parse_tool_call`) rather than failing the request or losing
-//! the content. `tool_choice` is parsed-and-ignored like `stop_sequences` —
-//! neither needs a struct field to be accepted, since serde silently drops
-//! unknown JSON fields on both request types here.
+//! the content. `tool_choice` remains parsed-and-ignored, while
+//! `stop_sequences` is applied by the shared gateway matcher before output
+//! reaches the SSE adapter.
 //!
 //! Endpoints: `POST /v1/messages` (`stream: true` → SSE),
 //! `POST /v1/messages/count_tokens`.
@@ -203,6 +203,8 @@ pub struct MessagesRequest {
     pub max_tokens: u32,
     #[serde(default)]
     pub tools: Vec<ToolDef>,
+    #[serde(default)]
+    pub stop_sequences: Vec<String>,
 }
 
 fn default_max_tokens() -> u32 {
@@ -328,6 +330,7 @@ async fn messages(
     };
     let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
     let max_tokens = req.clamped_max_tokens();
+    let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
 
     info!(
@@ -349,6 +352,7 @@ async fn messages(
             max_tokens,
             id,
             input_tokens,
+            stops,
         )
     } else {
         blocking_response(
@@ -359,6 +363,7 @@ async fn messages(
             max_tokens,
             id,
             input_tokens,
+            stops,
         )
         .await
     }
@@ -376,6 +381,8 @@ async fn count_tokens(_auth: ApiKeyAuth, Json(req): Json<CountTokensRequest>) ->
 fn stop_reason(summary: &GenSummary, max_tokens: u32, saw_tool_call: bool) -> &'static str {
     if saw_tool_call {
         "tool_use"
+    } else if summary.finish_reason.as_deref() == Some("stop") {
+        "stop_sequence"
     } else if summary.tokens_generated >= max_tokens {
         "max_tokens"
     } else {
@@ -391,8 +398,9 @@ async fn blocking_response(
     max_tokens: u32,
     id: String,
     input_tokens: u32,
+    stops: Vec<String>,
 ) -> Response {
-    match crate::gateway::generate_blocking(
+    match crate::gateway::generate_blocking_with_stops(
         state,
         "/v1/messages",
         caller,
@@ -400,6 +408,7 @@ async fn blocking_response(
         prompt,
         true,
         max_tokens,
+        stops,
     )
     .await
     {
@@ -415,7 +424,7 @@ async fn blocking_response(
                     "model": model,
                     "content": content,
                     "stop_reason": reason,
-                    "stop_sequence": null,
+                    "stop_sequence": summary.stop_sequence,
                     "usage": {
                         "input_tokens": input_tokens,
                         "output_tokens": summary.tokens_generated,
@@ -427,6 +436,8 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "partial": summary.partial,
+                        "finish_reason": summary.finish_reason,
+                        "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                     },
                 })),
@@ -445,9 +456,10 @@ fn stream_response(
     max_tokens: u32,
     id: String,
     input_tokens: u32,
+    stops: Vec<String>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
-    crate::gateway::spawn_logged_generation(
+    crate::gateway::spawn_logged_generation_with_stops(
         state,
         "/v1/messages",
         caller,
@@ -456,6 +468,7 @@ fn stream_response(
         true,
         max_tokens,
         tx,
+        stops,
     );
 
     let stream = sse_stream(rx, id, model, max_tokens, input_tokens);
@@ -694,7 +707,10 @@ fn sse_stream(
                             "message_delta",
                             json!({
                                 "type": "message_delta",
-                                "delta": { "stop_reason": reason, "stop_sequence": null },
+                                "delta": {
+                                    "stop_reason": reason,
+                                    "stop_sequence": summary.stop_sequence,
+                                },
                                 "usage": { "output_tokens": summary.tokens_generated },
                             }),
                         ));
@@ -916,6 +932,8 @@ mod tests {
             tokens_per_sec: 1.0,
             duration_ms: 10,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: None,
         };
         assert_eq!(stop_reason(&summary(5), 100, false), "end_turn");

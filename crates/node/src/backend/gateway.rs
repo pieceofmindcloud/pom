@@ -444,6 +444,8 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
 pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
 }
 
 #[derive(Debug, Serialize)]
@@ -454,6 +456,7 @@ pub struct GenerateResponse {
     pub tokens_generated: u32,
     pub tokens_per_sec: f64,
     pub duration_ms: u64,
+    pub stop_sequence: Option<String>,
     pub trace: Option<crate::prefill::RequestTrace>,
 }
 
@@ -505,8 +508,187 @@ pub struct GenSummary {
     pub duration_ms: u64,
     /// True when a peer failed mid-generation but some text was salvaged.
     pub partial: bool,
+    /// "stop" when a server-side stop sequence ended the generation.
+    pub finish_reason: Option<String>,
+    /// The exact stop sequence that was matched, when one ended the stream.
+    pub stop_sequence: Option<String>,
     /// Detailed per-request observations. It never affects planning.
     pub trace: Option<crate::prefill::RequestTrace>,
+}
+
+/// OpenAI's `stop` accepts either one string or a list. Keeping this parser in
+/// the gateway lets all HTTP adapters share the same matcher and keeps the
+/// internal inference protocol unchanged.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum StopInput {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl StopInput {
+    pub fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(stop) => vec![stop],
+            Self::Many(stops) => stops,
+        }
+    }
+}
+
+/// Normalize request-provided stop sequences once at the gateway boundary.
+/// Empty strings cannot delimit meaningful generated text, and duplicates do
+/// not change matching semantics.
+pub fn normalize_stop_sequences(stops: impl IntoIterator<Item = String>) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for stop in stops {
+        if stop.is_empty() || normalized.iter().any(|known| known == &stop) {
+            continue;
+        }
+        normalized.push(stop);
+    }
+    normalized
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StopEmission {
+    pub text: String,
+    pub matched: Option<String>,
+}
+
+/// Incremental stop matcher for already-valid UTF-8 output.
+///
+/// A suffix that could still become a stop sequence is retained between
+/// token events. This is deliberately byte-indexed only after `char_indices`
+/// has found a UTF-8 boundary, so a split multibyte character is never cut.
+#[derive(Debug, Clone)]
+pub struct StopMatcher {
+    stops: Vec<String>,
+    pending: String,
+    matched: Option<String>,
+}
+
+impl StopMatcher {
+    pub fn new(stops: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            stops: normalize_stop_sequences(stops),
+            pending: String::new(),
+            matched: None,
+        }
+    }
+
+    pub fn feed(&mut self, text: &str) -> StopEmission {
+        if self.matched.is_some() {
+            return StopEmission {
+                text: String::new(),
+                matched: self.matched.clone(),
+            };
+        }
+
+        self.pending.push_str(text);
+        if self.stops.is_empty() {
+            return StopEmission {
+                text: std::mem::take(&mut self.pending),
+                matched: None,
+            };
+        }
+
+        let mut match_at: Option<(usize, usize)> = None;
+        let mut matched_stop = None;
+        for (index, stop) in self.stops.iter().enumerate() {
+            if let Some(found) = self.pending.find(stop) {
+                if match_at.is_none_or(|current| (found, index) < current) {
+                    match_at = Some((found, index));
+                    matched_stop = Some(stop.clone());
+                }
+            }
+        }
+
+        if let Some((index, _)) = match_at {
+            let emitted = self.pending[..index].to_string();
+            self.pending.clear();
+            self.matched = matched_stop.clone();
+            return StopEmission {
+                text: emitted,
+                matched: matched_stop,
+            };
+        }
+
+        let hold = self
+            .pending
+            .char_indices()
+            .filter_map(|(index, _)| {
+                let suffix = &self.pending[index..];
+                self.stops
+                    .iter()
+                    .any(|stop| stop.starts_with(suffix))
+                    .then_some(suffix.len())
+            })
+            .max()
+            .unwrap_or(0);
+        let emit_len = self.pending.len().saturating_sub(hold);
+        let emitted = self.pending[..emit_len].to_string();
+        self.pending.drain(..emit_len);
+        StopEmission {
+            text: emitted,
+            matched: None,
+        }
+    }
+
+    pub fn finish(&mut self) -> String {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StopSend {
+    Continue,
+    Stopped(String),
+    Disconnected,
+}
+
+async fn send_text_with_stop(
+    tx: &mpsc::Sender<GenEvent>,
+    matcher: &mut StopMatcher,
+    text: &str,
+) -> StopSend {
+    let emission = matcher.feed(text);
+    if !emission.text.is_empty() && tx.send(GenEvent::Token(emission.text)).await.is_err() {
+        return StopSend::Disconnected;
+    }
+    match emission.matched {
+        Some(stop) => StopSend::Stopped(stop),
+        None => StopSend::Continue,
+    }
+}
+
+async fn flush_stop_matcher(tx: &mpsc::Sender<GenEvent>, matcher: &mut StopMatcher) -> bool {
+    let tail = matcher.finish();
+    tail.is_empty() || tx.send(GenEvent::Token(tail)).await.is_ok()
+}
+
+async fn send_stopped_summary(
+    tx: &mpsc::Sender<GenEvent>,
+    plan: &PipelinePlan,
+    gen_start: Instant,
+    tokens_generated: u32,
+    mut trace: crate::prefill::RequestTrace,
+    stop_sequence: String,
+) {
+    let elapsed = gen_start.elapsed();
+    trace.output_tokens = tokens_generated;
+    trace.complete = true;
+    let _ = tx
+        .send(GenEvent::Done(GenSummary {
+            source: format!("pipeline:{}", plan.hop_chain()),
+            tokens_generated,
+            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+            duration_ms: elapsed.as_millis() as u64,
+            partial: false,
+            finish_reason: Some("stop".to_string()),
+            stop_sequence: Some(stop_sequence),
+            trace: Some(trace),
+        }))
+        .await;
 }
 
 /// Run one generation, emitting each token as it is decoded.
@@ -522,6 +704,27 @@ pub async fn generate_stream(
     chat_template: bool,
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
+) {
+    generate_stream_with_stops(
+        state,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        tx,
+        Vec::new(),
+    )
+    .await;
+}
+
+pub async fn generate_stream_with_stops(
+    state: GatewayState,
+    model: String,
+    prompt: String,
+    chat_template: bool,
+    max_tokens: u32,
+    tx: mpsc::Sender<GenEvent>,
+    stops: Vec<String>,
 ) {
     let cancellation = crate::prefill::Cancellation::new();
     let monitor_cancel = cancellation.clone();
@@ -539,6 +742,7 @@ pub async fn generate_stream(
         max_tokens,
         tx,
         cancellation,
+        stops,
     )
     .await;
     monitor.abort();
@@ -552,6 +756,7 @@ async fn generate_stream_inner(
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
     cancellation: crate::prefill::Cancellation,
+    stops: Vec<String>,
 ) {
     if cancellation.is_cancelled() {
         return;
@@ -709,6 +914,8 @@ async fn generate_stream_inner(
         )
     };
 
+    let mut stop_matcher = StopMatcher::new(stops);
+
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
     // sampling peer used to free anything, and only on EOS, so the first peer
@@ -756,11 +963,29 @@ async fn generate_stream_inner(
         let mut next_token = first.token_id;
         let mut trace = first.trace;
         tokens_generated += 1;
-        if !first.text.is_empty() && tx.send(GenEvent::Token(first.text)).await.is_err() {
-            info!("cliente desconectou logo após o prompt");
-            return;
+        match send_text_with_stop(&tx, &mut stop_matcher, &first.text).await {
+            StopSend::Disconnected => {
+                info!("cliente desconectou logo após o prompt");
+                return;
+            }
+            StopSend::Stopped(stop_sequence) => {
+                send_stopped_summary(
+                    &tx,
+                    &plan,
+                    gen_start,
+                    tokens_generated,
+                    trace,
+                    stop_sequence,
+                )
+                .await;
+                return;
+            }
+            StopSend::Continue => {}
         }
         if first.done {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
             let elapsed = gen_start.elapsed();
             trace.output_tokens = tokens_generated;
             trace.complete = true;
@@ -771,6 +996,8 @@ async fn generate_stream_inner(
                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                     duration_ms: elapsed.as_millis() as u64,
                     partial: false,
+                    finish_reason: None,
+                    stop_sequence: None,
                     trace: Some(trace),
                 }))
                 .await;
@@ -872,6 +1099,8 @@ async fn generate_stream_inner(
                                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                     duration_ms: elapsed.as_millis() as u64,
                                     partial: true,
+                                    finish_reason: None,
+                                    stop_sequence: None,
                                     trace: {
                                         trace.output_tokens = tokens_generated;
                                         Some(trace)
@@ -930,15 +1159,33 @@ async fn generate_stream_inner(
                 for (token_id, text) in step.accepted.iter().take(take) {
                     next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
-                        info!("cliente desconectou após {tokens_generated} tokens");
-                        return;
+                    match send_text_with_stop(&tx, &mut stop_matcher, text).await {
+                        StopSend::Disconnected => {
+                            info!("cliente desconectou após {tokens_generated} tokens");
+                            return;
+                        }
+                        StopSend::Stopped(stop_sequence) => {
+                            send_stopped_summary(
+                                &tx,
+                                &plan,
+                                gen_start,
+                                tokens_generated,
+                                trace,
+                                stop_sequence,
+                            )
+                            .await;
+                            return;
+                        }
+                        StopSend::Continue => {}
                     }
                 }
 
                 let finished =
                     (step.done && !truncated_by_budget) || tokens_generated >= max_tokens;
                 if finished {
+                    if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                        return;
+                    }
                     let elapsed = gen_start.elapsed();
                     trace.output_tokens = tokens_generated;
                     trace.complete = true;
@@ -960,6 +1207,8 @@ async fn generate_stream_inner(
                             tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                             duration_ms: elapsed.as_millis() as u64,
                             partial: false,
+                            finish_reason: None,
+                            stop_sequence: None,
                             trace: Some(trace),
                         }))
                         .await;
@@ -1004,6 +1253,8 @@ async fn generate_stream_inner(
                                     tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                     duration_ms: elapsed.as_millis() as u64,
                                     partial: true,
+                                    finish_reason: None,
+                                    stop_sequence: None,
                                     trace: {
                                         trace.output_tokens = tokens_generated;
                                         Some(trace)
@@ -1046,14 +1297,32 @@ async fn generate_stream_inner(
                     let (token_id, text) = &step.accepted[0];
                     next_token = *token_id;
                     tokens_generated += 1;
-                    if !text.is_empty() && tx.send(GenEvent::Token(text.clone())).await.is_err() {
-                        // Client hung up; stop burning GPU time on a dead request.
-                        info!("cliente desconectou após {tokens_generated} tokens");
-                        return;
+                    match send_text_with_stop(&tx, &mut stop_matcher, text).await {
+                        StopSend::Disconnected => {
+                            // Client hung up; stop burning GPU time on a dead request.
+                            info!("cliente desconectou após {tokens_generated} tokens");
+                            return;
+                        }
+                        StopSend::Stopped(stop_sequence) => {
+                            send_stopped_summary(
+                                &tx,
+                                &plan,
+                                gen_start,
+                                tokens_generated,
+                                trace,
+                                stop_sequence,
+                            )
+                            .await;
+                            return;
+                        }
+                        StopSend::Continue => {}
                     }
                     let done = step.done;
 
                     if done || i == max_tokens - 1 {
+                        if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                            return;
+                        }
                         let elapsed = gen_start.elapsed();
                         trace.output_tokens = tokens_generated;
                         trace.complete = true;
@@ -1070,6 +1339,8 @@ async fn generate_stream_inner(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: false,
+                                finish_reason: None,
+                                stop_sequence: None,
                                 trace: Some(trace),
                             }))
                             .await;
@@ -1089,6 +1360,8 @@ async fn generate_stream_inner(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: true,
+                                finish_reason: None,
+                                stop_sequence: None,
                                 trace: {
                                     trace.output_tokens = tokens_generated;
                                     Some(trace)
@@ -1275,18 +1548,44 @@ pub fn spawn_logged_generation(
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
+    spawn_logged_generation_with_stops(
+        state,
+        route,
+        caller,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        tx,
+        Vec::new(),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn spawn_logged_generation_with_stops(
+    state: GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    model: String,
+    prompt: String,
+    chat_template: bool,
+    max_tokens: u32,
+    tx: mpsc::Sender<GenEvent>,
+    stops: Vec<String>,
+) {
     let entry_node_id = state.network.node_id.clone();
     let prompt_tokens = estimate_tokens(&prompt);
     let logged_model = model.clone();
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream(
+    tokio::spawn(generate_stream_with_stops(
         state,
         model,
         prompt,
         chat_template,
         max_tokens,
         inner_tx,
+        stops,
     ));
 
     tokio::spawn(async move {
@@ -1378,8 +1677,31 @@ pub async fn generate_blocking(
     chat_template: bool,
     max_tokens: u32,
 ) -> std::result::Result<(String, GenSummary), String> {
+    generate_blocking_with_stops(
+        state,
+        route,
+        caller,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        Vec::new(),
+    )
+    .await
+}
+
+pub async fn generate_blocking_with_stops(
+    state: GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    model: String,
+    prompt: String,
+    chat_template: bool,
+    max_tokens: u32,
+    stops: Vec<String>,
+) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation(
+    spawn_logged_generation_with_stops(
         state,
         route,
         caller,
@@ -1388,6 +1710,7 @@ pub async fn generate_blocking(
         chat_template,
         max_tokens,
         tx,
+        stops,
     );
 
     let mut text = String::new();
@@ -1498,6 +1821,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                     tokens_generated: 0,
                     tokens_per_sec: 0.0,
                     duration_ms: 0,
+                    stop_sequence: None,
                     trace: None,
                 }),
             )
@@ -1509,6 +1833,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
 
     info!(
         "📨 /api/generate model={} prompt_len={}",
@@ -1518,7 +1843,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
 
     // `/api/generate` has never been behind auth, so there is no credential to
     // attribute the request to — the log says exactly that instead of guessing.
-    match generate_blocking(
+    match generate_blocking_with_stops(
         state,
         "/api/generate",
         crate::reqlog::Caller::anonymous(),
@@ -1526,6 +1851,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         req.prompt,
         true,
         DEFAULT_MAX_TOKENS,
+        stops,
     )
     .await
     {
@@ -1537,6 +1863,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: summary.tokens_generated,
                 tokens_per_sec: summary.tokens_per_sec,
                 duration_ms: summary.duration_ms,
+                stop_sequence: summary.stop_sequence,
                 trace: summary.trace,
             }),
         )
@@ -1551,6 +1878,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 tokens_generated: 0,
                 tokens_per_sec: 0.0,
                 duration_ms: 0,
+                stop_sequence: None,
                 trace: None,
             }),
         )
@@ -1599,6 +1927,73 @@ async fn handle_health(State(state): State<GatewayState>) -> Json<HealthResponse
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stop_matcher_holds_a_suffix_that_is_a_stop_prefix() {
+        let mut matcher = StopMatcher::new(vec!["<END>".to_string()]);
+
+        assert_eq!(
+            matcher.feed("answer<").text,
+            "answer",
+            "the possible prefix must stay buffered"
+        );
+        assert_eq!(matcher.feed("EN").text, "");
+        let matched = matcher.feed("D>ignored");
+        assert_eq!(matched.text, "");
+        assert_eq!(matched.matched.as_deref(), Some("<END>"));
+        assert_eq!(matcher.feed("after").text, "");
+    }
+
+    #[test]
+    fn stop_matcher_emits_text_before_a_stop_and_flushes_unmatched_suffix() {
+        let mut matcher = StopMatcher::new(vec!["STOP".to_string()]);
+
+        assert_eq!(matcher.feed("abcST").text, "abc");
+        assert_eq!(matcher.finish(), "ST");
+
+        let mut matcher = StopMatcher::new(vec!["STOP".to_string()]);
+        assert_eq!(matcher.feed("abcST").text, "abc");
+        assert_eq!(matcher.feed("ill").text, "STill");
+        assert_eq!(matcher.finish(), "");
+    }
+
+    #[test]
+    fn stop_matcher_preserves_utf8_boundaries_and_flushes_at_end() {
+        let mut matcher = StopMatcher::new(vec!["fim".to_string()]);
+
+        assert_eq!(matcher.feed("olá f").text, "olá ");
+        assert_eq!(matcher.feed("oi").text, "foi");
+        assert_eq!(matcher.finish(), "");
+
+        let mut unicode = StopMatcher::new(vec!["終".to_string()]);
+        assert_eq!(unicode.feed("pré").text, "pré");
+        let emission = unicode.feed("終depois");
+        assert_eq!(emission.text, "");
+        assert_eq!(emission.matched.as_deref(), Some("終"));
+    }
+
+    #[test]
+    fn stop_matcher_uses_the_earliest_match_and_normalizes_requests() {
+        let mut matcher = StopMatcher::new(vec![
+            "DONE".to_string(),
+            "DONE".to_string(),
+            "END".to_string(),
+            String::new(),
+        ]);
+
+        let emission = matcher.feed("prefixENDsuffix");
+        assert_eq!(emission.text, "prefix");
+        assert_eq!(emission.matched.as_deref(), Some("END"));
+    }
+
+    #[test]
+    fn openai_stop_input_accepts_one_string_or_a_list() {
+        let one: StopInput = serde_json::from_str(r#""END""#).unwrap();
+        let many: StopInput = serde_json::from_str(r#"["END","DONE"]"#).unwrap();
+
+        assert_eq!(one.into_vec(), vec!["END"]);
+        assert_eq!(many.into_vec(), vec!["END", "DONE"]);
+    }
 
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
     /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`

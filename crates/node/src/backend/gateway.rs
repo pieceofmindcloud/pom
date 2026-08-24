@@ -2371,6 +2371,7 @@ pub(crate) mod testkit {
                 role: Role::Node,
                 tls_required: false,
                 node_name: None,
+                huggingface_token: None,
                 connection_key: "chave".into(),
                 gateway_port: 8080,
                 p2p_port: 42777,

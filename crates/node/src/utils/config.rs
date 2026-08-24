@@ -1,7 +1,9 @@
 // src/config.rs
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::fmt;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 
 /// Nome do arquivo de config: derivado da marca (`brand.json`), não escrito à
 /// mão, para renomear o produto ser uma edição só.
@@ -87,7 +89,7 @@ pub struct ApiKey {
     pub created_at: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Config {
     pub role: Role,
     #[serde(default)]
@@ -167,6 +169,45 @@ pub struct Config {
     /// Falls back to the OS hostname when absent.
     #[serde(default)]
     pub node_name: Option<String>,
+    /// Token opcional salvo pela tela de Configurações. O provider nunca o
+    /// devolve pela API: a interface recebe apenas estado e máscara.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub huggingface_token: Option<String>,
+}
+
+impl fmt::Debug for Config {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Config")
+            .field("role", &self.role)
+            .field(
+                "connection_key",
+                if self.connection_key.is_empty() {
+                    &"" as &dyn fmt::Debug
+                } else {
+                    &"[redacted]" as &dyn fmt::Debug
+                },
+            )
+            .field("gateway_port", &self.gateway_port)
+            .field("p2p_port", &self.p2p_port)
+            .field("inference_port", &self.inference_port)
+            .field("bootstrap_nodes", &self.bootstrap_nodes)
+            .field("advertise_addr", &self.advertise_addr)
+            .field("api_key_count", &self.api_keys.len())
+            .field("blocked_nodes", &self.blocked_nodes)
+            .field("tls_required", &self.tls_required)
+            .field("model_dirs", &self.model_dirs)
+            .field("shard_dir", &self.shard_dir)
+            .field("shard_max_gb", &self.shard_max_gb)
+            .field("gpus", &self.gpus)
+            .field("cache_type_k", &self.cache_type_k)
+            .field("cache_type_v", &self.cache_type_v)
+            .field("node_name", &self.node_name)
+            .field(
+                "huggingface_token",
+                &self.huggingface_token.as_ref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
 }
 
 fn default_gateway_port() -> u16 {
@@ -300,9 +341,31 @@ impl Config {
 
     pub fn save(&self) -> Result<()> {
         let path = Self::config_path();
+        self.write_to(&path)
+    }
+
+    fn write_to(&self, path: &Path) -> Result<()> {
         let content = serde_json::to_string_pretty(self)?;
-        std::fs::write(&path, content)
-            .with_context(|| format!("Failed to write config at {:?}", path))
+        let mut options = std::fs::OpenOptions::new();
+        options.create(true).write(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options
+            .open(path)
+            .with_context(|| format!("Failed to write config at {:?}", path))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            file.set_permissions(std::fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("Failed to restrict config at {:?}", path))?;
+        }
+        file.write_all(content.as_bytes())
+            .with_context(|| format!("Failed to write config at {:?}", path))?;
+        file.flush()
+            .with_context(|| format!("Failed to flush config at {:?}", path))
     }
 
     /// Inference port this node should use, falling back to the default.
@@ -445,6 +508,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
+            huggingface_token: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -472,6 +536,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
+            huggingface_token: None,
         };
         let json = serde_json::to_string(&cfg).unwrap();
         let parsed: Config = serde_json::from_str(&json).unwrap();
@@ -521,6 +586,50 @@ mod tests {
             serde_json::from_str(r#"{"role":"node","cache_type_k":"iq4_nl"}"#).unwrap();
         assert_eq!(typed.cache_type_k, KvCacheType::Iq4Nl);
         assert_eq!(typed.cache_type_k.as_str(), "iq4_nl");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn huggingface_token_config_is_saved_owner_only_and_debug_is_redacted() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = std::env::temp_dir().join(format!(
+            "pom-config-hf-token-{}-{}.json",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cfg = Config {
+            role: Role::Node,
+            connection_key: String::new(),
+            gateway_port: 8080,
+            p2p_port: 42777,
+            inference_port: None,
+            bootstrap_nodes: vec![],
+            advertise_addr: None,
+            api_keys: vec![],
+            blocked_nodes: vec![],
+            tls_required: false,
+            model_dirs: None,
+            shard_dir: None,
+            shard_max_gb: default_shard_max_gb(),
+            gpus: None,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            node_name: None,
+            huggingface_token: Some("hf_super_secret".into()),
+        };
+
+        std::fs::write(&path, b"old config").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        cfg.write_to(&path).unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        assert!(format!("{cfg:?}").contains("[redacted]"));
+        assert!(!format!("{cfg:?}").contains("hf_super_secret"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("hf_super_secret"));
+        let _ = std::fs::remove_file(path);
     }
 
     /// Saving the list is the operator taking over: an empty list means "look
@@ -598,6 +707,7 @@ mod tests {
             shard_dir: None,
             shard_max_gb: default_shard_max_gb(),
             node_name: None,
+            huggingface_token: None,
         };
         assert_eq!(cfg.active_api_key().unwrap().key, "sk-active");
     }

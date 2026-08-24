@@ -35,8 +35,6 @@ mod executor;
 mod gateway;
 #[path = "models/gguf.rs"]
 mod gguf;
-#[path = "models/hf_cli.rs"]
-mod hf_cli;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -699,6 +697,7 @@ async fn main() -> Result<()> {
     // ── Runtime: owns the model configuration and the inference server ──────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
+    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -816,9 +815,12 @@ async fn main() -> Result<()> {
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
-                huggingface::HuggingFaceProvider::new(),
-            ))),
+            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                    hf_token_store.clone(),
+                )),
+                hf_token_store,
+            )),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1042,6 +1044,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_dir: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
+        huggingface_token: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -1367,6 +1370,7 @@ async fn start_gateway_only(
         };
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
     let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
@@ -1427,9 +1431,12 @@ async fn start_gateway_only(
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-        model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
-            huggingface::HuggingFaceProvider::new(),
-        ))),
+        model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+            Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                hf_token_store.clone(),
+            )),
+            hf_token_store,
+        )),
     };
 
     info!(

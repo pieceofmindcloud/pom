@@ -19,22 +19,30 @@ transferência.
   atual e o modelo ativo são protegidos.
 - `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
   download, progresso, licença, armazenamento e manifesto.
-- `hf_cli.rs` - execução segura e parser isolado da saída do executável `hf`.
-- `huggingface.rs` - implementação `HuggingFaceProvider` sobre o runner do
-  CLI, com validação de entradas, cache externo e manifesto local.
+- `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
+  validação de entradas, retomada por faixa, cache próprio e manifesto local.
+
+O token do Hugging Face é resolvido em cada requisição nesta ordem: `HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`, o campo `huggingface_token` do `pom.json` e, por fim,
+o arquivo de cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`~/.cache/huggingface/token`). A configuração da UI fica em memória no
+`HfTokenStore`, então salvar na tela atualiza autenticação sem reiniciar o nó.
+Nenhum endpoint devolve o token bruto; erros continuam passando por
+`redact_sensitive`.
 
 Mensagens internas de `HfError` continuam passando por `redact_sensitive`, que
 aceita texto emprestado ou possuído sem alterar a redação de tokens, headers de
 autorização e `HF_TOKEN`. O teste de owned text fica em `provider.rs`; a suíte
 também cobre que erros públicos não devolvem detalhes do provider.
 
-O provider usa `hf --version`, `hf auth whoami`, `hf models ls/info/card` e
-`hf download` por argumentos separados. O resultado do download enumera apenas
-arquivos locais regulares, calcula SHA-256 com o mesmo `pom::hash_file` usado
-pelos manifestos POM e não executa conteúdo remoto. O backend expõe o status do
-CLI e usa a licença do contrato no detalhe do modelo; a tela remota mostra o
-estado de autenticação e a licença antes do download. Callers internos devem
-consumir `ModelProvider`/`ProgressSender`, nunca montar `hf` diretamente.
+O provider usa os endpoints JSON do Hub e a URL `resolve` para busca, detalhes,
+arquivos, licença, autenticação e downloads. O download faz streaming para
+`.pom-hf/partials`, retoma com `Range` e `If-Range` somente após validar o
+tamanho e a identidade remota, cancela removendo o parcial e verifica SHA-256
+antes de finalizar. O backend mantém o JSON de status compatível com a tela,
+mas o campo `cli.installed` é verdadeiro quando o provider Rust está disponível.
+Callers internos devem consumir `ModelProvider`/`ProgressSender`, nunca montar
+URLs do Hugging Face diretamente.
 
 `pom.rs` mantém o manifesto por modelo original: no único formato v1, `pom_id`
 é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e

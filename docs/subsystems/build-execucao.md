@@ -48,6 +48,8 @@ cargo test               # testes do nó
   `cudaGraphLaunch` mesmo depois do warmup. Para habilitar esse recurso,
   somente quando houver VRAM livre comprovada, use
   `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
+- O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
+  instala `hf`, Python ou outro runtime externo.
 
 ## Identidade do produto (`brand.json`)
 

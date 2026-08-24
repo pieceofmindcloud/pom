@@ -33,5 +33,8 @@ describe("RemoteModelProviderStatus", () => {
     );
 
     expect(screen.getByText("Autenticação do Hugging Face necessária.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: /configurações/i }).getAttribute("href")).toBe(
+      "/config/rede#hugging-face",
+    );
   });
 });

@@ -95,6 +95,13 @@ provider e exibe o marcador de modelo gated antes da confirmação de download;
 assim a tela não presume uma licença nem inicia uma operação protegida sem
 explicar a autenticação exigida.
 
+Em `/config/rede`, o `HuggingFaceSettingsPanel` oferece o token opcional para
+modelos privados e gated. O campo é `password`, começa vazio e mostra apenas a
+máscara devolvida pelo backend. Salvar ou remover chama
+`/api/ui/model-provider/config`, invalida o status e faz o provider reler a
+credencial sem reiniciar o processo; a precedência segue a documentada em
+`api-http.md`.
+
 ### Perfis: o que cada um enxerga
 
 Duas pessoas abrem a mesma interface com trabalhos diferentes. O **administrador**

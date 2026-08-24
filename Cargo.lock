@@ -2895,6 +2895,7 @@ dependencies = [
  "tower-http 0.5.2",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "winresource",
  "x509-parser 0.16.0",

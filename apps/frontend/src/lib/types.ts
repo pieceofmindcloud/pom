@@ -553,6 +553,13 @@ export interface RemoteModelProviderStatus {
   };
 }
 
+/** Estado seguro do token: o segredo bruto nunca faz parte do contrato da UI. */
+export interface HuggingFaceTokenConfig {
+  configured: boolean;
+  masked: string | null;
+  source: "HF_TOKEN" | "HUGGING_FACE_HUB_TOKEN" | "pom.json" | "~/.cache/huggingface/token" | "none";
+}
+
 export interface RemoteModelDetails {
   repo_id: string;
   description: string | null;

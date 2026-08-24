@@ -16,6 +16,9 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
   (`crates/node/src/routing/pipeline.rs`) enquanto a cobertura de equivalencia
   cresce. O README.md da raiz aponta para ele.
 
+- `rdma-hf-provider-reuso.md` - levantamento pré-implementação e fronteiras de
+  reuso da integração `ModelProvider` com o CLI Hugging Face.
+
 ## subsystems/
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`

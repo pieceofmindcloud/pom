@@ -10,6 +10,11 @@ transferência.
 - `storage.rs` - calcula uso recursivo da pasta de fatias e remove diretórios
   gerados mais antigos quando o limite configurado seria excedido. A saída
   atual e o modelo ativo são protegidos.
+- `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
+  download, progresso, licença, armazenamento e manifesto.
+- `hf_cli.rs` - execução segura e parser isolado da saída do executável `hf`.
+- `huggingface.rs` - implementação `HuggingFaceProvider` sobre o runner do
+  CLI, com validação de entradas, cache externo e manifesto local.
 
 `pom.rs` mantém o manifesto por modelo original: no único formato v1, `pom_id`
 é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e

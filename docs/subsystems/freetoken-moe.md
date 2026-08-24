@@ -306,6 +306,13 @@ nosso caminho fica fora de `llama_decode`, no decodificador de referência em
 CPU. O fato de o FreeToken manter experts em CPU/RAM elimina offload como
 explicação suficiente: o gargalo é o cálculo do expert.
 
+Há uma segunda referência, medida no CHAT real da ksia sem a amarra de batch 8:
+o `llama.cpp` faz `292` tokens de entrada em `983 ms`, cerca de `3,4 ms/token`
+de prefill, e estabiliza em cerca de `30 ms/token` no p50 de decode. Portanto,
+o prefill de `3,1 ms/token` é simultaneamente o alvo FreeToken e a paridade
+prática com `llama.cpp`; no decode, `30 ms/token` é um marco intermediário de
+paridade com o motor denso antes do alvo FreeToken de `18,8 ms/token`.
+
 O objetivo é reimplementar a abordagem de cálculo do FreeToken na plataforma
 Rust, com kernels CUDA próprios e chamadas feitas pelo host Rust. Python,
 Triton e o FreeToken como motor externo estão fora do escopo. O FreeToken é
@@ -336,9 +343,10 @@ publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
    provado e mantém o decoder CPU somente como fallback explícito. Pronto
    quando 100% dos forwards de expert do prefill da carga de referência
    publicarem `gpu_expert_calls`, `cpu_expert_calls=0`, a saída passar a
-   comparação numérica com o decoder CPU e o prefill não piorar o baseline de
-   `54 ms/token`. A distância até o alvo FreeToken de `3,1 ms/token` deve ser
-   medida, não estimada.
+   comparação numérica com o decoder CPU e o prefill atingir `<= 5,4
+   ms/token`, uma redução de pelo menos uma ordem de grandeza sobre os `54
+   ms/token` atuais. O alvo final de `3,1 ms/token` continua sendo medido na
+   F5.3; o marco de `5,4` não pode ser substituído por apenas não regredir.
 
 3. **F5.2, perfil de banda e double buffer reais.** Medir H2D e D2H na mesma
    GPU, para os tamanhos de tokens e experts da carga, persistir o perfil
@@ -357,15 +365,21 @@ publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
    F5.1, `engine_mismatch=false`, sem fallback CPU e decode ainda `<= 80
    ms/token` durante a medição.
 
-5. **F5.4, decode e co-execução completa.** Aplicar a mesma lane ao decode de
-   um token, sobrepondo roteamento, transferência e cálculo entre requests e
-   preservando leases do LRU. Pronto quando o decode atingir `<= 18,8
-   ms/token` na mesma carga e GPU, o prefill permanecer `<= 3,1 ms/token`, e
-   a telemetria de cada hop mostrar `executed_engine=MoE`, sem mistura ou
-   divergência. Um fallback deve falhar nominalmente ou aparecer com seu
+5. **F5.4, paridade de decode com llama.cpp.** Aplicar a mesma lane ao decode
+   de um token, primeiro sem exigir o alvo FreeToken. Pronto quando o p50 de
+   decode atingir `<= 30 ms/token` na mesma carga e GPU, empatando o
+   `llama.cpp` medido no CHAT real, enquanto o prefill permanecer `<= 3,1
+   ms/token`. A telemetria deve mostrar `executed_engine=MoE`, sem mistura ou
+   divergência; um fallback deve falhar nominalmente ou aparecer com seu
    motivo, nunca ser contado como GPU.
 
-6. **F5.5, prova final e regressão.** Repetir os pontos F5.0 a F5.4 em pelo
+6. **F5.5, alvo FreeToken e co-execução completa.** Sobrepor roteamento,
+   transferência e cálculo entre requests, preservando leases do LRU. Pronto
+   quando o decode atingir `<= 18,8 ms/token` na mesma carga e GPU, o prefill
+   permanecer `<= 3,1 ms/token`, e a telemetria de cada hop mostrar
+   `executed_engine=MoE`, sem mistura ou divergência.
+
+7. **F5.6, prova final e regressão.** Repetir os pontos F5.0 a F5.5 em pelo
    menos três execuções independentes na ksia, anexar mediana e dispersão dos
    tempos, e rodar a suíte densa completa. O goal só fecha se os limites
    `3,1 ms/token` e `18,8 ms/token` forem atingidos na carga de referência,

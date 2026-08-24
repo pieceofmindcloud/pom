@@ -36,8 +36,10 @@ The chat telemetry additions live in both locale blocks: execution RTT, the
 source-to-destination edge scope, machine capacity/configuration, effective
 placement, per-peer `POM_PROFILE_SYNC`, execution diagnosis, TP collective
 table, AI-analysis action and initial-model mark must remain available in
-English and Brazilian Portuguese. The footnote explains the measurements but
-does not claim a fixed environment value.
+English and Brazilian Portuguese. Generic configuration state labels for
+fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
+state labels. The footnote explains the measurements but does not claim a fixed
+environment value.
 
 ### provider.tsx
 - `LocaleProvider({ children, initialLocale })` - initial state from `initialLocale` or from `localStorage` `codai.locale` + `navigator.languages`; writes `<html lang>` on change; persists the choice.

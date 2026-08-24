@@ -167,6 +167,10 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/Camadas com peso em GPU: 1/)).toBeTruthy();
     expect(screen.getByText(/Camadas mistas: 1/)).toBeTruthy();
     expect(screen.getByText(/Camadas com peso em CPU: 1/)).toBeTruthy();
+    expect(screen.getByText(/Ajuste à memória: ligado/)).toBeTruthy();
+    expect(screen.getByText(/Ajuste à memória: desligado/)).toBeTruthy();
+    expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
+    expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
     expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();
   });

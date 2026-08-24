@@ -220,7 +220,7 @@ function ExecutionEnvironment({
                       <div className="space-y-0.5">
                         <p>{t("chat.telemetry.requestedGpuLayers", { count: config.n_gpu_layers })}</p>
                         <p>{t("chat.telemetry.nCtx", { count: config.n_ctx })} · {t("chat.telemetry.nBatch", { count: config.n_batch })}</p>
-                        <p>{t("chat.telemetry.fitMemory", { value: config.fit_memory ? t("chat.telemetry.profileSyncActive") : t("chat.telemetry.profileSyncOff") })} · {t("chat.telemetry.offloadKqv", { value: config.offload_kqv ? t("chat.telemetry.profileSyncActive") : t("chat.telemetry.profileSyncOff") })}</p>
+                        <p>{t("chat.telemetry.fitMemory", { value: config.fit_memory ? t("chat.telemetry.configOn") : t("chat.telemetry.configOff") })} · {t("chat.telemetry.offloadKqv", { value: config.offload_kqv ? t("chat.telemetry.configOn") : t("chat.telemetry.configOff") })}</p>
                         <p>{t("chat.telemetry.sessions", { count: config.max_sessions })}</p>
                       </div>
                     ) : <p>{t("chat.telemetry.notInformed")}</p>}

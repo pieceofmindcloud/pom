@@ -308,9 +308,11 @@ derivado da marca `POM_INFERENCE_MODE` pode forçar `dense` ou exigir `moe`; o
 último recusa um GGUF denso com erro explícito.
 
 O caminho MoE atual aparece como `moe/llama.cpp-delegated` no `/health`, mas
-continua delegando ao `LlmEngine`. Isso cria a bifurcação observável e
-reversível sem alterar o comportamento do caminho denso. A substituição pelo
-motor de experts começa na Fase 4.
+continua delegando ao `LlmEngine`. Isso mantém a bifurcação observável e
+reversível sem alterar o comportamento do caminho denso. O motor próprio da
+Fase 4 vive em `inference/moe/`: o bloco Q4_0 mmapa experts do GGUF, faz
+roteamento top-k e usa o LRU global; a ligação ao runtime de transformer ainda
+precisa entregar hidden states e logits de router a esse bloco.
 
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser

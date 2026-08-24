@@ -74,11 +74,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   referência acompanha lookup, insert, busy, release e eviction; o proxy
   propositalmente quebra `cached_tokens` e a bateria precisa registrar a
   divergência.
-- `moe/` - núcleo inicial do executor próprio: `cache.rs` mantém um LRU global
-  por chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
+- `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
+  chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
-  `format_q4_0.rs` executa o gate-up, SiLU gated e down de um expert Q4_0 packed
-  em CPU. A integração com o forward completo aguarda um GGUF MoE real local.
+  `format_q4_0.rs` mmapa bancos Q4_0 do GGUF e executa gate-up, SiLU gated e
+  down em CPU; `router.rs` e `block.rs` fazem top-k e soma ponderada no bloco
+  MoE. O runtime HTTP ainda delega o caminho selecionado ao llama.cpp até
+  conectar hidden states e logits de router a esse bloco.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
   `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. Nesta fase ambos os
   caminhos delegam ao `LlmEngine`; o nome do caminho é exposto no `/health`.

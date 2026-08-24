@@ -95,7 +95,7 @@ Os testes isolados de GGUF e executor passaram em um harness `rustc` com 15
 casos. A suíte `cargo test -p node` continua sem alcançar a compilação Rust
 porque o build script não encontra `vendor/llama-cpp-sys-2/llama.cpp`.
 
-### Fase 4: núcleo do cache de experts e primeiro formato
+### Fase 4: cache global, loader GGUF e primeiro bloco MoE
 
 O desenho foi reimplementado em Rust a partir do FreeToken fixado em
 `bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. A instância `ExpertCache` é
@@ -112,18 +112,23 @@ local usa `MemAvailable` no Linux, `vm_stat` no macOS e
 mesma trait sem mudar a política.
 
 O primeiro formato é Q4_0 packed em CPU. `format_q4_0.rs` valida a geometria
-GGML, decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e down,
-e reutiliza o payload pelo LRU em uma segunda execução. O harness isolado tem
-11 testes passando, incluindo eviction global, memória medida, leases ativos e
-esse forward de expert. Nenhuma linha do FreeToken foi copiada.
+GGML, mmapa o GGUF, copia somente os dois bancos do expert solicitado para o
+cache, decodifica os blocos de 32 elementos, executa gate-up, SiLU gated e
+down. `router.rs` escolhe top-k de forma determinística e renormaliza os pesos;
+`block.rs` conecta essa seleção ao `Q4_0Executor`, usando uma chave global por
+modelo, camada, expert e formato. Nenhuma linha do FreeToken foi copiada.
 
-Esta fase ainda não está verde como modelo MoE ponta a ponta. A busca local não
-encontrou GGUF ou Safetensors MoE, e o build nativo não consegue carregar o
-`llama.cpp` apontado pelo symlink `vendor/llama-cpp-sys-2/llama.cpp`. Sem um
-modelo real e o motor nativo, não é possível provar a ligação de router,
-atenção, FFN e cache nem afirmar desempenho. O código entregue é a política e
-o executor de expert isolados; a validação de modelo completo permanece
-bloqueada por essa evidência de ambiente.
+O harness isolado passou com 17 testes, incluindo parser GGUF sintético,
+forward do bloco, cache hit, eviction global, memória medida, leases ativos e
+rejeições de geometria. Isso prova as fronteiras puras do motor, não um modelo
+completo. O caminho HTTP ainda reporta `moe/llama.cpp-delegated` até que o
+runtime de transformer entregue os hidden states e logits do router ao bloco
+próprio. O captain assumiu a prova ponta a ponta com um modelo real e fará essa
+validação fora deste ambiente, sem alterar o caminho denso.
+
+Não há número de desempenho nesta fase. O build nativo continua sem execução
+neste worktree porque `vendor/llama-cpp-sys-2/llama.cpp` não existe; não foi
+criado workaround para mascarar essa falha.
 
 ## Fase 0: baseline local
 

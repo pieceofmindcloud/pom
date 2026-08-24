@@ -7,6 +7,7 @@
 pub mod admission;
 pub mod block;
 pub mod cache;
+pub mod format_nvfp4;
 pub mod format_q4_0;
 pub mod router;
 pub mod runtime;

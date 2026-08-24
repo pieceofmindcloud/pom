@@ -5,6 +5,7 @@
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
 use super::cache::{ExpertCache, ExpertKey};
+use super::format_nvfp4::{Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{dispatch_top_k, DispatchError, RouteError};
 use std::fmt;
@@ -13,7 +14,7 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub enum MoeBlockError {
     Route(RouteError),
-    Executor(Q4ExecuteError),
+    Executor(String),
 }
 
 impl fmt::Display for MoeBlockError {
@@ -29,7 +30,13 @@ impl std::error::Error for MoeBlockError {}
 
 impl From<Q4ExecuteError> for MoeBlockError {
     fn from(error: Q4ExecuteError) -> Self {
-        Self::Executor(error)
+        Self::Executor(error.to_string())
+    }
+}
+
+impl From<Nvfp4ExecuteError> for MoeBlockError {
+    fn from(error: Nvfp4ExecuteError) -> Self {
+        Self::Executor(error.to_string())
     }
 }
 
@@ -72,7 +79,7 @@ impl Q4_0MoeBlock {
         });
         output.map_err(|error| match error {
             DispatchError::Route(error) => MoeBlockError::Route(error),
-            DispatchError::Expert(error) => MoeBlockError::Executor(error),
+            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
         })
     }
 
@@ -85,6 +92,53 @@ impl Q4_0MoeBlock {
             .router_logits(self.layer, hidden)
             .map_err(Q4ExecuteError::Source)?;
         self.forward(source, hidden, &logits)
+    }
+}
+
+/// Forward de um bloco MoE NVFP4 para uma camada GGUF.
+pub struct Nvfp4MoeBlock {
+    model: String,
+    layer: u32,
+    top_k: usize,
+    executor: Nvfp4Executor,
+}
+
+impl Nvfp4MoeBlock {
+    pub fn new(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            executor: Nvfp4Executor::new(cache, hidden, intermediate)
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub fn forward_from_source(
+        &self,
+        source: &Nvfp4Source,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let logits = source
+            .router_logits(self.layer, hidden)
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        let model = &self.model;
+        let layer = self.layer;
+        let output = dispatch_top_k(&logits, self.top_k, |expert| {
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            self.executor.run_from_source(source, key, layer, hidden)
+        });
+        output.map_err(|error| match error {
+            DispatchError::Route(error) => MoeBlockError::Route(error),
+            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
     }
 }
 

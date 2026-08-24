@@ -81,18 +81,19 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
-  `format_q4_0.rs` mmapa bancos Q4_0 do GGUF e executa gate-up, SiLU gated e
-  down em CPU. O loader aceita tanto `ffn_gate_up_exps.weight` fundido quanto
+  `format_q4_0.rs` compartilha o parser GGUF, o inventário de dtypes e o
+  decoder Q4_0, enquanto `format_nvfp4.rs` implementa o decoder NVFP4 em CPU.
+  Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
-  `block.rs` fazem top-k e soma ponderada no bloco
-  MoE. `runtime.rs` abre o router local e liga o bloco Q4_0 ao hidden state nos
-  caminhos unitário e batch. Não há executor GPU próprio nem perfil medido
+  `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
+  dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
+  nos caminhos unitário e batch. Não há executor GPU próprio nem perfil medido
   carregado, portanto a co-execução CPU/GPU da Fase 5 ainda não está ativa. O
   wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
   `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. O caminho denso fica
-  em `LlmEngine`, e o MoE seleciona o runtime Q4_0. `ExecutionEngine` é a
+  em `LlmEngine`, e o MoE seleciona o runtime próprio por dtype. `ExecutionEngine` é a
   fonte única do rótulo que sai na telemetria; ausente em peer antigo vira
   desconhecido na interface.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo

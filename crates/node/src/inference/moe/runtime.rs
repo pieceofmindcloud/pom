@@ -5,8 +5,10 @@
 //! Atenção e o restante das camadas continuam no contexto llama.cpp; aqui a
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
-use super::block::{MoeBlockError, Q4_0MoeBlock};
+use super::block::{MoeBlockError, Nvfp4MoeBlock, Q4_0MoeBlock};
 use super::cache::{CacheError, ExpertCache};
+use super::format_nvfp4::Nvfp4Source;
+use super::format_q4_0::{detect_expert_format, ExpertFormat};
 use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
 use std::fmt;
 use std::path::Path;
@@ -17,7 +19,8 @@ pub enum MoeRuntimeError {
     Source(Q4LoadError),
     Cache(CacheError),
     Format(Q4Error),
-    Block(MoeBlockError),
+    Block(String),
+    FormatMismatch,
     MissingLayer {
         layer: u32,
         layers: u32,
@@ -35,7 +38,10 @@ impl fmt::Display for MoeRuntimeError {
             Self::Source(error) => error.fmt(formatter),
             Self::Cache(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
-            Self::Block(error) => error.fmt(formatter),
+            Self::Block(error) => formatter.write_str(error),
+            Self::FormatMismatch => {
+                formatter.write_str("fonte e bloco MoE usam formatos diferentes")
+            }
             Self::MissingLayer { layer, layers } => {
                 write!(formatter, "camada MoE local {layer} fora de [0, {layers})")
             }
@@ -73,13 +79,32 @@ impl From<Q4Error> for MoeRuntimeError {
 
 impl From<MoeBlockError> for MoeRuntimeError {
     fn from(error: MoeBlockError) -> Self {
-        Self::Block(error)
+        Self::Block(error.to_string())
     }
 }
 
+enum MoeSource {
+    Q4(Q4_0Source),
+    Nvfp4(Nvfp4Source),
+}
+
+impl MoeSource {
+    fn hidden(&self) -> usize {
+        match self {
+            Self::Q4(source) => source.hidden(),
+            Self::Nvfp4(source) => source.hidden(),
+        }
+    }
+}
+
+enum MoeBlock {
+    Q4(Q4_0MoeBlock),
+    Nvfp4(Nvfp4MoeBlock),
+}
+
 pub struct MoeRuntime {
-    source: Q4_0Source,
-    blocks: Vec<Q4_0MoeBlock>,
+    source: MoeSource,
+    blocks: Vec<MoeBlock>,
 }
 
 impl MoeRuntime {
@@ -92,32 +117,71 @@ impl MoeRuntime {
         top_k: usize,
         weights_bytes: u64,
     ) -> Result<Self, MoeRuntimeError> {
-        let source = Q4_0Source::open_infer(path, experts)?;
-        if !source.has_router() {
-            return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
-                "blk.<layer>.ffn_gate_inp.weight".into(),
-            )));
-        }
-        let layers = source.layer_count();
-        if layers == 0 {
-            return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
-                "GGUF MoE sem camadas",
-            )));
-        }
         let cache = ExpertCache::measured_system(weights_bytes, 0, 0)?;
         let model = model.into();
-        let mut blocks = Vec::with_capacity(layers as usize);
-        for layer in 0..layers {
-            blocks.push(Q4_0MoeBlock::new(
-                Arc::clone(&cache),
-                &model,
-                layer,
-                top_k,
-                source.hidden(),
-                source.intermediate(),
-            )?);
+        match detect_expert_format(&path)? {
+            ExpertFormat::Q4_0 => {
+                let source = Q4_0Source::open_infer(&path, experts)?;
+                if !source.has_router() {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
+                        "blk.<layer>.ffn_gate_inp.weight".into(),
+                    )));
+                }
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::Q4(Q4_0MoeBlock::new(
+                        Arc::clone(&cache),
+                        &model,
+                        layer,
+                        top_k,
+                        source.hidden(),
+                        source.intermediate(),
+                    )?));
+                }
+                Ok(Self {
+                    source: MoeSource::Q4(source),
+                    blocks,
+                })
+            }
+            ExpertFormat::Nvfp4 => {
+                let source = Nvfp4Source::open_infer(&path, experts)?;
+                if !source.has_router() {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
+                        "blk.<layer>.ffn_gate_inp.weight".into(),
+                    )));
+                }
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::Nvfp4(
+                        Nvfp4MoeBlock::new(
+                            Arc::clone(&cache),
+                            &model,
+                            layer,
+                            top_k,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                        .map_err(MoeRuntimeError::Block)?,
+                    ));
+                }
+                Ok(Self {
+                    source: MoeSource::Nvfp4(source),
+                    blocks,
+                })
+            }
         }
-        Ok(Self { source, blocks })
     }
 
     pub fn layers(&self) -> u32 {
@@ -154,7 +218,16 @@ impl MoeRuntime {
         }
         let mut output = Vec::with_capacity(hidden.len());
         for token_hidden in hidden.chunks_exact(hidden_width) {
-            output.extend(block.forward_from_source(&self.source, token_hidden)?);
+            let values = match (&self.source, block) {
+                (MoeSource::Q4(source), MoeBlock::Q4(block)) => {
+                    block.forward_from_source(source, token_hidden)?
+                }
+                (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) => {
+                    block.forward_from_source(source, token_hidden)?
+                }
+                _ => return Err(MoeRuntimeError::FormatMismatch),
+            };
+            output.extend(values);
         }
         Ok(output)
     }

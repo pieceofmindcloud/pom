@@ -126,9 +126,11 @@ router F32, forward do bloco, cache hit, eviction global, memória medida,
 leases ativos e rejeições de geometria. Isso prova as fronteiras puras do
 motor, não um modelo completo. O parser também aceita arrays GGUF grandes,
 limitando-os pelo espaço restante do arquivo em vez de um teto arbitrário.
-O runtime HTTP agora abre o banco Q4_0 local,
-calcula os logits do router e aplica o bloco ao hidden state recebido ou ao
-residual que será encaminhado. O frame continua em f16 e não leva pesos.
+O runtime HTTP agora detecta o dtype dos bancos de experts, abre o decoder
+próprio correspondente e calcula os logits do router antes de aplicar o bloco
+ao hidden state recebido ou ao residual que será encaminhado. Q4_0 e NVFP4
+compartilham a mesma fronteira de cache e dispatch, mas cada decoder valida sua
+própria geometria. O frame continua em f16 e não leva pesos.
 Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
 bloco costurado e a amostragem final do token; portanto esta entrega não
 afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
@@ -143,7 +145,7 @@ não entra no commit e não substitui a prova ponta a ponta com um modelo real.
 
 `infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é
 MoE, `MoeRuntime` é aberto somente para esse caminho e o router local escolhe
-os experts Q4_0. No prefill e no decode, um hidden state recebido é transformado
+os experts do decoder selecionado. No prefill e no decode, um hidden state recebido é transformado
 antes do decode local; quando o pedido entrou como tokens, o residual capturado
 é transformado antes de seguir para o próximo hop. Os caminhos unitário e batch
 passam pela mesma ponte. O wire permanece o estado oculto f16 já existente,
@@ -160,15 +162,12 @@ classificada como `llama.cpp`.
 
 O Gemma4 real inspecionado na ksia usa os nomes separados, com dimensões
 `[2816, 704, 128]` para gate/up, `dtype=40` (NVFP4), e 100 camadas. A costura
-de nomes separados está coberta para Q4_0 (`dtype=2`); o executor Q4_0 ainda
-não executa o dtype NVFP4 desse arquivo. O primeiro ponto esperado de quebra
-na prova real depois da seleção de nomes é, portanto, o formato de
-quantização. Depois vêm geometria Q4_0 incompatível ou camada fora
-da faixa, e por fim a qualidade numérica da costura parcial, que ainda não
-substitui todas as operações do transformer. Os testes puros do executor e da
-telemetria estão escritos; a suíte nativa já foi executada. A prova física
-ponta a ponta com um modelo MoE real continua sendo responsabilidade do
-captain.
+de nomes separados e o decoder NVFP4 CPU estão cobertos por fixtures locais;
+o primeiro teste físico desse formato será feito pelo captain na ksia. Depois
+da abertura, os riscos restantes são sidecars de escala, geometria por camada
+e a qualidade numérica da costura parcial, que ainda não substitui todas as
+operações do transformer. Os testes puros do executor e da telemetria estão
+escritos; a suíte nativa já foi executada.
 
 ### Fase 5: co-execução CPU/GPU ainda não ativa
 
@@ -183,6 +182,84 @@ acontece. O caminho MoE que existe hoje é CPU para router e experts, com cache
 LRU global; a fase 5 só poderá ser retomada quando houver um executor GPU
 concreto e uma fonte de medições simultâneas CPU/transferência. Nenhum ganho de
 desempenho ou sobreposição CPU/GPU é afirmado.
+
+## Goal: executor MoE para todos os dtypes GGUF
+
+Este é um goal formal adicional ao caminho `feat/ftk`: o runtime próprio deve
+executar experts MoE em todos os dtypes GGUF ativos suportados pelo
+`ggml_type` do `llama.cpp`, e não somente em Q4_0. A fonte da enumeração é
+`llama.cpp/ggml/include/ggml.h`, especialmente `GGML_TYPE_COUNT`; os IDs
+removidos de arquivos GGUF não são tratados como formatos válidos. O escopo
+preserva a bifurcação: modelos densos continuam no `llama.cpp`, e nenhum peso
+ou bloco de quantização atravessa a rede por causa do fatiamento.
+
+O contrato de segurança é comum a todas as fases: o cabeçalho GGUF é validado
+antes de qualquer decodificação, o dispatch usa o ID e a geometria do tensor,
+e uma combinação não implementada recusa com `dtype=<id> (<nome>)`. Um dtype
+desconhecido também é recusado com seu ID bruto. É proibido interpretar bytes
+de um formato como se fossem outro. Ao concluir o goal, essa recusa será o
+caminho raro para um dtype realmente novo ou um tensor inválido, não a saída
+normal para modelos conhecidos.
+
+### Fases e critérios de pronto
+
+1. **Inventário e conformance.** Mapear todos os IDs ativos da enumeração,
+   nomeá-los no loader, levantar os dtypes dos experts em um corpus real e
+   adicionar fixtures de cabeçalho para formatos suportados e recusados. Pronto
+   quando cada ID chega a uma decisão explícita, cada recusa nomeia o dtype e o
+   parser não lê um payload sem validar limites, rank, geometria e offset.
+
+2. **NVFP4, dtype 40.** Implementar primeiro o decoder CPU de referência para
+   o layout NVFP4 usado pelo Gemma4, incluindo escalas E4M3, blocos, gate/up
+   fundido ou separado e down. Pronto quando fixtures sintéticas cobrem cada
+   escala e sinal, o resultado é comparado operação a operação com uma
+   referência independente e um GGUF real NVFP4 completa a abertura e o
+   forward do expert sem cair no loader Q4_0.
+
+3. **Camada genérica e compatibilidade Q4_0.** Extrair `ExpertDecoder` e um
+   dispatch por dtype, mantendo a chave do cache, admissão por memória e
+   formatos de nomes fora do decoder. Migrar Q4_0 e NVFP4 para essa camada,
+   com testes de contrato idênticos por formato. Pronto quando o caminho denso
+   não importar o runtime MoE, Q4_0 continuar passando e nenhum branch puder
+   escolher um decoder por nome de arquivo.
+
+4. **Cobertura por impacto, sem recorte de famílias.** Depois do NVFP4, a
+   primeira fila são os K-quants que existem na ksia: `Q4_K` (12) e `Q6_K`
+   (14), presentes no Qwen3.6 Q4_K_M. A segunda fila são os IQ-quants que
+   aparecem no corpus real: `IQ3_S` (21), `IQ2_S` (22) e `IQ4_XS` (23), nas
+   variantes Qwen3.6 UD-IQ3_S e Ornith UD-IQ3_XXS. Depois entram os demais
+   tipos, sem abandonar nenhum: numéricos `F32`, `F16`, `BF16`, `F64`, `I8`,
+   `I16`, `I32` e `I64`; blocos legados `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0` e
+   `Q8_1`; `Q2_K`, `Q3_K`, `Q5_K`, `Q8_K`, `TQ1_0`, `TQ2_0`, `MXFP4`, `Q1_0` e
+   `Q2_0`; e os IQ restantes `IQ1_M`, `IQ1_S`, `IQ2_XS`, `IQ2_XXS`, `IQ3_XXS`
+   e `IQ4_NL`. A prioridade é evidência do corpus real, não um recorte de
+   famílias: a ausência de qualquer MoE Q4_0 na ksia impede que Q4_0 seja uma
+   fila de validação física, embora ele permaneça coberto pelos testes locais.
+   Cada subgrupo fica pronto com decoder, fixture de payload, rejeições de
+   geometria e teste diferencial antes do próximo.
+
+5. **Prova real e encerramento.** Executar um modelo MoE real para cada dtype
+   presente no corpus, medir carregamento, cache, forward e tok/s, e comparar
+   com a referência do `llama.cpp` ou uma referência numérica independente.
+   Pronto quando todos os dtypes ativos da enumeração têm teste de formato e
+   pelo menos uma prova de execução; apenas IDs removidos, desconhecidos ou
+   GGUF inválidos podem terminar em recusa nominal. A suíte densa completa
+   continua obrigatória em cada fase.
+
+### Inventário GGUF atual
+
+Os dtypes ativos são: `0 F32`, `1 F16`, `2 Q4_0`, `3 Q4_1`, `6 Q5_0`,
+`7 Q5_1`, `8 Q8_0`, `9 Q8_1`, `10 Q2_K`, `11 Q3_K`, `12 Q4_K`, `13 Q5_K`,
+`14 Q6_K`, `15 Q8_K`, `16 IQ2_XXS`, `17 IQ2_XS`, `18 IQ3_XXS`, `19 IQ1_S`,
+`20 IQ4_NL`, `21 IQ3_S`, `22 IQ2_S`, `23 IQ4_XS`, `24 I8`, `25 I16`, `26 I32`,
+`27 I64`, `28 F64`, `29 IQ1_M`, `30 BF16`, `34 TQ1_0`, `35 TQ2_0`,
+`39 MXFP4`, `40 NVFP4`, `41 Q1_0` e `42 Q2_0`.
+
+Os IDs `4 Q4_2`, `5 Q4_3`, `31 Q4_0_4_4`, `32 Q4_0_4_8`, `33 Q4_0_8_8`,
+`36 IQ4_NL_4_4`, `37 IQ4_NL_4_8` e `38 IQ4_NL_8_8` permanecem na faixa
+histórica da enumeração, mas o `llama.cpp` marca-os como removidos de arquivos
+GGUF. O loader deve rejeitá-los como dtype removido, com o ID e o nome na
+mensagem, em vez de tratá-los como um dos formatos ativos.
 
 ## Fase 0: baseline local
 

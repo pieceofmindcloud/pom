@@ -16,6 +16,61 @@ const BLOCK_ELEMENTS: usize = 32;
 const BLOCK_BYTES: usize = 18;
 const PAYLOAD_HEADER_BYTES: usize = 8;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpertFormat {
+    Q4_0,
+    Nvfp4,
+}
+
+pub fn ggml_type_name(dtype: u32) -> &'static str {
+    match dtype {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        4 => "Q4_2 (removido)",
+        5 => "Q4_3 (removido)",
+        6 => "Q5_0",
+        7 => "Q5_1",
+        8 => "Q8_0",
+        9 => "Q8_1",
+        10 => "Q2_K",
+        11 => "Q3_K",
+        12 => "Q4_K",
+        13 => "Q5_K",
+        14 => "Q6_K",
+        15 => "Q8_K",
+        16 => "IQ2_XXS",
+        17 => "IQ2_XS",
+        18 => "IQ3_XXS",
+        19 => "IQ1_S",
+        20 => "IQ4_NL",
+        21 => "IQ3_S",
+        22 => "IQ2_S",
+        23 => "IQ4_XS",
+        24 => "I8",
+        25 => "I16",
+        26 => "I32",
+        27 => "I64",
+        28 => "F64",
+        29 => "IQ1_M",
+        30 => "BF16",
+        31 => "Q4_0_4_4 (removido)",
+        32 => "Q4_0_4_8 (removido)",
+        33 => "Q4_0_8_8 (removido)",
+        34 => "TQ1_0",
+        35 => "TQ2_0",
+        36 => "IQ4_NL_4_4 (removido)",
+        37 => "IQ4_NL_4_8 (removido)",
+        38 => "IQ4_NL_8_8 (removido)",
+        39 => "MXFP4",
+        40 => "NVFP4",
+        41 => "Q1_0",
+        42 => "Q2_0",
+        _ => "desconhecido",
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Q4Error {
     Geometry(&'static str),
@@ -204,7 +259,11 @@ impl fmt::Display for Q4LoadError {
             Self::Io(error) => write!(formatter, "falha ao ler GGUF: {error}"),
             Self::InvalidGguf(reason) => write!(formatter, "GGUF inválido: {reason}"),
             Self::UnsupportedTensorType(kind) => {
-                write!(formatter, "tensor MoE usa tipo GGML não suportado: {kind}")
+                write!(
+                    formatter,
+                    "tensor MoE usa dtype GGML não suportado: {kind} ({})",
+                    ggml_type_name(*kind)
+                )
             }
             Self::MissingTensor(name) => write!(formatter, "tensor de expert ausente: {name}"),
             Self::InvalidTensor(reason) => write!(formatter, "tensor de expert inválido: {reason}"),
@@ -218,11 +277,11 @@ impl fmt::Display for Q4LoadError {
 impl std::error::Error for Q4LoadError {}
 
 #[derive(Debug, Clone)]
-struct TensorSpec {
-    name: String,
-    dims: Vec<u64>,
-    dtype: u32,
-    offset: u64,
+pub(crate) struct TensorSpec {
+    pub(crate) name: String,
+    pub(crate) dims: Vec<u64>,
+    pub(crate) dtype: u32,
+    pub(crate) offset: u64,
 }
 
 enum GateUpTensors {
@@ -231,6 +290,44 @@ enum GateUpTensors {
         gate: Vec<TensorSpec>,
         up: Vec<TensorSpec>,
     },
+}
+
+pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4LoadError> {
+    let file = File::open(path.as_ref()).map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    // SAFETY: the file descriptor stays alive until the mmap is created and
+    // the mapping is used only during this inspection.
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    let (_, tensors) = parse_tensor_table(&mmap)?;
+    let mut expert_dtypes = tensors
+        .iter()
+        .filter(|tensor| {
+            tensor.name.starts_with("blk.")
+                && tensor.name.ends_with(".weight")
+                && [
+                    "ffn_gate_up_exps.weight",
+                    "ffn_gate_exps.weight",
+                    "ffn_up_exps.weight",
+                    "ffn_down_exps.weight",
+                ]
+                .iter()
+                .any(|suffix| tensor.name.ends_with(suffix))
+        })
+        .map(|tensor| tensor.dtype);
+    let Some(dtype) = expert_dtypes.next() else {
+        return Err(Q4LoadError::MissingTensor(
+            "blk.<layer>.ffn_*_exps.weight".into(),
+        ));
+    };
+    if expert_dtypes.any(|other| other != dtype) {
+        return Err(Q4LoadError::InvalidTensor(
+            "experts usam dtypes GGML misturados",
+        ));
+    }
+    match dtype {
+        2 => Ok(ExpertFormat::Q4_0),
+        40 => Ok(ExpertFormat::Nvfp4),
+        other => Err(Q4LoadError::UnsupportedTensorType(other)),
+    }
 }
 
 /// Fonte mmap de experts Q4_0 em GGUF.
@@ -637,7 +734,7 @@ fn validate_tensor(
     Ok(())
 }
 
-fn parse_tensor_table(raw: &[u8]) -> Result<(usize, Vec<TensorSpec>), Q4LoadError> {
+pub(crate) fn parse_tensor_table(raw: &[u8]) -> Result<(usize, Vec<TensorSpec>), Q4LoadError> {
     let mut cursor = 0usize;
     let magic = read_u32(raw, &mut cursor)?;
     if magic != 0x4655_4747 {
@@ -1075,6 +1172,13 @@ pub(crate) mod tests {
 
         let parsed = parse_tensor_table(&raw);
         assert!(parsed.is_ok(), "{parsed:?}");
+    }
+
+    #[test]
+    fn dtype_nao_suportado_informa_id_e_nome() {
+        let error = Q4LoadError::UnsupportedTensorType(40).to_string();
+        assert!(error.contains("40"));
+        assert!(error.contains("NVFP4"));
     }
 
     #[test]

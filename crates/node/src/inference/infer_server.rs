@@ -1169,7 +1169,7 @@ impl InferState {
         };
         let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
         moe.forward_batch(layer, &hidden, n_tokens)
-            .map_err(|error| anyhow::anyhow!("forward MoE Q4_0 falhou: {error}"))
+            .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))
     }
 
     fn mark_execution_engine(&self, timings: &mut NodeTimings) {
@@ -1363,7 +1363,7 @@ pub async fn run(
                 top_k,
                 weights_bytes,
             )
-            .map_err(|error| anyhow::anyhow!("runtime MoE Q4_0 indisponível: {error}"))?,
+            .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
         )
     } else {
         None

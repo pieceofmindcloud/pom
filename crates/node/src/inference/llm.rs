@@ -55,7 +55,7 @@ unsafe extern "C" fn capture_callback(
     if user_data.is_null() {
         return true;
     }
-    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load` registrou, e ele
+    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load_with_cache` registrou, e ele
     // aponta para o `Box<Mutex<CaptureSlot>>` do mesmo `LlmEngine` que é dono
     // deste contexto. O Box vive enquanto o contexto viver (ver `Drop`).
     let slot = unsafe { &*(user_data as *const Mutex<CaptureSlot>) };
@@ -606,11 +606,6 @@ impl LoadedModel {
 }
 
 impl LlmEngine {
-    /// Load a GGUF model slice and create a llama context.
-    pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
-        Self::load_with_cache(model_path, cfg, &ModelCache::new(), false)
-    }
-
     /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
     /// pesos carregados por uma geração anterior.
     pub(crate) fn load_with_cache(
@@ -2507,7 +2502,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
 
         let n_tokens = 4;
         // Values in the range a real residual carries; zeros would let a graph
@@ -2550,7 +2546,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let toks = engine.tokenize("Explique inferencia distribuida em uma frase.", true, true);
         assert!(!toks.is_empty(), "prompt must tokenize");
         engine
@@ -2606,7 +2603,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize(
             "Explique o que e inferencia distribuida em uma frase.",
             true,
@@ -2673,7 +2671,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize("oi", true, true);
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
@@ -2710,7 +2709,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
         assert!(formatted.contains("Oi, teste"));
         assert!(!formatted.starts_with("Oi, teste"));

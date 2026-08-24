@@ -3,7 +3,7 @@
 ## What this folder is
 
 The HTTP backend of the `pom` node: every axum router and handler the
-binary serves. It owns the single generation path (`gateway::generate_stream`,
+binary serves. It owns the single generation path (`gateway::generate_stream_with_stops`,
 which routes to the **distributed pipeline** - there is no fallback to a local
 or peer Ollama, a missing plan fails the request), the gateway state all
 handlers share, the two protocol adapters (OpenAI and
@@ -22,8 +22,8 @@ behind an auth extractor.
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
-- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream` /
-  `generate_blocking` / `spawn_logged_generation`, o `StopMatcher` incremental,
+- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+  `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
   prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
@@ -113,7 +113,7 @@ behind an auth extractor.
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
   complete window for each session; `max_sessions` multiplies the runtime KV
   reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
-  prompt); `generate_stream`
+  prompt); `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -131,8 +131,8 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking` collapses it. When the stream receiver closes,
-  `generate_stream` cancels the prefill's local HTTP future and prevents the
+  /`Failed`; `generate_blocking_with_stops` collapses it. When the stream receiver closes,
+  `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,

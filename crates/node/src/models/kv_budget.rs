@@ -1,60 +1,11 @@
 use crate::config::KvCacheType;
 use anyhow::{bail, Result};
 
-/// Entradas medidas do cache KV de uma fatia.
-///
-/// A capacidade de contexto é por sessão; `max_sessions` transforma-a na
-/// quantidade total de células que o contexto reserva. Nenhuma função deste
-/// módulo consulta device, FFI ou arquivo de modelo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct KvBudgetInput {
-    pub context_tokens: u64,
-    pub max_sessions: u64,
-    pub layers: u64,
-    pub kv_heads: u64,
-    pub key_head_dim: u64,
-    pub value_head_dim: u64,
-    pub cache_type_k: KvCacheType,
-    pub cache_type_v: KvCacheType,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct KvLayerGeometry {
     pub kv_heads: u64,
     pub key_head_dim: u64,
     pub value_head_dim: u64,
-}
-
-/// Bytes de KV para a geometria informada, com falha explícita em aritmética
-/// inválida ou overflow.
-pub(crate) fn kv_bytes(input: &KvBudgetInput) -> Result<u64> {
-    for (name, value) in [
-        ("contexto", input.context_tokens),
-        ("sessões", input.max_sessions),
-        ("camadas", input.layers),
-        ("cabeças KV", input.kv_heads),
-        ("dimensão K", input.key_head_dim),
-        ("dimensão V", input.value_head_dim),
-    ] {
-        if value == 0 {
-            bail!("geometria KV inválida: {name} é zero");
-        }
-    }
-
-    let geometry = KvLayerGeometry {
-        kv_heads: input.kv_heads,
-        key_head_dim: input.key_head_dim,
-        value_head_dim: input.value_head_dim,
-    };
-    let bytes_per_layer = kv_bytes_per_layer(&geometry, input.cache_type_k, input.cache_type_v)?;
-    let cells = input
-        .context_tokens
-        .checked_mul(input.max_sessions)
-        .ok_or_else(|| anyhow::anyhow!("overflow em context_tokens * max_sessions"))?;
-    cells
-        .checked_mul(input.layers)
-        .and_then(|v| v.checked_mul(bytes_per_layer))
-        .ok_or_else(|| anyhow::anyhow!("overflow ao calcular bytes totais do KV"))
 }
 
 pub(crate) fn kv_bytes_for_layers(
@@ -114,7 +65,7 @@ fn row_bytes(kind: KvCacheType, elements: u64) -> Result<u64> {
         KvCacheType::Q5_0 => (22, 32),
         KvCacheType::Q5_1 => (24, 32),
     };
-    if elements % block_elements != 0 {
+    if !elements.is_multiple_of(block_elements) {
         bail!("largura KV de {elements} elementos não fecha o bloco de {block_elements} elementos");
     }
     (elements / block_elements)
@@ -129,68 +80,65 @@ mod tests {
 
     #[test]
     fn calcula_kv_com_tipos_assimetricos_e_sessoes() {
-        let input = KvBudgetInput {
-            context_tokens: 1024,
-            max_sessions: 2,
-            layers: 4,
+        let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 64,
             value_head_dim: 64,
-            cache_type_k: KvCacheType::F16,
-            cache_type_v: KvCacheType::Q8_0,
         };
-
-        assert_eq!(kv_bytes(&input).unwrap(), 12_845_056);
+        assert_eq!(
+            kv_bytes_for_layers(1024, 2, &[geometry; 4], KvCacheType::F16, KvCacheType::Q8_0,)
+                .unwrap(),
+            12_845_056
+        );
     }
 
     #[test]
     fn recusa_dimensao_que_nao_fecha_bloco_quantizado() {
-        let input = KvBudgetInput {
-            context_tokens: 1,
-            max_sessions: 1,
-            layers: 1,
+        let geometry = KvLayerGeometry {
             kv_heads: 1,
             key_head_dim: 33,
             value_head_dim: 32,
-            cache_type_k: KvCacheType::Q8_0,
-            cache_type_v: KvCacheType::F16,
         };
 
-        assert!(kv_bytes(&input).unwrap_err().to_string().contains("bloco"));
+        assert!(
+            kv_bytes_for_layers(1, 1, &[geometry], KvCacheType::Q8_0, KvCacheType::F16,)
+                .unwrap_err()
+                .to_string()
+                .contains("bloco")
+        );
     }
 
     #[test]
     fn recusa_overflow_em_vez_de_enrolar_o_planejamento() {
-        let input = KvBudgetInput {
-            context_tokens: u64::MAX,
-            max_sessions: 2,
-            layers: 2,
+        let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 128,
             value_head_dim: 128,
-            cache_type_k: KvCacheType::F16,
-            cache_type_v: KvCacheType::F16,
         };
 
-        assert!(kv_bytes(&input).is_err());
+        assert!(kv_bytes_for_layers(
+            u64::MAX,
+            2,
+            &[geometry; 2],
+            KvCacheType::F16,
+            KvCacheType::F16,
+        )
+        .is_err());
     }
 
     #[test]
     fn recusa_zero_sessoes_em_vez_de_inventar_uma_sessao() {
-        let input = KvBudgetInput {
-            context_tokens: 1024,
-            max_sessions: 0,
-            layers: 1,
+        let geometry = KvLayerGeometry {
             kv_heads: 8,
             key_head_dim: 128,
             value_head_dim: 128,
-            cache_type_k: KvCacheType::F16,
-            cache_type_v: KvCacheType::F16,
         };
 
-        assert!(kv_bytes(&input)
-            .unwrap_err()
-            .to_string()
-            .contains("sessões"));
+        assert!(
+            kv_bytes_for_layers(1024, 0, &[geometry], KvCacheType::F16, KvCacheType::F16,)
+                .unwrap_err()
+                .to_string()
+                .contains("sessões")
+        );
     }
 }

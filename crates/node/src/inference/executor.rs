@@ -7,17 +7,12 @@
 
 use anyhow::{bail, Result};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferenceMode {
+    #[default]
     Auto,
     Dense,
     Moe,
-}
-
-impl Default for InferenceMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 impl InferenceMode {

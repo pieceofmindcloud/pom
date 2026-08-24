@@ -92,20 +92,6 @@ pub struct SplitPlan {
 
 // ── Planner ──────────────────────────────────────────────────────────────────
 
-/// Turn per-peer memory budgets into per-peer layer ranges.
-///
-/// Peers are served in the order given: peer 0 takes layers from 0 upward until
-/// its budget is spent, peer 1 continues from there, and so on. The last peer
-/// also has to fit the output head, which `slice_bytes` accounts for.
-pub fn plan_split(
-    model_path: &str,
-    layout: &GgufLayout,
-    budgets: &[PeerBudget],
-    reserve_pct: f64,
-) -> Result<SplitPlan> {
-    plan_split_impl(model_path, layout, None, budgets, reserve_pct, None)
-}
-
 /// Variante do planejador que recusa uma faixa quando peso + KV não cabem no
 /// orçamento de memória do peer.
 pub fn plan_split_with_kv(
@@ -777,6 +763,15 @@ pub fn base_name_from_label(label: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan_split(
+        model_path: &str,
+        layout: &GgufLayout,
+        budgets: &[PeerBudget],
+        reserve_pct: f64,
+    ) -> Result<SplitPlan> {
+        plan_split_impl(model_path, layout, None, budgets, reserve_pct, None)
+    }
 
     fn layout(n: u32, per_layer_mb: f64) -> GgufLayout {
         let per = (per_layer_mb * MB) as u64;

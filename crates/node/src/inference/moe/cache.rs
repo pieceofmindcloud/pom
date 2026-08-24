@@ -72,7 +72,7 @@ fn system_free_bytes() -> io::Result<u64> {
     let page_size = command_number("sysctl", &["-n", "hw.pagesize"])?;
     let output = std::process::Command::new("vm_stat").output()?;
     if !output.status.success() {
-        return Err(io::Error::new(io::ErrorKind::Other, "vm_stat falhou"));
+        return Err(io::Error::other("vm_stat falhou"));
     }
     let text = String::from_utf8_lossy(&output.stdout);
     let available_pages = [
@@ -93,10 +93,7 @@ fn system_free_bytes() -> io::Result<u64> {
 fn command_number(program: &str, args: &[&str]) -> io::Result<u64> {
     let output = std::process::Command::new(program).args(args).output()?;
     if !output.status.success() {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("{program} falhou"),
-        ));
+        return Err(io::Error::other(format!("{program} falhou")));
     }
     String::from_utf8_lossy(&output.stdout)
         .trim()
@@ -184,14 +181,14 @@ impl fmt::Display for CacheError {
 impl std::error::Error for CacheError {}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ExpertCacheStats {
-    pub hits: u64,
-    pub misses: u64,
-    pub admissions: u64,
-    pub evictions: u64,
-    pub rejections: u64,
-    pub resident_bytes: usize,
-    pub entries: usize,
+struct ExpertCacheStats {
+    hits: u64,
+    misses: u64,
+    admissions: u64,
+    evictions: u64,
+    rejections: u64,
+    resident_bytes: usize,
+    entries: usize,
 }
 
 struct Entry {
@@ -352,11 +349,6 @@ impl ExpertCache {
         })
     }
 
-    pub fn stats(&self) -> ExpertCacheStats {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        state.stats
-    }
-
     fn release(&self, key: &ExpertKey) {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(entry) = state.entries.get_mut(key) {
@@ -372,10 +364,6 @@ pub struct ExpertLease {
 }
 
 impl ExpertLease {
-    pub fn key(&self) -> &ExpertKey {
-        &self.key
-    }
-
     pub fn bytes(&self) -> &[u8] {
         &self.payload
     }
@@ -426,6 +414,14 @@ mod tests {
         cache_with_baseline(probe, 10)
     }
 
+    fn stats(cache: &ExpertCache) -> ExpertCacheStats {
+        cache
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stats
+    }
+
     fn key(expert: u32) -> ExpertKey {
         ExpertKey::new("model", 3, expert, "q4_0")
     }
@@ -437,8 +433,8 @@ mod tests {
         let first = cache.admit(key(1), vec![1, 2, 3]).unwrap();
         let second = cache.lookup(&key(1)).unwrap();
         assert_eq!(second.bytes(), &[1, 2, 3]);
-        assert_eq!(cache.stats().resident_bytes, 3);
-        assert_eq!(cache.stats().hits, 1);
+        assert_eq!(stats(&cache).resident_bytes, 3);
+        assert_eq!(stats(&cache).hits, 1);
         drop(first);
         drop(second);
     }
@@ -454,7 +450,7 @@ mod tests {
         assert!(cache.lookup(&key(1)).is_some());
         assert!(cache.lookup(&key(2)).is_none());
         assert_eq!(replacement.bytes(), &[3, 3, 3]);
-        assert_eq!(cache.stats().evictions, 1);
+        assert_eq!(stats(&cache).evictions, 1);
         drop(active);
         drop(replacement);
     }
@@ -468,8 +464,8 @@ mod tests {
         probe.set(2);
         let replacement = cache.admit(key(2), vec![2; 3]).unwrap();
         assert_eq!(replacement.bytes(), &[2, 2, 2]);
-        assert_eq!(cache.stats().evictions, 1);
-        assert_eq!(cache.stats().resident_bytes, 3);
+        assert_eq!(stats(&cache).evictions, 1);
+        assert_eq!(stats(&cache).resident_bytes, 3);
         drop(replacement);
     }
 

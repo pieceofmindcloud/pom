@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 #[derive(Debug)]
 pub enum MoeRuntimeError {
-    Io(String),
     Source(Q4LoadError),
     Cache(CacheError),
     Format(Q4Error),
@@ -33,7 +32,6 @@ pub enum MoeRuntimeError {
 impl fmt::Display for MoeRuntimeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(error) => write!(formatter, "falha ao preparar runtime MoE: {error}"),
             Self::Source(error) => error.fmt(formatter),
             Self::Cache(error) => error.fmt(formatter),
             Self::Format(error) => error.fmt(formatter),
@@ -82,7 +80,6 @@ impl From<MoeBlockError> for MoeRuntimeError {
 pub struct MoeRuntime {
     source: Q4_0Source,
     blocks: Vec<Q4_0MoeBlock>,
-    hidden: usize,
 }
 
 impl MoeRuntime {
@@ -120,15 +117,7 @@ impl MoeRuntime {
                 source.intermediate(),
             )?);
         }
-        Ok(Self {
-            hidden: source.hidden(),
-            source,
-            blocks,
-        })
-    }
-
-    pub fn hidden(&self) -> usize {
-        self.hidden
+        Ok(Self { source, blocks })
     }
 
     pub fn layers(&self) -> u32 {
@@ -148,22 +137,23 @@ impl MoeRuntime {
                 layer,
                 layers: self.layers(),
             })?;
+        let hidden_width = self.source.hidden();
         let expected = tokens
-            .checked_mul(self.hidden)
+            .checked_mul(hidden_width)
             .ok_or(MoeRuntimeError::InvalidShape {
                 values: hidden.len(),
                 tokens,
-                hidden: self.hidden,
+                hidden: hidden_width,
             })?;
         if tokens == 0 || hidden.len() != expected {
             return Err(MoeRuntimeError::InvalidShape {
                 values: hidden.len(),
                 tokens,
-                hidden: self.hidden,
+                hidden: hidden_width,
             });
         }
         let mut output = Vec::with_capacity(hidden.len());
-        for token_hidden in hidden.chunks_exact(self.hidden) {
+        for token_hidden in hidden.chunks_exact(hidden_width) {
             output.extend(block.forward_from_source(&self.source, token_hidden)?);
         }
         Ok(output)
@@ -182,8 +172,7 @@ mod tests {
         let (hidden, _) = write_q4_source(&path);
         let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
         let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
-        assert_eq!(runtime.hidden(), hidden);
-        assert_eq!(output.len(), 64);
+        assert_eq!(output.len(), hidden * 2);
         assert!(runtime.forward_batch(1, &[1.0; 32], 1).is_err());
         std::fs::remove_file(path).unwrap();
     }

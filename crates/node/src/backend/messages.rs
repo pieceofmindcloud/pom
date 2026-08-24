@@ -4,7 +4,7 @@
 //!
 //! Same shape as that module: a protocol adapter, nothing more. It renders
 //! `messages`/`system`/`tools` into the single prompt string the pipeline
-//! already accepts, calls [`crate::gateway::generate_stream`], and dresses
+//! already accepts, calls [`crate::gateway::generate_stream_with_stops`], and dresses
 //! the result as Anthropic Messages API responses (SSE event names
 //! included). No inference behaviour is changed or duplicated here — this
 //! file and `openai.rs` both bottom out in the same generation path.
@@ -33,7 +33,7 @@
 //! `POST /v1/messages/count_tokens`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, GenSummary};
+use crate::gateway::{GatewayState, GenEvent, GenSummary, GenerationInput};
 use crate::openai::{approx_tokens, cors_headers, preflight, resolve_model};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
@@ -401,14 +401,16 @@ async fn blocking_response(
     stops: Vec<String>,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
-        state,
         "/v1/messages",
         caller,
-        model.clone(),
-        prompt,
-        true,
-        max_tokens,
-        stops,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: true,
+            max_tokens,
+            stops,
+        },
     )
     .await
     {
@@ -460,15 +462,17 @@ fn stream_response(
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
-        state,
         "/v1/messages",
         caller,
-        model.clone(),
-        prompt,
-        true,
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: true,
+            max_tokens,
+            stops,
+        },
         tx,
-        stops,
     );
 
     let stream = sse_stream(rx, id, model, max_tokens, input_tokens);

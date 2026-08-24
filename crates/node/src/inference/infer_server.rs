@@ -640,7 +640,7 @@ mod tests {
 
     /// Porta ocupada tem que falhar *antes* de o modelo ser carregado.
     ///
-    /// O `run` ligava o socket depois do `LlmEngine::load`, então cada uma das
+    /// O `run` ligava o socket depois do `LlmEngine::load_with_cache`, então cada uma das
     /// 10 tentativas do supervisor carregava um modelo inteiro na VRAM para
     /// descobrir, no fim, que a porta estava tomada - minutos por tentativa, e
     /// memória de GPU presa em cargas descartadas. O sintoma no log era
@@ -3203,7 +3203,7 @@ fn prefill_batch_blocking(
 
             let mut timings = NodeTimings {
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
-                lock_wait_us: lock_wait_us,
+                lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
@@ -4174,7 +4174,7 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// `llm_arch_supports_rs_rollback` no llama.cpp) - sem isso `seq_rm`
 /// simplesmente recusa, `rollback_sessions` percebe pela resposta e encerra
 /// a geração com o que já foi confirmado (ver seu call site em
-/// `gateway::generate_stream`) em vez de deixar o `n_past` do nó divergir do
+/// `gateway::generate_stream_with_stops`) em vez de deixar o `n_past` do nó divergir do
 /// cache, que é o que produzia "inconsistent sequence positions".
 pub(crate) fn should_draft(speculate: Option<Speculate>, mtp_ready: bool) -> bool {
     match speculate {

@@ -2,7 +2,7 @@
 //!
 //! A protocol adapter, nothing more: it renders chat messages into the single
 //! prompt string the pipeline already accepts, calls
-//! [`crate::gateway::generate_stream`], and dresses the resulting tokens as
+//! [`crate::gateway::generate_stream_with_stops`], and dresses the resulting tokens as
 //! OpenAI responses. No inference behaviour is changed or duplicated here.
 //!
 //! Every node serves these routes, so any peer address works as an OpenAI base
@@ -12,7 +12,7 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent, StopInput};
+use crate::gateway::{GatewayState, GenEvent, GenerationInput, StopInput};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
 };
@@ -569,14 +569,16 @@ async fn blocking_response(
     stops: Vec<String>,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
-        state,
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
-        stops,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+        },
     )
     .await
     {
@@ -697,15 +699,17 @@ fn stream_response(
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
-        state,
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+        },
         tx,
-        stops,
     );
 
     let stream = sse_stream(rx, id, created, model, mode, max_tokens);

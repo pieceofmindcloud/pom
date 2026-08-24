@@ -18,7 +18,8 @@ O goal será entregue em fases coesas:
    de prefill e stop strings;
 3. detecção de MoE com bifurcação reversível;
 4. motor MoE próprio com um formato de quantização por vez e cache LRU global;
-5. co-execução CPU/GPU baseada em banda medida.
+5. co-execução CPU/GPU baseada em banda medida, ainda pendente de um executor
+   GPU concreto.
 
 ### Fase 1: S9 entregue
 
@@ -120,7 +121,9 @@ modelo, camada, expert e formato. Nenhuma linha do FreeToken foi copiada.
 O harness isolado passou com 28 testes, incluindo parser GGUF sintético,
 router F32, forward do bloco, cache hit, eviction global, memória medida,
 leases ativos e rejeições de geometria. Isso prova as fronteiras puras do
-motor, não um modelo completo. O runtime HTTP agora abre o banco Q4_0 local,
+motor, não um modelo completo. O parser também aceita arrays GGUF grandes,
+limitando-os pelo espaço restante do arquivo em vez de um teto arbitrário.
+O runtime HTTP agora abre o banco Q4_0 local,
 calcula os logits do router e aplica o bloco ao hidden state recebido ou ao
 residual que será encaminhado. O frame continua em f16 e não leva pesos.
 Ainda delegam ao `LlmEngine` a atenção, as operações que não pertencem ao
@@ -129,9 +132,9 @@ afirma ser um transformer MoE completo. O captain assumiu a prova ponta a
 ponta com um modelo real e fará essa validação fora deste ambiente, sem
 alterar o caminho denso.
 
-Não há número de desempenho nesta fase. O build nativo continua sem execução
-neste worktree porque `vendor/llama-cpp-sys-2/llama.cpp` não existe; não foi
-criado workaround para mascarar essa falha.
+Não há número de desempenho nesta fase. A validação nativa foi executada com o
+symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato
+não entra no commit e não substitui a prova ponta a ponta com um modelo real.
 
 ### Ligação e telemetria do hop
 
@@ -160,21 +163,19 @@ telemetria estão escritos; a suíte nativa já foi executada. A prova física
 ponta a ponta com um modelo MoE real continua sendo responsabilidade do
 captain.
 
-### Fase 5: co-execução CPU/GPU
+### Fase 5: co-execução CPU/GPU ainda não ativa
 
-`bandwidth.rs` aceita somente bandas medidas e prefere o perfil de CPU e
-transferência obtido sob disputa simultânea. A fração de misses encaminhada
-para transferência é `transfer/(cpu+transfer)`; sem perfil simultâneo, usa o
-fallback explícito, e perfil incompleto é erro. `coexecution.rs` aplica essa
-fração aos misses e inicia CPU e GPU em paralelo; o callback GPU representa a
-transferência e o kernel. `DoubleBuffer::with_budget` exige orçamento medido
-para os dois slots e impede sobrescrever um slot antes da conclusão.
+A investigação dos warnings mostrou que a política de banda e o double buffer
+existiam apenas como scaffolding de testes: não havia perfil medido carregado
+no runtime e não havia executor GPU para os pesos Q4_0 do motor próprio. O
+`llama.cpp` tem seu próprio backend GPU para o transformer, mas não expõe uma
+lane que execute os experts Q4_0 mmapados por `MoeRuntime`.
 
-O harness isolado passou com 28 testes, dez deles cobrindo o perfil de banda,
-divisão de misses, soma de outputs CPU/GPU, início simultâneo, propagação de
-erro e reserva do double buffer. Ainda não há ligação a um backend GPU
-concreto nem medição local de banda neste worktree; o captain fará a prova e
-não há ganho de desempenho afirmado.
+Esse scaffolding foi removido do binário para não sugerir que a co-execução
+acontece. O caminho MoE que existe hoje é CPU para router e experts, com cache
+LRU global; a fase 5 só poderá ser retomada quando houver um executor GPU
+concreto e uma fonte de medições simultâneas CPU/transferência. Nenhum ganho de
+desempenho ou sobreposição CPU/GPU é afirmado.
 
 ## Fase 0: baseline local
 
@@ -223,15 +224,16 @@ temporário documentado em `build-execucao.md`; os resultados estão abaixo.
 No worktree com `<worktree>/llama.cpp` apontando para
 `/Users/jairpereira/Sites/rdma-p2p/llama.cpp`:
 
-- `cargo build -p node`: código 0, 0 erros, 29 warnings.
-- `cargo test -p node`: 770 testes passaram, 5 ignorados.
+- `cargo build -p node`: código 0, 0 erros e nenhum warning.
+- `cargo test -p node`: 761 testes passaram, 5 ignorados.
 - `cargo fmt --check`: código 0.
-- `cargo clippy -p node`: código 0, 0 erros, 90 warnings.
+- `cargo clippy -p node`: código 0, 0 erros, 45 warnings restantes, todos fora
+  do motor MoE e do gateway refatorado neste goal; não foram silenciados.
 - `apps/frontend`: `npm run build` passou, com o aviso do Vite sobre chunk
   maior que 500 kB; `npm test` passou com 44 arquivos e 278 testes.
 
-Os warnings foram preservados no registro de execução; não houve erro do
-provider Hugging Face nesta validação e nenhum arquivo desse provider foi
+Os warnings restantes foram preservados no registro de execução; não houve erro
+do provider Hugging Face nesta validação e nenhum arquivo desse provider foi
 alterado. O symlink foi removido ao fim e não é artefato versionado.
 
 ### Reexecução

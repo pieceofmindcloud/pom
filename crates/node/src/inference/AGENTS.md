@@ -83,12 +83,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
   `format_q4_0.rs` mmapa bancos Q4_0 do GGUF e executa gate-up, SiLU gated e
   down em CPU; `router.rs` e `block.rs` fazem top-k e soma ponderada no bloco
-  MoE; `bandwidth.rs` calcula a divisão de misses a partir de medições
-  simultâneas e `coexecution.rs` inicia as lanes CPU/GPU com double buffer sob
-  orçamento explícito. `runtime.rs` abre o router local e liga o bloco Q4_0 ao
-  hidden state nos caminhos unitário e batch. O wire continua em f16 e nenhum
-  peso trafega; a costura não substitui ainda atenção, demais camadas ou a
-  amostragem do `LlmEngine`.
+  MoE. `runtime.rs` abre o router local e liga o bloco Q4_0 ao hidden state nos
+  caminhos unitário e batch. Não há executor GPU próprio nem perfil medido
+  carregado, portanto a co-execução CPU/GPU da Fase 5 ainda não está ativa. O
+  wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
+  atenção, demais camadas ou a amostragem do `LlmEngine`.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
   `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. O caminho denso fica
   em `LlmEngine`, e o MoE seleciona o runtime Q4_0. `ExecutionEngine` é a
@@ -105,7 +104,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
   ou de parâmetros de carregamento também o invalida.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
-  `generate_stream` de verdade contra hops falsos que decidem com
+  `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão. O fixture não anuncia batching, pois o endpoint falso atende
   frames unitários.
@@ -260,7 +259,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   duas formas de resposta em `prefill.rs`).
 
 `llm.rs`:
-- `LlmEngine::load` - carga com `EngineConfig` (n_ctx total, n_batch,
+- `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
   n_gpu_layers, offload_kqv, fit_memory, max_sessions). O runtime transforma
   o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
   `fit_memory=true` e o padrão de

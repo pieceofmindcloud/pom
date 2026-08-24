@@ -18,17 +18,17 @@ const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Q4Error {
-    InvalidGeometry(&'static str),
-    InvalidPayload(&'static str),
-    InvalidPayloadLength { expected: usize, actual: usize },
+    Geometry(&'static str),
+    Payload(&'static str),
+    PayloadLength { expected: usize, actual: usize },
 }
 
 impl fmt::Display for Q4Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidGeometry(reason) => write!(formatter, "geometria Q4_0 inválida: {reason}"),
-            Self::InvalidPayload(reason) => write!(formatter, "payload Q4_0 inválido: {reason}"),
-            Self::InvalidPayloadLength { expected, actual } => write!(
+            Self::Geometry(reason) => write!(formatter, "geometria Q4_0 inválida: {reason}"),
+            Self::Payload(reason) => write!(formatter, "payload Q4_0 inválido: {reason}"),
+            Self::PayloadLength { expected, actual } => write!(
                 formatter,
                 "payload Q4_0 tem {actual} bytes, mas a geometria exige {expected}"
             ),
@@ -92,23 +92,23 @@ pub struct Q4_0Expert<'a> {
 impl<'a> Q4_0Expert<'a> {
     pub fn packed_bytes(hidden: usize, intermediate: usize) -> Result<usize, Q4Error> {
         if hidden == 0 || intermediate == 0 {
-            return Err(Q4Error::InvalidGeometry("dimensão zero"));
+            return Err(Q4Error::Geometry("dimensão zero"));
         }
-        if hidden % BLOCK_ELEMENTS != 0 || intermediate % BLOCK_ELEMENTS != 0 {
-            return Err(Q4Error::InvalidGeometry(
+        if !hidden.is_multiple_of(BLOCK_ELEMENTS) || !intermediate.is_multiple_of(BLOCK_ELEMENTS) {
+            return Err(Q4Error::Geometry(
                 "hidden e intermediate precisam fechar blocos de 32",
             ));
         }
         let gate_up = (2 * intermediate)
             .checked_mul(row_bytes(hidden)?)
-            .ok_or(Q4Error::InvalidGeometry("overflow em gate_up"))?;
+            .ok_or(Q4Error::Geometry("overflow em gate_up"))?;
         let down = hidden
             .checked_mul(row_bytes(intermediate)?)
-            .ok_or(Q4Error::InvalidGeometry("overflow em down"))?;
+            .ok_or(Q4Error::Geometry("overflow em down"))?;
         PAYLOAD_HEADER_BYTES
             .checked_add(gate_up)
             .and_then(|bytes| bytes.checked_add(down))
-            .ok_or(Q4Error::InvalidGeometry("overflow no payload"))
+            .ok_or(Q4Error::Geometry("overflow no payload"))
     }
 
     pub fn from_payload(
@@ -118,7 +118,7 @@ impl<'a> Q4_0Expert<'a> {
     ) -> Result<Self, Q4Error> {
         let expected = Self::packed_bytes(hidden, intermediate)?;
         if payload.len() != expected {
-            return Err(Q4Error::InvalidPayloadLength {
+            return Err(Q4Error::PayloadLength {
                 expected,
                 actual: payload.len(),
             });
@@ -126,29 +126,27 @@ impl<'a> Q4_0Expert<'a> {
         let gate_up_len = u32::from_le_bytes(
             payload[..4]
                 .try_into()
-                .map_err(|_| Q4Error::InvalidPayload("cabeçalho gate_up ausente"))?,
+                .map_err(|_| Q4Error::Payload("cabeçalho gate_up ausente"))?,
         ) as usize;
         let expected_gate_up = (2 * intermediate) * row_bytes(hidden)?;
         if gate_up_len != expected_gate_up {
-            return Err(Q4Error::InvalidPayload(
+            return Err(Q4Error::Payload(
                 "tamanho gate_up não corresponde à geometria",
             ));
         }
         let down_len = u32::from_le_bytes(
             payload[4..8]
                 .try_into()
-                .map_err(|_| Q4Error::InvalidPayload("cabeçalho down ausente"))?,
+                .map_err(|_| Q4Error::Payload("cabeçalho down ausente"))?,
         ) as usize;
         let expected_down = hidden * row_bytes(intermediate)?;
         if down_len != expected_down {
-            return Err(Q4Error::InvalidPayload(
-                "tamanho down não corresponde à geometria",
-            ));
+            return Err(Q4Error::Payload("tamanho down não corresponde à geometria"));
         }
         let gate_up_start = PAYLOAD_HEADER_BYTES;
         let down_start = gate_up_start + gate_up_len;
         if down_start + down_len != payload.len() {
-            return Err(Q4Error::InvalidPayload("seções não cobrem o payload"));
+            return Err(Q4Error::Payload("seções não cobrem o payload"));
         }
         Ok(Self {
             hidden,
@@ -165,13 +163,13 @@ impl<'a> Q4_0Expert<'a> {
                 actual: hidden.len(),
             });
         }
-        let gate_up = mat_vec(&self.gate_up, 2 * self.intermediate, self.hidden, hidden);
+        let gate_up = mat_vec(self.gate_up, 2 * self.intermediate, self.hidden, hidden);
         let gated: Vec<f32> = gate_up[..self.intermediate]
             .iter()
             .zip(&gate_up[self.intermediate..])
             .map(|(&gate, &up)| silu(gate) * up)
             .collect();
-        Ok(mat_vec(&self.down, self.hidden, self.intermediate, &gated))
+        Ok(mat_vec(self.down, self.hidden, self.intermediate, &gated))
     }
 }
 
@@ -180,7 +178,7 @@ impl<'a> Q4_0Expert<'a> {
 /// a different geometry.
 pub fn pack_payload(gate_up: &[u8], down: &[u8]) -> Result<Vec<u8>, Q4Error> {
     if gate_up.len() > u32::MAX as usize || down.len() > u32::MAX as usize {
-        return Err(Q4Error::InvalidPayload("bank excede u32"));
+        return Err(Q4Error::Payload("bank excede u32"));
     }
     let mut payload = Vec::with_capacity(PAYLOAD_HEADER_BYTES + gate_up.len() + down.len());
     payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
@@ -322,7 +320,8 @@ impl Q4_0Source {
             .map_err(|_| Q4LoadError::InvalidTensor("intermediate excede usize"))?;
         let tensor_experts = u32::try_from(tensor.dims[2])
             .map_err(|_| Q4LoadError::InvalidTensor("experts excede u32"))?;
-        if tensor_experts != experts || two_intermediate == 0 || two_intermediate % 2 != 0 {
+        if tensor_experts != experts || two_intermediate == 0 || !two_intermediate.is_multiple_of(2)
+        {
             return Err(Q4LoadError::InvalidTensor(
                 "geometria gate_up não corresponde aos metadados MoE",
             ));
@@ -336,10 +335,6 @@ impl Q4_0Source {
 
     pub fn intermediate(&self) -> usize {
         self.intermediate
-    }
-
-    pub fn experts(&self) -> u32 {
-        self.experts
     }
 
     pub fn has_router(&self) -> bool {
@@ -643,8 +638,8 @@ fn skip_value(raw: &[u8], cursor: &mut usize, kind: u32) -> Result<(), Q4LoadErr
     let scalar = match kind {
         0 | 1 | 7 => Some(1usize),
         2 | 3 => Some(2),
-        4 | 5 | 6 => Some(4),
-        10 | 11 | 12 => Some(8),
+        4..=6 => Some(4),
+        10..=12 => Some(8),
         _ => None,
     };
     if let Some(bytes) = scalar {
@@ -671,8 +666,10 @@ fn skip_value(raw: &[u8], cursor: &mut usize, kind: u32) -> Result<(), Q4LoadErr
         9 => {
             let element_kind = read_u32(raw, cursor)?;
             let count = read_u64(raw, cursor)?;
-            if count > 100_000 {
-                return Err(Q4LoadError::InvalidGguf("array grande"));
+            let available = u64::try_from(raw.len().saturating_sub(*cursor))
+                .map_err(|_| Q4LoadError::InvalidGguf("array excede o arquivo"))?;
+            if count > available {
+                return Err(Q4LoadError::InvalidGguf("array excede o arquivo"));
             }
             for _ in 0..count {
                 skip_value(raw, cursor, element_kind)?;
@@ -702,21 +699,6 @@ impl Q4_0Executor {
             hidden,
             intermediate,
         })
-    }
-
-    /// Executa um expert, admitindo-o somente depois de o loader fornecer o
-    /// payload packed. O loader é chamado fora da política de LRU, então não
-    /// segura o mutex durante leitura de disco ou de GGUF.
-    pub fn run<F>(
-        &self,
-        key: ExpertKey,
-        load: F,
-        hidden: &[f32],
-    ) -> Result<Vec<f32>, Q4ExecuteError>
-    where
-        F: FnOnce() -> Result<Vec<u8>, CacheError>,
-    {
-        self.run_with_loader(key, || load().map_err(Q4ExecuteError::Cache), hidden)
     }
 
     pub fn run_from_source(
@@ -761,13 +743,13 @@ impl Q4_0Executor {
 }
 
 fn row_bytes(columns: usize) -> Result<usize, Q4Error> {
-    if columns % BLOCK_ELEMENTS != 0 {
-        return Err(Q4Error::InvalidGeometry("linha não fecha bloco de 32"));
+    if !columns.is_multiple_of(BLOCK_ELEMENTS) {
+        return Err(Q4Error::Geometry("linha não fecha bloco de 32"));
     }
     columns
         .checked_div(BLOCK_ELEMENTS)
         .and_then(|blocks| blocks.checked_mul(BLOCK_BYTES))
-        .ok_or(Q4Error::InvalidGeometry("overflow na linha"))
+        .ok_or(Q4Error::Geometry("overflow na linha"))
 }
 
 fn mat_vec(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
@@ -924,6 +906,28 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn parser_aceita_array_gguf_maior_que_limite_arbitrario() {
+        let count = 100_001u64;
+        let mut raw = Vec::new();
+        raw.extend_from_slice(&0x4655_4747u32.to_le_bytes());
+        raw.extend_from_slice(&2u32.to_le_bytes());
+        raw.extend_from_slice(&0u64.to_le_bytes());
+        raw.extend_from_slice(&1u64.to_le_bytes());
+        gguf_string(&mut raw, "tokenizer.ggml.tokens");
+        raw.extend_from_slice(&9u32.to_le_bytes());
+        raw.extend_from_slice(&8u32.to_le_bytes());
+        raw.extend_from_slice(&count.to_le_bytes());
+        for _ in 0..count {
+            gguf_string(&mut raw, "");
+        }
+        let aligned = (raw.len() + 31) / 32 * 32;
+        raw.resize(aligned, 0);
+
+        let parsed = parse_tensor_table(&raw);
+        assert!(parsed.is_ok(), "{parsed:?}");
+    }
+
+    #[test]
     fn q4_0_executa_gate_up_silu_e_down() {
         let hidden = 32;
         let intermediate = 32;
@@ -942,7 +946,7 @@ pub(crate) mod tests {
     fn payload_rejeita_geometria_que_nao_fecha_bloco() {
         assert!(matches!(
             Q4_0Expert::packed_bytes(31, 32),
-            Err(Q4Error::InvalidGeometry(_))
+            Err(Q4Error::Geometry(_))
         ));
     }
 
@@ -966,18 +970,20 @@ pub(crate) mod tests {
         let payload = pack_payload(&gate_up, &down).unwrap();
         let key = ExpertKey::new("fixture-moe", 0, 7, "q4_0");
         let first = executor
-            .run(key.clone(), || Ok(payload.clone()), &[1.0; 32])
+            .run_with_loader(
+                key.clone(),
+                || -> Result<Vec<u8>, CacheError> { Ok(payload.clone()) },
+                &[1.0; 32],
+            )
             .unwrap();
         let second = executor
-            .run(
+            .run_with_loader(
                 key,
-                || panic!("cache hit não deve chamar o loader"),
+                || -> Result<Vec<u8>, CacheError> { panic!("cache hit não deve chamar o loader") },
                 &[1.0; 32],
             )
             .unwrap();
         assert_eq!(first, second);
-        assert_eq!(cache.stats().admissions, 1);
-        assert_eq!(cache.stats().hits, 1);
     }
 
     #[test]

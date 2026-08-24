@@ -502,6 +502,18 @@ pub enum GenEvent {
     Failed(String),
 }
 
+/// Inputs shared by the blocking, streaming and logged generation adapters.
+/// Keeping them together prevents each adapter from growing a subtly
+/// different list of generation parameters.
+pub(crate) struct GenerationInput {
+    pub(crate) state: GatewayState,
+    pub(crate) model: String,
+    pub(crate) prompt: String,
+    pub(crate) chat_template: bool,
+    pub(crate) max_tokens: u32,
+    pub(crate) stops: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct GenSummary {
     /// "pipeline:<hop-chain>", with " (partial)" when it stopped early.
@@ -700,35 +712,7 @@ async fn send_stopped_summary(
 /// the events into one response, the OpenAI endpoints forward them as SSE. The
 /// per-token loop and the peer protocol are unchanged — one round trip through
 /// every peer yields exactly one token.
-pub async fn generate_stream(
-    state: GatewayState,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-    tx: mpsc::Sender<GenEvent>,
-) {
-    generate_stream_with_stops(
-        state,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        tx,
-        Vec::new(),
-    )
-    .await;
-}
-
-pub async fn generate_stream_with_stops(
-    state: GatewayState,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-    tx: mpsc::Sender<GenEvent>,
-    stops: Vec<String>,
-) {
+pub async fn generate_stream_with_stops(input: GenerationInput, tx: mpsc::Sender<GenEvent>) {
     let cancellation = crate::prefill::Cancellation::new();
     let monitor_cancel = cancellation.clone();
     let monitor_tx = tx.clone();
@@ -737,30 +721,23 @@ pub async fn generate_stream_with_stops(
         monitor_cancel.cancel();
     });
 
-    generate_stream_inner(
+    generate_stream_inner(input, tx, cancellation).await;
+    monitor.abort();
+}
+
+async fn generate_stream_inner(
+    input: GenerationInput,
+    tx: mpsc::Sender<GenEvent>,
+    cancellation: crate::prefill::Cancellation,
+) {
+    let GenerationInput {
         state,
         model,
         prompt,
         chat_template,
         max_tokens,
-        tx,
-        cancellation,
         stops,
-    )
-    .await;
-    monitor.abort();
-}
-
-async fn generate_stream_inner(
-    state: GatewayState,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-    tx: mpsc::Sender<GenEvent>,
-    cancellation: crate::prefill::Cancellation,
-    stops: Vec<String>,
-) {
+    } = input;
     if cancellation.is_cancelled() {
         return;
     }
@@ -1524,7 +1501,7 @@ async fn release_sessions(
 /// request itself failed) — a 200 response is not success by itself,
 /// `handle_rollback` returns 200 either way and puts the real answer in the
 /// body. The caller has to treat `false` as fatal for the generation: see
-/// its call site in `generate_stream`.
+/// its call site in `generate_stream_with_stops`.
 async fn rollback_sessions(
     plan: &PipelinePlan,
     session_id: &str,
@@ -1628,58 +1605,20 @@ fn rate(tokens: u32, secs: f64) -> f64 {
 /// Identity lives with the HTTP route (it is in the `Authorization` header) and
 /// the pipeline lives with the generator, so neither one alone can fill in the
 /// Logs screen. Forwarding the events through here joins the two without
-/// putting a caller argument through every early return in `generate_stream` —
-/// which is the hot inference path and not worth destabilising for a log line.
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_logged_generation(
-    state: GatewayState,
-    route: &'static str,
-    caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-    tx: mpsc::Sender<GenEvent>,
-) {
-    spawn_logged_generation_with_stops(
-        state,
-        route,
-        caller,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        tx,
-        Vec::new(),
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
+/// putting a caller argument through every early return in the hot inference
+/// path.
 pub fn spawn_logged_generation_with_stops(
-    state: GatewayState,
     route: &'static str,
     caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
+    input: GenerationInput,
     tx: mpsc::Sender<GenEvent>,
-    stops: Vec<String>,
 ) {
-    let entry_node_id = state.network.node_id.clone();
-    let prompt_tokens = estimate_tokens(&prompt);
-    let logged_model = model.clone();
+    let entry_node_id = input.state.network.node_id.clone();
+    let prompt_tokens = estimate_tokens(&input.prompt);
+    let logged_model = input.model.clone();
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream_with_stops(
-        state,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        inner_tx,
-        stops,
-    ));
+    tokio::spawn(generate_stream_with_stops(input, inner_tx));
 
     tokio::spawn(async move {
         let started = Instant::now();
@@ -1761,50 +1700,13 @@ pub fn spawn_logged_generation_with_stops(
 }
 
 /// Run a generation to completion and return the whole text.
-pub async fn generate_blocking(
-    state: GatewayState,
-    route: &'static str,
-    caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-) -> std::result::Result<(String, GenSummary), String> {
-    generate_blocking_with_stops(
-        state,
-        route,
-        caller,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        Vec::new(),
-    )
-    .await
-}
-
 pub async fn generate_blocking_with_stops(
-    state: GatewayState,
     route: &'static str,
     caller: crate::reqlog::Caller,
-    model: String,
-    prompt: String,
-    chat_template: bool,
-    max_tokens: u32,
-    stops: Vec<String>,
+    input: GenerationInput,
 ) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation_with_stops(
-        state,
-        route,
-        caller,
-        model,
-        prompt,
-        chat_template,
-        max_tokens,
-        tx,
-        stops,
-    );
+    spawn_logged_generation_with_stops(route, caller, input, tx);
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -1937,14 +1839,16 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
     // `/api/generate` has never been behind auth, so there is no credential to
     // attribute the request to — the log says exactly that instead of guessing.
     match generate_blocking_with_stops(
-        state,
         "/api/generate",
         crate::reqlog::Caller::anonymous(),
-        model,
-        req.prompt,
-        true,
-        DEFAULT_MAX_TOKENS,
-        stops,
+        GenerationInput {
+            state,
+            model,
+            prompt: req.prompt,
+            chat_template: true,
+            max_tokens: DEFAULT_MAX_TOKENS,
+            stops,
+        },
     )
     .await
     {

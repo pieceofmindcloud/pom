@@ -71,7 +71,7 @@ haver chave.
 
 ### OpenAI (`/v1/*`)
 
-Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
+Camada de protocolo pura sobre `gateway::generate_stream_with_stops`. `render_prompt`
 achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
 passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
 512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o

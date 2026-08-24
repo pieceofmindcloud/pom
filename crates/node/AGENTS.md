@@ -120,7 +120,7 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
 - `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,
-  `generate_stream`), `webapp.rs` (serve a UI do disco), `webui.rs`
+  `generate_stream_with_stops`), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
   `deploy.rs`, `transfer.rs` (fatias por HTTP Range), `devupdate.rs`
   (atualizar/reiniciar), `openai.rs` (rotas OpenAI-compatíveis), `messages.rs`,

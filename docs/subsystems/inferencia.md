@@ -3,7 +3,7 @@
 O que o código faz hoje, verificado nos fontes (ver nota de versão no fim).
 
 Um pedido de geração (OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`,
-`POST /api/generate`) desce por um único caminho: `gateway::generate_stream`.
+`POST /api/generate`) desce por um único caminho: `gateway::generate_stream_with_stops`.
 Ele planeja a cadeia de peers com `routing/pipeline.rs`, manda o prompt e cada
 token pelo pipeline distribuído e devolve tokens ao cliente. Este documento
 descreve os três modos de execução, o formato binário do estado oculto, o
@@ -88,7 +88,7 @@ por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 
 `n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta
 primeiro respeitar `offload_kqv=true`, colocando o KV cache na GPU. Se o
-`cudaMalloc` do KV cache falhar, `LlmEngine::load` repete a criação do contexto
+`cudaMalloc` do KV cache falhar, `LlmEngine::load_with_cache` repete a criação do contexto
 com `offload_kqv=false`: os pesos permanecem nas mesmas camadas da GPU e o KV
 cache passa para a memória RAM. A aplicação registra o fallback e `/health`
 mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
@@ -314,10 +314,9 @@ antes do decode local; residuals produzidos a partir de tokens passam pela
 mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
 peso é transportado. Atenção, operações restantes e sampling final ainda
 delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
-transformer MoE completo. A Fase 5
-também fornece divisão de misses por banda medida, execução concorrente das
-duas lanes e double buffer com orçamento explícito, sem assumir um backend GPU
-ou uma largura de banda constante.
+transformer MoE completo. A Fase 5 ainda não está ativa: não há executor GPU
+para os experts Q4_0 mmapados nem perfil medido carregado no runtime. O caminho
+atual é CPU para router e experts; não afirma sobreposição CPU/GPU.
 
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
@@ -487,7 +486,7 @@ cauda. O número somado continua certo; dividido por hop, ele não existe.
 
 São **dois** mecanismos, com chaves de operador separadas, e nunca os dois na
 mesma rodada (o lote é um só, e misturar as fontes tornaria a taxa de aceitação
-impossível de atribuir). O gateway escolhe em `generate_stream`: com as duas
+impossível de atribuir). O gateway escolhe em `generate_stream_with_stops`: com as duas
 ligadas e o plano capaz, vence o MTP.
 
 | | `speculative_decoding_enabled` | `mtp_enabled` |
@@ -549,7 +548,7 @@ extra), `accept_count` e `batch_width`.
   `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B) - esse defeito
   era real e independente do engano do `kv_can_shift` acima.
 - **Recusada a especulação, o gateway para de insistir** pelo resto da
-  requisição (`especulando`, em `generate_stream`): passa a chamar
+requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
   `prefill::step`, que já usa a resposta direta (N+1 travessias). Não é só
   economia do campo `speculate` - insistir prende a cadeia no anel borbulhado
   (2N travessias por token).
@@ -634,7 +633,7 @@ RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 
 ## 7. Fallbacks no gateway
 
-O gateway **só tem o caminho do pipeline**. `generate_stream` falha com
+O gateway **só tem o caminho do pipeline**. `generate_stream_with_stops` falha com
 "Nenhum pipeline válido para o modelo X (verifique a cobertura de camadas
 0..N)" quando `plan_pipeline` devolve `None`; o handler de `/api/generate`
 responde 503 com "Start peers with --inference-port." e `source: "none"`.
@@ -673,7 +672,7 @@ inteiro.
   2026-08-14 (cota). A decodificação especulativa também segue sem cobertura no
   desvio direto (ver seção 5).
 - A especulação tem a sua bancada própria, `spec_lab.rs` (cfg(test)):
-  `generate_stream` de verdade contra hops falsos que decidem com
+  `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
   (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de

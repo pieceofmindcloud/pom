@@ -19,6 +19,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
   caminho local nesses valores.
+- O grupo `huggingFace.*` cobre o campo de token da tela de Rede. O valor
+  persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
+  fonte efetiva.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured
@@ -55,3 +58,10 @@ environment value.
 - Imported by nearly every route and component (28 files use `useI18n`).
 - `api.ts` and `chatStore.ts` import `getActiveLocale` from `locales` for non-React strings.
 - `index.html` has a pre-paint script that stamps `document.documentElement.lang` from the same `codai.locale` + browser-locale logic, so the first render is already in the right language before `LocaleProvider` mounts.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

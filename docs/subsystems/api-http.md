@@ -123,6 +123,16 @@ username } }`: CLI ausente é um estado estruturado, enquanto login necessário
 e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta
 a licença no provider antes de a tela oferecer o download.
 
+**`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
+controlam o token opcional do Hugging Face. O GET devolve somente
+`{ configured, masked, source }`, nunca o segredo. O POST recebe `{ token }` -
+`null` ou texto vazio remove o valor - grava `huggingface_token` no `pom.json`
+com permissão `0600` no Unix e atualiza o provider em memória, sem reinício.
+A precedência efetiva é `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, token do
+`pom.json` e, por último, o cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`~/.cache/huggingface/token`). Assim, variáveis existentes continuam vencendo,
+e a configuração explícita da UI vence o cache.
+
 **`POST /api/ui/network/tls`** - corpo `{ tls_required: bool }`, liga ou desliga
 o TLS entre peers do cluster inteiro. Responde **403 fora do nó principal**, e
 essa checagem é do servidor: esconder o interruptor na tela de um nó comum é

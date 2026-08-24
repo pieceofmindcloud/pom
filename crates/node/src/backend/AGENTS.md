@@ -35,6 +35,9 @@ behind an auth extractor.
   caminho local. O status estruturado em
   `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
   login necessário e sessão autenticada.
+  `GET` e `POST /api/ui/model-provider/config` expõem somente a máscara e a
+  fonte efetiva do token, e o POST salva o segredo no `pom.json` com modo
+  restrito e atualiza o `HfTokenStore` sem reinício.
   O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.

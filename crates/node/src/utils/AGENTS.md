@@ -32,6 +32,9 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   nenhuma.
 - `Config::load`/`save`/`config_path` - `$POM_CONFIG` ou
   `<project_root>/pom.json`.
+  `Config::save` grava com permissão exclusiva do proprietário (`0600` no
+  Unix), inclusive quando o arquivo já existia; o campo opcional
+  `huggingface_token` é segredo e o `Debug` de `Config` o mascara.
 - `normalize_peer_addr` - completa a porta que falta em endereço digitado
   (IPv6 puro sem porta vira `invalid port value` no resolver, repetido para
   sempre no log); mantém o que está gravado igual ao que se imprime.
@@ -98,3 +101,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 ## Defeitos anotados
 
 Nenhum.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

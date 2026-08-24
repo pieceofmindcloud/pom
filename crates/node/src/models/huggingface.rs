@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 use tokio::fs::{self, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -28,26 +28,128 @@ trait HfTokenSource: Send + Sync {
     fn load(&self) -> Result<Option<String>, HfError>;
 }
 
-#[derive(Debug, Default)]
-struct EnvironmentHfTokenSource;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HfTokenSourceKind {
+    HfToken,
+    HubToken,
+    Config,
+    Cache,
+    None,
+}
+
+impl HfTokenSourceKind {
+    pub(crate) const fn label(self) -> &'static str {
+        match self {
+            Self::HfToken => "HF_TOKEN",
+            Self::HubToken => "HUGGING_FACE_HUB_TOKEN",
+            Self::Config => "pom.json",
+            Self::Cache => "~/.cache/huggingface/token",
+            Self::None => "none",
+        }
+    }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct HfTokenResolution {
+    token: Option<String>,
+    source: HfTokenSourceKind,
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct HfTokenStore(Arc<RwLock<Option<String>>>);
+
+impl HfTokenStore {
+    pub(crate) fn new(token: Option<String>) -> Self {
+        Self(Arc::new(RwLock::new(clean_token(token))))
+    }
+
+    pub(crate) fn set(&self, token: Option<String>) {
+        *self.0.write().expect("token store lock poisoned") = clean_token(token);
+    }
+
+    fn current(&self) -> Option<String> {
+        self.0.read().expect("token store lock poisoned").clone()
+    }
+
+    pub(crate) fn status(&self) -> Result<HfTokenStatus, HfError> {
+        let hf_token = std::env::var("HF_TOKEN").ok();
+        let hub_token = std::env::var("HUGGING_FACE_HUB_TOKEN").ok();
+        let config_token = self.current();
+        let cache_token = read_cache_token()?;
+        let resolution = resolve_token_values(
+            hf_token.as_deref(),
+            hub_token.as_deref(),
+            config_token.as_deref(),
+            cache_token.as_deref(),
+        );
+        Ok(HfTokenStatus {
+            configured: config_token.is_some(),
+            masked: resolution.token.as_deref().map(mask_token),
+            source: resolution.source,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HfTokenStatus {
+    pub(crate) configured: bool,
+    pub(crate) masked: Option<String>,
+    pub(crate) source: HfTokenSourceKind,
+}
+
+struct EnvironmentHfTokenSource {
+    store: HfTokenStore,
+}
 
 impl HfTokenSource for EnvironmentHfTokenSource {
     fn load(&self) -> Result<Option<String>, HfError> {
-        if let Some(token) = clean_token(std::env::var("HF_TOKEN").ok()) {
-            return Ok(Some(token));
-        }
-        if let Some(token) = clean_token(std::env::var("HUGGING_FACE_HUB_TOKEN").ok()) {
-            return Ok(Some(token));
-        }
+        let hf_token = std::env::var("HF_TOKEN").ok();
+        let hub_token = std::env::var("HUGGING_FACE_HUB_TOKEN").ok();
+        let config_token = self.store.current();
+        let cache_token = read_cache_token()?;
+        Ok(resolve_token_values(
+            hf_token.as_deref(),
+            hub_token.as_deref(),
+            config_token.as_deref(),
+            cache_token.as_deref(),
+        )
+        .token)
+    }
+}
 
-        let path = token_path();
-        match std::fs::read_to_string(&path) {
-            Ok(token) => Ok(clean_token(Some(token))),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(HfError::Io {
-                message: format!("não foi possível ler a credencial do Hugging Face: {error}"),
-            }),
-        }
+fn resolve_token_values(
+    hf_token: Option<&str>,
+    hub_token: Option<&str>,
+    config_token: Option<&str>,
+    cache_token: Option<&str>,
+) -> HfTokenResolution {
+    [
+        (HfTokenSourceKind::HfToken, hf_token),
+        (HfTokenSourceKind::HubToken, hub_token),
+        (HfTokenSourceKind::Config, config_token),
+        (HfTokenSourceKind::Cache, cache_token),
+    ]
+    .into_iter()
+    .find_map(|(source, token)| {
+        clean_token_ref(token).map(|token| HfTokenResolution {
+            token: Some(token),
+            source,
+        })
+    })
+    .unwrap_or(HfTokenResolution {
+        token: None,
+        source: HfTokenSourceKind::None,
+    })
+}
+
+fn read_cache_token() -> Result<Option<String>, HfError> {
+    let path = token_path();
+    match std::fs::read_to_string(&path) {
+        Ok(token) => Ok(clean_token(Some(token))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(HfError::Io {
+            message: format!("não foi possível ler a credencial do Hugging Face: {error}"),
+        }),
     }
 }
 
@@ -56,6 +158,26 @@ fn clean_token(value: Option<String>) -> Option<String> {
         let token = token.trim().to_string();
         (!token.is_empty()).then_some(token)
     })
+}
+
+fn clean_token_ref(value: Option<&str>) -> Option<String> {
+    clean_token(value.map(str::to_string))
+}
+
+fn mask_token(token: &str) -> String {
+    let tail: String = token
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if token.chars().count() <= 4 {
+        "••••••••".into()
+    } else {
+        format!("••••••••{tail}")
+    }
 }
 
 fn token_path() -> PathBuf {
@@ -89,9 +211,13 @@ pub struct HuggingFaceProvider {
 
 impl HuggingFaceProvider {
     pub fn new() -> Self {
+        Self::new_with_token_store(HfTokenStore::default())
+    }
+
+    pub(crate) fn new_with_token_store(store: HfTokenStore) -> Self {
         Self::from_parts(
             DEFAULT_ENDPOINT,
-            Arc::new(EnvironmentHfTokenSource),
+            Arc::new(EnvironmentHfTokenSource { store }),
             Arc::new(LocalModelStorage),
         )
     }
@@ -131,6 +257,15 @@ impl HuggingFaceProvider {
         Self::from_parts(
             endpoint,
             Arc::new(StaticHfTokenSource(token.map(str::to_string))),
+            Arc::new(LocalModelStorage),
+        )
+    }
+
+    #[cfg(test)]
+    fn with_http_endpoint_and_token_store_for_test(endpoint: &str, store: HfTokenStore) -> Self {
+        Self::from_parts(
+            endpoint,
+            Arc::new(StoreOnlyHfTokenSource(store)),
             Arc::new(LocalModelStorage),
         )
     }
@@ -878,6 +1013,16 @@ impl HfTokenSource for StaticHfTokenSource {
     }
 }
 
+#[cfg(test)]
+struct StoreOnlyHfTokenSource(HfTokenStore);
+
+#[cfg(test)]
+impl HfTokenSource for StoreOnlyHfTokenSource {
+    fn load(&self) -> Result<Option<String>, HfError> {
+        Ok(self.0.current())
+    }
+}
+
 fn http_error(status: StatusCode, authenticated: bool, operation: &str, download: bool) -> HfError {
     match status {
         StatusCode::UNAUTHORIZED if authenticated => HfError::HfAccessDenied,
@@ -1557,6 +1702,51 @@ mod tests {
             Some("hf_test_secret"),
         );
         let status = with_token.check_authentication().await.unwrap();
+        assert!(status.authenticated);
+        assert_eq!(status.username.as_deref(), Some("captain"));
+
+        server.stop().await;
+    }
+
+    #[test]
+    fn configured_token_beats_cache_but_environment_keeps_existing_precedence() {
+        let resolved = resolve_token_values(
+            Some("hf-from-env"),
+            Some("hf-from-hub-env"),
+            Some("hf-from-config"),
+            Some("hf-from-cache"),
+        );
+        assert_eq!(resolved.source, HfTokenSourceKind::HfToken);
+        assert_eq!(resolved.token.as_deref(), Some("hf-from-env"));
+
+        let resolved = resolve_token_values(
+            None,
+            Some("hf-from-hub-env"),
+            Some("hf-from-config"),
+            Some("hf-from-cache"),
+        );
+        assert_eq!(resolved.source, HfTokenSourceKind::HubToken);
+        assert_eq!(resolved.token.as_deref(), Some("hf-from-hub-env"));
+
+        let resolved =
+            resolve_token_values(None, None, Some("hf-from-config"), Some("hf-from-cache"));
+        assert_eq!(resolved.source, HfTokenSourceKind::Config);
+        assert_eq!(resolved.token.as_deref(), Some("hf-from-config"));
+    }
+
+    #[tokio::test]
+    async fn configured_token_is_reloaded_without_recreating_the_provider() {
+        let state = MockHubState::new(b"abcdefgh".to_vec());
+        let server = MockServer::start(state).await;
+        let store = HfTokenStore::new(None);
+        let provider = HuggingFaceProvider::with_http_endpoint_and_token_store_for_test(
+            &server.endpoint,
+            store.clone(),
+        );
+
+        assert!(!provider.check_authentication().await.unwrap().authenticated);
+        store.set(Some("hf_test_secret".into()));
+        let status = provider.check_authentication().await.unwrap();
         assert!(status.authenticated);
         assert_eq!(status.username.as_deref(), Some("captain"));
 

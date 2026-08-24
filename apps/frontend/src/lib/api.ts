@@ -15,6 +15,7 @@ import { storageKey } from "./brand";
 import { modelSearchPath, type ModelSearchPathOptions } from "./modelProvider";
 import type {
   Deployment,
+  HuggingFaceTokenConfig,
   RemoteModelDetails,
   RemoteModelProviderStatus,
   RemoteModelSearchResponse,
@@ -200,6 +201,14 @@ export function getRemoteModelStorage(signal?: AbortSignal) {
 
 export function getRemoteModelProviderStatus(signal?: AbortSignal) {
   return api.get<RemoteModelProviderStatus>("/api/ui/model-provider/status", { signal });
+}
+
+export function getHuggingFaceTokenConfig(signal?: AbortSignal) {
+  return api.get<HuggingFaceTokenConfig>("/api/ui/model-provider/config", { signal });
+}
+
+export function saveHuggingFaceToken(token: string | null) {
+  return api.post<HuggingFaceTokenConfig>("/api/ui/model-provider/config", { token });
 }
 
 export interface RemoteModelDownloadRequest {

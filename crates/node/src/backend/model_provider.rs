@@ -6,6 +6,7 @@
 
 use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
+use crate::huggingface::HfTokenStore;
 use crate::model_provider::{
     validate_filename, validate_repo_id, validate_revision, DownloadOptions, DownloadProgress,
     DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfCliStatus, HfError, ManifestFile,
@@ -38,15 +39,25 @@ pub(crate) const MODEL_DOWNLOAD_KIND: &str = "model_download";
 #[derive(Clone)]
 pub(crate) struct ModelService {
     pub(crate) provider: DynModelProvider,
+    pub(crate) hf_token_store: HfTokenStore,
     permits: Arc<Semaphore>,
     admission: Arc<Mutex<()>>,
     cancellations: Arc<RwLock<HashMap<String, CancellationToken>>>,
 }
 
 impl ModelService {
+    #[cfg(test)]
     pub(crate) fn new(provider: DynModelProvider) -> Self {
+        Self::with_token_store(provider, HfTokenStore::default())
+    }
+
+    pub(crate) fn with_token_store(
+        provider: DynModelProvider,
+        hf_token_store: HfTokenStore,
+    ) -> Self {
         Self {
             provider,
+            hf_token_store,
             permits: Arc::new(Semaphore::new(MAX_CONCURRENT_DOWNLOADS)),
             admission: Arc::new(Mutex::new(())),
             cancellations: Arc::new(RwLock::new(HashMap::new())),
@@ -154,6 +165,18 @@ pub(crate) struct ModelProviderStatusResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct HuggingFaceTokenConfigResponse {
+    pub configured: bool,
+    pub masked: Option<String>,
+    pub source: &'static str,
+}
+
+#[derive(Deserialize)]
+pub(crate) struct HuggingFaceTokenUpdate {
+    pub token: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ModelFileView {
     pub filename: String,
     pub size_bytes: Option<u64>,
@@ -202,6 +225,10 @@ pub(crate) fn routes() -> Router<GatewayState> {
         .route("/api/ui/model-provider/search", get(search_models))
         .route("/api/ui/model-provider/details", get(model_details))
         .route("/api/ui/model-provider/status", get(status))
+        .route(
+            "/api/ui/model-provider/config",
+            get(token_config).post(save_token_config),
+        )
         .route("/api/ui/model-provider/storage", get(storage_info))
         .route("/api/ui/model-provider/downloads", post(start_download))
         .route(
@@ -369,6 +396,53 @@ async fn status(auth: ConnectionAuth, State(state): State<GatewayState>) -> Resp
     match provider_status(&state.model_service.provider).await {
         Ok(status) => Json(status).into_response(),
         Err(error) => provider_error(error),
+    }
+}
+
+async fn token_config(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    match state.model_service.hf_token_store.status() {
+        Ok(status) => Json(token_config_response(status)).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+async fn save_token_config(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(update): Json<HuggingFaceTokenUpdate>,
+) -> Response {
+    let token = update
+        .token
+        .map(|token| token.trim().to_string())
+        .filter(|token| !token.is_empty());
+    {
+        let mut config = state.auth.write().await;
+        let previous = config.huggingface_token.clone();
+        config.huggingface_token = token.clone();
+        if let Err(error) = config.save() {
+            config.huggingface_token = previous;
+            return provider_error(HfError::Io {
+                message: format!("não foi possível salvar a configuração do Hugging Face: {error}"),
+            });
+        }
+    }
+
+    // The provider reads this shared store for every request, so the next
+    // status check and download use the saved credential without a restart.
+    state.model_service.hf_token_store.set(token);
+    match state.model_service.hf_token_store.status() {
+        Ok(status) => Json(token_config_response(status)).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+fn token_config_response(
+    status: crate::huggingface::HfTokenStatus,
+) -> HuggingFaceTokenConfigResponse {
+    HuggingFaceTokenConfigResponse {
+        configured: status.configured,
+        masked: status.masked,
+        source: status.source.label(),
     }
 }
 
@@ -1223,6 +1297,33 @@ mod tests {
         let body = crate::gateway::testkit::body_of(response).await;
         assert_eq!(body["cli"]["installed"], false);
         assert_eq!(body["cli"]["authenticated"], false);
+    }
+
+    #[tokio::test]
+    async fn token_config_route_returns_only_masked_state() {
+        let (provider, _) = test_provider();
+        let store = crate::huggingface::HfTokenStore::new(Some("hf_super_secret".into()));
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.model_service = Arc::new(ModelService::with_token_store(provider, store));
+        let app = routes().with_state(state);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/ui/model-provider/config")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let serialized = body.to_string();
+        assert!(!serialized.contains("hf_super_secret"));
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["source"], "pom.json");
+        assert!(body["masked"].as_str().unwrap().contains("••••"));
+        assert!(body.get("token").is_none());
     }
 
     #[tokio::test]

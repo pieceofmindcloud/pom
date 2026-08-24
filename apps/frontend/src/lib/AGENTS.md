@@ -55,6 +55,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   calcula a cadência derivada e só calcula percentual quando o backend conhece
   o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
   estruturado do CLI e da sessão Hugging Face antes da busca remota.
+- `api.ts` e `queries.ts` também expõem `getHuggingFaceTokenConfig`,
+  `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
+  contém apenas `configured`, `masked` e `source`, nunca o token bruto.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
@@ -221,3 +224,10 @@ would go.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

@@ -36,6 +36,14 @@ export function RemoteModelProviderStatus({
             <Badge tone={tone}>{missing ? t("remoteModels.cliUnavailable") : unauthenticated ? t("remoteModels.authNeeded") : t("remoteModels.authenticated")}</Badge>
           </div>
           <p className="mt-1 text-sm text-muted">{detail}</p>
+          {unauthenticated && (
+            <a
+              className="mt-2 inline-flex text-xs font-medium text-iris hover:text-iris/80"
+              href="/config/rede#hugging-face"
+            >
+              {t("remoteModels.configureAuth")}
+            </a>
+          )}
         </div>
       </div>
       {cli.installed && (cli.version || cli.username) && (

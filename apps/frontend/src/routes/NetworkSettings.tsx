@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Confirm } from "../components/Confirm";
+import { HuggingFaceSettingsPanel } from "../components/HuggingFaceSettingsPanel";
 import { MachineIcon } from "../components/MachineIcon";
 import {
   Badge,
@@ -255,6 +256,8 @@ export function NetworkSettings() {
           busy={tlsSaving}
           onToggle={(next) => void toggleTls(next)}
         />
+
+        <HuggingFaceSettingsPanel />
 
         <Panel>
           <PanelHeader

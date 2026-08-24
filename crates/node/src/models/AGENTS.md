@@ -15,6 +15,14 @@ transferência.
 - `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
   validação de entradas, retomada por faixa, cache próprio e manifesto local.
 
+O token do Hugging Face é resolvido em cada requisição nesta ordem: `HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`, o campo `huggingface_token` do `pom.json` e, por fim,
+o arquivo de cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`~/.cache/huggingface/token`). A configuração da UI fica em memória no
+`HfTokenStore`, então salvar na tela atualiza autenticação sem reiniciar o nó.
+Nenhum endpoint devolve o token bruto; erros continuam passando por
+`redact_sensitive`.
+
 Mensagens internas de `HfError` continuam passando por `redact_sensitive`, que
 aceita texto emprestado ou possuído sem alterar a redação de tokens, headers de
 autorização e `HF_TOKEN`. O teste de owned text fica em `provider.rs`; a suíte
@@ -47,3 +55,10 @@ janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
 mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
 os repõe a partir do `pom.json` antes de carregar o modelo.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

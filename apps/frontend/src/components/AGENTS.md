@@ -298,6 +298,9 @@ Key logic carriers:
   tamanho, licença, revisão e estados instalado/em download.
 - `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
   indisponível, login necessário ou autenticado, com mensagem localizada.
+- `HuggingFaceSettingsPanel.tsx` - campo de senha para o token opcional. O
+  valor salvo nunca é pré-preenchido nem renderizado: a API fornece só máscara
+  e fonte efetiva, e o painel invalida status/configuração depois de salvar.
 - `DownloadModelDialog.tsx` - confirmação do download remoto; chama somente a
   API estruturada e mostra espaço disponível sem aceitar caminho do navegador.
 - `ModelDownloadsPanel.tsx` - progresso, cancelamento e retry de jobs

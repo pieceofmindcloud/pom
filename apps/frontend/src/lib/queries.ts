@@ -14,6 +14,7 @@ import {
   getRemoteModelDetails,
   getRemoteModelProviderStatus,
   getRemoteModelStorage,
+  getHuggingFaceTokenConfig,
   listDeployments,
   searchRemoteModels,
   setConnectionKey,
@@ -76,6 +77,7 @@ export const keys = {
     ["remote-model-details", repoId, revision ?? "default"] as const,
   remoteModelStorage: ["remote-model-storage"] as const,
   remoteModelProviderStatus: ["remote-model-provider-status"] as const,
+  huggingFaceTokenConfig: ["hugging-face-token-config"] as const,
 };
 
 /**
@@ -377,6 +379,15 @@ export function useRemoteModelProviderStatus() {
   });
 }
 
+export function useHuggingFaceTokenConfig() {
+  return useQuery({
+    queryKey: keys.huggingFaceTokenConfig,
+    queryFn: ({ signal }) => getHuggingFaceTokenConfig(signal),
+    staleTime: 30_000,
+    retry: false,
+  });
+}
+
 export function useModelDownloads() {
   const jobs = useJobs();
   return {
@@ -393,6 +404,8 @@ export function invalidateAfterAction(qc: QueryClient) {
     keys.jobs,
     keys.adminNodes,
     keys.models,
+    keys.remoteModelProviderStatus,
+    keys.huggingFaceTokenConfig,
   ]) {
     void qc.invalidateQueries({ queryKey: key });
   }

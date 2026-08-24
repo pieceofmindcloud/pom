@@ -147,9 +147,10 @@ describe("ExecutionTelemetry", () => {
     expect(screen.getByText(/RTT agregado da execução: 1340 ms/)).toBeTruthy();
   });
 
-  it("says the backend sync is off rather than reporting a bare zero", () => {
+  it("does not infer backend sync state from a zero duration", () => {
     mount(<ExecutionTelemetry trace={trace} />);
-    expect(screen.getAllByText(/sync desligado/).length).toBe(2);
+    expect(screen.queryByText(/sync desligado/)).toBeNull();
+    expect(screen.getAllByText(/conclusão 0 ms/).length).toBe(2);
   });
 
   it("shows directional RTT for every pipeline edge with its measurement scope", () => {

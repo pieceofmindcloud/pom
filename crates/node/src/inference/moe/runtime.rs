@@ -338,10 +338,19 @@ impl MoeRuntime {
                     blocks,
                 })
             }
-            ExpertFormat::Q4K | ExpertFormat::Q6K => {
+            ExpertFormat::Q2K
+            | ExpertFormat::Q3K
+            | ExpertFormat::Q4K
+            | ExpertFormat::Q5K
+            | ExpertFormat::Q6K
+            | ExpertFormat::Q8K => {
                 let format = match detected {
+                    ExpertFormat::Q2K => KQuantFormat::Q2K,
+                    ExpertFormat::Q3K => KQuantFormat::Q3K,
                     ExpertFormat::Q4K => KQuantFormat::Q4K,
+                    ExpertFormat::Q5K => KQuantFormat::Q5K,
                     ExpertFormat::Q6K => KQuantFormat::Q6K,
+                    ExpertFormat::Q8K => KQuantFormat::Q8K,
                     _ => unreachable!("detect_expert_format mudou após a seleção K-quant"),
                 };
                 let source = KQuantSource::open_infer(&path, experts)?;
@@ -511,21 +520,22 @@ mod tests {
     }
 
     #[test]
-    fn runtime_carrega_e_executa_q4_k_e_q6_k() {
-        for (dtype, expected) in [(12u32, "q4_k"), (14u32, "q6_k")] {
+    fn runtime_carrega_e_executa_k_quants() {
+        for format in [
+            KQuantFormat::Q2K,
+            KQuantFormat::Q3K,
+            KQuantFormat::Q4K,
+            KQuantFormat::Q5K,
+            KQuantFormat::Q6K,
+            KQuantFormat::Q8K,
+        ] {
+            let dtype = format.dtype();
+            let expected = format.name();
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-k-runtime-{dtype}-{}.gguf",
                 std::process::id()
             ));
-            write_k_source(
-                &path,
-                dtype,
-                if dtype == 12 {
-                    super::super::format_k_quants::KQuantFormat::Q4K
-                } else {
-                    super::super::format_k_quants::KQuantFormat::Q6K
-                },
-            );
+            write_k_source(&path, dtype, format);
             let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
             assert_eq!(runtime.layers(), 1, "formato {expected}");
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();

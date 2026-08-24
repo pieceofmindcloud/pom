@@ -220,6 +220,21 @@ nomes e forward ponta a ponta para os cinco dtypes. Não há um GGUF MoE real
 destes formatos disponível neste worktree; portanto estão **implementados,
 mas não provados em GGUF real**. Nenhum número de desempenho é afirmado.
 
+### Fase 4D: K-quants restantes
+
+`format_k_quants.rs` agora cobre também `Q2_K` (10), `Q3_K` (11), `Q5_K`
+(13) e `Q8_K` (15), além de `Q4_K` e `Q6_K`. Cada formato usa o tamanho de
+bloco e a disposição de campos GGML próprios: escalas e mínimos quantizados
+de Q2/Q4/Q5, high bits de Q3/Q5 e o bloco escalar de Q8. O dispatch por dtype,
+o cálculo de bytes por linha e a validação de `[columns, rows, experts]` são
+compartilhados sem aceitar um bloco com decoder de outro formato.
+
+Os testes cobrem dequantização dos quatro formatos novos, slices por expert
+com gate/up fundidos e separados, cache e forward do `MoeRuntime` para todos
+os seis K-quants. Não há GGUF MoE real K-quant disponível neste worktree;
+estes formatos estão **implementados, mas não provados em GGUF real**. Nenhum
+número de desempenho é afirmado.
+
 ### Ligação e telemetria do hop
 
 `infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é

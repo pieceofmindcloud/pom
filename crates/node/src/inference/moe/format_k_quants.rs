@@ -7,14 +7,22 @@ use std::path::Path;
 use std::sync::Arc;
 
 const BLOCK_ELEMENTS: usize = 256;
+const Q2_K_BLOCK_BYTES: usize = 84;
+const Q3_K_BLOCK_BYTES: usize = 110;
 const Q4_K_BLOCK_BYTES: usize = 144;
+const Q5_K_BLOCK_BYTES: usize = 176;
 const Q6_K_BLOCK_BYTES: usize = 210;
+const Q8_K_BLOCK_BYTES: usize = 292;
 const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KQuantFormat {
+    Q2K,
+    Q3K,
     Q4K,
+    Q5K,
     Q6K,
+    Q8K,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,16 +94,46 @@ impl From<Q4LoadError> for KQuantExecuteError {
 impl KQuantFormat {
     pub fn from_dtype(dtype: u32) -> Result<Self, Q4LoadError> {
         match dtype {
+            10 => Ok(Self::Q2K),
+            11 => Ok(Self::Q3K),
             12 => Ok(Self::Q4K),
+            13 => Ok(Self::Q5K),
             14 => Ok(Self::Q6K),
+            15 => Ok(Self::Q8K),
             other => Err(Q4LoadError::UnsupportedTensorType(other)),
         }
     }
 
     fn block_bytes(self) -> usize {
         match self {
+            Self::Q2K => Q2_K_BLOCK_BYTES,
+            Self::Q3K => Q3_K_BLOCK_BYTES,
             Self::Q4K => Q4_K_BLOCK_BYTES,
+            Self::Q5K => Q5_K_BLOCK_BYTES,
             Self::Q6K => Q6_K_BLOCK_BYTES,
+            Self::Q8K => Q8_K_BLOCK_BYTES,
+        }
+    }
+
+    pub fn dtype(self) -> u32 {
+        match self {
+            Self::Q2K => 10,
+            Self::Q3K => 11,
+            Self::Q4K => 12,
+            Self::Q5K => 13,
+            Self::Q6K => 14,
+            Self::Q8K => 15,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Q2K => "q2_k",
+            Self::Q3K => "q3_k",
+            Self::Q4K => "q4_k",
+            Self::Q5K => "q5_k",
+            Self::Q6K => "q6_k",
+            Self::Q8K => "q8_k",
         }
     }
 }
@@ -586,10 +624,7 @@ impl KQuantSource {
 }
 
 fn ensure_format(tensor: &TensorSpec, format: KQuantFormat) -> Result<(), Q4LoadError> {
-    let expected = match format {
-        KQuantFormat::Q4K => 12,
-        KQuantFormat::Q6K => 14,
-    };
+    let expected = format.dtype();
     if tensor.dtype != expected {
         return Err(Q4LoadError::UnsupportedTensorType(tensor.dtype));
     }
@@ -734,11 +769,100 @@ pub fn dequantize_row(format: KQuantFormat, packed: &[u8]) -> Result<Vec<f32>, K
     let mut values = Vec::with_capacity(packed.len() / block_bytes * 256);
     for block in packed.chunks_exact(block_bytes) {
         match format {
+            KQuantFormat::Q2K => dequantize_q2_k_block(block, &mut values),
+            KQuantFormat::Q3K => dequantize_q3_k_block(block, &mut values),
             KQuantFormat::Q4K => dequantize_q4_k_block(block, &mut values),
+            KQuantFormat::Q5K => dequantize_q5_k_block(block, &mut values),
             KQuantFormat::Q6K => dequantize_q6_k_block(block, &mut values),
+            KQuantFormat::Q8K => dequantize_q8_k_block(block, &mut values),
         }
     }
     Ok(values)
+}
+
+fn dequantize_q2_k_block(block: &[u8], output: &mut Vec<f32>) {
+    let d = f16_to_f32(u16::from_le_bytes([block[80], block[81]]));
+    let min = f16_to_f32(u16::from_le_bytes([block[82], block[83]]));
+    let scales = &block[..16];
+    let quants = &block[16..80];
+    let mut scale_index = 0;
+    for chunk in quants.chunks_exact(32).take(2) {
+        let mut shift = 0;
+        for _ in 0..4 {
+            let scale = scales[scale_index];
+            let dl = d * f32::from(scale & 0x0f);
+            let ml = min * f32::from(scale >> 4);
+            output.extend(
+                chunk
+                    .iter()
+                    .take(16)
+                    .map(|packed| dl * f32::from((packed >> shift) & 3) - ml),
+            );
+            scale_index += 1;
+            let scale = scales[scale_index];
+            let dl = d * f32::from(scale & 0x0f);
+            let ml = min * f32::from(scale >> 4);
+            output.extend(
+                chunk
+                    .iter()
+                    .skip(16)
+                    .map(|packed| dl * f32::from((packed >> shift) & 3) - ml),
+            );
+            scale_index += 1;
+            shift += 2;
+        }
+    }
+}
+
+fn dequantize_q3_k_block(block: &[u8], output: &mut Vec<f32>) {
+    let d = f16_to_f32(u16::from_le_bytes([block[108], block[109]]));
+    let high = &block[..32];
+    let quants = &block[32..96];
+    let mut aux = [0u32; 4];
+    for (word, bytes) in aux.iter_mut().zip(block[96..108].chunks_exact(4)) {
+        *word = u32::from_le_bytes(bytes.try_into().unwrap());
+    }
+    let mask1 = 0x0303_0303u32;
+    let mask2 = 0x0f0f_0f0fu32;
+    let tmp = aux[2];
+    aux[2] = ((aux[0] >> 4) & mask2) | (((tmp >> 4) & mask1) << 4);
+    aux[3] = ((aux[1] >> 4) & mask2) | (((tmp >> 6) & mask1) << 4);
+    aux[0] = (aux[0] & mask2) | ((tmp & mask1) << 4);
+    aux[1] = (aux[1] & mask2) | (((tmp >> 2) & mask1) << 4);
+    let scales = aux
+        .iter()
+        .flat_map(|word| word.to_le_bytes())
+        .collect::<Vec<_>>();
+    let mut scale_index = 0;
+    let mut high_mask = 1u8;
+    for chunk in quants.chunks_exact(32).take(2) {
+        let mut shift = 0;
+        for _ in 0..4 {
+            let scale = i32::from(scales[scale_index] as i8) - 32;
+            let factor = d * scale as f32;
+            output.extend(chunk.iter().take(16).enumerate().map(|(index, packed)| {
+                factor
+                    * (i32::from((packed >> shift) & 3)
+                        - if high[index] & high_mask != 0 { 0 } else { 4 })
+                        as f32
+            }));
+            scale_index += 1;
+            let scale = i32::from(scales[scale_index] as i8) - 32;
+            let factor = d * scale as f32;
+            output.extend(chunk.iter().skip(16).enumerate().map(|(index, packed)| {
+                factor
+                    * (i32::from((packed >> shift) & 3)
+                        - if high[index + 16] & high_mask != 0 {
+                            0
+                        } else {
+                            4
+                        }) as f32
+            }));
+            scale_index += 1;
+            shift += 2;
+            high_mask <<= 1;
+        }
+    }
 }
 
 fn dequantize_q4_k_block(block: &[u8], output: &mut Vec<f32>) {
@@ -800,6 +924,53 @@ fn dequantize_q6_k_block(block: &[u8], output: &mut Vec<f32>) {
         }
         output.extend(values);
     }
+}
+
+fn dequantize_q5_k_block(block: &[u8], output: &mut Vec<f32>) {
+    let d = f16_to_f32(u16::from_le_bytes([block[0], block[1]]));
+    let min = f16_to_f32(u16::from_le_bytes([block[2], block[3]]));
+    let scales = &block[4..16];
+    let high = &block[16..48];
+    let low = &block[48..176];
+    let mut scale_index = 0;
+    let mut mask_low = 1u8;
+    let mut mask_high = 2u8;
+    for chunk in low.chunks_exact(32).take(4) {
+        let (scale0, min0) = get_scale_min_k4(scale_index, scales);
+        let (scale1, min1) = get_scale_min_k4(scale_index + 1, scales);
+        output.extend(chunk.iter().enumerate().map(|(index, packed)| {
+            d * scale0
+                * (f32::from(packed & 0x0f)
+                    + if high[index] & mask_low != 0 {
+                        16.0
+                    } else {
+                        0.0
+                    })
+                - min * min0
+        }));
+        output.extend(chunk.iter().enumerate().map(|(index, packed)| {
+            d * scale1
+                * (f32::from(packed >> 4)
+                    + if high[index] & mask_high != 0 {
+                        16.0
+                    } else {
+                        0.0
+                    })
+                - min * min1
+        }));
+        scale_index += 2;
+        mask_low <<= 2;
+        mask_high <<= 2;
+    }
+}
+
+fn dequantize_q8_k_block(block: &[u8], output: &mut Vec<f32>) {
+    let d = f32::from_le_bytes(block[..4].try_into().unwrap());
+    output.extend(
+        block[4..260]
+            .iter()
+            .map(|value| d * f32::from(*value as i8)),
+    );
 }
 
 fn f16_to_f32(bits: u16) -> f32 {
@@ -907,14 +1078,36 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn k_quants_restantes_decodificam_blocos_completos() {
+        for format in [
+            KQuantFormat::Q2K,
+            KQuantFormat::Q3K,
+            KQuantFormat::Q5K,
+            KQuantFormat::Q8K,
+        ] {
+            let values = dequantize_row(format, &test_block(format)).unwrap();
+            assert_eq!(values.len(), 256, "formato {}", format.name());
+            assert!(values.iter().all(|value| value.is_finite()));
+        }
+    }
+
+    #[test]
     fn k_quant_rejeita_linha_truncada() {
         let error = dequantize_row(KQuantFormat::Q4K, &[0; 143]).unwrap_err();
         assert!(matches!(error, KQuantError::PayloadLength { .. }));
     }
 
     #[test]
-    fn source_mmap_carrega_q4_k_e_q6_k_por_expert() {
-        for (dtype, format) in [(12u32, KQuantFormat::Q4K), (14u32, KQuantFormat::Q6K)] {
+    fn source_mmap_carrega_k_quants_por_expert() {
+        for format in [
+            KQuantFormat::Q2K,
+            KQuantFormat::Q3K,
+            KQuantFormat::Q4K,
+            KQuantFormat::Q5K,
+            KQuantFormat::Q6K,
+            KQuantFormat::Q8K,
+        ] {
+            let dtype = format.dtype();
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-k-source-{dtype}-{}.gguf",
                 std::process::id()
@@ -931,8 +1124,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn source_mmap_carrega_gate_e_up_separados_nos_dois_k_quants() {
-        for (dtype, format) in [(12u32, KQuantFormat::Q4K), (14u32, KQuantFormat::Q6K)] {
+    fn source_mmap_carrega_gate_e_up_separados_nos_k_quants() {
+        for format in [
+            KQuantFormat::Q2K,
+            KQuantFormat::Q3K,
+            KQuantFormat::Q4K,
+            KQuantFormat::Q5K,
+            KQuantFormat::Q6K,
+            KQuantFormat::Q8K,
+        ] {
+            let dtype = format.dtype();
             let path = std::env::temp_dir().join(format!(
                 "pom-ftk-k-source-split-{dtype}-{}.gguf",
                 std::process::id()
@@ -964,10 +1165,7 @@ pub(crate) mod tests {
         let hidden = 256usize;
         let intermediate = 256usize;
         let experts = 2usize;
-        let row_bytes = match format {
-            KQuantFormat::Q4K => 144,
-            KQuantFormat::Q6K => 210,
-        };
+        let row_bytes = format.block_bytes();
         let gate_up = packed_rows(experts * 2 * intermediate, hidden, format);
         let down = packed_rows(experts * hidden, intermediate, format);
         let mut router = Vec::with_capacity(experts * hidden * 4);
@@ -1045,28 +1243,56 @@ pub(crate) mod tests {
     }
 
     fn packed_rows(rows: usize, columns: usize, format: KQuantFormat) -> Vec<u8> {
-        let row_bytes = match format {
-            KQuantFormat::Q4K => 144,
-            KQuantFormat::Q6K => 210,
-        };
-        let mut output = vec![0u8; rows * row_bytes];
-        for row in output.chunks_exact_mut(row_bytes) {
+        let row_bytes = format.block_bytes();
+        let blocks_per_row = columns / BLOCK_ELEMENTS;
+        assert!(columns.is_multiple_of(BLOCK_ELEMENTS));
+        let row_size = blocks_per_row * row_bytes;
+        let mut output = vec![0u8; rows * row_size];
+        for row in output.chunks_exact_mut(row_size) {
             for block in row.chunks_exact_mut(row_bytes) {
-                block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
                 match format {
+                    KQuantFormat::Q2K => {
+                        block[80..82].copy_from_slice(&0x3c00u16.to_le_bytes());
+                        block[82..84].copy_from_slice(&0x3c00u16.to_le_bytes());
+                        block[0..16].fill(1);
+                        block[16..80].fill(0x55);
+                    }
+                    KQuantFormat::Q3K => {
+                        block[96..108].fill(0);
+                        block[108..110].copy_from_slice(&0x3c00u16.to_le_bytes());
+                        block[32..96].fill(0x55);
+                    }
                     KQuantFormat::Q4K => {
+                        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+                        block[2..4].copy_from_slice(&0x3800u16.to_le_bytes());
                         block[4..16].fill(1);
                         block[16..].fill(0x11);
                     }
+                    KQuantFormat::Q5K => {
+                        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+                        block[2..4].copy_from_slice(&0x3800u16.to_le_bytes());
+                        block[4..16].fill(1);
+                        block[16..48].fill(0);
+                        block[48..].fill(0x11);
+                    }
                     KQuantFormat::Q6K => {
+                        block[0..2].copy_from_slice(&0x3c00u16.to_le_bytes());
                         block[2..130].fill(0x11);
                         block[130..194].fill(0xaa);
                         block[194..].fill(1);
+                    }
+                    KQuantFormat::Q8K => {
+                        block[0..4].copy_from_slice(&1.0f32.to_le_bytes());
+                        block[4..260].fill(1);
                     }
                 }
             }
         }
         output
+    }
+
+    fn test_block(format: KQuantFormat) -> Vec<u8> {
+        packed_rows(1, BLOCK_ELEMENTS, format)
     }
 
     fn gguf_string(output: &mut Vec<u8>, value: &str) {

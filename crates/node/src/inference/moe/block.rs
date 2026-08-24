@@ -321,10 +321,7 @@ impl KQuantMoeBlock {
             .map_err(KQuantExecuteError::Source)?;
         let model = &self.model;
         let layer = self.layer;
-        let format = match self.format {
-            KQuantFormat::Q4K => "q4_k",
-            KQuantFormat::Q6K => "q6_k",
-        };
+        let format = self.format.name();
         let output = dispatch_top_k(&logits, self.top_k, |expert| {
             let key = ExpertKey::new(model, layer, expert, format);
             self.executor.run_from_source(source, key, layer, hidden)

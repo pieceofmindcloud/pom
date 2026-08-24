@@ -747,6 +747,7 @@ async fn main() -> Result<()> {
             peer_index: 0,
             primary: args.gateway,
             tp: None,
+            inference_mode: Default::default(),
             inference_port: port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,

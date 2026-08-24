@@ -104,7 +104,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
-  off for tensor parallel deployment.
+  off for tensor parallel deployment. `RuntimeParams.inference_mode` is the
+  persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
+  node's GGUF expert metadata; the deploy screen must not infer MoE from a
+  filename. `inference_mode_supported` and `inference_mode_reason` keep an
+  unsupported path visible instead of presenting a misleading selection.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
   size-, tensor- and budget-driven slicing plans. Budget-driven shards expose

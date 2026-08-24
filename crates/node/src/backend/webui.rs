@@ -1549,6 +1549,18 @@ async fn plan_split_endpoint(
 
 // ── Applying a configuration ─────────────────────────────────────────────────
 
+/// Which inference engine the operator asks the runtime to use for a model.
+/// `Auto` keeps the runtime's model-metadata decision; the explicit variants
+/// are persisted with the deployment so every peer receives the same choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceMode {
+    #[default]
+    Auto,
+    Dense,
+    Moe,
+}
+
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
 ///
@@ -1557,6 +1569,10 @@ async fn plan_split_endpoint(
 /// verifica que uma reimplantação mudou alguma coisa.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
+    /// Engine preference. `Auto` is backwards-compatible and lets the runtime
+    /// choose from the actual GGUF metadata.
+    #[serde(default)]
+    pub inference_mode: InferenceMode,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -1691,6 +1707,7 @@ fn d_mtp_min_probability() -> f32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
+            inference_mode: InferenceMode::Auto,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -1729,6 +1746,7 @@ impl Default for RuntimeParams {
 impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
+            inference_mode: c.inference_mode,
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
@@ -2364,6 +2382,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_index: req.peer_index,
         primary: req.primary,
         tp: req.tp.clone(),
+        inference_mode: req.params.inference_mode,
         inference_port,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
@@ -4738,6 +4757,20 @@ mod tests {
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
+    }
+
+    #[test]
+    fn inference_mode_defaults_to_auto_and_round_trips() {
+        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.inference_mode, InferenceMode::Auto);
+
+        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "inference_mode": "moe"
+        }))
+        .unwrap();
+        assert_eq!(explicit.inference_mode, InferenceMode::Moe);
+        let encoded = serde_json::to_value(explicit).unwrap();
+        assert_eq!(encoded["inference_mode"], "moe");
     }
 
     #[test]

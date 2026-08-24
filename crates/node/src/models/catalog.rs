@@ -71,6 +71,9 @@ pub struct DiscoveredModel {
     pub path: String,
     pub size_bytes: u64,
     pub architecture: Option<String>,
+    /// True only when the GGUF header reports more than one expert.
+    #[serde(default)]
+    pub is_moe: bool,
     /// Layers of the *whole* model (shards report the original count).
     pub total_layers: Option<u32>,
     /// Quantisation tag parsed from the filename, e.g. "Q4_K_M".
@@ -490,6 +493,7 @@ fn describe(
         path: path.to_string_lossy().into_owned(),
         size_bytes,
         architecture: info.as_ref().and_then(|i| i.architecture.clone()),
+        is_moe: info.as_ref().is_some_and(GgufInfo::is_moe),
         total_layers,
         // Numa parte o nome do arquivo é o hash, e hash não tem tag de
         // quantização para achar: quem sabe é o manifesto.
@@ -1024,6 +1028,7 @@ mod tests {
             path: format!("/tmp/s_{start}_{end}.gguf"),
             size_bytes: 4096,
             architecture: None,
+            is_moe: false,
             total_layers: Some(total),
             quant: None,
             shard_range: Some((start, end)),
@@ -1054,6 +1059,7 @@ mod tests {
                 path: format!("/tmp/{id}.gguf"),
                 size_bytes: 4096,
                 architecture: None,
+                is_moe: false,
                 total_layers: Some(32),
                 quant: None,
                 shard_range: Some((start, end)),
@@ -1174,6 +1180,7 @@ mod tests {
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
             size_bytes: 4096,
             architecture: None,
+            is_moe: false,
             total_layers: None,
             quant: None,
             shard_range: Some((start, end)),

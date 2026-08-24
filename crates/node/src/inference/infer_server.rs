@@ -769,6 +769,7 @@ mod tests {
             peer_count: 2,
             peer_index: 0,
             primary: true,
+            inference_mode: Default::default(),
             inference_port: port,
             n_gpu_layers: 99,
             n_ctx: 8192,

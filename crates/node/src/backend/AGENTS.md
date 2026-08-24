@@ -235,6 +235,11 @@ behind an auth extractor.
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
+  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy.
+  O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
+  experts identifica MoE. O plano expõe `inference_mode_supported` e
+  `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
+  enquanto esse caminho não for suportado.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

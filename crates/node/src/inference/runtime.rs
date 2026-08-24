@@ -70,6 +70,10 @@ pub struct NodeConfig {
     /// primary/worker de um grupo. `None` = nó sem TP (o caso de hoje).
     #[serde(default)]
     pub tp: Option<crate::network::TpIdentity>,
+    /// Persisted engine preference for this deployment. The executor decides
+    /// the concrete path from this value and the loaded GGUF metadata.
+    #[serde(default)]
+    pub inference_mode: crate::webui::InferenceMode,
 
     pub inference_port: u16,
     pub n_gpu_layers: u32,
@@ -180,6 +184,7 @@ impl NodeConfig {
             peer_index: 0,
             primary: false,
             tp: None,
+            inference_mode: p.inference_mode,
             inference_port: 0,
             single_peer: false,
             no_embeddings: p.no_embeddings,
@@ -1313,6 +1318,7 @@ mod tests {
             peer_count: 2,
             peer_index: 0,
             primary: true,
+            inference_mode: Default::default(),
             inference_port: 8181,
             n_gpu_layers: 99,
             n_ctx: 8192,

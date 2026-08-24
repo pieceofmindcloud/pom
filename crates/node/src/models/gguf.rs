@@ -122,6 +122,13 @@ impl GgufInfo {
         }
     }
 
+    /// Whether the real GGUF metadata describes a mixture of experts model.
+    /// This delegates to the explicit expert metadata and never to the
+    /// architecture name.
+    pub fn is_moe(&self) -> bool {
+        self.model_architecture().is_moe()
+    }
+
     /// Layers of the *whole* model: the shard metadata when present, else the
     /// block count of the file itself.
     pub fn total_layers(&self) -> Option<u32> {
@@ -797,6 +804,38 @@ mod tests {
         let layout = read_layout(&q).unwrap();
         assert_eq!(layout.nextn_predict_layers, 0);
         let _ = std::fs::remove_file(&q);
+    }
+
+    #[test]
+    fn moe_detection_uses_real_expert_metadata_not_architecture_name() {
+        let dir = std::env::temp_dir();
+        let moe = dir.join("pom-moe-metadata.gguf");
+        std::fs::write(
+            &moe,
+            header_only_gguf(&[
+                ("general.architecture", T_STRING, "qwen3moe".into()),
+                (
+                    "qwen3moe.expert_count",
+                    T_UINT32,
+                    128u32.to_le_bytes().to_vec(),
+                ),
+            ]),
+        )
+        .unwrap();
+        let info = read_info(&moe).unwrap();
+        assert!(info.is_moe());
+
+        let dense = dir.join("pom-dense-with-moe-name.gguf");
+        std::fs::write(
+            &dense,
+            header_only_gguf(&[("general.architecture", T_STRING, "qwen3moe".into())]),
+        )
+        .unwrap();
+        let info = read_info(&dense).unwrap();
+        assert!(!info.is_moe(), "nome de arquitetura não substitui metadata");
+
+        let _ = std::fs::remove_file(moe);
+        let _ = std::fs::remove_file(dense);
     }
 
     /// Every type this project claims to measure, with the `(type_size,

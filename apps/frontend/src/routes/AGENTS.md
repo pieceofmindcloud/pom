@@ -111,6 +111,12 @@ Per-file list:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
+  For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
+  the Globais inspector shows the inference engine selector and sends
+  `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense
+  models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
+  is blocked with the backend's explicit unsupported reason, so the UI cannot
+  imply that the request will use another engine silently.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,

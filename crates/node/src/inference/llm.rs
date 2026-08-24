@@ -431,6 +431,56 @@ pub struct LlmEngine {
     mtp: Option<crate::mtp::MtpDrafter>,
 }
 
+/// Pesos mantidos entre gerações do servidor para que uma reconfiguração de
+/// contexto não faça outra leitura do GGUF nem outra carga de VRAM.
+#[derive(Default)]
+pub(crate) struct ModelCache {
+    entry: Mutex<Option<CachedModel>>,
+}
+
+#[derive(Clone)]
+struct CachedModel {
+    model_path: String,
+    loaded: Arc<LoadedModel>,
+    fit_memory_applied: bool,
+    effective_n_gpu_layers: i32,
+}
+
+impl ModelCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, model_path: &str) -> Option<CachedModel> {
+        let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry
+            .as_ref()
+            .filter(|cached| cached.model_path == model_path)
+            .cloned()
+    }
+
+    fn put(
+        &self,
+        model_path: &str,
+        loaded: Arc<LoadedModel>,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+    ) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = Some(CachedModel {
+            model_path: model_path.to_string(),
+            loaded,
+            fit_memory_applied,
+            effective_n_gpu_layers,
+        });
+    }
+
+    pub(crate) fn clear(&self) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = None;
+    }
+}
+
 /// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
 /// measured with the public `llama_synchronize` API and therefore includes all
 /// queued backend work and output transfers that must complete. It is not
@@ -558,33 +608,80 @@ impl LoadedModel {
 impl LlmEngine {
     /// Load a GGUF model slice and create a llama context.
     pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
+        Self::load_with_cache(model_path, cfg, &ModelCache::new(), false)
+    }
+
+    /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
+    /// pesos carregados por uma geração anterior.
+    pub(crate) fn load_with_cache(
+        model_path: &str,
+        cfg: &EngineConfig,
+        cache: &ModelCache,
+        reuse_weights: bool,
+    ) -> Result<Self> {
+        if reuse_weights {
+            if let Some(cached) = cache.get(model_path) {
+                tracing::info!(
+                    model = %model_path,
+                    "reutilizando pesos carregados; reconstruindo apenas o contexto"
+                );
+                return Self::from_loaded(
+                    cached.loaded,
+                    cfg,
+                    cached.fit_memory_applied,
+                    cached.effective_n_gpu_layers,
+                );
+            }
+        }
+
         let plan = fit_plan(model_path, cfg)?;
         let loaded = LoadedModel::load(model_path, &plan)?;
-        match Self::with_model(loaded.clone(), &plan.config) {
+        let engine = Self::from_loaded(
+            loaded.clone(),
+            &plan.config,
+            plan.applied,
+            plan.config.n_gpu_layers,
+        )?;
+        cache.put(
+            model_path,
+            loaded,
+            engine.fit_memory_applied,
+            engine.effective_n_gpu_layers,
+        );
+        Ok(engine)
+    }
+
+    fn from_loaded(
+        loaded: Arc<LoadedModel>,
+        cfg: &EngineConfig,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+    ) -> Result<Self> {
+        match Self::with_model(loaded.clone(), cfg) {
             Ok(mut engine) => {
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(cfg);
                 Ok(engine)
             }
             Err(gpu_kv_error) => {
-                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(&plan.config) else {
+                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(cfg) else {
                     return Err(gpu_kv_error);
                 };
 
                 warn!(
                     "llama context failed with KV cache on GPU: {gpu_kv_error}; retrying with KV cache in host RAM while keeping {} GPU layers",
-                    plan.config.n_gpu_layers
+                    effective_n_gpu_layers
                 );
                 let mut engine = Self::with_model(loaded, &cpu_kv_cfg).with_context(|| {
                     format!(
                         "llama context failed with GPU KV and host-RAM KV fallback; requested {} GPU layers",
-                        plan.config.n_gpu_layers
+                        effective_n_gpu_layers
                     )
                 })?;
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&cpu_kv_cfg);
                 Ok(engine)
             }
         }
@@ -2202,6 +2299,28 @@ mod tests {
             cache_type_to_ggml(KvCacheType::Iq4Nl),
             sys::GGML_TYPE_IQ4_NL
         );
+    }
+
+    #[test]
+    fn model_cache_retem_handle_ate_clear() {
+        let cache = ModelCache::new();
+        let loaded = Arc::new(LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+        });
+        cache.put("model.gguf", loaded.clone(), true, 7);
+
+        let first = cache.get("model.gguf").unwrap().loaded;
+        let second = cache.get("model.gguf").unwrap().loaded;
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(cache.get("other.gguf").is_none());
+
+        drop((first, second));
+        cache.clear();
+        assert!(cache.get("model.gguf").is_none());
+        assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
     /// Characterisation tests: they pin the sampler's *current* choices so the

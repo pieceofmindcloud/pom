@@ -352,6 +352,20 @@ impl NodeConfig {
         false
     }
 
+    /// Pesos podem sobreviver a esta troca de configuração quando a fatia e a
+    /// forma de carregamento continuam iguais. Contexto, KV, sessões, lote e
+    /// sampling ficam fora desta identidade e são reconstruídos no servidor.
+    fn weights_are_compatible(&self, other: &Self) -> bool {
+        self.model_path == other.model_path
+            && self.start_layer == other.start_layer
+            && self.end_layer == other.end_layer
+            && self.total_layers == other.total_layers
+            && self.n_gpu_layers == other.n_gpu_layers
+            && self.fit_memory == other.fit_memory
+            && self.mtp_effective() == other.mtp_effective()
+            && self.tp == other.tp
+    }
+
     fn validate(&self) -> Result<()> {
         if self.model_path.trim().is_empty() {
             bail!("model_path é obrigatório");
@@ -480,6 +494,9 @@ pub struct NodeRuntime {
     tls: Option<crate::serve::TlsServer>,
     /// Configuração viva usada para autorizar chamadas internas de inferência.
     auth: Option<crate::auth::AuthState>,
+    /// Dono do último conjunto de pesos carregado. O servidor de cada geração
+    /// conserva sua própria referência até drenar as requisições em voo.
+    model_cache: Arc<crate::llm::ModelCache>,
 }
 
 impl NodeRuntime {
@@ -515,6 +532,7 @@ impl NodeRuntime {
             generation,
             tls,
             auth,
+            model_cache: Arc::new(crate::llm::ModelCache::new()),
         })
     }
 
@@ -557,6 +575,7 @@ impl NodeRuntime {
 
         *self.config.write().await = None;
         *self.assignment.write().await = None;
+        self.model_cache.clear();
         *self.status.write().await =
             RuntimeStatus::new(ServerState::Disabled, "parado para reconfiguracao");
         self.net.set_batching_ready(false);
@@ -591,6 +610,20 @@ impl NodeRuntime {
             cfg.peer_index + 1,
             cfg.peer_count
         );
+
+        let reuse_weights = self
+            .config
+            .read()
+            .await
+            .as_ref()
+            .is_some_and(|current| current.weights_are_compatible(&cfg));
+        if !reuse_weights {
+            // A path can be reused for a different slice, or its loader
+            // parameters can change. Drop the cache entry before publishing
+            // the new generation so a failed load cannot leave stale weights
+            // eligible for a later retry.
+            self.model_cache.clear();
+        }
 
         // Bumping the generation stops the previous supervisor, which kills its
         // child on the way out.
@@ -628,7 +661,7 @@ impl NodeRuntime {
             warn!("não deu para anotar a fatia aplicada: {e}");
         }
 
-        self.spawn_supervisor(cfg, generation);
+        self.spawn_supervisor(cfg, generation, reuse_weights);
         Ok(())
     }
 
@@ -649,7 +682,7 @@ impl NodeRuntime {
     }
 
     /// Start (or restart) the Rust inference server for `generation`.
-    fn spawn_supervisor(&self, cfg: NodeConfig, generation: u64) {
+    fn spawn_supervisor(&self, cfg: NodeConfig, generation: u64, reuse_weights: bool) {
         let gen_rx = self.generation.subscribe();
         let status = StatusWriter {
             status: self.status_handle(),
@@ -661,6 +694,7 @@ impl NodeRuntime {
         let mtp_ready = self.net.mtp_ready_handle();
         let batching_ready = self.net.batching_ready_handle();
         let auth = self.auth.clone();
+        let model_cache = self.model_cache.clone();
         // A porta de inferência só recebe peer: nada de redirecionar para
         // https quem chegar em claro, porque não há navegador aqui.
         let tls = self.tls.as_ref().map(|t| t.so_de_peers());
@@ -733,6 +767,8 @@ impl NodeRuntime {
                     batching_ready.clone(),
                     tls.clone(),
                     auth.clone(),
+                    model_cache.clone(),
+                    reuse_weights,
                 )
                 .await
                 {
@@ -1131,7 +1167,7 @@ mod tests {
         let rt = NodeRuntime::new(net, Arc::new(RwLock::new(None)));
         let mut c = cfg();
         c.inference_port = port;
-        rt.spawn_supervisor(c, 0);
+        rt.spawn_supervisor(c, 0, false);
 
         let mut status = rt.status().await;
         for _ in 0..80 {
@@ -1222,6 +1258,23 @@ mod tests {
         assert_eq!(depois.no_embeddings, antes.no_embeddings);
         assert_eq!(depois.cache_type_k, antes.cache_type_k);
         assert_eq!(depois.cache_type_v, antes.cache_type_v);
+    }
+
+    #[test]
+    fn reconfigurar_contexto_reutiliza_pesos_mas_nova_fatia_nao() {
+        let antes = cfg();
+        let mut params = crate::webui::RuntimeParams::default();
+        params.n_ctx = 65536;
+        params.max_sessions = 4;
+        params.n_batch = 1024;
+        let mut depois = antes.with_params(&params);
+        depois.cache_type_k = crate::config::KvCacheType::Q8_0;
+        depois.cache_type_v = crate::config::KvCacheType::Bf16;
+
+        assert!(antes.weights_are_compatible(&depois));
+
+        depois.start_layer += 1;
+        assert!(!antes.weights_are_compatible(&depois));
     }
 
     /// Num grupo de tensor parallelism o `fit` nativo do llama.cpp não serve, e

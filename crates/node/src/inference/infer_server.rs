@@ -12,7 +12,7 @@
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, SamplingConfig};
+use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
 use crate::wire::{self, WireDtype};
@@ -1198,6 +1198,8 @@ pub async fn run(
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
+    model_cache: Arc<ModelCache>,
+    reuse_weights: bool,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -1243,9 +1245,11 @@ pub async fn run(
     };
 
     let model_path = cfg.model_path.clone();
-    let engine = tokio::task::spawn_blocking(move || LlmEngine::load(&model_path, &engine_cfg))
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
+    let engine = tokio::task::spawn_blocking(move || {
+        LlmEngine::load_with_cache(&model_path, &engine_cfg, &model_cache, reuse_weights)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
 
     // Só agora se sabe se a cabeça `nextn` existe: depende do GGUF, não da
     // configuração. Ver `Network::mtp_ready`.

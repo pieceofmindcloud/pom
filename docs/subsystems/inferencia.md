@@ -135,6 +135,22 @@ antes de criar o contexto de rascunho; deixar essa flag falsa mantém os
 metadados MTP, mas deixa `nextn.eh_proj` nulo e faz o Qwen3.5 abortar na
 construção do grafo.
 
+### Reconfiguração sem reler pesos
+
+`NodeRuntime` mantém um `ModelCache` local com o `Arc<LoadedModel>` da última
+fatia. Em uma nova geração, `NodeConfig::weights_are_compatible` compara o
+caminho, a faixa, a contagem total, a forma de carregamento GPU, o MTP efetivo
+e a identidade TP. Se tudo coincide, `infer_server::run` chama
+`LlmEngine::load_with_cache` e cria somente um `llama_context` novo, aplicando os
+novos valores de contexto, sessões, KV, lote e sampling. A geração anterior
+continua dona do contexto antigo até o servidor parar de aceitar conexões e
+drenar as requisições em voo.
+
+Uma troca de fatia, caminho ou parâmetro de carregamento limpa o cache antes de
+publicar a nova geração. `NodeRuntime::stop` também limpa o cache, porque
+unload explícito deve devolver os pesos. O cache nunca é compartilhado entre
+processos ou máquinas e não altera nenhum contrato de fio.
+
 ### Onde as camadas ficaram
 
 Nada acima diz onde o modelo **de fato** foi parar. `n_gpu_layers` é o pedido; o

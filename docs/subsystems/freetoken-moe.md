@@ -88,9 +88,11 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
 
 - Metadados ausentes não viram zero silenciosamente. Um orçamento de KV só pode
   ser calculado quando a geometria necessária estiver presente.
-- Um rebuild só acontece em manutenção, depois de drenar sessões e retirar o
-  nó do anúncio de capacidade. Falha de rebuild não pode deixar uma geração
-  antiga anunciada como pronta.
+- Um rebuild acontece como nova geração: o servidor anterior para de aceitar
+  conexões, drena requisições em voo e só então libera o contexto antigo.
+  Reconfiguração compatível mantém os pesos no `ModelCache`; troca de fatia ou
+  de carregamento limpa esse cache. Falha de rebuild não pode deixar a nova
+  geração anunciada como pronta.
 - Cancelamento é cooperativo e idempotente. Um prefill cancelado libera sessão
   e os peers não podem continuar avançando um pedido morto.
 - O motor novo nunca é selecionado por nome heurístico ou por falha do

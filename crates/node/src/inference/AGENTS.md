@@ -66,8 +66,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
-  supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
-  anotação da fatia servida (Pending → Serving via `/health`).
+  supervisa o servidor Rust embutido (`infer_server::run`), mantém um cache de
+  pesos entre gerações compatíveis e mantém a anotação da fatia servida
+  (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
+  ou de parâmetros de carregamento também o invalida.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
@@ -233,7 +235,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
   total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
   o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
-  `pool` é a marca disso.
+  `pool` é a marca disso. `LlmEngine::load_with_cache` usa o
+  `ModelCache` do runtime para criar apenas um contexto novo quando a
+  identidade da fatia e do carregamento de pesos não mudou; parâmetros de KV,
+  contexto, sessões, lote e sampling não forçam releitura do GGUF.
 - `LlmEngine::placement` / `LlmEngine::context_memory` - onde as camadas e o
   cache KV ficaram **de fato**, do llama.cpp, por
   `llama_rs_model_placement_json` e `llama_rs_context_memory_json`

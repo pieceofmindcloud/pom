@@ -89,6 +89,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
   `format_q4_0.rs` compartilha o parser GGUF, o inventário de dtypes e o
   decoder Q4_0, `format_plain.rs` implementa os bancos escalares F32/F16/BF16,
+  `format_legacy_quants.rs` implementa Q4_1/Q5_0/Q5_1/Q8_0,
   `format_k_quants.rs` implementa Q4_K/Q6_K, `format_iq_quants.rs`
   implementa IQ3_S/IQ2_S/IQ4_XS e `format_nvfp4.rs` implementa o decoder NVFP4
   em CPU. K-quants e IQ-quants validam a convenção GGUF

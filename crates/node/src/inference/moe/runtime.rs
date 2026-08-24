@@ -5,10 +5,13 @@
 //! Atenção e o restante das camadas continuam no contexto llama.cpp; aqui a
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
-use super::block::{IqQuantMoeBlock, MoeBlockError, Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock};
+use super::block::{
+    IqQuantMoeBlock, LegacyQuantMoeBlock, MoeBlockError, Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
+};
 use super::cache::{CacheError, ExpertCache};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
+use super::format_legacy_quants::{LegacyQuantFormat, LegacyQuantSource};
 use super::format_nvfp4::Nvfp4Source;
 use super::format_plain::{PlainFormat, PlainSource};
 use super::format_q4_0::{detect_expert_format, ExpertFormat};
@@ -87,6 +90,7 @@ impl From<MoeBlockError> for MoeRuntimeError {
 }
 
 enum MoeSource {
+    Legacy(LegacyQuantSource),
     Plain(PlainSource),
     Q4(Q4_0Source),
     K(KQuantSource),
@@ -97,6 +101,7 @@ enum MoeSource {
 impl MoeSource {
     fn hidden(&self) -> usize {
         match self {
+            Self::Legacy(source) => source.hidden(),
             Self::Plain(source) => source.hidden(),
             Self::Q4(source) => source.hidden(),
             Self::K(source) => source.hidden(),
@@ -107,6 +112,7 @@ impl MoeSource {
 }
 
 enum MoeBlock {
+    Legacy(LegacyQuantMoeBlock),
     Plain(PlainMoeBlock),
     Q4(Q4_0MoeBlock),
     K(super::block::KQuantMoeBlock),
@@ -133,6 +139,49 @@ impl MoeRuntime {
         let model = model.into();
         let detected = detect_expert_format(&path)?;
         match detected {
+            ExpertFormat::Q4_1 | ExpertFormat::Q5_0 | ExpertFormat::Q5_1 | ExpertFormat::Q8_0 => {
+                let format = match detected {
+                    ExpertFormat::Q4_1 => LegacyQuantFormat::Q4_1,
+                    ExpertFormat::Q5_0 => LegacyQuantFormat::Q5_0,
+                    ExpertFormat::Q5_1 => LegacyQuantFormat::Q5_1,
+                    ExpertFormat::Q8_0 => LegacyQuantFormat::Q8_0,
+                    _ => unreachable!("detect_expert_format mudou após seleção legacy"),
+                };
+                let source = LegacyQuantSource::open_infer(&path, experts)?;
+                if source.format() != format {
+                    return Err(MoeRuntimeError::FormatMismatch);
+                }
+                if !source.has_router() {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
+                        "blk.<layer>.ffn_gate_inp.weight".into(),
+                    )));
+                }
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::Legacy(
+                        LegacyQuantMoeBlock::new(
+                            Arc::clone(&cache),
+                            &model,
+                            layer,
+                            top_k,
+                            format,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                        .map_err(MoeRuntimeError::Block)?,
+                    ));
+                }
+                Ok(Self {
+                    source: MoeSource::Legacy(source),
+                    blocks,
+                })
+            }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
                 let format = match detected {
                     ExpertFormat::F32 => PlainFormat::F32,
@@ -357,6 +406,9 @@ impl MoeRuntime {
         let mut output = Vec::with_capacity(hidden.len());
         for token_hidden in hidden.chunks_exact(hidden_width) {
             let values = match (&self.source, block) {
+                (MoeSource::Legacy(source), MoeBlock::Legacy(block)) => {
+                    block.forward_from_source(source, token_hidden)?
+                }
                 (MoeSource::Plain(source), MoeBlock::Plain(block)) => {
                     block.forward_from_source(source, token_hidden)?
                 }
@@ -384,6 +436,7 @@ impl MoeRuntime {
 mod tests {
     use super::super::format_iq_quants::{tests::write_iq_source, IqQuantFormat};
     use super::super::format_k_quants::tests::write_k_source;
+    use super::super::format_legacy_quants::{tests::write_legacy_source, LegacyQuantFormat};
     use super::super::format_plain::{tests::write_plain_source, PlainFormat};
     use super::super::format_q4_0::tests::write_q4_source;
     use super::*;
@@ -456,6 +509,27 @@ mod tests {
             let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 4], 2).unwrap();
             assert_eq!(output.len(), 4, "formato {}", format.name());
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_carrega_e_executa_q4_1_q5_0_q5_1_e_q8_0() {
+        for format in [
+            LegacyQuantFormat::Q4_1,
+            LegacyQuantFormat::Q5_0,
+            LegacyQuantFormat::Q5_1,
+            LegacyQuantFormat::Q8_0,
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "pom-ftk-legacy-runtime-{}-{}.gguf",
+                format.name(),
+                std::process::id()
+            ));
+            write_legacy_source(&path, format, false);
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
+            assert_eq!(output.len(), 64, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
         }
     }

@@ -11,6 +11,9 @@ use super::format_iq_quants::{
 use super::format_k_quants::{
     KQuantError, KQuantExecuteError, KQuantExecutor, KQuantFormat, KQuantSource,
 };
+use super::format_legacy_quants::{
+    LegacyQuantExecuteError, LegacyQuantExecutor, LegacyQuantFormat, LegacyQuantSource,
+};
 use super::format_nvfp4::{Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
 use super::format_plain::{PlainExecuteError, PlainExecutor, PlainFormat, PlainSource};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
@@ -62,6 +65,63 @@ impl From<IqQuantExecuteError> for MoeBlockError {
 impl From<PlainExecuteError> for MoeBlockError {
     fn from(error: PlainExecuteError) -> Self {
         Self::Executor(error.to_string())
+    }
+}
+
+impl From<LegacyQuantExecuteError> for MoeBlockError {
+    fn from(error: LegacyQuantExecuteError) -> Self {
+        Self::Executor(error.to_string())
+    }
+}
+
+/// Forward de um bloco MoE Q4_1, Q5_0, Q5_1 ou Q8_0.
+pub struct LegacyQuantMoeBlock {
+    model: String,
+    layer: u32,
+    top_k: usize,
+    format: LegacyQuantFormat,
+    executor: LegacyQuantExecutor,
+}
+
+impl LegacyQuantMoeBlock {
+    pub fn new(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: LegacyQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: LegacyQuantExecutor::new(cache, format, hidden, intermediate)
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    pub fn forward_from_source(
+        &self,
+        source: &LegacyQuantSource,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let logits = source
+            .router_logits(self.layer, hidden)
+            .map_err(LegacyQuantExecuteError::Source)?;
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        let output = dispatch_top_k(&logits, self.top_k, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
+        });
+        output.map_err(|error| match error {
+            DispatchError::Route(error) => MoeBlockError::Route(error),
+            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
     }
 }
 

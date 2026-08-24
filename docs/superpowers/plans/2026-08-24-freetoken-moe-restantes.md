@@ -50,10 +50,10 @@
 - `LegacyQuantFormat` maps IDs 3, 6, 7 and 8 and owns exact block sizes and dequantization.
 - `LegacyQuantSource` owns GGUF tensor slicing; `LegacyQuantExecutor` owns mat-vec.
 
-- [ ] Add failing format tests for one block of every dtype.
-- [ ] Implement block layouts from the ggml type definitions and validate row divisibility.
-- [ ] Run focused tests and compare decoded values against an independent scalar reference.
-- [ ] Inspect any available real GGUF; record proof or explicit lack of proof and publish.
+- [x] Add failing format tests for one block of every dtype.
+- [x] Implement block layouts from the ggml type definitions and validate row divisibility.
+- [x] Run focused tests and compare decoded values against an independent scalar reference.
+- [x] Inspect available local GGUFs; none contain these MoE dtypes, so record explicit lack of proof and publish.
 
 ### Task 3: MXFP4, TQ1_0, TQ2_0, Q1_0 and Q2_0
 

@@ -182,6 +182,23 @@ forward com cache e a recusa nominal, portanto estes formatos estão
 **implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
 afirmado.
 
+### Fase 4B: Q4_1, Q5_0, Q5_1 e Q8_0
+
+Os blocos clássicos `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) e `Q8_0` (8) têm
+decoder CPU próprio em `format_legacy_quants.rs`. Os tamanhos dos blocos e as
+fórmulas de dequantização seguem a definição ativa em `ggml-common.h` e
+`ggml-quants.c`: escalas e mínimos em F16, quinto bit separado para Q5 e
+quantes assinados para Q8. O loader valida divisibilidade por blocos de 32,
+dimensões `[columns, rows, experts]`, dtype uniforme, offsets e limites do
+arquivo. Gate/up fundido e separado compartilham o mesmo caminho de cache e
+router, mas nenhum dtype é aceito pelo decoder de outro.
+
+Os testes locais cobrem vetor de referência para cada bloco, forward do expert,
+as duas convenções de nomes e o forward do `MoeRuntime`. Não há GGUF MoE
+Q4_1/Q5_0/Q5_1/Q8_0 disponível neste worktree, então estes formatos estão
+**implementados, mas não provados em GGUF real**. Nenhum número de desempenho é
+afirmado.
+
 Não há número de desempenho nesta fase. A validação nativa foi executada com o
 symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato
 não entra no commit e não substitui a prova ponta a ponta com um modelo real.

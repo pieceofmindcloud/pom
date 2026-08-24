@@ -6,7 +6,14 @@ transferência.
 
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
-  chama o extrator de GGUF.
+  chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
+  `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.
+- `gguf.rs` - lê a geometria de KV escalar ou por camada
+  (`attention.head_count_kv`, `key_length` e `value_length`) sem carregar os
+  pesos.
+- `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
+  linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
+  overflow, sem consultar FFI ou dispositivo.
 - `storage.rs` - calcula uso recursivo da pasta de fatias e remove diretórios
   gerados mais antigos quando o limite configurado seria excedido. A saída
   atual e o modelo ativo são protegidos.

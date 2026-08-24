@@ -744,6 +744,9 @@ export interface PlannedShard {
   end_layer: number;
   layers: number;
   weight_mb: number;
+  weight_bytes: number;
+  kv_bytes: number;
+  total_bytes: number;
   is_first: boolean;
   is_last: boolean;
   has_model: boolean;

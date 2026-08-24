@@ -43,6 +43,8 @@ mod identity;
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
+#[path = "models/kv_budget.rs"]
+mod kv_budget;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/llm.rs"]

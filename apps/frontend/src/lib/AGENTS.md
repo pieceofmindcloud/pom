@@ -107,7 +107,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   off for tensor parallel deployment.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
-  size-, tensor- and budget-driven slicing plans.
+  size-, tensor- and budget-driven slicing plans. Budget-driven shards expose
+  `weight_bytes`, `kv_bytes` and `total_bytes`; those are the byte arithmetic
+  returned by the node planner, not display-only estimates.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 

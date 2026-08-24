@@ -11,7 +11,9 @@
 //! only its own slice from its own copy of the source model, so no weights ever
 //! cross the network.
 
-use crate::gguf::GgufLayout;
+use crate::config::KvCacheType;
+use crate::gguf::{GgufInfo, GgufLayout};
+use crate::kv_budget::kv_bytes_for_layers;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -38,6 +40,15 @@ pub struct PeerBudget {
     pub has_model: bool,
 }
 
+/// Parâmetros do cache usados para transformar a geometria GGUF em bytes.
+#[derive(Debug, Clone, Copy)]
+pub struct KvPlanParams {
+    pub n_ctx: u32,
+    pub max_sessions: u32,
+    pub cache_type_k: KvCacheType,
+    pub cache_type_v: KvCacheType,
+}
+
 // ── Outputs ──────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,6 +63,9 @@ pub struct PlannedShard {
     pub layers: u32,
     /// Real size of the slice this peer would write to disk.
     pub weight_mb: f64,
+    pub weight_bytes: u64,
+    pub kv_bytes: u64,
+    pub total_bytes: u64,
     pub is_first: bool,
     pub is_last: bool,
     pub has_model: bool,
@@ -89,6 +103,37 @@ pub fn plan_split(
     budgets: &[PeerBudget],
     reserve_pct: f64,
 ) -> Result<SplitPlan> {
+    plan_split_impl(model_path, layout, None, budgets, reserve_pct, None)
+}
+
+/// Variante do planejador que recusa uma faixa quando peso + KV não cabem no
+/// orçamento de memória do peer.
+pub fn plan_split_with_kv(
+    model_path: &str,
+    layout: &GgufLayout,
+    info: &GgufInfo,
+    budgets: &[PeerBudget],
+    reserve_pct: f64,
+    kv: KvPlanParams,
+) -> Result<SplitPlan> {
+    plan_split_impl(
+        model_path,
+        layout,
+        Some(info),
+        budgets,
+        reserve_pct,
+        Some(kv),
+    )
+}
+
+fn plan_split_impl(
+    model_path: &str,
+    layout: &GgufLayout,
+    info: Option<&GgufInfo>,
+    budgets: &[PeerBudget],
+    reserve_pct: f64,
+    kv: Option<KvPlanParams>,
+) -> Result<SplitPlan> {
     let total_layers = layout.layer_count();
     if total_layers == 0 {
         bail!("não foi possível ler as camadas do GGUF (tensor table vazia)");
@@ -105,7 +150,8 @@ pub fn plan_split(
 
     for (i, budget) in budgets.iter().enumerate() {
         let is_last_peer = i == budgets.len() - 1;
-        let usable_mb = budget.budget_mb * (1.0 - reserve);
+        let usable_bytes = usable_memory_bytes(budget.budget_mb, reserve)?;
+        let usable_mb = usable_bytes as f64 / MB;
 
         if pos >= total_layers {
             warnings.push(format!(
@@ -120,8 +166,8 @@ pub fn plan_split(
         let mut end = pos;
         let mut taken = 0u32;
         while end < total_layers {
-            let cost_mb = layout.slice_bytes(pos, end, is_last_peer) as f64 / MB;
-            if cost_mb > usable_mb {
+            let (_, _, total_bytes) = range_cost(layout, info, kv, pos, end, is_last_peer)?;
+            if total_bytes > usable_bytes {
                 // `taken == 0` here means not even one layer fits; reported below.
                 break;
             }
@@ -130,10 +176,11 @@ pub fn plan_split(
         }
 
         if taken == 0 {
-            let need = layout.slice_bytes(pos, pos, is_last_peer) as f64 / MB;
+            let (weight_bytes, kv_bytes, total_bytes) =
+                range_cost(layout, info, kv, pos, pos, is_last_peer)?;
             warnings.push(format!(
-                "{}: {:.0} MB não cobrem nem uma camada (mínimo ≈{:.0} MB, já descontada a reserva de {:.0}%)",
-                budget.label, budget.budget_mb, need / (1.0 - reserve), reserve_pct
+                "{}: {:.0} MB não cobrem nem uma camada (peso {} B + KV {} B = {} B, já descontada a reserva de {:.0}%)",
+                budget.label, budget.budget_mb, weight_bytes, kv_bytes, total_bytes, reserve_pct
             ));
             continue;
         }
@@ -147,6 +194,8 @@ pub fn plan_split(
         end_layer = layout.snap_end_layer(start_layer, end_layer, total_layers);
         let taken = end_layer - start_layer + 1;
         let is_last = is_last_peer || end_layer + 1 >= total_layers;
+        let (weight_bytes, kv_bytes, total_bytes) =
+            range_cost(layout, info, kv, start_layer, end_layer, is_last)?;
 
         if !budget.has_model {
             warnings.push(format!(
@@ -163,7 +212,10 @@ pub fn plan_split(
             start_layer,
             end_layer,
             layers: taken,
-            weight_mb: layout.slice_bytes(start_layer, end_layer, is_last) as f64 / MB,
+            weight_mb: weight_bytes as f64 / MB,
+            weight_bytes,
+            kv_bytes,
+            total_bytes,
             is_first,
             is_last,
             has_model: budget.has_model,
@@ -177,8 +229,11 @@ pub fn plan_split(
     let (missing_range, missing_mb) = if complete {
         (None, 0.0)
     } else {
-        let missing = layout.slice_bytes(covered_layers, total_layers - 1, true) as f64 / MB;
-        (Some((covered_layers, total_layers - 1)), missing)
+        let (_, _, missing) = range_cost(layout, info, kv, covered_layers, total_layers - 1, true)?;
+        (
+            Some((covered_layers, total_layers - 1)),
+            missing as f64 / MB,
+        )
     };
 
     if !complete {
@@ -203,6 +258,46 @@ pub fn plan_split(
         missing_mb,
         warnings,
     })
+}
+
+fn usable_memory_bytes(budget_mb: f64, reserve: f64) -> Result<u64> {
+    if !budget_mb.is_finite() || budget_mb < 0.0 {
+        bail!("orçamento de memória inválido: {budget_mb}");
+    }
+    let bytes = budget_mb * (1.0 - reserve) * MB;
+    if !bytes.is_finite() || bytes < 0.0 || bytes > u64::MAX as f64 {
+        bail!("orçamento de memória excede a aritmética de bytes");
+    }
+    Ok(bytes.floor() as u64)
+}
+
+fn range_cost(
+    layout: &GgufLayout,
+    info: Option<&GgufInfo>,
+    kv: Option<KvPlanParams>,
+    start_layer: u32,
+    end_layer: u32,
+    is_last: bool,
+) -> Result<(u64, u64, u64)> {
+    let weight_bytes = layout.slice_bytes(start_layer, end_layer, is_last);
+    let kv_bytes = match (info, kv) {
+        (Some(info), Some(kv)) => {
+            let geometry = info.kv_geometry_for_range(start_layer, end_layer)?;
+            kv_bytes_for_layers(
+                kv.n_ctx as u64,
+                kv.max_sessions as u64,
+                &geometry,
+                kv.cache_type_k,
+                kv.cache_type_v,
+            )?
+        }
+        (None, None) => 0,
+        _ => bail!("configuração de orçamento KV incompleta"),
+    };
+    let total_bytes = weight_bytes
+        .checked_add(kv_bytes)
+        .ok_or_else(|| anyhow::anyhow!("overflow ao somar peso e KV da fatia"))?;
+    Ok((weight_bytes, kv_bytes, total_bytes))
 }
 
 /// O nome do modelo tirado do caminho do arquivo, sem diretório nem `.gguf`.
@@ -786,6 +881,60 @@ mod tests {
         // b picks up from 10 and is the last, so it also pays the 100 MB head.
         assert_eq!(plan.shards[1].start_layer, 10);
         assert!(plan.shards[1].layers > plan.shards[0].layers);
+    }
+
+    #[test]
+    fn kv_bytes_entram_na_decisao_de_corte_e_nao_so_na_reserva() {
+        let l = layout(4, 10.0);
+        let info = GgufInfo {
+            attention_head_count_kv: Some(vec![8]),
+            attention_key_length: Some(vec![128]),
+            attention_value_length: Some(vec![128]),
+            ..GgufInfo::default()
+        };
+        let plan = plan_split_with_kv(
+            "/m/qwen.gguf",
+            &l,
+            &info,
+            &[budget("a", 120.0), budget("b", 500.0)],
+            0.0,
+            KvPlanParams {
+                n_ctx: 1024,
+                max_sessions: 2,
+                cache_type_k: KvCacheType::F16,
+                cache_type_v: KvCacheType::F16,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.shards[0].layers, 1);
+        assert_eq!(plan.shards[0].kv_bytes, 8 * 1024 * 1024);
+        assert_eq!(
+            plan.shards[0].total_bytes,
+            plan.shards[0].weight_bytes + plan.shards[0].kv_bytes
+        );
+    }
+
+    #[test]
+    fn kv_sem_metadado_completo_recusa_o_plano() {
+        let l = layout(2, 10.0);
+        let info = GgufInfo::default();
+        let error = plan_split_with_kv(
+            "/m/qwen.gguf",
+            &l,
+            &info,
+            &[budget("a", 1000.0)],
+            0.0,
+            KvPlanParams {
+                n_ctx: 1024,
+                max_sessions: 1,
+                cache_type_k: KvCacheType::F16,
+                cache_type_v: KvCacheType::F16,
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("attention.head_count_kv"));
     }
 
     #[test]

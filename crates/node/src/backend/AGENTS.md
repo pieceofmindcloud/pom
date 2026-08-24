@@ -47,6 +47,10 @@ behind an auth extractor.
   matching `If-None-Match` returns 304 without a body, and the cluster keeps
   a 2s fingerprinted snapshot cache that bypasses its TTL on known state
   changes.
+  `plan` reads the GGUF header from the node that owns `model_path` and, when
+  calculating budget-driven ranges, includes the configured context, sessions
+  and K/V cache types in the byte arithmetic. The response exposes weight,
+  KV and total bytes per shard; absent KV metadata is an explicit bad request.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,

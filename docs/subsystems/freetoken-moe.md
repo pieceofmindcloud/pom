@@ -59,8 +59,8 @@ tok/s agregado, erros e a configuração efetiva reportada por `/health`.
 | A/B `kv_unified=true` | não executado | o parâmetro ainda não está exposto no runtime e a única instância POM observada pertence a outro worktree e mantém conexões com o cluster remoto, que está fora do escopo |
 
 Nenhum acesso ao cluster remoto, SSH ou deploy foi feito. Portanto, não há
-número de desempenho para inventar e as decisões da Fase 2 que dependem de
-prefill continuam abertas até existir uma execução local válida.
+número de desempenho para inventar. Por decisão do captain, a Fase 2 seguirá
+mesmo sem esse baseline; a medição posterior deve usar o método acima.
 
 A verificação da base também ficou limitada: `cargo test` não chegou a
 compilar o crate porque o build script de `vendor/llama-cpp-sys-2` falhou ao

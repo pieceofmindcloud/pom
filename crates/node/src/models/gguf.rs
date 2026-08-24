@@ -56,6 +56,12 @@ pub struct GgufInfo {
     pub shard_range: Option<(u32, u32)>,
     /// `<arch>.embedding_length`.
     pub embedding_length: Option<u32>,
+    /// `<arch>.attention.head_count_kv`, scalar ou valor por camada.
+    pub attention_head_count_kv: Option<Vec<u32>>,
+    /// `<arch>.attention.key_length`, scalar ou valor por camada.
+    pub attention_key_length: Option<Vec<u32>>,
+    /// `<arch>.attention.value_length`, scalar ou valor por camada.
+    pub attention_value_length: Option<Vec<u32>>,
     /// `general.size_label`, e.g. "35B".
     pub size_label: Option<String>,
     /// `pom.tp_format`/`pom.tp_size`/`pom.tp_rank` de um shard de tensor
@@ -82,6 +88,82 @@ impl GgufInfo {
     /// block count of the file itself.
     pub fn total_layers(&self) -> Option<u32> {
         self.original_block_count.or(self.block_count)
+    }
+
+    /// Geometria de KV de cada camada do intervalo pedido.
+    ///
+    /// GGUF pode declarar uma geometria escalar ou um array por camada. O
+    /// planejador nunca reduz um array ao primeiro valor: quando a forma
+    /// varia, cada camada recebe a sua própria conta.
+    pub(crate) fn kv_geometry_for_range(
+        &self,
+        start_layer: u32,
+        end_layer: u32,
+    ) -> Result<Vec<crate::kv_budget::KvLayerGeometry>> {
+        if end_layer < start_layer {
+            bail!("intervalo de camadas KV invertido");
+        }
+        let range_layers = end_layer
+            .checked_sub(start_layer)
+            .and_then(|layers| layers.checked_add(1))
+            .ok_or_else(|| anyhow::anyhow!("overflow ao contar camadas do KV"))?;
+        (start_layer..=end_layer)
+            .map(|layer| {
+                Ok(crate::kv_budget::KvLayerGeometry {
+                    kv_heads: self.kv_value(
+                        &self.attention_head_count_kv,
+                        "attention.head_count_kv",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                    key_head_dim: self.kv_value(
+                        &self.attention_key_length,
+                        "attention.key_length",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                    value_head_dim: self.kv_value(
+                        &self.attention_value_length,
+                        "attention.value_length",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                })
+            })
+            .collect()
+    }
+
+    fn kv_value(
+        &self,
+        values: &Option<Vec<u32>>,
+        name: &str,
+        layer: u32,
+        start_layer: u32,
+        range_layers: u32,
+    ) -> Result<u32> {
+        let values = values
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GGUF não declara {name}; orçamento KV recusado"))?;
+        let index = if values.len() == 1 {
+            0
+        } else if values.len() == range_layers as usize {
+            (layer - start_layer) as usize
+        } else {
+            layer as usize
+        };
+        let value = values.get(index).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "GGUF declara {name} para {} camadas, mas falta a camada {layer}",
+                values.len()
+            )
+        })?;
+        if value == 0 {
+            bail!("GGUF declara {name}=0 na camada {layer}; orçamento KV recusado");
+        }
+        Ok(value)
     }
 }
 
@@ -166,6 +248,26 @@ impl<R: Read + Seek> Reader<R> {
         };
         Ok(v)
     }
+
+    fn values_as_u32(&mut self, vtype: u32) -> Result<Option<Vec<u32>>> {
+        if vtype != T_ARRAY {
+            return Ok(self.value_as_u32(vtype)?.map(|value| vec![value]));
+        }
+
+        let element_type = self.u32()?;
+        let count = self.u64()?;
+        if count > 100_000 {
+            bail!("implausible GGUF integer array length {count}");
+        }
+        let mut values = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let Some(value) = self.value_as_u32(element_type)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        Ok(Some(values))
+    }
 }
 
 /// Parse the KV header of a GGUF file.
@@ -221,6 +323,15 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".embedding_length") => {
                 info.embedding_length = r.value_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.head_count_kv") => {
+                info.attention_head_count_kv = r.values_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.key_length") => {
+                info.attention_key_length = r.values_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.value_length") => {
+                info.attention_value_length = r.values_as_u32(vtype)?
             }
             _ => r.skip_value(vtype)?,
         }
@@ -543,6 +654,45 @@ mod tests {
             b.extend_from_slice(v);
         }
         b
+    }
+
+    fn u32_array(values: &[u32]) -> Vec<u8> {
+        let mut out = T_UINT32.to_le_bytes().to_vec();
+        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn read_info_preserva_geometria_kv_escalar_e_por_camada() {
+        let dir = std::env::temp_dir();
+        let mut p = dir.clone();
+        p.push("pom-kv-geometry.gguf");
+        std::fs::write(
+            &p,
+            header_only_gguf(&[
+                (
+                    "llama.attention.head_count_kv",
+                    T_UINT32,
+                    8u32.to_le_bytes().to_vec(),
+                ),
+                ("llama.attention.key_length", T_ARRAY, u32_array(&[128, 64])),
+                (
+                    "llama.attention.value_length",
+                    T_UINT32,
+                    128u32.to_le_bytes().to_vec(),
+                ),
+            ]),
+        )
+        .unwrap();
+
+        let info = read_info(&p).unwrap();
+        assert_eq!(info.attention_head_count_kv, Some(vec![8]));
+        assert_eq!(info.attention_key_length, Some(vec![128, 64]));
+        assert_eq!(info.attention_value_length, Some(vec![128]));
+        let _ = std::fs::remove_file(&p);
     }
 
     #[test]

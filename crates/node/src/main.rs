@@ -33,6 +33,10 @@ mod display;
 mod gateway;
 #[path = "models/gguf.rs"]
 mod gguf;
+#[path = "models/hf_cli.rs"]
+mod hf_cli;
+#[path = "models/huggingface.rs"]
+mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
 #[path = "inference/infer_server.rs"]
@@ -49,6 +53,8 @@ mod memory;
 mod messages;
 #[path = "models/model.rs"]
 mod model;
+#[path = "models/provider.rs"]
+mod model_provider;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]

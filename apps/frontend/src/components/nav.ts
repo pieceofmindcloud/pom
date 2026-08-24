@@ -9,6 +9,7 @@ import {
   MessagesSquare,
   Network,
   Radio,
+  Search,
   Rocket,
   Scissors,
   Send,
@@ -48,6 +49,7 @@ export const NAV: NavSection[] = [
     icon: Boxes,
     children: [
       { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
+      { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
       { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
     ],

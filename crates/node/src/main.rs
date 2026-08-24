@@ -33,6 +33,10 @@ mod display;
 mod gateway;
 #[path = "models/gguf.rs"]
 mod gguf;
+#[path = "models/hf_cli.rs"]
+mod hf_cli;
+#[path = "models/huggingface.rs"]
+mod huggingface;
 #[path = "network/identity.rs"]
 mod identity;
 #[path = "inference/infer_server.rs"]
@@ -49,6 +53,10 @@ mod memory;
 mod messages;
 #[path = "models/model.rs"]
 mod model;
+#[path = "models/provider.rs"]
+mod model_provider;
+#[path = "backend/model_provider.rs"]
+mod model_provider_backend;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]
@@ -795,6 +803,9 @@ async fn main() -> Result<()> {
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+            model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
+                huggingface::HuggingFaceProvider::new(),
+            ))),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1402,6 +1413,9 @@ async fn start_gateway_only(
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
+        model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
+            huggingface::HuggingFaceProvider::new(),
+        ))),
     };
 
     info!(

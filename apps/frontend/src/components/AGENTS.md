@@ -293,6 +293,14 @@ Key logic carriers:
   not just the ones opened from `backdrop-blur` ancestors. The `openModals`
   stack (Confirm.tsx:27) is the companion rule: only the top window answers
   Escape.
+- `RemoteModelCard.tsx` / `RemoteModelDetails.tsx` - card comparável e janela
+  sob demanda para modelos do provider, com prioridade para GGUF, quantização,
+  tamanho, licença, revisão e estados instalado/em download.
+- `DownloadModelDialog.tsx` - confirmação do download remoto; chama somente a
+  API estruturada e mostra espaço disponível sem aceitar caminho do navegador.
+- `ModelDownloadsPanel.tsx` - progresso, cancelamento e retry de jobs
+  `model_download` vindos de `useJobs`; a fonte de verdade é o nó e o painel
+  não cria downloader local.
 
 Links to other folders: everything imports `../lib/*` — `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,

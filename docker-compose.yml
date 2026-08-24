@@ -38,48 +38,40 @@ services:
     <<: *node
     container_name: pom-node-gpu
     volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu:/data
-      - ./models:/data/models
-      - ./source-models:/data/source-models
-    # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
-    # Toolkit on the host; omitted entirely on the other two nodes.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['0']
               capabilities: [gpu]
+              device_ids: ['0']
 
   node-gpu2:
     <<: *node
     container_name: pom-node-gpu2
     volumes:
+      - ${POM_SHARD_MODELS_DIR:-./models}:/data/models
+      - ${POM_SOURCE_MODELS_DIR:-./source-models}:/data/source-models
       - ./tests/fixtures/node-gpu-2:/data
-      - ./models:/data/models
-      - ./source-models:/data/source-models
-    # Equivalent of `docker run --gpus all`. Requires the NVIDIA Container
-    # Toolkit on the host; omitted entirely on the other two nodes.
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
-              device_ids: ['1']
               capabilities: [gpu]
+              device_ids: ['1']
 
 #  node-cpu-1:
 #    <<: *node
 #    container_name: pom-node-cpu-1
 #    volumes:
 #      - ./tests/fixtures/node-cpu-1:/data
-#      - ./models:/data/models
-#      - ./source-models:/data/source-models
 
 #  node-cpu-2:
 #    <<: *node
 #    container_name: pom-node-cpu-2
 #    volumes:
 #      - ./tests/fixtures/node-cpu-2:/data
-#      - ./models:/data/models
-#      - ./source-models:/data/source-models

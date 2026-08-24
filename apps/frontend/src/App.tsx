@@ -22,6 +22,7 @@ import { ConnectionKeys, TokenKeys } from "./routes/Keys";
 import { SendFile } from "./routes/SendFile";
 import { Transfers } from "./routes/Transfers";
 import { WholeModels } from "./routes/WholeModels";
+import { RemoteModels } from "./routes/RemoteModels";
 import { Documentation } from "./routes/Documentation";
 import { Forbidden } from "./routes/Forbidden";
 import { useI18n } from "./i18n/provider";
@@ -129,6 +130,7 @@ export default function App() {
                   <Routes location={location} key={location.pathname}>
                     <Route path="/" element={<Page><Dashboard /></Page>} />
                     <Route path="/modelos" element={<Page><WholeModels /></Page>} />
+                    <Route path="/modelos/remotos" element={<Page><RemoteModels /></Page>} />
                     <Route path="/modelos/fatiar" element={<Page><SliceModels /></Page>} />
                     <Route path="/fatias" element={<Page><Shards /></Page>} />
                     <Route path="/implantar" element={<Page><DeployModel /></Page>} />

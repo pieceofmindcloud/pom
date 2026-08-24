@@ -268,6 +268,27 @@ Clonar nesse caminho, e não na raiz, é o que faz o Windows funcionar: lá o
 checkout não cria symlink nenhum - materializa um arquivo de texto com o caminho
 dentro -, então repor a pasta na raiz não adiantaria.
 
+### Preparar um worktree local
+
+O symlink versionado em `vendor/llama-cpp-sys-2/llama.cpp` resolve para
+`<worktree>/llama.cpp`, mas o conteúdo da raiz é ignorado pelo git. Portanto,
+um worktree novo precisa receber uma cópia ou um symlink para um checkout local
+do fork antes do primeiro build. O preparo não toca no checkout primário:
+
+```bash
+LLAMA_SOURCE=/caminho/para/llama.cpp
+test -d "$LLAMA_SOURCE/ggml"
+ln -s "$LLAMA_SOURCE" llama.cpp
+test -d vendor/llama-cpp-sys-2/llama.cpp/ggml
+cargo build -p node
+```
+
+Se `llama.cpp` já existir na raiz do worktree, confirme que ele é o checkout
+do fork e que contém `ggml`; não substitua uma pasta de pesos por engano. Em
+ambientes de CI ou Windows, clone diretamente sobre
+`vendor/llama-cpp-sys-2/llama.cpp`, como descrito acima, porque esses ambientes
+não preservam o symlink da raiz.
+
 ### A interface tem que ir no pacote
 
 A UI é lida do disco em tempo de execução (`config::ui_dist_dir`), não embutida

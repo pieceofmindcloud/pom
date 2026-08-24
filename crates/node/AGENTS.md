@@ -32,6 +32,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   um passo separado.
 - Lido em `main.rs:1` (`BUILD_COMMIT`) e exposto em `/api/ui/node` - é como se
   descobre um peer com binário velho sem shell na máquina.
+- O build nativo também exige o fork local de `llama.cpp`: em um worktree novo,
+  preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
+  rodar `cargo build -p node`. O procedimento completo está em
+  `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
 
 ## src/main.rs - fluxo de arranque e CLI
 
@@ -104,7 +108,9 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `model_dirs`), `gguf.rs` (leitor de cabeçalho/tensor table), `plan.rs`
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
-  Pending/Serving), `ollama.rs` (`OllamaClient`).
+  Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
+  agnóstico de provider), `hf_cli.rs` (processo e parser isolado) e
+  `huggingface.rs` (`HuggingFaceProvider`).
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),

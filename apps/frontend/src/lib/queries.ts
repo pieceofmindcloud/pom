@@ -8,7 +8,16 @@
  * node nobody is watching.
  */
 import { useQueries, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { ApiError, api, listDeployments, setConnectionKey } from "./api";
+import {
+  ApiError,
+  api,
+  getRemoteModelDetails,
+  getRemoteModelStorage,
+  listDeployments,
+  searchRemoteModels,
+  setConnectionKey,
+} from "./api";
+import { modelDownloadJobs } from "./modelProvider";
 import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   AdminNode,
@@ -60,6 +69,11 @@ export const keys = {
   chatTelemetry: (executionId: string | undefined, nodeIds: string[]) => ["chat-telemetry", executionId ?? "idle", ...nodeIds] as const,
   openaiModels: ["openai-models"] as const,
   deployments: ["deployments"] as const,
+  remoteModels: (query: string, ggufOnly: boolean, page: number) =>
+    ["remote-models", query, ggufOnly, page] as const,
+  remoteModelDetails: (repoId: string, revision: string | undefined) =>
+    ["remote-model-details", repoId, revision ?? "default"] as const,
+  remoteModelStorage: ["remote-model-storage"] as const,
 };
 
 /**
@@ -311,6 +325,52 @@ export function useServableModels() {
     staleTime: 20_000,
     refetchInterval: 30_000,
   });
+}
+
+export function useRemoteModelSearch(options: {
+  query: string;
+  ggufOnly: boolean;
+  page: number;
+  pageSize: number;
+  sort?: "relevance" | "downloads" | "recent";
+}) {
+  return useQuery({
+    queryKey: [
+      ...keys.remoteModels(options.query, options.ggufOnly, options.page),
+      options.sort ?? "relevance",
+    ],
+    queryFn: ({ signal }) => searchRemoteModels(options, signal),
+    enabled: options.query.trim().length > 0,
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
+export function useRemoteModelDetails(repoId: string | null, revision?: string) {
+  return useQuery({
+    queryKey: keys.remoteModelDetails(repoId ?? "", revision),
+    queryFn: ({ signal }) => getRemoteModelDetails(repoId ?? "", revision, signal),
+    enabled: Boolean(repoId),
+    staleTime: 60_000,
+    retry: false,
+  });
+}
+
+export function useRemoteModelStorage() {
+  return useQuery({
+    queryKey: keys.remoteModelStorage,
+    queryFn: ({ signal }) => getRemoteModelStorage(signal),
+    staleTime: 15_000,
+    retry: false,
+  });
+}
+
+export function useModelDownloads() {
+  const jobs = useJobs();
+  return {
+    ...jobs,
+    data: modelDownloadJobs(jobs.data?.jobs ?? []),
+  };
 }
 
 /** After an action lands, the screens that could have changed refetch at once. */

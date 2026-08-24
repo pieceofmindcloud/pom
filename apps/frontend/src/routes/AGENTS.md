@@ -221,6 +221,10 @@ Per-file list:
   per model with actions: slice (links to `/modelos/fatiar?path=`), send
   (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`
   lists the scanned folders and per-folder file counts.
+- `RemoteModels.tsx` - busca com debounce em `/api/ui/model-provider/search`,
+  filtro GGUF, ordenação, paginação por URL, detalhes lazy e confirmação de
+  download. Os jobs aparecem no `ModelDownloadsPanel`, então trocar de rota ou
+  recarregar não perde uma transferência.
 
 Key logic carriers:
 
@@ -270,7 +274,10 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/send`, `/api/transfer/jobs`, `/api/transfer/jobs/:id/cancel`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
-`/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`.
+`/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`,
+`/api/ui/model-provider/search`, `/api/ui/model-provider/details`,
+`/api/ui/model-provider/storage`, `/api/ui/model-provider/downloads` e
+`/api/ui/model-provider/downloads/:id/{cancel,retry}`.
 
 ## Maintaining this file
 

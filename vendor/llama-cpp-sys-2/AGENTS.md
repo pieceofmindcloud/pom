@@ -22,6 +22,20 @@ git clone --depth 1 --branch pom-tensor-parallel \
   https://github.com/pereirajair/llama.cpp.git vendor/llama-cpp-sys-2/llama.cpp
 ```
 
+Em um worktree local, a alternativa mais simples é apontar a pasta ignorada da
+raiz para um checkout já existente, sem tocar no checkout primário:
+
+```bash
+LLAMA_SOURCE=/caminho/para/llama.cpp
+test -d "$LLAMA_SOURCE/ggml"
+ln -s "$LLAMA_SOURCE" llama.cpp
+cargo build -p node
+```
+
+O primeiro build deve ser usado como verificação do ambiente. Se o symlink
+existir mas `ggml` estiver ausente, o `build.rs` falhará antes de compilar o
+Rust; corrija o caminho do checkout e rode novamente.
+
 É o que os três workflows de release fazem. No Windows é obrigatório clonar
 nesse caminho, e não na raiz: lá o checkout não cria symlink - materializa um
 arquivo de texto com o caminho dentro -, então repor a pasta na raiz não

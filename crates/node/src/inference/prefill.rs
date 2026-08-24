@@ -25,7 +25,13 @@ use crate::wire::{FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
 use serde::Serialize;
 use serde_json::json;
+use std::future::Future;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 use std::time::Instant;
+use tokio::sync::Notify;
 use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -36,6 +42,70 @@ use tracing::info;
 /// this cluster actually has, which keeps a retry cheap while leaving the
 /// per-chunk overhead well under the transfer time it covers.
 pub const DEFAULT_CHUNK_TOKENS: u32 = 512;
+
+/// Cancelamento compartilhado entre o stream HTTP e o prefill. O `Notify`
+/// acorda uma chamada em voo; o `AtomicBool` torna as checagens entre hops e
+/// chunks baratas e sem await.
+#[derive(Clone, Default)]
+pub struct Cancellation {
+    cancelled: Arc<AtomicBool>,
+    notify: Arc<Notify>,
+}
+
+impl Cancellation {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn cancel(&self) {
+        if !self.cancelled.swap(true, Ordering::Release) {
+            self.notify.notify_waiters();
+        }
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    async fn cancelled(&self) {
+        if self.is_cancelled() {
+            return;
+        }
+        self.notify.notified().await;
+    }
+}
+
+#[derive(Debug)]
+pub struct GenerationCancelled;
+
+impl std::fmt::Display for GenerationCancelled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("geração cancelada pelo cliente")
+    }
+}
+
+impl std::error::Error for GenerationCancelled {}
+
+pub fn is_cancelled(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<GenerationCancelled>().is_some()
+}
+
+fn check_cancelled(cancellation: &Cancellation) -> Result<()> {
+    if cancellation.is_cancelled() {
+        return Err(anyhow::Error::new(GenerationCancelled));
+    }
+    Ok(())
+}
+
+async fn cancelable<F, T>(cancellation: &Cancellation, future: F) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+{
+    tokio::select! {
+        result = future => result,
+        _ = cancellation.cancelled() => Err(anyhow::Error::new(GenerationCancelled)),
+    }
+}
 
 /// Attempts per chunk before the request is given up on. Lives in `relay.rs`
 /// (`crate::relay::CHUNK_ATTEMPTS`) since a ring-mode relaying hop needs the
@@ -131,8 +201,19 @@ pub struct PhaseTrace {
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
+    /// Caminho que o backend selecionou a partir do GGUF.
+    pub selected_path: Option<String>,
+    /// Motor único quando a fase foi homogênea; `unknown` para mistura ou
+    /// ausência de amostra.
+    pub executed_engine: crate::executor::ExecutionEngine,
+    /// Todos os motores observados, preservando a evidência de uma fase mista.
+    pub executed_engines: Vec<crate::executor::ExecutionEngine>,
+    pub engine_mismatch: bool,
+    pub mixed_execution: bool,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
+    #[serde(skip)]
+    selected_path_seen: bool,
 }
 
 impl PhaseTrace {
@@ -151,6 +232,30 @@ impl PhaseTrace {
     ) {
         let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
+        let selected_path = node
+            .get("selected_path")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
+        let engines = node
+            .get("executed_engines")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|engines| !engines.is_empty())
+            .unwrap_or_else(|| {
+                node.get("executed_engine")
+                    .and_then(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .into_iter()
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect()
+            });
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -188,7 +293,56 @@ impl PhaseTrace {
         self.node_encode_ms += node_ms("encode_ms");
 
         self.node_samples_ms.push(node_decode_ms);
+        self.observe_path(selected_path);
+        for engine in engines {
+            self.observe_engine(engine);
+        }
         self.refresh_percentiles();
+    }
+
+    fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
+        if next != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&next)
+        {
+            self.executed_engines.push(next);
+        }
+        self.executed_engine = match self.executed_engines.as_slice() {
+            [engine] => *engine,
+            _ => crate::executor::ExecutionEngine::Unknown,
+        };
+        self.mixed_execution = self.executed_engines.len() > 1;
+        self.refresh_engine_mismatch();
+    }
+
+    fn observe_path(&mut self, next: Option<String>) {
+        let Some(next) = next else {
+            return;
+        };
+        if self.selected_path_seen {
+            if self.selected_path.as_deref() != Some(next.as_str()) {
+                self.selected_path = None;
+            }
+        } else {
+            self.selected_path = Some(next);
+            self.selected_path_seen = true;
+        }
+        self.refresh_engine_mismatch();
+    }
+
+    fn refresh_engine_mismatch(&mut self) {
+        let Some(path) = self.selected_path.as_deref() else {
+            self.engine_mismatch = false;
+            return;
+        };
+        let expected = if path.starts_with("moe/") {
+            crate::executor::ExecutionEngine::Moe
+        } else if path.starts_with("dense/") {
+            crate::executor::ExecutionEngine::LlamaCpp
+        } else {
+            crate::executor::ExecutionEngine::Unknown
+        };
+        self.engine_mismatch = expected != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&expected);
     }
 
     fn merge(&mut self, next: &PhaseTrace) {
@@ -226,6 +380,12 @@ impl PhaseTrace {
         self.node_encode_ms += next.node_encode_ms;
         self.node_samples_ms
             .extend_from_slice(&next.node_samples_ms);
+        if next.selected_path_seen {
+            self.observe_path(next.selected_path.clone());
+        }
+        for engine in &next.executed_engines {
+            self.observe_engine(*engine);
+        }
         self.refresh_percentiles();
     }
 
@@ -511,6 +671,8 @@ fn head_prefill_meta(
     is_last: bool,
     prompt: Option<&str>,
     chat_template: bool,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
 ) -> serde_json::Value {
     json!({
         "session_id": session_id,
@@ -520,6 +682,8 @@ fn head_prefill_meta(
         "is_final_chunk": false,
         "prompt": prompt,
         "chat_template": chat_template,
+        "reuse_prefix": reuse_prefix,
+        "start_pos": start_pos,
     })
 }
 
@@ -536,7 +700,10 @@ pub async fn run(
     routes: &crate::route::RouteTable,
     direct: Option<&crate::direct::DirectReply>,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
+    check_cancelled(cancellation)?;
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
     if n_peers == 0 {
@@ -555,6 +722,8 @@ pub async fn run(
             routes,
             direct,
             tunnel,
+            cancellation,
+            reuse_prefix,
         )
         .await;
     }
@@ -570,16 +739,20 @@ pub async fn run(
             http,
             routes,
             tunnel,
+            cancellation,
+            reuse_prefix,
         )
         .await;
     }
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         // ── First peer: it owns the tokenizer and decides whether more remain.
         let head_meta = head_prefill_meta(
             session_id,
@@ -588,6 +761,8 @@ pub async fn run(
             n_peers == 1,
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
 
         let (mut meta, mut tensor) = send_chunk(
@@ -603,6 +778,7 @@ pub async fn run(
             &mut trace,
             0,
             Phase::Prefill,
+            cancellation,
         )
         .await?;
 
@@ -614,9 +790,18 @@ pub async fn run(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_start_pos = meta
+            .get("start_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or((chunk_index * chunk_size) as u64) as u32;
+        let chunk_next_pos =
+            meta.get("next_pos")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(chunk_start_pos as u64 + chunk_size as u64) as u32;
 
         // ── The rest of the pipeline, carrying this chunk's hidden state.
         for (i, step) in plan.steps.iter().enumerate().skip(1) {
+            check_cancelled(cancellation)?;
             let is_last = i == n_peers - 1;
             let Some((values, shape)) = tensor.take() else {
                 return Err(anyhow!(
@@ -630,6 +815,8 @@ pub async fn run(
                 "chunk_size": chunk_size,
                 "is_last": is_last,
                 "is_final_chunk": is_final_chunk,
+                "reuse_prefix": reuse_prefix && chunk_index == 0,
+                "start_pos": chunk_start_pos,
                 "scale": 1.0,
             });
             if let Some(tokens) = meta.get("tokens") {
@@ -648,6 +835,7 @@ pub async fn run(
                 &mut trace,
                 i,
                 Phase::Prefill,
+                cancellation,
             )
             .await?;
             meta = m;
@@ -682,6 +870,7 @@ pub async fn run(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -704,16 +893,20 @@ async fn run_ring(
     http: &crate::peer_client::PeerClients,
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         let mut head_meta = head_prefill_meta(
             session_id,
             chunk_index,
@@ -721,27 +914,34 @@ async fn run_ring(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["exec_start"] = json!(head.exec_start);
         head_meta["exec_end"] = json!(head.exec_end);
 
-        let sent = crate::relay::send_frame_or_tunnel(
-            http,
-            head,
-            tunnel,
-            "/v1/prefill",
-            &head_meta,
-            None,
-            dtype,
-            head.frame_encoding(),
-            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
-            &head.node_id,
-            |_issue| {},
+        let sent = cancelable(
+            cancellation,
+            crate::relay::send_frame_or_tunnel(
+                http,
+                head,
+                tunnel,
+                "/v1/prefill",
+                &head_meta,
+                None,
+                dtype,
+                head.frame_encoding(),
+                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                &head.node_id,
+                |_issue| {},
+            ),
         )
         .await
         .map_err(|e| {
-            routes.mark_failure(&head.node_id, &head.inference_url);
+            if !is_cancelled(&e) {
+                routes.mark_failure(&head.node_id, &head.inference_url);
+            }
             ring_relay_error(&head.node_id, e)
         })?;
 
@@ -761,6 +961,12 @@ async fn run_ring(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
+        let chunk_next_pos = sent
+            .meta
+            .get("next_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
+            as u32;
 
         if is_final_chunk {
             let token_id = sent
@@ -796,6 +1002,7 @@ async fn run_ring(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -820,16 +1027,20 @@ async fn run_direct(
     routes: &crate::route::RouteTable,
     direct: &crate::direct::DirectReply,
     tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
+        check_cancelled(cancellation)?;
         let mut ticket = direct.ticket();
         let mut head_meta = head_prefill_meta(
             session_id,
@@ -838,6 +1049,8 @@ async fn run_direct(
             next_hops.is_empty(),
             (chunk_index == 0).then_some(prompt),
             chat_template,
+            reuse_prefix && chunk_index == 0,
+            next_start_pos,
         );
         head_meta["next_hops"] = json!(next_hops);
         head_meta["reply_to"] = direct.reply_to(ticket.id());
@@ -845,28 +1058,41 @@ async fn run_direct(
         head_meta["exec_end"] = json!(head.exec_end);
 
         let dispatched = Instant::now();
-        let ack = crate::relay::send_frame_or_tunnel(
-            http,
-            head,
-            tunnel,
-            "/v1/prefill",
-            &head_meta,
-            None,
-            dtype,
-            head.frame_encoding(),
-            crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
-            &head.node_id,
-            |_issue| {},
+        let ack = cancelable(
+            cancellation,
+            crate::relay::send_frame_or_tunnel(
+                http,
+                head,
+                tunnel,
+                "/v1/prefill",
+                &head_meta,
+                None,
+                dtype,
+                head.frame_encoding(),
+                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                &head.node_id,
+                |_issue| {},
+            ),
         );
-        let meta = crate::direct::await_result(ack, &mut ticket, &head.node_id)
-            .await
-            .map_err(|e| {
+        let meta = cancelable(
+            cancellation,
+            crate::direct::await_result(ack, &mut ticket, &head.node_id),
+        )
+        .await
+        .map_err(|e| {
+            if !is_cancelled(&e) {
                 routes.mark_failure(&head.node_id, &head.inference_url);
-                ring_relay_error(&head.node_id, e)
-            })?;
+            }
+            ring_relay_error(&head.node_id, e)
+        })?;
         if let Some(error) = direct_failure(plan, routes, &meta) {
             return Err(error);
         }
+        let chunk_next_pos = meta
+            .get("next_pos")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
+            as u32;
 
         record_direct_hops(
             &mut trace,
@@ -912,6 +1138,7 @@ async fn run_direct(
             });
         }
 
+        next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
 }
@@ -987,22 +1214,27 @@ async fn send_chunk(
     trace: &mut RequestTrace,
     hop: usize,
     phase: Phase,
+    cancellation: &Cancellation,
 ) -> Result<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> {
+    check_cancelled(cancellation)?;
     let node_id = &step.node_id;
     let peer_label = format!("{node_id} (pedaço {chunk_index})");
     let mut issues = Vec::new();
-    let result = crate::relay::send_frame_or_tunnel(
-        http,
-        step,
-        tunnel,
-        "/v1/prefill",
-        meta,
-        tensor,
-        dtype,
-        encoding,
-        CHUNK_ATTEMPTS,
-        &peer_label,
-        |issue| issues.push(issue),
+    let result = cancelable(
+        cancellation,
+        crate::relay::send_frame_or_tunnel(
+            http,
+            step,
+            tunnel,
+            "/v1/prefill",
+            meta,
+            tensor,
+            dtype,
+            encoding,
+            CHUNK_ATTEMPTS,
+            &peer_label,
+            |issue| issues.push(issue),
+        ),
     )
     .await;
 
@@ -1027,7 +1259,9 @@ async fn send_chunk(
         // nesse meio tempo. A proxima medicao reescolhe. Uma recuperação bem
         // sucedida via túnel nunca chega aqui — só o insucesso final marca a
         // rota como ruim.
-        routes.mark_failure(node_id, &step.inference_url);
+        if !is_cancelled(&e) {
+            routes.mark_failure(node_id, &step.inference_url);
+        }
         e
     })?;
     let processing_ms = sent
@@ -1667,9 +1901,31 @@ fn speculative_step_from_meta(
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn cancelamento_acorda_chamada_em_voo() {
+        let cancellation = Cancellation::new();
+        cancellation.cancel();
+
+        let error = cancelable(&cancellation, async {
+            std::future::pending::<Result<(), anyhow::Error>>().await
+        })
+        .await
+        .unwrap_err();
+        assert!(is_cancelled(&error));
+    }
+
     #[test]
     fn chat_head_frame_delivers_prompt_with_template_mode() {
-        let meta = head_prefill_meta("session", 0, 512, true, Some("Oi, teste"), true);
+        let meta = head_prefill_meta(
+            "session",
+            0,
+            512,
+            true,
+            Some("Oi, teste"),
+            true,
+            false,
+            None,
+        );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
     }
@@ -1815,6 +2071,110 @@ mod tests {
         let phase = &trace.hops[0].decode;
         assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
         assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
+    }
+
+    #[test]
+    fn hop_trace_publica_o_motor_real_e_nao_inventa_o_de_peer_antigo() {
+        let mut moe = RequestTrace::new("qwen", &[("moe", 0, 15)]);
+        moe.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "moe",
+            }),
+        );
+        assert_eq!(
+            moe.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Moe
+        );
+        assert_eq!(
+            moe.hops[0].decode.selected_path.as_deref(),
+            Some("moe/q4_0")
+        );
+
+        let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
+        delegated.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "llama.cpp",
+            }),
+        );
+        assert_eq!(
+            delegated.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::LlamaCpp
+        );
+        assert!(delegated.hops[0].decode.engine_mismatch);
+
+        let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
+        old.record_hop(
+            0,
+            Phase::Decode,
+            1,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+        assert_eq!(
+            old.hops[0].decode.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+    }
+
+    #[test]
+    fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
+        let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
+        for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
+            trace.record_hop(
+                0,
+                Phase::Prefill,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({
+                    "selected_path": path,
+                    "executed_engine": engine,
+                }),
+            );
+        }
+        assert_eq!(
+            trace.hops[0].prefill.executed_engine,
+            crate::executor::ExecutionEngine::Unknown
+        );
+        assert!(trace.hops[0].prefill.mixed_execution);
+        assert!(!trace.hops[0].prefill.engine_mismatch);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array

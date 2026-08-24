@@ -6,7 +6,14 @@ transferência.
 
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
-  chama o extrator de GGUF.
+  chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
+  `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.
+- `gguf.rs` - lê a geometria de KV escalar ou por camada
+  (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
+  MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos.
+- `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
+  linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
+  overflow, sem consultar FFI ou dispositivo.
 - `storage.rs` - calcula uso recursivo da pasta de fatias e remove diretórios
   gerados mais antigos quando o limite configurado seria excedido. A saída
   atual e o modelo ativo são protegidos.
@@ -56,9 +63,9 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
 os repõe a partir do `pom.json` antes de carregar o modelo.
 
-## Maintaining this file
+## Manutenção deste arquivo
 
-Keep this file for knowledge useful to almost every future agent session in this project.
-Do not repeat what the codebase already shows; point to the authoritative file or command instead.
-Prefer rewriting or pruning existing entries over appending new ones.
-When updating this file, preserve this bar for all agents and keep entries concise.
+Este arquivo é um mapa curto da pasta. Ao adicionar metadados de modelo ou
+mudar a fronteira entre catálogo, GGUF e planejamento, atualize aqui e o
+subsistema correspondente no mesmo commit. Detalhes de implementação ficam no
+código ou em `docs/subsystems/`.

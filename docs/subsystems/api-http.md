@@ -71,7 +71,7 @@ haver chave.
 
 ### OpenAI (`/v1/*`)
 
-Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
+Camada de protocolo pura sobre `gateway::generate_stream_with_stops`. `render_prompt`
 achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
 passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
 512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
@@ -80,16 +80,20 @@ prompt do gateway e responde
 HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
 clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
 resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
-(fora do schema) com a prova de execução distribuída. CORS `*` para harnesses
+(fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
+(string ou lista) passa pelo matcher incremental do gateway: um sufixo que
+ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
+enviada ao cliente. CORS `*` para harnesses
 de navegador.
 
 ### Anthropic (`/v1/messages`)
 
 Mesmo caminho de geração, próprio `render_prompt` (system/messages/tools
 separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
-(`end_turn`/`max_tokens`/`tool_use`), SSE com os nomes de evento Anthropic.
-`tool_choice` e `stop_sequences` são parseados e ignorados (serde descarta
-campos desconhecidos). `x_pom` vai na resposta não-streaming.
+(`end_turn`/`max_tokens`/`tool_use`/`stop_sequence`), SSE com os nomes de
+evento Anthropic. `stop_sequences` usa o mesmo matcher incremental e
+`stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
+parseado e ignorado. `x_pom` vai na resposta não-streaming.
 
 ### `/admin/*`
 
@@ -122,6 +126,15 @@ comandos ou tokens do provider. **`GET /api/ui/model-provider/status`** exige
 username } }`: CLI ausente é um estado estruturado, enquanto login necessário
 e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta
 a licença no provider antes de a tela oferecer o download.
+
+As rotas `POST /api/ui/deploy/plan` e `POST /api/ui/deploy` carregam
+`params.inference_mode` (`auto`, `dense` ou `moe`) para os três modos de
+execução: modelo inteiro, pipeline fatiado e Tensor Parallelism. O planner
+também devolve `is_moe`, `inference_mode_supported` e
+`inference_mode_reason`. `is_moe` vem da metadata real de experts do GGUF,
+nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma
+combinação ainda não é suportada, a razão permanece visível e o deploy é
+recusado para não apresentar uma preferência que não será respeitada.
 
 **`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
 controlam o token opcional do Hugging Face. O GET devolve somente

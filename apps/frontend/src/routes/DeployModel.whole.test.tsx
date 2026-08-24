@@ -147,6 +147,18 @@ function tensorPlan(): DeployPlan {
   return p;
 }
 
+function moePlan(kind: DeployPlan["kind"] = "whole"): DeployPlan {
+  const p = wholePlan();
+  p.kind = kind;
+  p.is_moe = true;
+  p.inference_mode_supported = kind !== "tensor_parallel";
+  p.inference_mode_reason = kind === "tensor_parallel"
+    ? "Tensor Parallelism não suporta MoE nesta versão."
+    : null;
+  p.params = { ...p.params, inference_mode: "auto" };
+  return p;
+}
+
 /** Uma máquina com o GGUF inteiro **e** um conjunto de fatias, para que as
  *  duas opções existam e a troca entre elas seja de verdade. */
 function mount() {
@@ -501,6 +513,61 @@ describe("DeployModel · modelo inteiro", () => {
       const last = planCalls().at(-1)![1] as { params: RuntimeParams };
       expect(last.params.fit_memory).toBe(false);
     });
+  });
+
+  it("mantém o seletor de motor oculto para um modelo denso", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+    expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
+  });
+
+  it("mostra e envia a escolha do motor no modelo inteiro", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(moePlan(body.kind as DeployPlan["kind"]));
+    });
+    mount();
+    chooseWhole();
+
+    const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
+    fireEvent.change(selector, { target: { value: "moe" } });
+    await waitFor(() => {
+      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("moe");
+    });
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy");
+      expect(deploy?.[1]).toMatchObject({
+        kind: "whole",
+        params: { inference_mode: "moe" },
+      });
+    });
+  });
+
+  it("leva a escolha para fatias e mostra a limitação do Tensor Parallelism", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(moePlan((body.kind ?? "shards") as DeployPlan["kind"]));
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+    const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
+    fireEvent.change(selector, { target: { value: "dense" } });
+    await waitFor(() => {
+      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("dense");
+    });
+
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+    expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Motor de inferência" })).toBeTruthy();
   });
 });
 

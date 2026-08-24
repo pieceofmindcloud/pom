@@ -18,7 +18,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
@@ -107,10 +107,16 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
-  off for tensor parallel deployment.
+  off for tensor parallel deployment. `RuntimeParams.inference_mode` is the
+  persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
+  node's GGUF expert metadata; the deploy screen must not infer MoE from a
+  filename. `inference_mode_supported` and `inference_mode_reason` keep an
+  unsupported path visible instead of presenting a misleading selection.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
-  size-, tensor- and budget-driven slicing plans.
+  size-, tensor- and budget-driven slicing plans. Budget-driven shards expose
+  `weight_bytes`, `kv_bytes` and `total_bytes`; those are the byte arithmetic
+  returned by the node planner, not display-only estimates.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 
@@ -140,7 +146,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
 - `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records tokens/sec, duration and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
-- Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry contract from `inference_server.py`/gateway.
+- Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
+  contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is
+  the GGUF selection, while `executed_engine` and `executed_engines` are the
+  backend facts (`llama.cpp`, `moe` or unknown when absent). The mismatch and
+  mixed flags are evidence from the request, not a UI guess.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

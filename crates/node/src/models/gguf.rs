@@ -56,8 +56,19 @@ pub struct GgufInfo {
     pub shard_range: Option<(u32, u32)>,
     /// `<arch>.embedding_length`.
     pub embedding_length: Option<u32>,
+    /// `<arch>.attention.head_count_kv`, scalar ou valor por camada.
+    pub attention_head_count_kv: Option<Vec<u32>>,
+    /// `<arch>.attention.key_length`, scalar ou valor por camada.
+    pub attention_key_length: Option<Vec<u32>>,
+    /// `<arch>.attention.value_length`, scalar ou valor por camada.
+    pub attention_value_length: Option<Vec<u32>>,
     /// `general.size_label`, e.g. "35B".
     pub size_label: Option<String>,
+    /// `<arch>.expert_count`, present only when the architecture has routed
+    /// feed-forward experts.
+    pub expert_count: Option<u32>,
+    /// `<arch>.expert_used_count`, the number selected by the router per token.
+    pub expert_used_count: Option<u32>,
     /// `pom.tp_format`/`pom.tp_size`/`pom.tp_rank` de um shard de tensor
     /// parallelism: qual versão da regra de fatiamento escreveu este arquivo, e
     /// que posição do grupo ele é.
@@ -69,6 +80,24 @@ pub struct GgufInfo {
     pub tp_stamp: Option<TpStamp>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelArchitecture {
+    Dense {
+        architecture: Option<String>,
+    },
+    Moe {
+        architecture: Option<String>,
+        expert_count: u32,
+        expert_used_count: Option<u32>,
+    },
+}
+
+impl ModelArchitecture {
+    pub fn is_moe(&self) -> bool {
+        matches!(self, Self::Moe { .. })
+    }
+}
+
 /// Carimbo de origem de um shard de tensor parallelism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TpStamp {
@@ -78,10 +107,108 @@ pub struct TpStamp {
 }
 
 impl GgufInfo {
+    /// Classify only from explicit GGUF metadata. A missing or zero expert
+    /// count is dense, even when the architecture name looks unfamiliar.
+    pub fn model_architecture(&self) -> ModelArchitecture {
+        match self.expert_count.filter(|count| *count > 1) {
+            Some(expert_count) => ModelArchitecture::Moe {
+                architecture: self.architecture.clone(),
+                expert_count,
+                expert_used_count: self.expert_used_count,
+            },
+            None => ModelArchitecture::Dense {
+                architecture: self.architecture.clone(),
+            },
+        }
+    }
+
+    /// Whether the real GGUF metadata describes a mixture of experts model.
+    /// This delegates to the explicit expert metadata and never to the
+    /// architecture name.
+    pub fn is_moe(&self) -> bool {
+        self.model_architecture().is_moe()
+    }
+
     /// Layers of the *whole* model: the shard metadata when present, else the
     /// block count of the file itself.
     pub fn total_layers(&self) -> Option<u32> {
         self.original_block_count.or(self.block_count)
+    }
+
+    /// Geometria de KV de cada camada do intervalo pedido.
+    ///
+    /// GGUF pode declarar uma geometria escalar ou um array por camada. O
+    /// planejador nunca reduz um array ao primeiro valor: quando a forma
+    /// varia, cada camada recebe a sua própria conta.
+    pub(crate) fn kv_geometry_for_range(
+        &self,
+        start_layer: u32,
+        end_layer: u32,
+    ) -> Result<Vec<crate::kv_budget::KvLayerGeometry>> {
+        if end_layer < start_layer {
+            bail!("intervalo de camadas KV invertido");
+        }
+        let range_layers = end_layer
+            .checked_sub(start_layer)
+            .and_then(|layers| layers.checked_add(1))
+            .ok_or_else(|| anyhow::anyhow!("overflow ao contar camadas do KV"))?;
+        (start_layer..=end_layer)
+            .map(|layer| {
+                Ok(crate::kv_budget::KvLayerGeometry {
+                    kv_heads: self.kv_value(
+                        &self.attention_head_count_kv,
+                        "attention.head_count_kv",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                    key_head_dim: self.kv_value(
+                        &self.attention_key_length,
+                        "attention.key_length",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                    value_head_dim: self.kv_value(
+                        &self.attention_value_length,
+                        "attention.value_length",
+                        layer,
+                        start_layer,
+                        range_layers,
+                    )? as u64,
+                })
+            })
+            .collect()
+    }
+
+    fn kv_value(
+        &self,
+        values: &Option<Vec<u32>>,
+        name: &str,
+        layer: u32,
+        start_layer: u32,
+        range_layers: u32,
+    ) -> Result<u32> {
+        let values = values
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("GGUF não declara {name}; orçamento KV recusado"))?;
+        let index = if values.len() == 1 {
+            0
+        } else if values.len() == range_layers as usize {
+            (layer - start_layer) as usize
+        } else {
+            layer as usize
+        };
+        let value = values.get(index).copied().ok_or_else(|| {
+            anyhow::anyhow!(
+                "GGUF declara {name} para {} camadas, mas falta a camada {layer}",
+                values.len()
+            )
+        })?;
+        if value == 0 {
+            bail!("GGUF declara {name}=0 na camada {layer}; orçamento KV recusado");
+        }
+        Ok(value)
     }
 }
 
@@ -166,6 +293,26 @@ impl<R: Read + Seek> Reader<R> {
         };
         Ok(v)
     }
+
+    fn values_as_u32(&mut self, vtype: u32) -> Result<Option<Vec<u32>>> {
+        if vtype != T_ARRAY {
+            return Ok(self.value_as_u32(vtype)?.map(|value| vec![value]));
+        }
+
+        let element_type = self.u32()?;
+        let count = self.u64()?;
+        if count > 100_000 {
+            bail!("implausible GGUF integer array length {count}");
+        }
+        let mut values = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let Some(value) = self.value_as_u32(element_type)? else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+        Ok(Some(values))
+    }
 }
 
 /// Parse the KV header of a GGUF file.
@@ -221,6 +368,19 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".embedding_length") => {
                 info.embedding_length = r.value_as_u32(vtype)?
+            }
+            k if k.ends_with(".expert_count") => info.expert_count = r.value_as_u32(vtype)?,
+            k if k.ends_with(".expert_used_count") => {
+                info.expert_used_count = r.value_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.head_count_kv") => {
+                info.attention_head_count_kv = r.values_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.key_length") => {
+                info.attention_key_length = r.values_as_u32(vtype)?
+            }
+            k if k.ends_with(".attention.value_length") => {
+                info.attention_value_length = r.values_as_u32(vtype)?
             }
             _ => r.skip_value(vtype)?,
         }
@@ -493,6 +653,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn model_architecture_requires_an_explicit_expert_count() {
+        let dense = GgufInfo {
+            architecture: Some("llama".into()),
+            ..GgufInfo::default()
+        };
+        assert!(matches!(
+            dense.model_architecture(),
+            ModelArchitecture::Dense { .. }
+        ));
+
+        let moe = GgufInfo {
+            architecture: Some("qwen3moe".into()),
+            expert_count: Some(128),
+            expert_used_count: Some(8),
+            ..GgufInfo::default()
+        };
+        assert!(moe.model_architecture().is_moe());
+        assert!(matches!(
+            moe.model_architecture(),
+            ModelArchitecture::Moe {
+                expert_count: 128,
+                expert_used_count: Some(8),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn parses_block_indices() {
         assert_eq!(block_index("blk.0.attn_q.weight"), Some(0));
         assert_eq!(block_index("blk.31.ffn_up.weight"), Some(31));
@@ -545,6 +733,45 @@ mod tests {
         b
     }
 
+    fn u32_array(values: &[u32]) -> Vec<u8> {
+        let mut out = T_UINT32.to_le_bytes().to_vec();
+        out.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+
+    #[test]
+    fn read_info_preserva_geometria_kv_escalar_e_por_camada() {
+        let dir = std::env::temp_dir();
+        let mut p = dir.clone();
+        p.push("pom-kv-geometry.gguf");
+        std::fs::write(
+            &p,
+            header_only_gguf(&[
+                (
+                    "llama.attention.head_count_kv",
+                    T_UINT32,
+                    8u32.to_le_bytes().to_vec(),
+                ),
+                ("llama.attention.key_length", T_ARRAY, u32_array(&[128, 64])),
+                (
+                    "llama.attention.value_length",
+                    T_UINT32,
+                    128u32.to_le_bytes().to_vec(),
+                ),
+            ]),
+        )
+        .unwrap();
+
+        let info = read_info(&p).unwrap();
+        assert_eq!(info.attention_head_count_kv, Some(vec![8]));
+        assert_eq!(info.attention_key_length, Some(vec![128, 64]));
+        assert_eq!(info.attention_value_length, Some(vec![128]));
+        let _ = std::fs::remove_file(&p);
+    }
+
     #[test]
     fn read_layout_sees_nextn_predict_layers() {
         let dir = std::env::temp_dir();
@@ -577,6 +804,38 @@ mod tests {
         let layout = read_layout(&q).unwrap();
         assert_eq!(layout.nextn_predict_layers, 0);
         let _ = std::fs::remove_file(&q);
+    }
+
+    #[test]
+    fn moe_detection_uses_real_expert_metadata_not_architecture_name() {
+        let dir = std::env::temp_dir();
+        let moe = dir.join("pom-moe-metadata.gguf");
+        std::fs::write(
+            &moe,
+            header_only_gguf(&[
+                ("general.architecture", T_STRING, "qwen3moe".into()),
+                (
+                    "qwen3moe.expert_count",
+                    T_UINT32,
+                    128u32.to_le_bytes().to_vec(),
+                ),
+            ]),
+        )
+        .unwrap();
+        let info = read_info(&moe).unwrap();
+        assert!(info.is_moe());
+
+        let dense = dir.join("pom-dense-with-moe-name.gguf");
+        std::fs::write(
+            &dense,
+            header_only_gguf(&[("general.architecture", T_STRING, "qwen3moe".into())]),
+        )
+        .unwrap();
+        let info = read_info(&dense).unwrap();
+        assert!(!info.is_moe(), "nome de arquitetura não substitui metadata");
+
+        let _ = std::fs::remove_file(moe);
+        let _ = std::fs::remove_file(dense);
     }
 
     /// Every type this project claims to measure, with the `(type_size,

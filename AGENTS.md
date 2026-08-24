@@ -20,6 +20,7 @@ dele é lá, não aqui.
 | `paralelismo.md` | pipeline parallelism, tensor parallelism, escolha por topologia e telemetria |
 | `fatiamento.md` | split/merge de GGUF, tabela de tipos ggml, planejamento por tamanho |
 | `implantacao.md` | pôr fatias em serviço, fusão, ordem do pipeline, ciclo de vida da fatia |
+| `freetoken-moe.md` | medições do goal FreeToken, orçamento de KV e caminho MoE próprio |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |
 | `api-http.md` | todas as rotas, autenticação, `x_pom.source`, `gateway::testkit` |
 | `web-ui.md` | como a UI sobe, menu, modais, Painel, chat de teste, telas de fatiar/implantar |

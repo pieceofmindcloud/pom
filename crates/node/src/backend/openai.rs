@@ -2,7 +2,7 @@
 //!
 //! A protocol adapter, nothing more: it renders chat messages into the single
 //! prompt string the pipeline already accepts, calls
-//! [`crate::gateway::generate_stream`], and dresses the resulting tokens as
+//! [`crate::gateway::generate_stream_with_stops`], and dresses the resulting tokens as
 //! OpenAI responses. No inference behaviour is changed or duplicated here.
 //!
 //! Every node serves these routes, so any peer address works as an OpenAI base
@@ -12,7 +12,7 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent};
+use crate::gateway::{GatewayState, GenEvent, GenerationInput, StopInput};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
 };
@@ -187,6 +187,8 @@ pub struct ChatRequest {
     pub max_completion_tokens: Option<u32>,
     #[serde(default)]
     pub tools: Vec<ChatToolDef>,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -227,6 +229,8 @@ pub struct CompletionRequest {
     pub stream: bool,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
 }
 
 impl ChatRequest {
@@ -404,6 +408,7 @@ async fn chat_completions(
         _ => state.active_model().await,
     };
     let max_tokens = req.max_tokens();
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let tools: Vec<ToolDef> = req
         .tools
         .into_iter()
@@ -440,6 +445,7 @@ async fn chat_completions(
             id,
             created,
             Mode::Chat,
+            stops,
         )
     } else {
         blocking_response(
@@ -453,6 +459,7 @@ async fn chat_completions(
             created,
             prompt_tokens,
             Mode::Chat,
+            stops,
         )
         .await
     }
@@ -471,6 +478,7 @@ async fn completions(
         .max_tokens
         .unwrap_or(DEFAULT_MAX_TOKENS)
         .clamp(1, HARD_MAX_TOKENS);
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
@@ -486,6 +494,7 @@ async fn completions(
             id,
             created,
             Mode::Completion,
+            stops,
         )
     } else {
         blocking_response(
@@ -499,6 +508,7 @@ async fn completions(
             created,
             prompt_tokens,
             Mode::Completion,
+            stops,
         )
         .await
     }
@@ -556,15 +566,19 @@ async fn blocking_response(
     created: i64,
     prompt_tokens: u32,
     mode: Mode,
+    stops: Vec<String>,
 ) -> Response {
-    match crate::gateway::generate_blocking(
-        state,
+    match crate::gateway::generate_blocking_with_stops(
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+        },
     )
     .await
     {
@@ -606,6 +620,8 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "partial": summary.partial,
+                        "finish_reason": summary.finish_reason,
+                        "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                     },
                 })),
@@ -623,6 +639,8 @@ fn finish_reason(
 ) -> &'static str {
     if saw_tool_call {
         "tool_calls"
+    } else if summary.finish_reason.as_deref() == Some("stop") {
+        "stop"
     } else if summary.tokens_generated >= max_tokens {
         "length"
     } else {
@@ -677,16 +695,20 @@ fn stream_response(
     id: String,
     created: i64,
     mode: Mode,
+    stops: Vec<String>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
-    crate::gateway::spawn_logged_generation(
-        state,
+    crate::gateway::spawn_logged_generation_with_stops(
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+        },
         tx,
     );
 
@@ -940,6 +962,8 @@ fn chunk_json(
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
             "partial": summary.partial,
+            "finish_reason": summary.finish_reason,
+            "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
         });
     }
@@ -1097,6 +1121,7 @@ mod tests {
                 max_tokens: Some(1),
                 max_completion_tokens: None,
                 tools: Vec::new(),
+                stop: None,
             }),
         )
         .await;
@@ -1132,6 +1157,7 @@ mod tests {
                 max_tokens: Some(32_000),
                 max_completion_tokens: None,
                 tools: Vec::new(),
+                stop: None,
             }),
         )
         .await;
@@ -1311,6 +1337,8 @@ mod tests {
             tokens_per_sec: 1.0,
             duration_ms: 10,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: None,
         };
         assert_eq!(finish_reason(&summary(5), 100, false), "stop");
@@ -1451,6 +1479,8 @@ mod tests {
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: Some(crate::prefill::RequestTrace::new(
                 "qwen35",
                 &[("no1", 0, 15)],

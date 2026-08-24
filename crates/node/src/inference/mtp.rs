@@ -490,7 +490,13 @@ mod tests {
             mtp: true,
             rs_seq_window: 0,
         };
-        let mut engine = crate::llm::LlmEngine::load(&path, &cfg).expect("carregar o modelo");
+        let mut engine = crate::llm::LlmEngine::load_with_cache(
+            &path,
+            &cfg,
+            &crate::llm::ModelCache::new(),
+            false,
+        )
+        .expect("carregar o modelo");
         assert!(
             engine.mtp_ready(),
             "o modelo em {path} não trouxe bloco nextn — a sonda precisa de um que traga"

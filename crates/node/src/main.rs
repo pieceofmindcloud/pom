@@ -29,6 +29,8 @@ mod direct_lab;
 mod discovery;
 #[path = "utils/display.rs"]
 mod display;
+#[path = "inference/executor.rs"]
+mod executor;
 #[path = "backend/gateway.rs"]
 mod gateway;
 #[path = "models/gguf.rs"]
@@ -41,6 +43,8 @@ mod identity;
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
+#[path = "models/kv_budget.rs"]
+mod kv_budget;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/llm.rs"]
@@ -55,6 +59,8 @@ mod model;
 mod model_provider;
 #[path = "backend/model_provider.rs"]
 mod model_provider_backend;
+#[path = "inference/moe/mod.rs"]
+pub(crate) mod moe;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]
@@ -75,6 +81,11 @@ mod plan;
 mod pom;
 #[path = "inference/prefill.rs"]
 mod prefill;
+#[path = "inference/prefix_cache.rs"]
+mod prefix_cache;
+#[cfg(test)]
+#[path = "inference/prefix_cache_lab.rs"]
+mod prefix_cache_lab;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -735,6 +746,7 @@ async fn main() -> Result<()> {
             peer_index: 0,
             primary: args.gateway,
             tp: None,
+            inference_mode: Default::default(),
             inference_port: port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
@@ -793,6 +805,7 @@ async fn main() -> Result<()> {
             default_model: profile.name.clone(),
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             gateway_port,
@@ -1404,6 +1417,7 @@ async fn start_gateway_only(
         default_model: String::new(),
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
+        prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         gateway_port,

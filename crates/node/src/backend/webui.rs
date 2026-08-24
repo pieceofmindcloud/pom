@@ -1460,6 +1460,16 @@ pub struct PlanRequest {
     /// file actually is.
     #[serde(default)]
     pub layout_node_id: Option<String>,
+    /// Parâmetros usados para cobrar o KV junto com o peso. Ausentes usam os
+    /// defaults da tela de runtime e os tipos globais da instalação.
+    #[serde(default)]
+    pub n_ctx: Option<u32>,
+    #[serde(default)]
+    pub max_sessions: Option<u32>,
+    #[serde(default)]
+    pub cache_type_k: Option<KvCacheType>,
+    #[serde(default)]
+    pub cache_type_v: Option<KvCacheType>,
 }
 
 /// Work out asymmetric layer ranges from each peer's declared memory budget.
@@ -1507,20 +1517,49 @@ async fn plan_split_endpoint(
     }
 
     let path = std::path::PathBuf::from(&req.model_path);
-    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&path)).await {
+    let layout_path = path.clone();
+    let layout = match tokio::task::spawn_blocking(move || gguf::read_layout(&layout_path)).await {
         Ok(Ok(l)) => l,
         Ok(Err(e)) => return bad_request(format!("não foi possível ler o GGUF: {e}")),
         Err(e) => return bad_request(format!("leitura do GGUF falhou: {e}")),
     };
 
+    let info = match tokio::task::spawn_blocking(move || gguf::read_info(&path)).await {
+        Ok(Ok(info)) => info,
+        Ok(Err(e)) => {
+            return bad_request(format!("não foi possível ler a geometria KV do GGUF: {e}"))
+        }
+        Err(e) => return bad_request(format!("leitura da geometria KV falhou: {e}")),
+    };
+
     let reserve = req.reserve_pct.unwrap_or(DEFAULT_RESERVE_PCT);
-    match plan::plan_split(&req.model_path, &layout, &req.budgets, reserve) {
+    let defaults = RuntimeParams::default();
+    let installation = state.auth.read().await;
+    let kv = plan::KvPlanParams {
+        n_ctx: req.n_ctx.unwrap_or(defaults.n_ctx),
+        max_sessions: req.max_sessions.unwrap_or(defaults.max_sessions),
+        cache_type_k: req.cache_type_k.unwrap_or(installation.cache_type_k),
+        cache_type_v: req.cache_type_v.unwrap_or(installation.cache_type_v),
+    };
+    match plan::plan_split_with_kv(&req.model_path, &layout, &info, &req.budgets, reserve, kv) {
         Ok(p) => Json(p).into_response(),
         Err(e) => bad_request(e.to_string()),
     }
 }
 
 // ── Applying a configuration ─────────────────────────────────────────────────
+
+/// Which inference engine the operator asks the runtime to use for a model.
+/// `Auto` keeps the runtime's model-metadata decision; the explicit variants
+/// are persisted with the deployment so every peer receives the same choice.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InferenceMode {
+    #[default]
+    Auto,
+    Dense,
+    Moe,
+}
 
 /// Sampling and context knobs. Defaults match `run-p1.sh`, which is the
 /// configuration the two-peer cluster was validated with.
@@ -1530,6 +1569,10 @@ async fn plan_split_endpoint(
 /// verifica que uma reimplantação mudou alguma coisa.
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct RuntimeParams {
+    /// Engine preference. `Auto` is backwards-compatible and lets the runtime
+    /// choose from the actual GGUF metadata.
+    #[serde(default)]
+    pub inference_mode: InferenceMode,
     #[serde(default = "d_gpu_layers")]
     pub n_gpu_layers: u32,
     #[serde(default = "d_n_ctx")]
@@ -1664,6 +1707,7 @@ fn d_mtp_min_probability() -> f32 {
 impl Default for RuntimeParams {
     fn default() -> Self {
         Self {
+            inference_mode: InferenceMode::Auto,
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
@@ -1702,6 +1746,7 @@ impl Default for RuntimeParams {
 impl From<&NodeConfig> for RuntimeParams {
     fn from(c: &NodeConfig) -> Self {
         Self {
+            inference_mode: c.inference_mode,
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
@@ -2337,6 +2382,7 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         peer_index: req.peer_index,
         primary: req.primary,
         tp: req.tp.clone(),
+        inference_mode: req.params.inference_mode,
         inference_port,
         single_peer: req.single_peer(),
         no_embeddings: req.no_embeddings(),
@@ -4711,6 +4757,20 @@ mod tests {
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
+    }
+
+    #[test]
+    fn inference_mode_defaults_to_auto_and_round_trips() {
+        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.inference_mode, InferenceMode::Auto);
+
+        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "inference_mode": "moe"
+        }))
+        .unwrap();
+        assert_eq!(explicit.inference_mode, InferenceMode::Moe);
+        let encoded = serde_json::to_value(explicit).unwrap();
+        assert_eq!(encoded["inference_mode"], "moe");
     }
 
     #[test]

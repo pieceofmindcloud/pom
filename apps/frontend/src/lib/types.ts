@@ -68,6 +68,9 @@ export interface SystemLoad {
  */
 export type ServerState = "disabled" | "starting" | "ready" | "failed";
 
+/** Motor que o backend afirma ter executado, sem inferência da interface. */
+export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
+
 export interface RuntimeStatus {
   state: ServerState;
   detail: string;
@@ -95,6 +98,8 @@ export interface NodeConfig {
   peer_count: number;
   peer_index: number;
   primary: boolean;
+  /** Persisted engine preference carried by the active deployment. */
+  inference_mode: InferenceMode;
   inference_port: number;
   n_gpu_layers: number;
   n_ctx: number;
@@ -229,6 +234,8 @@ export interface PeerRuntimeHealth {
   n_ubatch_effective: number;
   /** Real backend setting on this peer, not inferred from a zero timing. */
   profile_sync_enabled?: boolean;
+  /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
+  selected_path?: string;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
@@ -304,6 +311,8 @@ export interface DiscoveredModel {
   path: string;
   size_bytes: number;
   architecture: string | null;
+  /** True only when the GGUF metadata reports more than one expert. */
+  is_moe?: boolean;
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
@@ -751,6 +760,9 @@ export interface PlannedShard {
   end_layer: number;
   layers: number;
   weight_mb: number;
+  weight_bytes: number;
+  kv_bytes: number;
+  total_bytes: number;
   is_first: boolean;
   is_last: boolean;
   has_model: boolean;
@@ -914,6 +926,8 @@ export interface DeployLoadDistribution {
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
  */
 export interface RuntimeParams {
+  /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
+  inference_mode: InferenceMode;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
@@ -946,6 +960,8 @@ export interface RuntimeParams {
   /** Confiança mínima para o rascunho continuar; 0 aceita qualquer palpite. */
   mtp_min_probability: number;
 }
+
+export type InferenceMode = "auto" | "dense" | "moe";
 
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
 export interface DeploySelection {
@@ -1001,6 +1017,12 @@ export interface DeployPlan {
    * the same default the node applies to a request without a `kind`.
    */
   kind?: DeployKind;
+  /** True only when the surveyed model's actual GGUF metadata is MoE. */
+  is_moe?: boolean;
+  /** Whether this plan can honor the selected inference mode. */
+  inference_mode_supported?: boolean;
+  /** Why the selected inference mode cannot be honored, when applicable. */
+  inference_mode_reason?: string | null;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

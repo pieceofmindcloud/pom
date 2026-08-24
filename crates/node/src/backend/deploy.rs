@@ -70,8 +70,8 @@ use crate::gateway::GatewayState;
 use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
-    jobs, launch, new_job, set_job, set_job_progress, LaunchRequest, LaunchTarget, MergeSource,
-    RuntimeParams, PEER_TIMEOUT,
+    jobs, launch, new_job, set_job, set_job_progress, InferenceMode, LaunchRequest, LaunchTarget,
+    MergeSource, RuntimeParams, PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -519,6 +519,8 @@ struct HeldShard {
     tp_rank: Option<u32>,
     /// Número total de ranks desta rodada TP.
     tp_size: Option<u32>,
+    /// Whether the actual GGUF metadata identifies this model as MoE.
+    is_moe: bool,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -938,6 +940,10 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .get("tp_size")
             .and_then(|size| size.as_u64())
             .map(|size| size as u32),
+        is_moe: v
+            .get("is_moe")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -980,6 +986,10 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         sha256: None,
         tp_rank: None,
         tp_size: None,
+        is_moe: v
+            .get("is_moe")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false),
     })
 }
 
@@ -1138,6 +1148,13 @@ pub struct Plan {
     /// Echoed so the screen never has to guess which question it asked. A whole
     /// model plan has exactly one step covering every layer.
     kind: DeployKind,
+    /// True only when the surveyed GGUF metadata reports more than one expert.
+    /// The UI must never infer this from a filename or architecture label.
+    is_moe: bool,
+    /// Whether this plan can honor the requested inference mode.
+    inference_mode_supported: bool,
+    /// Explicit reason when the selected execution mode cannot be honored.
+    inference_mode_reason: Option<String>,
     /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
     /// usa isto para gerar os alvos dos workers.
     tp: Option<TpLaunch>,
@@ -1541,6 +1558,18 @@ fn plan_with_rtt_options(
     let size = model_size(&available);
     let total_layers = size.value();
     let tp_pre_sliced = kind == DeployKind::TensorParallel && has_tp_parts(machines);
+    let is_moe = machines
+        .iter()
+        .flat_map(|machine| &machine.held)
+        .any(|shard| shard.is_moe);
+    let inference_mode_reason = if params.inference_mode == InferenceMode::Moe && !is_moe {
+        Some("MoE exige metadata real de experts no GGUF deste modelo.".to_string())
+    } else if kind == DeployKind::TensorParallel && is_moe {
+        Some("Tensor Parallelism não suporta MoE nesta versão.".to_string())
+    } else {
+        None
+    };
+    let inference_mode_supported = inference_mode_reason.is_none();
 
     // What we are planning: (index into `available`, target node id).
     let auto = selection.is_none();
@@ -1548,6 +1577,10 @@ fn plan_with_rtt_options(
     let mut chosen: Vec<(usize, String, PeerOverrides)> = Vec::new();
     let mut blocked: Option<String> = None;
     let mut warnings: Vec<String> = Vec::new();
+
+    if let Some(reason) = &inference_mode_reason {
+        blocked = Some(reason.clone());
+    }
 
     match selection {
         None => {
@@ -2203,6 +2236,9 @@ fn plan_with_rtt_options(
         strategy,
         kind,
         tp,
+        is_moe,
+        inference_mode_supported,
+        inference_mode_reason,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -5106,6 +5142,7 @@ mod tests {
                         sha256: None,
                         tp_rank: None,
                         tp_size: None,
+                        is_moe: false,
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -5950,6 +5987,88 @@ mod tests {
         assert!(effective_params_for_kind(DeployKind::Shards, &params).fit_memory);
     }
 
+    #[test]
+    fn inference_mode_round_trips_for_whole_shards_and_tensor_parallel() {
+        for kind in [
+            DeployKind::Whole,
+            DeployKind::Shards,
+            DeployKind::TensorParallel,
+        ] {
+            let request: DeployRequest = serde_json::from_value(serde_json::json!({
+                "group": "model",
+                "kind": kind,
+                "params": { "inference_mode": "moe" }
+            }))
+            .unwrap();
+            assert_eq!(request.params.inference_mode, InferenceMode::Moe);
+            assert_eq!(
+                effective_params_for_kind(kind, &request.params).inference_mode,
+                InferenceMode::Moe
+            );
+        }
+    }
+
+    #[test]
+    fn moe_capability_is_reported_for_whole_shards_and_tensor_parallel() {
+        let mut params = RuntimeParams::default();
+        params.inference_mode = InferenceMode::Moe;
+
+        let mut whole = whole_machine("whole", 900_000, true);
+        whole.held[0].is_moe = true;
+        let p_whole = super::plan(
+            "qwen-moe",
+            std::slice::from_ref(&whole),
+            None,
+            &params,
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        let p_shards = super::plan(
+            "qwen-moe",
+            std::slice::from_ref(&whole),
+            None,
+            &params,
+            false,
+            DeployKind::Shards,
+            None,
+        );
+        for (kind, p) in [(DeployKind::Whole, p_whole), (DeployKind::Shards, p_shards)] {
+            assert!(p.is_moe);
+            assert!(
+                p.inference_mode_supported,
+                "{kind:?}: {:?}",
+                p.inference_mode_reason
+            );
+            assert!(p.inference_mode_reason.is_none());
+        }
+
+        let mut primary = tp_machine("primary", 0);
+        let mut worker = tp_machine("worker", 1);
+        primary.held[0].is_moe = true;
+        worker.held[0].is_moe = true;
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "primary".into(),
+            worker_node_ids: vec!["worker".into()],
+        };
+        let p = super::plan(
+            "qwen-moe",
+            &[primary, worker],
+            None,
+            &params,
+            false,
+            DeployKind::TensorParallel,
+            Some(tp),
+        );
+        assert!(p.is_moe);
+        assert!(!p.inference_mode_supported);
+        assert_eq!(
+            p.inference_mode_reason.as_deref(),
+            Some("Tensor Parallelism não suporta MoE nesta versão.")
+        );
+    }
+
     /// A cluster of unlike machines is the whole point of the per-peer offload:
     /// the number the operator typed for one peer must reach that peer and no
     /// other.
@@ -6190,6 +6309,7 @@ mod tests {
                     sha256: None,
                     tp_rank: None,
                     tp_size: None,
+                    is_moe: false,
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -6215,6 +6335,7 @@ mod tests {
             sha256: Some(format!("{:064x}", rank + 1)),
             tp_rank: Some(rank),
             tp_size: Some(2),
+            is_moe: false,
         });
         machine
     }
@@ -6701,6 +6822,7 @@ mod tests {
                 sha256: None,
                 tp_rank: None,
                 tp_size: None,
+                is_moe: false,
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),

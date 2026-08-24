@@ -3,7 +3,7 @@
 ## What this folder is
 
 The HTTP backend of the `pom` node: every axum router and handler the
-binary serves. It owns the single generation path (`gateway::generate_stream`,
+binary serves. It owns the single generation path (`gateway::generate_stream_with_stops`,
 which routes to the **distributed pipeline** - there is no fallback to a local
 or peer Ollama, a missing plan fails the request), the gateway state all
 handlers share, the two protocol adapters (OpenAI and
@@ -22,8 +22,9 @@ behind an auth extractor.
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
-- `gateway.rs` (1542) - `GatewayState`, `start_gateway`, `generate_stream` /
-  `generate_blocking` / `spawn_logged_generation`, prompt-budget math, the
+- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+  `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
+  prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
@@ -50,6 +51,10 @@ behind an auth extractor.
   matching `If-None-Match` returns 304 without a body, and the cluster keeps
   a 2s fingerprinted snapshot cache that bypasses its TTL on known state
   changes.
+  `plan` reads the GGUF header from the node that owns `model_path` and, when
+  calculating budget-driven ranges, includes the configured context, sessions
+  and K/V cache types in the byte arithmetic. The response exposes weight,
+  KV and total bytes per shard; absent KV metadata is an explicit bad request.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
@@ -111,7 +116,7 @@ behind an auth extractor.
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
   complete window for each session; `max_sessions` multiplies the runtime KV
   reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
-  prompt); `generate_stream`
+  prompt); `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -129,7 +134,10 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
+  /`Failed`; `generate_blocking_with_stops` collapses it. When the stream receiver closes,
+  `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
+  next retry, hop or chunk; already accepted peer frames are cleaned up by the
+  normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), and `POST /v1/relay-result`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, deliberately no auth -
@@ -149,15 +157,15 @@ behind an auth extractor.
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
-  `x_pom` extension with source/tps/duration/partial/trace),
+  `x_pom` extension with source/tps/duration/partial/trace/finish_reason/stop_sequence),
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
   `POST /v1/messages/count_tokens`; its own `render_prompt` (system/messages/
   tools split), `content_blocks` for tool_use/tool_result, `stop_reason`
-  (end_turn / max_tokens / tool_use), `blocking_response` and `stream_response`
-  with the Anthropic SSE event names. `tool_choice` and `stop_sequences` are
-  parsed-and-ignored (serde drops unknown fields).
+  (end_turn / max_tokens / tool_use / stop_sequence), `blocking_response` and
+  `stream_response` with the Anthropic SSE event names. `tool_choice` is
+  parsed-and-ignored; `stop_sequences` is applied by the gateway matcher.
 - `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
@@ -230,6 +238,11 @@ behind an auth extractor.
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
+  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy.
+  O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
+  experts identifica MoE. O plano expõe `inference_mode_supported` e
+  `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
+  enquanto esse caminho não for suportado.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

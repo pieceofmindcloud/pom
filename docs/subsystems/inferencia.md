@@ -3,7 +3,7 @@
 O que o código faz hoje, verificado nos fontes (ver nota de versão no fim).
 
 Um pedido de geração (OpenAI `/v1/chat/completions`, Anthropic `/v1/messages`,
-`POST /api/generate`) desce por um único caminho: `gateway::generate_stream`.
+`POST /api/generate`) desce por um único caminho: `gateway::generate_stream_with_stops`.
 Ele planeja a cadeia de peers com `routing/pipeline.rs`, manda o prompt e cada
 token pelo pipeline distribuído e devolve tokens ao cliente. Este documento
 descreve os três modos de execução, o formato binário do estado oculto, o
@@ -88,7 +88,7 @@ por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
 
 `n_gpu_layers` continua controlando onde ficam os pesos. O contexto tenta
 primeiro respeitar `offload_kqv=true`, colocando o KV cache na GPU. Se o
-`cudaMalloc` do KV cache falhar, `LlmEngine::load` repete a criação do contexto
+`cudaMalloc` do KV cache falhar, `LlmEngine::load_with_cache` repete a criação do contexto
 com `offload_kqv=false`: os pesos permanecem nas mesmas camadas da GPU e o KV
 cache passa para a memória RAM. A aplicação registra o fallback e `/health`
 mostra o valor efetivo. Isso resolve falta de VRAM para o cache; se os próprios
@@ -134,6 +134,22 @@ Quando o MTP está ligado, o carregamento também passa
 antes de criar o contexto de rascunho; deixar essa flag falsa mantém os
 metadados MTP, mas deixa `nextn.eh_proj` nulo e faz o Qwen3.5 abortar na
 construção do grafo.
+
+### Reconfiguração sem reler pesos
+
+`NodeRuntime` mantém um `ModelCache` local com o `Arc<LoadedModel>` da última
+fatia. Em uma nova geração, `NodeConfig::weights_are_compatible` compara o
+caminho, a faixa, a contagem total, a forma de carregamento GPU, o MTP efetivo
+e a identidade TP. Se tudo coincide, `infer_server::run` chama
+`LlmEngine::load_with_cache` e cria somente um `llama_context` novo, aplicando os
+novos valores de contexto, sessões, KV, lote e sampling. A geração anterior
+continua dona do contexto antigo até o servidor parar de aceitar conexões e
+drenar as requisições em voo.
+
+Uma troca de fatia, caminho ou parâmetro de carregamento limpa o cache antes de
+publicar a nova geração. `NodeRuntime::stop` também limpa o cache, porque
+unload explícito deve devolver os pesos. O cache nunca é compartilhado entre
+processos ou máquinas e não altera nenhum contrato de fio.
 
 ### Onde as camadas ficaram
 
@@ -249,8 +265,70 @@ decodificado na própria posição e o estado oculto viaja sozinho.
 - Só a cabeça tokeniza (tem o prompt), e é a única autoridade em
   `more_chunks`/`n_prompt_tokens`. O gateway sempre manda `is_final_chunk:
   false` e quem tokenizou corrige (ver `prompt_progress` na seção 4).
+- O fechamento do stream cria um cancelamento cooperativo por geração.
+  `prefill::Cancellation` interrompe a espera HTTP em voo e impede o próximo
+  retry, hop ou chunk. Um frame que o peer já aceitou pode terminar, porque o
+  contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
+  libera as sessões dos peers alcançados.
 
-### 3.1 Scheduler local e batching contínuo
+### 3.1 Cache de prefixo entre turnos
+
+O gateway mantém um `PrefixCache` global com leases por sessão. A chave combina
+modelo e sequência de hops, e o cache guarda apenas texto, identidade da sessão
+e contagem de tokens, nunca pesos ou tensors. Uma entrada hit fica ocupada
+durante a geração; entradas ociosas seguem LRU dentro da capacidade configurada.
+Leases ocupados não são despejados, mesmo que o total passe temporariamente a
+capacidade nominal.
+Em um miss, uma entrada ociosa pode ser reciclada antes do prefill novo, o que
+mantém o caminho compatível com `max_sessions=1` sem compartilhar entrada
+ocupada.
+
+Depois de um prefill bem-sucedido, `/v1/session/rewind` remove em cada peer o
+sufixo gerado e exige a confirmação do `n_past` igual ao tamanho do prompt. Se
+qualquer hop falhar, o gateway invalida o lease inteiro e libera a sessão. No
+turno seguinte, o primeiro frame leva `reuse_prefix`; a cabeça compara os
+tokens do novo prompt com os tokens guardados na sessão, remove do KV qualquer
+sufixo que deixou de ser comum e responde com `start_pos`/`next_pos`. O gateway
+usa essa posição no chunk seguinte, e o relay preserva os campos até cada hop.
+Assim, um peer que só recebe estado oculto não precisa tokenizar, mas também não
+pode começar numa posição diferente da cabeça.
+
+O cache é uma otimização interna. O envelope binário `frame/v1-batch` e as APIs
+públicas não mudaram. `prefix_cache_lab.rs` compara cada operação com uma
+referência e contém um proxy propositalmente quebrado que precisa disparar a
+bateria. Não há número de desempenho nesta fase: o captain fará a medição
+posterior usando o método da Fase 0.
+
+### 3.2 Seleção do executor
+
+Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um
+`expert_count > 1` classifica o modelo como MoE. Em `auto`, qualquer modelo
+denso ou com metadados ausentes permanece em `dense/llama.cpp`. O campo
+persistido `NodeConfig.inference_mode` chega ao seletor antes da carga: uma
+escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
+`POM_INFERENCE_MODE`; em `auto`, esse ambiente ainda pode forçar um modo e, sem
+override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.
+
+O caminho MoE atual aparece como `moe/q4_0` no `/health` quando o seletor
+escolhe esse modo e abre o runtime próprio em `inference/moe/`: o dispatcher
+detecta o dtype do GGUF, calcula o router top-k e usa o LRU global. Hidden states recebidos são transformados
+antes do decode local; residuals produzidos a partir de tokens passam pela
+mesma ponte antes de seguir ao próximo hop. O wire continua em f16 e nenhum
+peso é transportado. Atenção, operações restantes e sampling final ainda
+delegam ao `LlmEngine`, então esta é uma ligação parcial do bloco, não um
+transformer MoE completo. NVFP4, K-quants e IQ-quants usam loaders próprios
+com validação da ordem GGUF `[input, output, experts]` antes do forward. A Fase
+5 ainda não está ativa: não há executor GPU próprio nem perfil medido carregado
+no runtime. O caminho atual é CPU para router e experts; não afirma
+sobreposição CPU/GPU.
+
+Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
+stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
+prefixo de uma parada, remove a própria parada da saída e encerra a geração com
+`finish_reason=stop` e a sequência correspondente. Sem stop strings o caminho
+continua emitindo os eventos como antes.
+
+### 3.3 Scheduler local e batching contínuo
 
 Cada processo de inferência possui um scheduler próprio para o contexto
 `llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,
@@ -296,6 +374,10 @@ OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e
 prefill. A cabeça, que é a única dona do tokenizer, aplica o
 `tokenizer.chat_template` do GGUF uma vez e abre o turno do assistente; os
 demais peers recebem somente o estado oculto e não reformatam o prompt.
+Para Gemma4, o renderer lê o template do GGUF e aplica `enable_thinking` e
+`add_generation_prompt` no fluxo suportado pelo modelo, sem inserir marcadores
+de outro formato. A cauda encerra em EOS ou no fim de turno tokenizado pelo
+vocabulário do mesmo GGUF, sem enviar esse marcador ao cliente.
 
 `/v1/completions` continua sendo completion cru e envia `chat_template: false`.
 Essa flag explícita tem precedência sobre o padrão legado do servidor, que
@@ -412,7 +494,7 @@ cauda. O número somado continua certo; dividido por hop, ele não existe.
 
 São **dois** mecanismos, com chaves de operador separadas, e nunca os dois na
 mesma rodada (o lote é um só, e misturar as fontes tornaria a taxa de aceitação
-impossível de atribuir). O gateway escolhe em `generate_stream`: com as duas
+impossível de atribuir). O gateway escolhe em `generate_stream_with_stops`: com as duas
 ligadas e o plano capaz, vence o MTP.
 
 | | `speculative_decoding_enabled` | `mtp_enabled` |
@@ -474,7 +556,7 @@ extra), `accept_count` e `batch_width`.
   `partial: true` em toda requisição (2026-08-15, Qwen3.8-27B) - esse defeito
   era real e independente do engano do `kv_can_shift` acima.
 - **Recusada a especulação, o gateway para de insistir** pelo resto da
-  requisição (`especulando`, em `generate_stream`): passa a chamar
+requisição (`especulando`, em `generate_stream_with_stops`): passa a chamar
   `prefill::step`, que já usa a resposta direta (N+1 travessias). Não é só
   economia do campo `speculate` - insistir prende a cadeia no anel borbulhado
   (2N travessias por token).
@@ -559,7 +641,7 @@ RAII que decrementa no drop: o balanço de carga nunca fica preso num erro.
 
 ## 7. Fallbacks no gateway
 
-O gateway **só tem o caminho do pipeline**. `generate_stream` falha com
+O gateway **só tem o caminho do pipeline**. `generate_stream_with_stops` falha com
 "Nenhum pipeline válido para o modelo X (verifique a cobertura de camadas
 0..N)" quando `plan_pipeline` devolve `None`; o handler de `/api/generate`
 responde 503 com "Start peers with --inference-port." e `source: "none"`.
@@ -598,7 +680,7 @@ inteiro.
   2026-08-14 (cota). A decodificação especulativa também segue sem cobertura no
   desvio direto (ver seção 5).
 - A especulação tem a sua bancada própria, `spec_lab.rs` (cfg(test)):
-  `generate_stream` de verdade contra hops falsos que decidem com
+  `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção. O motor é fingido
   (sem GGUF nesta máquina ela prova o contrato entre os processos, não o que o
   llama.cpp faz com o lote); por isso ela não exercita `n_rs_seq`/`seq_rm` de

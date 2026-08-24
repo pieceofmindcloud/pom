@@ -52,9 +52,11 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 `gguf.rs` lê o GGUF sem carregar pesos:
 
 - `read_info` - só o KV header: arquitetura, `block_count`, `pom.*`
-  (original/total), `shard_range`, `embedding_length`. Quem decide se um
-  arquivo é fatia é `catalog::InstalledModel::is_shard`; a cópia que existia em
-  `GgufInfo` não tinha chamador e saiu.
+  (original/total), `shard_range`, `embedding_length` e a geometria do cache
+  (`attention.head_count_kv`, `key_length` e `value_length`). Cada item pode
+  ser escalar ou array por camada. Quem decide se um arquivo é fatia é
+  `catalog::InstalledModel::is_shard`; a cópia que existia em `GgufInfo` não
+  tinha chamador e saiu.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
@@ -98,6 +100,13 @@ alvo pedido, a faixa que saiu e o tamanho real.
   também tem que caber a cabeça de saída (`is_last_peer` muda o custo);
   `snap_end_layer` ajusta o corte para a fronteira de tipo. Avisa peer que fica
   sem camada e peer que não tem o modelo escolhido instalado.
+- `plan_split_with_kv` - caminho de `POST /api/ui/plan` que cobra o custo em
+  bytes para cada faixa: peso real da tensor table mais KV para
+  `n_ctx * max_sessions`, com os tipos K e V configurados. A reserva é aplicada
+  ao orçamento do peer antes da aritmética. O resultado traz
+  `weight_bytes`, `kv_bytes` e `total_bytes`; geometria GGUF ausente, largura
+  incompatível com bloco quantizado e overflow recusam o plano em vez de
+  produzir uma estimativa silenciosa.
 - `plan_by_size` - alvos em MB (`SizedSlice { target_mb }`) -> faixas
   (`SizedRange { index, start_layer, end_layer, layers, bytes, target_mb, is_rest,
   is_last, too_small, empty }`). `target_mb: None` = "o resto do modelo". Uma

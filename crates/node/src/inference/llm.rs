@@ -44,6 +44,10 @@ use llama_cpp_sys_2 as sys;
 struct CaptureSlot {
     want: Option<CString>,
     buf: Option<Vec<f32>>,
+    expected_floats: Option<usize>,
+    last_shape: Option<[i64; 4]>,
+    last_strides: Option<[usize; 4]>,
+    last_nbytes: Option<usize>,
     copy_us: u64,
 }
 
@@ -55,7 +59,7 @@ unsafe extern "C" fn capture_callback(
     if user_data.is_null() {
         return true;
     }
-    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load` registrou, e ele
+    // SAFETY: `user_data` é o ponteiro que `LlmEngine::load_with_cache` registrou, e ele
     // aponta para o `Box<Mutex<CaptureSlot>>` do mesmo `LlmEngine` que é dono
     // deste contexto. O Box vive enquanto o contexto viver (ver `Drop`).
     let slot = unsafe { &*(user_data as *const Mutex<CaptureSlot>) };
@@ -100,7 +104,12 @@ unsafe extern "C" fn capture_callback(
 
     // Compute phase: copy the tensor bytes.
     let copy_started = Instant::now();
+    let tensor_shape = unsafe { (*t).ne };
+    let tensor_strides = unsafe { (*t).nb };
     let n_bytes = unsafe { sys::ggml_nbytes(t) } as usize;
+    slot.last_shape = Some(tensor_shape);
+    slot.last_strides = Some(tensor_strides);
+    slot.last_nbytes = Some(n_bytes);
     let n_floats = n_bytes / 4;
     let mut raw = vec![0u8; n_bytes];
     unsafe {
@@ -136,6 +145,15 @@ unsafe extern "C" fn capture_callback(
 /// llama.cpp usa `split_equal`, que agrupa por sequência, e aí esta ordem
 /// deixa de valer.
 fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
+    if let Some(expected) = slot.expected_floats {
+        let current = slot.buf.as_ref().map_or(0, Vec::len);
+        if current >= expected {
+            // Gemma4 can evaluate the same named boundary more than once in a
+            // decode. Once the requested batch is complete, later callbacks
+            // are duplicate evaluations, not additional token rows.
+            return;
+        }
+    }
     match slot.buf.as_mut() {
         Some(acumulado) => acumulado.extend_from_slice(&floats),
         None => slot.buf = Some(floats),
@@ -431,6 +449,56 @@ pub struct LlmEngine {
     mtp: Option<crate::mtp::MtpDrafter>,
 }
 
+/// Pesos mantidos entre gerações do servidor para que uma reconfiguração de
+/// contexto não faça outra leitura do GGUF nem outra carga de VRAM.
+#[derive(Default)]
+pub(crate) struct ModelCache {
+    entry: Mutex<Option<CachedModel>>,
+}
+
+#[derive(Clone)]
+struct CachedModel {
+    model_path: String,
+    loaded: Arc<LoadedModel>,
+    fit_memory_applied: bool,
+    effective_n_gpu_layers: i32,
+}
+
+impl ModelCache {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+
+    fn get(&self, model_path: &str) -> Option<CachedModel> {
+        let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        entry
+            .as_ref()
+            .filter(|cached| cached.model_path == model_path)
+            .cloned()
+    }
+
+    fn put(
+        &self,
+        model_path: &str,
+        loaded: Arc<LoadedModel>,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+    ) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = Some(CachedModel {
+            model_path: model_path.to_string(),
+            loaded,
+            fit_memory_applied,
+            effective_n_gpu_layers,
+        });
+    }
+
+    pub(crate) fn clear(&self) {
+        let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
+        *entry = None;
+    }
+}
+
 /// A diagnostic boundary around `llama_decode`. `backend_completion_us` is
 /// measured with the public `llama_synchronize` API and therefore includes all
 /// queued backend work and output transfers that must complete. It is not
@@ -556,35 +624,77 @@ impl LoadedModel {
 }
 
 impl LlmEngine {
-    /// Load a GGUF model slice and create a llama context.
-    pub fn load(model_path: &str, cfg: &EngineConfig) -> Result<Self> {
+    /// Cria um contexto e, quando permitido pelo runtime, reaproveita os
+    /// pesos carregados por uma geração anterior.
+    pub(crate) fn load_with_cache(
+        model_path: &str,
+        cfg: &EngineConfig,
+        cache: &ModelCache,
+        reuse_weights: bool,
+    ) -> Result<Self> {
+        if reuse_weights {
+            if let Some(cached) = cache.get(model_path) {
+                tracing::info!(
+                    model = %model_path,
+                    "reutilizando pesos carregados; reconstruindo apenas o contexto"
+                );
+                return Self::from_loaded(
+                    cached.loaded,
+                    cfg,
+                    cached.fit_memory_applied,
+                    cached.effective_n_gpu_layers,
+                );
+            }
+        }
+
         let plan = fit_plan(model_path, cfg)?;
         let loaded = LoadedModel::load(model_path, &plan)?;
-        match Self::with_model(loaded.clone(), &plan.config) {
+        let engine = Self::from_loaded(
+            loaded.clone(),
+            &plan.config,
+            plan.applied,
+            plan.config.n_gpu_layers,
+        )?;
+        cache.put(
+            model_path,
+            loaded,
+            engine.fit_memory_applied,
+            engine.effective_n_gpu_layers,
+        );
+        Ok(engine)
+    }
+
+    fn from_loaded(
+        loaded: Arc<LoadedModel>,
+        cfg: &EngineConfig,
+        fit_memory_applied: bool,
+        effective_n_gpu_layers: i32,
+    ) -> Result<Self> {
+        match Self::with_model(loaded.clone(), cfg) {
             Ok(mut engine) => {
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(cfg);
                 Ok(engine)
             }
             Err(gpu_kv_error) => {
-                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(&plan.config) else {
+                let Some(cpu_kv_cfg) = Self::cpu_kv_fallback(cfg) else {
                     return Err(gpu_kv_error);
                 };
 
                 warn!(
                     "llama context failed with KV cache on GPU: {gpu_kv_error}; retrying with KV cache in host RAM while keeping {} GPU layers",
-                    plan.config.n_gpu_layers
+                    effective_n_gpu_layers
                 );
                 let mut engine = Self::with_model(loaded, &cpu_kv_cfg).with_context(|| {
                     format!(
                         "llama context failed with GPU KV and host-RAM KV fallback; requested {} GPU layers",
-                        plan.config.n_gpu_layers
+                        effective_n_gpu_layers
                     )
                 })?;
-                engine.fit_memory_applied = plan.applied;
-                engine.effective_n_gpu_layers = plan.config.n_gpu_layers;
-                engine.effective_n_ubatch = effective_n_ubatch(&plan.config);
+                engine.fit_memory_applied = fit_memory_applied;
+                engine.effective_n_gpu_layers = effective_n_gpu_layers;
+                engine.effective_n_ubatch = effective_n_ubatch(&cpu_kv_cfg);
                 Ok(engine)
             }
         }
@@ -656,6 +766,10 @@ impl LlmEngine {
         let capture: Box<Mutex<CaptureSlot>> = Box::new(Mutex::new(CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         }));
         let capture_ok = if cfg.need_embeddings {
@@ -862,6 +976,30 @@ impl LlmEngine {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }
 
+    /// Returns true for the model EOS or for a complete turn terminator named
+    /// by the GGUF chat template. A Gemma4 turn is not necessarily the model
+    /// EOS, so checking only `eos_token()` lets the next turn leak into the
+    /// response.
+    pub fn is_generation_stop(&self, recent: &[i32], next: i32) -> bool {
+        if next == self.eos_token() {
+            return true;
+        }
+        let Some(template) = self.chat_template() else {
+            return false;
+        };
+        if !template.contains("<turn|>") {
+            return false;
+        }
+        let turn_end = self.tokenize("<turn|>", false, true);
+        if turn_end.is_empty() {
+            return false;
+        }
+        let mut candidate = Vec::with_capacity(recent.len() + 1);
+        candidate.extend_from_slice(recent);
+        candidate.push(next);
+        token_sequence_ends_with(&candidate, &turn_end)
+    }
+
     // ── Tokenization ─────────────────────────────────────────────────────────
 
     pub fn tokenize(&self, text: &str, add_special: bool, parse_special: bool) -> Vec<i32> {
@@ -940,7 +1078,16 @@ impl LlmEngine {
 
     /// The `tokenizer.chat_template` from the model's GGUF metadata, or None.
     pub fn chat_template(&self) -> Option<String> {
-        let key = CString::new("tokenizer.chat_template").ok()?;
+        self.model_metadata_string("tokenizer.chat_template")
+    }
+
+    /// A arquitetura declarada no GGUF, sem inferência pelo nome do arquivo.
+    pub fn model_architecture(&self) -> Option<String> {
+        self.model_metadata_string("general.architecture")
+    }
+
+    fn model_metadata_string(&self, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
         let mut buf = vec![0u8; 32768];
         let n = unsafe {
             sys::llama_model_meta_val_str(
@@ -959,20 +1106,45 @@ impl LlmEngine {
 
     /// Apply the model's built-in Jinja2 chat template.
     ///
-    /// Returns the formatted prompt string. On failure falls back to a simple
-    /// Qwen-style `<|im_start|>` wrapper — same as the Python server's last resort.
+    /// Gemma4 receives an explicit renderer because its `enable_thinking`
+    /// variable cannot be passed through the current llama.cpp C API. Other
+    /// templates must succeed in llama.cpp; a failure is returned rather than
+    /// silently changing the model's control tokens.
     pub fn apply_chat_template(
         &self,
         messages: &[(&str, &str)],
         add_generation_prompt: bool,
         no_thinking: bool,
-    ) -> String {
+    ) -> Result<String> {
         let sys_msg = "You are a helpful assistant.";
         let full_messages: Vec<(&str, &str)> = std::iter::once(("system", sys_msg))
             .chain(messages.iter().copied())
             .collect();
 
         let tmpl = self.chat_template();
+        let architecture = self.model_architecture();
+        if architecture
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("gemma4"))
+        {
+            let template = tmpl.as_deref().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Gemma4 exige tokenizer.chat_template no GGUF; renderer não inventado"
+                )
+            })?;
+            let bos = unsafe { sys::llama_vocab_bos(self.loaded.vocab) };
+            let bos = String::from_utf8_lossy(&self.token_to_piece_bytes(bos, true)).into_owned();
+            if bos.is_empty() {
+                bail!("Gemma4 exige token BOS no vocabulário GGUF");
+            }
+            return render_gemma4_template(
+                template,
+                &bos,
+                messages,
+                add_generation_prompt,
+                no_thinking,
+            );
+        }
 
         // Build the llama_chat_message array.
         let c_msgs: Vec<(CString, CString)> = full_messages
@@ -1016,8 +1188,10 @@ impl LlmEngine {
             out_buf.truncate(n as usize);
             String::from_utf8_lossy(&out_buf).into_owned()
         } else {
-            warn!("llama_chat_apply_template returned {n}; using Qwen fallback");
-            qwen_fallback(messages, sys_msg, no_thinking)
+            bail!(
+                "llama_chat_apply_template falhou (rc={n}) para arquitetura {}; renderer explícito indisponível",
+                architecture.as_deref().unwrap_or("desconhecida")
+            );
         };
 
         if no_thinking {
@@ -1027,7 +1201,7 @@ impl LlmEngine {
                 }
             }
         }
-        text
+        Ok(text)
     }
 
     // ── Batch decode ─────────────────────────────────────────────────────────
@@ -1061,7 +1235,7 @@ impl LlmEngine {
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot();
+        self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
         batch.n_tokens = n;
         let mut row = 0usize;
@@ -1116,7 +1290,7 @@ impl LlmEngine {
         let n = i32::try_from(layout.total_tokens())
             .map_err(|_| anyhow::anyhow!("batch excede o limite de tokens do llama.cpp"))?;
         let enqueue_started = Instant::now();
-        self.reset_capture_slot();
+        self.reset_capture_slot(layout.total_tokens());
         let mut batch = unsafe { sys::llama_batch_init(n, self.n_embd as i32, 1) };
         batch.n_tokens = n;
         batch.token = ptr::null_mut();
@@ -1152,9 +1326,13 @@ impl LlmEngine {
         self.finish_batch(layout, need_residual, enqueue_started)
     }
 
-    fn reset_capture_slot(&self) {
+    fn reset_capture_slot(&self, n_tokens: usize) {
         let mut capture = self.capture.lock().unwrap();
         capture.buf = None;
+        capture.expected_floats = n_tokens.checked_mul(self.n_embd);
+        capture.last_shape = None;
+        capture.last_strides = None;
+        capture.last_nbytes = None;
         capture.copy_us = 0;
     }
 
@@ -1214,7 +1392,7 @@ impl LlmEngine {
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot();
+        self.reset_capture_slot(tokens.len());
         let enqueue_started = Instant::now();
         let n = tokens.len() as i32;
         let mut batch = unsafe { sys::llama_batch_init(n, 0, 1) };
@@ -1340,7 +1518,7 @@ impl LlmEngine {
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
-        self.reset_capture_slot();
+        self.reset_capture_slot(n_tokens);
         let enqueue_started = Instant::now();
         if hidden.len() != n_tokens * self.n_embd {
             bail!(
@@ -1439,11 +1617,15 @@ impl LlmEngine {
     /// Must be called exactly once per decode when `need_embeddings` is true.
     pub fn take_residual(&self, n_tokens: usize) -> Result<Vec<f32>> {
         if self.capture_ok {
-            let buf = self.capture.lock().unwrap().buf.take();
+            let mut capture = self.capture.lock().unwrap();
+            let shape = capture.last_shape;
+            let strides = capture.last_strides;
+            let nbytes = capture.last_nbytes;
+            let buf = capture.buf.take();
             match buf {
                 Some(v) if v.len() == n_tokens * self.n_embd => Ok(v),
                 Some(v) => bail!(
-                    "residual capture: got {} floats, expected {} ({}×{})",
+                    "residual capture: got {} floats, expected {} ({}×{}), tensor shape={shape:?} strides={strides:?} nbytes={nbytes:?}",
                     v.len(),
                     n_tokens * self.n_embd,
                     n_tokens,
@@ -1868,6 +2050,10 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         };
 
@@ -1901,12 +2087,34 @@ mod pool_tests {
         let mut slot = CaptureSlot {
             want: None,
             buf: None,
+            expected_floats: None,
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
             copy_us: 0,
         };
         accumulate_capture(&mut slot, vec![1.0, 2.0]);
         slot.buf = None; // o que `reset_capture_slot` faz antes de cada decode
         accumulate_capture(&mut slot, vec![3.0, 4.0]);
         assert_eq!(slot.buf.expect("captura"), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn capture_ignores_duplicate_named_boundary_after_expected_rows() {
+        let mut slot = CaptureSlot {
+            want: None,
+            buf: None,
+            expected_floats: Some(4),
+            last_shape: None,
+            last_strides: None,
+            last_nbytes: None,
+            copy_us: 0,
+        };
+
+        accumulate_capture(&mut slot, vec![1.0, 2.0, 3.0, 4.0]);
+        accumulate_capture(&mut slot, vec![5.0, 6.0, 7.0, 8.0]);
+
+        assert_eq!(slot.buf.as_deref(), Some(&[1.0, 2.0, 3.0, 4.0][..]));
     }
 
     #[test]
@@ -2170,21 +2378,108 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> String {
-    let mut out = format!("<|im_start|>system\n{system}<|im_end|>\n");
-    for (role, content) in messages {
-        out.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
+fn template_marker<'a>(template: &str, marker: &'a str) -> Result<&'a str> {
+    if template.contains(marker) {
+        Ok(marker)
+    } else {
+        bail!("GGUF Gemma4 chat_template não contém o marcador {marker:?}")
     }
-    out.push_str("<|im_start|>assistant\n");
-    if no_thinking {
-        out.push_str("<think>\n\n</think>\n");
+}
+
+/// Render the Gemma4 template shape stored in the GGUF.
+///
+/// llama.cpp's public C helper accepts the Jinja source but has no argument
+/// for `enable_thinking`. This renderer only supports the exact control-flow
+/// markers it finds in the model's own template and refuses a drifted
+/// template instead of substituting a Qwen-like prompt.
+fn render_gemma4_template(
+    template: &str,
+    bos: &str,
+    messages: &[(&str, &str)],
+    add_generation_prompt: bool,
+    no_thinking: bool,
+) -> Result<String> {
+    let turn = template_marker(template, "<|turn>")?;
+    let turn_end = template_marker(template, "<turn|>")?;
+    let think = template_marker(template, "<|think|>")?;
+    let channel = template_marker(template, "<|channel>")?;
+    let channel_end = template_marker(template, "<channel|>")?;
+    let enable_thinking = !no_thinking;
+
+    let mut out = String::from(bos);
+    let mut loop_messages = messages;
+    let has_system_block = enable_thinking
+        || messages
+            .first()
+            .is_some_and(|(role, _)| *role == "system" || *role == "developer");
+    if has_system_block {
+        out.push_str(turn);
+        out.push_str("system\n");
+        if enable_thinking {
+            out.push_str(think);
+            out.push('\n');
+        }
+        if let Some((role, content)) = messages.first() {
+            if *role == "system" || *role == "developer" {
+                out.push_str(content.trim());
+                loop_messages = &messages[1..];
+            }
+        }
+        out.push_str(turn_end);
+        out.push('\n');
     }
-    out
+
+    for (role, content) in loop_messages {
+        let role = if *role == "assistant" { "model" } else { role };
+        out.push_str(turn);
+        out.push_str(role);
+        out.push('\n');
+        out.push_str(content.trim());
+        out.push_str(turn_end);
+        out.push('\n');
+    }
+
+    if add_generation_prompt {
+        out.push_str(turn);
+        out.push_str("model\n");
+        if !enable_thinking {
+            out.push_str(channel);
+            out.push_str("thought\n");
+            out.push_str(channel_end);
+        }
+    }
+    Ok(out)
+}
+
+fn token_sequence_ends_with(tokens: &[i32], suffix: &[i32]) -> bool {
+    !suffix.is_empty() && tokens.len() >= suffix.len() && tokens.ends_with(suffix)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const GEMMA4_TEMPLATE_FIXTURE: &str = r#"
+        {{- bos_token -}}
+        {%- if (enable_thinking is defined and enable_thinking) or messages[0]['role'] in ['system', 'developer'] -%}
+            {{- '<|turn>system\n' -}}
+            {%- if enable_thinking is defined and enable_thinking -%}
+                {{- '<|think|>\n' -}}
+            {%- endif -%}
+            {{- '<turn|>\n' -}}
+        {%- endif -%}
+        {%- for message in messages -%}
+            {{- '<|turn>' + ('model' if message['role'] == 'assistant' else message['role']) + '\n' -}}
+            {{- message['content'] | trim -}}
+            {{- '<turn|>\n' -}}
+        {%- endfor -%}
+        {%- if add_generation_prompt -%}
+            {{- '<|turn>model\n' -}}
+            {%- if not enable_thinking | default(false) -%}
+                {{- '<|channel>thought\n<channel|>' -}}
+            {%- endif -%}
+        {%- endif -%}
+    "#;
 
     #[test]
     fn profile_sync_defaults_on_and_accepts_explicit_off_values() {
@@ -2202,6 +2497,28 @@ mod tests {
             cache_type_to_ggml(KvCacheType::Iq4Nl),
             sys::GGML_TYPE_IQ4_NL
         );
+    }
+
+    #[test]
+    fn model_cache_retem_handle_ate_clear() {
+        let cache = ModelCache::new();
+        let loaded = Arc::new(LoadedModel {
+            model: std::ptr::null_mut(),
+            vocab: std::ptr::null(),
+            n_embd: 1,
+            n_vocab: 1,
+        });
+        cache.put("model.gguf", loaded.clone(), true, 7);
+
+        let first = cache.get("model.gguf").unwrap().loaded;
+        let second = cache.get("model.gguf").unwrap().loaded;
+        assert!(Arc::ptr_eq(&first, &second));
+        assert!(cache.get("other.gguf").is_none());
+
+        drop((first, second));
+        cache.clear();
+        assert!(cache.get("model.gguf").is_none());
+        assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
     /// Characterisation tests: they pin the sampler's *current* choices so the
@@ -2352,7 +2669,7 @@ mod tests {
     /// rejected chunk 0 with "não tem tokens" before the second peer was ever
     /// contacted. Only a real vocab exercises the contract, so the test points
     /// at a GGUF given by the environment and skips when there is none.
-
+    ///
     /// The residual capture has to actually fire, and the tensor has to have one
     /// row per token. This is the regression test for the eval-callback
     /// contract: returning `false` in the compute phase does not mean "not my
@@ -2360,7 +2677,7 @@ mod tests {
     /// graph. With that inverted, the forward pass stopped at the input
     /// embedding, `llama_decode` still returned success, and the peer answered
     /// "residual capture did not fire".
-
+    ///
     /// The middle-peer path: a hidden state comes in, the residual must come
     /// out. This is the one the pipeline actually breaks on and the one the
     /// token test above cannot reach — `decode_hidden` builds a different batch
@@ -2388,7 +2705,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
 
         let n_tokens = 4;
         // Values in the range a real residual carries; zeros would let a graph
@@ -2431,7 +2749,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let toks = engine.tokenize("Explique inferencia distribuida em uma frase.", true, true);
         assert!(!toks.is_empty(), "prompt must tokenize");
         engine
@@ -2487,7 +2806,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let mut engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize(
             "Explique o que e inferencia distribuida em uma frase.",
             true,
@@ -2554,7 +2874,8 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
         let tokens = engine.tokenize("oi", true, true);
         assert!(!tokens.is_empty(), "a two-character prompt must tokenize");
         assert!(
@@ -2591,8 +2912,11 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
         };
-        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
-        let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
+        let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
+            .expect("model loads");
+        let formatted = engine
+            .apply_chat_template(&[("user", "Oi, teste")], true, false)
+            .expect("chat template must render");
         assert!(formatted.contains("Oi, teste"));
         assert!(!formatted.starts_with("Oi, teste"));
         assert!(formatted.to_ascii_lowercase().contains("assistant"));
@@ -2600,6 +2924,62 @@ mod tests {
             engine.tokenize(&formatted, false, true).len()
                 > engine.tokenize("Oi, teste", true, true).len()
         );
+    }
+
+    #[test]
+    fn gemma4_fallback_usa_turnos_e_token_de_thinking_do_modelo() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi, teste")],
+            true,
+            true,
+        )
+        .unwrap();
+
+        assert!(formatted.starts_with("<bos><|turn>user\n"));
+        assert!(formatted.contains("<|turn>user\nOi, teste<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+        assert!(formatted.contains("<|channel>thought\n<channel|>"));
+        assert!(!formatted.contains("<|im_start|>"));
+        assert!(!formatted.contains("<|im_end|>"));
+        assert!(!formatted.contains("<think>"));
+    }
+
+    #[test]
+    fn gemma4_fallback_preserva_o_inicio_de_thinking_quando_habilitado() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi")],
+            true,
+            false,
+        )
+        .unwrap();
+
+        assert!(formatted.contains("<|turn>system\n<|think|>\n<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n"));
+        assert!(!formatted.contains("<|channel>thought\n<channel|>"));
+    }
+
+    #[test]
+    fn gemma4_renderer_honors_add_generation_prompt_from_the_gguf_template() {
+        let formatted = render_gemma4_template(
+            GEMMA4_TEMPLATE_FIXTURE,
+            "<bos>",
+            &[("user", "Oi")],
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(formatted, "<bos><|turn>user\nOi<turn|>\n");
+    }
+
+    #[test]
+    fn generation_stop_matches_a_complete_turn_marker() {
+        assert!(token_sequence_ends_with(&[12, 106], &[106]));
+        assert!(!token_sequence_ends_with(&[12, 105], &[106]));
     }
 }
 

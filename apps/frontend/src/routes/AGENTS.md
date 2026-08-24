@@ -21,8 +21,9 @@ Per-file list:
   snapshot, directional RTT for each adjacent execution pair and each peer's
   inference health. `ExecutionEnvironment` keeps requested configuration
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
-  from the explicit per-peer health field. Missing snapshots stay visible as
-  missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  from the explicit per-peer health field; health shows the selected path,
+  while the request trace shows the executed engine and mixed/mismatch flags.
+  Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
@@ -110,6 +111,12 @@ Per-file list:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
+  For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,
+  the Globais inspector shows the inference engine selector and sends
+  `RuntimeParams.inference_mode` in whole-model, sliced and TP requests. Dense
+  models hide it. A MoE Tensor Parallelism plan keeps the selector visible but
+  is blocked with the backend's explicit unsupported reason, so the UI cannot
+  imply that the request will use another engine silently.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
@@ -238,12 +245,12 @@ Key logic carriers:
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
 - `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
-  closed-by-default telemetry table: per-hop prefill/decode phases, gateway vs
-  backend vs residual vs transport timing, bytes per hop; renders the legacy
-  (pre-phase-split) hop shape separately, an optional TP collective table and
-  a pure diagnosis card. The AI action sends both tables as private request
-  content, while the initial model is shown as a non-turn mark before chat
-  messages.
+  closed-by-default telemetry table: per-hop prefill/decode phases, selected
+  path versus backend-reported executed engine, mixed/mismatch evidence,
+  gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
+  optional TP collective table and a pure diagnosis card. The AI action sends
+  both tables as private request content, while the initial model is shown as
+  a non-turn mark before chat messages.
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.

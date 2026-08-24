@@ -434,6 +434,13 @@ impressão digital é só modelo + conjunto de faixas.
   de execução separa a especulação por lookup do MTP; ao marcar MTP, a
   probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
   pelo operador e o valor alterado segue no deploy. A seção
+  **Motor de inferência** aparece somente quando a metadata real do GGUF
+  informa mais de um expert. Ela persiste `inference_mode` como `auto`,
+  `dense` ou `moe` e envia a escolha nos modos modelo inteiro, pipeline
+  fatiado e Tensor Parallelism. Em modelo denso a seção fica oculta. Se a
+  combinação escolhida não for suportada, o seletor continua visível com a
+  razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
+  sobre o motor executado.
   **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
   (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
   o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque

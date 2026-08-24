@@ -76,6 +76,7 @@ import type {
   DeployStrategy,
   CacheTypesResponse,
   KvCacheType,
+  InferenceMode,
   RuntimeParams,
   TpLaunch,
 } from "../lib/types";
@@ -748,6 +749,8 @@ export function DeployModel() {
 
   /** The settings in force: the operator's edit, or the node's own defaults. */
   const eff: RuntimeParams = params ?? p?.params ?? ({} as RuntimeParams);
+  /** The server's GGUF metadata is the only source of truth for MoE. */
+  const isMoePlan = p?.is_moe === true;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
 
@@ -999,7 +1002,7 @@ export function DeployModel() {
   }
 
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
-  const canDeploy = validated && !p?.blocked && rows.length > 0;
+  const canDeploy = validated && !p?.blocked && p?.inference_mode_supported !== false && rows.length > 0;
   const machineOptions = liveMachines.length > 0 ? liveMachines : (cluster.data?.peers ?? []).map((peer) => ({
     node_id: peer.node_id,
     label: peer.hostname || peer.node_id,
@@ -1021,8 +1024,10 @@ export function DeployModel() {
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
-        : p.blocked
-          ? t("deploy.whyNotBlocked")
+          : p.blocked
+            ? t("deploy.whyNotBlocked")
+          : p.inference_mode_supported === false
+            ? t("deploy.whyNotBlocked")
           : !validated
             ? t("deploy.whyNotMismatch")
             : rows.length === 0
@@ -1260,6 +1265,31 @@ export function DeployModel() {
                 <Switch checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
               </div>
             </section>
+
+            {isMoePlan && (
+              <section className="border-b border-amber/25 bg-amber/[0.04] px-2 py-3">
+                <p className="text-[0.65rem] font-semibold uppercase tracking-[0.12em] text-amber">Motor de inferência</p>
+                <label className="mt-2 grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-2 text-[0.65rem]">
+                  <span className="truncate text-muted">Escolha para os três modos</span>
+                  <Select
+                    aria-label="Motor de inferência"
+                    value={eff.inference_mode ?? "auto"}
+                    onChange={(event) => setParams({ ...eff, inference_mode: event.target.value as InferenceMode })}
+                    compact
+                  >
+                    <option value="auto">Automático</option>
+                    <option value="dense">llama.cpp</option>
+                    <option value="moe">MoE</option>
+                  </Select>
+                </label>
+                <p className="mt-1.5 text-[0.6rem] leading-relaxed text-faint">A decisão usa metadata real do GGUF e é enviada ao modelo inteiro, às fatias e ao Tensor Parallelism.</p>
+                {p?.inference_mode_supported === false && (
+                  <p role="alert" className="mt-2 rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-[0.6rem] leading-relaxed text-amber">
+                    {p.inference_mode_reason ?? "Este caminho não pode honrar o motor escolhido."}
+                  </p>
+                )}
+              </section>
+            )}
 
             <section className="border-b border-aqua/20 bg-aqua/[0.035] px-2 py-3">
               <div className="flex items-start justify-between gap-2">

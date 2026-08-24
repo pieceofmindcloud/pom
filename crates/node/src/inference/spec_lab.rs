@@ -28,7 +28,8 @@
 //! que foi o que o captain viu em 2026-08-15 no Qwen3.8-27B. Essa metade
 //! continua valendo e é o que os testes abaixo ainda provam.
 //!
-//! Aqui o caminho de orquestração é o de produção inteiro — `generate_stream`,
+//! Aqui o caminho de orquestração é o de produção inteiro —
+//! `generate_stream_with_stops`,
 //! `prefill::run`, `prefill::step_speculative`, `relay::send_frame`,
 //! `infer_server::forward_direct`, `direct::deliver_result` — e os hops falsos
 //! decidem com as funções de produção em pessoa (`should_draft`, `find_draft`,
@@ -236,6 +237,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 "session_id": inc.meta["session_id"].clone(),
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
+                "reuse_prefix": inc.meta["reuse_prefix"].clone(),
                 "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
                 "prompt_progress": crate::infer_server::prompt_progress_for_forward(&inc.meta, &local),
                 "hop_timings": hop_timings,
@@ -264,6 +266,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         "session_id": inc.meta["session_id"].clone(),
         "chunk_index": chunk_index,
         "chunk_size": chunk_size,
+        "reuse_prefix": inc.meta["reuse_prefix"].clone(),
         "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
     });
     match bubble(&inc.next_hops, "/v1/prefill", base, (&residual, shape)).await {
@@ -433,7 +436,7 @@ async fn spawn_hop(hop: Hop) -> String {
 
 // ── O cenário, montado no caminho do usuário final ────────────────────────────
 
-/// O que o cliente vê no fim de um `generate_stream`.
+/// O que o cliente vê no fim de um `generate_stream_with_stops`.
 struct Visto {
     texto: String,
     tokens: u32,
@@ -525,12 +528,15 @@ async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
     let state = crate::gateway::testkit::with_self_reachable_gateway(state).await;
 
     let (tx, mut rx) = tokio::sync::mpsc::channel(64);
-    let bg = tokio::spawn(crate::gateway::generate_stream(
-        state,
-        "lab".into(),
-        "um prompt qualquer para a bancada".into(),
-        true,
-        max_tokens,
+    let bg = tokio::spawn(crate::gateway::generate_stream_with_stops(
+        crate::gateway::GenerationInput {
+            state,
+            model: "lab".into(),
+            prompt: "um prompt qualquer para a bancada".into(),
+            chat_template: true,
+            max_tokens,
+            stops: Vec::new(),
+        },
         tx,
     ));
 

@@ -1,0 +1,483 @@
+//! Cache LRU global de experts.
+//!
+//! Uma instância vive no servidor de inferência e é compartilhada por todas
+//! as sessões. A chave inclui modelo, camada, expert e formato, portanto uma
+//! entrada de uma requisição pode ser reutilizada por outra sem misturar
+//! pesos. Leases mantêm entradas ativas protegidas contra eviction.
+
+use super::admission::MemoryAccount;
+use std::collections::HashMap;
+use std::fmt;
+use std::io;
+use std::sync::{Arc, Mutex};
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ExpertKey {
+    pub model: String,
+    pub layer: u32,
+    pub expert: u32,
+    pub format: String,
+}
+
+impl ExpertKey {
+    pub fn new(
+        model: impl Into<String>,
+        layer: u32,
+        expert: u32,
+        format: impl Into<String>,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            layer,
+            expert,
+            format: format.into(),
+        }
+    }
+}
+
+pub trait FreeMemoryProbe: Send + Sync {
+    fn free_bytes(&self) -> io::Result<u64>;
+}
+
+/// Mede a memória livre que uma nova alocação consegue usar.
+///
+/// Em uma máquina unificada isto é RAM livre, que é também o pool usado por
+/// Metal. Em GPU discreta a integração deverá fornecer uma sonda do backend
+/// que conhece VRAM; a política aceita qualquer sonda pela trait acima.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct SystemFreeMemory;
+
+impl FreeMemoryProbe for SystemFreeMemory {
+    fn free_bytes(&self) -> io::Result<u64> {
+        system_free_bytes()
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn system_free_bytes() -> io::Result<u64> {
+    let text = std::fs::read_to_string("/proc/meminfo")?;
+    let kib = text
+        .lines()
+        .find(|line| line.starts_with("MemAvailable:"))
+        .and_then(|line| line.split_whitespace().nth(1))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "MemAvailable ausente"))?
+        .parse::<u64>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    kib.checked_mul(1024)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "MemAvailable excede u64"))
+}
+
+#[cfg(target_os = "macos")]
+fn system_free_bytes() -> io::Result<u64> {
+    let page_size = command_number("sysctl", &["-n", "hw.pagesize"])?;
+    let output = std::process::Command::new("vm_stat").output()?;
+    if !output.status.success() {
+        return Err(io::Error::other("vm_stat falhou"));
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let available_pages = [
+        "Pages free",
+        "Pages inactive",
+        "Pages speculative",
+        "Pages purgeable",
+    ]
+    .iter()
+    .filter_map(|name| page_value(&text, name))
+    .sum::<u64>();
+    available_pages
+        .checked_mul(page_size)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "páginas livres excedem u64"))
+}
+
+#[cfg(target_os = "macos")]
+fn command_number(program: &str, args: &[&str]) -> io::Result<u64> {
+    let output = std::process::Command::new(program).args(args).output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!("{program} falhou")));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse::<u64>()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+#[cfg(target_os = "macos")]
+fn page_value(text: &str, name: &str) -> Option<u64> {
+    text.lines()
+        .find(|line| line.starts_with(name))
+        .and_then(|line| line.split_whitespace().last())
+        .map(|value| value.trim_end_matches('.'))
+        .and_then(|value| value.parse::<u64>().ok())
+}
+
+#[cfg(windows)]
+fn system_free_bytes() -> io::Result<u64> {
+    #[repr(C)]
+    struct MemoryStatusEx {
+        dw_length: u32,
+        dw_memory_load: u32,
+        ull_total_phys: u64,
+        ull_avail_phys: u64,
+        ull_total_page_file: u64,
+        ull_avail_page_file: u64,
+        ull_total_virtual: u64,
+        ull_avail_virtual: u64,
+        ull_avail_extended_virtual: u64,
+    }
+    extern "system" {
+        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
+    }
+    let mut status = MemoryStatusEx {
+        dw_length: std::mem::size_of::<MemoryStatusEx>() as u32,
+        dw_memory_load: 0,
+        ull_total_phys: 0,
+        ull_avail_phys: 0,
+        ull_total_page_file: 0,
+        ull_avail_page_file: 0,
+        ull_total_virtual: 0,
+        ull_avail_virtual: 0,
+        ull_avail_extended_virtual: 0,
+    };
+    // SAFETY: the Windows API fills the correctly sized repr(C) structure.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(status.ull_avail_phys)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
+fn system_free_bytes() -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "sonda de memória livre não implementada para este alvo",
+    ))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CacheError {
+    EmptyExpert,
+    MemoryProbe(String),
+    NoBudget { bytes: usize, limit: u64 },
+    BusyAndNoEviction { bytes: usize, limit: u64 },
+}
+
+impl fmt::Display for CacheError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyExpert => write!(formatter, "expert vazio não pode entrar no cache"),
+            Self::MemoryProbe(error) => write!(formatter, "não foi possível medir memória livre: {error}"),
+            Self::NoBudget { bytes, limit } => write!(
+                formatter,
+                "expert de {bytes} bytes excede o orçamento medido de {limit} bytes"
+            ),
+            Self::BusyAndNoEviction { bytes, limit } => write!(
+                formatter,
+                "não há entrada ociosa para admitir expert de {bytes} bytes no limite de {limit} bytes"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CacheError {}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct ExpertCacheStats {
+    hits: u64,
+    misses: u64,
+    admissions: u64,
+    evictions: u64,
+    rejections: u64,
+    resident_bytes: usize,
+    entries: usize,
+}
+
+struct Entry {
+    payload: Arc<[u8]>,
+    active: usize,
+    last_used: u64,
+}
+
+struct State {
+    entries: HashMap<ExpertKey, Entry>,
+    clock: u64,
+    stats: ExpertCacheStats,
+}
+
+pub struct ExpertCache {
+    account: MemoryAccount,
+    probe: Arc<dyn FreeMemoryProbe>,
+    state: Mutex<State>,
+}
+
+impl ExpertCache {
+    pub fn new(account: MemoryAccount, probe: Arc<dyn FreeMemoryProbe>) -> Arc<Self> {
+        Arc::new(Self {
+            account,
+            probe,
+            state: Mutex::new(State {
+                entries: HashMap::new(),
+                clock: 0,
+                stats: ExpertCacheStats::default(),
+            }),
+        })
+    }
+
+    /// Cria o cache com baseline e memória atual medidos no próprio processo.
+    /// `weights_bytes`, `fixed_bytes` e `reserve_bytes` continuam explícitos
+    /// para que o orçamento não confunda memória livre com memória disponível.
+    pub fn measured_system(
+        weights_bytes: u64,
+        fixed_bytes: u64,
+        reserve_bytes: u64,
+    ) -> Result<Arc<Self>, CacheError> {
+        let probe: Arc<dyn FreeMemoryProbe> = Arc::new(SystemFreeMemory);
+        let baseline = probe
+            .free_bytes()
+            .map_err(|error| CacheError::MemoryProbe(error.to_string()))?;
+        Ok(Self::new(
+            MemoryAccount {
+                baseline_free_bytes: baseline,
+                weights_bytes,
+                fixed_bytes,
+                reserve_bytes,
+            },
+            probe,
+        ))
+    }
+
+    pub fn lookup(self: &Arc<Self>, key: &ExpertKey) -> Option<ExpertLease> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.saturating_add(1);
+        let now = state.clock;
+        let payload = {
+            let entry = state.entries.get_mut(key)?;
+            entry.active = entry.active.saturating_add(1);
+            entry.last_used = now;
+            Arc::clone(&entry.payload)
+        };
+        state.stats.hits = state.stats.hits.saturating_add(1);
+        Some(ExpertLease {
+            cache: Arc::clone(self),
+            key: key.clone(),
+            payload,
+        })
+    }
+
+    pub fn admit(
+        self: &Arc<Self>,
+        key: ExpertKey,
+        payload: Vec<u8>,
+    ) -> Result<ExpertLease, CacheError> {
+        if payload.is_empty() {
+            return Err(CacheError::EmptyExpert);
+        }
+        let bytes = payload.len();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.saturating_add(1);
+        let now = state.clock;
+
+        if state.entries.contains_key(&key) {
+            let payload = {
+                let entry = state
+                    .entries
+                    .get_mut(&key)
+                    .expect("entrada acabou de ser vista");
+                entry.active = entry.active.saturating_add(1);
+                entry.last_used = now;
+                Arc::clone(&entry.payload)
+            };
+            state.stats.hits = state.stats.hits.saturating_add(1);
+            return Ok(ExpertLease {
+                cache: Arc::clone(self),
+                key,
+                payload,
+            });
+        }
+
+        state.stats.misses = state.stats.misses.saturating_add(1);
+        let current_free = self
+            .probe
+            .free_bytes()
+            .map_err(|error| CacheError::MemoryProbe(error.to_string()))?;
+
+        let limit = self
+            .account
+            .cache_limit_bytes(current_free, state.stats.resident_bytes as u64)
+            .unwrap_or(0);
+        if bytes as u64 > limit {
+            state.stats.rejections = state.stats.rejections.saturating_add(1);
+            return Err(CacheError::NoBudget { bytes, limit });
+        }
+
+        while state.stats.resident_bytes.saturating_add(bytes) as u64 > limit {
+            let victim = state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.active == 0)
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(victim) = victim else {
+                state.stats.rejections = state.stats.rejections.saturating_add(1);
+                return Err(CacheError::BusyAndNoEviction { bytes, limit });
+            };
+            if let Some(entry) = state.entries.remove(&victim) {
+                state.stats.resident_bytes = state
+                    .stats
+                    .resident_bytes
+                    .saturating_sub(entry.payload.len());
+                state.stats.entries = state.stats.entries.saturating_sub(1);
+                state.stats.evictions = state.stats.evictions.saturating_add(1);
+            }
+        }
+
+        let payload: Arc<[u8]> = Arc::from(payload);
+        state.stats.resident_bytes = state.stats.resident_bytes.saturating_add(bytes);
+        state.stats.entries = state.entries.len().saturating_add(1);
+        state.stats.admissions = state.stats.admissions.saturating_add(1);
+        state.entries.insert(
+            key.clone(),
+            Entry {
+                payload: Arc::clone(&payload),
+                active: 1,
+                last_used: now,
+            },
+        );
+        Ok(ExpertLease {
+            cache: Arc::clone(self),
+            key,
+            payload,
+        })
+    }
+
+    fn release(&self, key: &ExpertKey) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = state.entries.get_mut(key) {
+            entry.active = entry.active.saturating_sub(1);
+        }
+    }
+}
+
+pub struct ExpertLease {
+    cache: Arc<ExpertCache>,
+    key: ExpertKey,
+    payload: Arc<[u8]>,
+}
+
+impl ExpertLease {
+    pub fn bytes(&self) -> &[u8] {
+        &self.payload
+    }
+}
+
+impl Drop for ExpertLease {
+    fn drop(&mut self) {
+        self.cache.release(&self.key);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct FixedProbe(AtomicU64);
+
+    impl FixedProbe {
+        fn new(bytes: u64) -> Self {
+            Self(AtomicU64::new(bytes))
+        }
+
+        fn set(&self, bytes: u64) {
+            self.0.store(bytes, Ordering::Relaxed);
+        }
+    }
+
+    impl FreeMemoryProbe for FixedProbe {
+        fn free_bytes(&self) -> io::Result<u64> {
+            Ok(self.0.load(Ordering::Relaxed))
+        }
+    }
+
+    fn cache_with_baseline(probe: &Arc<FixedProbe>, baseline_free_bytes: u64) -> Arc<ExpertCache> {
+        ExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes,
+                weights_bytes: 0,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            Arc::clone(probe) as Arc<dyn FreeMemoryProbe>,
+        )
+    }
+
+    fn cache(probe: &Arc<FixedProbe>) -> Arc<ExpertCache> {
+        cache_with_baseline(probe, 10)
+    }
+
+    fn stats(cache: &ExpertCache) -> ExpertCacheStats {
+        cache
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stats
+    }
+
+    fn key(expert: u32) -> ExpertKey {
+        ExpertKey::new("model", 3, expert, "q4_0")
+    }
+
+    #[test]
+    fn hit_reutiliza_payload_e_marca_lease_ativo() {
+        let probe = Arc::new(FixedProbe::new(10));
+        let cache = cache(&probe);
+        let first = cache.admit(key(1), vec![1, 2, 3]).unwrap();
+        let second = cache.lookup(&key(1)).unwrap();
+        assert_eq!(second.bytes(), &[1, 2, 3]);
+        assert_eq!(stats(&cache).resident_bytes, 3);
+        assert_eq!(stats(&cache).hits, 1);
+        drop(first);
+        drop(second);
+    }
+
+    #[test]
+    fn eviction_e_global_e_preserva_entrada_ativa() {
+        let probe = Arc::new(FixedProbe::new(6));
+        let cache = cache_with_baseline(&probe, 6);
+        let active = cache.admit(key(1), vec![1, 1, 1]).unwrap();
+        let idle = cache.admit(key(2), vec![2, 2, 2]).unwrap();
+        drop(idle);
+        let replacement = cache.admit(key(3), vec![3, 3, 3]).unwrap();
+        assert!(cache.lookup(&key(1)).is_some());
+        assert!(cache.lookup(&key(2)).is_none());
+        assert_eq!(replacement.bytes(), &[3, 3, 3]);
+        assert_eq!(stats(&cache).evictions, 1);
+        drop(active);
+        drop(replacement);
+    }
+
+    #[test]
+    fn nova_medicao_pode_forcar_eviction_antes_de_alocar() {
+        let probe = Arc::new(FixedProbe::new(10));
+        let cache = cache(&probe);
+        let first = cache.admit(key(1), vec![1; 6]).unwrap();
+        drop(first);
+        probe.set(2);
+        let replacement = cache.admit(key(2), vec![2; 3]).unwrap();
+        assert_eq!(replacement.bytes(), &[2, 2, 2]);
+        assert_eq!(stats(&cache).evictions, 1);
+        assert_eq!(stats(&cache).resident_bytes, 3);
+        drop(replacement);
+    }
+
+    #[test]
+    fn sem_entrada_ociosa_a_admissao_nao_expulsa_lease_ativo() {
+        let probe = Arc::new(FixedProbe::new(4));
+        let cache = cache_with_baseline(&probe, 4);
+        let _active = cache.admit(key(1), vec![1; 4]).unwrap();
+        assert!(matches!(
+            cache.admit(key(2), vec![2]),
+            Err(CacheError::BusyAndNoEviction { .. })
+        ));
+        assert!(cache.lookup(&key(1)).is_some());
+    }
+}

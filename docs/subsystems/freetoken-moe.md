@@ -76,6 +76,25 @@ diferencial passou; ela não substitui a suíte nativa. Nenhum ganho de
 desempenho é afirmado; os números ficam para a
 medição posterior pelo captain.
 
+### Fase 3: detecção de MoE e bifurcação reversível
+
+`gguf::read_info` agora lê `<arquitetura>.expert_count` e
+`<arquitetura>.expert_used_count`. A classificação é positiva somente quando
+`expert_count > 1`; nome de arquivo, falha de carga e nomes de arquitetura sem
+essa evidência não selecionam MoE. Em `auto`, um cabeçalho denso ou ausente
+segue explicitamente para `dense/llama.cpp`.
+
+O override `POM_INFERENCE_MODE` aceita `auto`, `dense` ou `moe`. `dense` força o
+caminho existente mesmo para um GGUF MoE. `moe` recusa um modelo sem
+`expert_count > 1`, em vez de desviar silenciosamente. O caminho MoE desta fase
+é `moe/llama.cpp-delegated`: ele ainda usa `LlmEngine`, mas a escolha fica
+registrada no estado e em `/health`, deixando o ponto de substituição para o
+executor próprio da Fase 4. Os testes de classificação cobrem denso, MoE,
+override e metadados ausentes.
+Os testes isolados de GGUF e executor passaram em um harness `rustc` com 15
+casos. A suíte `cargo test -p node` continua sem alcançar a compilação Rust
+porque o build script não encontra `vendor/llama-cpp-sys-2/llama.cpp`.
+
 ## Fase 0: baseline local
 
 ### Método reproduzível

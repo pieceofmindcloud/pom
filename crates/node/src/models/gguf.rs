@@ -64,6 +64,11 @@ pub struct GgufInfo {
     pub attention_value_length: Option<Vec<u32>>,
     /// `general.size_label`, e.g. "35B".
     pub size_label: Option<String>,
+    /// `<arch>.expert_count`, present only when the architecture has routed
+    /// feed-forward experts.
+    pub expert_count: Option<u32>,
+    /// `<arch>.expert_used_count`, the number selected by the router per token.
+    pub expert_used_count: Option<u32>,
     /// `pom.tp_format`/`pom.tp_size`/`pom.tp_rank` de um shard de tensor
     /// parallelism: qual versão da regra de fatiamento escreveu este arquivo, e
     /// que posição do grupo ele é.
@@ -75,6 +80,24 @@ pub struct GgufInfo {
     pub tp_stamp: Option<TpStamp>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelArchitecture {
+    Dense {
+        architecture: Option<String>,
+    },
+    Moe {
+        architecture: Option<String>,
+        expert_count: u32,
+        expert_used_count: Option<u32>,
+    },
+}
+
+impl ModelArchitecture {
+    pub fn is_moe(&self) -> bool {
+        matches!(self, Self::Moe { .. })
+    }
+}
+
 /// Carimbo de origem de um shard de tensor parallelism.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TpStamp {
@@ -84,6 +107,21 @@ pub struct TpStamp {
 }
 
 impl GgufInfo {
+    /// Classify only from explicit GGUF metadata. A missing or zero expert
+    /// count is dense, even when the architecture name looks unfamiliar.
+    pub fn model_architecture(&self) -> ModelArchitecture {
+        match self.expert_count.filter(|count| *count > 1) {
+            Some(expert_count) => ModelArchitecture::Moe {
+                architecture: self.architecture.clone(),
+                expert_count,
+                expert_used_count: self.expert_used_count,
+            },
+            None => ModelArchitecture::Dense {
+                architecture: self.architecture.clone(),
+            },
+        }
+    }
+
     /// Layers of the *whole* model: the shard metadata when present, else the
     /// block count of the file itself.
     pub fn total_layers(&self) -> Option<u32> {
@@ -323,6 +361,10 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".block_count") => info.block_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".embedding_length") => {
                 info.embedding_length = r.value_as_u32(vtype)?
+            }
+            k if k.ends_with(".expert_count") => info.expert_count = r.value_as_u32(vtype)?,
+            k if k.ends_with(".expert_used_count") => {
+                info.expert_used_count = r.value_as_u32(vtype)?
             }
             k if k.ends_with(".attention.head_count_kv") => {
                 info.attention_head_count_kv = r.values_as_u32(vtype)?
@@ -602,6 +644,34 @@ fn block_index(name: &str) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn model_architecture_requires_an_explicit_expert_count() {
+        let dense = GgufInfo {
+            architecture: Some("llama".into()),
+            ..GgufInfo::default()
+        };
+        assert!(matches!(
+            dense.model_architecture(),
+            ModelArchitecture::Dense { .. }
+        ));
+
+        let moe = GgufInfo {
+            architecture: Some("qwen3moe".into()),
+            expert_count: Some(128),
+            expert_used_count: Some(8),
+            ..GgufInfo::default()
+        };
+        assert!(moe.model_architecture().is_moe());
+        assert!(matches!(
+            moe.model_architecture(),
+            ModelArchitecture::Moe {
+                expert_count: 128,
+                expert_used_count: Some(8),
+                ..
+            }
+        ));
+    }
 
     #[test]
     fn parses_block_indices() {

@@ -299,13 +299,26 @@ referência e contém um proxy propositalmente quebrado que precisa disparar a
 bateria. Não há número de desempenho nesta fase: o captain fará a medição
 posterior usando o método da Fase 0.
 
+### 3.2 Seleção do executor
+
+Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um
+`expert_count > 1` classifica o modelo como MoE. Em `auto`, qualquer modelo
+denso ou com metadados ausentes permanece em `dense/llama.cpp`. O ambiente
+derivado da marca `POM_INFERENCE_MODE` pode forçar `dense` ou exigir `moe`; o
+último recusa um GGUF denso com erro explícito.
+
+O caminho MoE atual aparece como `moe/llama.cpp-delegated` no `/health`, mas
+continua delegando ao `LlmEngine`. Isso cria a bifurcação observável e
+reversível sem alterar o comportamento do caminho denso. A substituição pelo
+motor de experts começa na Fase 4.
+
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser
 prefixo de uma parada, remove a própria parada da saída e encerra a geração com
 `finish_reason=stop` e a sequência correspondente. Sem stop strings o caminho
 continua emitindo os eventos como antes.
 
-### 3.2 Scheduler local e batching contínuo
+### 3.3 Scheduler local e batching contínuo
 
 Cada processo de inferência possui um scheduler próprio para o contexto
 `llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,

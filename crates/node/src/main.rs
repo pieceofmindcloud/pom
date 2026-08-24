@@ -29,6 +29,8 @@ mod direct_lab;
 mod discovery;
 #[path = "utils/display.rs"]
 mod display;
+#[path = "inference/executor.rs"]
+mod executor;
 #[path = "backend/gateway.rs"]
 mod gateway;
 #[path = "models/gguf.rs"]

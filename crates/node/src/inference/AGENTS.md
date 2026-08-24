@@ -32,7 +32,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
-  `/health`; estado das sessões e o branch de relay. Os handlers decodificam o
+  `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
+  `moe/llama.cpp-delegated` e o branch de relay. Os handlers decodificam o
   frame e entregam comandos a uma fila local limitada; o worker seleciona uma
   entrada por sessão e pode chamar o decode multi-sequência. Cada `Session`
   mantém seu próprio
@@ -73,6 +74,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   referência acompanha lookup, insert, busy, release e eviction; o proxy
   propositalmente quebra `cached_tokens` e a bateria precisa registrar a
   divergência.
+- `executor.rs` - classifica a arquitetura GGUF e resolve o modo
+  `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. Nesta fase ambos os
+  caminhos delegam ao `LlmEngine`; o nome do caminho é exposto no `/health`.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.

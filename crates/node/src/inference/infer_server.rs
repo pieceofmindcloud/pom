@@ -1062,6 +1062,7 @@ struct InferState {
     start_layer: u32,
     end_layer: u32,
     original_block_count: Option<u32>,
+    inference_path: crate::executor::InferencePath,
     /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
     mtp_min_probability: f32,
     /// Duração do último handshake TLS aceito por este servidor, em ms.
@@ -1117,7 +1118,11 @@ async fn require_inference_auth(
 }
 
 impl InferState {
-    fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
+    fn new(
+        engine: LlmEngine,
+        cfg: &NodeConfig,
+        inference_path: crate::executor::InferencePath,
+    ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         Self {
@@ -1140,6 +1145,7 @@ impl InferState {
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
+            inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
             tp: cfg.tp.clone(),
         }
@@ -1262,6 +1268,21 @@ pub async fn run(
     let listener = bind_dual_stack(port).await?;
     info!("porta {port} ligada; carregando o modelo");
 
+    let model_info = match crate::gguf::read_info(std::path::Path::new(&cfg.model_path)) {
+        Ok(info) => Some(info),
+        Err(error) => {
+            warn!("não foi possível ler metadados GGUF antes da carga: {error}");
+            None
+        }
+    };
+    let inference_mode = crate::executor::InferenceMode::from_env()?;
+    let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
+    info!(
+        "caminho de inferência selecionado: {} (modo {:?})",
+        inference_path.as_str(),
+        inference_mode
+    );
+
     let need_embeddings = cfg.needs_residual_export();
     // Maior largura de lote especulativo que este nó pode receber, dos dois
     // mecanismos (lookup e MTP) - é o que `cparams.n_rs_seq` precisa cobrir
@@ -1294,12 +1315,11 @@ pub async fn run(
     // configuração. Ver `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
-    let mut state_inner = InferState::new(engine, &cfg);
+    let mut state_inner = InferState::new(engine, &cfg, inference_path);
     state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
-    state_inner.original_block_count =
-        crate::gguf::read_info(std::path::Path::new(&cfg.model_path))
-            .ok()
-            .and_then(|info| info.original_block_count);
+    state_inner.original_block_count = model_info
+        .as_ref()
+        .and_then(|info| info.original_block_count);
 
     // Fora do mutex do estado: o decode segura aquele lock e é de dentro dele
     // que o reduce espera a soma. Ver `handle_tp_reduce`.
@@ -1692,6 +1712,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "start_layer": s.start_layer,
         "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
+        "inference_path": s.inference_path.as_str(),
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,

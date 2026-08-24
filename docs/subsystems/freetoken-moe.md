@@ -145,20 +145,31 @@ não entra no commit e não substitui a prova ponta a ponta com um modelo real.
 
 `infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é
 MoE, `MoeRuntime` é aberto somente para esse caminho e o router local escolhe
-os experts do decoder selecionado. No prefill e no decode, um hidden state recebido é transformado
-antes do decode local; quando o pedido entrou como tokens, o residual capturado
-é transformado antes de seguir para o próximo hop. Os caminhos unitário e batch
-passam pela mesma ponte. O wire permanece o estado oculto f16 já existente,
-sem peso na rede. O limite atual é explícito: atenção, operações restantes e
-sampling final continuam no `LlmEngine`.
+os experts do decoder selecionado. O ownership do bloco de fronteira é
+explícito: um hidden recebido ou um residual destinado ao próximo hop só é
+entregue ao runtime MoE quando o caminho selecionado é MoE; o resultado do
+forward é registrado depois de retornar com sucesso. Em um hop final que
+recebe tokens, o decode real e os logits continuam no `LlmEngine`, que é
+registrado como tal, em vez de o objeto carregado ser contado como execução.
+Os caminhos unitário e batch passam pela mesma ponte. O wire permanece o
+estado oculto f16 já existente, sem peso na rede. Atenção, operações restantes
+e sampling final continuam no `LlmEngine`.
 
-Cada resposta de inferência inclui `node_timings.engine`, produzido pelo estado
-do backend, e `/health` publica o mesmo `execution_engine`. O gateway agrega o
-campo por fase de cada hop, sem deduzi-lo do nome do modelo, da arquitetura ou
-de tempos. A interface mostra `llama.cpp`, `motor MoE` ou `desconhecido`; um
-peer antigo, uma entrada sem campo ou chamadas divergentes no mesmo hop ficam
-em `desconhecido`. Uma delegação explícita `moe/llama.cpp-delegated` é
-classificada como `llama.cpp`.
+Cada resposta de inferência publica `selected_path`, `executed_engine`, a lista
+`executed_engines` e as flags `engine_mismatch`/`mixed_execution`. O primeiro
+vem da seleção GGUF; os demais só são gravados depois que o decode llama.cpp
+ou o forward MoE retornam. `/health` publica somente `selected_path`, porque
+não é uma medição de uma requisição. O gateway agrega os campos por fase de
+cada hop, sem deduzi-los do nome do modelo, da arquitetura ou de tempos. A
+interface mostra o caminho selecionado e o motor observado; mistura e
+divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótulo
+único.
+
+O renderer de emergência não usa mais marcadores Qwen. Gemma4 é reconhecido
+por `general.architecture` e usa seus tokens `<bos>`, `<|turn>`, `<|think|>` e
+`<|channel>thought`; `no_thinking` é aplicado ao token de controle correto.
+Arquiteturas sem renderer explícito cujo template falhe são recusadas com o
+retorno do `llama_chat_apply_template` e o nome da arquitetura.
 
 O Gemma4 real inspecionado na ksia usa os nomes separados, com dimensões
 `[2816, 704, 128]` para gate/up, `dtype=40` (NVFP4), e 100 camadas. A costura

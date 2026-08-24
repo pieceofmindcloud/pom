@@ -201,12 +201,19 @@ pub struct PhaseTrace {
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
     pub node_p50_ms: f64,
     pub node_p95_ms: f64,
-    /// Motor que o backend informou ter executado esta fase.
-    pub engine: crate::executor::ExecutionEngine,
+    /// Caminho que o backend selecionou a partir do GGUF.
+    pub selected_path: Option<String>,
+    /// Motor único quando a fase foi homogênea; `unknown` para mistura ou
+    /// ausência de amostra.
+    pub executed_engine: crate::executor::ExecutionEngine,
+    /// Todos os motores observados, preservando a evidência de uma fase mista.
+    pub executed_engines: Vec<crate::executor::ExecutionEngine>,
+    pub engine_mismatch: bool,
+    pub mixed_execution: bool,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
     #[serde(skip)]
-    engine_seen: bool,
+    selected_path_seen: bool,
 }
 
 impl PhaseTrace {
@@ -225,11 +232,30 @@ impl PhaseTrace {
     ) {
         let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
-        let engine = node
-            .get("engine")
+        let selected_path = node
+            .get("selected_path")
             .and_then(|value| value.as_str())
-            .map(crate::executor::ExecutionEngine::from_telemetry)
-            .unwrap_or_default();
+            .map(str::to_owned);
+        let engines = node
+            .get("executed_engines")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect::<Vec<_>>()
+            })
+            .filter(|engines| !engines.is_empty())
+            .unwrap_or_else(|| {
+                node.get("executed_engine")
+                    .and_then(|value| value.as_str())
+                    .map(crate::executor::ExecutionEngine::from_telemetry)
+                    .into_iter()
+                    .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
+                    .collect()
+            });
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -267,19 +293,56 @@ impl PhaseTrace {
         self.node_encode_ms += node_ms("encode_ms");
 
         self.node_samples_ms.push(node_decode_ms);
-        self.observe_engine(engine);
+        self.observe_path(selected_path);
+        for engine in engines {
+            self.observe_engine(engine);
+        }
         self.refresh_percentiles();
     }
 
     fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
-        if self.engine_seen {
-            if self.engine != next {
-                self.engine = crate::executor::ExecutionEngine::Unknown;
+        if next != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&next)
+        {
+            self.executed_engines.push(next);
+        }
+        self.executed_engine = match self.executed_engines.as_slice() {
+            [engine] => *engine,
+            _ => crate::executor::ExecutionEngine::Unknown,
+        };
+        self.mixed_execution = self.executed_engines.len() > 1;
+        self.refresh_engine_mismatch();
+    }
+
+    fn observe_path(&mut self, next: Option<String>) {
+        let Some(next) = next else {
+            return;
+        };
+        if self.selected_path_seen {
+            if self.selected_path.as_deref() != Some(next.as_str()) {
+                self.selected_path = None;
             }
         } else {
-            self.engine = next;
-            self.engine_seen = true;
+            self.selected_path = Some(next);
+            self.selected_path_seen = true;
         }
+        self.refresh_engine_mismatch();
+    }
+
+    fn refresh_engine_mismatch(&mut self) {
+        let Some(path) = self.selected_path.as_deref() else {
+            self.engine_mismatch = false;
+            return;
+        };
+        let expected = if path.starts_with("moe/") {
+            crate::executor::ExecutionEngine::Moe
+        } else if path.starts_with("dense/") {
+            crate::executor::ExecutionEngine::LlamaCpp
+        } else {
+            crate::executor::ExecutionEngine::Unknown
+        };
+        self.engine_mismatch = expected != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&expected);
     }
 
     fn merge(&mut self, next: &PhaseTrace) {
@@ -317,8 +380,11 @@ impl PhaseTrace {
         self.node_encode_ms += next.node_encode_ms;
         self.node_samples_ms
             .extend_from_slice(&next.node_samples_ms);
-        if next.engine_seen {
-            self.observe_engine(next.engine);
+        if next.selected_path_seen {
+            self.observe_path(next.selected_path.clone());
+        }
+        for engine in &next.executed_engines {
+            self.observe_engine(*engine);
         }
         self.refresh_percentiles();
     }
@@ -2022,11 +2088,18 @@ mod tests {
             0,
             0,
             TlsHop::default(),
-            &json!({"engine": "moe"}),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "moe",
+            }),
         );
         assert_eq!(
-            moe.hops[0].decode.engine,
+            moe.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::Moe
+        );
+        assert_eq!(
+            moe.hops[0].decode.selected_path.as_deref(),
+            Some("moe/q4_0")
         );
 
         let mut delegated = RequestTrace::new("qwen", &[("delegated", 0, 15)]);
@@ -2042,12 +2115,16 @@ mod tests {
             0,
             0,
             TlsHop::default(),
-            &json!({"engine": "moe/llama.cpp-delegated"}),
+            &json!({
+                "selected_path": "moe/q4_0",
+                "executed_engine": "llama.cpp",
+            }),
         );
         assert_eq!(
-            delegated.hops[0].decode.engine,
+            delegated.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::LlamaCpp
         );
+        assert!(delegated.hops[0].decode.engine_mismatch);
 
         let mut old = RequestTrace::new("qwen", &[("old", 0, 15)]);
         old.record_hop(
@@ -2065,7 +2142,7 @@ mod tests {
             &json!({}),
         );
         assert_eq!(
-            old.hops[0].decode.engine,
+            old.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::Unknown
         );
     }
@@ -2073,7 +2150,7 @@ mod tests {
     #[test]
     fn hop_trace_fica_desconhecido_se_as_chamadas_do_mesmo_hop_divergirem() {
         let mut trace = RequestTrace::new("qwen", &[("mixed", 0, 15)]);
-        for engine in ["llama.cpp", "moe"] {
+        for (path, engine) in [("moe/q4_0", "llama.cpp"), ("moe/q4_0", "moe")] {
             trace.record_hop(
                 0,
                 Phase::Prefill,
@@ -2086,13 +2163,18 @@ mod tests {
                 0,
                 0,
                 TlsHop::default(),
-                &json!({"engine": engine}),
+                &json!({
+                    "selected_path": path,
+                    "executed_engine": engine,
+                }),
             );
         }
         assert_eq!(
-            trace.hops[0].prefill.engine,
+            trace.hops[0].prefill.executed_engine,
             crate::executor::ExecutionEngine::Unknown
         );
+        assert!(trace.hops[0].prefill.mixed_execution);
+        assert!(!trace.hops[0].prefill.engine_mismatch);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array

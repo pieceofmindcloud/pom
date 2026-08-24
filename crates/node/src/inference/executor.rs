@@ -36,8 +36,9 @@ impl InferenceMode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InferencePath {
+    #[default]
     DenseLlamaCpp,
     MoeQ4_0,
 }

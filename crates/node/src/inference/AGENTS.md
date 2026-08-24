@@ -34,10 +34,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
   `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
   `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
-  decode local ou transforma o residual que vai para o próximo hop; atenção,
-  demais operações e amostragem final continuam no `LlmEngine`. Os handlers
-  também publicam `node_timings.engine` e `/health.execution_engine`, sempre a
-  partir do estado do backend. Os handlers decodificam o frame e entregam
+  decode local ou transforma o residual que vai para o próximo hop somente
+  quando o caminho selecionado é MoE; o forward é marcado depois de retornar.
+  Atenção, demais operações e amostragem final continuam no `LlmEngine`. Os
+  handlers publicam `selected_path`, `executed_engine`, `executed_engines` e as
+  flags `engine_mismatch`/`mixed_execution` em `node_timings`; `/health`
+  publica apenas o caminho selecionado, pois não representa uma requisição.
+  Os handlers decodificam o frame e entregam
   comandos a uma fila local limitada; o worker seleciona uma entrada por
   sessão e pode chamar o decode multi-sequência. Cada `Session`
   mantém seu próprio
@@ -250,11 +253,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
 - `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
-  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`),
-  `execution_engine` e também o snapshot do scheduler (`queue_depth`, limites,
-  tamanho e tokens do último lote). O mesmo motor sai por `node_timings.engine`
-  em cada hop do prefill/decode e é agregado no `RequestTrace` sem inferência
-  da tela.
+  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`), o caminho
+  `selected_path` e também o snapshot do scheduler (`queue_depth`, limites,
+  tamanho e tokens do último lote). O motor observado sai por
+  `node_timings.executed_engine` e `executed_engines` em cada hop do
+  prefill/decode e é agregado no `RequestTrace` sem inferência da tela.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
   legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no

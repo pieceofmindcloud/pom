@@ -1032,7 +1032,16 @@ impl LlmEngine {
 
     /// The `tokenizer.chat_template` from the model's GGUF metadata, or None.
     pub fn chat_template(&self) -> Option<String> {
-        let key = CString::new("tokenizer.chat_template").ok()?;
+        self.model_metadata_string("tokenizer.chat_template")
+    }
+
+    /// A arquitetura declarada no GGUF, sem inferência pelo nome do arquivo.
+    pub fn model_architecture(&self) -> Option<String> {
+        self.model_metadata_string("general.architecture")
+    }
+
+    fn model_metadata_string(&self, key: &str) -> Option<String> {
+        let key = CString::new(key).ok()?;
         let mut buf = vec![0u8; 32768];
         let n = unsafe {
             sys::llama_model_meta_val_str(
@@ -1051,20 +1060,29 @@ impl LlmEngine {
 
     /// Apply the model's built-in Jinja2 chat template.
     ///
-    /// Returns the formatted prompt string. On failure falls back to a simple
-    /// Qwen-style `<|im_start|>` wrapper — same as the Python server's last resort.
+    /// Gemma4 receives an explicit renderer because its `enable_thinking`
+    /// variable cannot be passed through the current llama.cpp C API. Other
+    /// templates must succeed in llama.cpp; a failure is returned rather than
+    /// silently changing the model's control tokens.
     pub fn apply_chat_template(
         &self,
         messages: &[(&str, &str)],
         add_generation_prompt: bool,
         no_thinking: bool,
-    ) -> String {
+    ) -> Result<String> {
         let sys_msg = "You are a helpful assistant.";
         let full_messages: Vec<(&str, &str)> = std::iter::once(("system", sys_msg))
             .chain(messages.iter().copied())
             .collect();
 
         let tmpl = self.chat_template();
+        let architecture = self.model_architecture();
+        if architecture
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("gemma4"))
+        {
+            return Ok(gemma4_fallback(messages, sys_msg, no_thinking));
+        }
 
         // Build the llama_chat_message array.
         let c_msgs: Vec<(CString, CString)> = full_messages
@@ -1108,8 +1126,10 @@ impl LlmEngine {
             out_buf.truncate(n as usize);
             String::from_utf8_lossy(&out_buf).into_owned()
         } else {
-            warn!("llama_chat_apply_template returned {n}; using Qwen fallback");
-            qwen_fallback(messages, sys_msg, no_thinking)
+            bail!(
+                "llama_chat_apply_template falhou (rc={n}) para arquitetura {}; renderer explícito indisponível",
+                architecture.as_deref().unwrap_or("desconhecida")
+            );
         };
 
         if no_thinking {
@@ -1119,7 +1139,7 @@ impl LlmEngine {
                 }
             }
         }
-        text
+        Ok(text)
     }
 
     // ── Batch decode ─────────────────────────────────────────────────────────
@@ -2262,14 +2282,21 @@ pub fn sample_token(logits: &[f32], recent: &[i32], cfg: &SamplingConfig) -> i32
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn qwen_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> String {
-    let mut out = format!("<|im_start|>system\n{system}<|im_end|>\n");
-    for (role, content) in messages {
-        out.push_str(&format!("<|im_start|>{role}\n{content}<|im_end|>\n"));
+fn gemma4_fallback(messages: &[(&str, &str)], system: &str, no_thinking: bool) -> String {
+    let mut out = String::from("<bos><|turn>system\n");
+    if !no_thinking {
+        out.push_str("<|think|>\n");
     }
-    out.push_str("<|im_start|>assistant\n");
+    out.push_str(system.trim());
+    out.push_str("<turn|>\n");
+    for (role, content) in messages {
+        let role = if *role == "assistant" { "model" } else { role };
+        out.push_str(&format!("<|turn>{role}\n{}<turn|>\n", content.trim()));
+    }
     if no_thinking {
-        out.push_str("<think>\n\n</think>\n");
+        out.push_str("<|turn>model\n<|channel>thought\n<channel|>");
+    } else {
+        out.push_str("<|turn>model\n");
     }
     out
 }
@@ -2711,7 +2738,9 @@ mod tests {
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
-        let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
+        let formatted = engine
+            .apply_chat_template(&[("user", "Oi, teste")], true, false)
+            .expect("chat template must render");
         assert!(formatted.contains("Oi, teste"));
         assert!(!formatted.starts_with("Oi, teste"));
         assert!(formatted.to_ascii_lowercase().contains("assistant"));
@@ -2719,6 +2748,32 @@ mod tests {
             engine.tokenize(&formatted, false, true).len()
                 > engine.tokenize("Oi, teste", true, true).len()
         );
+    }
+
+    #[test]
+    fn gemma4_fallback_usa_turnos_e_token_de_thinking_do_modelo() {
+        let formatted = gemma4_fallback(
+            &[("user", "Oi, teste")],
+            "You are a helpful assistant.",
+            true,
+        );
+
+        assert!(formatted.starts_with("<bos><|turn>system\n"));
+        assert!(formatted.contains("<|turn>user\nOi, teste<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n<|channel>thought\n<channel|>"));
+        assert!(formatted.contains("<|channel>thought\n<channel|>"));
+        assert!(!formatted.contains("<|im_start|>"));
+        assert!(!formatted.contains("<|im_end|>"));
+        assert!(!formatted.contains("<think>"));
+    }
+
+    #[test]
+    fn gemma4_fallback_preserva_o_inicio_de_thinking_quando_habilitado() {
+        let formatted = gemma4_fallback(&[("user", "Oi")], "Sistema", false);
+
+        assert!(formatted.contains("<|turn>system\n<|think|>\nSistema<turn|>\n"));
+        assert!(formatted.ends_with("<|turn>model\n"));
+        assert!(!formatted.contains("<|channel>thought\n<channel|>"));
     }
 }
 

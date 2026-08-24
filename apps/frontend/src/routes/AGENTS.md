@@ -21,11 +21,9 @@ Per-file list:
   snapshot, directional RTT for each adjacent execution pair and each peer's
   inference health. `ExecutionEnvironment` keeps requested configuration
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
-  from the explicit per-peer health field; it also shows the backend-reported
-  execution engine, with unknown as the safe state for an older peer.
-  `ExecutionTelemetry` shows that same backend fact per hop and phase from the
-  trace, so a selected MoE path that delegated to llama.cpp is not labeled as
-  the MoE engine. Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  from the explicit per-peer health field; health shows the selected path,
+  while the request trace shows the executed engine and mixed/mismatch flags.
+  Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
@@ -239,9 +237,9 @@ Key logic carriers:
   aborts via `AbortController`, persists the session on finish. The only screen
   that talks to the OpenAI-compatible surface.
 - `Chat.ExecutionTelemetry` (Chat.tsx:128) + `PhaseRow`/`LegacyHopRows` - the
-  closed-by-default telemetry table: per-hop prefill/decode phases, the
-  backend-reported engine, gateway vs backend vs residual vs transport timing,
-  bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
+  closed-by-default telemetry table: per-hop prefill/decode phases, selected
+  path versus backend-reported executed engine, mixed/mismatch evidence,
+  gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
   optional TP collective table and a pure diagnosis card. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.

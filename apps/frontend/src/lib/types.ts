@@ -232,8 +232,8 @@ export interface PeerRuntimeHealth {
   n_ubatch_effective: number;
   /** Real backend setting on this peer, not inferred from a zero timing. */
   profile_sync_enabled?: boolean;
-  /** Motor efetivo informado pelo próprio servidor; ausente em peers antigos. */
-  execution_engine?: ExecutionEngine;
+  /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
+  selected_path?: string;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;

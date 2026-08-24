@@ -32,6 +32,11 @@ pub enum ExpertFormat {
     Iq4XS,
     Nvfp4,
     Bf16,
+    Mxfp4,
+    Tq1_0,
+    Tq2_0,
+    Q1_0,
+    Q2_0,
 }
 
 pub fn ggml_type_name(dtype: u32) -> &'static str {
@@ -350,6 +355,11 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
         22 => Ok(ExpertFormat::Iq2S),
         23 => Ok(ExpertFormat::Iq4XS),
         40 => Ok(ExpertFormat::Nvfp4),
+        34 => Ok(ExpertFormat::Tq1_0),
+        35 => Ok(ExpertFormat::Tq2_0),
+        39 => Ok(ExpertFormat::Mxfp4),
+        41 => Ok(ExpertFormat::Q1_0),
+        42 => Ok(ExpertFormat::Q2_0),
         other => Err(Q4LoadError::UnsupportedTensorType(other)),
     }
 }

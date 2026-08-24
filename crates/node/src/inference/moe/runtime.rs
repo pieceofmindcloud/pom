@@ -6,12 +6,14 @@
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
 use super::block::{
-    IqQuantMoeBlock, LegacyQuantMoeBlock, MoeBlockError, Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
+    IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError, Nvfp4MoeBlock,
+    PlainMoeBlock, Q4_0MoeBlock,
 };
 use super::cache::{CacheError, ExpertCache};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
 use super::format_legacy_quants::{LegacyQuantFormat, LegacyQuantSource};
+use super::format_low_bits::{LowBitFormat, LowBitSource};
 use super::format_nvfp4::Nvfp4Source;
 use super::format_plain::{PlainFormat, PlainSource};
 use super::format_q4_0::{detect_expert_format, ExpertFormat};
@@ -96,6 +98,7 @@ enum MoeSource {
     K(KQuantSource),
     Iq(IqQuantSource),
     Nvfp4(Nvfp4Source),
+    LowBit(LowBitSource),
 }
 
 impl MoeSource {
@@ -107,6 +110,7 @@ impl MoeSource {
             Self::K(source) => source.hidden(),
             Self::Iq(source) => source.hidden(),
             Self::Nvfp4(source) => source.hidden(),
+            Self::LowBit(source) => source.hidden(),
         }
     }
 }
@@ -118,6 +122,7 @@ enum MoeBlock {
     K(super::block::KQuantMoeBlock),
     Iq(IqQuantMoeBlock),
     Nvfp4(Nvfp4MoeBlock),
+    LowBit(LowBitMoeBlock),
 }
 
 pub struct MoeRuntime {
@@ -285,6 +290,54 @@ impl MoeRuntime {
                     blocks,
                 })
             }
+            ExpertFormat::Mxfp4
+            | ExpertFormat::Tq1_0
+            | ExpertFormat::Tq2_0
+            | ExpertFormat::Q1_0
+            | ExpertFormat::Q2_0 => {
+                let format = match detected {
+                    ExpertFormat::Mxfp4 => LowBitFormat::Mxfp4,
+                    ExpertFormat::Tq1_0 => LowBitFormat::Tq1_0,
+                    ExpertFormat::Tq2_0 => LowBitFormat::Tq2_0,
+                    ExpertFormat::Q1_0 => LowBitFormat::Q1_0,
+                    ExpertFormat::Q2_0 => LowBitFormat::Q2_0,
+                    _ => unreachable!("detect_expert_format mudou após seleção low-bit"),
+                };
+                let source = LowBitSource::open_infer(&path, experts)?;
+                if source.format() != format {
+                    return Err(MoeRuntimeError::FormatMismatch);
+                }
+                if !source.has_router() {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::MissingTensor(
+                        "blk.<layer>.ffn_gate_inp.weight".into(),
+                    )));
+                }
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::LowBit(
+                        LowBitMoeBlock::new(
+                            Arc::clone(&cache),
+                            &model,
+                            layer,
+                            top_k,
+                            format,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                        .map_err(MoeRuntimeError::Block)?,
+                    ));
+                }
+                Ok(Self {
+                    source: MoeSource::LowBit(source),
+                    blocks,
+                })
+            }
             ExpertFormat::Q4K | ExpertFormat::Q6K => {
                 let format = match detected {
                     ExpertFormat::Q4K => KQuantFormat::Q4K,
@@ -424,6 +477,9 @@ impl MoeRuntime {
                 (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) => {
                     block.forward_from_source(source, token_hidden)?
                 }
+                (MoeSource::LowBit(source), MoeBlock::LowBit(block)) => {
+                    block.forward_from_source(source, token_hidden)?
+                }
                 _ => return Err(MoeRuntimeError::FormatMismatch),
             };
             output.extend(values);
@@ -437,6 +493,7 @@ mod tests {
     use super::super::format_iq_quants::{tests::write_iq_source, IqQuantFormat};
     use super::super::format_k_quants::tests::write_k_source;
     use super::super::format_legacy_quants::{tests::write_legacy_source, LegacyQuantFormat};
+    use super::super::format_low_bits::{tests::write_low_bit_source, LowBitFormat};
     use super::super::format_plain::{tests::write_plain_source, PlainFormat};
     use super::super::format_q4_0::tests::write_q4_source;
     use super::*;
@@ -530,6 +587,28 @@ mod tests {
             let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
             assert_eq!(output.len(), 64, "formato {}", format.name());
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn runtime_carrega_e_executa_mxfp4_tq1_tq2_q1_e_q2() {
+        for format in [
+            LowBitFormat::Mxfp4,
+            LowBitFormat::Tq1_0,
+            LowBitFormat::Tq2_0,
+            LowBitFormat::Q1_0,
+            LowBitFormat::Q2_0,
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "pom-ftk-low-bit-runtime-{}-{}.gguf",
+                format.name(),
+                std::process::id()
+            ));
+            write_low_bit_source(&path, format, false);
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
+            assert_eq!(output.len(), 512, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
         }
     }

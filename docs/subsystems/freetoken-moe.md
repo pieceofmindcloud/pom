@@ -203,6 +203,23 @@ Não há número de desempenho nesta fase. A validação nativa foi executada co
 symlink local de `llama.cpp` documentado em `build-execucao.md`; esse artefato
 não entra no commit e não substitui a prova ponta a ponta com um modelo real.
 
+### Fase 4C: MXFP4, TQ1_0, TQ2_0, Q1_0 e Q2_0
+
+Os formatos de baixa largura `MXFP4` (39), `TQ1_0` (34), `TQ2_0` (35),
+`Q1_0` (41) e `Q2_0` (42) têm decoder próprio em `format_low_bits.rs`. Cada
+formato declara seu bloco, tamanho packed e fórmula de dequantização. MXFP4
+usa expoente E8M0 por bloco; TQ1/TQ2 usam seus codebooks ternários; Q1/Q2
+usam os campos de bits GGML correspondentes. O loader valida dtype, rank,
+geometria `[columns, rows, experts]`, offsets e limites do mmap antes de
+admitir qualquer expert no cache.
+
+O caminho aceita gate/up fundido e separado, calcula o slice por expert sem
+confundir bytes de uma linha com bytes de um bloco e liga o executor ao
+`MoeRuntime`. Há testes de vetor, fonte mmap, cache, router, convenções de
+nomes e forward ponta a ponta para os cinco dtypes. Não há um GGUF MoE real
+destes formatos disponível neste worktree; portanto estão **implementados,
+mas não provados em GGUF real**. Nenhum número de desempenho é afirmado.
+
 ### Ligação e telemetria do hop
 
 `infer_server` mantém o caminho denso em `llama.cpp`. Quando a seleção GGUF é
@@ -301,18 +318,18 @@ normal para modelos conhecidos.
    não importar o runtime MoE, Q4_0 continuar passando e nenhum branch puder
    escolher um decoder por nome de arquivo.
 
-4. **Cobertura por impacto, sem recorte de famílias.** Depois do NVFP4, a
-   primeira fila são os K-quants que existem na ksia: `Q4_K` (12) e `Q6_K`
-   (14), presentes no Qwen3.6 Q4_K_M. A segunda fila são os IQ-quants que
-   aparecem no corpus real: `IQ3_S` (21), `IQ2_S` (22) e `IQ4_XS` (23), nas
-   variantes Qwen3.6 UD-IQ3_S e Ornith UD-IQ3_XXS. Depois entram os demais
-   tipos, sem abandonar nenhum: numéricos `F32`, `F16`, `BF16`, `F64`, `I8`,
-   `I16`, `I32` e `I64`; blocos legados `Q4_1`, `Q5_0`, `Q5_1`, `Q8_0` e
-   `Q8_1`; `Q2_K`, `Q3_K`, `Q5_K`, `Q8_K`, `TQ1_0`, `TQ2_0`, `MXFP4`, `Q1_0` e
-   `Q2_0`; e os IQ restantes `IQ1_M`, `IQ1_S`, `IQ2_XS`, `IQ2_XXS`, `IQ3_XXS`
-   e `IQ4_NL`. A prioridade é evidência do corpus real, não um recorte de
-   famílias: a ausência de qualquer MoE Q4_0 na ksia impede que Q4_0 seja uma
-   fila de validação física, embora ele permaneça coberto pelos testes locais.
+4. **Cobertura por impacto, sem recorte de famílias.** Depois dos blocos já
+   publicados NVFP4, K-quants `Q4_K` (12) e `Q6_K` (14), e IQ-quants `IQ3_S`
+   (21), `IQ2_S` (22) e `IQ4_XS` (23), a fila restante segue esta ordem:
+   primeiro os escalares `F32` (0), `F16` (1) e `BF16` (30), depois os blocos
+   clássicos `Q4_1` (3), `Q5_0` (6), `Q5_1` (7) e `Q8_0` (8), e então
+   `MXFP4` (39), `TQ1_0` (34), `TQ2_0` (35), `Q1_0` (41) e `Q2_0` (42).
+   A próxima fila cobre os demais tipos, sem abandonar nenhum: numéricos
+   `F64`, `I8`, `I16`, `I32` e `I64`; K-quants `Q2_K`, `Q3_K`, `Q5_K` e
+   `Q8_K`; e IQ-quants `IQ1_M`, `IQ1_S`, `IQ2_XS`, `IQ2_XXS`, `IQ3_XXS` e
+   `IQ4_NL`. A ordem dos dois primeiros blocos foi definida pelos modelos
+   reais disponíveis na ksia. Nenhum MoE Q4_0 existe na ksia, então Q4_0
+   permanece coberto por testes locais, sem ser fila de validação física.
    Cada subgrupo fica pronto com decoder, fixture de payload, rejeições de
    geometria e teste diferencial antes do próximo.
 

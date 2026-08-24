@@ -48,6 +48,22 @@ const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
 const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
 
+/// Resolve a preferência persistida pelo deploy para o seletor operacional.
+///
+/// Uma escolha explícita na UI não pode ser sobrescrita por uma variável do
+/// processo. `Auto` continua aceitando `POM_INFERENCE_MODE` para preservar o
+/// override operacional existente; sem ele, `executor::select` decide pela
+/// metadata GGUF real.
+fn configured_inference_mode(
+    mode: crate::webui::InferenceMode,
+) -> Result<crate::executor::InferenceMode> {
+    match mode {
+        crate::webui::InferenceMode::Auto => crate::executor::InferenceMode::from_env(),
+        crate::webui::InferenceMode::Dense => Ok(crate::executor::InferenceMode::Dense),
+        crate::webui::InferenceMode::Moe => Ok(crate::executor::InferenceMode::Moe),
+    }
+}
+
 /// Timings measured on the inference node itself. The names deliberately name
 /// the boundary being measured instead of guessing whether a CUDA call is
 /// asynchronous. In particular, `residual_ms` contains the GPU -> host copy
@@ -641,6 +657,18 @@ mod tests {
         );
         assert!(!value["engine_mismatch"].as_bool().unwrap());
         assert!(value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn modo_explicito_do_deploy_chega_ao_seletor_sem_ser_sobrescrito_pelo_ambiente() {
+        assert_eq!(
+            configured_inference_mode(crate::webui::InferenceMode::Dense).unwrap(),
+            crate::executor::InferenceMode::Dense
+        );
+        assert_eq!(
+            configured_inference_mode(crate::webui::InferenceMode::Moe).unwrap(),
+            crate::executor::InferenceMode::Moe
+        );
     }
 
     #[test]
@@ -1436,7 +1464,7 @@ pub async fn run(
             None
         }
     };
-    let inference_mode = crate::executor::InferenceMode::from_env()?;
+    let inference_mode = configured_inference_mode(cfg.inference_mode)?;
     let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
     info!(
         "caminho de inferência selecionado: {} (modo {:?})",

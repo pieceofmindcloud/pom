@@ -51,7 +51,8 @@
 
 **Interfaces:**
 - `RuntimeParams.inference_mode: "auto" | "dense" | "moe"`, default `auto`.
-- `NodeConfig.inference_mode` guarda o mesmo valor para a configuração retomada.
+- `NodeConfig.inference_mode` guarda o mesmo valor para a configuração retomada;
+  `infer_server::run` dá precedência a valores explícitos sobre o ambiente.
 
 - [ ] **Step 1: Write failing round-trip tests** para default, whole, shards e TP.
 - [ ] **Step 2: Run the tests** e confirmar que o campo é rejeitado/descartado hoje.

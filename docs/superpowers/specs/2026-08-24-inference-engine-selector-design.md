@@ -34,7 +34,9 @@ partir de arquitetura ou nome.
 
 `RuntimeParams.inference_mode` é serializado no pedido de plano, no pedido de
 deploy e no registro persistido da implantação. Campo ausente em registros
-anteriores lê como `auto`.
+anteriores lê como `auto`. Em `infer_server::run`, valores explícitos `dense` e
+`moe` vencem `POM_INFERENCE_MODE`; `auto` preserva esse override de ambiente
+antes da decisão por metadata.
 
 ## Fluxo
 

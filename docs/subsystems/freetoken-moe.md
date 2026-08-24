@@ -82,8 +82,9 @@ captain.
 essa evidência não selecionam MoE. Em `auto`, um cabeçalho denso ou ausente
 segue explicitamente para `dense/llama.cpp`.
 
-O override `POM_INFERENCE_MODE` aceita `auto`, `dense` ou `moe`. `dense` força o
-caminho existente mesmo para um GGUF MoE. `moe` recusa um modelo sem
+O override `POM_INFERENCE_MODE` aceita `auto`, `dense` ou `moe` quando o deploy
+está em `auto`; uma escolha explícita persistida pelo deploy vence o ambiente.
+`dense` força o caminho existente mesmo para um GGUF MoE. `moe` recusa um modelo sem
 `expert_count > 1`, em vez de desviar silenciosamente. O caminho MoE desta
 fase foi inicialmente `moe/llama.cpp-delegated`, uma delegação temporária ao
 `LlmEngine`. A costura posterior da Fase 4 substituiu essa seleção operacional

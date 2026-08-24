@@ -303,9 +303,11 @@ posterior usando o método da Fase 0.
 
 Antes de carregar os pesos, `executor::select` lê o cabeçalho GGUF. Só um
 `expert_count > 1` classifica o modelo como MoE. Em `auto`, qualquer modelo
-denso ou com metadados ausentes permanece em `dense/llama.cpp`. O ambiente
-derivado da marca `POM_INFERENCE_MODE` pode forçar `dense` ou exigir `moe`; o
-último recusa um GGUF denso com erro explícito.
+denso ou com metadados ausentes permanece em `dense/llama.cpp`. O campo
+persistido `NodeConfig.inference_mode` chega ao seletor antes da carga: uma
+escolha explícita `dense` ou `moe` vence o ambiente derivado da marca
+`POM_INFERENCE_MODE`; em `auto`, esse ambiente ainda pode forçar um modo e, sem
+override, a metadata escolhe. `moe` recusa um GGUF denso com erro explícito.
 
 O caminho MoE atual aparece como `moe/q4_0` no `/health` quando o seletor
 escolhe esse modo e abre o runtime próprio em `inference/moe/`: o dispatcher

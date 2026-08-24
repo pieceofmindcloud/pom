@@ -111,10 +111,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `[intermediate, hidden, experts]`. A inversão desses eixos faz o runtime
   recusar o residual com largura incompatível.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
-  `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. O caminho denso fica
-  em `LlmEngine`, e o MoE seleciona o runtime próprio por dtype. `ExecutionEngine` é a
-  fonte única do rótulo que sai na telemetria; ausente em peer antigo vira
-  desconhecido na interface.
+  `auto/dense/moe`. No `infer_server::run`, uma escolha explícita persistida no
+  deploy vence `POM_INFERENCE_MODE`; `auto` ainda aceita esse override e, sem
+  ele, usa a metadata GGUF. O caminho denso fica em `LlmEngine`, e o MoE
+  seleciona o runtime próprio por dtype. `ExecutionEngine` é a fonte única do
+  rótulo que sai na telemetria; ausente em peer antigo vira desconhecido na
+  interface.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.
@@ -126,9 +128,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
   ou de parâmetros de carregamento também o invalida.
   `NodeConfig.inference_mode` preserva a preferência `auto`/`dense`/`moe` que
-  veio do deploy. A leitura dessa preferência pelo executor é uma integração
-  separada no `infer_server::run`; até ela ser publicada, o campo persistido não
-  é prova do motor executado e a telemetria continua sendo a fonte de verdade.
+  veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
+  modelo. O campo escolhido ainda não substitui a observação: a telemetria
+  continua sendo a fonte de verdade sobre o motor executado e deixa divergência
+  visível.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
   `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`

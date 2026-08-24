@@ -138,7 +138,7 @@ pub struct GatewayState {
     /// Retrato curto do cluster, isolado por gateway e por instância de teste.
     pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
     /// Provider de modelos remotos e seus jobs de download.
-    pub model_service: Arc<crate::model_provider_backend::ModelService>,
+    pub(crate) model_service: Arc<crate::model_provider_backend::ModelService>,
 }
 
 #[cfg(test)]

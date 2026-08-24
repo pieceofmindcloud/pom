@@ -535,6 +535,15 @@ export interface RemoteStorage {
   destination_available: boolean;
 }
 
+export interface RemoteModelProviderStatus {
+  cli: {
+    installed: boolean;
+    version: string | null;
+    authenticated: boolean;
+    username: string | null;
+  };
+}
+
 export interface RemoteModelDetails {
   repo_id: string;
   description: string | null;

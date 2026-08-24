@@ -20,11 +20,13 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
   reuso da integração `ModelProvider` com o CLI Hugging Face.
 
 O relatório de entrega desta integração está em
-`rdma-hf-provider-relatorio.md`.
+`rdma-hf-provider-relatorio.md` e registra também o status autenticado do CLI,
+a consulta de licença e o fallback para detalhes do modelo.
 O levantamento de reuso da fase de UI está em
 `rdma-hf-provider-ui-reuso.md`.
 O relatório de entrega da fase de UI está em
-`rdma-hf-provider-ui-relatorio.md`.
+`rdma-hf-provider-ui-relatorio.md` e descreve o painel de status, os modelos
+gated e a licença antes do download.
 
 ## subsystems/
 

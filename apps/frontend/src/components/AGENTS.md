@@ -296,6 +296,8 @@ Key logic carriers:
 - `RemoteModelCard.tsx` / `RemoteModelDetails.tsx` - card comparável e janela
   sob demanda para modelos do provider, com prioridade para GGUF, quantização,
   tamanho, licença, revisão e estados instalado/em download.
+- `RemoteModelProviderStatus.tsx` - estado estruturado do CLI do Hugging Face:
+  indisponível, login necessário ou autenticado, com mensagem localizada.
 - `DownloadModelDialog.tsx` - confirmação do download remoto; chama somente a
   API estruturada e mostra espaço disponível sem aceitar caminho do navegador.
 - `ModelDownloadsPanel.tsx` - progresso, cancelamento e retry de jobs

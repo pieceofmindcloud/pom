@@ -28,10 +28,13 @@ behind an auth extractor.
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
-- `model_provider.rs` - API agnóstica de busca, detalhes, espaço e downloads
-  remotos. Injeta `DynModelProvider`, usa `webui::Job` como estado persistente,
-  `CancellationToken` por download e semáforo de dois processos; não monta
-  comandos nem expõe token, stderr ou caminho local.
+- `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
+  licença, detalhes, espaço e downloads remotos. Injeta `DynModelProvider`, usa
+  `webui::Job` como estado persistente, `CancellationToken` por download e
+  semáforo de dois processos; não monta comandos nem expõe token, stderr ou
+  caminho local. O status estruturado em
+  `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
+  login necessário e sessão autenticada.
   O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.

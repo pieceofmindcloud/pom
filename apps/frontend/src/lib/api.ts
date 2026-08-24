@@ -16,6 +16,7 @@ import { modelSearchPath, type ModelSearchPathOptions } from "./modelProvider";
 import type {
   Deployment,
   RemoteModelDetails,
+  RemoteModelProviderStatus,
   RemoteModelSearchResponse,
   RemoteStorage,
   RuntimeParams,
@@ -195,6 +196,10 @@ export function getRemoteModelDetails(
 
 export function getRemoteModelStorage(signal?: AbortSignal) {
   return api.get<RemoteStorage>("/api/ui/model-provider/storage", { signal });
+}
+
+export function getRemoteModelProviderStatus(signal?: AbortSignal) {
+  return api.get<RemoteModelProviderStatus>("/api/ui/model-provider/status", { signal });
 }
 
 export interface RemoteModelDownloadRequest {

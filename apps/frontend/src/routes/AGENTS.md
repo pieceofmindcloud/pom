@@ -221,8 +221,10 @@ Per-file list:
   per model with actions: slice (links to `/modelos/fatiar?path=`), send
   (`/transferencias/enviar?path=`), delete (`../lib/deleteModel`). `ScannedRoots`
   lists the scanned folders and per-folder file counts.
-- `RemoteModels.tsx` - busca com debounce em `/api/ui/model-provider/search`,
-  filtro GGUF, ordenação, paginação por URL, detalhes lazy e confirmação de
+- `RemoteModels.tsx` - mostra primeiro o status do CLI e da autenticação,
+  depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
+  ordenação, paginação por URL, detalhes lazy e confirmação de download. O
+  detalhe resolve a licença pelo provider e marca modelos gated antes do
   download. Os jobs aparecem no `ModelDownloadsPanel`, então trocar de rota ou
   recarregar não perde uma transferência.
 

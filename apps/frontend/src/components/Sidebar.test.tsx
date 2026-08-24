@@ -29,7 +29,10 @@ describe("Sidebar", () => {
 
   it("collapses to icon buttons and exposes child destinations in a hover flyout", () => {
     render(
-      <MemoryRouter initialEntries={["/modelos/fatiar"]}>
+      <MemoryRouter
+        initialEntries={["/modelos/fatiar"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <Sidebar />
         </LocaleProvider>
@@ -46,7 +49,10 @@ describe("Sidebar", () => {
 
   it("reabre pelo clique na logo quando o menu está minimizado", () => {
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <Sidebar />
         </LocaleProvider>
@@ -66,7 +72,10 @@ describe("Sidebar", () => {
   it("fecha pelo hover da logo somente depois de um pequeno atraso", () => {
     vi.useFakeTimers();
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <Sidebar />
         </LocaleProvider>
@@ -89,7 +98,10 @@ describe("Sidebar", () => {
    */
   it("esconde do perfil do nó as entradas que ele não abre", () => {
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <ProfileProvider initialProfile="node">
             <Sidebar />
@@ -109,7 +121,10 @@ describe("Sidebar", () => {
 
   it("mantém o menu inteiro para o administrador", () => {
     render(
-      <MemoryRouter initialEntries={["/"]}>
+      <MemoryRouter
+        initialEntries={["/"]}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <LocaleProvider initialLocale="pt-BR">
           <ProfileProvider initialProfile="admin">
             <Sidebar />

@@ -69,8 +69,9 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens)
-- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels, com o painel de
-  jobs e progresso de fatiamento embutido
+- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
+  `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
+  fatiamento embutido
 - `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
@@ -84,6 +85,15 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
+
+### Modelos remotos
+
+`RemoteModels` consulta primeiro `GET /api/ui/model-provider/status` e mostra
+se o CLI do Hugging Face está ausente, se a autenticação é necessária ou se a
+sessão está autenticada. Depois da busca, o detalhe resolve a licença pelo
+provider e exibe o marcador de modelo gated antes da confirmação de download;
+assim a tela não presume uma licença nem inicia uma operação protegida sem
+explicar a autenticação exigida.
 
 ### Perfis: o que cada um enxerga
 

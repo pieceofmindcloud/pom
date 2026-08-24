@@ -465,9 +465,8 @@ fn to_gguf(file: &ModelFile) -> Option<crate::model_provider::GgufFile> {
 
 fn concise_message(text: &str) -> String {
     text.lines()
+        .rfind(|line| !line.trim().is_empty())
         .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .last()
         .unwrap_or("erro desconhecido")
         .chars()
         .take(240)

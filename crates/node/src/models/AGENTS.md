@@ -24,9 +24,10 @@ também cobre que erros públicos não devolvem detalhes do provider.
 O provider usa `hf --version`, `hf auth whoami`, `hf models ls/info/card` e
 `hf download` por argumentos separados. O resultado do download enumera apenas
 arquivos locais regulares, calcula SHA-256 com o mesmo `pom::hash_file` usado
-pelos manifestos POM e não executa conteúdo remoto. A integração ainda não é
-ligada a uma rota HTTP ou tela; callers internos devem consumir
-`ModelProvider`/`ProgressSender`, nunca montar `hf` diretamente.
+pelos manifestos POM e não executa conteúdo remoto. O backend expõe o status do
+CLI e usa a licença do contrato no detalhe do modelo; a tela remota mostra o
+estado de autenticação e a licença antes do download. Callers internos devem
+consumir `ModelProvider`/`ProgressSender`, nunca montar `hf` diretamente.
 
 `pom.rs` mantém o manifesto por modelo original: no único formato v1, `pom_id`
 é o sha256 do GGUF fonte, `parts` reúne fatias de camadas alternativas e

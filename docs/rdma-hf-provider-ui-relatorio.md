@@ -1,7 +1,7 @@
 # Relatório de entrega: interface de modelos remotos
 
 Data: 2026-08-24  
-Branch: `fm/rdma-hf-provider`  
+Branch: `fm/rdma-hf-warnings`
 Especificação: `/Users/jairpereira/Sites/firstmate/data/rdma-hf-provider/spec-ui.md`
 
 ## 1. Arquitetura implementada
@@ -11,12 +11,17 @@ A UI fala com a camada agnóstica `model_provider_backend`, que recebe um
 `HuggingFaceProvider`; nenhum componente conhece `hf`, shell, stdout, stderr ou
 credenciais.
 
-O backend expõe DTOs de busca, detalhes, arquivos GGUF, armazenamento e
-downloads. Cada download é um `webui::Job` com status próprio, token de
+O backend expõe DTOs de status do CLI, busca, detalhes, licença, armazenamento
+e downloads. Cada download é um `webui::Job` com status próprio, token de
 cancelamento e limite de dois processos concorrentes. O frontend compõe a
 tela usando os primitives existentes, React Query, o cliente `api.ts`, o
 endpoint condicional de jobs com ETag e o polling adaptativo já usado pelo
 POM.
+
+`RemoteModels` consulta o status autenticado antes da busca. CLI ausente,
+autenticação necessária e sessão autenticada aparecem como estados localizados;
+quando o operador abre um detalhe, a licença é consultada pelo provider e o
+marcador `gated` permanece visível antes da confirmação de download.
 
 ## 2. Arquivos criados
 
@@ -67,6 +72,7 @@ cancelamento, retry e mensagens seguras.
 
 Rotas autenticadas com `ConnectionAuth`:
 
+- `GET /api/ui/model-provider/status`
 - `GET /api/ui/model-provider/search`
 - `GET /api/ui/model-provider/details`
 - `GET /api/ui/model-provider/storage`
@@ -74,10 +80,11 @@ Rotas autenticadas com `ConnectionAuth`:
 - `POST /api/ui/model-provider/downloads/:id/cancel`
 - `POST /api/ui/model-provider/downloads/:id/retry`
 
-O serviço chama apenas métodos de `ModelProvider`: `search_models`,
-`get_model_info`, `list_files` e `download_file`. A implementação Hugging Face
-monta argumentos separados e executa o processo externo pelo runner já
-existente. A UI envia JSON estruturado, nunca uma linha de comando.
+O serviço chama apenas métodos de `ModelProvider`: `check_authentication`,
+`search_models`, `get_model_info`, `get_license`, `list_files` e
+`download_file`. A implementação Hugging Face monta argumentos separados e
+executa o processo externo pelo runner já existente. A UI envia JSON
+estruturado, nunca uma linha de comando.
 
 ## 6. Fluxo de início
 
@@ -128,18 +135,19 @@ quantização como instalada. Nenhum modelo é carregado na GPU ou executado.
   cobertura para descrição e atualização.
 - Frontend: serialização de URL e `AbortSignal`, endpoints estruturados de
   início/cancelamento/retry, filtragem de jobs, polling, percentual sem total,
-  cards de resultado, metadados GGUF e painel de progresso/cancelamento/retry.
-- `rtk npm test -- --run`: 48 arquivos, 287 testes, todos passaram.
-- `rtk npm run build`: TypeScript e Vite passaram.
-- `rtk cargo fmt --all -- --check` e `rtk git diff --check`: passaram.
+  cards de resultado, metadados GGUF, painel de progresso/cancelamento/retry,
+  status localizado do provider e detalhe com licença/gated antes do download.
+- `rtk npm test`: 50 arquivos e 291 testes passaram.
+- `rtk npm run build`: TypeScript e Vite passaram; o Vite mantém o aviso
+  informativo de chunk acima de 500 kB.
+- `rtk cargo build -p node`: passou sem os avisos do provider Hugging Face.
+- `rtk cargo test -p node`: 752 passaram, 5 ignorados.
+- `rtk cargo fmt --check` e `rtk git diff --check`: passaram.
+- `rtk cargo clippy -p node`: código de saída zero; restam avisos
+  preexistentes em outros subsistemas, sem avisos nos arquivos alterados.
 
 ## 12. Limitações conhecidas
 
-- Os testes e o build do crate `node` não puderam compilar neste worktree: o
-  symlink `vendor/llama-cpp-sys-2/llama.cpp` aponta para um checkout ausente.
-  O erro exato reproduzido foi `Failed to obtain entry ... Os { code: 2,
-  kind: NotFound, message: "No such file or directory" }` no `build.rs` de
-  `llama-cpp-sys-2`. Portanto não há afirmação de suíte Rust verde.
 - A tela oferece apenas filtros que o endpoint atual sustenta com segurança:
   GGUF, além da ordenação por relevância, downloads e atualização. Filtros por
   tamanho, licença ou quantização exigem metadados de arquivos por resultado e
@@ -152,11 +160,9 @@ quantização como instalada. Nenhum modelo é carregado na GPU ou executado.
 
 ## 13. Próximos passos
 
-1. Restaurar o checkout nativo de `llama.cpp` e executar os testes do crate
-   `node`, a suíte workspace e o build release.
-2. Usar o `ModelManifest` lateral no fluxo de fatiamento/implantação quando a
+1. Usar o `ModelManifest` lateral no fluxo de fatiamento/implantação quando a
    integração de origem remota precisar distinguir arquivos por fonte.
-3. Se necessário, evoluir o contrato de busca para filtros remotos de tamanho,
+2. Se necessário, evoluir o contrato de busca para filtros remotos de tamanho,
    licença e quantização sem fazer N chamadas ocultas por resultado.
-4. Adicionar fixtures de resposta para versões futuras do CLI e uma
+3. Adicionar fixtures de resposta para versões futuras do CLI e uma
    implementação HTTP alternativa do mesmo `ModelProvider`.

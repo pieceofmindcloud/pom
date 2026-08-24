@@ -517,7 +517,6 @@ pub fn gguf_metadata(filename: &str) -> GgufMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn rejects_repo_id_traversal() {
@@ -606,10 +605,5 @@ mod tests {
         assert_eq!(manifest.files[0].filename, "model.gguf");
         assert!(manifest.files[0].sha256.is_some());
         let _ = std::fs::remove_dir_all(root);
-    }
-
-    #[allow(dead_code)]
-    fn _path_type_is_portable(path: PathBuf) -> PathBuf {
-        path
     }
 }

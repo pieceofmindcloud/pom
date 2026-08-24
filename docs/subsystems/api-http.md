@@ -115,6 +115,14 @@ peers solicitados), `dev/update` +
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
+As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
+`/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar
+comandos ou tokens do provider. **`GET /api/ui/model-provider/status`** exige
+`ConnectionAuth` e devolve `{ cli: { installed, version, authenticated,
+username } }`: CLI ausente é um estado estruturado, enquanto login necessário
+e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta
+a licença no provider antes de a tela oferecer o download.
+
 **`POST /api/ui/network/tls`** - corpo `{ tls_required: bool }`, liga ou desliga
 o TLS entre peers do cluster inteiro. Responde **403 fora do nó principal**, e
 essa checagem é do servidor: esconder o interruptor na tela de um nó comum é

@@ -8,8 +8,8 @@ use crate::auth::ConnectionAuth;
 use crate::gateway::GatewayState;
 use crate::model_provider::{
     validate_filename, validate_repo_id, validate_revision, DownloadOptions, DownloadProgress,
-    DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfError, ManifestFile, ModelFile,
-    ModelLicense,
+    DownloadResult, DownloadStatus, DynModelProvider, GgufFile, HfCliStatus, HfError, ManifestFile,
+    ModelFile, ModelLicense,
 };
 use crate::webui::{self, Job};
 use axum::{
@@ -25,7 +25,7 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 use tokio::sync::{mpsc, Mutex, RwLock, Semaphore};
@@ -149,6 +149,11 @@ pub(crate) struct ModelDetailsResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub(crate) struct ModelProviderStatusResponse {
+    pub cli: HfCliStatus,
+}
+
+#[derive(Debug, Serialize)]
 pub(crate) struct ModelFileView {
     pub filename: String,
     pub size_bytes: Option<u64>,
@@ -196,6 +201,7 @@ pub(crate) fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/model-provider/search", get(search_models))
         .route("/api/ui/model-provider/details", get(model_details))
+        .route("/api/ui/model-provider/status", get(status))
         .route("/api/ui/model-provider/storage", get(storage_info))
         .route("/api/ui/model-provider/downloads", post(start_download))
         .route(
@@ -326,6 +332,16 @@ async fn model_details(
         info.files = files.files;
         info.gguf_files = files.gguf_files;
     }
+    let license = match model_license(
+        &state.model_service.provider,
+        &repo_id,
+        info.license.clone(),
+    )
+    .await
+    {
+        Ok(license) => license,
+        Err(error) => return provider_error(error),
+    };
     let storage = storage_response(&state).await;
     let files = file_views(&state, &repo_id, revision.as_deref(), &info.files).await;
     let gguf_files = gguf_views(&state, &repo_id, revision.as_deref(), &info.gguf_files).await;
@@ -340,12 +356,46 @@ async fn model_details(
         private: info.private,
         gated: info.gated,
         tags: info.tags,
-        license: info.license,
+        license,
         files,
         gguf_files,
         storage,
     })
     .into_response()
+}
+
+async fn status(auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+    consume_connection_auth(auth);
+    match provider_status(&state.model_service.provider).await {
+        Ok(status) => Json(status).into_response(),
+        Err(error) => provider_error(error),
+    }
+}
+
+fn consume_connection_auth(auth: ConnectionAuth) {
+    match auth {
+        ConnectionAuth => {}
+    }
+}
+
+async fn provider_status(
+    provider: &DynModelProvider,
+) -> Result<ModelProviderStatusResponse, HfError> {
+    Ok(ModelProviderStatusResponse {
+        cli: provider.check_authentication().await?,
+    })
+}
+
+async fn model_license(
+    provider: &DynModelProvider,
+    repo_id: &str,
+    fallback: ModelLicense,
+) -> Result<ModelLicense, HfError> {
+    match provider.get_license(repo_id).await {
+        Ok(license) => Ok(license),
+        Err(HfError::HfInvalidResponse { .. } | HfError::HfDownloadFailed { .. }) => Ok(fallback),
+        Err(error) => Err(error),
+    }
 }
 
 async fn storage_info(
@@ -674,7 +724,7 @@ async fn run_download(
 async fn complete_download(
     job_id: &str,
     request: &DownloadRequest,
-    destination: &PathBuf,
+    destination: &Path,
     result: DownloadResult,
 ) {
     if let Err(error) = write_installed_record(destination, request, &result).await {
@@ -719,7 +769,7 @@ async fn complete_download(
 }
 
 async fn write_installed_record(
-    destination: &PathBuf,
+    destination: &Path,
     request: &DownloadRequest,
     result: &DownloadResult,
 ) -> Result<(), HfError> {
@@ -1040,7 +1090,148 @@ fn public_error_message_code(code: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_provider::HfError;
+    use crate::model_provider::{
+        DownloadOptions, DownloadResult, HfCliStatus, ModelFiles, ModelInfo, ModelProvider,
+        ModelSummary, ProgressSender,
+    };
+    use async_trait::async_trait;
+    use axum::{body::Body, http::Request};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    struct TestProvider {
+        license: ModelLicense,
+        license_calls: Arc<AtomicUsize>,
+        status: HfCliStatus,
+    }
+
+    fn unreachable_provider_call<T>(value: T) -> ! {
+        std::mem::drop(value);
+        unreachable!("não faz parte deste teste")
+    }
+
+    #[async_trait]
+    impl ModelProvider for TestProvider {
+        async fn search_models(&self, query: &str) -> Result<Vec<ModelSummary>, HfError> {
+            unreachable_provider_call(query)
+        }
+
+        async fn get_model_info(&self, repo_id: &str) -> Result<ModelInfo, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn list_files(
+            &self,
+            repo_id: &str,
+            revision: Option<&str>,
+        ) -> Result<ModelFiles, HfError> {
+            unreachable_provider_call((repo_id, revision))
+        }
+
+        async fn download_file(
+            &self,
+            repo_id: &str,
+            filename: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            unreachable_provider_call((repo_id, filename, options, progress, cancel))
+        }
+
+        async fn download_model(
+            &self,
+            repo_id: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            unreachable_provider_call((repo_id, options, progress, cancel))
+        }
+
+        async fn get_license(&self, repo_id: &str) -> Result<ModelLicense, HfError> {
+            assert!(!repo_id.is_empty());
+            self.license_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(self.license.clone())
+        }
+
+        async fn check_authentication(&self) -> Result<HfCliStatus, HfError> {
+            Ok(self.status.clone())
+        }
+    }
+
+    fn test_provider() -> (DynModelProvider, Arc<AtomicUsize>) {
+        let license_calls = Arc::new(AtomicUsize::new(0));
+        let provider = TestProvider {
+            license: ModelLicense {
+                id: Some("apache-2.0".into()),
+                name: Some("Apache License 2.0".into()),
+                url: Some("https://www.apache.org/licenses/LICENSE-2.0".into()),
+                raw_value: Some("apache-2.0".into()),
+                detected: true,
+            },
+            license_calls: license_calls.clone(),
+            status: HfCliStatus::not_installed(),
+        };
+        (Arc::new(provider), license_calls)
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_reads_structured_cli_state() {
+        let (provider, _) = test_provider();
+
+        let response = provider_status(&provider).await.unwrap();
+
+        assert!(!response.cli.installed);
+        assert!(!response.cli.authenticated);
+        assert_eq!(response.cli.version, None);
+    }
+
+    #[tokio::test]
+    async fn status_route_requires_auth_and_serializes_cli_state() {
+        let (provider, _) = test_provider();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.model_service = Arc::new(ModelService::new(provider));
+        let app = routes().with_state(state);
+
+        let missing = app
+            .clone()
+            .oneshot(
+                Request::get("/api/ui/model-provider/status")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+
+        let response = app
+            .oneshot(
+                Request::get("/api/ui/model-provider/status")
+                    .header("authorization", "Bearer chave")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["cli"]["installed"], false);
+        assert_eq!(body["cli"]["authenticated"], false);
+    }
+
+    #[tokio::test]
+    async fn details_license_uses_provider_license_contract() {
+        let (provider, license_calls) = test_provider();
+
+        let license = model_license(&provider, "owner/model", ModelLicense::unknown())
+            .await
+            .unwrap();
+
+        assert_eq!(license.id.as_deref(), Some("apache-2.0"));
+        assert_eq!(license_calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn structured_download_identity_rejects_traversal() {

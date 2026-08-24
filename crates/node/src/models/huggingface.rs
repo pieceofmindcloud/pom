@@ -27,6 +27,8 @@ impl HuggingFaceProvider {
         Self::with_dependencies(Arc::new(TokioHfCommandRunner), Arc::new(LocalModelStorage))
     }
 
+    #[cfg(test)]
+    /// Injeta o runner fake usado pelos testes sem executar o processo `hf`.
     pub fn with_runner(runner: Arc<dyn HfCommandRunner>) -> Self {
         Self::with_dependencies(runner, Arc::new(LocalModelStorage))
     }
@@ -362,7 +364,9 @@ impl ModelProvider for HuggingFaceProvider {
             Err(error)
                 if matches!(
                     &error,
-                    HfError::HfInvalidResponse { .. } | HfError::HfDownloadFailed { .. }
+                    HfError::HfInvalidResponse { .. }
+                        | HfError::HfDownloadFailed { .. }
+                        | HfError::ProcessFailed { .. }
                 ) =>
             {
                 Ok(self.get_model_info(&repo_id).await?.license)
@@ -455,7 +459,13 @@ fn parse_progress_chunk(_stream: OutputStream, chunk: &str) -> Option<DownloadPr
 fn map_process_failure(operation: &str, output: &ProcessOutput) -> HfError {
     let failure = classify_failure(&format!("{}\n{}", output.stderr, output.stdout));
     match failure {
-        HfError::HfDownloadFailed { message } => HfError::HfDownloadFailed {
+        HfError::HfDownloadFailed { message } if operation == "download" => {
+            HfError::HfDownloadFailed {
+                message: format!("{operation}: {message}"),
+            }
+        }
+        HfError::HfDownloadFailed { message } => HfError::ProcessFailed {
+            exit_code: output.exit_code,
             message: format!("{operation}: {message}"),
         },
         other => other,
@@ -637,6 +647,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn license_falls_back_to_model_info_after_card_process_failure() {
+        let fake = FakeRunner::with_outputs(vec![
+            failed("unexpected card failure"),
+            output(
+                r#"{"id":"owner/model","license":"mit","siblings":[{"rfilename":"model.gguf","size":1}]}"#,
+            ),
+        ]);
+        let provider = HuggingFaceProvider::with_runner(Arc::new(fake.clone()));
+
+        let license = provider.get_license("owner/model").await.unwrap();
+
+        assert_eq!(license.id.as_deref(), Some("mit"));
+        assert_eq!(fake.commands().len(), 2);
+        assert_eq!(
+            fake.commands()[0].args[0..3],
+            ["models", "card", "owner/model"]
+        );
+        assert_eq!(
+            fake.commands()[1].args[0..3],
+            ["models", "info", "owner/model"]
+        );
+    }
+
+    #[tokio::test]
     async fn searches_with_json_arguments() {
         let fake = FakeRunner::with_outputs(vec![output(
             r#"[{"id":"owner/model","downloads":7,"tags":["gguf"]}]"#,
@@ -664,6 +698,23 @@ mod tests {
         assert_eq!(
             provider.list_files("owner/model", None).await.unwrap_err(),
             HfError::HfRepositoryNotFound
+        );
+    }
+
+    #[test]
+    fn preserves_process_failure_for_non_download_operations() {
+        let output = ProcessOutput {
+            stdout: String::new(),
+            stderr: "unexpected hf failure".into(),
+            exit_code: Some(17),
+        };
+
+        assert_eq!(
+            map_process_failure("search", &output),
+            HfError::ProcessFailed {
+                exit_code: Some(17),
+                message: "search: unexpected hf failure".into(),
+            }
         );
     }
 

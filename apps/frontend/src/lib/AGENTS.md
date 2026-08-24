@@ -14,7 +14,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `api.ts` - fetch wrapper over relative paths with connection-key auth,
   conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment`,
-  `activateDeployment`).
+  `activateDeployment`), além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
@@ -53,7 +53,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
 - `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
   calcula a cadência derivada e só calcula percentual quando o backend conhece
-  o total de bytes.
+  o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
+  estruturado do CLI e da sessão Hugging Face antes da busca remota.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is

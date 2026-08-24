@@ -35,6 +35,25 @@ describe("remote model API", () => {
     expect(String(fetchMock.mock.calls[0][0])).not.toContain("hf download");
   });
 
+  it("reads structured Hugging Face CLI status", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: vi.fn().mockResolvedValue(
+        '{"cli":{"installed":false,"version":null,"authenticated":false,"username":null}}',
+      ),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const status = await apiModule.getRemoteModelProviderStatus();
+
+    expect(status.cli.installed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/ui/model-provider/status",
+      expect.objectContaining({ method: "GET" }),
+    );
+  });
+
   it("starts, cancels and retries through structured backend endpoints", async () => {
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,

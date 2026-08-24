@@ -412,6 +412,12 @@ async fn chat_completions(
     let prompt = render_prompt(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
 
+    if let Some(cfg) = state.runtime.config().await {
+        if let Some(error) = crate::gateway::prompt_budget_error(&cfg, &prompt) {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
+        }
+    }
+
     info!(
         "🤖 /v1/chat/completions model={model} stream={} msgs={} tools={} prompt_len={}",
         req.stream,
@@ -525,6 +531,10 @@ enum Mode {
 }
 
 impl Mode {
+    fn applies_chat_template(self) -> bool {
+        matches!(self, Self::Chat)
+    }
+
     fn object(&self, streaming: bool) -> &'static str {
         match (self, streaming) {
             (Mode::Chat, false) => "chat.completion",
@@ -547,8 +557,16 @@ async fn blocking_response(
     prompt_tokens: u32,
     mode: Mode,
 ) -> Response {
-    match crate::gateway::generate_blocking(state, route, caller, model.clone(), prompt, max_tokens)
-        .await
+    match crate::gateway::generate_blocking(
+        state,
+        route,
+        caller,
+        model.clone(),
+        prompt,
+        mode.applies_chat_template(),
+        max_tokens,
+    )
+    .await
     {
         Ok((text, summary)) => {
             let (message_or_text, saw_tool_call): (serde_json::Value, bool) = match mode {
@@ -667,6 +685,7 @@ fn stream_response(
         caller,
         model.clone(),
         prompt,
+        mode.applies_chat_template(),
         max_tokens,
         tx,
     );
@@ -1000,6 +1019,127 @@ mod tests {
     // ── render_prompt ────────────────────────────────────────────────────────
 
     #[test]
+    fn chat_requests_enable_template_but_completions_stay_raw() {
+        assert!(Mode::Chat.applies_chat_template());
+        assert!(!Mode::Completion.applies_chat_template());
+    }
+
+    #[tokio::test]
+    async fn chat_endpoint_delivers_the_template_mode_with_the_user_prompt() {
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(None::<serde_json::Value>));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"status": "ok", "model_loaded": true}))
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                axum::routing::post({
+                    let seen = seen.clone();
+                    move |body: axum::body::Bytes| {
+                        let seen = seen.clone();
+                        async move {
+                            let (meta, _) = crate::wire::decode_inference_request(&body).unwrap();
+                            *seen.lock().unwrap() = Some(meta);
+                            let response = json!({
+                                "done": true,
+                                "more_chunks": false,
+                                "token_id": 1,
+                                "text": "ok"
+                            });
+                            let bytes = crate::wire::encode_batch_single(
+                                &response,
+                                None,
+                                crate::wire::WireDtype::F16,
+                            )
+                            .unwrap();
+                            (
+                                StatusCode::OK,
+                                [("content-type", "application/octet-stream")],
+                                bytes,
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/session/release",
+                axum::routing::post(|| async { StatusCode::OK }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut peer = crate::gateway::testkit::peer("head", "head", 8080);
+        peer.model = "lab".into();
+        peer.start_layer = 0;
+        peer.end_layer = 0;
+        peer.total_layers = 1;
+        peer.inference_port = Some(port);
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let response = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("lab".into()),
+                messages: vec![msg("user", "Oi, teste")],
+                stream: false,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let meta = seen
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the chat request reached the inference head");
+        assert_eq!(meta["prompt"], "Oi, teste");
+        assert_eq!(meta["chat_template"], true);
+    }
+
+    #[tokio::test]
+    async fn oversized_streaming_chat_is_rejected_before_sse_starts() {
+        let state = crate::gateway::testkit::state_with("eu", Vec::new()).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let response = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("lab".into()),
+                messages: vec![
+                    msg("system", &"agent instructions ".repeat(2_000)),
+                    msg("user", "hello"),
+                ],
+                stream: true,
+                max_tokens: Some(32_000),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+            }),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    #[test]
     fn single_user_message_passes_through_unchanged() {
         // Must stay byte-identical to what /api/generate would receive, so the
         // simple path behaves the same in both APIs.
@@ -1149,6 +1289,10 @@ mod tests {
         let mk = |json: &str| -> ChatRequest { serde_json::from_str(json).unwrap() };
         assert_eq!(mk(r#"{"messages":[]}"#).max_tokens(), DEFAULT_MAX_TOKENS);
         assert_eq!(mk(r#"{"messages":[],"max_tokens":10}"#).max_tokens(), 10);
+        assert_eq!(
+            mk(r#"{"messages":[],"max_tokens":2048}"#).max_tokens(),
+            2048
+        );
         assert_eq!(
             mk(r#"{"messages":[],"max_completion_tokens":32}"#).max_tokens(),
             32

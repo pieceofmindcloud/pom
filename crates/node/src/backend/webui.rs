@@ -16,13 +16,15 @@ use crate::config::{KvCacheType, Role};
 use crate::deploy::normalize_deployment_name;
 use crate::gateway::GatewayState;
 use crate::gguf;
+use crate::network::PeerInfo;
 use crate::plan::{self, PeerBudget, DEFAULT_RESERVE_PCT};
 use crate::runtime::{NodeConfig, RuntimeStatus};
 use crate::sysmon::{self, SystemLoad};
 use anyhow::Context;
 use axum::{
+    body::Body,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{header, HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -39,8 +41,83 @@ use tracing::{info, warn};
 
 /// How long a scanned catalog is served before a refresh is started behind it.
 const CATALOG_TTL: Duration = Duration::from_secs(20);
+/// A cluster snapshot is cheap to reuse briefly, but never allowed to hide a
+/// peer/runtime mutation for more than this window.
+const CLUSTER_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Timeout for one peer-to-peer control call.
 pub(crate) const PEER_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// A stable validator for JSON consumed by the browser. Callers must pass the
+/// UI payload, not a larger server response containing sampling timestamps or
+/// other transport-only noise.
+pub(crate) fn etag_for_json<T: Serialize>(body: &T) -> String {
+    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    format!("\"{}\"", hex::encode(Sha256::digest(bytes)))
+}
+
+fn if_none_match(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|values| {
+            values
+                .split(',')
+                .map(str::trim)
+                .any(|candidate| candidate == "*" || candidate == etag)
+        })
+}
+
+fn json_response_with_etag(
+    headers: &HeaderMap,
+    bytes: Vec<u8>,
+    etag: &str,
+    version: &str,
+) -> Response {
+    let not_modified = if_none_match(headers, etag);
+    let mut response = if not_modified {
+        Response::new(Body::empty())
+    } else {
+        Response::new(Body::from(bytes))
+    };
+    *response.status_mut() = if not_modified {
+        StatusCode::NOT_MODIFIED
+    } else {
+        StatusCode::OK
+    };
+    response.headers_mut().insert(
+        header::ETAG,
+        HeaderValue::from_str(etag).expect("ETag de SHA256 é um header válido"),
+    );
+    response.headers_mut().insert(
+        header::HeaderName::from_static("x-state-version"),
+        HeaderValue::from_str(version).expect("versão de estado é um header válido"),
+    );
+    if !not_modified {
+        response.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+    }
+    response
+}
+
+/// Return a conditional JSON response, keeping 304 bodies empty.
+pub(crate) fn conditional_json<T: Serialize>(headers: &HeaderMap, body: &T) -> Response {
+    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    let etag = etag_for_json(body);
+    json_response_with_etag(headers, bytes, &etag, &etag)
+}
+
+/// Same response helper with a monotonic snapshot version.
+pub(crate) fn conditional_json_with_version<T: Serialize>(
+    headers: &HeaderMap,
+    body: &T,
+    etag: &str,
+    version: u64,
+) -> Response {
+    let bytes = serde_json::to_vec(body).expect("JSON de estado da UI deve serializar");
+    json_response_with_etag(headers, bytes, etag, &version.to_string())
+}
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -51,6 +128,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/cluster/models", get(cluster_models))
         .route("/api/ui/peer/:node_id/runtime", get(peer_runtime))
         .route("/api/ui/network/rtt", get(network_rtt))
+        .route("/api/ui/chat/telemetry", post(chat_telemetry))
         .route("/api/ui/paths", get(get_paths).post(save_paths))
         .route(
             "/api/ui/cache-types",
@@ -660,7 +738,7 @@ async fn models(State(state): State<GatewayState>) -> impl IntoResponse {
     }))
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct RttReport {
     source_node_id: String,
     measurements: Vec<crate::route::RttMeasurement>,
@@ -670,15 +748,114 @@ struct RttReport {
 /// porque o relatório faz parte da telemetria interna usada para escolher
 /// rotas de inferência.
 async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Json<RttReport> {
+    let mut measurements = local_rtt_measurements(&state);
+    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+
+    Json(RttReport {
+        source_node_id: state.network.node_id.clone(),
+        measurements,
+    })
+}
+
+#[derive(Debug, Deserialize)]
+struct ChatTelemetryRequest {
+    #[serde(default)]
+    node_ids: Vec<String>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+struct ChatTelemetryMeasurement {
+    from_node_id: String,
+    to_node_id: String,
+    rtt_ms: f64,
+    transport: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ChatTelemetryResponse {
+    measurements: Vec<ChatTelemetryMeasurement>,
+}
+
+/// Combina a sonda local com os relatórios direcionais dos próprios peers.
+///
+/// A tela de implantação já usa esta mesma fonte para as arestas do plano,
+/// mas o chat precisa de uma consulta sob demanda para a execução recém
+/// terminada. Cada relatório é aceito somente quando o `source_node_id` bate
+/// com o peer que respondeu: sem essa verificação, um gateway intermediário
+/// poderia fazer uma medida parecer ser de outra máquina.
+async fn chat_telemetry(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(request): Json<ChatTelemetryRequest>,
+) -> Json<ChatTelemetryResponse> {
+    let requested: std::collections::HashSet<String> = request
+        .node_ids
+        .into_iter()
+        .filter(|node_id| !node_id.is_empty())
+        .collect();
+    if requested.len() < 2 {
+        return Json(ChatTelemetryResponse {
+            measurements: Vec::new(),
+        });
+    }
+
+    let self_id = state.network.node_id.clone();
+    let peers = state.all_peers().await;
+    let connection_key = state.auth.read().await.connection_key.clone();
+    let mut measurements = Vec::new();
+
+    append_chat_telemetry_measurements(
+        &mut measurements,
+        &self_id,
+        RttReport {
+            source_node_id: self_id.clone(),
+            measurements: local_rtt_measurements(&state),
+        },
+        &requested,
+    );
+
+    for peer in peers {
+        if peer.node_id == self_id || !requested.contains(&peer.node_id) {
+            continue;
+        }
+        let Some(base) = peer.gateway_url() else {
+            continue;
+        };
+        let Ok(http) = state.peer_http.for_peer(&peer.node_id) else {
+            continue;
+        };
+        let response = http
+            .get(format!("{base}/api/ui/network/rtt"))
+            .timeout(PEER_TIMEOUT)
+            .bearer_auth(&connection_key)
+            .send()
+            .await;
+        let Ok(response) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(report) = response.json::<RttReport>().await else {
+            continue;
+        };
+        append_chat_telemetry_measurements(&mut measurements, &peer.node_id, report, &requested);
+    }
+
+    measurements.sort_by(|a, b| {
+        a.from_node_id
+            .cmp(&b.from_node_id)
+            .then_with(|| a.to_node_id.cmp(&b.to_node_id))
+    });
+    Json(ChatTelemetryResponse { measurements })
+}
+
+fn local_rtt_measurements(state: &GatewayState) -> Vec<crate::route::RttMeasurement> {
     let mut measurements = state.network.rtts.snapshot();
     let measured_targets: std::collections::HashSet<String> = measurements
         .iter()
         .map(|measurement| measurement.target_node_id.clone())
         .collect();
-
-    // Peers antigos não têm o probe libp2p. O RTT HTTP local continua sendo
-    // uma informação útil para compatibilidade, mas nunca substitui uma
-    // medição libp2p já existente para o mesmo destino.
     for (node_id, route) in state.network.routes.snapshot() {
         if !measured_targets.contains(&node_id) {
             measurements.push(crate::route::RttMeasurement {
@@ -688,12 +865,33 @@ async fn network_rtt(_auth: ConnectionAuth, State(state): State<GatewayState>) -
             });
         }
     }
-    measurements.sort_by(|a, b| a.target_node_id.cmp(&b.target_node_id));
+    measurements
+}
 
-    Json(RttReport {
-        source_node_id: state.network.node_id.clone(),
-        measurements,
-    })
+fn append_chat_telemetry_measurements(
+    output: &mut Vec<ChatTelemetryMeasurement>,
+    expected_source: &str,
+    report: RttReport,
+    requested: &std::collections::HashSet<String>,
+) {
+    if report.source_node_id != expected_source {
+        return;
+    }
+    output.extend(
+        report
+            .measurements
+            .into_iter()
+            .filter(|measurement| {
+                requested.contains(&measurement.target_node_id)
+                    && measurement.target_node_id != expected_source
+            })
+            .map(|measurement| ChatTelemetryMeasurement {
+                from_node_id: expected_source.to_string(),
+                to_node_id: measurement.target_node_id,
+                rtt_ms: measurement.rtt_ms,
+                transport: measurement.transport,
+            }),
+    );
 }
 
 // ── Cluster view ─────────────────────────────────────────────────────────────
@@ -821,8 +1019,94 @@ struct ModelCoverageView {
     complete: bool,
 }
 
-async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
+async fn cluster_fingerprint(state: &GatewayState, peers: &[PeerInfo]) -> String {
+    let mut peer_state = serde_json::to_value(peers).expect("peers da UI devem serializar");
+    if let Some(peers) = peer_state.as_array_mut() {
+        for peer in peers {
+            // Liveness is represented by presence in this list. The timestamp
+            // itself is not rendered and would invalidate the cache on every
+            // heartbeat, including the synthetic self peer.
+            if let Some(peer) = peer.as_object_mut() {
+                peer.remove("last_seen");
+            }
+        }
+    }
+    let mut loads = Vec::with_capacity(peers.len());
+    for peer in peers {
+        loads.push(json!({
+            "node_id": peer.node_id,
+            "load": state.loads.load(&peer.node_id).await,
+        }));
+    }
+    let mut routes = state
+        .network
+        .routes
+        .snapshot()
+        .into_iter()
+        .map(|(node_id, route)| {
+            json!({
+                "node_id": node_id,
+                "addr": route.addr,
+                "rtt_ms": route.rtt_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    routes.sort_by(|left, right| left["node_id"].as_str().cmp(&right["node_id"].as_str()));
+
+    etag_for_json(&json!({
+        "self_id": state.network.node_id,
+        "peers": peer_state,
+        "loads": loads,
+        "routes": routes,
+        "runtime": state.runtime.status().await,
+        "config": state.runtime.config().await,
+        "active_model": state.active_model().await,
+        "detached": state.network.is_detached(),
+    }))
+}
+
+/// Sampling time is not a UI fact. Keep the actual metrics in the version, but
+/// remove only this timestamp so a fresh sample with identical values does not
+/// invalidate the semantic cluster version.
+fn cluster_etag(body: &serde_json::Value) -> String {
+    let mut normalized = body.clone();
+    if let Some(node) = normalized.get_mut("node") {
+        remove_system_sample_time(node);
+    }
+    if let Some(peers) = normalized
+        .get_mut("peers")
+        .and_then(|value| value.as_array_mut())
+    {
+        for peer in peers {
+            if let Some(node) = peer.get_mut("node") {
+                remove_system_sample_time(node);
+            }
+        }
+    }
+    etag_for_json(&normalized)
+}
+
+fn remove_system_sample_time(node: &mut serde_json::Value) {
+    if let Some(system) = node
+        .get_mut("system")
+        .and_then(|value| value.as_object_mut())
+    {
+        system.remove("sampled_at");
+    }
+}
+
+async fn cluster(headers: HeaderMap, State(state): State<GatewayState>) -> Response {
     let peers = state.all_peers().await;
+    let fingerprint = cluster_fingerprint(&state, &peers).await;
+    let mut cache = state.cluster_cache.lock().await;
+    if let Some(snapshot) = cache.get(&fingerprint, Instant::now(), CLUSTER_CACHE_TTL) {
+        return conditional_json_with_version(
+            &headers,
+            &snapshot.body,
+            &snapshot.etag,
+            snapshot.version,
+        );
+    }
     let self_id = state.network.node_id.clone();
 
     // Fan out to every peer at once; a slow peer must not serialise the others.
@@ -1005,7 +1289,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
 
     let self_node = serde_json::to_value(node_info(State(state.clone())).await.0).ok();
 
-    Json(json!({
+    let body = json!({
         "self_id": self_id,
         "active_model": active,
         "total_layers": total,
@@ -1017,7 +1301,11 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
         "routing_edges": routing_edges,
         "candidate_edges": candidate_edges,
         "node": self_node,
-    }))
+    });
+
+    let etag = cluster_etag(&body);
+    let snapshot = cache.store(fingerprint, body, etag, Instant::now());
+    conditional_json_with_version(&headers, &snapshot.body, &snapshot.etag, snapshot.version)
 }
 
 /// Como uma máquina carregou o modelo: o `/health` do servidor de inferência
@@ -1032,10 +1320,7 @@ async fn cluster(State(state): State<GatewayState>) -> impl IntoResponse {
 /// tem `inference_url` como as outras, e é o mesmo caminho que o
 /// `ready_for_pipeline` já percorre - um só código, então o card do nó local
 /// nunca mostra menos que o card de um remoto.
-async fn peer_runtime(
-    State(state): State<GatewayState>,
-    Path(node_id): Path<String>,
-) -> Response {
+async fn peer_runtime(State(state): State<GatewayState>, Path(node_id): Path<String>) -> Response {
     let Some(peer) = state
         .all_peers()
         .await
@@ -1600,7 +1885,7 @@ const JOB_RETENTION: Duration = Duration::from_secs(600);
 /// here, on the node running it, and the browser only ever asks what is going
 /// on. Finished jobs are pruned as the list is built, which is the only moment
 /// anybody looks at them.
-async fn list_jobs() -> Response {
+async fn list_jobs(headers: HeaderMap) -> Response {
     let cutoff = chrono::Utc::now() - chrono::Duration::from_std(JOB_RETENTION).unwrap();
     let mut map = jobs().write().await;
     map.retain(|_, job| {
@@ -1614,7 +1899,7 @@ async fn list_jobs() -> Response {
 
     let mut list: Vec<Job> = map.values().cloned().collect();
     list.sort_by(|a, b| b.started_at.cmp(&a.started_at));
-    Json(json!({ "jobs": list })).into_response()
+    conditional_json(&headers, &json!({ "jobs": list }))
 }
 
 pub(crate) async fn set_job(id: &str, state: &'static str, step: &str, message: &str) {
@@ -3965,6 +4250,7 @@ mod catalogo_sob_tls_tests {
     /// cliente pinado, entao ele e a prova de que o caminho certo foi usado.
     #[tokio::test]
     async fn cluster_models_fala_com_os_peers_pelo_cliente_pinado() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
         assert!(state.peer_http.cached_peers().is_empty());
@@ -3983,6 +4269,7 @@ mod catalogo_sob_tls_tests {
     /// que e por onde o defeito apareceu para o operador.
     #[tokio::test]
     async fn a_lista_de_maquinas_para_implantar_tambem_e_pinada() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
 
@@ -4800,5 +5087,123 @@ mod peer_runtime_tests {
         assert_eq!(body["loaded"], true);
         assert_eq!(body["health"]["offload_kqv"], true);
         assert_eq!(body["health"]["placement"]["n_layer"], 1);
+    }
+}
+
+#[cfg(test)]
+mod state_transport_tests {
+    use super::*;
+    use axum::body::to_bytes;
+    use axum::http::header::{ETAG, IF_NONE_MATCH};
+
+    #[test]
+    fn the_etag_changes_when_the_ui_payload_changes() {
+        let before = etag_for_json(&json!({ "jobs": [] }));
+        let after = etag_for_json(&json!({
+            "jobs": [{ "id": "job-1", "state": "running" }]
+        }));
+
+        assert_ne!(
+            before, after,
+            "uma mudança visível precisa invalidar a versão"
+        );
+    }
+
+    #[test]
+    fn the_etag_stays_when_the_ui_payload_does_not_change() {
+        let first = etag_for_json(&json!({ "offers": [] }));
+        let second = etag_for_json(&json!({ "offers": [] }));
+
+        assert_eq!(first, second, "o mesmo retrato precisa manter a versão");
+    }
+
+    #[test]
+    fn cluster_version_ignores_only_the_sampling_timestamp() {
+        let first = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:00Z", "ram": { "used_mb": 10 } } }
+        });
+        let second = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:01Z", "ram": { "used_mb": 10 } } }
+        });
+        let changed = json!({
+            "node": { "system": { "sampled_at": "2026-01-01T00:00:01Z", "ram": { "used_mb": 11 } } }
+        });
+
+        assert_eq!(cluster_etag(&first), cluster_etag(&second));
+        assert_ne!(cluster_etag(&second), cluster_etag(&changed));
+    }
+
+    #[tokio::test]
+    async fn an_matching_etag_returns_304_without_a_body() {
+        let payload = json!({ "jobs": [] });
+        let first = conditional_json(&HeaderMap::new(), &payload);
+        let etag = first.headers().get(ETAG).cloned().unwrap();
+        let mut headers = HeaderMap::new();
+        headers.insert(IF_NONE_MATCH, etag);
+
+        let second = conditional_json(&headers, &payload);
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert!(
+            to_bytes(second.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty(),
+            "304 não pode remandar o JSON"
+        );
+    }
+}
+
+#[cfg(test)]
+mod chat_telemetry_tests {
+    use super::*;
+
+    #[test]
+    fn directional_report_is_kept_only_for_verified_sources_and_requested_targets() {
+        let requested = ["a", "b", "c"].into_iter().map(str::to_string).collect();
+        let mut output = Vec::new();
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "wrong-source".into(),
+                measurements: vec![crate::route::RttMeasurement {
+                    target_node_id: "b".into(),
+                    rtt_ms: 12.5,
+                    transport: "libp2p".into(),
+                }],
+            },
+            &requested,
+        );
+        assert!(output.is_empty(), "a resposta não pode trocar a origem");
+
+        append_chat_telemetry_measurements(
+            &mut output,
+            "a",
+            RttReport {
+                source_node_id: "a".into(),
+                measurements: vec![
+                    crate::route::RttMeasurement {
+                        target_node_id: "b".into(),
+                        rtt_ms: 12.5,
+                        transport: "libp2p".into(),
+                    },
+                    crate::route::RttMeasurement {
+                        target_node_id: "outside-pipeline".into(),
+                        rtt_ms: 99.0,
+                        transport: "libp2p".into(),
+                    },
+                ],
+            },
+            &requested,
+        );
+        assert_eq!(
+            output,
+            vec![ChatTelemetryMeasurement {
+                from_node_id: "a".into(),
+                to_node_id: "b".into(),
+                rtt_ms: 12.5,
+                transport: "libp2p".into(),
+            }]
+        );
     }
 }

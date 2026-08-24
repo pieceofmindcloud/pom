@@ -46,6 +46,7 @@ export function fakeNode(over: Partial<NodeInfo> = {}): NodeInfo {
       restarts: 0,
       log_path: null,
       reported_total_layers: 32,
+      reported_gpu_layers: null,
       changed_at: "2026-08-15T00:00:00Z",
     },
     system: fakeSystem({ hostname: over.hostname ?? "salem" }),

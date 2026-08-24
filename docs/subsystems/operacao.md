@@ -155,9 +155,13 @@ desligadas - o prompt do agente padrão não cabe no orçamento de prompt.
 OPENCODE_CONFIG=/caminho/opencode.json opencode run --pure --agent curto "..."
 ```
 
-Números medidos: o OpenCode manda ~2200 caracteres com um agente mínimo (sem
-ferramentas) e ~8000 no agente padrão. Config que fez funcionar:
-`--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 3072 tokens.
+Números medidos: o OpenCode 1.18.21 manda ~2200 caracteres na chamada de título
+e ~54k no agente padrão, com `max_tokens: 32000`, ferramentas e
+`stream_options.include_usage`. Config que fez funcionar para o agente padrão:
+`--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32768 menos
+256 tokens. Se o prompt excede o orçamento, `/v1/chat/completions` agora
+responde HTTP 413 antes do SSE; isso deixa o erro visível no OpenCode em vez de
+deixá-lo aguardando um evento de erro que não tem formato de chunk.
 
 O Pi só expõe base URL para Azure; não há como apontá-lo para um endpoint
 OpenAI-compatível arbitrário por variável de ambiente.

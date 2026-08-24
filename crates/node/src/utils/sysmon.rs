@@ -477,7 +477,10 @@ async fn read_gpu(ram: &MemStat) -> (GpuKind, Option<String>, Vec<GpuStat>, Vec<
             gpus.retain(|g| permitidas.contains(&g.index));
         }
     }
-    let nvidia = gpus.iter().filter(|g| g.vendor == GpuVendor::Nvidia).count();
+    let nvidia = gpus
+        .iter()
+        .filter(|g| g.vendor == GpuVendor::Nvidia)
+        .count();
     let amd = gpus.iter().filter(|g| g.vendor == GpuVendor::Amd).count();
 
     if !gpus.is_empty() {
@@ -655,7 +658,9 @@ async fn amd_sysfs(first_index: u32) -> Vec<GpuStat> {
 
     let mut out = Vec::new();
     for name in cards {
-        let dev = std::path::Path::new("/sys/class/drm").join(&name).join("device");
+        let dev = std::path::Path::new("/sys/class/drm")
+            .join(&name)
+            .join("device");
         if read(dev.join("vendor")).await.as_deref() != Some(AMD) {
             continue;
         }

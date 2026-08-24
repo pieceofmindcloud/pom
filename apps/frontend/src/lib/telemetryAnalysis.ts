@@ -1,5 +1,6 @@
-import type { PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
+import type { LegacyHopTrace, PhaseTrace, RequestTrace, TpTelemetry } from "./chatStream";
 import { isPhasedHop } from "./chatStream";
+import type { LayerPlacement } from "./types";
 
 export type TelemetryAnalysisKind =
   | "tp-network"
@@ -35,6 +36,75 @@ function total(rows: Array<{ data: PhaseTrace }>, selector: (phase: PhaseTrace) 
 
 function formatMs(value: number) {
   return `${Math.round(value)} ms`;
+}
+
+/** RTT observado nas chamadas do stream, ou ausência para traces antigos. */
+export function executionRttMs(trace: RequestTrace): number | null {
+  const phased = trace.hops.filter(isPhasedHop);
+  if (phased.length === 0) return null;
+  const phases = phased.flatMap((hop) => [hop.prefill, hop.decode]);
+  if (phases.some((phase) => typeof phase.round_trip_ms !== "number")) return null;
+  return phases.reduce((sum, phase) => sum + phase.round_trip_ms, 0);
+}
+
+/** Tempo de transporte que o trace atribuiu fora do processamento do peer. */
+export function executionNetworkMs(trace: RequestTrace): number | null {
+  const phased = trace.hops.filter(isPhasedHop);
+  if (phased.length > 0) {
+    const phases = phased.flatMap((hop) => [hop.prefill, hop.decode]);
+    if (phases.some((phase) => typeof phase.network_ms !== "number")) return null;
+    return phases.reduce((sum, phase) => sum + phase.network_ms, 0);
+  }
+  const legacy = trace.hops.filter((hop): hop is LegacyHopTrace => !isPhasedHop(hop));
+  if (legacy.length === 0 || legacy.some((hop) => typeof hop.network_ms !== "number")) return null;
+  return legacy.reduce((sum, hop) => sum + hop.network_ms, 0);
+}
+
+/** Pares adjacentes que a execução realmente atravessou, sem incluir TP workers. */
+export function executionPipelineEdges(trace: RequestTrace): Array<{
+  from_node_id: string;
+  to_node_id: string;
+}> {
+  const nodes = trace.hops.map((hop) => hop.node_id);
+  const edges: Array<{ from_node_id: string; to_node_id: string }> = [];
+  for (let index = 1; index < nodes.length; index += 1) {
+    const from_node_id = nodes[index - 1];
+    const to_node_id = nodes[index];
+    if (from_node_id !== to_node_id) edges.push({ from_node_id, to_node_id });
+  }
+  return edges;
+}
+
+export interface PlacementCounts {
+  gpu: number;
+  cpu: number;
+  mixed: number;
+  unknown: number;
+}
+
+function bufferKind(buffer: string): "gpu" | "cpu" | "unknown" {
+  const normalized = buffer.toLowerCase();
+  if (normalized.includes("cpu") || normalized.includes("host")) return "cpu";
+  if (["cuda", "metal", "vulkan", "opencl", "hip", "sycl", "gpu"].some((name) => normalized.includes(name))) {
+    return "gpu";
+  }
+  return "unknown";
+}
+
+/** Conta camadas pela colocação efetiva dos buffers, não pelo pedido de GPU. */
+export function effectivePlacementCounts(layers: LayerPlacement[]): PlacementCounts {
+  return layers.reduce<PlacementCounts>((counts, layer) => {
+    const kinds = new Set(
+      layer.buffers
+        .filter((buffer) => buffer.bytes > 0)
+        .map((buffer) => bufferKind(buffer.buffer)),
+    );
+    if (kinds.has("gpu") && kinds.has("cpu")) counts.mixed += 1;
+    else if (kinds.has("gpu")) counts.gpu += 1;
+    else if (kinds.has("cpu")) counts.cpu += 1;
+    else counts.unknown += 1;
+    return counts;
+  }, { gpu: 0, cpu: 0, mixed: 0, unknown: 0 });
 }
 
 export function analyzeTelemetry(trace: RequestTrace): TelemetryAnalysis {

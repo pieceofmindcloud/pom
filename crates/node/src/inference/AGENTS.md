@@ -34,11 +34,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
   e o branch de relay. Os handlers decodificam o frame e entregam comandos a
   uma fila local limitada; o worker seleciona uma entrada por sessão e pode
-  chamar o decode multi-sequência.
+  chamar o decode multi-sequência. Cada `Session` mantém seu próprio
+  `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
+  posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
+  limpeza de erro/cancelamento.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
-  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `decode_tokens_batch` e
-  `decode_hidden_batch`
+  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
+  devolve a peça sem conversão lossy para o acumulador da sessão.
+  `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
 - `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
@@ -202,7 +206,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
-- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift` e também o snapshot
+- `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
+  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`) e também o snapshot
   do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
@@ -249,8 +254,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `reset_capture_slot` antes, senão a sobra de uma requisição entraria
   concatenada na próxima. A ordem depende do `split_simple` - ver Defeitos
   anotados.
-- `profile_backend_sync` - perfil do backend síncrono, `POM_PROFILE_SYNC`
-  (default ligado; "0"/"false" desliga).
+- `profile_backend_sync_enabled` - perfil do backend síncrono, `POM_PROFILE_SYNC`
+  (default ligado; "0"/"false" desliga), publicado explicitamente por peer em
+  `/health`. `NodeTimings` mantém os contadores em microssegundos e serializa os
+  campos `*_ms` de diagnóstico como milissegundos fracionários, então uma
+  medição sub-milisegundo não vira zero no wire. `backend_completion_ms` é uma
+  duração medida, não uma fonte de verdade sobre o estado da flag; a telemetria
+  do Chat não deduz esse estado de um timing zero.
 - `unsafe impl Send/Sync` atrás de Mutex do std (o llama.cpp não é thread-safe);
   `Drop` libera só o ctx - os pesos são do `LoadedModel`.
 - `SamplingConfig` - temperature/top_p/top_k/repeat_penalty, aplicados por passo.
@@ -299,8 +309,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `speculate.draft` presente bastam.
 - `DEFAULT_CHUNK_TOKENS=512` - ~8 MiB f16 por hop por pedaço
   (medido: 565 KB para 69 tokens, exatamente `hidden_dim 4096 × 2`).
-- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; o campo
-  `node_lock_wait_ms` separa "nó lento" de "nó ocupado".
+- `RequestTrace`/`PhaseTrace`/`HopTrace` - timings por fase por hop; `round_trip_ms`
+  conserva a ida e volta observada de cada chamada para a soma do RTT da execução,
+  enquanto `node_lock_wait_ms` separa "nó lento" de "nó ocupado". Os campos
+  derivados de `NodeTimings` preservam frações de milissegundo. Isso é telemetria
+  do gateway/SSE e não muda o frame entre peers.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;

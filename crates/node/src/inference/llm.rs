@@ -460,10 +460,14 @@ pub struct DecodeTimings {
 /// dizia que o gargalo era "acesso aos logits" quando era a GPU terminando.
 /// Foi essa conta errada que a Mudança 6 do spec de 2026-08-12 pedia para
 /// fechar.
-fn profile_backend_sync() -> bool {
-    std::env::var("POM_PROFILE_SYNC")
+fn profile_backend_sync_value(value: Option<&str>) -> bool {
+    value
         .map(|value| value != "0" && !value.eq_ignore_ascii_case("false"))
         .unwrap_or(true)
+}
+
+pub fn profile_backend_sync_enabled() -> bool {
+    profile_backend_sync_value(std::env::var("POM_PROFILE_SYNC").ok().as_deref())
 }
 
 // SAFETY: We serialise all GPU calls behind a `Mutex<LlmEngine>` in the HTTP
@@ -791,6 +795,36 @@ impl LlmEngine {
         self.cache_type_v
     }
 
+    /// Quantos blocos esta fatia carregou.
+    pub fn n_layer(&self) -> u32 {
+        unsafe { sys::llama_model_n_layer(self.loaded.model) as u32 }
+    }
+
+    /// Em qual bloco desta fatia a próxima decodificação deve parar.
+    ///
+    /// `None` volta ao normal: captura no último bloco, grafo inteiro. Com
+    /// `Some(k)` a captura passa a mirar `l_out-k`, e o retorno `false` do
+    /// callback na fase de compute **abandona o resto do grafo** - é isso que
+    /// faz a execução ser de fato parcial, e não o grafo inteiro com o
+    /// resultado de um bloco do meio.
+    ///
+    /// Vale só para a próxima decodificação porque quem a chama já segura o
+    /// mesmo lock que serializa as decodificações deste contexto.
+    pub fn set_capture_layer(&self, block_index: Option<u32>) -> Result<()> {
+        if !self.capture_ok {
+            bail!("esta fatia não exporta residual: não há captura para reposicionar");
+        }
+        let last = self.n_layer().saturating_sub(1);
+        let index = block_index.unwrap_or(last);
+        if index > last {
+            bail!("bloco {index} não existe nesta fatia (último é {last})");
+        }
+        let name = CString::new(format!("l_out-{index}"))
+            .map_err(|e| anyhow::anyhow!("nome de tensor inválido: {e}"))?;
+        self.capture.lock().unwrap().want = Some(name);
+        Ok(())
+    }
+
     pub fn fit_memory_applied(&self) -> bool {
         self.fit_memory_applied
     }
@@ -810,7 +844,9 @@ impl LlmEngine {
     /// possível, porque nada em `EngineConfig` substitui o buffer real de um
     /// tensor. Ver `llama_rs_model_placement_json` no `wrapper_common.cpp`.
     pub fn placement(&self) -> Option<serde_json::Value> {
-        unsafe { json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out)) }
+        unsafe {
+            json_from_wrapper(|out| sys::llama_rs_model_placement_json(self.loaded.model, out))
+        }
     }
 
     /// A memória deste contexto por buffer: pesos, cache KV e cálculo.
@@ -876,7 +912,12 @@ impl LlmEngine {
         tokens
     }
 
-    pub fn token_to_piece(&self, token: i32, special: bool) -> String {
+    /// Devolve os bytes crus da peça do vocabulário.
+    ///
+    /// Uma peça pode terminar no meio de um codepoint UTF-8. A conversão para
+    /// `String` fica deliberadamente fora deste limite: o caminho de streaming
+    /// precisa alimentar um `Utf8Assembler` que vive na sessão da requisição.
+    pub fn token_to_piece_bytes(&self, token: i32, special: bool) -> Vec<u8> {
         let mut buf = vec![0u8; 256];
         let n = unsafe {
             sys::llama_token_to_piece(
@@ -889,10 +930,10 @@ impl LlmEngine {
             )
         };
         if n <= 0 {
-            return String::new();
+            return Vec::new();
         }
         buf.truncate(n as usize);
-        String::from_utf8_lossy(&buf).into_owned()
+        buf
     }
 
     // ── Chat template ─────────────────────────────────────────────────────────
@@ -1146,7 +1187,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -1274,7 +1315,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -1383,7 +1424,7 @@ impl LlmEngine {
             residual_capture_d2h_sync_us: self.capture.lock().unwrap().copy_us,
             ..Default::default()
         };
-        if profile_backend_sync() {
+        if profile_backend_sync_enabled() {
             let completion_started = Instant::now();
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
@@ -1475,6 +1516,75 @@ impl LlmEngine {
             let mem = sys::llama_get_memory(self.ctx);
             !mem.is_null() && sys::llama_memory_can_shift(mem)
         }
+    }
+}
+
+/// Monta peças de token em texto válido entre chamadas.
+///
+/// O vocabulário devolve bytes crus por token: um token BYTE é um byte só
+/// (`llama-vocab.cpp::token_to_piece`, ramo `LLAMA_TOKEN_ATTR_BYTE`) e um
+/// token normal pode terminar no meio de um codepoint. Converter cada peça
+/// com `from_utf8_lossy` por chamada nascia U+FFFD independente a cada
+/// fragmento e rasgava a palavra no delta do chat. O acumulador guarda o
+/// rabicho incompleto e só emite caractere completo; `flush` drena o resto
+/// no fim do stream.
+pub(crate) struct Utf8Assembler {
+    pending: Vec<u8>,
+}
+
+impl Utf8Assembler {
+    pub(crate) fn new() -> Self {
+        Self {
+            pending: Vec::new(),
+        }
+    }
+
+    /// Acrescenta os bytes da peça e devolve o texto completo até aqui.
+    ///
+    /// Sequência incompleta no fim fica pendente para a peça seguinte;
+    /// sequência inválida de verdade vira um único U+FFFD na hora, a mesma
+    /// semântica de um `from_utf8_lossy` sobre o stream inteiro.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> String {
+        self.pending.extend_from_slice(bytes);
+        let mut out = String::new();
+        loop {
+            match std::str::from_utf8(&self.pending) {
+                Ok(s) => {
+                    out.push_str(s);
+                    self.pending.clear();
+                    break;
+                }
+                Err(e) => {
+                    let valid = e.valid_up_to();
+                    if valid > 0 {
+                        out.push_str(
+                            std::str::from_utf8(&self.pending[..valid])
+                                .expect("prefixo validado por from_utf8"),
+                        );
+                    }
+                    match e.error_len() {
+                        // Incompleta: o caractere pode completar na próxima peça.
+                        None => {
+                            self.pending.drain(..valid);
+                            break;
+                        }
+                        // Inválida: não vai completar nunca; repõe e segue.
+                        Some(n) => {
+                            self.pending.drain(..valid + n);
+                            out.push('\u{fffd}');
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Fim do stream: drena o rabicho que não virou caractere completo.
+    pub(crate) fn flush(&mut self) -> String {
+        let out = String::from_utf8_lossy(&self.pending).into_owned();
+        self.pending.clear();
+        out
     }
 }
 
@@ -2077,6 +2187,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn profile_sync_defaults_on_and_accepts_explicit_off_values() {
+        assert!(profile_backend_sync_value(None));
+        assert!(profile_backend_sync_value(Some("1")));
+        assert!(!profile_backend_sync_value(Some("0")));
+        assert!(!profile_backend_sync_value(Some("false")));
+    }
+
+    #[test]
     fn cache_types_map_to_the_llama_context_types() {
         assert_eq!(cache_type_to_ggml(KvCacheType::F16), sys::GGML_TYPE_F16);
         assert_eq!(cache_type_to_ggml(KvCacheType::Q8_0), sys::GGML_TYPE_Q8_0);
@@ -2332,10 +2450,11 @@ mod tests {
     }
 
     /// Mudança 6 do spec de 2026-08-12: `node_logits_access_ms` marcava ~4,9 ms
-    /// por token no nó da LM head, com `backend_completion_ms` em zero porque o
-    /// `llama_synchronize` de diagnóstico está desligado por padrão. A hipótese
-    /// é que esses milissegundos são a GPU terminando o trabalho, cobrados na
-    /// etapa errada — o primeiro toque de CPU nos logits é quem espera.
+    /// por token no nó da LM head, com `backend_completion_ms` em zero quando o
+    /// `llama_synchronize` de diagnóstico está desligado pela configuração. A
+    /// hipótese é que esses milissegundos são a GPU terminando o trabalho,
+    /// cobrados na etapa errada - o primeiro toque de CPU nos logits é quem
+    /// espera.
     ///
     /// Este teste decide isso sem precisar de duas máquinas: decodifica um
     /// token na mesma fatia duas vezes, uma com `POM_PROFILE_SYNC`
@@ -2449,5 +2568,87 @@ mod tests {
                 > tokens.len(),
             "a longer prompt must produce more tokens"
         );
+    }
+
+    #[test]
+    fn chat_template_wraps_the_user_prompt_and_opens_assistant_turn() {
+        let _guard = ENGINE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(path) = std::env::var("POM_TEST_GGUF") else {
+            eprintln!("skipping: set POM_TEST_GGUF to a .gguf to run this");
+            return;
+        };
+        let cfg = EngineConfig {
+            n_ctx: 512,
+            offload_kqv: true,
+            cache_type_k: KvCacheType::F16,
+            cache_type_v: KvCacheType::F16,
+            fit_memory: false,
+            n_batch: 512,
+            n_gpu_layers: 0,
+            n_threads: 2,
+            max_sessions: 1,
+            need_embeddings: false,
+            mtp: false,
+            rs_seq_window: 0,
+        };
+        let engine = LlmEngine::load(&path, &cfg).expect("model loads");
+        let formatted = engine.apply_chat_template(&[("user", "Oi, teste")], true, false);
+        assert!(formatted.contains("Oi, teste"));
+        assert!(!formatted.starts_with("Oi, teste"));
+        assert!(formatted.to_ascii_lowercase().contains("assistant"));
+        assert!(
+            engine.tokenize(&formatted, false, true).len()
+                > engine.tokenize("Oi, teste", true, true).len()
+        );
+    }
+}
+
+#[cfg(test)]
+mod utf8_assembler_tests {
+    use super::*;
+
+    /// Um token pode terminar no meio de um codepoint (byte-fallback) e o
+    /// pedaço seguinte completa a sequência. Converter cada chamada com
+    /// `from_utf8_lossy` nascia U+FFFD no meio da palavra - este é o
+    /// contrato de regressão: só caractere completo sai, e o rabinho fica.
+    #[test]
+    fn assembler_emite_so_caractere_completo_e_guarda_o_rabicho() {
+        let mut asm = Utf8Assembler::new();
+        // "ão" = c3 a3, quebrado entre dois tokens depois de "Jo".
+        assert_eq!(asm.feed(b"Jo\xc3"), "Jo");
+        assert_eq!(asm.feed(b"\xa3o "), "\u{e3}o ");
+        // Emoji de 4 bytes (🧠 = f0 9f a7 a0) quebrado em três feeds.
+        assert_eq!(asm.feed(&[0xf0]), "");
+        assert_eq!(asm.feed(&[0x9f, 0xa7]), "");
+        assert_eq!(asm.feed(&[0xa0, b'!']), "\u{1f9e0}!");
+        assert_eq!(asm.flush(), "");
+    }
+
+    #[test]
+    fn assembler_passa_ascii_inteiro_numa_so_chamada() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(
+            asm.feed(b"Ol\xc3\xa1, a\xc3\xa7\xc3\xa3o, cora\xc3\xa7\xc3\xa3o"),
+            "Ol\u{e1}, a\u{e7}\u{e3}o, cora\u{e7}\u{e3}o"
+        );
+    }
+
+    /// Byte inválido de verdade (não é prefixo de nada): vira um U+FFFD na
+    /// hora e o stream continua - mesma semântica do from_utf8_lossy global,
+    /// sem esperar bytes que nunca vão completar sequência alguma.
+    #[test]
+    fn assembler_repassa_byte_invalido_como_um_fffd_e_segue() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(asm.feed(b"a\xffb"), "a\u{fffd}b");
+    }
+
+    /// Fim do stream com sequência truncada: o flush drena o resto como um
+    /// único replacement, e chamar de novo devolve vazio.
+    #[test]
+    fn flush_drena_rabicho_truncado_uma_vez() {
+        let mut asm = Utf8Assembler::new();
+        assert_eq!(asm.feed(b"ok\xc3"), "ok");
+        assert_eq!(asm.flush(), "\u{fffd}");
+        assert_eq!(asm.flush(), "");
     }
 }

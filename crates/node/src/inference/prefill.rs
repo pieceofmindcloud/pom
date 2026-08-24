@@ -77,6 +77,9 @@ pub struct TlsHop {
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
     pub processing_ms: u64,
+    /// Sum of the observed call round trips for this phase, including peer
+    /// processing. The frontend uses this for the execution RTT total.
+    pub round_trip_ms: u64,
     /// Round trip minus what the peer claimed: the residual HTTP time.
     pub network_ms: u64,
     pub bytes_sent: u64,
@@ -97,39 +100,39 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
-    pub node_frame_decode_ms: u64,
-    pub node_input_prepare_ms: u64,
-    pub node_queue_ms: u64,
+    pub node_frame_decode_ms: f64,
+    pub node_input_prepare_ms: f64,
+    pub node_queue_ms: f64,
     /// Espera pelo mutex do motor no nó: o preço de outra requisição estar
     /// decodificando ali. É o que separa "o nó é lento" de "o nó está ocupado".
-    pub node_lock_wait_ms: u64,
-    pub node_setup_ms: u64,
-    pub node_decode_ms: u64,
+    pub node_lock_wait_ms: f64,
+    pub node_setup_ms: f64,
+    pub node_decode_ms: f64,
     /// Time to hand the batch to the backend — not the time it ran.
-    pub node_backend_enqueue_ms: u64,
+    pub node_backend_enqueue_ms: f64,
     /// Queued backend work plus already-queued output transfer, measured with
-    /// `llama_synchronize`. Zero unless the peer runs with
-    /// `POM_PROFILE_SYNC` (on by default; `=0` turns it off); it is a
-    /// diagnostic boundary, not kernel time.
-    pub node_backend_completion_ms: u64,
+    /// `llama_synchronize`. A zero value means no completion duration was
+    /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
+    /// by `/health` and must never be inferred from this timing.
+    pub node_backend_completion_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
-    pub node_residual_capture_d2h_sync_ms: u64,
-    pub node_residual_ms: u64,
-    pub node_logits_access_ms: u64,
-    pub node_logits_clone_ms: u64,
-    pub node_repetition_penalty_ms: u64,
-    pub node_softmax_ms: u64,
-    pub node_top_k_ms: u64,
-    pub node_top_p_ms: u64,
-    pub node_selection_ms: u64,
-    pub node_token_text_ms: u64,
-    pub node_sampling_ms: u64,
-    pub node_encode_ms: u64,
+    pub node_residual_capture_d2h_sync_ms: f64,
+    pub node_residual_ms: f64,
+    pub node_logits_access_ms: f64,
+    pub node_logits_clone_ms: f64,
+    pub node_repetition_penalty_ms: f64,
+    pub node_softmax_ms: f64,
+    pub node_top_k_ms: f64,
+    pub node_top_p_ms: f64,
+    pub node_selection_ms: f64,
+    pub node_token_text_ms: f64,
+    pub node_sampling_ms: f64,
+    pub node_encode_ms: f64,
     /// Percentiles over the peer's own `decode_ms`, per call in this phase.
-    pub node_p50_ms: u64,
-    pub node_p95_ms: u64,
+    pub node_p50_ms: f64,
+    pub node_p95_ms: f64,
     #[serde(skip)]
-    node_samples_ms: Vec<u64>,
+    node_samples_ms: Vec<f64>,
 }
 
 impl PhaseTrace {
@@ -146,10 +149,11 @@ impl PhaseTrace {
         tls: TlsHop,
         node: &serde_json::Value,
     ) {
-        let node_ms = |key: &str| node[key].as_u64().unwrap_or(0);
+        let node_ms = |key: &str| node[key].as_f64().unwrap_or(0.0);
         let node_decode_ms = node_ms("decode_ms");
 
         self.processing_ms += processing_ms;
+        self.round_trip_ms += round_trip_ms;
         self.network_ms += round_trip_ms.saturating_sub(processing_ms);
         self.bytes_sent += bytes_sent;
         self.bytes_received += bytes_received;
@@ -189,6 +193,7 @@ impl PhaseTrace {
 
     fn merge(&mut self, next: &PhaseTrace) {
         self.processing_ms += next.processing_ms;
+        self.round_trip_ms += next.round_trip_ms;
         self.network_ms += next.network_ms;
         self.bytes_sent += next.bytes_sent;
         self.bytes_received += next.bytes_received;
@@ -488,23 +493,43 @@ impl RequestTrace {
     }
 }
 
-fn percentile(samples: &[u64], percentile: u64) -> u64 {
+fn percentile(samples: &[f64], percentile: u64) -> f64 {
     if samples.is_empty() {
-        return 0;
+        return 0.0;
     }
     let mut sorted = samples.to_vec();
-    sorted.sort_unstable();
+    sorted.sort_by(|a, b| a.total_cmp(b));
     let index = ((sorted.len() - 1) * percentile as usize + 50) / 100;
     sorted[index]
 }
 
 /// Push the whole prompt through the pipeline, chunk by chunk.
+fn head_prefill_meta(
+    session_id: &str,
+    chunk_index: u32,
+    chunk_size: u32,
+    is_last: bool,
+    prompt: Option<&str>,
+    chat_template: bool,
+) -> serde_json::Value {
+    json!({
+        "session_id": session_id,
+        "chunk_index": chunk_index,
+        "chunk_size": chunk_size,
+        "is_last": is_last,
+        "is_final_chunk": false,
+        "prompt": prompt,
+        "chat_template": chat_template,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     plan: &PipelinePlan,
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -519,13 +544,32 @@ pub async fn run(
     }
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return run_direct(
-            plan, model, session_id, prompt, chunk_size, dtype, http, routes, direct, tunnel,
+            plan,
+            model,
+            session_id,
+            prompt,
+            chat_template,
+            chunk_size,
+            dtype,
+            http,
+            routes,
+            direct,
+            tunnel,
         )
         .await;
     }
     if plan.supports_relay_chain() {
         return run_ring(
-            plan, model, session_id, prompt, chunk_size, dtype, http, routes, tunnel,
+            plan,
+            model,
+            session_id,
+            prompt,
+            chat_template,
+            chunk_size,
+            dtype,
+            http,
+            routes,
+            tunnel,
         )
         .await;
     }
@@ -537,21 +581,14 @@ pub async fn run(
 
     loop {
         // ── First peer: it owns the tokenizer and decides whether more remain.
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": n_peers == 1,
-            // We cannot know whether this is the last chunk before the head
-            // peer — which owns the tokenizer — tells us how many tokens the
-            // prompt has. So we say false, and for a one-hop pipeline the head
-            // peer overrides it from its own token count; see the
-            // `hidden is None and not more` branch in inference_server.py.
-            // For longer pipelines the flag is recomputed below, once
-            // `more_chunks` has come back, and sent to the real tail.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-        });
+        let head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            n_peers == 1,
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
 
         let (mut meta, mut tensor) = send_chunk(
             http,
@@ -661,6 +698,7 @@ async fn run_ring(
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -676,18 +714,17 @@ async fn run_ring(
     let mut trace = RequestTrace::from_plan(model, plan);
 
     loop {
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": next_hops.is_empty(),
-            // Same reasoning as `run`'s identical comment: the head is the
-            // only one who can know this, and overrides it locally before
-            // relaying onward — we always say false here.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-            "next_hops": next_hops,
-        });
+        let mut head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            next_hops.is_empty(),
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
+        head_meta["next_hops"] = json!(next_hops);
+        head_meta["exec_start"] = json!(head.exec_start);
+        head_meta["exec_end"] = json!(head.exec_end);
 
         let sent = crate::relay::send_frame_or_tunnel(
             http,
@@ -776,6 +813,7 @@ async fn run_direct(
     model: &str,
     session_id: &str,
     prompt: &str,
+    chat_template: bool,
     chunk_size: u32,
     dtype: WireDtype,
     http: &crate::peer_client::PeerClients,
@@ -793,17 +831,18 @@ async fn run_direct(
 
     loop {
         let mut ticket = direct.ticket();
-        let head_meta = json!({
-            "session_id": session_id,
-            "chunk_index": chunk_index,
-            "chunk_size": chunk_size,
-            "is_last": next_hops.is_empty(),
-            // Same reasoning as `run`'s identical comment.
-            "is_final_chunk": false,
-            "prompt": if chunk_index == 0 { Some(prompt) } else { None },
-            "next_hops": next_hops,
-            "reply_to": direct.reply_to(ticket.id()),
-        });
+        let mut head_meta = head_prefill_meta(
+            session_id,
+            chunk_index,
+            chunk_size,
+            next_hops.is_empty(),
+            (chunk_index == 0).then_some(prompt),
+            chat_template,
+        );
+        head_meta["next_hops"] = json!(next_hops);
+        head_meta["reply_to"] = direct.reply_to(ticket.id());
+        head_meta["exec_start"] = json!(head.exec_start);
+        head_meta["exec_end"] = json!(head.exec_end);
 
         let dispatched = Instant::now();
         let ack = crate::relay::send_frame_or_tunnel(
@@ -1060,14 +1099,25 @@ pub async fn step(
     for (i, peer) in plan.steps.iter().enumerate() {
         let is_last = i == n_peers - 1;
         let body_meta = if i == 0 {
-            let mut m =
-                json!({ "session_id": session_id, "is_last": is_last, "token_id": token_id });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "token_id": token_id,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             if let Some(spec) = &speculate {
                 m["speculate"] = spec.to_meta();
             }
             m
         } else {
-            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "scale": 1.0,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             // Thread o que a cabeça decidiu na ida — o rascunho, a composição
             // do lote (`tokens`, para o `observe` da cauda) e a largura de
             // lote da próxima rodada (`mtp_k`).
@@ -1158,6 +1208,8 @@ async fn step_ring(
         "is_last": next_hops.is_empty(),
         "token_id": token_id,
         "next_hops": next_hops,
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
@@ -1224,6 +1276,8 @@ async fn step_direct(
         "token_id": token_id,
         "next_hops": next_hops,
         "reply_to": direct.reply_to(ticket.id()),
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
     if let Some(spec) = &speculate {
         body_meta["speculate"] = spec.to_meta();
@@ -1394,9 +1448,17 @@ async fn step_speculative_hub(
                 "is_last": is_last,
                 "token_id": token_id,
                 "speculate": {"k": k, "m": m, "source": source.wire()},
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
             })
         } else {
-            let mut m = json!({ "session_id": session_id, "is_last": is_last, "scale": 1.0 });
+            let mut m = json!({
+                "session_id": session_id,
+                "is_last": is_last,
+                "scale": 1.0,
+                "exec_start": peer.exec_start,
+                "exec_end": peer.exec_end,
+            });
             // Keep threading whatever the head decided — see `step_blocking`'s
             // `draft`/`incoming_draft` doc comments for why absent vs. an
             // empty array mean different things here.
@@ -1480,6 +1542,8 @@ async fn step_speculative_ring(
         "token_id": token_id,
         "speculate": {"k": k, "m": m, "source": source.wire()},
         "next_hops": next_hops,
+        "exec_start": head.exec_start,
+        "exec_end": head.exec_end,
     });
 
     let sent = crate::relay::send_frame_or_tunnel(
@@ -1603,6 +1667,13 @@ fn speculative_step_from_meta(
 mod tests {
     use super::*;
 
+    #[test]
+    fn chat_head_frame_delivers_prompt_with_template_mode() {
+        let meta = head_prefill_meta("session", 0, 512, true, Some("Oi, teste"), true);
+        assert_eq!(meta["prompt"], "Oi, teste");
+        assert_eq!(meta["chat_template"], true);
+    }
+
     fn route_item(
         item_id: &str,
         model: &str,
@@ -1718,8 +1789,32 @@ mod tests {
             &json!({"decode_ms": 34, "lock_wait_ms": 194}),
         );
 
-        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194);
-        assert_eq!(trace.hops[0].decode.node_decode_ms, 34);
+        assert_eq!(trace.hops[0].decode.node_lock_wait_ms, 194.0);
+        assert_eq!(trace.hops[0].decode.node_decode_ms, 34.0);
+    }
+
+    #[test]
+    fn hop_trace_preserva_fracao_dos_tempos_do_no() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 2,
+                "processing_ms": 1,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "decode_ms": 0.999,
+                    "backend_completion_ms": 0.999,
+                },
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert!((phase.node_decode_ms as f64 - 0.999).abs() < 1e-12);
+        assert!((phase.node_backend_completion_ms as f64 - 0.999).abs() < 1e-12);
     }
 
     /// Ring mode reconstructs a trace from a bubbled `hop_timings` array
@@ -1802,15 +1897,15 @@ mod tests {
         let hop = &request.hops[0];
         assert_eq!(hop.decode.calls, 1);
         assert_eq!(hop.decode.client_encode_ms, 2);
-        assert_eq!(hop.decode.node_decode_ms, 11);
-        assert_eq!(hop.decode.node_residual_ms, 4);
-        assert_eq!(hop.decode.node_top_p_ms, 3);
-        assert_eq!(hop.decode.node_backend_completion_ms, 9);
-        assert_eq!(hop.decode.node_p50_ms, 11);
-        assert_eq!(hop.decode.node_p95_ms, 11);
+        assert_eq!(hop.decode.node_decode_ms, 11.0);
+        assert_eq!(hop.decode.node_residual_ms, 4.0);
+        assert_eq!(hop.decode.node_top_p_ms, 3.0);
+        assert_eq!(hop.decode.node_backend_completion_ms, 9.0);
+        assert_eq!(hop.decode.node_p50_ms, 11.0);
+        assert_eq!(hop.decode.node_p95_ms, 11.0);
         // A decode-only trace must leave prefill untouched.
         assert_eq!(hop.prefill.calls, 0);
-        assert_eq!(hop.prefill.node_decode_ms, 0);
+        assert_eq!(hop.prefill.node_decode_ms, 0.0);
     }
 
     #[test]
@@ -1847,6 +1942,27 @@ mod tests {
 
         assert_eq!(trace.hops[0].prefill.network_ms, 4);
         assert_eq!(trace.hops[0].decode.network_ms, 11);
+    }
+
+    #[test]
+    fn hop_trace_keeps_the_observed_round_trip_for_execution_summary() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        trace.record_hop(
+            0,
+            Phase::Prefill,
+            18,
+            7,
+            100,
+            200,
+            1,
+            8,
+            1,
+            0,
+            TlsHop::default(),
+            &json!({}),
+        );
+
+        assert_eq!(trace.hops[0].prefill.round_trip_ms, 18);
     }
 
     // ── As duas formas legítimas de resposta a uma rodada especulativa ──────

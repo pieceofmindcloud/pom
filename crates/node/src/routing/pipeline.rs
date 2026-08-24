@@ -83,6 +83,19 @@ pub struct PipelineStep {
     pub inference_candidates: Vec<String>,
     pub start_layer: u32,
     pub end_layer: u32,
+    /// A sub-faixa que **este passo executa**, que nem sempre é a faixa que ele
+    /// carregou.
+    ///
+    /// `start_layer`/`end_layer` dizem o que o peer tem em disco; estes dizem o
+    /// que o remetente está mandando ele rodar agora. Os dois separados porque
+    /// um peer com L0-59 pode ser entrada de um ramo (executa L0-59) e cauda de
+    /// outro (executaria L40-59) - a faixa carregada é a mesma, o trabalho não.
+    ///
+    /// Quem manda decide, e manda sempre: sem isto o destinatário rodava a
+    /// fatia inteira que carregou, que é como uma sobreposição virava camada
+    /// executada duas vezes sem erro nenhum.
+    pub exec_start: u32,
+    pub exec_end: u32,
     /// Capabilities of the canonical inference frame and relay.
     pub inference_frame_capabilities: Vec<String>,
     /// This hop's libp2p `PeerId` (base58), when known — lets a caller reach
@@ -420,11 +433,15 @@ pub async fn plan_pipeline_with_rtt(
     let mut pos: u32 = 0; // next layer we need covered
 
     while pos < total_layers {
-        // Peers whose range includes `pos`
+        // Only a peer whose loaded range starts at `pos` can be the next hop.
+        // The inference engine enters at the first block of its loaded slice;
+        // choosing a peer that merely covers `pos` would emit an execution
+        // subrange beginning in the middle of that slice and fail after the
+        // request had already crossed the network.
         let reachable: Vec<&PeerInfo> = candidates
             .iter()
             .copied()
-            .filter(|p| p.start_layer <= pos && p.end_layer >= pos)
+            .filter(|p| p.start_layer == pos && p.end_layer >= pos)
             .collect();
 
         if reachable.is_empty() {
@@ -439,7 +456,7 @@ pub async fn plan_pipeline_with_rtt(
         let mut best: Option<(&PeerInfo, i64)> = None;
         for peer in reachable {
             let load = tracker.load(&peer.node_id).await as i64;
-            let layers = (peer.end_layer - peer.start_layer + 1) as i64;
+            let layers = (peer.end_layer - pos + 1) as i64;
             // Layer coverage remains the dominant factor. For peers covering
             // the same range, lower RTT wins, followed by lower in-flight
             // load. Unknown RTT is a stable last resort.
@@ -448,7 +465,10 @@ pub async fn plan_pipeline_with_rtt(
                 .map(|rtt| (*rtt * 100.0).max(0.0) as i64)
                 .unwrap_or(100_000);
             let score = layers * 100_000 - rtt_penalty.min(99_999) - load * 10;
-            if best.map(|(_, s)| score > s).unwrap_or(true) {
+            if best
+                .map(|(current, s)| score > s || (score == s && peer.node_id < current.node_id))
+                .unwrap_or(true)
+            {
                 best = Some((peer, score));
             }
         }
@@ -469,6 +489,12 @@ pub async fn plan_pipeline_with_rtt(
             inference_candidates: chosen.inference_candidates(),
             start_layer: chosen.start_layer,
             end_layer: chosen.end_layer,
+            // O que falta cobrir a partir de `pos`, não a fatia inteira. Quando
+            // os dois coincidem - o caso comum - nada muda; quando não, é aqui
+            // que fica registrado que o peer teria de entrar no meio da faixa,
+            // em vez de o destinatário descobrir isso tarde demais.
+            exec_start: pos,
+            exec_end: chosen.end_layer,
             inference_frame_capabilities: chosen.inference_frame_capabilities.clone(),
             libp2p_peer_id: chosen.libp2p_peer_id.clone(),
             libp2p_addr_candidates: if chosen.addr_candidates.is_empty() {
@@ -483,11 +509,12 @@ pub async fn plan_pipeline_with_rtt(
 
     let edges = steps
         .windows(2)
+        .filter(|pair| pair[1].exec_start == pair[0].exec_end.saturating_add(1))
         .map(|pair| PipelineEdge {
             from_node_id: pair[0].node_id.clone(),
             to_node_id: pair[1].node_id.clone(),
-            from_end_layer: pair[0].end_layer,
-            to_start_layer: pair[1].start_layer,
+            from_end_layer: pair[0].exec_end,
+            to_start_layer: pair[1].exec_start,
         })
         .collect();
 
@@ -704,6 +731,62 @@ mod ipv6_tests {
         assert_eq!(plano.steps.len(), 2);
     }
 
+    #[tokio::test]
+    async fn planner_follows_an_exact_subrange_entry_instead_of_entering_mid_slice() {
+        let mut head = peer("10.0.0.1:42777", 0, 3);
+        let mut overlapping = peer("10.0.0.2:42777", 2, 15);
+        let mut exact = peer("10.0.0.3:42777", 4, 15);
+        head.node_id = "head".into();
+        overlapping.node_id = "overlapping".into();
+        exact.node_id = "exact".into();
+
+        let plan = plan_pipeline(
+            &[head, overlapping, exact],
+            "qwen35",
+            None,
+            16,
+            &LoadTracker::new(),
+        )
+        .await
+        .expect("a cobertura contígua existe");
+
+        assert_eq!(
+            plan.steps
+                .iter()
+                .map(|step| step.node_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["head", "exact"]
+        );
+        assert_eq!((plan.steps[1].exec_start, plan.steps[1].exec_end), (4, 15));
+    }
+
+    #[tokio::test]
+    async fn equivalent_entry_branches_choose_the_lowest_gateway_rtt() {
+        let mut slow = peer("10.0.0.1:42777", 0, 7);
+        let mut fast = peer("10.0.0.2:42777", 0, 7);
+        let mut tail = peer("10.0.0.3:42777", 8, 15);
+        slow.node_id = "slow-entry".into();
+        fast.node_id = "fast-entry".into();
+        tail.node_id = "tail".into();
+
+        let mut rtts = HashMap::new();
+        rtts.insert("slow-entry".into(), 25.0);
+        rtts.insert("fast-entry".into(), 3.0);
+
+        let plan = plan_pipeline_with_rtt(
+            &[slow, fast, tail],
+            "qwen35",
+            None,
+            16,
+            &LoadTracker::new(),
+            &rtts,
+        )
+        .await
+        .expect("as duas entradas cobrem o mesmo ramo");
+
+        assert_eq!(plan.steps[0].node_id, "fast-entry");
+    }
+
     #[test]
     fn peers_without_a_compression_capability_keep_the_v1_f16_wire_format() {
         let step = PipelineStep {
@@ -712,6 +795,8 @@ mod ipv6_tests {
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -729,6 +814,8 @@ mod ipv6_tests {
                     inference_candidates: Vec::new(),
                     start_layer: 0,
                     end_layer: 7,
+                    exec_start: 0,
+                    exec_end: 7,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
                     libp2p_addr_candidates: Vec::new(),
@@ -739,6 +826,8 @@ mod ipv6_tests {
                     inference_candidates: Vec::new(),
                     start_layer: 8,
                     end_layer: 15,
+                    exec_start: 8,
+                    exec_end: 15,
                     inference_frame_capabilities: Vec::new(),
                     libp2p_peer_id: None,
                     libp2p_addr_candidates: Vec::new(),
@@ -762,6 +851,8 @@ mod ipv6_tests {
             inference_candidates: candidatos.into_iter().map(String::from).collect(),
             start_layer: 0,
             end_layer: 9,
+            exec_start: 0,
+            exec_end: 9,
             inference_frame_capabilities: Vec::new(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -845,6 +936,8 @@ mod ipv6_tests {
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: caps.iter().map(|c| c.to_string()).collect(),
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),

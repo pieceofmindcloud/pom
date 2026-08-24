@@ -17,7 +17,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -35,6 +35,62 @@ const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 const CHARS_PER_TOKEN: usize = 3;
 
 // ── State ────────────────────────────────────────────────────────────────────
+
+#[derive(Clone)]
+pub(crate) struct ClusterSnapshot {
+    pub(crate) fingerprint: String,
+    pub(crate) body: serde_json::Value,
+    pub(crate) at: Instant,
+    pub(crate) version: u64,
+    pub(crate) etag: String,
+}
+
+#[derive(Default)]
+pub(crate) struct ClusterSnapshotCache {
+    snapshot: Option<ClusterSnapshot>,
+    next_version: u64,
+}
+
+impl ClusterSnapshotCache {
+    pub(crate) fn get(
+        &self,
+        fingerprint: &str,
+        now: Instant,
+        ttl: Duration,
+    ) -> Option<ClusterSnapshot> {
+        let snapshot = self.snapshot.as_ref()?;
+        let age = now.checked_duration_since(snapshot.at)?;
+        (snapshot.fingerprint == fingerprint && age < ttl).then(|| snapshot.clone())
+    }
+
+    pub(crate) fn store(
+        &mut self,
+        fingerprint: impl Into<String>,
+        body: serde_json::Value,
+        etag: impl Into<String>,
+        at: Instant,
+    ) -> ClusterSnapshot {
+        let fingerprint = fingerprint.into();
+        let version = self
+            .snapshot
+            .as_ref()
+            .filter(|previous| previous.body == body)
+            .map(|previous| previous.version)
+            .unwrap_or_else(|| {
+                self.next_version = self.next_version.saturating_add(1);
+                self.next_version
+            });
+        let snapshot = ClusterSnapshot {
+            fingerprint,
+            body,
+            at,
+            version,
+            etag: etag.into(),
+        };
+        self.snapshot = Some(snapshot.clone());
+        snapshot
+    }
+}
 
 #[derive(Clone)]
 pub struct GatewayState {
@@ -79,6 +135,55 @@ pub struct GatewayState {
     /// conseguiu derivá-los da identidade. `None` só nos servidores de teste,
     /// que sobem em `127.0.0.1:0` e não têm par de chaves a apresentar.
     pub tls_server: Option<crate::serve::TlsServer>,
+    /// Retrato curto do cluster, isolado por gateway e por instância de teste.
+    pub(crate) cluster_cache: Arc<Mutex<ClusterSnapshotCache>>,
+}
+
+#[cfg(test)]
+mod cluster_cache_tests {
+    use super::*;
+    use serde_json::json;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_known_state_change_bypasses_the_ttl_and_advances_the_version() {
+        let mut cache = ClusterSnapshotCache::default();
+        let at = Instant::now();
+        let first = cache.store("state-a", json!({ "peers": [] }), "etag-a", at);
+
+        assert!(cache
+            .get(
+                "state-a",
+                at + Duration::from_millis(50),
+                Duration::from_secs(2)
+            )
+            .is_some());
+        assert!(cache
+            .get(
+                "state-b",
+                at + Duration::from_millis(50),
+                Duration::from_secs(2)
+            )
+            .is_none());
+
+        let second = cache.store("state-b", json!({ "peers": [{ "id": "b" }] }), "etag-b", at);
+        assert!(second.version > first.version);
+    }
+
+    #[test]
+    fn an_unchanged_snapshot_expires_after_the_short_ttl() {
+        let mut cache = ClusterSnapshotCache::default();
+        let at = Instant::now();
+        cache.store("state-a", json!({ "peers": [] }), "etag-a", at);
+
+        assert!(cache
+            .get(
+                "state-a",
+                at + Duration::from_secs(2),
+                Duration::from_secs(2)
+            )
+            .is_none());
+    }
 }
 
 impl axum::extract::FromRef<GatewayState> for AuthState {
@@ -412,27 +517,14 @@ pub async fn generate_stream(
     state: GatewayState,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
     // Size the prompt up before any peer sees it — see `prompt_token_budget`.
     if let Some(cfg) = state.runtime.config().await {
-        let budget = prompt_budget(&cfg);
-        let estimated = estimate_tokens(&prompt);
-        if estimated > budget {
-            let _ = tx
-                .send(GenEvent::Failed(format!(
-                    "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
-                     {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
-                     vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
-                     n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
-                     as requisições simultâneas.",
-                    cfg.n_ctx,
-                    cfg.max_new_tokens,
-                    prompt_chunk_tokens(&cfg),
-                    cfg.n_batch,
-                )))
-                .await;
+        if let Some(error) = prompt_budget_error(&cfg, &prompt) {
+            let _ = tx.send(GenEvent::Failed(error)).await;
             return;
         }
     }
@@ -594,6 +686,7 @@ pub async fn generate_stream(
             model,
             &session_id,
             &prompt,
+            chat_template,
             chunk_tokens,
             dtype,
             &state.peer_http,
@@ -1094,6 +1187,24 @@ fn estimate_tokens(prompt: &str) -> u32 {
     prompt.chars().count().div_ceil(CHARS_PER_TOKEN) as u32
 }
 
+pub fn prompt_budget_error(cfg: &crate::runtime::NodeConfig, prompt: &str) -> Option<String> {
+    let budget = prompt_budget(cfg);
+    let estimated = estimate_tokens(prompt);
+    (estimated > budget).then(|| {
+        format!(
+            "Prompt grande demais: ~{estimated} tokens estimados contra um limite de \
+             {budget}. Cada sessão recebe n_ctx ({}) menos max_new_tokens ({}). O prompt \
+             vai em pedaços de {} tokens, então n_batch ({}) não limita o prompt. Aumente \
+             n_ctx em Configurar → ajustes avançados, reduza max_new_tokens, ou reduza \
+             as requisições simultâneas.",
+            cfg.n_ctx,
+            cfg.max_new_tokens,
+            prompt_chunk_tokens(cfg),
+            cfg.n_batch,
+        )
+    })
+}
+
 fn rate(tokens: u32, secs: f64) -> f64 {
     if secs > 0.0 {
         tokens as f64 / secs
@@ -1117,6 +1228,7 @@ pub fn spawn_logged_generation(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
     tx: mpsc::Sender<GenEvent>,
 ) {
@@ -1125,7 +1237,14 @@ pub fn spawn_logged_generation(
     let logged_model = model.clone();
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
-    tokio::spawn(generate_stream(state, model, prompt, max_tokens, inner_tx));
+    tokio::spawn(generate_stream(
+        state,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        inner_tx,
+    ));
 
     tokio::spawn(async move {
         let started = Instant::now();
@@ -1213,10 +1332,20 @@ pub async fn generate_blocking(
     caller: crate::reqlog::Caller,
     model: String,
     prompt: String,
+    chat_template: bool,
     max_tokens: u32,
 ) -> std::result::Result<(String, GenSummary), String> {
     let (tx, mut rx) = mpsc::channel(64);
-    spawn_logged_generation(state, route, caller, model, prompt, max_tokens, tx);
+    spawn_logged_generation(
+        state,
+        route,
+        caller,
+        model,
+        prompt,
+        chat_template,
+        max_tokens,
+        tx,
+    );
 
     let mut text = String::new();
     while let Some(event) = rx.recv().await {
@@ -1351,6 +1480,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         crate::reqlog::Caller::anonymous(),
         model,
         req.prompt,
+        true,
         DEFAULT_MAX_TOKENS,
     )
     .await
@@ -1774,6 +1904,7 @@ pub(crate) mod testkit {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: None,
             tls_server: None,
+            cluster_cache: Arc::new(Mutex::new(Default::default())),
         }
     }
 

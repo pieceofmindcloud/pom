@@ -129,9 +129,10 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
-- **A ordem do pipeline é a ordem das camadas**, e um nó serve uma faixa (duas
-  só com `merge`). Sobreposição é recusa; buraco é aviso. Quem fica com a camada
-  0 processa o prompt inteiro de toda requisição. → `implantacao.md`
+- **A ordem do pipeline é a ordem das camadas**, e um nó pode servir várias
+  faixas. `merge` apenas junta faixas adjacentes no mesmo nó. Sobreposição e
+  buraco global são recusa. Quem fica com a camada 0 processa o prompt inteiro
+  de toda requisição. → `implantacao.md`
 - **Quantas camadas o modelo tem é `Option`, não número.** Fatia sem metadata
   `pom.*` não sabe o total; inventar zero foi um bug real. → `fatiamento.md`
 - **`<config>.last-slice.json` só vira `serving` pelo watcher do `/health`.**
@@ -160,3 +161,10 @@ Ele deve caber numa leitura. Conhecimento novo entra no `AGENTS.md` da pasta ou
 no subsistema correspondente; aqui só entra o que muda o mapa (uma pasta nova,
 um subsistema novo, uma invariante que atravessa tudo). Prefira reescrever e
 podar a acrescentar.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

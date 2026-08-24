@@ -20,9 +20,13 @@ permanentes do repositorio. O manual do operador e o `AGENTS.md` da raiz
 
 Os guias permanentes do runtime ficam em `docs/subsystems/`. `paralelismo.md`
 documenta a diferença entre pipeline e tensor parallelism, os custos de WAN e
-a leitura da telemetria correspondente. `implantacao.md` também documenta a
-seleção de `tp_parts`, os ranks `1ofN` e a transferência do `.pom` antes do
-arquivo de peso.
+a leitura da telemetria correspondente. `inferencia.md` e `web-ui.md` também
+documentam o RTT observado do Chat, o RTT direcional por aresta e a leitura
+efetiva de colocação e configuração por peer. `implantacao.md` também documenta a
+seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
+arquivo de peso e a regra de várias faixas por máquina com cobertura global
+completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e
+como o mapa apresenta hops e RTTs direcionais.
 
 ## superpowers/specs/
 
@@ -41,6 +45,9 @@ Par de specs notaveis: `2026-05-24-pkarr-discovery-design.md` e
 `2026-08-12-request-telemetry-design.md` e
 `2026-08-20-batching-continuo-inferencia-distribuida-design.md` (scheduler local,
 frame multi-item e sincronizacao de lotes no Tensor Parallelism).
+`2026-08-24-chat-telemetria-design.md` registra o inventário do fio e a decisão
+de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
+mudar frame entre peers ou planner.
 
 ## superpowers/plans/
 
@@ -81,3 +88,10 @@ commit proprio. `2026-05-24-pkarr-discovery.md` e o par do design homonimo.
 Nenhum em aberto. O `README.md` da raiz foi reconciliado com o codigo em
 2026-08-15, mas continua sendo apresentacao: para arquitetura valem o
 `AGENTS.md` da raiz e os `docs/subsystems/*`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

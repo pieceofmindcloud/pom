@@ -75,6 +75,10 @@ export interface RuntimeStatus {
   restarts: number;
   log_path: string | null;
   reported_total_layers: number | null;
+  /** Camadas que o llama.cpp de fato pôs na GPU, relatadas pelo motor depois de
+   *  carregar. Não confundir com `NodeConfig.n_gpu_layers`, que é o pedido.
+   *  Negativo é "todas", na convenção do llama.cpp. Ver `layerPlacement`. */
+  reported_gpu_layers: number | null;
   changed_at: string;
 }
 
@@ -223,6 +227,8 @@ export interface PeerRuntimeHealth {
   fit_memory_applied: boolean;
   n_gpu_layers_effective: number;
   n_ubatch_effective: number;
+  /** Real backend setting on this peer, not inferred from a zero timing. */
+  profile_sync_enabled?: boolean;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
@@ -235,6 +241,18 @@ export interface PeerRuntime {
   /** Por que não há dados, quando `loaded` é falso. */
   reason?: string;
   health?: PeerRuntimeHealth;
+}
+
+/** RTT direcional medido entre dois peers da execução exibida no chat. */
+export interface ChatTelemetryRtt {
+  from_node_id: string;
+  to_node_id: string;
+  rtt_ms: number;
+  transport: string;
+}
+
+export interface ChatTelemetryNetwork {
+  measurements: ChatTelemetryRtt[];
 }
 
 export interface ModelCapability {
@@ -674,6 +692,9 @@ export interface DeployStep {
   position: number;
   start_layer: number;
   end_layer: number;
+  /** Faixa efetivamente executada; ausente em respostas antigas. */
+  exec_start?: number;
+  exec_end?: number;
   /** The plan's answer for the model size, `null` when nobody could say. */
   total_layers: number | null;
   name: string;

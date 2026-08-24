@@ -28,12 +28,15 @@ behind an auth extractor.
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
-- `webui.rs` (2974) - the `/api/ui/*` control API behind the dashboard:
+- `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
   storage paths and slice retention. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
-  `parts`.
+  `parts`. Jobs and the cluster view use conditional JSON responses:
+  matching `If-None-Match` returns 304 without a body, and the cluster keeps
+  a 2s fingerprinted snapshot cache that bypasses its TTL on known state
+  changes.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
@@ -43,8 +46,11 @@ behind an auth extractor.
   rank e transfere pelo hash do arquivo original; o `apply` usa
   `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
   de runtime que extrai cada rank de um modelo inteiro.
-  `route_options` liga somente máquinas selecionadas em estágios consecutivos;
-  réplicas cruzam apenas para o próximo estágio, nunca para uma camada posterior.
+  `route_options` forma um grafo das máquinas selecionadas cujas sub-faixas de
+  execução são contíguas; ele preserva mais de uma entrada quando há caminhos
+  alternativos e nunca inventa salto para uma camada posterior. Faixas
+  carregadas sobrepostas são permitidas quando pertencem a caminhos distintos;
+  a cobertura é validada pelo caminho executável, não pela união dos arquivos.
   `undeploy` tira uma pipeline inteira do ar.
 - `transfer.rs` (1542) - slice push/pull over HTTP `Range` with resume and MD5;
   offers carry only a `stat`, the digest is computed by the receiver. Pushes
@@ -54,7 +60,10 @@ behind an auth extractor.
   ofereceu** (`receive_answer`), e todo desfecho passa por
   `TransferState::finish`, que carimba `finished_at`. Um job carrega o rótulo
   da fatia (`SliceLabel`: modelo + faixa), lido do `.pom` - hash não é nome.
-- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path.
+- `openai.rs` (1253) - OpenAI-compatible `/v1/*` on top of the generation path;
+  streaming chat requests that exceed the configured prompt budget are rejected with
+  HTTP 413 before the SSE response starts, so clients such as OpenCode do not
+  hang on an error event inside an otherwise successful stream.
 - `messages.rs` (1038) - Anthropic Messages API (`/v1/messages`), same path.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
@@ -136,7 +145,8 @@ behind an auth extractor.
   (end_turn / max_tokens / tool_use), `blocking_response` and `stream_response`
   with the Anthropic SSE event names. `tool_choice` and `stop_sequences` are
   parsed-and-ignored (serde drops unknown fields).
-- `webui.rs` - `CATALOG_TTL=20s`, `pub(crate) PEER_TIMEOUT=4s` (reused by
+- `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
+  `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
@@ -144,7 +154,9 @@ behind an auth extractor.
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
-  `requests` (GET ->
+  `network/rtt` (GET autenticado, relatório direcional deste nó),
+  `chat/telemetry` (POST autenticado, coleta os relatórios direcionais dos
+  peers selecionados para o trace e não altera o planner), `requests` (GET ->
   `crate::reqlog::list_requests`). `leave_network` now takes an optional
   `LeaveRequest { node_id }`: absent (or this node's own id) keeps the old
   behavior - this node detaches; a peer's id is **forwarded** to that peer's
@@ -160,6 +172,9 @@ behind an auth extractor.
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be
   authenticated and would rotate the connection key on a configured node).
+  Os testes que chamam `apply_cluster_policy` também seguram
+  `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
+  por toda a suíte.
 - `deploy.rs` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
   qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
   `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O
@@ -209,21 +224,19 @@ behind an auth extractor.
   /api/ui/undeploy` (take a whole pipeline out of the air). The planner is a
   suggestion; the operator's `selection` in the request is authoritative.
   Rules from the architecture: pipeline order = layer order (layer 0 takes
-  every prompt); one distinct range per node unless `merge` (adjacent ranges
-  joined via `splitter::merge`); the exact same range on different nodes is a
-  replica and a valid parallel route; the same whole model may likewise be
-  selected on multiple nodes for balancing; distinct overlapping cuts are refused,
-  and a gap only warns.
+  every prompt); one node may serve multiple distinct ranges, and `merge` only
+  joins adjacent ranges via `splitter::merge`; the exact same range on different
+  nodes is a replica and a valid parallel route; the same whole model may
+  likewise be selected on multiple nodes for balancing; distinct overlapping
+  cuts and global gaps are refused.
   **`steps` always comes back in layer order**, blocked plans included:
   `position` only means "place in the pipeline" in that order, `run` reads the
   launch order straight off the list, and the screen lines the plan up against
-  rows it keeps sorted by layer. The grouping loop walks by target machine, so
-  the sort is applied once at the end - without it, a machine holding two
-  ranges emitted its second one ahead of everything in between and the deploy
-  screen fell silent (2026-08-16). For the same reason an **empty
-  `target_node_id` never groups**: "no machine" is not a machine, and lumping
-  every unplaced range under one empty id produced a refusal naming a machine
-  with no name.
+  rows it keeps sorted by layer. The grouping loop walks in layer order and
+  only joins consecutive entries when `merge` is enabled, so separated ranges
+  on one machine remain independent steps. For the same reason an **empty
+  `target_node_id` never groups**: "no machine" is not a machine, and each
+  unplaced range keeps its own step and problem text.
   `undeploy_endpoint` re-surveys the cluster (never trusts the screen),
   resolves `UndeployRequest.group` via `resolve_group` (empty picks the only
   pipeline in the air; two pipelines is a 400 - never guess), then calls
@@ -241,7 +254,9 @@ behind an auth extractor.
   /api/transfer/offers`, `POST /api/transfer/offers/:id/accept` +
   `/:id/reject`, `POST /api/transfer/offers/answer`, `GET
   /api/transfer/jobs`, `POST /api/transfer/jobs/:id/cancel`, `POST
-  /api/transfer/send`. Path safety is
+  /api/transfer/send`. `GET /api/transfer/offers` returns only
+  `{ offers }`, without disk telemetry, and uses ETag plus 304 when
+  unchanged. Path safety is
   directional: `safe_model_path` confines the *pull* direction to `models/`
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF
@@ -378,3 +393,10 @@ behind an auth extractor.
   body (the doc comment spells out the Principal-only check) and update the
   test. The route still needs the connection key (`ConnectionAuth`), so the
   port is operator-gated, not anonymous.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

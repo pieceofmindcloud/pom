@@ -44,10 +44,11 @@ Per-file list:
   active pill; a section holding the current path stays open. The desktop
   sidebar can be minimized and persists that choice in `localStorage`; the
   minimized state renders icon-only links and hover/focus flyout menus for
-  sections with children. `SidebarBrand` is
-  the header and holds **only the lockup** (`LogoFull variant="band"`), filling
-  the strip edge to edge with a divider under it; the menu below it keeps a 5px
-  top gap so the first item does not touch that line - the hash sits **on the identity** because in
+  sections with children. `SidebarBrand` is the header and, on desktop, the
+  lockup itself is the accessible expand/collapse button: click or touch toggles
+  it, while a deliberate mouse hover closes an open sidebar after a short delay.
+  In the mobile drawer it remains a passive lockup. The menu below it keeps a
+  5px top gap so the first item does not touch that line - the hash sits **on the identity** because in
   a multi-machine cluster "which build is that?" is unanswerable without a
   shell, and a peer on an old binary looks healthy until inference.
   `SidebarUtilityControls` is the footer, and the node's `build_commit` lives
@@ -248,8 +249,11 @@ Key logic carriers:
   ponteiro, zoom, Fit, Organizar e Redefinir. Cards já presentes no mapa não
   repetem a faixa inferior; arrastar ou dar duplo clique num peer disponível
   adiciona-o ao conjunto preferido e faz o card aparecer no mapa. O plano ainda é a fonte de
-  verdade: `route_options` desenha somente pontes entre estágios consecutivos,
-  com caminhos principal/paralelo/inativo e RTT direcional; o canvas também filtra
+  verdade: estágios são identificados pela faixa, não pelo nó, e `route_options`
+  desenha somente pontes entre estágios consecutivos, com caminhos
+  principal/paralelo/inativo e RTT direcional; a geometria ancora a origem e o
+  receptor nos lados que se encaram, inclusive quando o receptor está à esquerda;
+  o canvas também filtra
   respostas antigas que tentem saltar um estágio. A faixa inferior continua
   aceitando peers arrastados para recalcular a sugestão. O `X` de um card remove todas as faixas daquele peer da seleção
   e o devolve à faixa inferior. Se o backend não publicar uma aresta, o canvas
@@ -257,10 +261,17 @@ Key logic carriers:
   card ainda pode mostrar o RTT local anunciado pela própria máquina. Réplicas exatas podem aparecer empilhadas na
   mesma coluna. Em modelo inteiro, incluir um peer no mapa acrescenta a réplica
   explícita da faixa completa; em Tensor, o mapa limita os ranks disponíveis.
+  O `DeployModel` calcula `mapNodeIds` uma vez e passa essa mesma população
+  para os cards e para os seletores primary/workers; TP pré-fatiado aceita
+  worker mapeado sem o rank local, enquanto TP de modelo inteiro exige o GGUF
+  local. O card Tensor expõe a ação acessível de marcar primary, removendo o
+  mesmo nó dos workers.
   Uma GPU ausente mostra uma trilha estática com o texto `sem GPU`, sem barra
   indeterminada. A hidratação de posições preserva cards existentes quando um
   peer novo entra sem faixa, então a topologia não se reorganiza por causa de
-  uma inclusão ainda não configurada. A separação existe porque este grafo
+  uma inclusão ainda não configurada. Em viewport estreito, o mapa usa
+  rolagem interna para preservar o tamanho dos cards e alinhar a curva aos
+  endpoints mesmo quando o conteúdo é mais largo que o painel. A separação existe porque este grafo
   representa uma implantação ainda não aplicada.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
@@ -297,3 +308,10 @@ Backend endpoints touched directly: `POST /api/ui/unload`, `POST /api/ui/leave`,
 `GET/POST /api/ui/release/candidate` + `/api/ui/release`,
 `GET /api/transfer/jobs`, `GET /api/transfer/offers`,
 `POST /api/transfer/offers/:id/accept|reject`; the rest go through the hooks.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

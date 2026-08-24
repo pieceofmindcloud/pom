@@ -10,6 +10,22 @@ descreve os três modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+### Montagem UTF-8 no streaming
+
+O llama.cpp devolve a peça de cada token como bytes crus: um token BYTE pode
+ser apenas um byte e um token normal pode terminar no meio de um codepoint.
+`llm::LlmEngine::token_to_piece_bytes` preserva esses bytes até o limite de
+emissão. Cada `Session` de `infer_server.rs` possui um `Utf8Assembler` próprio,
+que só entrega no delta os caracteres completos. No caminho especulativo,
+somente as posições aceitas avançam o acumulador; posições rejeitadas não
+podem contaminar a rodada seguinte.
+
+O acumulador é drenado com `flush` quando o modelo encerra por EOS. Limpeza
+por release explícito, erro, cancelamento ou timeout também chama `flush` antes
+de devolver o slot KV, descartando o resultado nesses caminhos e garantindo
+que nenhum rabicho sobreviva para outra requisição. Uma sequência realmente
+inválida mantém a semântica de `from_utf8_lossy`: produz um único U+FFFD.
+
 ## 0. Coletiva de tensor parallelism (`collective.rs`)
 
 Para o caminho C (tensor parallelism sem transferir peso), o núcleo de troca é a
@@ -32,6 +48,11 @@ As rotas de inferência aceitam a `connection_key` compartilhada ou uma API key
 ativa. As chamadas internas usam a `connection_key` e caem para a primeira API
 key ativa quando a chave compartilhada não existe. O loopback do túnel mantém o
 `Content-Type` JSON do release de sessão em vez de aplicar o padrão binário.
+Quando o destino anunciado de um passo é o próprio `node_id` deste processo, o
+relay despacha o quadro diretamente para o handler de inferência em processo.
+Essa chamada não abre socket nem passa por HTTP. O servidor HTTP de inferência
+continua ativo para health checks e para peers remotos; nesses peers a ordem é
+túnel libp2p e fallback HTTP direto.
 Ver
 `docs/superpowers/specs/2026-08-17-tensor-parallelism-design.md`.
 
@@ -54,6 +75,14 @@ row-parallel por camada, um decode de um token pode fazer 64 esperas coletivas;
 isso é inerentemente caro entre máquinas na internet. Para WAN, pipeline com
 camadas completas por nó troca um frame de hidden state entre blocos e evita
 essas coletivas TP.
+
+O `PhaseTrace` também preserva `round_trip_ms`, a soma das idas e voltas
+observadas das chamadas daquela fase. Esse campo segue no `x_pom` do stream
+para a tela do Chat e não entra no frame entre peers nem no planejador. O Chat
+usa `/api/ui/chat/telemetry` para buscar separadamente o RTT direcional das
+arestas entre os peers do trace. O `/health` publica `profile_sync_enabled`
+por máquina, derivado diretamente de `POM_PROFILE_SYNC`; um zero em
+`node_backend_completion_ms` nunca é usado para deduzir essa flag.
 
 ### Cache KV e fallback de VRAM
 
@@ -244,6 +273,36 @@ essa afinidade durante a sessão. Dois ranks do mesmo grupo TP são outra
 unidade: eles precisam executar o mesmo lote coordenado pela barreira TP, por
 isso a execução multi-sequência ainda fica desabilitada no TP atual.
 
+### 3.2 Telemetria do nó
+
+O servidor de inferência acumula os cronômetros internos em microssegundos em
+`NodeTimings`. Ao montar o metadado `node_timings`, os campos públicos
+`*_ms` usam milissegundos fracionários (`us / 1000.0`) para não perder uma
+etapa menor que 1 ms. Isso vale para a chamada de decode, a conclusão medida
+por `llama_synchronize`, captura D2H, logits, amostragem, fila e os demais
+limites do bloco.
+
+`POM_PROFILE_SYNC` fica ligado por padrão e controla se a barreira de
+diagnóstico é executada. `backend_completion_ms` é uma duração: zero pode
+representar uma duração nula ou uma medição pequena demais apenas se um
+consumidor antigo ainda tiver truncado o número, e não deve ser usado para
+deduzir sozinho o estado da configuração do peer.
+
+### 3.3 Template de conversa e completions
+
+O gateway distingue o formato do pedido antes de iniciar o prefill. Chat
+OpenAI (`/v1/chat/completions`), Anthropic (`/v1/messages`) e
+`POST /api/generate` enviam `chat_template: true` no metadado do primeiro
+prefill. A cabeça, que é a única dona do tokenizer, aplica o
+`tokenizer.chat_template` do GGUF uma vez e abre o turno do assistente; os
+demais peers recebem somente o estado oculto e não reformatam o prompt.
+
+`/v1/completions` continua sendo completion cru e envia `chat_template: false`.
+Essa flag explícita tem precedência sobre o padrão legado do servidor, que
+existia para chamadas internas sem metadado. `no_thinking` controla apenas a
+abertura do bloco de raciocínio e não decide mais se o prompt é conversa. Assim
+o modo de pensamento e o enquadramento de conversa não podem se confundir.
+
 No TP, `handle_prefill` e `handle_step` serializam também o caminho de um
 frame com um único item usando `tp_batch_gate`. O gateway pode enviar esse
 frame pelo `BatchCoordinator`, e outra requisição não pode substituir o decode
@@ -252,6 +311,35 @@ batch já protegido usam `BATCH_CHILD_HEADER` para não tentar adquirir o mesmo
 lock novamente. Ao reencodar a resposta de um item único, os handlers
 preservam `item_id` e `batch_id`; sem isso o coordenador não consegue associar
 a resposta ao pedido que está aguardando.
+
+### 3.2 Sub-faixa executada por hop
+
+`PipelineStep` separa a faixa que o peer carregou (`start_layer`/`end_layer`)
+da faixa que aquele passo deve executar (`exec_start`/`exec_end`). O planejador
+preenche a segunda com a cobertura que falta a partir da posição atual. Esses
+dois campos viajam no `meta` de cada item do frame, tanto no prefill quanto no
+decode de `/v1/step`; o envelope `frame/v1-batch` não muda. Sem os campos, o
+receptor mantém o comportamento de executar a fatia inteira.
+
+O handler confere a sub-faixa contra a faixa carregada antes de enfileirar o
+trabalho. Quando `exec_start` coincide com `start_layer`, `exec_end` menor que
+`end_layer` reposiciona a captura de residual para o bloco local correspondente
+e o callback do llama.cpp interrompe o grafo depois dele. Quando o pedido chega
+até `end_layer`, a captura normal da fatia inteira é usada. Uma sub-faixa
+invertida ou fora da fatia recebe HTTP 400; começar acima de `start_layer`
+também é recusado explicitamente, porque o motor atual sempre entra pelo
+primeiro bloco da fatia e não consegue pular a cabeça já carregada.
+
+Por isso o planejador só escolhe uma faixa que começa exatamente na posição
+executada. Faixas sobrepostas no inventário podem formar entradas alternativas,
+mas cada caminho de uma requisição avança por sub-faixas contíguas. Quando há
+réplicas equivalentes na entrada, o gateway escolhe a de menor RTT medido a
+partir do nó que recebeu a requisição e mantém essa escolha na sessão.
+
+O relay de anel e a resposta direta escolhem a faixa do próximo `PipelineStep`
+ao montar o próximo quadro. Um microbatch com limites de captura diferentes é
+recusado, pois um único grafo não pode parar em dois blocos. Essa execução
+parcial é uma capacidade do binário atual, não um fallback para peers antigos.
 
 `prefill::BatchRoute` é a chave de compatibilidade para o próximo passo do
 transporte: modelo, deployment, fase, configuração relevante e próximo hop
@@ -534,6 +622,12 @@ gateway mede o prompt
 prompt e recusa com uma mensagem citando as flags. O `/health` expõe os dois
 valores como `n_ctx_total` e `n_ctx_per_session`.
 
+O adaptador OpenAI de chat faz essa mesma verificação antes de iniciar o SSE e responde
+HTTP 413 quando o orçamento foi excedido. Sem esse preflight, a geração emitia
+um evento de erro dentro de um HTTP 200; clientes como OpenCode aguardavam uma
+resposta válida e mostravam apenas uma execução sem resposta. Requisições que
+cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
+
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
   de o prefill ser fatiado, `n_batch` na fórmula capava todo prompt em 512
@@ -541,9 +635,11 @@ valores como `n_ctx_total` e `n_ctx_per_session`.
 - Por que o limite existe: passá-lo faz o llama.cpp abortar o **processo
   inteiro** com `GGML_ASSERT(n_tokens_all <= cparams.n_batch)` - um prompt
   grande derruba o peer e todas as requisições em voo. Recusar cedo mantém o nó
-  de pé. Números medidos: o OpenCode manda ~2200 caracteres com um agente mínimo
-  e ~8000 no agente padrão; config que funcionou: `--n-ctx 32768 --n-batch 3072
-  --max-new-tokens 256` → orçamento de 3072 tokens.
+  de pé. Números medidos: o OpenCode 1.18.21 manda ~2200 caracteres na chamada
+  de título e ~54k no agente padrão, com `max_tokens: 32000`, ferramentas e
+  `stream_options.include_usage`. Config que fez funcionar para o agente padrão:
+  `--n-ctx 32768 --n-batch 3072 --max-new-tokens 256` → orçamento de 32512
+  tokens; sem uma janela compatível o nó responde HTTP 413 antes do SSE.
 
 ## 10. O canal de cada salto na telemetria
 

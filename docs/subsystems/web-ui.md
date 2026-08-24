@@ -145,18 +145,23 @@ no Dashboard (`hidden`, para uma superfície futura).
   `api.ts` é o único caminho de fetch: caminho **relativo** (o nó serve API e
   UI na mesma porta, o navegador nunca aprende endereço de peer), assinado com
   `Authorization: Bearer <connectionKey>`, e também o leitor de SSE
-  (`streamSse`). `queries.ts` concentra as leituras com polling: `useNode` 4s
-  (guarda a `connection_key`), `useCluster` 5s, catálogo local 30s, catálogo
-  do cluster 60s, `useJobs`/`useTransfers`/`useOffers` 2s, admin nodes 8s,
-  log de requisições 3s. `optional()` engole só 404 (nó antigo sem rota não é
-  erro para mostrar). `types.ts` é a fonte única das formas que o nó serve
-  (comentários apontam para o Rust).
+  (`streamSse`). `api.getConditional()` conserva os snapshots de
+  `/api/ui/cluster`, `/api/ui/jobs` e `/api/transfer/offers` por `ETag`,
+  aceitando 304 sem reparsear JSON. `queries.ts` concentra as leituras com
+  polling: `useNode` 4s (guarda a `connection_key`), `useCluster` 5s,
+  catálogo local 30s, catálogo do cluster 60s, `useJobs` 2s enquanto há job
+  rodando e 10s quando ocioso, `useTransfers` 2s, `useOffers` 2s enquanto
+  há oferta e 10s quando vazio, admin nodes 8s, log de requisições 3s.
+  `optional()` engole só 404 (nó antigo sem rota não é erro para mostrar).
+  `types.ts` é a fonte única das formas que o nó serve (comentários apontam
+  para o Rust).
 - **`src/components/`** - chrome (`Sidebar`, `Topbar`, `Notifications`, `nav`)
   e widgets compartilhados. `ui.tsx` é o design system num arquivo de propósito
   (painéis, botões, inputs, badges, meters, estados) em classes por token CSS,
   sem estilo em runtime. Visualizações do cluster: `ModelNetworkCanvas` (grafo
   SVG pan/zoom com RAM/VRAM/carga e arestas principal/paralela/inativa,
-  posições persistidas por fingerprint de implantação) e `PipelineRail` (o
+  posições persistidas por fingerprint de implantação; o card também resume
+  quantas camadas foram parar na GPU e quantas sobraram na CPU) e `PipelineRail` (o
   caminho que a requisição percorre). Guardas de ação remota/destrutiva:
   `Confirm`/`Modal`, `ReleaseSlice`, `RemoveNode`, `LeaveNode`,
   `UndeployPipeline`, `AddNodeDialog`.
@@ -258,16 +263,28 @@ harness receberia. O histórico é do navegador (`chatStore`, `localStorage`,
 cap 50 sessões, sincronizado entre abas), não do nó. Três coisas a conversa
 guarda além das falas:
 
-- **A telemetria da execução chega fechada** (`ExecutionTelemetry`): quatro
-  linhas de números por salto, embaixo de toda resposta; abrir é um clique.
+- **A telemetria da execução chega fechada** (`ExecutionTelemetry`): a tabela
+  de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
+  abrir é um clique.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
-  embaixo do campo de texto.
+  embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
+  com o seletor de implantação `@d-<deploy_id>`; o catálogo do backend e as
+  telas de gerenciamento de implantações continuam vendo os ids completos.
 - **O título se edita clicando nele** e fica gravado (`titled` impede a
   primeira mensagem de sobrescrever o nome escolhido).
 
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
+Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
+os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
+do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
+aresta com o rótulo origem -> destino, capacidade e configuração pedida,
+colocação efetiva por buffers GPU/CPU/mistos e `POM_PROFILE_SYNC` individual de
+cada peer. A colocação não é derivada de `n_gpu_layers`, e o estado de sync não
+é deduzido de um tempo zero. Se a coleta falhar, a tela diz indisponível ou não
+medido em vez de preencher com zero. Em uma pipeline de uma máquina, ela
+explica que não existem arestas entre peers.
 
 ## Documentação: dois públicos na mesma rota
 
@@ -312,6 +329,30 @@ Ed25519 que os peers recebem - navegador não verifica Ed25519. Ver
 **O navegador avisa na primeira visita de cada máquina**, porque o certificado é
 auto assinado e não há CA para validá-lo. É esperado; o operador aceita uma vez
 por máquina.
+
+## O card do Fluxo diz quanto do modelo coube na GPU
+
+Uma camada na CPU é ordens de grandeza mais lenta que na GPU, e esse é o
+primeiro motivo de uma inferência arrastada. O card do Fluxo mostra a divisão
+(`LayerPlacementMeter`, em `ModelNetworkCanvas.tsx`) na mesma forma dos medidores
+de VRAM e RAM, logo abaixo da faixa de camadas: barra âmbar e "12 GPU · 10 CPU"
+quando sobra camada na CPU, barra neutra e "22 na GPU" quando não sobra. O
+duplo clique continua abrindo o detalhe completo; isto é resumo, não
+substituição.
+
+O número **não** sai de `NodeConfig.n_gpu_layers`. Esse é o *pedido*, e o pedido
+quase sempre é o sentinela 99 ("descarregue tudo"); quem decide é o `fit` do
+llama.cpp, que baixa o número até caber na VRAM. Derivar a divisão do pedido
+responde "todas na GPU" exatamente quando algumas não estão - o único caso que
+o operador precisa enxergar. O que vale é `RuntimeStatus.reported_gpu_layers`,
+que o nó lê do `n_gpu_layers_effective` do próprio `/health` do servidor de
+inferência, no mesmo poll de 3s que já lhe dá `reported_total_layers`. Nenhuma
+chamada nova: o `/api/ui/cluster` já busca o `/api/ui/node` de cada peer.
+
+Sem relato do motor a linha não aparece. `layerPlacement` (`src/lib/layerPlacement.ts`)
+devolve `null`, e a tela cala em vez de chutar - dizer "tudo na GPU" sem saber
+seria pior que o silêncio. Negativo é "todas" na convenção do llama.cpp, e lido
+como zero diria que a máquina inteira roda na CPU.
 
 ## O canvas do Fluxo: arranjo por camadas
 
@@ -363,11 +404,28 @@ impressão digital é só modelo + conjunto de faixas.
   o planner recalcula a sugestão considerando cortes existentes, memória, RTT e
   carga. A barra de cobertura mostra camadas faltantes e sobrepostas; o mapa
   exibe hops, capacidade e latência conhecida, além de rotas alternativas e
-  distribuição projetada de carga. O Tensor usa o modelo inteiro em todos os
+  distribuição projetada de carga. Cada card separa a faixa física carregada da
+  sub-faixa efetivamente executada. As arestas vêm do grafo de execução do
+  planejador: ligam apenas sub-faixas contíguas, mantêm ramos equivalentes de
+  entrada e mostram o RTT direcional usado para escolher entre eles. O canvas
+  não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
+  quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
   (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
-  inspetor também mostra as camadas que ela executará. Não existe uma segunda
+  inspetor também mostra as camadas que ela executará. Nas globais, a seção
+  de execução separa a especulação por lookup do MTP; ao marcar MTP, a
+  probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
+  pelo operador e o valor alterado segue no deploy. A seção
+  **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
+  (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
+  o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque
+  `split` renomeia os blocos de toda fatia para `blk.0..` e duas não carregam
+  lado a lado. Sem ele o planejador recusa o par, e a recusa manda "juntar as
+  fatias vizinhas na tela" - o interruptor existe para essa frase ter destino.
+  Ele aparece sob a mesma condição que decide se `merge` vai na requisição
+  (`!isWhole`): controle sem envio, ou envio sem controle, foi exatamente como
+  ele se perdeu uma vez. Não existe uma segunda
   tabela legada abaixo do canvas: o mapa e a faixa inferior concentram a
   topologia, os RTTs direcionais e a inclusão de peers. Cada edição volta ao nó para validação; o deploy
   (`POST /api/ui/deploy`) **re-varre o cluster** em vez de confiar na prévia,
@@ -377,7 +435,12 @@ impressão digital é só modelo + conjunto de faixas.
   pode ser recolhido pela borda esquerda, separa visualmente propriedades
   globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
   ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
-  peers é uma rota paralela válida, não uma troca. Peers que já estão no mapa
+  peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
+  atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A
+  saída remove só aquela faixa naquela máquina: as réplicas da mesma faixa em
+  outros peers ficam onde estão, e o peer continua no mapa mesmo sem faixa
+  nenhuma, porque tirar uma camada não é o mesmo gesto que "Remover da
+  implantação". Peers que já estão no mapa
   deixam de aparecer na barra inferior; arrastar ou dar duplo clique num peer
   disponível adiciona o card sem redesenhar a topologia até que uma faixa seja
   atribuída. Em modelo inteiro, incluir um peer no mapa cria uma réplica explícita
@@ -396,11 +459,12 @@ impressão digital é só modelo + conjunto de faixas.
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os
   painéis de explicação renderizam sob `answered` (o nó respondeu sobre *estas*
-  linhas), nunca sob `validated`. Pendurar a explicação na comparação foi o
-  defeito de 2026-08-16: no estado em que o operador mais precisava do motivo -
-  duas faixas na mesma máquina - a tela ficava muda e o botão só cinza. `whyNot`
-  ainda põe a razão em uma linha ao lado do botão, inclusive nos dois casos sem
-  painel (nada selecionado, resposta a caminho).
+  linhas), nunca sob `validated`. O planner aceita várias faixas na mesma
+  máquina, mas mantém `blocked` para gaps globais, sobreposição e outros
+  problemas reais; `whyNot` põe a razão em uma linha ao lado do botão, inclusive
+  nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
+  mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
+  interna em viewport estreito para não cortar cards nem criar overflow na página.
 - **Transferir** (`Transfers`/`SendFile`/`Notifications`): ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
   ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")

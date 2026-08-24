@@ -44,6 +44,51 @@ function mount(view: ClusterView = cluster) {
 }
 
 /**
+ * Quantas camadas foram parar na CPU tem que aparecer no próprio card.
+ *
+ * Antes, isso só existia atrás do duplo clique: a inferência ficava lenta
+ * porque parte do modelo não coube na VRAM, e o card - que mostra VRAM, RAM e
+ * carga - não dizia nada. O resumo aqui não substitui o detalhe; ele existe
+ * para o operador não precisar abrir máquina por máquina para descobrir qual
+ * delas está rodando meio na CPU.
+ */
+describe("ModelNetworkCanvas: camadas na GPU e na CPU", () => {
+  afterEach(cleanup);
+
+  function withGpuLayers(reported: number | null) {
+    const peer = fakeSlicePeer("a", 0, 63);
+    return fakeCluster([
+      {
+        ...peer,
+        node: { ...peer.node!, status: { ...peer.node!.status, reported_gpu_layers: reported } },
+      },
+    ]);
+  }
+
+  it("mostra a divisão e destaca o que sobrou na CPU", () => {
+    // 64 camadas servidas, 55 na GPU: o caso que o captain relatou.
+    mount(withGpuLayers(55));
+    expect(screen.getByText("55 GPU · 9 CPU")).toBeTruthy();
+    // Âmbar é o destaque: é o sinal que interessa de relance.
+    expect(screen.getByText("55 GPU · 9 CPU").className).toContain("text-amber");
+    expect(screen.getByLabelText(/9 camadas não couberam na GPU/)).toBeTruthy();
+  });
+
+  it("não alarma quando tudo coube na GPU", () => {
+    mount(withGpuLayers(-1));
+    const value = screen.getByText("64 na GPU");
+    expect(value.className).not.toContain("text-amber");
+    expect(screen.queryByLabelText(/não couberam na GPU/)).toBeNull();
+  });
+
+  it("cala quando o motor não relatou nada, em vez de chutar", () => {
+    mount(withGpuLayers(null));
+    expect(screen.queryByText(/GPU ·/)).toBeNull();
+    expect(screen.queryByText(/na GPU$/)).toBeNull();
+  });
+});
+
+/**
  * O card do Fluxo e a aba Detalhes mostram a mesma coisa, e o caminho até ela é
  * o duplo clique. Um clique só continua sendo seleção e arrasto.
  */

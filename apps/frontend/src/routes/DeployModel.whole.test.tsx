@@ -272,13 +272,14 @@ function mount() {
       })),
     ],
   });
-  return render(
+  const view = render(
     <QueryClientProvider client={client}>
       <LocaleProvider initialLocale="pt-BR">
         <DeployModel />
       </LocaleProvider>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 /** Responde cada rota com o plano que corresponde ao `kind` pedido. */
@@ -350,7 +351,7 @@ describe("DeployModel · modelo inteiro", () => {
     mount();
 
     await waitFor(() => expect(screen.getByText(/Cobertura do modelo/)).toBeTruthy());
-    expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
 
     chooseWhole();
 
@@ -359,7 +360,7 @@ describe("DeployModel · modelo inteiro", () => {
     });
     expect(screen.queryByRole("checkbox", { name: /Incluir/ })).toBeNull();
     // No lugar delas, a faixa inteira como um fato, não como uma escolha.
-    expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
   });
 
   it("deixa escolher a máquina e manda a faixa inteira na seleção", async () => {
@@ -482,7 +483,7 @@ describe("DeployModel · modelo inteiro", () => {
       const button = screen.getByRole("button", { name: /^Implantar$/ });
       expect((button as HTMLButtonElement).disabled).toBe(false);
     });
-    expect(screen.getAllByText("L0–31").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/L0–31/).length).toBeGreaterThan(0);
   });
 
   it("permite ligar e desligar o ajuste automático de memória", async () => {
@@ -604,6 +605,47 @@ describe("DeployModel · MTP", () => {
     });
   });
 
+  it("marcar o MTP preenche 0,75 e permite editar a probabilidade mínima", async () => {
+    mountWhole();
+    chooseWhole();
+
+    const switchEl = await screen.findByRole("checkbox", {
+      name: /Predição multi-token/,
+    });
+    fireEvent.click(switchEl);
+
+    await waitFor(() => {
+      expect(screen.getByText("Probabilidade mínima do MTP")).toBeTruthy();
+      expect(
+        (screen.getByRole("spinbutton", {
+          name: /Probabilidade mínima do MTP/,
+        }) as HTMLInputElement).value,
+      ).toBe("0.75");
+    });
+
+    const probabilityInput = screen.getByRole("spinbutton", {
+      name: /Probabilidade mínima do MTP/,
+    });
+    fireEvent.change(probabilityInput, { target: { value: "0.42" } });
+    await waitFor(() =>
+      expect((probabilityInput as HTMLInputElement).value).toBe("0.42"),
+    );
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() =>
+      expect((button as HTMLButtonElement).disabled).toBe(false),
+    );
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      const deploys = post.mock.calls.filter(([url]) => url === "/api/ui/deploy");
+      expect(deploys).toHaveLength(1);
+      const body = deploys[0][1] as { params: RuntimeParams };
+      expect(body.params.mtp_enabled).toBe(true);
+      expect(body.params.mtp_min_probability).toBe(0.42);
+    });
+  });
+
   /// "Voltar ao plano do nó" tem que desfazer **também** o que está meio
   /// digitado.
   ///
@@ -652,6 +694,8 @@ describe("DeployModel · MTP", () => {
         </LocaleProvider>
       </QueryClientProvider>,
     );
+
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
 
     const campo = () =>
       document.querySelector('input[name="n_ctx"]') as HTMLInputElement | null;
@@ -801,5 +845,185 @@ describe("DeployModel · Tensor simples", () => {
     expect(screen.getByText(/1of2/)).toBeTruthy();
     expect(screen.getByText(/2of2/)).toBeTruthy();
     expect(screen.queryByText("Camadas disponíveis neste peer")).toBeNull();
+  });
+
+  it("mantém primary e workers restritos aos cards que estão no mapa", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    await waitFor(() => {
+      expect(
+        [...screen.getByRole("combobox", { name: /Máquina principal/ }).options].filter((option) => option.value).map((option) => option.textContent),
+      ).toEqual(["ksia", "salem"]);
+      expect(
+        [...screen.getByRole("listbox", { name: /Workers/ }).options].map((option) => option.textContent),
+      ).toEqual(["salem"]);
+    });
+  });
+
+  it("preserva um worker pré-fatiado sem rank local enquanto o plano responde", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    let releasePlan: ((plan: DeployPlan) => void) | undefined;
+    post.mockImplementation((url: string, body: { kind?: string; tp?: { worker_node_ids?: string[] } }) => {
+      if (url === "/api/ui/deploy/plan" && body.tp?.worker_node_ids?.includes("salem")) {
+        return new Promise<DeployPlan>((resolve) => { releasePlan = resolve; });
+      }
+      return body.kind === "tensor_parallel" ? Promise.resolve(tensorPlan()) : Promise.resolve(shardPlan());
+    });
+
+    const workerSelect = screen.getByRole("listbox", { name: /Workers/ }) as HTMLSelectElement;
+    [...workerSelect.options].forEach((option) => { option.selected = option.value === "salem"; });
+    fireEvent.change(workerSelect);
+
+    await waitFor(() => {
+      expect((planCalls().at(-1)![1] as { tp: { worker_node_ids: string[] } }).tp.worker_node_ids).toEqual(["salem"]);
+      expect([...workerSelect.selectedOptions].map((option) => option.value)).toEqual(["salem"]);
+    });
+    releasePlan?.(tensorPlan());
+  });
+
+  it("mantém no canvas uma máquina sem GGUF, mas não a oferece como worker no modelo inteiro", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return body.kind === "tensor_parallel"
+        ? Promise.resolve({ ...tensorPlan(), group: "qwen3.5-9b" })
+        : Promise.resolve(shardPlan());
+    });
+    const { client } = mount();
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+    client.setQueryData(keys.clusterModels, {
+      peers: [
+        {
+          node_id: "ksia",
+          hostname: "ksia",
+          is_self: false,
+          models: [{
+            id: "1",
+            name: "qwen3.5-9b",
+            source: "local",
+            source_label: "Local",
+            path: "/lm/qwen3.5-9b.gguf",
+            size_bytes: 5_000_000_000,
+            architecture: "qwen3",
+            total_layers: 32,
+            quant: "Q4_K_M",
+            shard_range: null,
+            shard_group: null,
+          }],
+          shard_sets: [],
+        },
+        { node_id: "salem", hostname: "salem", is_self: false, models: [], shard_sets: [] },
+      ],
+    });
+    chooseTensor();
+
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /salem disponível/ })).toBeTruthy());
+    expect([...screen.getByRole("combobox", { name: /Máquina principal/ }).options].filter((option) => option.value).map((option) => option.textContent)).toEqual(["ksia"]);
+    expect([...screen.getByRole("listbox", { name: /Workers/ }).options]).toHaveLength(0);
+  });
+
+  it("usa nos combos a mesma população de máquinas apresentada pela estratégia completa", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+    fireEvent.click(screen.getByRole("button", { name: "Completa" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: /salem disponível/ })).toBeTruthy());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    await waitFor(() => {
+      expect([...screen.getByRole("combobox", { name: /Máquina principal/ }).options].filter((option) => option.value).map((option) => option.textContent)).toEqual(["ksia", "mac", "salem"]);
+      expect([...screen.getByRole("listbox", { name: /Workers/ }).options].map((option) => option.textContent)).toEqual(["mac", "salem"]);
+    });
+  });
+
+  it("marca primary no card e mantém a exclusão mútua com workers ao trocar de card", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+
+    fireEvent.click(await screen.findByRole("button", { name: /Marcar salem como primary/ }));
+    await waitFor(() => expect((planCalls().at(-1)![1] as { tp: { primary_node_id: string } }).tp.primary_node_id).toBe("salem"));
+
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    const workerSelect = screen.getByRole("listbox", { name: /Workers/ }) as HTMLSelectElement;
+    [...workerSelect.options].forEach((option) => { option.selected = option.value === "ksia"; });
+    fireEvent.change(workerSelect);
+    fireEvent.click(await screen.findByRole("button", { name: /Marcar ksia como primary/ }));
+
+    await waitFor(() => {
+      expect(planCalls().some(([, body]) => JSON.stringify((body as { tp?: unknown }).tp) === JSON.stringify({
+        size: 2,
+        primary_node_id: "ksia",
+        worker_node_ids: ["salem"],
+      }))).toBe(true);
+    });
+  });
+
+  it("limpa primary e worker ao remover os cards correspondentes do mapa", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    const workerSelect = screen.getByRole("listbox", { name: /Workers/ }) as HTMLSelectElement;
+    [...workerSelect.options].forEach((option) => { option.selected = option.value === "salem"; });
+    fireEvent.change(workerSelect);
+    expect((screen.getByRole("combobox", { name: /Máquina principal/ }) as HTMLSelectElement).value).toBe("ksia");
+
+    fireEvent.click(await screen.findByRole("button", { name: "Remover ksia da implantação" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /ksia na implantação/ })).toBeNull());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    expect((screen.getByRole("combobox", { name: /Máquina principal/ }) as HTMLSelectElement).value).toBe("");
+    expect([...screen.getByRole("listbox", { name: /Workers/ }).options].map((option) => option.textContent)).toEqual(["salem"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remover salem da implantação" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: /salem na implantação/ })).toBeNull());
+    fireEvent.click(screen.getByRole("tab", { name: "Globais" }));
+    expect((screen.getByRole("combobox", { name: /Máquina principal/ }) as HTMLSelectElement).value).toBe("");
+    expect([...screen.getByRole("listbox", { name: /Workers/ }).options]).toHaveLength(0);
+  });
+
+  it("preserva size, primary e a ordem dos workers no plan e no deploy", async () => {
+    answerPlans();
+    mount();
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("button", { name: /^salem RTT -/ }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+
+    const workerSelect = screen.getByRole("listbox", { name: /Workers/ }) as HTMLSelectElement;
+    [...workerSelect.options].forEach((option) => { option.selected = option.value === "salem"; });
+    fireEvent.change(workerSelect);
+
+    await waitFor(() => expect((planCalls().at(-1)![1] as { tp: unknown }).tp).toEqual({
+      size: 2,
+      primary_node_id: "ksia",
+      worker_node_ids: ["salem"],
+    }));
+    fireEvent.click(screen.getByRole("button", { name: /^Implantar$/ }));
+
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy");
+      expect(deploy?.[1]).toMatchObject({
+        tp: {
+          size: 2,
+          primary_node_id: "ksia",
+          worker_node_ids: ["salem"],
+        },
+      });
+    });
   });
 });

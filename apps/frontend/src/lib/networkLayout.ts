@@ -33,12 +33,41 @@ export function deploymentLayoutKey(model: string, peers: DeploymentPeer[]) {
 
 /** Medidas do card em `ModelNetworkCanvas`. Mudou lá, muda aqui. */
 export const CARD_WIDTH = 264;
-export const CARD_HEIGHT = 202;
+export const CARD_HEIGHT = 228;
 const GAP_X = 92;
 const GAP_Y = 40;
 const ORIGIN_X = 48;
 /** Eixo horizontal em torno do qual cada coluna é centrada. */
 const AXIS_Y = 300;
+
+export type RouteGeometry = {
+  x1: number;
+  y1: number;
+  c1x: number;
+  c1y: number;
+  c2x: number;
+  c2y: number;
+  x2: number;
+  y2: number;
+  labelX: number;
+  labelY: number;
+};
+
+/** Curve endpoints face each other, including for a manually reversed layout. */
+export function routeGeometry(from: CanvasPosition, to: CanvasPosition): RouteGeometry {
+  const leftToRight = to.left >= from.left;
+  const x1 = leftToRight ? from.left + CARD_WIDTH : from.left;
+  const y1 = from.top + CARD_HEIGHT / 2;
+  const x2 = leftToRight ? to.left : to.left + CARD_WIDTH;
+  const y2 = to.top + CARD_HEIGHT / 2;
+  const direction = x2 >= x1 ? 1 : -1;
+  const bend = Math.max(60, Math.abs(x2 - x1) * 0.42);
+  const c1x = x1 + direction * bend;
+  const c2x = x2 - direction * bend;
+  const labelX = (x1 + 3 * c1x + 3 * c2x + x2) / 8;
+  const labelY = (y1 + 3 * y1 + 3 * y2 + y2) / 8;
+  return { x1, y1, c1x, c1y: y1, c2x, c2y: y2, x2, y2, labelX, labelY };
+}
 
 /**
  * Posição de último recurso, quando não há como calcular nada melhor.

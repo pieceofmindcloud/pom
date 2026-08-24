@@ -23,7 +23,9 @@ export function getConnectionKey(): string {
 }
 
 export function setConnectionKey(key: string) {
-  connectionKey = key ?? "";
+  const nextKey = key ?? "";
+  if (nextKey !== connectionKey) clearConditionalCache();
+  connectionKey = nextKey;
   if (connectionKey) localStorage.setItem(KEY_STORAGE, connectionKey);
   else localStorage.removeItem(KEY_STORAGE);
 }
@@ -95,8 +97,70 @@ export async function request<T>(
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+type ConditionalCacheEntry = {
+  etag: string;
+  data: unknown;
+};
+
+const conditionalCache = new Map<string, ConditionalCacheEntry>();
+
+/**
+ * Forget conditional GET snapshots. Tests use this to isolate requests; a
+ * caller changing the connection target can also clear it before switching
+ * nodes so an old node never supplies a valid-looking 304.
+ */
+export function clearConditionalCache() {
+  conditionalCache.clear();
+}
+
+/**
+ * GET that sends the last ETag and keeps the last parsed value on 304.
+ *
+ * The regular request helper deliberately stays simple for mutations and
+ * one-shot reads. These four live snapshots are different: a 304 has no JSON
+ * to parse, so React Query receives the same object it already renders.
+ */
+export async function requestConditional<T>(
+  path: string,
+  { auth = true, signal }: Pick<RequestOptions, "auth" | "signal"> = {},
+): Promise<T> {
+  const cached = conditionalCache.get(path);
+  const headers: Record<string, string> = {};
+  if (auth && connectionKey) headers.Authorization = `Bearer ${connectionKey}`;
+  if (cached) headers["If-None-Match"] = cached.etag;
+
+  let res = await fetch(path, { method: "GET", headers, signal });
+
+  // A 304 without a local value is not useful to a new tab. Recover with one
+  // unconditional read instead of exposing an impossible empty state.
+  if (res.status === 304 && !cached) {
+    res = await fetch(path, {
+      method: "GET",
+      headers: auth && connectionKey ? { Authorization: `Bearer ${connectionKey}` } : {},
+      signal,
+    });
+  }
+
+  if (res.status === 304 && cached) return cached.data as T;
+  if (!res.ok) {
+    const { message, body: detail } = await explain(res);
+    throw new ApiError(res.status, message, detail);
+  }
+
+  const text = await res.text();
+  const data = (text ? JSON.parse(text) : undefined) as T;
+  const etag = res.headers.get("ETag");
+  if (etag) conditionalCache.set(path, { etag, data });
+  else conditionalCache.delete(path);
+  return data;
+}
+
 export const api = {
   get: <T>(path: string, opts?: RequestOptions) => request<T>(path, opts),
+  getConditional: <T>(
+    path: string,
+    opts?: Pick<RequestOptions, "auth" | "signal">,
+  ) => requestConditional<T>(path, opts),
   post: <T>(path: string, body?: unknown, opts?: RequestOptions) =>
     request<T>(path, { ...opts, method: "POST", body }),
   del: <T>(path: string, opts?: RequestOptions) =>

@@ -450,7 +450,7 @@ struct Visto {
 
 /// Sobe dois hops falsos, um gateway de verdade com a config do captain e roda
 /// uma geração pelo mesmo caminho que `/v1/chat/completions` usa.
-async fn gerar(direto: bool, max_tokens: u32) -> Visto {
+async fn gerar(direto: bool, max_tokens: u32, n_batch: u32) -> Visto {
     // Com `RUST_LOG=info` a bancada imprime as mesmas linhas que o captain leu
     // no servidor — é assim que se confere que ela reproduz o caso dele, e não
     // um primo.
@@ -516,10 +516,9 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         .collect();
 
     let state = crate::gateway::testkit::state_with("eu", peers).await;
-    state
-        .runtime
-        .seed_config_for_test(crate::gateway::testkit::spec_config())
-        .await;
+    let mut config = crate::gateway::testkit::spec_config();
+    config.n_batch = n_batch;
+    state.runtime.seed_config_for_test(config).await;
 
     // O gateway de verdade, na loopback, para a cauda ter onde entregar a
     // resposta direta. Sem ele o modo direto esperaria o prazo inteiro.
@@ -530,6 +529,7 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
         state,
         "lab".into(),
         "um prompt qualquer para a bancada".into(),
+        true,
         max_tokens,
         tx,
     ));
@@ -583,7 +583,7 @@ async fn gerar(direto: bool, max_tokens: u32) -> Visto {
 /// `step_speculative` conhece — sem resposta direta negociada.
 #[tokio::test]
 async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
-    let visto = gerar(false, 5).await;
+    let visto = gerar(false, 5, 512).await;
 
     assert_eq!(visto.falhou, None, "a geração não pode falhar");
     assert_eq!(visto.tokens, 5);
@@ -601,7 +601,7 @@ async fn quem_rascunha_no_anel_gera_o_texto_inteiro() {
 /// pode ser desviada — sem isto o teste anterior passaria por acidente.
 #[tokio::test]
 async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
-    let visto = gerar(true, 5).await;
+    let visto = gerar(true, 5, 512).await;
     assert_eq!(visto.falhou, None);
     assert_eq!(visto.tokens, 5);
     assert!(!visto.partial);
@@ -611,4 +611,18 @@ async fn quem_rascunha_com_resposta_direta_nao_e_desviado_para_ela() {
         "toda rodada especulou, então nenhuma podia sair pelo caminho direto"
     );
     assert!(visto.decode_calls.iter().all(|c| *c > 0));
+}
+
+/// `n_batch=512` limita apenas a largura de uma rodada no motor, não o
+/// orçamento de saída pedido ao gateway.
+#[tokio::test]
+async fn um_orcamento_acima_de_n_batch_nao_e_truncado() {
+    for n_batch in [512, 8] {
+        let visto = gerar(false, 2048, n_batch).await;
+
+        assert_eq!(visto.falhou, None, "a geração não pode falhar");
+        assert_eq!(visto.tokens, 2048, "n_batch={n_batch} não pode ser o teto");
+        assert!(!visto.partial);
+        assert_eq!(visto.step_calls, vec![2047, 2047]);
+    }
 }

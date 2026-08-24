@@ -38,15 +38,17 @@ Três regras saem da arquitetura, não do gosto:
 - **Ordem do pipeline = ordem das camadas.** Quem fica com a camada 0 recebe o
   prompt inteiro de cada requisição. Escolher a ordem é o mesmo ato que escolher
   quem fica com qual faixa - não há segundo botão.
-- **Um nó serve uma faixa distinta**, exceto com `merge` ligado: faixas adjacentes
-  viram uma unidade fundida (`splitter::merge`, Rust), a máquina junta as fatias
-  num arquivo só e serve a união. O passo fundido carrega `parts`, um por fatia.
+- **Um nó pode servir várias faixas distintas.** Cada faixa válida vira uma
+  etapa do pipeline, mesmo quando a mesma máquina recebe faixas separadas.
+  Com `merge` ligado, apenas faixas adjacentes no mesmo nó viram uma unidade
+  fundida (`splitter::merge`, Rust), a máquina junta as fatias num arquivo só e
+  serve a união. O passo fundido carrega `parts`, um por fatia.
   A mesma faixa exata em nós diferentes é uma réplica do mesmo estágio e forma
   uma rota paralela válida.
-- **Sobreposição parcial é recusa, buraco é aviso.** Duas faixas com cortes
+- **Sobreposição parcial e buraco global são recusa.** Duas faixas com cortes
   diferentes sobre a mesma camada tornariam a resposta ambígua; cópias exatas
-  são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Um
-  buraco é meia-implantação legítima que só impede o pipeline de planejar.
+  são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Uma
+  atribuição válida precisa cobrir cada camada exigida exatamente uma vez.
 
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
@@ -57,7 +59,7 @@ e rotas paralelas válidas para balanceamento por RTT/carga. Não existe segundo
 `parse_whole`, num `HeldShard` de faixa `0..total_layers-1`. Daí para frente é
 tudo o mesmo código - `candidates`, `model_size`, a aritmética de cobertura, o
 guarda de disco/memória, a fase de cópia e `launch_targets`. A cobertura fecha
-por construção, "um nó serve uma faixa" é trivialmente satisfeita, e cada alvo sai
+por construção, "um nó serve uma ou mais faixas" é trivialmente satisfeita, e cada alvo sai
 como `LaunchTarget` comum com `skip_split: true`, o que faz o `apply` no destino
 se reconhecer como `single_peer` (sem extração de estado oculto). Quando o
 operador seleciona mais de um destino, cada cópia vira um `Step` independente;
@@ -223,12 +225,11 @@ n_gpu_layers, offload_kqv }` é validado por posição:
 `position` é numerado depois dessa ordenação. A ordem não é estética: a ordem do
 pipeline *é* a ordem das camadas, o `run` lê a ordem de lançamento direto dessa
 lista, e a tela alinha o plano com linhas que ela mantém ordenadas por camada. O
-laço de agrupamento anda por máquina de destino, então a ordenação é aplicada uma
-vez no fim - sem ela, uma máquina com duas faixas emitia a segunda na frente de
-tudo que estava no meio, e a tela de implantar emudecia (2026-08-16). Pela mesma
-razão **`target_node_id` vazio nunca agrupa**: "sem máquina" não é uma máquina, e
-juntar toda faixa sem destino sob o mesmo id vazio produzia uma recusa que
-nomeava uma máquina sem nome.
+laço de agrupamento anda em ordem de camada e só junta entradas consecutivas
+quando `merge` está ligado, então faixas separadas na mesma máquina continuam
+etapas independentes. Pela mesma razão **`target_node_id` vazio nunca agrupa**:
+"sem máquina" não é uma máquina, e cada faixa sem destino mantém seu próprio
+passo e motivo.
 
 O `Plan` carrega `total_layers` com `total_layers_inferred` (deduzido da cobertura
 quando a fatia não declara), `transfer_bytes`, `steps` (cada um com `ready`

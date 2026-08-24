@@ -341,7 +341,10 @@ async fn main() -> Result<()> {
         let detected = sysmon::sample().await.gpus;
         match sysmon::apply_gpu_selection(app_config.gpus.as_deref(), &detected) {
             _ if app_config.gpus.is_none() => {
-                info!("GPUs: todas as {} disponíveis (pom.json não restringe)", detected.len());
+                info!(
+                    "GPUs: todas as {} disponíveis (pom.json não restringe)",
+                    detected.len()
+                );
             }
             escolhidas if escolhidas.is_empty() => {
                 info!("GPUs: nenhuma - inferência em CPU (pom.json traz uma lista vazia)");
@@ -399,6 +402,7 @@ async fn main() -> Result<()> {
             app_config.clone(),
             args.ollama_url,
             args.no_discovery,
+            args.no_default_relays,
             args.advertise_addr.clone(),
             args.public_addr.clone(),
         )
@@ -490,26 +494,6 @@ async fn main() -> Result<()> {
     let node_id = identity.node_id.0.clone();
     let pubkey = identity.public_key_hex();
 
-    display::print_node_info(&node_id, &pubkey, p2p_port);
-
-    // ── Compute pkarr multiaddr to publish ───────────────────────────────────
-    // (Doesn't need a loaded `PkarrNode` — `start_p2p_stack` loads its own,
-    // for the keypair and for relay-peer resolution, later.)
-    let pkarr_multiaddr = {
-        let default_tcp_port = p2p_port.saturating_add(10000);
-        if !args.public_addr.is_empty() {
-            if let Some((host, port_str)) = args.public_addr.split_once(':') {
-                let udp_port = port_str.parse::<u16>().unwrap_or(p2p_port);
-                format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
-            } else {
-                format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
-            }
-        } else {
-            let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
-            format!("/ip4/{}/tcp/{}", ip, default_tcp_port)
-        }
-    };
-
     let pkarr_peer_keys: Vec<String> = args
         .pkarr_peers
         .split(',')
@@ -598,6 +582,25 @@ async fn main() -> Result<()> {
     let tunnel_tx = stack.tunnel_tx;
     let pkarr_node = stack.pkarr_node;
     let disc_dial_tx = stack.disc_dial_tx;
+    let p2p_port = net.bind_addr.port();
+    display::print_node_info(&node_id, &pubkey, p2p_port);
+
+    // ── Compute pkarr multiaddr to publish ───────────────────────────────────
+    // Use the actual UDP port when the config requested an ephemeral bind.
+    let pkarr_multiaddr = {
+        let default_tcp_port = p2p_port.saturating_add(10000);
+        if !args.public_addr.is_empty() {
+            if let Some((host, port_str)) = args.public_addr.split_once(':') {
+                let udp_port = port_str.parse::<u16>().unwrap_or(p2p_port);
+                format!("/ip4/{}/tcp/{}", host, udp_port.saturating_add(10000))
+            } else {
+                format!("/ip4/{}/tcp/{}", args.public_addr, default_tcp_port)
+            }
+        } else {
+            let ip = pkarr_node::detect_local_ip().unwrap_or_else(|| "0.0.0.0".to_string());
+            format!("/ip4/{}/tcp/{}", ip, default_tcp_port)
+        }
+    };
 
     info!("⏳ Scanning network for existing layer coverage...");
     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -791,6 +794,7 @@ async fn main() -> Result<()> {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
+            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1112,6 +1116,14 @@ struct P2pStack {
 /// deliberate: every caller of this function needs to always come up and
 /// serve its gateway, with or without libp2p.
 async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
+    let bootstrap_nodes: Vec<String> = args
+        .bootstrap_nodes
+        .iter()
+        .map(|addr| crate::config::normalize_peer_addr(addr))
+        .filter(|addr| !addr.is_empty())
+        .collect();
+    infer_tunnel::set_local_node_id(args.node_id.clone());
+
     let pkarr_node = match pkarr_node::PkarrNode::load_or_create(&identity::pkarr_key_path()) {
         Ok(n) => {
             info!("🔑 Pkarr address: {}", n.public_key_uri());
@@ -1173,7 +1185,7 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
             args.node_id,
             args.pubkey,
             args.p2p_port,
-            args.bootstrap_nodes.clone(),
+            bootstrap_nodes.clone(),
             args.ollama_port,
             args.inference_port,
             Some(args.gateway_port),
@@ -1197,9 +1209,12 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
     // libp2p TCP port = UDP port + 10 000 (e.g. 42777 → 52777). Announce
     // messages are published to gossipsub every 5 s so internet peers learn
     // our layer assignment without needing a shared signalling server.
+    // `Network::new` may have received port 0 and selected an ephemeral UDP
+    // port. Discovery must derive its TCP port from the assigned value, not
+    // from the unresolved configuration value.
     let (disc_announce_tx, disc_dial_tx) = match Discovery::new(
-        args.p2p_port,
-        &args.bootstrap_nodes,
+        net.bind_addr.port(),
+        &bootstrap_nodes,
         &resolved_relay_addrs,
         args.serve_relay,
         args.use_default_relays,
@@ -1254,11 +1269,16 @@ async fn start_p2p_stack(args: P2pStackArgs) -> Result<P2pStack> {
 /// Start the gateway with real routes but without model/network binding.
 /// The dashboard, admin, and handshake routes all work so the user can
 /// configure the model through the web UI.
+fn gateway_only_use_default_relays(no_default_relays: bool) -> bool {
+    !no_default_relays
+}
+
 async fn start_gateway_only(
     gateway_port: u16,
     app_config: config::Config,
     ollama_url: String,
     no_discovery: bool,
+    no_default_relays: bool,
     advertise_addr_cli: String,
     public_addr_cli: String,
 ) -> Result<()> {
@@ -1295,7 +1315,7 @@ async fn start_gateway_only(
         // addendum on deferred parity for `start_gateway_only`.
         relay_peer_keys: vec![],
         serve_relay: false,
-        use_default_relays: true,
+        use_default_relays: gateway_only_use_default_relays(no_default_relays),
         no_discovery,
     })
     .await?;
@@ -1381,6 +1401,7 @@ async fn start_gateway_only(
         // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
+        cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
     };
 
     info!(
@@ -1394,6 +1415,12 @@ async fn start_gateway_only(
 #[cfg(test)]
 mod main_tests {
     use super::*;
+
+    #[test]
+    fn gateway_only_honors_the_default_relay_switch() {
+        assert!(gateway_only_use_default_relays(false));
+        assert!(!gateway_only_use_default_relays(true));
+    }
 
     /// A porta do Ollama anunciada não pode depender de `--gateway`: a flag está
     /// marcada como deprecated porque todo nó já serve a API, e enquanto o

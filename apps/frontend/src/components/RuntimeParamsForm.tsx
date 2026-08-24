@@ -51,9 +51,17 @@ export const SPECULATIVE_KNOBS: Knob[] = [
 ];
 
 /**
+ * O piso de confiança do MTP começa em 0,75 ao marcar o MTP, mas continua
+ * editável pelo operador. Fica aqui, ao lado dos outros
+ * números do MTP, para que as duas telas que ligam o MTP gravem o mesmo valor -
+ * duas constantes iguais em lugares diferentes é como elas passam a divergir.
+ */
+export const MTP_MIN_PROBABILITY = 0.75;
+
+/**
  * Só aparecem com o MTP ligado. `mtp_draft_tokens` tem o mesmo teto sensato da
- * largura do rascunho por lookup; `mtp_min_probability` é um piso de confiança,
- * então vive em [0,1] com passo de centésimo.
+ * largura do rascunho por lookup; a probabilidade é um piso em [0,1] com passo
+ * de centésimo.
  */
 export const MTP_KNOBS: Knob[] = [
   { key: "mtp_draft_tokens", min: 1, max: 8 },
@@ -216,7 +224,13 @@ export function RuntimeParamsForm({
         />
         <Switch
           checked={value.mtp_enabled ?? false}
-          onChange={(v) => onChange({ ...value, mtp_enabled: v })}
+          onChange={(v) =>
+            onChange({
+              ...value,
+              mtp_enabled: v,
+              ...(v ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
+            })
+          }
           disabled={disabled}
           label={t("deploy.mtp")}
           hint={t("deploy.mtpHint")}

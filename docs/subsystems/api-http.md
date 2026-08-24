@@ -74,9 +74,14 @@ haver chave.
 Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
 achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
 passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
-512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Todas as respostas
-levam a extensão `x_pom` (fora do schema) com a prova de execução
-distribuída. CORS `*` para harnesses de navegador.
+512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
+SSE em `/v1/chat/completions`, o adaptador faz a mesma guarda de orçamento de
+prompt do gateway e responde
+HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
+clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
+resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
+(fora do schema) com a prova de execução distribuída. CORS `*` para harnesses
+de navegador.
 
 ### Anthropic (`/v1/messages`)
 
@@ -103,7 +108,9 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
 `requests` (o log de requisições, `reqlog::list_requests`), `network/rtt` (GET
-autenticado, snapshot direcional deste nó), `dev/update` +
+autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
+recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
+peers solicitados), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
@@ -119,6 +126,30 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 `libp2p_peer_id` e `inference_frame_capabilities` para que um plano de
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
+
+### Leituras condicionais do painel
+
+`GET /api/ui/jobs` e `GET /api/transfer/offers` respondem com `ETag` e
+`x-state-version`. Quando o cliente envia `If-None-Match` com a versão atual, o
+gateway responde `304 Not Modified` sem corpo. A lista de ofertas tem somente
+`{ offers }`; espaço livre em disco é uma decisão interna da transferência,
+não parte do contrato de leitura da UI.
+
+`GET /api/ui/cluster` usa o mesmo contrato condicional. Cada gateway mantém por
+até 2 segundos o snapshot já montado, protegido por um fingerprint do estado
+conhecido de peers, runtime, configuração e implantação. Uma mudança conhecida
+troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
+somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
+continuam invalidando a versão. `x-state-version` é monotônico para snapshots
+alterados.
+**`POST /api/ui/chat/telemetry`** - coleta sob demanda feita depois de uma
+execução do Chat. O gateway inclui a medição local e consulta o
+`GET /api/ui/network/rtt` autenticado de cada peer solicitado, aceitando o
+relatório somente quando `source_node_id` coincide com o peer que respondeu.
+Cada item responde `{ from_node_id, to_node_id, rtt_ms, transport }`. A medida
+é da origem da aresta até o destino e não é o RTT do card que um gateway mediu
+até um peer. Ausência de uma medida fica ausente na resposta; não há zero de
+fallback.
 
 ## 3. Autenticação (`auth.rs`)
 
@@ -145,6 +176,9 @@ loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
 `peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
+
+`POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige
+`ConnectionAuth` porque repassa relatórios internos de RTT entre peers.
 
 A porta interna de inferência (`inference_port`, normalmente 8181) tem outro
 router e também exige credencial em `/v1/prefill`, `/v1/step`,

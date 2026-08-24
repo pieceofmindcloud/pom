@@ -11,6 +11,7 @@
 use crate::infer_tunnel::{TunnelOutbound, TunnelOutboundSender, TunnelRequest};
 use crate::wire::{self, FrameEncoding, WireDtype};
 use anyhow::{anyhow, Result};
+use axum::body::Bytes;
 use libp2p::PeerId;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -18,7 +19,48 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
-use tracing::warn;
+use tracing::{debug, warn};
+
+#[async_trait::async_trait]
+pub(crate) trait InProcessInference: Send + Sync {
+    async fn dispatch(&self, path: &str, body: Bytes) -> Result<axum::response::Response>;
+}
+
+pub(crate) type LocalInference = Arc<dyn InProcessInference>;
+
+type LocalInferenceSlot = Arc<tokio::sync::RwLock<Option<(u64, LocalInference)>>>;
+
+fn local_inference_slot() -> &'static LocalInferenceSlot {
+    static SLOT: OnceLock<LocalInferenceSlot> = OnceLock::new();
+    SLOT.get_or_init(|| Arc::new(tokio::sync::RwLock::new(None)))
+}
+
+pub(crate) async fn install_local_inference(generation: u64, local: LocalInference) {
+    *local_inference_slot().write().await = Some((generation, local));
+}
+
+pub(crate) async fn clear_local_inference(generation: u64) {
+    let mut slot = local_inference_slot().write().await;
+    if slot
+        .as_ref()
+        .is_some_and(|(current, _)| *current == generation)
+    {
+        *slot = None;
+    }
+}
+
+async fn current_local_inference() -> Option<LocalInference> {
+    local_inference_slot()
+        .read()
+        .await
+        .as_ref()
+        .map(|(_, local)| local.clone())
+}
+
+#[cfg(test)]
+pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
+    *local_inference_slot().write().await = local.map(|local| (u64::MAX, local));
+}
 
 /// Attempts per prefill chunk before giving up on it — safe to retry because
 /// the receiving peer rewinds its KV cache to the chunk's position first
@@ -69,6 +111,7 @@ struct BatchCall {
     clients: crate::peer_client::PeerClients,
     step: crate::pipeline::PipelineStep,
     tunnel: Option<TunnelOutboundSender>,
+    local: Option<LocalInference>,
     path: String,
     meta: Value,
     tensor: Option<(Vec<f32>, [usize; 2])>,
@@ -136,6 +179,7 @@ impl BatchCoordinator {
         clients: &crate::peer_client::PeerClients,
         step: &crate::pipeline::PipelineStep,
         tunnel: Option<&TunnelOutboundSender>,
+        local: Option<LocalInference>,
         path: &str,
         meta: &Value,
         tensor: Option<(&[f32], [usize; 2])>,
@@ -157,6 +201,7 @@ impl BatchCoordinator {
             clients: clients.clone(),
             step: step.clone(),
             tunnel: tunnel.cloned(),
+            local,
             path: path.to_string(),
             meta,
             tensor: tensor.map(|(values, shape)| (values.to_vec(), shape)),
@@ -221,6 +266,7 @@ impl BatchCoordinator {
                 &first.clients,
                 &first.step,
                 first.tunnel.as_ref(),
+                first.local.clone(),
                 &first.path,
                 body,
                 first.attempts,
@@ -387,6 +433,73 @@ pub fn extract_relay_failure(e: &anyhow::Error) -> Option<RelayFailure> {
 /// means exactly one try, no retry at all (the decode/`/v1/step` path has
 /// never retried, since — unlike prefill chunks — a step has no KV-rollback
 /// idempotency protection against being redecoded).
+fn encode_frame_body(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+    encoding: FrameEncoding,
+    use_batch_frame: bool,
+) -> Result<Vec<u8>> {
+    if use_batch_frame {
+        wire::encode_batch_single(meta, tensor, dtype)
+    } else {
+        match (tensor, dtype) {
+            (Some(tensor), WireDtype::F16) => {
+                wire::encode_with_encoding(meta, Some(tensor), encoding)
+            }
+            (tensor, dtype) => wire::encode(meta, tensor, dtype),
+        }
+    }
+}
+
+async fn send_frame_in_process(
+    local: LocalInference,
+    path: &str,
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    dtype: WireDtype,
+    encoding: FrameEncoding,
+    use_batch_frame: bool,
+    peer_label: &str,
+) -> Result<SentFrame> {
+    debug!(peer = peer_label, path, "inferência em processo");
+    let encode_started = Instant::now();
+    let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
+    let client_encode_ms = encode_started.elapsed().as_millis() as u64;
+    let started = Instant::now();
+    let bytes_sent = body.len() as u64;
+    let response = local.dispatch(path, Bytes::from(body)).await?;
+    let status = response.status();
+    let bytes = axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await?;
+    if !status.is_success() {
+        return Err(anyhow::Error::new(HttpRefusal {
+            status: status.as_u16(),
+            body: String::from_utf8_lossy(&bytes).into_owned(),
+            peer_label: peer_label.to_string(),
+        }));
+    }
+    let client_decode_started = Instant::now();
+    let (meta, tensor) = wire::decode(&bytes)?;
+    let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+    let tls_handshake_ms = meta
+        .get("tls_handshake_ms")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
+    Ok(SentFrame {
+        meta,
+        tensor,
+        round_trip_ms: started.elapsed().as_millis() as u64,
+        bytes_sent,
+        bytes_received: bytes.len() as u64,
+        client_encode_ms,
+        response_headers_ms: 0,
+        response_body_ms: 0,
+        client_decode_ms,
+        tls: false,
+        tls_handshake_ms,
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 #[cfg(test)]
 pub async fn send_frame(
@@ -429,16 +542,7 @@ async fn send_frame_with_protocol(
     // de quem se põe no meio dele.
     let http = &clients.for_peer(peer_id)?;
     let encode_started = Instant::now();
-    let body = if use_batch_frame {
-        wire::encode_batch_single(meta, tensor, dtype)?
-    } else {
-        match (tensor, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(meta, Some(tensor), encoding)?
-            }
-            (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
-        }
-    };
+    let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
     let url = format!("{base_url}{path}");
     let attempts = attempts.max(1);
@@ -554,17 +658,49 @@ async fn send_batch_body(
     clients: &crate::peer_client::PeerClients,
     step: &crate::pipeline::PipelineStep,
     tunnel: Option<&TunnelOutboundSender>,
+    local: Option<LocalInference>,
     path: &str,
     body: Vec<u8>,
     attempts: u32,
     peer_label: &str,
 ) -> Result<BatchTransportResponse> {
+    if let Some(local) = local {
+        debug!(peer = peer_label, path, "inferência em processo em batch");
+        let started = Instant::now();
+        let bytes_sent = body.len() as u64;
+        let response = local.dispatch(path, Bytes::from(body)).await?;
+        let status = response.status();
+        let bytes =
+            axum::body::to_bytes(response.into_body(), wire::MAX_FRAME_PAYLOAD_BYTES).await?;
+        if !status.is_success() {
+            return Err(anyhow::Error::new(HttpRefusal {
+                status: status.as_u16(),
+                body: String::from_utf8_lossy(&bytes).into_owned(),
+                peer_label: peer_label.to_string(),
+            }));
+        }
+        return Ok(BatchTransportResponse {
+            body: bytes.to_vec(),
+            round_trip_ms: started.elapsed().as_millis() as u64,
+            bytes_sent,
+            client_encode_ms: 0,
+            response_headers_ms: 0,
+            response_body_ms: 0,
+            client_decode_ms: 0,
+            tls: false,
+        });
+    }
+
     let peer_id = step
         .libp2p_peer_id
         .as_deref()
         .and_then(|value| value.parse::<PeerId>().ok());
-    let can_use_tunnel =
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
         match send_batch_via_tunnel(
@@ -910,6 +1046,16 @@ pub async fn send_frame_or_tunnel(
     peer_label: &str,
     on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
+    let local = if crate::infer_tunnel::is_local_node(&step.node_id) {
+        Some(current_local_inference().await.ok_or_else(|| {
+            anyhow!(
+                "inferência em processo indisponível para o próprio nó {}",
+                step.node_id
+            )
+        })?)
+    } else {
+        None
+    };
     let can_batch = step.supports(crate::pipeline::CAP_FRAME_BATCH)
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
@@ -920,7 +1066,16 @@ pub async fn send_frame_or_tunnel(
         let mut on_issue = on_issue;
         return match coordinator
             .submit(
-                clients, step, tunnel, path, meta, tensor, dtype, attempts, peer_label,
+                clients,
+                step,
+                tunnel,
+                local.clone(),
+                path,
+                meta,
+                tensor,
+                dtype,
+                attempts,
+                peer_label,
             )
             .await
         {
@@ -935,13 +1090,32 @@ pub async fn send_frame_or_tunnel(
             }
         };
     }
+
+    if let Some(local) = local {
+        return send_frame_in_process(
+            local,
+            path,
+            meta,
+            tensor,
+            dtype,
+            encoding,
+            step.supports(crate::pipeline::CAP_FRAME_BATCH),
+            peer_label,
+        )
+        .await;
+    }
+
     let peer_id = step
         .libp2p_peer_id
         .as_deref()
         .and_then(|s| s.parse::<PeerId>().ok());
 
-    let can_use_tunnel =
-        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL) && peer_id.is_some() && tunnel.is_some();
+    let can_use_tunnel = tunnel_is_allowed_for_peer(
+        step.supports(crate::pipeline::CAP_LIBP2P_TUNNEL),
+        peer_id.is_some(),
+        tunnel.is_some(),
+        crate::infer_tunnel::is_local_node(&step.node_id),
+    );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
@@ -982,6 +1156,17 @@ pub async fn send_frame_or_tunnel(
         on_issue,
     )
     .await
+}
+
+/// A local pipeline step is dispatched directly to this process's inference
+/// handler. Remote steps may use the tunnel before the direct HTTP fallback.
+fn tunnel_is_allowed_for_peer(
+    step_supports_tunnel: bool,
+    peer_id_known: bool,
+    tunnel_available: bool,
+    target_is_local: bool,
+) -> bool {
+    !target_is_local && step_supports_tunnel && peer_id_known && tunnel_available
 }
 
 /// Predicado mantido para os testes e para consumidores que ainda classificam
@@ -1317,6 +1502,8 @@ mod tests {
     }
     use tokio::sync::mpsc;
 
+    static LOCAL_IN_PROCESS_TEST_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
     #[test]
     fn only_timeout_and_transport_issues_ever_trigger_the_tunnel() {
         for kind in [SendIssueKind::Timeout, SendIssueKind::Transport] {
@@ -1342,6 +1529,125 @@ mod tests {
             !should_attempt_tunnel_fallback(kind, true, true, false),
             "the local swarm must actually be up"
         );
+    }
+
+    #[test]
+    fn the_local_peer_is_never_sent_through_the_tunnel() {
+        assert!(!tunnel_is_allowed_for_peer(true, true, true, true));
+        assert!(tunnel_is_allowed_for_peer(true, true, true, false));
+    }
+
+    #[derive(Clone)]
+    struct FakeInProcessInference {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl InProcessInference for FakeInProcessInference {
+        async fn dispatch(
+            &self,
+            _path: &str,
+            body: axum::body::Bytes,
+        ) -> Result<axum::response::Response> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let response = if let Ok(batch) = wire::decode_batch(&body) {
+                wire::encode_batch_items(
+                    batch.kind,
+                    batch.batch_id,
+                    &batch
+                        .items
+                        .iter()
+                        .map(|item| wire::BatchPayloadItem {
+                            item_id: item.item_id.clone(),
+                            session_id: item.session_id.clone(),
+                            meta: json!({"done": true}),
+                            tensor: None,
+                            dtype: WireDtype::F16,
+                        })
+                        .collect::<Vec<_>>(),
+                )?
+            } else {
+                wire::encode(&json!({"done": true}), None, WireDtype::F16)?
+            };
+            Ok(axum::response::Response::new(axum::body::Body::from(
+                response,
+            )))
+        }
+    }
+
+    fn local_in_process_probe() -> (Arc<std::sync::atomic::AtomicUsize>, LocalInference) {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let handle: LocalInference = Arc::new(FakeInProcessInference {
+            calls: calls.clone(),
+        });
+        (calls, handle)
+    }
+
+    #[tokio::test]
+    async fn a_local_step_is_dispatched_in_process_without_opening_a_socket() {
+        let _guard = LOCAL_IN_PROCESS_TEST_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        crate::infer_tunnel::set_local_node_id("in-process-local".into());
+        let (calls, local) = local_in_process_probe();
+        set_test_local_inference(Some(local)).await;
+        let step = step_with_node("in-process-local", "http://127.0.0.1:1", false, None);
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+            &step,
+            None,
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "in-process-local",
+            |_| {},
+        )
+        .await
+        .expect("local inference must not use the invalid HTTP endpoint");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        set_test_local_inference(None).await;
+    }
+
+    #[tokio::test]
+    async fn a_local_batch_is_dispatched_in_process_without_opening_a_socket() {
+        let _guard = LOCAL_IN_PROCESS_TEST_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+        crate::infer_tunnel::set_local_node_id("in-process-local".into());
+        let (calls, local) = local_in_process_probe();
+        set_test_local_inference(Some(local)).await;
+        let mut step = step_with_node("in-process-local", "http://127.0.0.1:1", false, None);
+        step.inference_frame_capabilities
+            .push(crate::pipeline::CAP_FRAME_BATCH.into());
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+            &step,
+            None,
+            "/v1/step",
+            &json!({"session_id": "local-batch"}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "in-process-local",
+            |_| {},
+        )
+        .await
+        .expect("local batch must not use the invalid HTTP endpoint");
+
+        assert_eq!(sent.meta["done"], true);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        set_test_local_inference(None).await;
     }
 
     /// `Result<SentFrame>::expect_err` would need `SentFrame: Debug`, which
@@ -1476,12 +1782,23 @@ mod tests {
         supports_tunnel: bool,
         peer_id: Option<String>,
     ) -> crate::pipeline::PipelineStep {
+        step_with_node("peer-x", inference_url, supports_tunnel, peer_id)
+    }
+
+    fn step_with_node(
+        node_id: &str,
+        inference_url: &str,
+        supports_tunnel: bool,
+        peer_id: Option<String>,
+    ) -> crate::pipeline::PipelineStep {
         crate::pipeline::PipelineStep {
-            node_id: "peer-x".into(),
+            node_id: node_id.into(),
             inference_url: inference_url.into(),
             inference_candidates: Vec::new(),
             start_layer: 0,
             end_layer: 1,
+            exec_start: 0,
+            exec_end: 1,
             inference_frame_capabilities: if supports_tunnel {
                 vec![crate::pipeline::CAP_LIBP2P_TUNNEL.to_string()]
             } else {
@@ -1524,6 +1841,52 @@ mod tests {
         .await
         .expect("qualified peer must succeed over libp2p");
 
+        assert_eq!(sent.meta["done"], true);
+    }
+
+    #[tokio::test]
+    async fn a_remote_peer_tries_the_tunnel_before_http_fallback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let port = spawn_fake_inference_server(|_body| {
+            (
+                200,
+                wire::encode(&json!({"done": true}), None, WireDtype::F16).unwrap(),
+            )
+        })
+        .await;
+        let step = step_with(
+            &format!("http://127.0.0.1:{port}"),
+            true,
+            Some(PeerId::random().to_string()),
+        );
+        let tunnel_attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_swarm = tunnel_attempts.clone();
+        let (tunnel_tx, mut tunnel_rx) = mpsc::channel::<TunnelOutbound>(1);
+        tokio::spawn(async move {
+            if let Some(outbound) = tunnel_rx.recv().await {
+                attempts_for_swarm.fetch_add(1, Ordering::Relaxed);
+                let _ = outbound.reply.send(Err("dial failed".into()));
+            }
+        });
+
+        let sent = send_frame_or_tunnel(
+            &crate::peer_client::PeerClients::new(std::time::Duration::from_secs(600)),
+            &step,
+            Some(&tunnel_tx),
+            "/v1/step",
+            &json!({}),
+            None,
+            WireDtype::F16,
+            FrameEncoding::F16,
+            1,
+            "peer-x",
+            |_| {},
+        )
+        .await
+        .expect("remote HTTP fallback must succeed after tunnel failure");
+
+        assert_eq!(tunnel_attempts.load(Ordering::Relaxed), 1);
         assert_eq!(sent.meta["done"], true);
     }
 

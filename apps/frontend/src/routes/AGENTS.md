@@ -14,9 +14,17 @@ Per-file list:
   exactly what a harness gets. Imports `../lib/chatStore` (sessions, localStorage),
   `../lib/chatStream` (SSE delta + metrics parsing), `../lib/chatScroll`
   (`isNearBottom`), `../lib/api` (`streamSse`, `ApiError`), `../lib/queries`
-  (`useCluster`, `useNode`, `useServableModels`), `../components/Markdown`,
+  (`useCluster`, `useNode`, `usePeerRuntimes`, `useChatTelemetryNetwork`,
+  `useServableModels`), `../components/Markdown`,
   `../components/ui`, `../lib/toast`. The `/v1` call is signed with the
-  connection key by `api`.
+  connection key by `api`. When the stream finishes, it captures the cluster
+  snapshot, directional RTT for each adjacent execution pair and each peer's
+  inference health. `ExecutionEnvironment` keeps requested configuration
+  separate from effective layer placement and shows `POM_PROFILE_SYNC` only
+  from the explicit per-peer health field. Missing snapshots stay visible as
+  missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  ids from chat presentation only; deployment screens and backend model
+  resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
   the top of the navigation column (`?tab=guias|referencia`).
   **Guides** (`../guides/`) are written for people: ordered pages with SVG
@@ -86,8 +94,12 @@ Per-file list:
   single answer), or **tensor parallel** (`tensor_parallel`): when the catalog
   has `tp_parts`, the picker groups the round by TP width and the inspector
   shows one-based ranks such as `1of2` and `2of2`; otherwise it uses the
-  whole-model runtime path. The primary select and workers multi-select are
-  limited to peers that hold the required ranks and participate in the map.
+  whole-model runtime path. Canvas membership is canonical: rows plus preferred
+  peers, with every live peer added by the Complete strategy. Tensor selectors
+  reuse those map cards; pre-sliced TP accepts any mapped peer because the node
+  can transfer the needed rank, while whole-model TP filters mapped cards to
+  peers that hold the local GGUF. Eligible Tensor cards expose the accessible
+  primary toggle, which removes that node from workers.
   `size` is derived from the selected TP group or `workers.length + 1`, never a
   typed number, and the node derives the reduce URL from the primary's
   inference port (the operator no longer types `rank0_url`). `tp` is in the
@@ -102,7 +114,8 @@ Per-file list:
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
   repetition, fit-memory, execution toggles and the installation-wide KV cache
-  types; the machine section includes
+  types. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
+  then edit that probability before deploying. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is
@@ -123,15 +136,19 @@ Per-file list:
   cluster and RTT comes from the directional survey in the plan;
   adding a peer without a range only adds its card and keeps existing positions;
   in whole-model mode, adding a peer also appends an explicit full-model replica;
-  in tensor mode, adding a peer makes it eligible for a rank but never adds an
-  off-map peer implicitly;
+  in pre-sliced tensor mode, adding a peer makes it eligible for a rank even
+  without a local rank file, while whole-model tensor mode still requires the
+  local GGUF; neither path adds an off-map peer implicitly;
   assigning a range is what validates a new selection. Choosing a range removes
   an empty placeholder for that same range, while an already assigned copy on
   another machine remains as a replica. Removing a card deletes
   that peer's routes and returns it to the bottom strip. `DeployNetworkCanvas` reutiliza os controles do
   canvas do Painel, desenha nós por faixa, pontes somente entre estágios
-  consecutivos e alternativas com RTT direcional, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
-  repete no rodapé peers já desenhados. Arrastar ou dar duplo clique adiciona
+  consecutivos e alternativas com RTT direcional, orienta a curva pelos lados
+  enfrentados dos cards, mantém métricas de GPU/RAM/carga atualizadas pelo cluster e não
+  repete no rodapé peers já desenhados. Em viewport estreito, o mapa ganha
+  altura mínima e rolagem interna para não cortar cards nem criar overflow na
+  página. Arrastar ou dar duplo clique adiciona
   um peer disponível ao plano; a atribuição de uma faixa disponível edita
   somente aquela seleção, preserva as faixas existentes no peer como réplicas
   explícitas e volta ao backend para validação.
@@ -139,6 +156,10 @@ Per-file list:
   `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
   mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
   backend.
+- O fechamento do inspetor é uma barra visual de 3px em altura total, com uma
+  área de clique e foco maior e invisível. Ela fica fora do scroll do conteúdo,
+  então continua ancorada na altura da tela durante rolagem e resize; ao fechar,
+  o controle de reabertura permanece na coluna compacta existente.
 - `Deployments.tsx` - lista as implantações registradas no cluster via
   `useDeployments`, diferencia "no ar" de "padrão" e permite reimplantar só
   parâmetros, ativar uma implantação e desimplantá-la pelo `deploy_id`.
@@ -250,3 +271,10 @@ in the repo root): `/v1/chat/completions`, `/v1/models`, `/api/ui/cluster`,
 `/api/transfer/offers`, `/api/transfer/offers/:id/accept|reject`,
 `/admin/nodes`, `/admin/nodes/:id/block|unblock`, `/admin/api-keys`,
 `/admin/regenerate-key`, `/api/setup/key`, `/api/setup/save`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

@@ -46,14 +46,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import {
-  ArrowRight,
   Check,
   ChevronLeft,
-  ChevronRight,
-  MessageSquareText,
   Rocket,
   ServerCog,
-  Sparkles,
 } from "lucide-react";
 import { api } from "../lib/api";
 import { useCacheTypes, useCluster, useClusterCatalog, useInvalidate, useJobs } from "../lib/queries";
@@ -61,6 +57,7 @@ import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemo
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
+import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -343,6 +340,10 @@ export function DeployModel() {
     primary_node_id: "",
     worker_node_ids: [],
   });
+  const tpSyncKey = useRef<string | null>(null);
+  const tpCandidateIds = useRef<string[] | null>(null);
+  const seedTpWorkers = useRef(false);
+  const preserveEmptyPrimary = useRef(false);
   /** `null` until the operator says — see `kind` below for what that means. */
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
@@ -604,15 +605,25 @@ export function DeployModel() {
     () => (selection ?? rowsOf(p)).slice().sort(byLayer),
     [selection, p],
   );
-  /** Tensor ranks are a subset of the machines the operator put on the map.
-   *  A peer that merely holds the model is not an implicit worker. */
+  /** The canvas, TP selectors and card actions all use this same membership.
+   *  Complete strategy intentionally puts every live machine on the map. */
   const mapNodeIds = useMemo(
-    () => new Set([...rows.map((row) => row.target_node_id), ...preferredNodeIds]),
-    [preferredNodeIds, rows],
+    () => {
+      const ids = new Set([...rows.map((row) => row.target_node_id), ...preferredNodeIds]);
+      if (strategy === "complete") {
+        for (const machine of liveMachines) ids.add(machine.node_id);
+      }
+      return ids;
+    },
+    [liveMachines, preferredNodeIds, rows, strategy],
+  );
+  const mapMachineIds = useMemo(
+    () => liveMachines.filter((machine) => mapNodeIds.has(machine.node_id)).map((machine) => machine.node_id),
+    [liveMachines, mapNodeIds],
   );
   const tpCandidates = useMemo(
-    () => tpGroup?.holders ?? wholeModel?.holders.filter((nodeId) => mapNodeIds.has(nodeId)) ?? [],
-    [mapNodeIds, tpGroup, wholeModel],
+    () => tpGroup ? mapMachineIds : mapMachineIds.filter((nodeId) => wholeModel?.holders.includes(nodeId)),
+    [mapMachineIds, tpGroup, wholeModel],
   );
   useEffect(() => {
     if (!isTp || (!wholeModel && !tpGroup)) return;
@@ -623,11 +634,37 @@ export function DeployModel() {
         : current);
       return;
     }
+    const fresh = tpSyncKey.current !== memoryKey;
+    const previousCandidates = tpCandidateIds.current;
+    const candidatesExpanded = previousCandidates != null
+      && candidates.some((nodeId) => !previousCandidates.includes(nodeId));
+    const shouldSeedWorkers = fresh || candidatesExpanded || seedTpWorkers.current;
+    tpSyncKey.current = memoryKey;
+    tpCandidateIds.current = candidates;
+    seedTpWorkers.current = false;
     setTp((current) => {
-      const primaryChoices = tpGroup?.ranks.find((rank) => rank.rank === 0)?.holders ?? candidates;
-      const primary = primaryChoices.includes(current.primary_node_id)
+      const preferredPrimaryChoices = tpGroup?.ranks.find((rank) => rank.rank === 0)?.holders
+        .filter((nodeId) => candidates.includes(nodeId)) ?? [];
+      const primary = candidates.includes(current.primary_node_id)
         ? current.primary_node_id
-        : primaryChoices.find((nodeId) => candidates.includes(nodeId)) ?? candidates[0];
+        : preserveEmptyPrimary.current
+          ? ""
+          : fresh
+          ? preferredPrimaryChoices[0] ?? candidates[0]
+          : "";
+      if (!shouldSeedWorkers) {
+        const nextWorkers = current.worker_node_ids.filter(
+          (nodeId) => nodeId !== primary && candidates.includes(nodeId),
+        );
+        if (
+          primary === current.primary_node_id
+          && nextWorkers.length === current.worker_node_ids.length
+          && nextWorkers.every((nodeId, index) => nodeId === current.worker_node_ids[index])
+        ) {
+          return current;
+        }
+        return { primary_node_id: primary, worker_node_ids: nextWorkers };
+      }
       const desiredWorkers = tpGroup?.tp_size
         ? tpGroup.ranks.filter((rank) => rank.rank > 0).map((rank) => rank.holders)
         : [candidates.filter((nodeId) => nodeId !== primary)];
@@ -732,6 +769,15 @@ export function DeployModel() {
     setInspectorTab("machine");
   }
 
+  function togglePrimary(nodeId: string) {
+    preserveEmptyPrimary.current = tp.primary_node_id === nodeId;
+    seedTpWorkers.current = tp.primary_node_id !== nodeId;
+    setTp((current) => ({
+      primary_node_id: current.primary_node_id === nodeId ? "" : nodeId,
+      worker_node_ids: current.worker_node_ids.filter((candidate) => candidate !== nodeId),
+    }));
+  }
+
   /**
    * How many layers this machine offloads, or `null` to take the cluster's
    * number. One number per machine, so it lands on every row the machine
@@ -792,6 +838,28 @@ export function DeployModel() {
         },
       ].sort(byLayer);
     });
+  }
+
+  /**
+   * Tira a faixa desta máquina - o inverso exato de `assignRangeToMachine`.
+   *
+   * Remove só a linha que o operador clicou (faixa **e** máquina), então as
+   * réplicas da mesma faixa em outras máquinas ficam onde estavam, pelo mesmo
+   * motivo que atribuir preserva as vizinhas. A máquina continua no canvas
+   * mesmo sem faixa nenhuma: um peer sem faixa ainda é uma possibilidade, e
+   * tirar uma camada não é o mesmo gesto que "Remover da implantação".
+   */
+  function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
+    edit((base) =>
+      base.filter(
+        (row) =>
+          !(
+            row.target_node_id === nodeId &&
+            row.start_layer === startLayer &&
+            row.end_layer === endLayer
+          ),
+      ),
+    );
   }
 
   function assignWhole(nodeId: string) {
@@ -877,6 +945,8 @@ export function DeployModel() {
     setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
     setMerge(p?.merge ?? null);
     setPreferredNodeIds([]);
+    preserveEmptyPrimary.current = true;
+    seedTpWorkers.current = false;
     setTp({ primary_node_id: "", worker_node_ids: [] });
     setDeploymentName(chosen);
   }
@@ -917,6 +987,8 @@ export function DeployModel() {
     const next = rows.filter((row) => row.target_node_id !== nodeId);
     setSelection(next.slice().sort(byLayer));
     setPreferredNodeIds((current) => current.filter((id) => id !== nodeId));
+    preserveEmptyPrimary.current = true;
+    seedTpWorkers.current = false;
     setTp((current) => ({
       primary_node_id: current.primary_node_id === nodeId ? "" : current.primary_node_id,
       worker_node_ids: current.worker_node_ids.filter((id) => id !== nodeId),
@@ -932,13 +1004,7 @@ export function DeployModel() {
     node_id: peer.node_id,
     label: peer.hostname || peer.node_id,
   }));
-  const canvasMachineIds = new Set([
-    ...rows.map((row) => row.target_node_id),
-    ...(strategy === "complete" && selection == null
-      ? liveMachines.map((machine) => machine.node_id)
-      : preferredNodeIds),
-  ]);
-  const bottomMachines = liveMachines.filter((machine) => !canvasMachineIds.has(machine.node_id));
+  const bottomMachines = liveMachines.filter((machine) => !mapNodeIds.has(machine.node_id));
 
   /**
    * Why the button is grey, in one line, next to the button.
@@ -1120,7 +1186,7 @@ export function DeployModel() {
         )}
 
         <div className={`relative grid min-h-0 flex-1 ${inspectorOpen ? "lg:grid-cols-[minmax(0,1fr)_19rem]" : "lg:grid-cols-[minmax(0,1fr)_2rem]"}`}>
-          <div className="flex min-h-0 min-w-0 p-3 sm:p-4">
+          <div className="flex min-h-[24rem] min-w-0 p-3 sm:p-4 lg:min-h-0">
             {plan.isError ? (
               <div className="flex min-h-[22rem] flex-1 items-center justify-center rounded-xl border border-dashed border-rose/40 p-4">
                 <ErrorState error={plan.error} onRetry={() => void plan.refetch()} />
@@ -1135,8 +1201,10 @@ export function DeployModel() {
                 onRemovePeer={removePeerFromDeployment}
                 onDropPeer={addPeerToDeployment}
                 labelOf={labelOf}
-                extraNodeIds={strategy === "simple" || selection != null ? preferredNodeIds : liveMachines.map((machine) => machine.node_id)}
-                showAllMachines={strategy === "complete" && selection == null}
+                mapNodeIds={mapMachineIds}
+                primaryCandidateIds={isTp ? tpCandidates : undefined}
+                primaryNodeId={isTp ? tp.primary_node_id : undefined}
+                onTogglePrimary={isTp ? togglePrimary : undefined}
               />
             ) : (
               <div className="flex min-h-[22rem] flex-1 items-center justify-center rounded-xl border border-dashed border-line-strong p-4">
@@ -1145,16 +1213,8 @@ export function DeployModel() {
             )}
           </div>
 
-          {inspectorOpen ? <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
-            <button
-              type="button"
-              aria-label="Ocultar inspetor"
-              title="Ocultar inspetor"
-              onClick={() => setInspectorOpen(false)}
-              className="absolute -left-3 top-1/2 z-30 flex h-12 w-5 -translate-y-1/2 items-center justify-center border border-line bg-surface text-faint shadow-panel hover:text-fg"
-            >
-              <ChevronRight className="h-3.5 w-3.5" />
-            </button>
+          {inspectorOpen ? <>
+            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
             <div className="mb-3 flex items-center justify-between gap-2 border-b border-line pb-2">
               <div>
                 <p className="eyebrow">Inspetor</p>
@@ -1188,11 +1248,11 @@ export function DeployModel() {
             {inspectorTab === "global" ? <>
             <section className="border-b border-iris/20 bg-iris/[0.04] pb-3">
               <p className="border-b border-iris/20 bg-iris/10 px-2 py-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Configurações globais</p>
-              <div className="space-y-1.5 px-2 pt-2">
+              <div className="space-y-1 px-2 pt-2">
                 {GLOBAL_NUMERIC_KNOBS.map(({ key, label, step }) => (
-                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label key={key} className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">{label}</span>
-                    <Input type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
                 <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
@@ -1217,7 +1277,7 @@ export function DeployModel() {
                     value={cacheTypeK}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeK(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
@@ -1231,7 +1291,7 @@ export function DeployModel() {
                     value={cacheTypeV}
                     disabled={cacheTypes.isLoading || savingCacheTypes}
                     onChange={(event) => setCacheTypeV(event.target.value as KvCacheType)}
-                    className="h-7 px-1.5 text-[0.62rem]"
+                    compact
                   >
                     {cacheTypeChoices.map((choice) => (
                       <option key={choice} value={choice}>{CACHE_TYPE_LABELS[choice]}</option>
@@ -1251,6 +1311,31 @@ export function DeployModel() {
                 Salvar cache KV
               </Button>
             </section>
+            {/*
+              * Duas faixas vizinhas na mesma máquina só passam quando são
+              * juntadas antes de subir: `split` renomeia os blocos de toda
+              * fatia para `blk.0..`, então duas não carregam lado a lado, e
+              * `splitter::merge` é o inverso disso. O planejador recusa o par
+              * sem esta flag, e a mensagem de recusa manda "juntar as fatias
+              * vizinhas na tela" - o controle tem que existir, ou a recusa
+              * aponta para lugar nenhum. Foi exatamente o que aconteceu quando
+              * a reescrita do canvas apagou este interruptor.
+              *
+              * Vive sob a mesma condição que decide se `merge` é enviado, e não
+              * outra: um controle que a requisição ignora, ou um valor enviado
+              * sem controle, é como ele se perdeu da primeira vez.
+              */}
+            {!isWhole && (
+              <section className="border-b border-line py-3">
+                <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Fatias</p>
+                <Switch
+                  checked={effMerge}
+                  onChange={(value) => setMerge(value)}
+                  label={t("deploy.merge")}
+                  hint={t("deploy.mergeHint")}
+                />
+              </section>
+            )}
 
             {(isWhole || isTp) && (wholeModel || tpGroup) && (
               <section className="border-b border-line py-3">
@@ -1268,7 +1353,7 @@ export function DeployModel() {
                       aria-label="Máquina que serve o modelo inteiro"
                       value={rows[0]?.target_node_id ?? p?.steps[0]?.target_node_id ?? ""}
                       onChange={(event) => assignWhole(event.target.value)}
-                      className="h-6 rounded-md px-1 text-[0.6rem]"
+                      compact
                     >
                       {machineOptions.map((machine) => (
                         <option key={machine.node_id} value={machine.node_id}>{machine.label}</option>
@@ -1305,32 +1390,36 @@ export function DeployModel() {
               />
               {eff.speculative_decoding_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
-                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_k ?? String(eff.speculative_k ?? "")} onChange={(event) => setKnob("speculative_k", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Janela de busca</span>
-                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input type="number" min={1} value={drafts.speculative_lookup_window ?? String(eff.speculative_lookup_window ?? "")} onChange={(event) => setKnob("speculative_lookup_window", event.target.value)} compact className="text-right font-mono" />
                   </label>
                 </div>
               )}
               <div className="mt-2">
                 <Switch
                   checked={eff.mtp_enabled ?? false}
-                  onChange={(value) => setParams({ ...eff, mtp_enabled: value })}
+                  onChange={(value) => setParams({
+                    ...eff,
+                    mtp_enabled: value,
+                    ...(value ? { mtp_min_probability: MTP_MIN_PROBABILITY } : {}),
+                  })}
                   label="Predição multi-token (MTP)"
                 />
               </div>
               {eff.mtp_enabled && (
                 <div className="mt-1.5 space-y-1.5">
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>
-                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input aria-label="Tokens rascunhados pelo MTP" type="number" min={1} value={drafts.mtp_draft_tokens ?? String(eff.mtp_draft_tokens ?? "")} onChange={(event) => setKnob("mtp_draft_tokens", event.target.value)} compact className="text-right font-mono" />
                   </label>
-                  <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]">
+                  <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Probabilidade mínima do MTP</span>
-                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" />
+                    <Input aria-label="Probabilidade mínima do MTP" type="number" min={0} max={1} step={0.01} value={drafts.mtp_min_probability ?? String(eff.mtp_min_probability ?? "")} onChange={(event) => setKnob("mtp_min_probability", event.target.value)} compact className="text-right font-mono" />
                   </label>
                 </div>
               )}
@@ -1344,13 +1433,17 @@ export function DeployModel() {
                   <Select
                     aria-label="Máquina principal do Tensor Parallelism"
                     value={tp.primary_node_id}
-                    onChange={(event) => setTp((current) => ({
-                      ...current,
-                      primary_node_id: event.target.value,
-                      worker_node_ids: current.worker_node_ids.filter((nodeId) => nodeId !== event.target.value),
-                    }))}
-                    className="h-6 rounded-md px-1 text-[0.6rem]"
+                    onChange={(event) => {
+                      preserveEmptyPrimary.current = false;
+                      setTp((current) => ({
+                        ...current,
+                        primary_node_id: event.target.value,
+                        worker_node_ids: current.worker_node_ids.filter((nodeId) => nodeId !== event.target.value),
+                      }));
+                    }}
+                    compact
                   >
+                    <option value="">não atribuído</option>
                     {tpCandidates.map((nodeId) => (
                       <option key={nodeId} value={nodeId}>{labelOf(nodeId)}</option>
                     ))}
@@ -1440,10 +1533,12 @@ export function DeployModel() {
                               <button
                                 key={`${candidate.start_layer}-${candidate.end_layer}`}
                                 type="button"
-                                disabled={assigned}
-                                aria-label={`Atribuir ${range} a ${machine.label}`}
-                                onClick={() => assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id)}
-                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
+                                aria-label={assigned ? `Remover ${range} de ${machine.label}` : `Atribuir ${range} a ${machine.label}`}
+                                title={assigned ? `Tirar ${range} de ${machine.label}` : `Dar ${range} a ${machine.label}`}
+                                onClick={() => (assigned
+                                  ? unassignRangeFromMachine(candidate.start_layer, candidate.end_layer, machine.node_id)
+                                  : assignRangeToMachine(candidate.start_layer, candidate.end_layer, machine.node_id))}
+                                className={`border px-1.5 py-0.5 font-mono text-[0.6rem] ${assigned ? "border-aqua/30 bg-aqua/10 text-aqua hover:border-rose/50 hover:bg-rose/10 hover:text-rose" : "border-line bg-ink text-muted hover:border-aqua/50 hover:text-fg"}`}
                               >
                                 {assigned ? `${range} ✓` : range}
                               </button>
@@ -1455,7 +1550,7 @@ export function DeployModel() {
                   )}
                   {first && (
                     <div className="mt-3 space-y-2 border-t border-line pt-2">
-                      <label className="grid grid-cols-[minmax(0,1fr)_5rem] items-center gap-2 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} className="h-6 rounded-md px-1.5 text-right font-mono text-[0.62rem]" /></label>
+                      <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]"><span className="truncate text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} compact className="text-right font-mono" /></label>
                       <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
                     </div>
                   )}
@@ -1464,7 +1559,20 @@ export function DeployModel() {
               );
             })()}
             </>}
-          </aside> : (
+            </aside>
+            <button
+              type="button"
+              aria-label="Ocultar inspetor"
+              title="Ocultar inspetor"
+              onClick={() => setInspectorOpen(false)}
+              className="group absolute inset-y-0 right-0 z-30 w-6 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-iris focus-visible:ring-offset-1 focus-visible:ring-offset-surface lg:right-[19rem]"
+            >
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-y-0 right-0 w-[3px] bg-line transition-colors duration-150 group-hover:bg-muted group-focus-visible:bg-muted"
+              />
+            </button>
+          </> : (
             <button
               type="button"
               aria-label="Mostrar inspetor"
@@ -1494,176 +1602,6 @@ export function DeployModel() {
           </div>
         </div>
 
-        <div aria-hidden="true" className="hidden grid min-w-0 lg:grid-cols-[minmax(0,1fr)_19rem]">
-          <div className="min-w-0 border-b border-line p-4 sm:p-5 lg:border-b-0 lg:border-r">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="eyebrow">Mapa da implantação</p>
-                <p className="mt-1 text-[0.78rem] text-muted">
-                  Arraste um peer da faixa inferior para recalcular a sugestão.
-                </p>
-              </div>
-              {p && (
-                <Badge tone={p.complete ? "aqua" : "amber"} mono>
-                  {p.steps.length} {p.steps.length === 1 ? "hop" : "hops"}
-                </Badge>
-              )}
-            </div>
-            {p?.steps.length ? (
-              <div className="mb-4 flex min-w-0 items-center gap-1 overflow-x-auto pb-1">
-                <MessageSquareText className="h-4 w-4 shrink-0 text-faint" />
-                {p.steps.map((step, index) => (
-                  <div key={`${step.target_node_id}-${step.position}`} className="flex shrink-0 items-center gap-1">
-                    {index > 0 && <ArrowRight className="h-3.5 w-3.5 text-faint" />}
-                    <span className={`rounded-md border px-2 py-1 font-mono text-[0.68rem] ${
-                      index === 0 ? "border-iris/40 bg-iris/10 text-iris" : "border-line text-muted"
-                    }`}>
-                      {layerRange(step.start_layer, step.end_layer)} · {step.target_host || labelOf(step.target_node_id)}
-                    </span>
-                  </div>
-                ))}
-                <ArrowRight className="h-3.5 w-3.5 shrink-0 text-faint" />
-                <Sparkles className="h-4 w-4 shrink-0 text-faint" />
-              </div>
-            ) : (
-              <div className="flex min-h-[13rem] items-center justify-center rounded-xl border border-dashed border-line-strong text-sm text-faint">
-                Selecione um modelo para montar a topologia.
-              </div>
-            )}
-            <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
-              {(p?.machines ?? []).map((machine) => {
-                const selected = rows.some((row) => row.target_node_id === machine.node_id);
-                const taking = rows.filter((row) => row.target_node_id === machine.node_id);
-                const isInspected = inspectedNodeId === machine.node_id;
-                return (
-                  <button
-                    key={machine.node_id}
-                    type="button"
-                    draggable
-                    onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)}
-                    onClick={() => setInspectedNodeId(machine.node_id)}
-                    className={`min-w-0 rounded-xl border p-3 text-left transition-colors ${
-                      isInspected ? "border-iris bg-iris/[0.08]" : "border-line bg-surface hover:border-line-strong"
-                    } ${selected ? "ring-1 ring-inset ring-aqua/30" : "opacity-80"}`}
-                  >
-                    <div className="flex items-start gap-2">
-                      <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-line bg-ink text-faint">
-                        <ServerCog className="h-4 w-4" />
-                      </span>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-[0.78rem] font-medium text-fg">{machine.label}</span>
-                        <span className="mt-0.5 block font-mono text-[0.64rem] text-faint">
-                          {taking.length ? taking.map((row) => layerRange(row.start_layer, row.end_layer)).join(" · ") : "disponível"}
-                        </span>
-                      </span>
-                      {machine.rtt_ms != null && <Badge tone="aqua" mono>{machine.rtt_ms.toFixed(1)} ms</Badge>}
-                    </div>
-                    <div className="mt-3 grid grid-cols-3 gap-2 text-[0.64rem]">
-                      <span><i className="block text-faint">GPU</i><b className="font-mono font-normal text-muted">{machine.gpu_free_mb ? megabytes(machine.gpu_free_mb) : "-"}</b></span>
-                      <span><i className="block text-faint">RAM</i><b className="font-mono font-normal text-muted">{machine.ram_free_mb ? megabytes(machine.ram_free_mb) : "-"}</b></span>
-                      <span><i className="block text-faint">carga</i><b className="font-mono font-normal text-muted">{machine.load}</b></span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-            {p && ((p.route_options?.length ?? 0) > 0 || (p.load_distribution?.length ?? 0) > 0) && (
-              <div className="mt-4 grid gap-3 border-t border-line pt-3 md:grid-cols-2">
-                <div className="min-w-0">
-                  <p className="eyebrow">Rotas</p>
-                  <div className="mt-2 flex min-w-0 flex-wrap gap-1.5">
-                    {(p.route_options ?? []).slice(0, 8).map((route) => (
-                      <span key={`${route.from_node_id}-${route.to_node_id}`} className={`rounded-md border px-2 py-1 font-mono text-[0.62rem] ${route.selected ? "border-aqua/40 bg-aqua/10 text-aqua" : "border-line text-faint"}`}>
-                        {labelOf(route.from_node_id)} → {labelOf(route.to_node_id)} · {route.rtt_ms == null ? "RTT -" : `${route.rtt_ms.toFixed(1)} ms`}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-                <div className="min-w-0">
-                  <p className="eyebrow">Balanceamento projetado</p>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {(p.load_distribution ?? []).filter((item) => item.selected).map((item) => (
-                      <span key={item.node_id} className="rounded-md border border-line px-2 py-1 font-mono text-[0.62rem] text-muted">
-                        {labelOf(item.node_id)} · {item.current} → {item.projected}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          <aside className="min-w-0 bg-surface/45 p-4 sm:p-5">
-            <div className="mb-4 flex items-center justify-between gap-2">
-              <div>
-                <p className="eyebrow">Inspetor</p>
-                <p className="mt-1 text-[0.78rem] text-fg">Propriedades da implantação</p>
-              </div>
-              <ServerCog className="h-4 w-4 text-faint" />
-            </div>
-            <div className="space-y-2 border-b border-line pb-4">
-              {(["n_ctx", "max_new_tokens", "max_sessions"] as (keyof RuntimeParams)[]).map((key) => (
-                <label key={key} className="grid grid-cols-[1fr_6rem] items-center gap-2 text-[0.7rem]">
-                  <span className="text-muted">{key === "n_ctx" ? "Contexto" : key === "max_new_tokens" ? "Máx. tokens" : "Sessões"}</span>
-                  <Input
-                    type="number"
-                    name={key}
-                    value={drafts[key] ?? String(eff[key] ?? "")}
-                    onChange={(event) => setKnob(key, event.target.value)}
-                    className="h-7 text-right font-mono text-[0.68rem]"
-                  />
-                </label>
-              ))}
-              <label className="grid grid-cols-[1fr_6rem] items-center gap-2 text-[0.7rem]">
-                <span className="text-muted">Temperatura</span>
-                <Input type="number" step="0.05" value={drafts.temperature ?? String(eff.temperature ?? "")} onChange={(event) => setKnob("temperature", event.target.value)} className="h-7 text-right font-mono text-[0.68rem]" />
-              </label>
-              <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
-            </div>
-            {(() => {
-              const machine = p?.machines.find((item) => item.node_id === inspectedNodeId);
-              const taking = rows.filter((row) => row.target_node_id === machine?.node_id);
-              const first = taking[0];
-              if (!machine) return <p className="py-5 text-[0.72rem] text-faint">Selecione uma máquina no mapa.</p>;
-              return (
-                <div className="space-y-3 pt-4">
-                  <div className="flex items-center justify-between gap-2"><span className="text-[0.72rem] font-medium text-fg">{machine.label}</span><Badge tone={taking.length ? "iris" : "neutral"}>{taking.length ? "na implantação" : "disponível"}</Badge></div>
-                  <dl className="grid grid-cols-2 gap-2 text-[0.68rem]">
-                    <div><dt className="text-faint">GPU livre</dt><dd className="font-mono text-muted">{machine.gpu_free_mb ? megabytes(machine.gpu_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">RAM livre</dt><dd className="font-mono text-muted">{machine.ram_free_mb ? megabytes(machine.ram_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">Disco livre</dt><dd className="font-mono text-muted">{machine.disk_free_mb ? megabytes(machine.disk_free_mb) : "-"}</dd></div>
-                    <div><dt className="text-faint">RTT</dt><dd className="font-mono text-muted">{machine.rtt_ms == null ? "não medido" : `${machine.rtt_ms.toFixed(1)} ms`}</dd></div>
-                  </dl>
-                  {first && (
-                    <>
-                      <label className="grid grid-cols-[1fr_6rem] items-center gap-2 text-[0.7rem]"><span className="text-muted">Camadas GPU</span><Input type="number" min={0} value={first.n_gpu_layers ?? ""} placeholder={String(eff.n_gpu_layers)} onChange={(event) => setPeerGpu(machine.node_id, event.target.value === "" ? null : Math.max(0, Number(event.target.value) || 0))} className="h-7 text-right font-mono text-[0.68rem]" /></label>
-                      <Switch checked={first.offload_kqv ?? eff.offload_kqv} onChange={(value) => setPeerKqv(machine.node_id, value)} label="KV cache na GPU" />
-                    </>
-                  )}
-                </div>
-              );
-            })()}
-          </aside>
-        </div>
-
-        <div aria-hidden="true" className="hidden border-t border-line bg-surface/75 px-4 py-3 sm:px-5">
-          <div className="mb-2 flex items-center justify-between gap-2"><p className="eyebrow">Peers disponíveis</p><span className="text-[0.68rem] text-faint">arraste para o mapa</span></div>
-          <div className="flex min-w-0 gap-2 overflow-x-auto pb-1">
-            {(p?.machines ?? []).map((machine) => (
-              <button
-                key={machine.node_id}
-                type="button"
-                draggable
-                onDragStart={(event) => event.dataTransfer.setData("application/x-pom-node", machine.node_id)}
-                onClick={() => addPeerToDeployment(machine.node_id)}
-                className="flex min-w-[10rem] shrink-0 items-center gap-2 rounded-lg border border-line bg-ink px-2.5 py-2 text-left hover:border-iris/60"
-              >
-                <ServerCog className="h-3.5 w-3.5 text-faint" />
-                <span className="min-w-0"><span className="block truncate text-[0.7rem] text-fg">{machine.label}</span><span className="block font-mono text-[0.6rem] text-faint">{machine.rtt_ms == null ? "RTT -" : `${machine.rtt_ms.toFixed(1)} ms`} · {machine.load} carga</span></span>
-              </button>
-            ))}
-          </div>
-        </div>
       </section>
 
 

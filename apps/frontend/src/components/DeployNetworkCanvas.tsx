@@ -11,6 +11,7 @@ import {
   fallbackPosition,
   mergePositions,
   readPositions,
+  routeGeometry,
   writePositions,
   type CanvasPosition,
 } from "../lib/networkLayout";
@@ -27,8 +28,10 @@ type DeployNetworkCanvasProps = {
   onRemovePeer: (nodeId: string) => void;
   onDropPeer: (nodeId: string) => void;
   labelOf: (nodeId: string) => string;
-  extraNodeIds?: string[];
-  showAllMachines?: boolean;
+  mapNodeIds?: string[];
+  primaryCandidateIds?: string[];
+  primaryNodeId?: string;
+  onTogglePrimary?: (nodeId: string) => void;
 };
 
 function machineRows(rows: DeploySelection[], nodeId: string) {
@@ -37,6 +40,35 @@ function machineRows(rows: DeploySelection[], nodeId: string) {
 
 function edgeId(from: string, to: string) {
   return `${from}:${to}`;
+}
+
+type Stage = {
+  start_layer: number;
+  end_layer: number;
+  nodeIds: string[];
+};
+
+function stagesOf(plan: DeployPlan): Stage[] {
+  const stages: Stage[] = [];
+  for (const step of plan.steps) {
+    const previous = stages[stages.length - 1];
+    if (
+      previous &&
+      previous.start_layer === step.start_layer &&
+      previous.end_layer === step.end_layer
+    ) {
+      if (step.target_node_id && !previous.nodeIds.includes(step.target_node_id)) {
+        previous.nodeIds.push(step.target_node_id);
+      }
+    } else {
+      stages.push({
+        start_layer: step.start_layer,
+        end_layer: step.end_layer,
+        nodeIds: step.target_node_id ? [step.target_node_id] : [],
+      });
+    }
+  }
+  return stages;
 }
 
 function machineBounds(rows: DeploySelection[], machine: DeployMachine) {
@@ -86,6 +118,8 @@ function NodeCard({
   onPointerDown,
   onPointerMove,
   onPointerUp,
+  primaryNodeId,
+  onTogglePrimary,
 }: {
   machine: DeployMachine;
   rows: DeploySelection[];
@@ -98,6 +132,8 @@ function NodeCard({
   onPointerDown: (event: PointerEvent<HTMLElement>) => void;
   onPointerMove: (event: PointerEvent<HTMLElement>) => void;
   onPointerUp: (event: PointerEvent<HTMLElement>) => void;
+  primaryNodeId?: string;
+  onTogglePrimary?: () => void;
 }) {
   const taking = machineRows(rows, machine.node_id);
   const active = taking.length > 0;
@@ -141,6 +177,29 @@ function NodeCard({
         </div>
         <div className="flex items-center gap-1">
           <Dot tone={active ? "aqua" : "neutral"} pulse={active} />
+          {onTogglePrimary && (
+            <button
+              type="button"
+              aria-label={`${primaryNodeId === machine.node_id ? "Desmarcar" : "Marcar"} ${machine.label} como primary`}
+              aria-pressed={primaryNodeId === machine.node_id}
+              title={primaryNodeId === machine.node_id ? "Desmarcar primary" : "Marcar como primary"}
+              onClick={(event) => {
+                event.stopPropagation();
+                onTogglePrimary();
+              }}
+              onPointerDown={(event) => event.stopPropagation()}
+              onPointerUp={(event) => event.stopPropagation()}
+              className={clsx(
+                "flex h-5 items-center gap-1 rounded-md px-1 text-[9px] font-semibold uppercase tracking-[0.08em]",
+                primaryNodeId === machine.node_id
+                  ? "bg-aqua/12 text-aqua"
+                  : "text-faint hover:bg-aqua/10 hover:text-aqua",
+              )}
+            >
+              <Sparkles className="h-3 w-3" />
+              <span className="sr-only">primary</span>
+            </button>
+          )}
           <button
             type="button"
             aria-label={`Remover ${machine.label} da implantação`}
@@ -197,8 +256,10 @@ export function DeployNetworkCanvas({
   onRemovePeer,
   onDropPeer,
   labelOf,
-  extraNodeIds = [],
-  showAllMachines = false,
+  mapNodeIds,
+  primaryCandidateIds,
+  primaryNodeId,
+  onTogglePrimary,
 }: DeployNetworkCanvasProps) {
   const canvas = useRef<HTMLDivElement>(null);
   const dragOffset = useRef({ x: 0, y: 0 });
@@ -206,15 +267,15 @@ export function DeployNetworkCanvas({
   const [positions, setPositions] = useState<Record<string, CanvasPosition>>({});
   const [dragging, setDragging] = useState<string | null>(null);
 
+  const visibleMapNodeIds = useMemo(
+    () => mapNodeIds ?? plan.machines.map((machine) => machine.node_id),
+    [mapNodeIds, plan.machines],
+  );
   const machines = useMemo(() => {
-    const ids = new Set(rows.map((row) => row.target_node_id).filter(Boolean));
-    for (const step of plan.steps) if (step.target_node_id) ids.add(step.target_node_id);
-    if (showAllMachines) for (const machine of plan.machines) ids.add(machine.node_id);
-    for (const nodeId of extraNodeIds) ids.add(nodeId);
-    return [...ids]
+    return visibleMapNodeIds
       .map((nodeId) => plan.machines.find((machine) => machine.node_id === nodeId))
       .filter((machine): machine is DeployMachine => Boolean(machine));
-  }, [extraNodeIds, plan.machines, plan.steps, rows, showAllMachines]);
+  }, [plan.machines, visibleMapNodeIds]);
   const nodeIds = useMemo(() => machines.map((machine) => machine.node_id), [machines]);
   const layoutKey = useMemo(
     () => deploymentLayoutKey(plan.deployment_name || plan.group, machines.map((machine) => ({ node_id: machine.node_id, ...machineBounds(rows, machine) }))),
@@ -270,24 +331,11 @@ export function DeployNetworkCanvas({
     });
   }
 
-  const stageNodes = new Map<string, string[]>();
-  const stageOrder: string[] = [];
-  for (const step of plan.steps) {
-    const range = `${step.start_layer}-${step.end_layer}`;
-    if (!step.target_node_id) continue;
-    if (!stageNodes.has(range)) {
-      stageNodes.set(range, []);
-      stageOrder.push(range);
-    }
-    const nodes = stageNodes.get(range)!;
-    if (!nodes.includes(step.target_node_id)) nodes.push(step.target_node_id);
-  }
+  const stages = stagesOf(plan);
   const bridgeIds = new Set<string>();
-  for (let index = 1; index < stageOrder.length; index += 1) {
-    const fromNodes = stageNodes.get(stageOrder[index - 1]) ?? [];
-    const toNodes = stageNodes.get(stageOrder[index]) ?? [];
-    for (const from of fromNodes) {
-      for (const to of toNodes) bridgeIds.add(edgeId(from, to));
+  for (let index = 1; index < stages.length; index += 1) {
+    for (const from of stages[index - 1].nodeIds) {
+      for (const to of stages[index].nodeIds) bridgeIds.add(edgeId(from, to));
     }
   }
   // O backend já limita as opções ao próximo estágio. Esta guarda no canvas
@@ -299,21 +347,10 @@ export function DeployNetworkCanvas({
   const selectedEdges = new Set(visibleRouteOptions.filter((route) => route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const candidateEdges = new Set(visibleRouteOptions.filter((route) => !route.selected).map((route) => edgeId(route.from_node_id, route.to_node_id)));
   const edges = visibleRouteOptions.filter((route) => nodeIds.includes(route.from_node_id) && nodeIds.includes(route.to_node_id));
-  const stages: string[][] = [];
-  for (const step of plan.steps) {
-    const previous = stages[stages.length - 1];
-    const previousStep = plan.steps.find((candidate) => candidate.target_node_id === previous?.[0]);
-    const sameStage = previousStep && previousStep.start_layer === step.start_layer && previousStep.end_layer === step.end_layer;
-    if (sameStage && previous) {
-      if (!previous.includes(step.target_node_id)) previous.push(step.target_node_id);
-    } else {
-      stages.push([step.target_node_id]);
-    }
-  }
   const principalEdges = stages.slice(1).flatMap((stage, stageIndex) => {
     const previous = stages[stageIndex];
-    return previous.flatMap((from) => stage.map((to) => ({ from, to })));
-  }).filter((edge) => !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
+    return previous.nodeIds.flatMap((from) => stage.nodeIds.map((to) => ({ from, to })));
+  }).filter((edge) => edge.from !== edge.to && !edges.some((route) => route.from_node_id === edge.from && route.to_node_id === edge.to));
   const allEdges = [
     ...edges,
     ...principalEdges.map((edge) => ({
@@ -330,7 +367,7 @@ export function DeployNetworkCanvas({
   return (
     <section
       ref={canvas}
-      className="relative h-full min-h-0 w-full overflow-hidden bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
+      className="relative h-full min-h-0 w-full overflow-auto bg-[radial-gradient(circle_at_1px_1px,rgba(91,78,255,.16)_1px,transparent_0)]"
       style={{ backgroundSize: "18px 18px" }}
       onDragOver={(event) => event.preventDefault()}
       onDrop={(event) => {
@@ -364,15 +401,11 @@ export function DeployNetworkCanvas({
               if (fromIndex < 0 || toIndex < 0) return null;
               const from = positionOf(route.from_node_id, fromIndex);
               const to = positionOf(route.to_node_id, toIndex);
-              const x1 = from.left + CARD_WIDTH;
-              const y1 = from.top + CARD_HEIGHT / 2;
-              const x2 = to.left;
-              const y2 = to.top + CARD_HEIGHT / 2;
-              const bend = Math.max(60, Math.abs(x2 - x1) * 0.42);
+              const geometry = routeGeometry(from, to);
               const id = edgeId(route.from_node_id, route.to_node_id);
               const state: EdgeState = selectedEdges.has(id) || (!selectedEdges.has(id) && route.selected) ? "principal" : candidateEdges.has(id) ? "paralela" : "inativa";
               const style = edgeStyle(state);
-              return <path key={`${id}-${index}`} d={`M ${x1} ${y1} C ${x1 + bend} ${y1}, ${x2 - bend} ${y2}, ${x2} ${y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
+              return <path key={`${id}-${index}`} d={`M ${geometry.x1} ${geometry.y1} C ${geometry.c1x} ${geometry.c1y}, ${geometry.c2x} ${geometry.c2y}, ${geometry.x2} ${geometry.y2}`} className={style.className} strokeWidth={style.strokeWidth} strokeDasharray={style.strokeDasharray} markerEnd={style.markerEnd?.replace("route-arrow", "deploy-route-arrow")} />;
             })}
           </svg>
           {allEdges.map((route, index) => {
@@ -381,12 +414,11 @@ export function DeployNetworkCanvas({
             if (fromIndex < 0 || toIndex < 0) return null;
             const from = positionOf(route.from_node_id, fromIndex);
             const to = positionOf(route.to_node_id, toIndex);
-            const x = (from.left + CARD_WIDTH + to.left) / 2;
-            const y = (from.top + to.top + CARD_HEIGHT) / 2;
-            return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: x, top: y }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
+            const geometry = routeGeometry(from, to);
+            return <span key={`rtt-${route.from_node_id}-${route.to_node_id}-${index}`} className="absolute z-10 -translate-x-1/2 rounded-md border border-aqua/25 bg-ink/95 px-1.5 py-0.5 font-mono text-[10px] text-aqua" style={{ left: geometry.labelX, top: geometry.labelY }}>{route.rtt_ms == null ? "RTT -" : `RTT ${route.rtt_ms.toFixed(1)} ms`}</span>;
           })}
           {machines.map((machine, index) => (
-            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
+            <NodeCard key={machine.node_id} machine={machine} rows={rows} position={positionOf(machine.node_id, index)} selected={inspectedNodeId === machine.node_id} dragging={dragging === machine.node_id} primaryNodeId={primaryNodeId} onTogglePrimary={onTogglePrimary && (primaryCandidateIds ?? []).includes(machine.node_id) ? () => onTogglePrimary(machine.node_id) : undefined} onInspect={() => onInspect(machine.node_id)} onAddPeer={() => onAddPeer(machine.node_id)} onRemovePeer={() => onRemovePeer(machine.node_id)} onPointerDown={(event) => beginDrag(machine.node_id, index, event)} onPointerMove={(event) => drag(machine.node_id, event)} onPointerUp={(event) => { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); setDragging(null); }} />
           ))}
           <div className="absolute bottom-3 left-4 flex items-center gap-2 border border-line bg-ink/90 px-3 py-2 text-[10px] text-muted shadow-panel backdrop-blur">
             <Sparkles className="h-3 w-3 text-aqua" /><span>prefill</span>

@@ -87,8 +87,9 @@ impl NodeTimings {
     fn json(&self) -> Value {
         // Counters are kept in microseconds so a stage costing less than a
         // millisecond is not truncated to zero on every call and lost in the
-        // sum. The wire stays in milliseconds, which is what the screen reads.
-        let ms = |us: u64| us / 1_000;
+        // sum. The wire stays in milliseconds, with a fraction preserved for
+        // the diagnostic fields the screen reads.
+        let ms = |us: u64| us as f64 / 1_000.0;
         json!({
             "frame_decode_ms": ms(self.frame_decode_us),
             "input_prepare_ms": ms(self.input_prepare_us),
@@ -127,10 +128,14 @@ struct PrefillJob {
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
+    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    capture_block: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
+    chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
     chunk_tokens: Option<Vec<i32>>,
     queued_at: Instant,
@@ -142,6 +147,9 @@ struct StepJob {
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    /// Bloco local onde parar, quando o remetente pediu menos que a fatia
+    /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
+    capture_block: Option<u32>,
     speculate: Option<Speculate>,
     incoming_draft: Option<Vec<i32>>,
     batch_tokens: Option<Vec<i32>>,
@@ -307,6 +315,22 @@ struct InferenceAppState {
     tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
+#[async_trait::async_trait]
+impl crate::relay::InProcessInference for InferenceAppState {
+    async fn dispatch(&self, path: &str, body: Bytes) -> Result<Response> {
+        let headers = axum::http::HeaderMap::new();
+        Ok(match path {
+            "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
+            "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "rota de inferência em processo desconhecida: {path}"
+                ))
+            }
+        })
+    }
+}
+
 fn spawn_scheduler(state: SharedState, cfg: crate::scheduler::SchedulerConfig) -> SchedulerHandle {
     let limit = cfg.max_queue_requests;
     let (tx, rx) = mpsc::channel(limit);
@@ -448,7 +472,9 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.is_final_chunk,
                 job.wire_dtype,
                 job.prompt,
+                job.chat_template,
                 job.tensor,
+                job.capture_block,
                 job.chunk_tokens,
                 job.queued_at,
             );
@@ -462,6 +488,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.wire_dtype,
                 job.token_id,
                 job.tensor,
+                job.capture_block,
                 job.speculate,
                 job.incoming_draft,
                 job.batch_tokens,
@@ -504,6 +531,25 @@ mod tests {
 
         assert_eq!(response["item_id"], "request-item");
         assert_eq!(response["batch_id"], "request-batch");
+    }
+
+    #[test]
+    fn serializacao_de_timing_preserva_submilissegundos() {
+        let timings = NodeTimings {
+            frame_decode_us: 999,
+            backend_completion_us: 999,
+            residual_us: 1_234,
+            sampling_us: 1,
+            ..Default::default()
+        };
+
+        let json = timings.json();
+
+        assert_eq!(json["frame_decode_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["backend_completion_ms"].as_f64(), Some(0.999));
+        assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
+        assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
+        assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
     }
 
     #[tokio::test]
@@ -685,6 +731,8 @@ mod relay_tests {
             inference_candidates: Vec::new(),
             start_layer: 16,
             end_layer: 31,
+            exec_start: 16,
+            exec_end: 31,
             inference_frame_capabilities: vec!["relay/v1-chain".into()],
             libp2p_peer_id: None,
             libp2p_addr_candidates: Vec::new(),
@@ -851,6 +899,37 @@ mod relay_tests {
         assert!(is_final_chunk_for_forward(&middle, true));
         assert!(!is_final_chunk_for_forward(&middle, false));
     }
+
+    #[test]
+    fn step_forward_meta_carries_the_next_hops_execution_range() {
+        let mut next = step("tail", "http://127.0.0.1:8182".into());
+        next.exec_start = 20;
+        next.exec_end = 27;
+        let local_meta = json!({
+            "draft": [11, 12],
+            "tokens": [10, 11, 12],
+            "mtp_k": 3,
+        });
+
+        let forwarded =
+            step_forward_meta("sess-1", &json!({"item_id": "item-1"}), &local_meta, &next);
+
+        assert_eq!(forwarded["session_id"], "sess-1");
+        assert_eq!(forwarded["item_id"], "item-1");
+        assert_eq!(forwarded["exec_start"], 20);
+        assert_eq!(forwarded["exec_end"], 27);
+        assert_eq!(forwarded["draft"], json!([11, 12]));
+        assert_eq!(forwarded["tokens"], json!([10, 11, 12]));
+        assert_eq!(forwarded["mtp_k"], 3);
+    }
+
+    #[test]
+    fn a_step_subrange_maps_to_the_local_capture_block() {
+        let capture = resolve_exec_range(&json!({"exec_start": 16, "exec_end": 23}), 16, 31)
+            .expect("a subrange at the slice start is executable");
+
+        assert_eq!(capture, Some(7));
+    }
 }
 
 // ── Session ───────────────────────────────────────────────────────────────────
@@ -861,6 +940,10 @@ struct Session {
     recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
     prompt_tokens: Vec<i32>,
+    /// UTF-8 tail for this request's token stream. It must never be shared
+    /// between sessions because a byte prefix from one generation can only be
+    /// completed by a later token in that same generation.
+    utf8: crate::llm::Utf8Assembler,
     last_used: Instant,
 }
 
@@ -871,8 +954,58 @@ impl Session {
             n_past: 0,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
+            utf8: crate::llm::Utf8Assembler::new(),
             last_used: Instant::now(),
         }
+    }
+
+    fn feed_token_piece(&mut self, piece: &[u8]) -> String {
+        self.utf8.feed(piece)
+    }
+
+    fn finish_token_stream(&mut self) -> String {
+        self.utf8.flush()
+    }
+}
+
+#[cfg(test)]
+mod session_text_tests {
+    use super::*;
+
+    /// Reproduz o caminho de emissão que alimenta o delta do chat: duas peças
+    /// de token chegam em chamadas distintas, mas o consumidor precisa ver o
+    /// caractere inteiro, não dois U+FFFD criados por conversões independentes.
+    #[test]
+    fn streaming_token_pieces_reach_the_consumer_as_one_utf8_character() {
+        let mut session = Session::new(0);
+
+        let mut emitted = String::new();
+        emitted.push_str(&session.feed_token_piece(b"caf\xc3"));
+        emitted.push_str(&session.feed_token_piece(b"\xa9"));
+
+        assert_eq!(emitted, "café");
+    }
+
+    /// O fim da sessão precisa drenar um prefixo truncado uma única vez.
+    #[test]
+    fn ending_stream_flushes_pending_bytes_without_leaking_them() {
+        let mut session = Session::new(0);
+
+        assert_eq!(session.feed_token_piece(b"ok\xc3"), "ok");
+        assert_eq!(session.finish_token_stream(), "\u{fffd}");
+        assert_eq!(session.finish_token_stream(), "");
+    }
+
+    /// Duas requisições intercaladas não podem compartilhar o rabicho de UTF-8.
+    #[test]
+    fn concurrent_sessions_keep_pending_utf8_isolated() {
+        let mut first = Session::new(0);
+        let mut second = Session::new(1);
+
+        assert_eq!(first.feed_token_piece(b"Jo\xc3"), "Jo");
+        assert_eq!(second.feed_token_piece(b"\xf0\x9f"), "");
+        assert_eq!(first.feed_token_piece(b"\xa3o"), "ão");
+        assert_eq!(second.feed_token_piece(b"\x98\x80"), "😀");
     }
 }
 
@@ -904,6 +1037,10 @@ struct InferState {
 }
 
 type SharedState = Arc<Mutex<InferState>>;
+
+fn use_chat_template(requested: Option<bool>, configured_default: bool) -> bool {
+    requested.unwrap_or(configured_default)
+}
 
 /// A porta de inferência aceita a credencial compartilhada do cluster ou uma
 /// API key ativa. O gateway usa a connection_key nas chamadas internas; a
@@ -958,7 +1095,9 @@ impl InferState {
                 repeat_last_n: cfg.repeat_last_n as usize,
             },
             no_thinking: cfg.no_thinking,
-            chat_template: cfg.no_thinking, // --no-thinking implies --chat-template
+            // Mantém o comportamento dos chamadores antigos que não enviam a
+            // flag. O gateway atual sempre a explicita por endpoint.
+            chat_template: cfg.no_thinking,
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
@@ -995,7 +1134,11 @@ impl InferState {
             .collect();
         let count = stale.len();
         for sid in stale {
-            if let Some(s) = self.sessions.remove(&sid) {
+            if let Some(mut s) = self.sessions.remove(&sid) {
+                // A timeout is an aborted stream. Clear its byte tail before
+                // returning the sequence slot so it cannot affect a later
+                // request that reuses the slot.
+                let _ = s.finish_token_stream();
                 info!(
                     "reclaiming idle session {}… (seq={})",
                     &sid[..8.min(sid.len())],
@@ -1011,7 +1154,8 @@ impl InferState {
 
     fn get_or_create(&mut self, sid: &str, reset: bool) -> Result<&mut Session> {
         if reset {
-            if let Some(old) = self.sessions.remove(sid) {
+            if let Some(mut old) = self.sessions.remove(sid) {
+                let _ = old.finish_token_stream();
                 let _ = self.engine.kv_remove(old.seq_id, 0, -1);
                 self.free_seq(old.seq_id);
             }
@@ -1029,7 +1173,12 @@ impl InferState {
     }
 
     fn finish(&mut self, sid: &str) {
-        if let Some(s) = self.sessions.remove(sid) {
+        if let Some(mut s) = self.sessions.remove(sid) {
+            // Normal EOS, explicit release, cancellation and error cleanup
+            // all pass here. The output path flushes before normal EOS calls
+            // this method; the cleanup cases deliberately discard the result
+            // after clearing it so no tail can leak into the next session.
+            let _ = s.finish_token_stream();
             let _ = self.engine.kv_remove(s.seq_id, 0, -1);
             self.free_seq(s.seq_id);
         }
@@ -1127,6 +1276,7 @@ pub async fn run(
         scheduler,
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
     };
+    crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 
     if let Some(auth) = auth.clone() {
         http_client().set_auth_state(auth);
@@ -1194,6 +1344,7 @@ pub async fn run(
         }
     })
     .await;
+    crate::relay::clear_local_inference(generation).await;
 
     if let Some(handle) = local_barrier_handle {
         crate::tp::clear_local_barrier(handle);
@@ -1510,6 +1661,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "fit_memory_applied": s.engine.fit_memory_applied(),
         "n_gpu_layers_effective": s.engine.effective_n_gpu_layers(),
         "n_ubatch_effective": s.engine.effective_n_ubatch(),
+        "profile_sync_enabled": crate::llm::profile_backend_sync_enabled(),
         // Onde as camadas e o cache KV ficaram de verdade, direto do
         // llama.cpp. `null` quando a ponte não respondeu - a interface diz
         // que não sabe, em vez de derivar um mapa de `n_gpu_layers`, que
@@ -1763,6 +1915,55 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
     crate::tp::broadcast_decode(&tp.members, rota, &id, body.to_vec());
 }
 
+/// A sub-faixa que o remetente mandou executar, conferida contra a fatia que
+/// este nó carregou.
+///
+/// Quem manda decide qual pedaço roda; este nó só confere que consegue rodar
+/// exatamente aquilo. O que ele **não** faz é ajustar em silêncio: rodar a
+/// fatia inteira quando pediram um pedaço é exatamente o modo de falha que
+/// devolve resposta errada sem erro nenhum.
+///
+/// Devolve o índice do bloco local onde a decodificação deve parar, ou `None`
+/// quando o pedido cobre a fatia até o fim (o caso comum, grafo inteiro).
+fn resolve_exec_range(
+    meta: &Value,
+    slice_start: u32,
+    slice_end: u32,
+) -> std::result::Result<Option<u32>, String> {
+    let exec_start = meta.get("exec_start").and_then(|v| v.as_u64());
+    let exec_end = meta.get("exec_end").and_then(|v| v.as_u64());
+    let (Some(exec_start), Some(exec_end)) = (exec_start, exec_end) else {
+        // Sem instrução não há o que conferir: roda a fatia inteira, que é o
+        // contrato de quem só carrega uma faixa e é dono dela inteira.
+        return Ok(None);
+    };
+    let (exec_start, exec_end) = (exec_start as u32, exec_end as u32);
+    if exec_end < exec_start {
+        return Err(format!("sub-faixa invertida: L{exec_start}-{exec_end}"));
+    }
+    if exec_start < slice_start || exec_end > slice_end {
+        return Err(format!(
+            "sub-faixa L{exec_start}-{exec_end} sai da fatia carregada L{slice_start}-{slice_end}"
+        ));
+    }
+    if exec_start > slice_start {
+        // O limite que o captain conhece: o estado oculto entra pelo embedding
+        // do llama.cpp, que sempre cai no bloco 0 da fatia. Começar acima da
+        // camada inicial exigiria pular blocos da cabeça, e o motor não sabe
+        // fazer isso hoje. Recusar alto é o contrato; refazer L{slice_start}-
+        // L{exec_start} em silêncio seria a resposta errada sem erro.
+        return Err(format!(
+            "entrar no meio da faixa ainda não é possível: pediram começar em L{exec_start}, \
+             mas esta fatia começa em L{slice_start} e o motor sempre entra pelo primeiro bloco. \
+             Mande a sub-faixa a partir de L{slice_start}, ou dê esta parte a um peer que comece em L{exec_start}"
+        ));
+    }
+    if exec_end == slice_end {
+        return Ok(None);
+    }
+    Ok(Some(exec_end - slice_start))
+}
+
 async fn handle_prefill(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
@@ -1846,6 +2047,7 @@ async fn handle_prefill(
         .get("prompt")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    let chat_template = meta.get("chat_template").and_then(|v| v.as_bool());
     // A composição dos tokens deste pedaço, gerada na cabeça (que tokenizou o
     // prompt) e ecoada até a cauda — é o que alimenta o `observe` da cabeça
     // `nextn` no `decode_hidden` (ver `prefill_blocking`). Ausente é peer antigo.
@@ -1870,6 +2072,22 @@ async fn handle_prefill(
     // copy, taken before `sid_key` moves into the blocking closure below.
     let sid_for_forward = sid_key.clone();
 
+    // A sub-faixa que o remetente mandou executar. Recusa alta quando este nó
+    // não consegue rodar exatamente aquilo - nunca ajuste silencioso.
+    let capture_block = {
+        let (slice_start, slice_end) = {
+            let guard = state.lock().map_err(|_| ()).ok();
+            match guard {
+                Some(st) => (st.start_layer, st.end_layer),
+                None => return err500("estado de inferência indisponível"),
+            }
+        };
+        match resolve_exec_range(&meta, slice_start, slice_end) {
+            Ok(block) => block,
+            Err(motivo) => return err400(motivo),
+        }
+    };
+
     let queued_at = Instant::now();
     let result = match scheduler.submit_prefill(PrefillJob {
         sid_key,
@@ -1879,7 +2097,9 @@ async fn handle_prefill(
         is_final_chunk,
         wire_dtype,
         prompt,
+        chat_template,
         tensor,
+        capture_block,
         chunk_tokens,
         queued_at,
     }) {
@@ -2024,6 +2244,10 @@ async fn handle_prefill(
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
                 "is_final_chunk": is_final_chunk_for_forward,
+                // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
+                // que este recebeu a sua: quem manda é que decide o pedaço.
+                "exec_start": hops[0].exec_start,
+                "exec_end": hops[0].exec_end,
             });
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
@@ -2143,7 +2367,9 @@ fn prefill_blocking(
     is_final_chunk: bool,
     wire_dtype: WireDtype,
     prompt: Option<String>,
+    chat_template: Option<bool>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    capture_block: Option<u32>,
     // A composição dos tokens deste pedaço, vinda da cabeça via `tokens` na
     // wire. Só tem sentido no branch de estado oculto (a cabeça tokeniza o
     // prompt; hops do meio ecoam): alimenta o `observe` da cabeça `nextn`
@@ -2173,7 +2399,7 @@ fn prefill_blocking(
     // compute everything we need, store results, then re-borrow.
     if let Some(ref text) = prompt {
         if chunk_index == 0 {
-            let use_tmpl = s.chat_template;
+            let use_tmpl = use_chat_template(chat_template, s.chat_template);
             let no_think = s.no_thinking;
             let formatted = if use_tmpl {
                 s.engine
@@ -2231,6 +2457,15 @@ fn prefill_blocking(
         };
         (session.n_past, session.seq_id, toks)
     };
+
+    // Onde parar, quando o remetente pediu menos que a fatia inteira. Antes do
+    // decode e sob o mesmo lock, que é o que torna o ajuste válido só para
+    // esta decodificação.
+    if let Err(e) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            bail!("{e}");
+        }
+    }
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -2298,9 +2533,17 @@ fn prefill_blocking(
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
-        let text = s.engine.token_to_piece(next_id, false);
+        let piece = s.engine.token_to_piece_bytes(next_id, false);
+        let mut text = s
+            .sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .feed_token_piece(&piece);
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
+        if done {
+            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+        }
         s.sessions
             .get_mut(&sid_key)
             .unwrap()
@@ -2385,6 +2628,7 @@ struct PreparedPrefill {
     chunk_tokens: Option<Vec<i32>>,
     input: PreparedPrefillInput,
     wire_dtype: WireDtype,
+    capture_block: Option<u32>,
     queued_at: Instant,
 }
 
@@ -2412,7 +2656,9 @@ fn prefill_batch_blocking(
             is_final_chunk,
             wire_dtype,
             prompt,
+            chat_template,
             tensor,
+            capture_block,
             chunk_tokens,
             queued_at,
         } = job;
@@ -2421,13 +2667,14 @@ fn prefill_batch_blocking(
             s.get_or_create(&sid_key, chunk_index == 0)?;
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
-                    let formatted = if s.chat_template {
+                    let use_tmpl = use_chat_template(chat_template, s.chat_template);
+                    let formatted = if use_tmpl {
                         s.engine
                             .apply_chat_template(&[("user", text)], true, s.no_thinking)
                     } else {
                         text.to_string()
                     };
-                    let tokens = s.engine.tokenize(&formatted, !s.chat_template, true);
+                    let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
                     s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
                 }
             }
@@ -2517,6 +2764,7 @@ fn prefill_batch_blocking(
                 chunk_tokens,
                 input,
                 wire_dtype,
+                capture_block,
                 queued_at,
             })
         })();
@@ -2532,6 +2780,33 @@ fn prefill_batch_blocking(
     }
 
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
+    // Onde parar vale para o grafo inteiro, não por item: um lote com pedidos
+    // de sub-faixas diferentes não tem uma resposta certa. O agrupamento em
+    // lote é conveniência de desempenho; ele não pode decidir isto por conta.
+    let capture_block = prepared[0].1.capture_block;
+    if prepared
+        .iter()
+        .any(|(_, item)| item.capture_block != capture_block)
+    {
+        for (reply, _) in prepared {
+            replies.push((
+                reply,
+                Err(anyhow::anyhow!(
+                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                )),
+            ));
+        }
+        return replies;
+    }
+    if let Err(e) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!("{e}"))));
+            }
+            return replies;
+        }
+    }
+
     let decode_result = match &prepared[0].1.input {
         PreparedPrefillInput::Tokens(_) => {
             let entries: Vec<crate::llm::TokenBatchEntry> = prepared
@@ -2629,8 +2904,21 @@ fn prefill_batch_blocking(
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
-                let text = s.engine.token_to_piece(next_id, false);
+                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let mut text = s
+                    .sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .feed_token_piece(&piece);
                 let done = next_id == s.engine.eos_token();
+                if done {
+                    text.push_str(
+                        &s.sessions
+                            .get_mut(&item.sid_key)
+                            .unwrap()
+                            .finish_token_stream(),
+                    );
+                }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
@@ -2707,6 +2995,7 @@ fn step_batch_blocking(
                     job.wire_dtype,
                     job.token_id,
                     job.tensor,
+                    job.capture_block,
                     job.speculate,
                     job.incoming_draft,
                     job.batch_tokens,
@@ -2731,6 +3020,7 @@ fn step_batch_blocking(
             wire_dtype,
             token_id,
             tensor,
+            capture_block,
             queued_at,
             ..
         } = job;
@@ -2781,6 +3071,7 @@ fn step_batch_blocking(
                 n_tokens,
                 is_last,
                 wire_dtype,
+                capture_block,
                 input,
                 queued_at,
             })
@@ -2793,6 +3084,32 @@ fn step_batch_blocking(
 
     if prepared.is_empty() {
         return replies;
+    }
+    // Um único grafo não consegue parar em dois blocos diferentes. Recusar o
+    // lote é seguro; escolher um dos limites faria uma sessão executar mais
+    // ou menos camadas que o remetente pediu.
+    let capture_block = prepared[0].1.capture_block;
+    if prepared
+        .iter()
+        .any(|(_, item)| item.capture_block != capture_block)
+    {
+        for (reply, _) in prepared {
+            replies.push((
+                reply,
+                Err(anyhow::anyhow!(
+                    "lote com sub-faixas diferentes: cada uma pararia num bloco, e o grafo é um só"
+                )),
+            ));
+        }
+        return replies;
+    }
+    if let Err(error) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            for (reply, _) in prepared {
+                replies.push((reply, Err(anyhow::anyhow!(error.to_string()))));
+            }
+            return replies;
+        }
     }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
     let decode_result = match &prepared[0].1.input {
@@ -2874,9 +3191,22 @@ fn step_batch_blocking(
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
                 let token_text_started = Instant::now();
-                let text = s.engine.token_to_piece(next_id, false);
+                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let mut text = s
+                    .sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .feed_token_piece(&piece);
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
                 let done = next_id == s.engine.eos_token();
+                if done {
+                    text.push_str(
+                        &s.sessions
+                            .get_mut(&item.sid_key)
+                            .unwrap()
+                            .finish_token_stream(),
+                    );
+                }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
@@ -2941,6 +3271,7 @@ struct PreparedStep {
     n_tokens: usize,
     is_last: bool,
     wire_dtype: WireDtype,
+    capture_block: Option<u32>,
     input: PreparedStepInput,
     queued_at: Instant,
 }
@@ -3047,6 +3378,18 @@ async fn handle_step(
         None => None,
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
+    // A sub-faixa só é válida se este peer consegue executá-la exatamente.
+    // Sem os campos, o contrato antigo continua rodando a fatia inteira.
+    let capture_block = {
+        let (slice_start, slice_end) = match state.lock() {
+            Ok(st) => (st.start_layer, st.end_layer),
+            Err(_) => return err500("estado de inferência indisponível"),
+        };
+        match resolve_exec_range(&meta, slice_start, slice_end) {
+            Ok(block) => block,
+            Err(motivo) => return err400(motivo),
+        }
+    };
     // Neither of `step_blocking`'s replies echoes `session_id` back — a
     // relay branch that forwards to the next hop needs its own copy, taken
     // before `sid_key` moves into the blocking closure below.
@@ -3059,6 +3402,7 @@ async fn handle_step(
         wire_dtype,
         token_id,
         tensor,
+        capture_block,
         speculate,
         incoming_draft,
         batch_tokens,
@@ -3147,20 +3491,8 @@ async fn handle_step(
             return direct_ack();
         };
 
-        let mut forward = json!({
-            "session_id": sid_for_forward,
-            "hop_timings": hop_timings,
-        });
-        preserve_batch_identity(&meta, &mut forward);
-        if let Some(draft) = local_meta.get("draft") {
-            forward["draft"] = draft.clone();
-        }
-        if let Some(tokens) = local_meta.get("tokens") {
-            forward["tokens"] = tokens.clone();
-        }
-        if let Some(mtp_k) = local_meta.get("mtp_k") {
-            forward["mtp_k"] = mtp_k.clone();
-        }
+        let mut forward = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
+        forward["hop_timings"] = json!(hop_timings);
         tokio::spawn(forward_direct(
             hops, "/v1/step", forward, residual, shape,
             1, // a decode step has never retried — see relay_and_bubble's doc comment
@@ -3190,22 +3522,7 @@ async fn handle_step(
     // of the chain reached directly instead of relaying back through it.
     let hops = next_hops.expect("should_relay implies next_hops is Some");
     let (residual, shape) = local_tensor.expect("should_relay implies local_tensor is Some");
-    let mut forward_meta = json!({"session_id": sid_for_forward});
-    preserve_batch_identity(&meta, &mut forward_meta);
-    // Keep threading the draft toward the tail — absent entirely (not just
-    // an empty array) when this round isn't speculative, same distinction
-    // `incoming_draft` relies on above.
-    if let Some(draft) = local_meta.get("draft") {
-        forward_meta["draft"] = draft.clone();
-    }
-    // Idem para `tokens`/`mtp_k` — o que mantém a cauda observando o lote e
-    // rascunhando a medida certa (ver os docs de `batch_tokens`/`mtp_k`).
-    if let Some(tokens) = local_meta.get("tokens") {
-        forward_meta["tokens"] = tokens.clone();
-    }
-    if let Some(mtp_k) = local_meta.get("mtp_k") {
-        forward_meta["mtp_k"] = mtp_k.clone();
-    }
+    let forward_meta = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
 
     let bubbled = match relay_and_bubble(
         http_client(),
@@ -3231,6 +3548,32 @@ async fn handle_step(
             .into_response(),
         Err(e) => err500(e),
     }
+}
+
+/// Monta o metadado que um hop de decode encaminha ao próximo peer.
+///
+/// A faixa carregada do próximo peer não basta para definir o que ele deve
+/// executar: uma mesma fatia pode ser usada por ramos diferentes. Por isso a
+/// sub-faixa é escolhida pelo `PipelineStep` do próximo hop e viaja em cada
+/// quadro `/v1/step`.
+fn step_forward_meta(
+    session_id: &str,
+    request_meta: &Value,
+    local_meta: &Value,
+    next: &PipelineStep,
+) -> Value {
+    let mut meta = json!({
+        "session_id": session_id,
+        "exec_start": next.exec_start,
+        "exec_end": next.exec_end,
+    });
+    preserve_batch_identity(request_meta, &mut meta);
+    for field in ["draft", "tokens", "mtp_k"] {
+        if let Some(value) = local_meta.get(field) {
+            meta[field] = value.clone();
+        }
+    }
+    meta
 }
 
 /// Relay a residual to `hops[0]` and bubble its reply back: the eventual
@@ -3268,6 +3611,8 @@ async fn relay_and_bubble(
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
+    base_meta["exec_start"] = json!(next.exec_start);
+    base_meta["exec_end"] = json!(next.exec_end);
 
     let mut last_issue_kind = None;
     let sent = crate::relay::send_frame_or_tunnel(
@@ -3365,6 +3710,8 @@ pub(crate) async fn forward_direct(
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
+    base_meta["exec_start"] = json!(next.exec_start);
+    base_meta["exec_end"] = json!(next.exec_end);
     base_meta["reply_to"] = reply_to.clone();
 
     let mut last_issue_kind = None;
@@ -3593,6 +3940,18 @@ fn rollback_from(n_past_after_batch: u32, batch_width: u32, accept_count: u32) -
 }
 
 #[cfg(test)]
+mod chat_template_tests {
+    use super::use_chat_template;
+
+    #[test]
+    fn request_mode_overrides_the_legacy_server_default() {
+        assert!(use_chat_template(Some(true), false));
+        assert!(!use_chat_template(Some(false), true));
+        assert!(use_chat_template(None, true));
+    }
+}
+
+#[cfg(test)]
 mod speculative_tests {
     use super::*;
 
@@ -3785,6 +4144,7 @@ fn step_blocking(
     wire_dtype: WireDtype,
     token_id: Option<i32>,
     tensor: Option<(Vec<f32>, [usize; 2])>,
+    capture_block: Option<u32>,
     // Present only for the head — everyone else either forwards
     // `incoming_draft` untouched (not the tail) or verifies against it (the
     // tail). Ver `Speculate` para por que a fonte do rascunho viaja junto.
@@ -3837,6 +4197,13 @@ fn step_blocking(
     // nos hops do meio repassa o que chegou da wire. É como a cauda descobre a
     // largura de lote que o gateway quer na rodada seguinte.
     let mut mtp_k_echo: Option<u32> = None;
+    // O limite é por decodificação, não por sessão. O mesmo lock serializa
+    // esta troca e o decode que a consome.
+    if let Err(error) = s.engine.set_capture_layer(capture_block) {
+        if capture_block.is_some() {
+            bail!("{error}");
+        }
+    }
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -3955,12 +4322,12 @@ fn step_blocking(
             let verification_started = Instant::now();
             let mut recent = s.sessions[&sid_key].recent_tokens.clone();
             let mut sampled: Vec<i32> = Vec::with_capacity(n_tokens);
-            let mut texts: Vec<String> = Vec::with_capacity(n_tokens);
+            let mut pieces: Vec<Vec<u8>> = Vec::with_capacity(n_tokens);
             for i in 0..n_tokens {
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
                 recent.push(id);
-                texts.push(s.engine.token_to_piece(id, false));
+                pieces.push(s.engine.token_to_piece_bytes(id, false));
                 let is_eos = id == eos;
                 sampled.push(id);
                 if is_eos {
@@ -3981,8 +4348,27 @@ fn step_blocking(
 
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
-            let accepted_texts = &texts[..keep];
             let done = accepted_ids.last().copied() == Some(eos);
+            // Only accepted positions may advance the session's byte stream.
+            // Feeding rejected draft positions would leave their UTF-8 tail
+            // in the next request even though those tokens never reached the
+            // consumer.
+            let mut accepted_texts: Vec<String> = pieces
+                .iter()
+                .take(keep)
+                .map(|piece| {
+                    s.sessions
+                        .get_mut(&sid_key)
+                        .unwrap()
+                        .feed_token_piece(piece)
+                })
+                .collect();
+            if done {
+                let tail = s.sessions.get_mut(&sid_key).unwrap().finish_token_stream();
+                if let Some(last) = accepted_texts.last_mut() {
+                    last.push_str(&tail);
+                }
+            }
 
             // Rascunho para a rodada seguinte. Numa máquina só ele alimenta
             // o mesmo processo; num pipeline fatiado ele viaja na resposta
@@ -4051,9 +4437,17 @@ fn step_blocking(
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
-        let text = s.engine.token_to_piece(next_id, false);
+        let piece = s.engine.token_to_piece_bytes(next_id, false);
+        let mut text = s
+            .sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .feed_token_piece(&piece);
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
+        if done {
+            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+        }
         s.sessions
             .get_mut(&sid_key)
             .unwrap()

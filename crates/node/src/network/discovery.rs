@@ -1,5 +1,5 @@
 use crate::infer_tunnel::{self, InferTunnelCodec, TunnelOutbound};
-use crate::network::{Network, P2PMessage, PeerInfo};
+use crate::network::{is_valid_destination, Network, P2PMessage, PeerInfo};
 use crate::wire;
 use anyhow::Result;
 use futures::StreamExt;
@@ -52,8 +52,14 @@ fn split_host_port(addr: &str) -> Option<(&str, &str)> {
 fn udp_to_libp2p_multiaddr(addr: &str) -> Option<Multiaddr> {
     use std::net::IpAddr;
 
+    if !is_valid_destination(addr) {
+        return None;
+    }
     let (host, port_str) = split_host_port(addr)?;
     let udp_port: u16 = port_str.parse().ok()?;
+    if udp_port == 0 {
+        return None;
+    }
     let tcp_port = udp_port.checked_add(10000)?;
 
     let ma = match host.parse::<IpAddr>() {
@@ -166,6 +172,9 @@ fn observed_host_port(addr: &Multiaddr) -> Option<String> {
         return None;
     }
     let udp_port = tcp_port.checked_sub(10000)?;
+    if udp_port == 0 {
+        return None;
+    }
     Some(format!("{host}:{udp_port}"))
 }
 
@@ -913,6 +922,27 @@ mod tests {
             observed_host_port(&"/ip4/203.0.113.5/tcp/80".parse().unwrap()),
             None
         );
+    }
+
+    #[test]
+    fn a_tcp_port_at_the_udp_offset_is_refused() {
+        assert_eq!(
+            observed_host_port(&"/ip4/203.0.113.5/tcp/10000".parse().unwrap()),
+            None
+        );
+    }
+
+    #[test]
+    fn a_zero_udp_port_is_not_a_dialable_multiaddr() {
+        assert!(udp_to_libp2p_multiaddr("[2001:db8::42]:0").is_none());
+    }
+
+    #[test]
+    fn wildcard_udp_addresses_are_not_tunnel_destinations() {
+        assert!(udp_to_libp2p_multiaddr("0.0.0.0:42778").is_none());
+        assert!(udp_to_libp2p_multiaddr("[::]:42778").is_none());
+        assert!(udp_to_libp2p_multiaddr("0.0.0.0:0").is_none());
+        assert!(udp_to_libp2p_multiaddr("[::]:0").is_none());
     }
 
     // ── Como o gossipsub distingue dois anúncios ────────────────────────────

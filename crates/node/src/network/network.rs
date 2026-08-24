@@ -252,8 +252,38 @@ pub(crate) fn ip_host(addr: &str) -> &str {
     }
 }
 
+fn has_nonzero_port(addr: &str) -> bool {
+    if addr.parse::<std::net::IpAddr>().is_ok() {
+        return false;
+    }
+    addr.parse::<SocketAddr>()
+        .map(|socket| socket.port() != 0)
+        .unwrap_or_else(|_| {
+            addr.rsplit_once(':')
+                .and_then(|(_, port)| port.parse::<u16>().ok())
+                .is_some_and(|port| port != 0)
+        })
+}
+
 fn bare_host(host: &str) -> &str {
     host.trim_start_matches('[').trim_end_matches(']')
+}
+
+/// Destinations may be private or loopback when the cluster is local, but an
+/// unspecified, multicast, broadcast, or `0.0.0.0/8` address is never a peer.
+/// Hostnames remain valid here and are checked by `lookup_host` at send time.
+pub(crate) fn is_valid_destination(addr: &str) -> bool {
+    if !has_nonzero_port(addr) {
+        return false;
+    }
+    let host = bare_host(ip_host(addr));
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(ip)) => {
+            !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast() && ip.octets()[0] != 0
+        }
+        Ok(std::net::IpAddr::V6(ip)) => !ip.is_unspecified() && !ip.is_multicast(),
+        Err(_) => !host.is_empty(),
+    }
 }
 
 fn host_port(host: &str, port: u16) -> String {
@@ -372,6 +402,14 @@ impl PeerInfo {
         }
     }
 
+    pub fn dialable_addr(&self) -> Option<&str> {
+        self.addr_candidates
+            .iter()
+            .find(|addr| is_valid_destination(addr))
+            .map(String::as_str)
+            .or_else(|| is_valid_destination(&self.addr).then_some(self.addr.as_str()))
+    }
+
     /// URLs do servidor de inferencia, uma por candidato.
     ///
     /// Cai no `addr` unico quando o peer nao anunciou candidatos, que e o caso
@@ -386,6 +424,7 @@ impl PeerInfo {
             self.addr_candidates.iter().collect()
         };
         base.iter()
+            .filter(|a| is_valid_destination(a))
             .map(|a| {
                 format!(
                     "{}://{}:{}",
@@ -439,6 +478,7 @@ impl PeerInfo {
             self.addr_candidates.iter().collect()
         };
         base.iter()
+            .filter(|a| is_valid_destination(a))
             .map(|a| {
                 format!(
                     "{}://{}:{}",
@@ -641,8 +681,8 @@ pub fn advertised_addr(raw: &str, default_port: u16) -> Option<String> {
     }
 
     // Already a full socket address, in either family.
-    if raw.parse::<SocketAddr>().is_ok() {
-        return Some(raw.to_string());
+    if let Ok(socket) = raw.parse::<SocketAddr>() {
+        return (socket.port() != 0).then(|| raw.to_string());
     }
     // "[2804:d55::1]" - bracketed, no port.
     if let Some(inner) = raw.strip_prefix('[').and_then(|r| r.strip_suffix(']')) {
@@ -662,6 +702,13 @@ pub fn advertised_addr(raw: &str, default_port: u16) -> Option<String> {
     // A hostname, with or without a port. Anything with a colon left at this
     // point already carries one.
     if raw.contains(':') {
+        if raw
+            .rsplit_once(':')
+            .and_then(|(_, port)| port.parse::<u16>().ok())
+            == Some(0)
+        {
+            return None;
+        }
         Some(raw.to_string())
     } else {
         Some(format!("{raw}:{default_port}"))
@@ -704,16 +751,19 @@ impl Network {
             let v6: SocketAddr = format!("[::]:{}", port).parse()?;
             match Self::bind_udp_dual_stack(v6) {
                 Ok(s) => {
-                    info!("UDP socket bound to [::]:{} (dual-stack)", port);
-                    (UdpSocket::from_std(s)?, v6)
+                    let socket = UdpSocket::from_std(s)?;
+                    let bind_addr = socket.local_addr()?;
+                    info!("UDP socket bound to [::]:{} (dual-stack)", bind_addr.port());
+                    (socket, bind_addr)
                 }
                 Err(e) => {
                     info!("{}", e);
                     let v4: SocketAddr = format!("0.0.0.0:{}", port).parse()?;
                     let s = UdpSocket::bind(v4).await?;
                     s.set_broadcast(true)?;
-                    info!("UDP socket bound to 0.0.0.0:{} (IPv4)", port);
-                    (s, v4)
+                    let bind_addr = s.local_addr()?;
+                    info!("UDP socket bound to 0.0.0.0:{} (IPv4)", bind_addr.port());
+                    (s, bind_addr)
                 }
             }
         };
@@ -810,6 +860,9 @@ impl Network {
     /// (`addrs::is_private_or_local`) — that's not new information, just a
     /// peer on the same LAN or a NAT rewriting within another private range.
     pub fn set_observed_addr(&self, host_port: &str) {
+        if !has_nonzero_port(host_port) {
+            return;
+        }
         let host = ip_host(host_port)
             .trim_start_matches('[')
             .trim_end_matches(']');
@@ -909,6 +962,12 @@ impl Network {
     }
 
     async fn send_bytes(&self, data: &[u8], addr: &str) -> std::io::Result<()> {
+        if !is_valid_destination(addr) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "non-routable destination",
+            ));
+        }
         let resolved = tokio::net::lookup_host(addr)
             .await?
             .next()
@@ -1113,7 +1172,9 @@ impl Network {
         let peers = self.peers.read().await;
         for peer in peers.values() {
             if peer.is_alive() {
-                self.send_to(&msg, &peer.addr).await?;
+                if let Some(addr) = peer.dialable_addr() {
+                    self.send_to(&msg, addr).await?;
+                }
             }
         }
 
@@ -1169,10 +1230,14 @@ impl Network {
         // de sortear os mesmos peers a cada volta.
         let mut targets: Vec<String> = {
             let peers = self.peers.read().await;
-            let mut v: Vec<(&String, &PeerInfo)> =
-                peers.iter().filter(|(_, p)| p.is_alive()).collect();
+            let mut v: Vec<(&String, &PeerInfo)> = peers
+                .iter()
+                .filter(|(_, p)| p.is_alive() && p.dialable_addr().is_some())
+                .collect();
             v.sort_by(|a, b| a.0.cmp(b.0));
-            v.into_iter().map(|(_, p)| p.addr.clone()).collect()
+            v.into_iter()
+                .filter_map(|(_, p)| p.dialable_addr().map(str::to_string))
+                .collect()
         };
         if targets.is_empty() {
             return Ok(0);
@@ -1546,7 +1611,10 @@ impl Network {
             P2PMessage::PeerList { peers } => {
                 let mut known = self.peers.write().await;
                 for peer in peers {
-                    if peer.node_id != self.node_id && !known.contains_key(&peer.node_id) {
+                    if peer.node_id != self.node_id
+                        && peer.dialable_addr().is_some()
+                        && !known.contains_key(&peer.node_id)
+                    {
                         info!(
                             "📋 Learned peer from gossip: {} layers={}-{}",
                             short(&peer.node_id),
@@ -1593,6 +1661,13 @@ impl Network {
 
     /// Insert or update a peer discovered via libp2p (gossipsub / mDNS).
     pub async fn insert_peer(&self, peer: PeerInfo) {
+        if peer.dialable_addr().is_none() {
+            debug!(
+                "ignorando peer {} sem endereço UDP discável",
+                short(&peer.node_id)
+            );
+            return;
+        }
         let node_id = peer.node_id.clone();
         if node_id == self.node_id {
             return;
@@ -1723,6 +1798,22 @@ mod tests {
             serde_json::from_slice(&net.gossip_announce_bytes(None).unwrap()).unwrap();
         assert_eq!(udp["tls"], true);
         assert_eq!(gossip["tls"], true);
+    }
+
+    #[tokio::test]
+    async fn an_ephemeral_p2p_socket_never_announces_port_zero() {
+        let net = Network::new("n".into(), "p".into(), 0, vec![], None, None, None)
+            .await
+            .unwrap();
+
+        let port = net.bind_addr.port();
+        assert_ne!(port, 0, "a port-0 bind must retain the assigned UDP port");
+        assert_ne!(net.announce_addr().rsplit(':').next(), Some("0"));
+        assert!(net.self_addr_candidates().iter().all(|addr| addr
+            .parse::<SocketAddr>()
+            .unwrap()
+            .port()
+            != 0));
     }
 
     /// Sending an IPv4 destination on the dual-stack socket fails with EINVAL on
@@ -1925,6 +2016,8 @@ mod tests {
             advertised_addr("192.168.100.138:1234", 42777).as_deref(),
             Some("192.168.100.138:1234")
         );
+        assert_eq!(advertised_addr("192.168.100.138:0", 42777), None);
+        assert_eq!(advertised_addr("peer.example:0", 42777), None);
         assert_eq!(advertised_addr("  ", 42777), None);
     }
 
@@ -2083,6 +2176,44 @@ mod tests {
             peer.inference_candidates(),
             vec!["http://192.168.1.9:8181".to_string()]
         );
+    }
+
+    #[test]
+    fn wildcard_addresses_are_not_destinations() {
+        for addr in [
+            "0.0.0.0:42778",
+            "[::]:42778",
+            "0.0.0.0:0",
+            "[::]:0",
+            "224.0.0.1:42778",
+            "255.255.255.255:42778",
+            "[ff02::1]:42778",
+        ] {
+            let mut peer = peer_com_candidatos(vec![]);
+            peer.addr = addr.into();
+            assert_eq!(peer.dialable_addr(), None, "{addr} must not be dialed");
+            assert!(
+                peer.inference_candidates().is_empty(),
+                "{addr} must not become a URL"
+            );
+        }
+
+        let peer = peer_com_candidatos(vec!["0.0.0.0:42778", "[2804:d55::1]:42778"]);
+        assert_eq!(peer.dialable_addr(), Some("[2804:d55::1]:42778"));
+        assert_eq!(
+            peer.inference_candidates(),
+            vec!["http://[2804:d55::1]:8181".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_peer_with_only_a_zero_port_is_not_dialable() {
+        let mut peer = peer_com_candidatos(vec![]);
+        peer.addr = "[2804:d55::1]:0".into();
+        assert_eq!(peer.dialable_addr(), None);
+
+        peer.addr_candidates.push("[2804:d55::2]:42777".into());
+        assert_eq!(peer.dialable_addr(), Some("[2804:d55::2]:42777"));
     }
 
     /// `inference_url()` costumava ler só `addr` — um valor que podia estar

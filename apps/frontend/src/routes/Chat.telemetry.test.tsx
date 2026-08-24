@@ -6,13 +6,13 @@
  */
 import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ExecutionTelemetry } from "./Chat";
+import { ExecutionTelemetry, type ExecutionTelemetryEnvironment } from "./Chat";
 import { LocaleProvider } from "../i18n/provider";
 import type { PhaseTrace, RequestTrace } from "../lib/chatStream";
 
 function phase(overrides: Partial<PhaseTrace>): PhaseTrace {
   return {
-    processing_ms: 0, network_ms: 0, bytes_sent: 0, bytes_received: 0, calls: 0,
+    processing_ms: 0, round_trip_ms: 0, network_ms: 0, bytes_sent: 0, bytes_received: 0, calls: 0,
     client_encode_ms: 0, response_headers_ms: 0, response_body_ms: 0, client_decode_ms: 0,
     node_frame_decode_ms: 0, node_input_prepare_ms: 0, node_queue_ms: 0, node_lock_wait_ms: 0, node_setup_ms: 0,
     node_decode_ms: 0, node_backend_enqueue_ms: 0, node_backend_completion_ms: 0,
@@ -45,17 +45,67 @@ const trace: RequestTrace = {
       start_layer: 0,
       end_layer: 15,
       prefill: phase({
-        processing_ms: 880, network_ms: 40, calls: 5, bytes_sent: 4_096, bytes_received: 512_000,
+        processing_ms: 880, round_trip_ms: 920, network_ms: 40, calls: 5, bytes_sent: 4_096, bytes_received: 512_000,
         client_encode_ms: 3, client_decode_ms: 4, node_decode_ms: 810, node_residual_ms: 45,
         node_sampling_ms: 0, node_encode_ms: 12, node_p50_ms: 160, node_p95_ms: 210,
       }),
       decode: phase({
-        processing_ms: 300, network_ms: 120, calls: 34, bytes_sent: 3_400, bytes_received: 278_000,
+        processing_ms: 300, round_trip_ms: 420, network_ms: 120, calls: 34, bytes_sent: 3_400, bytes_received: 278_000,
         client_encode_ms: 8, client_decode_ms: 9, node_decode_ms: 240, node_residual_ms: 30,
         node_sampling_ms: 0, node_encode_ms: 14, node_p50_ms: 7, node_p95_ms: 11,
       }),
     },
   ],
+};
+
+const twoPeerTrace: RequestTrace = {
+  ...trace,
+  hops: [
+    trace.hops[0],
+    {
+      node_id: "fedcba9876543210",
+      start_layer: 16,
+      end_layer: 31,
+      prefill: phase({ round_trip_ms: 330, calls: 5 }),
+      decode: phase({ round_trip_ms: 210, calls: 34 }),
+    },
+  ],
+};
+
+const environment: ExecutionTelemetryEnvironment = {
+  snapshotCaptured: true,
+  cluster: {
+    peers: [
+      {
+        node_id: "abcdef0123456789",
+        short_id: "abcdef0123",
+        node: {
+          hostname: "gpu-a",
+          system: { cpu_count: 12, ram: { total_mb: 32768, available_mb: 16384 }, gpus: [{ name: "RTX A6000" }] },
+          config: { n_gpu_layers: 12, n_ctx: 8192, n_batch: 512, fit_memory: true, offload_kqv: true, max_sessions: 2 },
+        },
+      },
+      {
+        node_id: "fedcba9876543210",
+        short_id: "fedcba9876",
+        node: {
+          hostname: "cpu-b",
+          system: { cpu_count: 8, ram: { total_mb: 16384, available_mb: 4096 }, gpus: [] },
+          config: { n_gpu_layers: 0, n_ctx: 4096, n_batch: 256, fit_memory: false, offload_kqv: false, max_sessions: 1 },
+        },
+      },
+    ],
+  } as unknown as ExecutionTelemetryEnvironment["cluster"],
+  network: { measurements: [{ from_node_id: "abcdef0123456789", to_node_id: "fedcba9876543210", rtt_ms: 12.5, transport: "libp2p" }] },
+  runtimes: {
+    "abcdef0123456789": { loaded: true, health: { profile_sync_enabled: true, placement: { layers: [
+      { layer: 0, device: "CUDA0", buffers: [{ buffer: "CUDA0", bytes: 10 }] },
+      { layer: 1, device: "CUDA0", buffers: [{ buffer: "CPU", bytes: 10 }, { buffer: "CUDA0", bytes: 10 }] },
+    ] } } as never },
+    "fedcba9876543210": { loaded: true, health: { profile_sync_enabled: false, placement: { layers: [
+      { layer: 16, device: "CPU", buffers: [{ buffer: "CPU", bytes: 10 }] },
+    ] } } as never },
+  },
 };
 
 describe("ExecutionTelemetry", () => {
@@ -92,9 +142,50 @@ describe("ExecutionTelemetry", () => {
     expect(within(decode!).getByText("34")).toBeTruthy();
   });
 
-  it("says the backend sync is off rather than reporting a bare zero", () => {
+  it("shows the observed aggregate RTT of the execution", () => {
     mount(<ExecutionTelemetry trace={trace} />);
-    expect(screen.getAllByText(/sync desligado/).length).toBe(2);
+    expect(screen.getByText(/RTT agregado da execução: 1340 ms/)).toBeTruthy();
+  });
+
+  it("does not infer backend sync state from a zero duration", () => {
+    mount(<ExecutionTelemetry trace={trace} />);
+    expect(screen.queryByText(/sync desligado/)).toBeNull();
+    expect(screen.getAllByText(/conclusão 0 ms/).length).toBe(2);
+  });
+
+  it("shows directional RTT for every pipeline edge with its measurement scope", () => {
+    mount(<ExecutionTelemetry trace={twoPeerTrace} environment={environment} />);
+    expect(screen.getByText("RTT da aresta (origem -> destino)")).toBeTruthy();
+    expect(screen.getByText("12,5 ms")).toBeTruthy();
+    expect(screen.getByText(/peer de origem até o peer de destino/)).toBeTruthy();
+  });
+
+  it("shows capacity, requested config, effective placement and sync per machine", () => {
+    mount(<ExecutionTelemetry trace={twoPeerTrace} environment={environment} />);
+    expect(screen.getByText(/CPU: 12 núcleos/)).toBeTruthy();
+    expect(screen.getByText(/RTX A6000/)).toBeTruthy();
+    expect(screen.getByText(/Camadas GPU pedidas \(intenção\): 12/)).toBeTruthy();
+    expect(screen.getByText(/Camadas com peso em GPU: 1/)).toBeTruthy();
+    expect(screen.getByText(/Camadas mistas: 1/)).toBeTruthy();
+    expect(screen.getByText(/Camadas com peso em CPU: 1/)).toBeTruthy();
+    expect(screen.getByText(/Ajuste à memória: ligado/)).toBeTruthy();
+    expect(screen.getByText(/Ajuste à memória: desligado/)).toBeTruthy();
+    expect(screen.getByText(/Pedido de offload KV: ligado/)).toBeTruthy();
+    expect(screen.getByText(/Pedido de offload KV: desligado/)).toBeTruthy();
+    expect(screen.getByText("POM_PROFILE_SYNC: ativo")).toBeTruthy();
+    expect(screen.getByText("POM_PROFILE_SYNC: desligado")).toBeTruthy();
+  });
+
+  it("explains the single-peer case without inventing an edge RTT", () => {
+    mount(<ExecutionTelemetry trace={trace} environment={{ ...environment, network: { measurements: [] } }} />);
+    expect(screen.getByText(/não há arestas entre peers/)).toBeTruthy();
+    expect(screen.queryByText("12,5 ms")).toBeNull();
+  });
+
+  it("renders missing environment measurements as missing, never as zero", () => {
+    mount(<ExecutionTelemetry trace={twoPeerTrace} environment={{ snapshotCaptured: true, network: { measurements: [] }, runtimes: {} }} />);
+    expect(screen.getByText("não medido")).toBeTruthy();
+    expect(screen.getAllByText("não informado").length).toBeGreaterThan(0);
   });
 
   /**
@@ -145,6 +236,7 @@ describe("ExecutionTelemetry", () => {
     // The numbers it does have still show up...
     expect(screen.getByText("95 ms")).toBeTruthy();
     expect(screen.getByText("L0-L15")).toBeTruthy();
+    expect(screen.getByText(/RTT agregado da execução: indisponível/)).toBeTruthy();
     // ...and the row says why there is no prefill/decode split, rather than
     // printing one total twice under two labels.
     expect(screen.getByText(/telemetria antiga/i)).toBeTruthy();

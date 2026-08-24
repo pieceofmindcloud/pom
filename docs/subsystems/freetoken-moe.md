@@ -30,10 +30,9 @@ posterior, encerra a geração e propaga `finish_reason=stop` mais
 `stop_sequence`. O protocolo entre peers não mudou.
 
 Os testes unitários cobrem parada dividida entre eventos, prefixo pendente,
-UTF-8, duplicatas e múltiplas paradas. A suíte nativa ainda não executou esses
-testes neste worktree porque o build script de `llama-cpp-sys-2` falha antes da
-compilação ao não encontrar `vendor/llama-cpp-sys-2/llama.cpp`; ver a lacuna
-registrada na Fase 0.
+UTF-8, duplicatas e múltiplas paradas. A suíte nativa foi executada depois de
+materializar localmente o `llama.cpp` exigido pelo build script; os números
+consolidados ficam na seção de validação ao fim deste documento.
 
 Modelos densos devem continuar no caminho existente. A seleção do caminho MoE
 será uma decisão explícita baseada em metadados GGUF, com teste que proíbe um
@@ -69,12 +68,10 @@ Os campos são metadados adicionais do frame de inferência existente; o envelop
 binário e as APIs públicas não mudaram. O autoteste diferencial de
 `prefix_cache_lab.rs` executa operações contra uma referência simples e exige
 que um proxy que altera `cached_tokens` seja detectado. O teste puro do cache
-também cobre maior prefixo, leases ocupados e eviction LRU. A suíte nativa não
-foi executada porque `vendor/llama-cpp-sys-2/llama.cpp` não existe neste
-worktree. A execução isolada dos quatro testes do cache e do laboratório
-diferencial passou; ela não substitui a suíte nativa. Nenhum ganho de
-desempenho é afirmado; os números ficam para a
-medição posterior pelo captain.
+também cobre maior prefixo, leases ocupados e eviction LRU. A suíte nativa foi
+executada com o symlink local documentado em `build-execucao.md`. Nenhum ganho
+de desempenho é afirmado; os números ficam para a medição posterior pelo
+captain.
 
 ### Fase 3: detecção de MoE e bifurcação reversível
 
@@ -94,8 +91,8 @@ estado histórico e o teste de telemetria que garante que uma delegação nunca
 seja rotulada como motor MoE. Os testes de classificação cobrem denso, MoE,
 override e metadados ausentes.
 Os testes isolados de GGUF e executor passaram em um harness `rustc` com 15
-casos. A suíte `cargo test -p node` continua sem alcançar a compilação Rust
-porque o build script não encontra `vendor/llama-cpp-sys-2/llama.cpp`.
+casos. A suíte `cargo test -p node` também passou com o symlink local do
+`llama.cpp` materializado durante a validação.
 
 ### Fase 4: cache global, loader GGUF e primeiro bloco MoE
 
@@ -159,9 +156,9 @@ O primeiro ponto esperado de quebra na prova real é o layout/nome do tensor de
 router no GGUF da fatia. Depois vêm geometria Q4_0 incompatível ou camada fora
 da faixa, e por fim a qualidade numérica da costura parcial, que ainda não
 substitui todas as operações do transformer. Os testes puros do executor e da
-telemetria estão escritos; a suíte nativa não roda neste worktree porque o
-build de `llama-cpp-sys-2` para antes da compilação ao não encontrar
-`vendor/llama-cpp-sys-2/llama.cpp`.
+telemetria estão escritos; a suíte nativa já foi executada. A prova física
+ponta a ponta com um modelo MoE real continua sendo responsabilidade do
+captain.
 
 ### Fase 5: co-execução CPU/GPU
 
@@ -173,7 +170,7 @@ fração aos misses e inicia CPU e GPU em paralelo; o callback GPU representa a
 transferência e o kernel. `DoubleBuffer::with_budget` exige orçamento medido
 para os dois slots e impede sobrescrever um slot antes da conclusão.
 
-O harness isolado passou com 27 testes, dez deles cobrindo o perfil de banda,
+O harness isolado passou com 28 testes, dez deles cobrindo o perfil de banda,
 divisão de misses, soma de outputs CPU/GPU, início simultâneo, propagação de
 erro e reserva do double buffer. Ainda não há ligação a um backend GPU
 concreto nem medição local de banda neste worktree; o captain fará a prova e
@@ -217,11 +214,25 @@ Nenhum acesso ao cluster remoto, SSH ou deploy foi feito. Portanto, não há
 número de desempenho para inventar. Por decisão do captain, a Fase 2 seguirá
 mesmo sem esse baseline; a medição posterior deve usar o método acima.
 
-A verificação da base também ficou limitada: `cargo test` não chegou a
-compilar o crate porque o build script de `vendor/llama-cpp-sys-2` falhou ao
-abrir `vendor/llama-cpp-sys-2/llama.cpp`, com `Os { code: 2, kind: NotFound,
-message: "No such file or directory" }`. Assim, nenhuma afirmação de testes
-verdes ou cobertura nativa é feita nesta fase.
+As medições de geração continuam fora do alcance deste worktree sem um GGUF e
+um servidor local. A infraestrutura nativa, porém, foi validada com o symlink
+temporário documentado em `build-execucao.md`; os resultados estão abaixo.
+
+### Validação executada
+
+No worktree com `<worktree>/llama.cpp` apontando para
+`/Users/jairpereira/Sites/rdma-p2p/llama.cpp`:
+
+- `cargo build -p node`: código 0, 0 erros, 29 warnings.
+- `cargo test -p node`: 770 testes passaram, 5 ignorados.
+- `cargo fmt --check`: código 0.
+- `cargo clippy -p node`: código 0, 0 erros, 90 warnings.
+- `apps/frontend`: `npm run build` passou, com o aviso do Vite sobre chunk
+  maior que 500 kB; `npm test` passou com 44 arquivos e 278 testes.
+
+Os warnings foram preservados no registro de execução; não houve erro do
+provider Hugging Face nesta validação e nenhum arquivo desse provider foi
+alterado. O symlink foi removido ao fim e não é artefato versionado.
 
 ### Reexecução
 

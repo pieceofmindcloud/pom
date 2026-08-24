@@ -25,6 +25,12 @@ npm install
 npm run build
 ```
 
+O bundle de produção é dividido por rota. O shell carrega o painel e o chrome
+comum; as telas entram por `import()` quando o endereço é aberto. O
+`vite.config.ts` também separa React, animações, ícones, React Query e cada
+documento de referência em chunks próprios. Isso mantém o JavaScript inicial
+pequeno sem esconder o alerta do Vite com `chunkSizeWarningLimit`.
+
 `config::ui_dist_dir()` decide onde procurar: por padrão
 `<project_root>/apps/frontend/dist` (o mesmo `project_root()` usado por
 `pom.json` e `models/`); `POM_UI_DIST` sobrescreve, para um container

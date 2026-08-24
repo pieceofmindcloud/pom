@@ -79,8 +79,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
   `format_q4_0.rs` mmapa bancos Q4_0 do GGUF e executa gate-up, SiLU gated e
   down em CPU; `router.rs` e `block.rs` fazem top-k e soma ponderada no bloco
-  MoE. O runtime HTTP ainda delega o caminho selecionado ao llama.cpp até
-  conectar hidden states e logits de router a esse bloco.
+  MoE; `bandwidth.rs` calcula a divisão de misses a partir de medições
+  simultâneas e `coexecution.rs` inicia as lanes CPU/GPU com double buffer sob
+  orçamento explícito. O runtime HTTP ainda delega o caminho selecionado ao
+  llama.cpp até conectar hidden states e logits de router a esse bloco.
 - `executor.rs` - classifica a arquitetura GGUF e resolve o modo
   `auto/dense/moe` controlado por `POM_INFERENCE_MODE`. Nesta fase ambos os
   caminhos delegam ao `LlmEngine`; o nome do caminho é exposto no `/health`.

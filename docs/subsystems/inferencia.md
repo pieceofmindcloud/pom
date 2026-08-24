@@ -312,7 +312,10 @@ continua delegando ao `LlmEngine`. Isso mantém a bifurcação observável e
 reversível sem alterar o comportamento do caminho denso. O motor próprio da
 Fase 4 vive em `inference/moe/`: o bloco Q4_0 mmapa experts do GGUF, faz
 roteamento top-k e usa o LRU global; a ligação ao runtime de transformer ainda
-precisa entregar hidden states e logits de router a esse bloco.
+precisa entregar hidden states e logits de router a esse bloco. A Fase 5
+também fornece divisão de misses por banda medida, execução concorrente das
+duas lanes e double buffer com orçamento explícito, sem assumir um backend GPU
+ou uma largura de banda constante.
 
 Antes de os eventos chegarem aos adaptadores HTTP, o gateway também aplica
 stop strings por requisição. `StopMatcher` mantém o sufixo que ainda pode ser

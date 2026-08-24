@@ -130,6 +130,22 @@ Não há número de desempenho nesta fase. O build nativo continua sem execuçã
 neste worktree porque `vendor/llama-cpp-sys-2/llama.cpp` não existe; não foi
 criado workaround para mascarar essa falha.
 
+### Fase 5: co-execução CPU/GPU
+
+`bandwidth.rs` aceita somente bandas medidas e prefere o perfil de CPU e
+transferência obtido sob disputa simultânea. A fração de misses encaminhada
+para transferência é `transfer/(cpu+transfer)`; sem perfil simultâneo, usa o
+fallback explícito, e perfil incompleto é erro. `coexecution.rs` aplica essa
+fração aos misses e inicia CPU e GPU em paralelo; o callback GPU representa a
+transferência e o kernel. `DoubleBuffer::with_budget` exige orçamento medido
+para os dois slots e impede sobrescrever um slot antes da conclusão.
+
+O harness isolado passou com 27 testes, dez deles cobrindo o perfil de banda,
+divisão de misses, soma de outputs CPU/GPU, início simultâneo, propagação de
+erro e reserva do double buffer. Ainda não há ligação a um backend GPU
+concreto nem medição local de banda neste worktree; o captain fará a prova e
+não há ganho de desempenho afirmado.
+
 ## Fase 0: baseline local
 
 ### Método reproduzível

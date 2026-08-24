@@ -454,8 +454,12 @@ pub fn validate_filter(value: &str, field: &str) -> Result<String, HfError> {
 }
 
 pub fn validate_directory(path: &Path, field: &str) -> Result<PathBuf, HfError> {
-    if path.as_os_str().to_string_lossy().contains('\0') {
-        return Err(invalid(field, "caminho contém NUL"));
+    if path.as_os_str().to_string_lossy().contains('\0')
+        || path
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return Err(invalid(field, "caminho contém NUL ou traversal"));
     }
     Ok(path.to_path_buf())
 }
@@ -533,6 +537,12 @@ mod tests {
         assert!(validate_filename("../../model.gguf").is_err());
         assert!(validate_filename("folder/../model.gguf").is_err());
         assert!(validate_filename("folder\\model.gguf").is_err());
+    }
+
+    #[test]
+    fn rejects_directory_parent_component() {
+        assert!(validate_directory(Path::new("cache/../outside"), "cache_dir").is_err());
+        assert!(validate_directory(Path::new("/var/lib/pom-cache"), "cache_dir").is_ok());
     }
 
     #[test]

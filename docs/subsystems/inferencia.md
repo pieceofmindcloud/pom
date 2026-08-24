@@ -10,6 +10,22 @@ descreve os três modos de execução, o formato binário do estado oculto, o
 prefill em pedaços, a resposta direta, a decodificação especulativa e os
 limites.
 
+### Montagem UTF-8 no streaming
+
+O llama.cpp devolve a peça de cada token como bytes crus: um token BYTE pode
+ser apenas um byte e um token normal pode terminar no meio de um codepoint.
+`llm::LlmEngine::token_to_piece_bytes` preserva esses bytes até o limite de
+emissão. Cada `Session` de `infer_server.rs` possui um `Utf8Assembler` próprio,
+que só entrega no delta os caracteres completos. No caminho especulativo,
+somente as posições aceitas avançam o acumulador; posições rejeitadas não
+podem contaminar a rodada seguinte.
+
+O acumulador é drenado com `flush` quando o modelo encerra por EOS. Limpeza
+por release explícito, erro, cancelamento ou timeout também chama `flush` antes
+de devolver o slot KV, descartando o resultado nesses caminhos e garantindo
+que nenhum rabicho sobreviva para outra requisição. Uma sequência realmente
+inválida mantém a semântica de `from_utf8_lossy`: produz um único U+FFFD.
+
 ## 0. Coletiva de tensor parallelism (`collective.rs`)
 
 Para o caminho C (tensor parallelism sem transferir peso), o núcleo de troca é a

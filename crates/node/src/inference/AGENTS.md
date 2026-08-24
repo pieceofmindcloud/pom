@@ -34,11 +34,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
   e o branch de relay. Os handlers decodificam o frame e entregam comandos a
   uma fila local limitada; o worker seleciona uma entrada por sessão e pode
-  chamar o decode multi-sequência.
+  chamar o decode multi-sequência. Cada `Session` mantém seu próprio
+  `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
+  posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
+  limpeza de erro/cancelamento.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
   residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
-  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `decode_tokens_batch` e
-  `decode_hidden_batch`
+  cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
+  devolve a peça sem conversão lossy para o acumulador da sessão.
+  `decode_tokens_batch` e `decode_hidden_batch`
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
 - `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
@@ -555,20 +559,3 @@ unidade mas **não** tem número medido de ponta a ponta.
   levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
   mapeando o microlote de volta às posições. Ver `split_equal` em
   `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.
-- **U+FFFD no stream do chat: `token_to_piece` converte por chamada e rasga
-  codepoint em pedaços (em aberto, causa raiz provada, fix pendente).**
-  `llm.rs::token_to_piece` aplica `String::from_utf8_lossy` a cada chamada, mas
-  o llama.cpp devolve bytes crus por token - token BYTE é um byte só
-  (`llama-vocab.cpp::token_to_piece`, ramo `LLAMA_TOKEN_ATTR_BYTE`) e um token
-  normal pode terminar no meio de um codepoint. Quando o modelo emite o
-  caractere quebrado entre dois tokens (byte-fallback), cada conversão nasce
-  U+FFFD independente e a palavra sai rasgada no delta do chat. Reproduzido
-  por análise contra o cluster real: o fio SSE chega UTF-8 válido
-  (`TextDecoder {stream:true}` no painel está correto; o U+FFFD já nasce no
-  servidor). Emissão por token acontece em cinco pontos de `infer_server.rs`
-  (2289, 2620, 2865, 3951, 4042) e todos precisam de um acumulador de UTF-8
-  por sessão. Os testes de regressão estão escritos em `llm.rs`
-  (`utf8_assembler_tests`) e falham porque `Utf8Assembler` ainda não existe -
-  fase RED do TDD cumprida; falta implementar o acumulador (`feed` emite só
-  caractere completo, `flush` drena o rabicho) e ligá-lo nos cinco pontos,
-  alimentando apenas as posições aceitas no caminho especulativo.

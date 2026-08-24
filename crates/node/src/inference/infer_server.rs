@@ -920,6 +920,10 @@ struct Session {
     recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
     prompt_tokens: Vec<i32>,
+    /// UTF-8 tail for this request's token stream. It must never be shared
+    /// between sessions because a byte prefix from one generation can only be
+    /// completed by a later token in that same generation.
+    utf8: crate::llm::Utf8Assembler,
     last_used: Instant,
 }
 
@@ -930,8 +934,58 @@ impl Session {
             n_past: 0,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
+            utf8: crate::llm::Utf8Assembler::new(),
             last_used: Instant::now(),
         }
+    }
+
+    fn feed_token_piece(&mut self, piece: &[u8]) -> String {
+        self.utf8.feed(piece)
+    }
+
+    fn finish_token_stream(&mut self) -> String {
+        self.utf8.flush()
+    }
+}
+
+#[cfg(test)]
+mod session_text_tests {
+    use super::*;
+
+    /// Reproduz o caminho de emissão que alimenta o delta do chat: duas peças
+    /// de token chegam em chamadas distintas, mas o consumidor precisa ver o
+    /// caractere inteiro, não dois U+FFFD criados por conversões independentes.
+    #[test]
+    fn streaming_token_pieces_reach_the_consumer_as_one_utf8_character() {
+        let mut session = Session::new(0);
+
+        let mut emitted = String::new();
+        emitted.push_str(&session.feed_token_piece(b"caf\xc3"));
+        emitted.push_str(&session.feed_token_piece(b"\xa9"));
+
+        assert_eq!(emitted, "café");
+    }
+
+    /// O fim da sessão precisa drenar um prefixo truncado uma única vez.
+    #[test]
+    fn ending_stream_flushes_pending_bytes_without_leaking_them() {
+        let mut session = Session::new(0);
+
+        assert_eq!(session.feed_token_piece(b"ok\xc3"), "ok");
+        assert_eq!(session.finish_token_stream(), "\u{fffd}");
+        assert_eq!(session.finish_token_stream(), "");
+    }
+
+    /// Duas requisições intercaladas não podem compartilhar o rabicho de UTF-8.
+    #[test]
+    fn concurrent_sessions_keep_pending_utf8_isolated() {
+        let mut first = Session::new(0);
+        let mut second = Session::new(1);
+
+        assert_eq!(first.feed_token_piece(b"Jo\xc3"), "Jo");
+        assert_eq!(second.feed_token_piece(b"\xf0\x9f"), "");
+        assert_eq!(first.feed_token_piece(b"\xa3o"), "ão");
+        assert_eq!(second.feed_token_piece(b"\x98\x80"), "😀");
     }
 }
 
@@ -1060,7 +1114,11 @@ impl InferState {
             .collect();
         let count = stale.len();
         for sid in stale {
-            if let Some(s) = self.sessions.remove(&sid) {
+            if let Some(mut s) = self.sessions.remove(&sid) {
+                // A timeout is an aborted stream. Clear its byte tail before
+                // returning the sequence slot so it cannot affect a later
+                // request that reuses the slot.
+                let _ = s.finish_token_stream();
                 info!(
                     "reclaiming idle session {}… (seq={})",
                     &sid[..8.min(sid.len())],
@@ -1076,7 +1134,8 @@ impl InferState {
 
     fn get_or_create(&mut self, sid: &str, reset: bool) -> Result<&mut Session> {
         if reset {
-            if let Some(old) = self.sessions.remove(sid) {
+            if let Some(mut old) = self.sessions.remove(sid) {
+                let _ = old.finish_token_stream();
                 let _ = self.engine.kv_remove(old.seq_id, 0, -1);
                 self.free_seq(old.seq_id);
             }
@@ -1094,7 +1153,12 @@ impl InferState {
     }
 
     fn finish(&mut self, sid: &str) {
-        if let Some(s) = self.sessions.remove(sid) {
+        if let Some(mut s) = self.sessions.remove(sid) {
+            // Normal EOS, explicit release, cancellation and error cleanup
+            // all pass here. The output path flushes before normal EOS calls
+            // this method; the cleanup cases deliberately discard the result
+            // after clearing it so no tail can leak into the next session.
+            let _ = s.finish_token_stream();
             let _ = self.engine.kv_remove(s.seq_id, 0, -1);
             self.free_seq(s.seq_id);
         }
@@ -2448,9 +2512,17 @@ fn prefill_blocking(
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
-        let text = s.engine.token_to_piece(next_id, false);
+        let piece = s.engine.token_to_piece_bytes(next_id, false);
+        let mut text = s
+            .sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .feed_token_piece(&piece);
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
+        if done {
+            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+        }
         s.sessions
             .get_mut(&sid_key)
             .unwrap()
@@ -2811,8 +2883,21 @@ fn prefill_batch_blocking(
                 let logits = s.engine.logits_ith(logits_index as i32);
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
-                let text = s.engine.token_to_piece(next_id, false);
+                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let mut text = s
+                    .sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .feed_token_piece(&piece);
                 let done = next_id == s.engine.eos_token();
+                if done {
+                    text.push_str(
+                        &s.sessions
+                            .get_mut(&item.sid_key)
+                            .unwrap()
+                            .finish_token_stream(),
+                    );
+                }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
@@ -3085,9 +3170,22 @@ fn step_batch_blocking(
                 let (next_id, sampling_timing) =
                     sample_token_profiled(logits, &recent, &s.sampling);
                 let token_text_started = Instant::now();
-                let text = s.engine.token_to_piece(next_id, false);
+                let piece = s.engine.token_to_piece_bytes(next_id, false);
+                let mut text = s
+                    .sessions
+                    .get_mut(&item.sid_key)
+                    .unwrap()
+                    .feed_token_piece(&piece);
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
                 let done = next_id == s.engine.eos_token();
+                if done {
+                    text.push_str(
+                        &s.sessions
+                            .get_mut(&item.sid_key)
+                            .unwrap()
+                            .finish_token_stream(),
+                    );
+                }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
@@ -4203,12 +4301,12 @@ fn step_blocking(
             let verification_started = Instant::now();
             let mut recent = s.sessions[&sid_key].recent_tokens.clone();
             let mut sampled: Vec<i32> = Vec::with_capacity(n_tokens);
-            let mut texts: Vec<String> = Vec::with_capacity(n_tokens);
+            let mut pieces: Vec<Vec<u8>> = Vec::with_capacity(n_tokens);
             for i in 0..n_tokens {
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
                 recent.push(id);
-                texts.push(s.engine.token_to_piece(id, false));
+                pieces.push(s.engine.token_to_piece_bytes(id, false));
                 let is_eos = id == eos;
                 sampled.push(id);
                 if is_eos {
@@ -4229,8 +4327,27 @@ fn step_blocking(
 
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
-            let accepted_texts = &texts[..keep];
             let done = accepted_ids.last().copied() == Some(eos);
+            // Only accepted positions may advance the session's byte stream.
+            // Feeding rejected draft positions would leave their UTF-8 tail
+            // in the next request even though those tokens never reached the
+            // consumer.
+            let mut accepted_texts: Vec<String> = pieces
+                .iter()
+                .take(keep)
+                .map(|piece| {
+                    s.sessions
+                        .get_mut(&sid_key)
+                        .unwrap()
+                        .feed_token_piece(piece)
+                })
+                .collect();
+            if done {
+                let tail = s.sessions.get_mut(&sid_key).unwrap().finish_token_stream();
+                if let Some(last) = accepted_texts.last_mut() {
+                    last.push_str(&tail);
+                }
+            }
 
             // Rascunho para a rodada seguinte. Numa máquina só ele alimenta
             // o mesmo processo; num pipeline fatiado ele viaja na resposta
@@ -4299,9 +4416,17 @@ fn step_blocking(
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
         let token_text_started = Instant::now();
-        let text = s.engine.token_to_piece(next_id, false);
+        let piece = s.engine.token_to_piece_bytes(next_id, false);
+        let mut text = s
+            .sessions
+            .get_mut(&sid_key)
+            .unwrap()
+            .feed_token_piece(&piece);
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         let done = next_id == eos;
+        if done {
+            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+        }
         s.sessions
             .get_mut(&sid_key)
             .unwrap()

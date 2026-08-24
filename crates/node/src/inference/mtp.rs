@@ -517,7 +517,7 @@ mod tests {
         );
         let texto: String = draft
             .iter()
-            .map(|&t| engine.token_to_piece(t, false))
+            .map(|&t| String::from_utf8_lossy(&engine.token_to_piece_bytes(t, false)).into_owned())
             .collect();
         eprintln!("rascunho MTP: {draft:?} → {texto:?}");
         assert!(

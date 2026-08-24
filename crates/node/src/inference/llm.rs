@@ -908,7 +908,12 @@ impl LlmEngine {
         tokens
     }
 
-    pub fn token_to_piece(&self, token: i32, special: bool) -> String {
+    /// Devolve os bytes crus da peça do vocabulário.
+    ///
+    /// Uma peça pode terminar no meio de um codepoint UTF-8. A conversão para
+    /// `String` fica deliberadamente fora deste limite: o caminho de streaming
+    /// precisa alimentar um `Utf8Assembler` que vive na sessão da requisição.
+    pub fn token_to_piece_bytes(&self, token: i32, special: bool) -> Vec<u8> {
         let mut buf = vec![0u8; 256];
         let n = unsafe {
             sys::llama_token_to_piece(
@@ -921,10 +926,10 @@ impl LlmEngine {
             )
         };
         if n <= 0 {
-            return String::new();
+            return Vec::new();
         }
         buf.truncate(n as usize);
-        String::from_utf8_lossy(&buf).into_owned()
+        buf
     }
 
     // ── Chat template ─────────────────────────────────────────────────────────

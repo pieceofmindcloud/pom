@@ -166,6 +166,9 @@ behind an auth extractor.
   which are deliberately NOT registered here - the setup mode router in
   `main.rs` serves them only while there is no `pom.json` (they cannot be
   authenticated and would rotate the connection key on a configured node).
+  Os testes que chamam `apply_cluster_policy` também seguram
+  `peer_client::POLITICA_GLOBAL`, porque o esquema TLS global é compartilhado
+  por toda a suíte.
 - `deploy.rs` - `DeployKind` (`shards` | `whole` | `tensor_parallel`) escolhe
   qual inventário o `survey` lê: `shard_sets`, ou os modelos inteiros via
   `parse_whole`, que lê um GGUF não fatiado como a faixa `0..total-1`. O

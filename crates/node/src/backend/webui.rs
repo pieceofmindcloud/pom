@@ -3962,6 +3962,7 @@ mod catalogo_sob_tls_tests {
     /// cliente pinado, entao ele e a prova de que o caminho certo foi usado.
     #[tokio::test]
     async fn cluster_models_fala_com_os_peers_pelo_cliente_pinado() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
         assert!(state.peer_http.cached_peers().is_empty());
@@ -3980,6 +3981,7 @@ mod catalogo_sob_tls_tests {
     /// que e por onde o defeito apareceu para o operador.
     #[tokio::test]
     async fn a_lista_de_maquinas_para_implantar_tambem_e_pinada() {
+        let _trava = crate::peer_client::POLITICA_GLOBAL.lock();
         let state = state_with("eu", vec![peer_com_gateway("outro")]).await;
         state.peer_http.apply_cluster_policy(true);
 

@@ -794,6 +794,7 @@ async fn main() -> Result<()> {
             reply_inbox: crate::direct::ReplyInbox::new(),
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
+            cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1400,6 +1401,7 @@ async fn start_gateway_only(
         // "no tunnel available" outcome `send_frame_via_tunnel` treats it as.
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
+        cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
     };
 
     info!(

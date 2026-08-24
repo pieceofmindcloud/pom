@@ -125,6 +125,22 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
 
+### Leituras condicionais do painel
+
+`GET /api/ui/jobs` e `GET /api/transfer/offers` respondem com `ETag` e
+`x-state-version`. Quando o cliente envia `If-None-Match` com a versão atual, o
+gateway responde `304 Not Modified` sem corpo. A lista de ofertas tem somente
+`{ offers }`; espaço livre em disco é uma decisão interna da transferência,
+não parte do contrato de leitura da UI.
+
+`GET /api/ui/cluster` usa o mesmo contrato condicional. Cada gateway mantém por
+até 2 segundos o snapshot já montado, protegido por um fingerprint do estado
+conhecido de peers, runtime, configuração e implantação. Uma mudança conhecida
+troca o fingerprint e força nova coleta antes do fim do TTL. O `ETag` ignora
+somente `system.sampled_at`, que é ruído de amostragem; métricas e topologia
+continuam invalidando a versão. `x-state-version` é monotônico para snapshots
+alterados.
+
 ## 3. Autenticação (`auth.rs`)
 
 Duas credenciais, dois extractors:

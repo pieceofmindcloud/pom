@@ -9,6 +9,7 @@
  */
 import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, api, listDeployments, setConnectionKey } from "./api";
+import { jobsPollInterval, offersPollInterval } from "./polling";
 import type {
   AdminNode,
   ApiKey,
@@ -108,7 +109,7 @@ export function useNode() {
 export function useCluster() {
   return useQuery({
     queryKey: keys.cluster,
-    queryFn: () => api.get<ClusterView>("/api/ui/cluster", { auth: false }),
+    queryFn: () => api.getConditional<ClusterView>("/api/ui/cluster", { auth: false }),
     refetchInterval: 5000,
   });
 }
@@ -183,8 +184,11 @@ export function useJobs() {
   return useQuery({
     queryKey: keys.jobs,
     queryFn: () =>
-      optional(api.get<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }), { jobs: [] }),
-    refetchInterval: 2000,
+      optional(
+        api.getConditional<{ jobs: Job[] }>("/api/ui/jobs", { auth: false }),
+        { jobs: [] },
+      ),
+    refetchInterval: (query) => jobsPollInterval(query.state.data),
   });
 }
 
@@ -225,10 +229,11 @@ export function useOffers() {
   return useQuery({
     queryKey: keys.offers,
     queryFn: () =>
-      optional(api.get<{ offers: TransferOffer[] }>("/api/transfer/offers"), {
-        offers: [],
-      }),
-    refetchInterval: 2000,
+      optional(
+        api.getConditional<{ offers: TransferOffer[] }>("/api/transfer/offers"),
+        { offers: [] },
+      ),
+    refetchInterval: (query) => offersPollInterval(query.state.data),
   });
 }
 

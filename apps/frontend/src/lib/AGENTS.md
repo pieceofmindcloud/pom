@@ -11,9 +11,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ## Per-file
 
-- `api.ts` - fetch wrapper over relative paths with connection-key auth; also
-  the SSE reader and the deployment registry actions (`listDeployments`,
-  `redeployDeployment`, `activateDeployment`).
+- `api.ts` - fetch wrapper over relative paths with connection-key auth,
+  conditional JSON GETs with ETag caching, the SSE reader and the deployment
+  registry actions (`listDeployments`, `redeployDeployment`,
+  `activateDeployment`).
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
 - `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including optional TP telemetry.
@@ -25,7 +26,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
-- `queries.ts` - every read the panel does, as react-query hooks with polling intervals.
+- `polling.ts` - the fast 2s and idle 10s cadences used by jobs and offers.
+- `queries.ts` - every read the panel does, as react-query hooks with polling
+  intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
+  jobs and offers slow to 10s when idle and return to 2s while active.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
   deployment inspector, not a per-machine launch parameter.
@@ -55,10 +59,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 ## Key functions
 
 ### api.ts
-- `request<T>(path, opts)` - the single fetch path: JSON body, optional `Authorization: Bearer <connectionKey>`, throws `ApiError` on non-2xx. Everything in the app goes through it.
+- `request<T>(path, opts)` - the single ordinary fetch path: JSON body,
+  optional `Authorization: Bearer <connectionKey>`, throws `ApiError` on
+  non-2xx. Everything in the app goes through it.
+- `requestConditional<T>(path, opts)` / `api.getConditional` - GET with an
+  in-memory ETag cache. It sends `If-None-Match`, returns the cached object
+  without parsing a 304 body, and falls back to an unconditional GET if a new
+  tab receives a bare 304.
+- `clearConditionalCache()` - clears conditional snapshots; changing the
+  connection key does this automatically so a new node cannot reuse an old
+  node's state.
 - `class ApiError` - carries `status` and the decoded JSON `body` so 409-style refusals (e.g. delete warnings list) survive to the caller.
 - `brand.ts` - the product identity on the screen side: `brand` (name, tagline, slug, logo/mark/favicon URLs) from the generated `src/brand/brand.json`, same source the binary embeds. `storageKey(name)` prefixes every `localStorage` key with the slug (`pom.theme`, `pom.locale`, `pom.connectionKey`, `pom.chat.sessions`, `pom.deploy.last`, `pom.network-layout`), which is what makes renaming the product one edit - and why a rename drops local preferences, deliberately: they belong to another product's keys.
-- `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`.
+- `setConnectionKey` / `getConnectionKey` - module-level credential persisted in `localStorage` key `codai.connectionKey`; seeded by `useNode()` from `GET /api/ui/node`. A changed key also clears conditional GET snapshots.
 - `streamSse(path, body, signal)` - async generator yielding each `data:` payload of an SSE stream (blank-line framing); used by Chat for `/v1/chat/completions`.
 - `api.get/post/del` - typed conveniences over `request`.
 - `devUpdate(nodeId)` - update+restart a machine, repassing to a peer when `node_id` is not this node (`src/devupdate.rs`).
@@ -98,9 +111,12 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` / `useTransfers()` 2s, `useOffers()` 2s, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
-- `useOffers()` polls at 2s (was 5s): an offer is a question waiting on a human, not a progress bar, and with the sender no longer hashing the file before offering (the digest moved to the receiver, after accept) an offer now lands in milliseconds - a 5s cadence only added waiting on top of a 5s poll.
+- `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
+  is a question waiting on a human, not a progress bar. With the sender no
+  longer hashing the file before offering, the active cadence keeps that
+  question responsive without charging an idle tab the same rate.
 - `invalidateAfterAction(qc)` / `useInvalidate()` - after a mutation, refetch node, cluster, jobs, admin-nodes and models at once.
 
 ### chatStore.ts

@@ -1082,10 +1082,13 @@ async fn receive_offer(
     Json(json!({ "accepted_for_review": true, "offer_id": id })).into_response()
 }
 
-async fn list_offers(_auth: ConnectionAuth, State(state): State<GatewayState>) -> Response {
+async fn list_offers(
+    _auth: ConnectionAuth,
+    headers: HeaderMap,
+    State(state): State<GatewayState>,
+) -> Response {
     let offers = state.transfers.offers.read().await.clone();
-    let disk = sysmon_disk_free_mb().await;
-    Json(json!({ "offers": offers, "disk_free_mb": disk })).into_response()
+    crate::webui::conditional_json(&headers, &json!({ "offers": offers }))
 }
 
 async fn sysmon_disk_free_mb() -> u64 {
@@ -3833,5 +3836,55 @@ mod verdict_tests {
             1,
             "e a oferta continua de pé, esperando quem de direito"
         );
+    }
+}
+
+#[cfg(test)]
+mod offer_etag_tests {
+    use super::*;
+    use crate::gateway::testkit::{body_of, state_with};
+    use axum::body::to_bytes;
+    use axum::http::header::{ETAG, IF_NONE_MATCH};
+
+    fn offer(id: &str) -> TransferOffer {
+        TransferOffer {
+            id: id.into(),
+            from_node_id: "ksia-id".into(),
+            from_host: "ksia".into(),
+            from_gateway: "http://ksia:8080".into(),
+            remote_path: "/models/f.gguf".into(),
+            grant: Some("grant".into()),
+            name: "f.gguf".into(),
+            size_bytes: 10,
+            md5: String::new(),
+            pom: None,
+            start_layer: Some(0),
+            end_layer: Some(1),
+        }
+    }
+
+    #[tokio::test]
+    async fn unchanged_offers_return_304_and_a_new_offer_changes_the_etag() {
+        let state = state_with("eu", vec![]).await;
+        state.transfers.offers.write().await.push(offer("offer-1"));
+
+        let first = list_offers(ConnectionAuth, HeaderMap::new(), State(state.clone())).await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let etag = first.headers().get(ETAG).cloned().expect("ETag da oferta");
+        assert!(body_of(first).await.get("disk_free_mb").is_none());
+
+        let mut headers = HeaderMap::new();
+        headers.insert(IF_NONE_MATCH, etag.clone());
+        let second = list_offers(ConnectionAuth, headers, State(state.clone())).await;
+        assert_eq!(second.status(), StatusCode::NOT_MODIFIED);
+        assert!(to_bytes(second.into_body(), usize::MAX)
+            .await
+            .unwrap()
+            .is_empty());
+
+        state.transfers.offers.write().await.push(offer("offer-2"));
+        let third = list_offers(ConnectionAuth, HeaderMap::new(), State(state)).await;
+        assert_eq!(third.status(), StatusCode::OK);
+        assert_ne!(third.headers().get(ETAG), Some(&etag));
     }
 }

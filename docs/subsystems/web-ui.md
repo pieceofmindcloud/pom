@@ -145,12 +145,16 @@ no Dashboard (`hidden`, para uma superfície futura).
   `api.ts` é o único caminho de fetch: caminho **relativo** (o nó serve API e
   UI na mesma porta, o navegador nunca aprende endereço de peer), assinado com
   `Authorization: Bearer <connectionKey>`, e também o leitor de SSE
-  (`streamSse`). `queries.ts` concentra as leituras com polling: `useNode` 4s
-  (guarda a `connection_key`), `useCluster` 5s, catálogo local 30s, catálogo
-  do cluster 60s, `useJobs`/`useTransfers`/`useOffers` 2s, admin nodes 8s,
-  log de requisições 3s. `optional()` engole só 404 (nó antigo sem rota não é
-  erro para mostrar). `types.ts` é a fonte única das formas que o nó serve
-  (comentários apontam para o Rust).
+  (`streamSse`). `api.getConditional()` conserva os snapshots de
+  `/api/ui/cluster`, `/api/ui/jobs` e `/api/transfer/offers` por `ETag`,
+  aceitando 304 sem reparsear JSON. `queries.ts` concentra as leituras com
+  polling: `useNode` 4s (guarda a `connection_key`), `useCluster` 5s,
+  catálogo local 30s, catálogo do cluster 60s, `useJobs` 2s enquanto há job
+  rodando e 10s quando ocioso, `useTransfers` 2s, `useOffers` 2s enquanto
+  há oferta e 10s quando vazio, admin nodes 8s, log de requisições 3s.
+  `optional()` engole só 404 (nó antigo sem rota não é erro para mostrar).
+  `types.ts` é a fonte única das formas que o nó serve (comentários apontam
+  para o Rust).
 - **`src/components/`** - chrome (`Sidebar`, `Topbar`, `Notifications`, `nav`)
   e widgets compartilhados. `ui.tsx` é o design system num arquivo de propósito
   (painéis, botões, inputs, badges, meters, estados) em classes por token CSS,

@@ -33,7 +33,10 @@ behind an auth extractor.
   storage paths and slice retention. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
-  `parts`.
+  `parts`. Jobs and the cluster view use conditional JSON responses:
+  matching `If-None-Match` returns 304 without a body, and the cluster keeps
+  a 2s fingerprinted snapshot cache that bypasses its TTL on known state
+  changes.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
@@ -142,7 +145,8 @@ behind an auth extractor.
   (end_turn / max_tokens / tool_use), `blocking_response` and `stream_response`
   with the Anthropic SSE event names. `tool_choice` and `stop_sequences` are
   parsed-and-ignored (serde drops unknown fields).
-- `webui.rs` - `CATALOG_TTL=20s`, `pub(crate) PEER_TIMEOUT=4s` (reused by
+- `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
+  `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
@@ -248,7 +252,9 @@ behind an auth extractor.
   /api/transfer/offers`, `POST /api/transfer/offers/:id/accept` +
   `/:id/reject`, `POST /api/transfer/offers/answer`, `GET
   /api/transfer/jobs`, `POST /api/transfer/jobs/:id/cancel`, `POST
-  /api/transfer/send`. Path safety is
+  /api/transfer/send`. `GET /api/transfer/offers` returns only
+  `{ offers }`, without disk telemetry, and uses ETag plus 304 when
+  unchanged. Path safety is
   directional: `safe_model_path` confines the *pull* direction to `models/`
   (`servable_path` canonicalizes and checks `starts_with`), while
   `local_send_path` lets the *operator's own* screen offer any readable GGUF

@@ -130,6 +130,13 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
+- **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
+  peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
+  dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de
+  sequência é usada, porque a parcial é recusada por motores recorrentes e
+  híbridos - e o cache de prefixo entre turnos é funcionalidade de produto, que
+  vale para todo modelo servido, não critério de elegibilidade. Retenção é ato
+  local do peer no EOS; `/v1/session/rewind` apenas confere. → `inferencia.md`
 - **A ordem do pipeline é a ordem das camadas**, e um nó pode servir várias
   faixas. `merge` apenas junta faixas adjacentes no mesmo nó. Sobreposição e
   buraco global são recusa. Quem fica com a camada 0 processa o prompt inteiro

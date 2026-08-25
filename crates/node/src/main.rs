@@ -88,6 +88,9 @@ mod prefix_cache;
 #[cfg(test)]
 #[path = "inference/prefix_cache_lab.rs"]
 mod prefix_cache_lab;
+#[cfg(test)]
+#[path = "inference/prefix_reuse_lab.rs"]
+mod prefix_reuse_lab;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]

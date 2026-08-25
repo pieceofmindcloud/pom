@@ -75,9 +75,14 @@ haver chave.
 
 ### OpenAI (`/v1/*`)
 
-Camada de protocolo pura sobre `gateway::generate_stream_with_stops`. `render_prompt`
-achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
-passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
+Camada de protocolo pura sobre `gateway::generate_stream_with_stops`.
+`render_prompt` achata a conversa em um único texto e **rotula todo turno,
+inclusive o primeiro** - é o que faz o prompt de um turno ser prefixo exato do
+prompt do seguinte, sem o que o cache de prefixo nunca acertaria na transição
+1→2. Texto cru, sem rótulo, é o que `/v1/completions` e `POST /api/generate`
+entregam. `usage.prompt_tokens_details.cached_tokens` informa quantos tokens de
+prompt o pipeline não reprocessou; é medida do executado, não da escolha do
+cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS`
 512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
 SSE em `/v1/chat/completions`, o adaptador faz a mesma guarda de orçamento de
 prompt do gateway e responde
@@ -95,7 +100,8 @@ de navegador.
 Mesmo caminho de geração, próprio `render_prompt` (system/messages/tools
 separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
 (`end_turn`/`max_tokens`/`tool_use`/`stop_sequence`), SSE com os nomes de
-evento Anthropic. `stop_sequences` usa o mesmo matcher incremental e
+evento Anthropic. Também rotula todo turno, pelo mesmo motivo do OpenAI, e
+publica o reuso honrado em `usage.cache_read_input_tokens`. `stop_sequences` usa o mesmo matcher incremental e
 `stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
 parseado e ignorado. `x_pom` vai na resposta não-streaming.
 

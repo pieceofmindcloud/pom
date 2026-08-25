@@ -37,7 +37,7 @@ use std::{
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
 /// Upper bound for one binary f16 hidden-state frame received from a peer.
@@ -1266,8 +1266,180 @@ mod relay_tests {
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
+/// O que a cabeça **executou** com o prefixo retido no pedaço 0.
+///
+/// Viaja de volta ao gateway e adiante para os hops seguintes. A distinção
+/// importa: o gateway escolhe *tentar* reusar, a cabeça é quem decide se deu, e
+/// era exatamente essa diferença que a telemetria antiga não mostrava.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrefixDecision {
+    pub(crate) reused: bool,
+    pub(crate) cached_tokens: u32,
+}
+
+/// A regra do reuso, sem sessão nem motor por perto.
+///
+/// `retidos` são os tokens do prompt do turno anterior, dos quais os primeiros
+/// `n_past` estão de fato no KV. O prefixo só é aproveitado quando ele é um
+/// prefixo **exato** dos novos tokens e acaba antes deles - assim o prefill
+/// apenas continua, e nenhuma posição precisa sair do cache.
+///
+/// Recusa deliberada em três casos, todos por não haver como cumpri-los sem
+/// remover posições do meio do KV (operação que motores recorrentes/híbridos
+/// recusam - ver `llm::LlmEngine::kv_remove`):
+///
+/// - divergência no meio: o retido teria de encolher;
+/// - prompt idêntico ao retido: não sobraria token para decodificar, e recuar
+///   um só continuaria sendo remoção parcial;
+/// - sessão sem prompt no KV.
+pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
+    // O último token do novo prompt tem de ser decodificado: é dele que saem os
+    // logits do primeiro token gerado.
+    let reutilizavel = novos.len().saturating_sub(1);
+    let comum = retidos
+        .iter()
+        .zip(novos)
+        .take_while(|(old, new)| old == new)
+        .count()
+        .min(reutilizavel) as u32;
+    if comum > 0 && comum == n_past {
+        PrefixDecision {
+            reused: true,
+            cached_tokens: comum,
+        }
+    } else {
+        PrefixDecision::default()
+    }
+}
+
+/// A posição do KV em que este pedaço de prompt deve começar.
+///
+/// `start_pos` vem do peer que tokenizou e manda quando existe. Ele só falta no
+/// pedaço 0, e é aí que estava o defeito: julgar o pedaço 0 por
+/// `chunk_index * chunk_size` = 0 fixo fazia a cabeça apagar, uma linha depois,
+/// exatamente o KV que ela acabara de reaproveitar - o `refazendo chunk 0` que
+/// aparecia no log toda vez que o cache **acertava**. A posição do pedaço 0 é
+/// onde a sessão está: zero numa sessão recomeçada, o fim do prefixo retido
+/// quando houve reuso.
+fn expected_prefill_pos(
+    start_pos: Option<u32>,
+    chunk_index: u32,
+    chunk_size: u32,
+    session_n_past: u32,
+) -> u32 {
+    start_pos.unwrap_or(if chunk_index == 0 {
+        session_n_past
+    } else {
+        chunk_index.saturating_mul(chunk_size)
+    })
+}
+
+#[cfg(test)]
+mod prefix_rule_tests {
+    use super::*;
+
+    /// O caso do relatório: o cache acerta, o pedaço 0 é julgado por zero, e o
+    /// reuso é desfeito antes de decodificar.
+    #[test]
+    fn chunk_zero_of_a_hit_starts_where_the_retained_prefix_ends() {
+        assert_eq!(expected_prefill_pos(None, 0, 512, 1523), 1523);
+    }
+
+    #[test]
+    fn chunk_zero_of_a_cold_session_starts_at_zero() {
+        assert_eq!(expected_prefill_pos(None, 0, 512, 0), 0);
+    }
+
+    /// Do pedaço 1 em diante quem manda é a posição que o peer devolveu; sem
+    /// ela, a grade dos pedaços.
+    #[test]
+    fn later_chunks_follow_the_position_the_head_reported() {
+        assert_eq!(expected_prefill_pos(Some(1600), 1, 512, 1600), 1600);
+        assert_eq!(expected_prefill_pos(None, 2, 512, 1024), 1024);
+    }
+
+    #[test]
+    fn a_conversation_that_only_grows_reuses_the_whole_previous_prompt() {
+        let turno1 = vec![10, 11, 12, 13];
+        let turno2 = vec![10, 11, 12, 13, 20, 21];
+        let d = plan_prefix_reuse(&turno1, 4, &turno2);
+        assert!(d.reused);
+        assert_eq!(d.cached_tokens, 4);
+    }
+
+    /// Divergência no meio exigiria encolher o KV. Recomeçar é a resposta, e
+    /// ela não custa nada além do reuso daquele turno.
+    #[test]
+    fn a_prompt_that_diverges_restarts_instead_of_shrinking_the_cache() {
+        let d = plan_prefix_reuse(&[10, 11, 12, 13], 4, &[10, 11, 99, 13, 20]);
+        assert!(!d.reused);
+        assert_eq!(d.cached_tokens, 0);
+    }
+
+    /// Prompt idêntico ao retido: não sobraria token para decodificar, e recuar
+    /// um só continuaria sendo remoção parcial. Recomeça.
+    #[test]
+    fn an_identical_prompt_restarts_because_nothing_would_be_left_to_decode() {
+        let tokens = vec![10, 11, 12, 13];
+        let d = plan_prefix_reuse(&tokens, 4, &tokens);
+        assert!(!d.reused);
+    }
+
+    /// O KV pode ter menos posições que os tokens guardados (turno anterior
+    /// interrompido no meio do prefill). Reusar até `n_past` seria mentira
+    /// sobre o que está no cache.
+    #[test]
+    fn a_partially_ingested_prompt_is_not_offered_as_a_prefix() {
+        let d = plan_prefix_reuse(&[10, 11, 12, 13], 2, &[10, 11, 12, 13, 20]);
+        assert!(!d.reused, "o retido tem 4 tokens mas só 2 estão no KV");
+    }
+
+    #[test]
+    fn a_session_with_no_prompt_in_the_cache_is_not_a_hit() {
+        assert!(!plan_prefix_reuse(&[], 0, &[10, 11]).reused);
+    }
+
+    /// Cada sessão tem uma sequência de prompt e a de geração emparelhada com
+    /// ela - ver `llm::kv_seq_budget`. Os dois conjuntos não podem se cruzar.
+    #[test]
+    fn prompt_and_generation_sequences_never_collide() {
+        let max_sessions = 4u32;
+        let orcamento = crate::llm::kv_seq_budget(max_sessions);
+        assert_eq!(orcamento, 8);
+        let prompts: Vec<u32> = (0..max_sessions).collect();
+        let geracoes: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
+        for g in &geracoes {
+            assert!(
+                !prompts.contains(g),
+                "sequência {g} servindo aos dois papéis"
+            );
+            assert!(
+                *g < orcamento,
+                "sequência {g} fora do orçamento do contexto"
+            );
+        }
+    }
+}
+
+/// Uma conversa viva neste peer, com o KV do prompt separado do KV da geração.
+///
+/// **O prompt nunca é estendido.** `prompt_seq` recebe os pedaços do prompt e
+/// para aí; assim que o turno vai gerar, `open_generation` copia esse KV para
+/// `gen_seq` e todo token gerado cai na cópia. No fim do turno a cópia é
+/// apagada inteira - `kv_remove(gen, 0, -1)`, remoção total, que todo motor
+/// aceita - e `prompt_seq` continua exatamente com o prompt, pronto para o
+/// turno seguinte. É por isso que o reuso de prefixo não depende de o modelo
+/// aceitar remoção parcial de KV: nada precisa ser removido do meio.
 struct Session {
-    seq_id: u32,
+    /// Sequência do prompt. Só o prefill escreve nela.
+    prompt_seq: u32,
+    /// Sequência da geração deste turno, aberta na primeira decodificação de
+    /// token gerado. `None` entre turnos.
+    gen_seq: Option<u32>,
+    /// Quantos tokens de prompt estão no KV de `prompt_seq`. É a posição para
+    /// onde a sessão volta no fim do turno, e o que o gateway confirma no
+    /// `/v1/session/rewind`.
+    prompt_len: u32,
     n_past: u32,
     recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
@@ -1276,19 +1448,32 @@ struct Session {
     /// between sessions because a byte prefix from one generation can only be
     /// completed by a later token in that same generation.
     utf8: crate::llm::Utf8Assembler,
+    /// `true` entre turnos: o KV guarda só o prompt e ninguém está gerando.
+    /// Uma sessão retida é cache reclamável - `alloc_seq` pode despejá-la
+    /// quando falta slot, e o turno seguinte apenas perde o reuso.
+    retained: bool,
     last_used: Instant,
 }
 
 impl Session {
     fn new(seq_id: u32) -> Self {
         Self {
-            seq_id,
+            prompt_seq: seq_id,
+            gen_seq: None,
+            prompt_len: 0,
             n_past: 0,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
             utf8: crate::llm::Utf8Assembler::new(),
+            retained: false,
             last_used: Instant::now(),
         }
+    }
+
+    /// Onde a próxima decodificação escreve: a cópia de geração quando o turno
+    /// já está gerando, a sequência do prompt enquanto ele ainda entra.
+    fn seq_id(&self) -> u32 {
+        self.gen_seq.unwrap_or(self.prompt_seq)
     }
 
     fn feed_token_piece(&mut self, piece: &[u8]) -> String {
@@ -1387,6 +1572,20 @@ fn record_terminal_engine(
     } else {
         timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
     }
+}
+
+/// Anota no meta o que este peer **executou** com o prefixo retido.
+///
+/// Só o pedaço 0 carrega a decisão, porque só ele pode reusar. Os hops
+/// seguintes obedecem a este campo em vez do pedido original do gateway: quem
+/// tokeniza é quem sabe se o prefixo servia, e um hop reusando enquanto a
+/// cabeça recomeçou (ou o contrário) desalinha as posições de todo o pipeline.
+fn apply_prefix_decision(meta: &mut Value, chunk_index: u32, prefix: PrefixDecision) {
+    if chunk_index != 0 {
+        return;
+    }
+    meta["reuse_prefix"] = json!(prefix.reused);
+    meta["cached_tokens"] = json!(prefix.cached_tokens);
 }
 
 fn terminal_prefill_meta(
@@ -1512,10 +1711,16 @@ impl InferState {
 
     fn alloc_seq(&mut self) -> Option<u32> {
         if self.seq_pool.is_empty() {
-            let reaped = self.reap_idle();
-            if reaped == 0 {
-                return None;
-            }
+            self.reap_idle();
+        }
+        if self.seq_pool.is_empty() {
+            // Uma sessão retida é só cache de prompt entre turnos: devolvê-la
+            // custa o reuso de um turno, e não devolvê-la custa a requisição
+            // inteira ("seq pool esgotado"). O cache cede primeiro.
+            self.evict_retained();
+        }
+        if self.seq_pool.is_empty() {
+            return None;
         }
         Some(self.seq_pool.remove(0))
     }
@@ -1524,6 +1729,146 @@ impl InferState {
         if !self.seq_pool.contains(&seq_id) {
             self.seq_pool.push(seq_id);
         }
+    }
+
+    /// A sequência de geração que acompanha uma sequência de prompt.
+    ///
+    /// Par fixo, não sorteado de um pool: quem tem slot de prompt tem slot de
+    /// geração por construção, então abrir a geração nunca falha por falta de
+    /// slot. Ver `llm::kv_seq_budget`, que reserva as duas metades no contexto.
+    fn gen_seq_of(&self, prompt_seq: u32) -> u32 {
+        prompt_seq + self.max_sessions.max(1)
+    }
+
+    /// Despeja a sessão retida menos usada, devolvendo o slot dela.
+    fn evict_retained(&mut self) -> bool {
+        let Some(sid) = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.retained)
+            .min_by_key(|(_, session)| session.last_used)
+            .map(|(sid, _)| sid.clone())
+        else {
+            return false;
+        };
+        info!(
+            "despejando prefixo retido da sessão {}… para liberar slot",
+            &sid[..8.min(sid.len())]
+        );
+        self.finish(&sid);
+        true
+    }
+
+    /// Abre a sequência de geração deste turno copiando o KV do prompt.
+    ///
+    /// Idempotente: chamado antes de cada decodificação de token gerado, faz
+    /// trabalho só na primeira. Depois disto nada mais escreve em
+    /// `prompt_seq`, que é o que torna o prefixo reutilizável sem remoção
+    /// parcial de KV - ver o doc de `Session`.
+    fn open_generation(&mut self, sid: &str) -> Result<()> {
+        let Some(session) = self.sessions.get(sid) else {
+            bail!("sessão '{sid}' desconhecida — faça o prefill antes");
+        };
+        if session.gen_seq.is_some() {
+            return Ok(());
+        }
+        let prompt_seq = session.prompt_seq;
+        let gen = self.gen_seq_of(prompt_seq);
+        // A cópia herda o que estiver na sequência de destino se ela não
+        // estiver limpa; limpar é remoção total, sempre aceita.
+        let _ = self.engine.kv_remove(gen, 0, -1);
+        self.engine.kv_copy_seq(prompt_seq, gen);
+        let session = self.sessions.get_mut(sid).expect("session exists");
+        session.gen_seq = Some(gen);
+        session.retained = false;
+        Ok(())
+    }
+
+    /// Decide, no pedaço 0, se o prefixo retido serve para este prompt - e
+    /// deixa a sessão coerente com a decisão.
+    ///
+    /// A regra é **só acrescentar**: o prefixo serve quando os tokens retidos
+    /// são exatamente um prefixo dos novos, e nem um token a mais. Assim o
+    /// prefill continua de onde parou e **nenhuma posição precisa sair do KV** -
+    /// que é a diferença entre funcionar em todo modelo e depender de o motor
+    /// aceitar `llama_memory_seq_rm` parcial. Qualquer outro caso (divergência
+    /// no meio, prompt idêntico ao retido, sessão sem prompt) recomeça a sessão
+    /// do zero, o que é uma perda de reuso naquele turno, nunca um erro.
+    ///
+    /// O último token do prompt nunca entra no prefixo aproveitado: é dele que
+    /// saem os logits do primeiro token gerado, então sempre sobra pelo menos
+    /// um token para decodificar.
+    fn adopt_prompt_prefix(
+        &mut self,
+        sid: &str,
+        tokens: Vec<i32>,
+        requested_reuse: bool,
+    ) -> Result<PrefixDecision> {
+        let mut decision = PrefixDecision::default();
+        if requested_reuse {
+            let session = self.sessions.get(sid).ok_or_else(|| {
+                anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
+            })?;
+            decision = plan_prefix_reuse(&session.prompt_tokens, session.n_past, &tokens);
+            if !decision.reused {
+                debug!(
+                    "prefixo da sessão {}… não serve (retido={}); recomeçando",
+                    &sid[..8.min(sid.len())],
+                    session.n_past
+                );
+                self.get_or_create(sid, true)?;
+            }
+        }
+        let session = self
+            .sessions
+            .get_mut(sid)
+            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desapareceu no prefill"))?;
+        session.prompt_tokens = tokens;
+        session.retained = false;
+        Ok(decision)
+    }
+
+    /// Fecha o turno mantendo o prompt: apaga a sequência de geração inteira e
+    /// devolve a sessão à posição do fim do prompt.
+    ///
+    /// Só usa remoção **total** de sequência, que todo motor aceita - inclusive
+    /// os recorrentes/híbridos, onde `llama_memory_seq_rm` recusa qualquer
+    /// recuo parcial maior que a janela de snapshots (`n_rs_seq`). É a
+    /// substituição do rewind que era recusado em 75 das 176 requisições.
+    ///
+    /// Devolve quantos tokens de prompt ficaram retidos, ou `None` quando não
+    /// havia prompt para reter (aí a sessão é encerrada de vez).
+    fn retain_prompt(&mut self, sid: &str) -> Option<u32> {
+        let session = self.sessions.get(sid)?;
+        if session.prompt_len == 0 {
+            self.finish(sid);
+            return None;
+        }
+        let (gen_seq, prompt_len) = (session.gen_seq, session.prompt_len);
+        if let Some(gen) = gen_seq {
+            let _ = self.engine.kv_remove(gen, 0, -1);
+        }
+        let session = self.sessions.get_mut(sid).expect("session exists");
+        session.gen_seq = None;
+        session.n_past = prompt_len;
+        session.recent_tokens.clear();
+        let _ = session.finish_token_stream();
+        session.retained = true;
+        session.last_used = Instant::now();
+        Some(prompt_len)
+    }
+
+    /// Apaga o KV das duas sequências de uma sessão.
+    fn wipe_kv(&mut self, session: &Session) {
+        if let Some(gen) = session.gen_seq {
+            let _ = self.engine.kv_remove(gen, 0, -1);
+        }
+        // A sequência de geração pode ter sobrado de um turno anterior que não
+        // passou por aqui; limpar as duas é barato e não deixa célula presa.
+        let _ = self
+            .engine
+            .kv_remove(self.gen_seq_of(session.prompt_seq), 0, -1);
+        let _ = self.engine.kv_remove(session.prompt_seq, 0, -1);
     }
 
     fn reap_idle(&mut self) -> usize {
@@ -1546,11 +1891,11 @@ impl InferState {
                 info!(
                     "reclaiming idle session {}… (seq={})",
                     &sid[..8.min(sid.len())],
-                    s.seq_id
+                    s.prompt_seq
                 );
-                // Limpeza total da sequência, que todo modelo aceita.
-                let _ = self.engine.kv_remove(s.seq_id, 0, -1);
-                self.free_seq(s.seq_id);
+                // Limpeza total das sequências, que todo modelo aceita.
+                self.wipe_kv(&s);
+                self.free_seq(s.prompt_seq);
             }
         }
         count
@@ -1560,8 +1905,8 @@ impl InferState {
         if reset {
             if let Some(mut old) = self.sessions.remove(sid) {
                 let _ = old.finish_token_stream();
-                let _ = self.engine.kv_remove(old.seq_id, 0, -1);
-                self.free_seq(old.seq_id);
+                self.wipe_kv(&old);
+                self.free_seq(old.prompt_seq);
             }
             let seq = self.alloc_seq().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1576,15 +1921,18 @@ impl InferState {
         })
     }
 
+    /// Encerra a sessão de vez: as duas sequências são apagadas e o slot volta
+    /// ao pool. O fim normal de um turno **não** passa por aqui - passa por
+    /// `retain_prompt`, que guarda o prompt. Aqui chegam a liberação explícita
+    /// do gateway, o cancelamento e a limpeza de erro.
     fn finish(&mut self, sid: &str) {
         if let Some(mut s) = self.sessions.remove(sid) {
-            // Normal EOS, explicit release, cancellation and error cleanup
-            // all pass here. The output path flushes before normal EOS calls
-            // this method; the cleanup cases deliberately discard the result
-            // after clearing it so no tail can leak into the next session.
+            // The output path flushes before the caller reaches this method;
+            // the cleanup cases deliberately discard the result after clearing
+            // it so no tail can leak into the next session.
             let _ = s.finish_token_stream();
-            let _ = self.engine.kv_remove(s.seq_id, 0, -1);
-            self.free_seq(s.seq_id);
+            self.wipe_kv(&s);
+            self.free_seq(s.prompt_seq);
         }
     }
 }
@@ -2150,10 +2498,28 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,
+        // Duas sequências de KV por sessão: a do prompt e a da geração. Ver
+        // `llm::kv_seq_budget`, que explica por que e o que custa.
+        "kv_seq_max": crate::llm::kv_seq_budget(s.max_sessions),
         "sessions_in_use": s.sessions.len(),
         "free_slots": s.seq_pool.len(),
+        // Sessões paradas no fim do prompt, esperando o turno seguinte. É o
+        // cache de prefixo visto do lado que o executa.
+        "sessions_retained": s.sessions.values().filter(|x| x.retained).count(),
+        "prefix_tokens_retained": s
+            .sessions
+            .values()
+            .filter(|x| x.retained)
+            .map(|x| x.prompt_len as u64)
+            .sum::<u64>(),
+        // Diagnóstico do motor: `kv_can_shift` é o K-shift do llama.cpp, e
+        // **não** governa remoção parcial de KV. O reuso de prefixo deste
+        // projeto não depende de nenhum dos dois - ver `Session`.
+        "kv_can_shift": s.engine.kv_can_shift(),
         "n_ctx_total": s.engine.n_ctx(),
-        "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
+        // Cache unificado: a janela por sessão é o contexto inteiro. Ver
+        // `llm::kv_seq_budget`.
+        "n_ctx_per_session": s.engine.n_ctx(),
         "offload_kqv": s.engine.offload_kqv(),
         "cache_type_k": s.engine.cache_type_k().as_str(),
         "cache_type_v": s.engine.cache_type_v().as_str(),
@@ -2359,43 +2725,50 @@ struct RewindRequest {
     n_tokens: u32,
 }
 
-/// Keep a completed prompt session alive while discarding only the generated
-/// suffix. The next turn can then match its full tokenized prompt against the
-/// retained prefix without copying a llama sequence.
+/// Confirma que a sessão ficou parada no fim do prompt, pronta para o turno
+/// seguinte.
+///
+/// **Não recua nada.** A geração deste turno correu numa sequência de KV
+/// separada (ver `Session`), então reter o prompt é apagar essa sequência
+/// inteira - remoção total, que todo motor aceita. Antes daqui saía o
+/// `"este modelo não aceita recuar a sessão para o prompt"` que descartava o
+/// prefixo em 75 das 176 requisições de um dia de produção, e o
+/// `"sessão desconhecida"` de quando o EOS destruía a sessão antes deste
+/// pedido chegar.
+///
+/// Idempotente por construção: o fim normal do turno já reteve, e chamar de
+/// novo confere o mesmo estado. Só divergência real de contagem é recusa.
 async fn handle_rewind(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<RewindRequest>,
 ) -> impl IntoResponse {
     let mut state = app.state.lock().unwrap();
-    let Some((seq_id, n_past)) = state
+    let Some(prompt_len) = state
         .sessions
         .get(&req.session_id)
-        .map(|session| (session.seq_id, session.n_past))
+        .map(|session| session.prompt_len)
     else {
         return Json(json!({ "rewound": false, "reason": "sessão desconhecida" }));
     };
-    if req.n_tokens > n_past {
+    if req.n_tokens != prompt_len {
         return Json(json!({
             "rewound": false,
-            "reason": format!("prompt maior que a sessão: {} > {}", req.n_tokens, n_past),
+            "reason": format!(
+                "prompt do gateway não bate com o desta sessão: {} != {prompt_len}",
+                req.n_tokens
+            ),
         }));
     }
-    if req.n_tokens < n_past && !state.engine.kv_remove(seq_id, req.n_tokens as i32, -1) {
+    let Some(retained) = state.retain_prompt(&req.session_id) else {
         return Json(json!({
             "rewound": false,
-            "reason": "este modelo não aceita recuar a sessão para o prompt",
+            "reason": "sessão sem prompt para reter",
         }));
-    }
-    if let Some(session) = state.sessions.get_mut(&req.session_id) {
-        session.n_past = req.n_tokens;
-        session.recent_tokens.clear();
-        let _ = session.finish_token_stream();
-        session.last_used = Instant::now();
-    }
+    };
     drop(state);
     replicate_session_rewind(&app.state, &headers, &req.session_id, req.n_tokens);
-    Json(json!({ "rewound": true, "n_past": req.n_tokens }))
+    Json(json!({ "rewound": true, "n_past": retained }))
 }
 
 // ── /v1/session/rollback ─────────────────────────────────────────────────────
@@ -2425,7 +2798,9 @@ async fn handle_rollback(
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
         .get(&req.session_id)
-        .map(|session| (session.seq_id, session.n_past))
+        // A sequência da geração: é lá que o lote especulativo escreveu, e o
+        // prompt fica intocado por construção.
+        .map(|session| (session.seq_id(), session.n_past))
     else {
         return Json(json!({"rolled_back": false}));
     };
@@ -2775,7 +3150,7 @@ async fn handle_prefill(
             "session_id": sid_for_forward,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
-            "reuse_prefix": reuse_prefix && chunk_index == 0,
+            "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
             "is_final_chunk": is_final_chunk_for_forward(&local_meta, is_final_chunk),
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
@@ -2833,7 +3208,7 @@ async fn handle_prefill(
                 "session_id": sid_for_forward,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
-                "reuse_prefix": reuse_prefix && chunk_index == 0,
+                "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
                 "is_final_chunk": is_final_chunk_for_forward,
                 // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
                 // que este recebeu a sua: quem manda é que decide o pedaço.
@@ -2885,6 +3260,27 @@ fn owns_tokens(local_meta: &Value) -> bool {
 /// Only the head (`owns_tokens`) can know whether this chunk was the last
 /// one — everyone else just passes through whatever `is_final_chunk` it was
 /// told, since it has no `prompt_tokens` of its own to check that against.
+/// Qual decisão de prefixo o hop seguinte deve obedecer.
+///
+/// A do peer que tokenizou, quando ele a informou (`reuse_prefix` no próprio
+/// meta), não a que o gateway pediu. A cabeça pode ter recomeçado a sessão -
+/// prefixo divergente, sessão despejada - e um hop reusando enquanto a cabeça
+/// recomeçou deixaria as posições do pipeline desalinhadas. Peer que não
+/// informa nada cai no pedido original, que é o comportamento anterior.
+pub(crate) fn reuse_prefix_for_forward(
+    local_meta: &Value,
+    requested: bool,
+    chunk_index: u32,
+) -> bool {
+    if chunk_index != 0 {
+        return false;
+    }
+    local_meta
+        .get("reuse_prefix")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(requested)
+}
+
 fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool) -> bool {
     if owns_tokens(local_meta) {
         !local_meta
@@ -2903,8 +3299,20 @@ fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool)
 /// truncate every multi-chunk prompt on a ring pipeline after one chunk.
 pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
     if owns_tokens(local_meta) {
-        for field in ["more_chunks", "n_prompt_tokens", "start_pos", "next_pos"] {
-            bubbled[field] = local_meta[field].clone();
+        for field in [
+            "more_chunks",
+            "n_prompt_tokens",
+            "start_pos",
+            "next_pos",
+            // Quantos tokens do prompt não foram reprocessados, e se o prefixo
+            // foi de fato aproveitado. Só a cabeça sabe - a cauda responde
+            // sobre um prompt que ela nunca tokenizou.
+            "reuse_prefix",
+            "cached_tokens",
+        ] {
+            if let Some(value) = local_meta.get(field) {
+                bubbled[field] = value.clone();
+            }
         }
     }
 }
@@ -2920,6 +3328,9 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             "n_prompt_tokens": local_meta["n_prompt_tokens"].clone(),
             "start_pos": local_meta["start_pos"].clone(),
             "next_pos": local_meta["next_pos"].clone(),
+            // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
+            "reuse_prefix": local_meta["reuse_prefix"].clone(),
+            "cached_tokens": local_meta["cached_tokens"].clone(),
         });
     }
     inbound_meta
@@ -2935,7 +3346,14 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
     let Some(progress) = inbound_meta.get("prompt_progress") else {
         return;
     };
-    for field in ["more_chunks", "n_prompt_tokens", "start_pos", "next_pos"] {
+    for field in [
+        "more_chunks",
+        "n_prompt_tokens",
+        "start_pos",
+        "next_pos",
+        "reuse_prefix",
+        "cached_tokens",
+    ] {
         if let Some(value) = progress.get(field) {
             if !value.is_null() {
                 result[field] = value.clone();
@@ -2994,7 +3412,12 @@ fn prefill_blocking(
     // ── Session setup ────────────────────────────────────────────────────────
 
     let setup_started = Instant::now();
-    s.get_or_create(&sid_key, chunk_index == 0 && !reuse_prefix)?;
+    // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
+    // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
+    // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
+    let want_reuse = reuse_prefix && chunk_index == 0 && s.sessions.contains_key(&sid_key);
+    s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
+    let mut prefix = PrefixDecision::default();
 
     // First peer: tokenize the prompt on chunk 0.
     // We must not hold a &mut Session borrow while calling engine methods, so
@@ -3011,43 +3434,18 @@ fn prefill_blocking(
             };
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
-            if reuse_prefix {
-                let (common, old_n_past, seq_id) = {
-                    let session = s.sessions.get(&sid_key).unwrap();
-                    (
-                        session
-                            .prompt_tokens
-                            .iter()
-                            .zip(&tokens)
-                            .take_while(|(old, new)| old == new)
-                            .count() as u32,
-                        session.n_past,
-                        session.seq_id,
-                    )
-                };
-                if old_n_past < common {
-                    bail!(
-                        "prefixo cacheado maior que a sessão {}: {} < {} tokens",
-                        sid_key,
-                        old_n_past,
-                        common
-                    );
-                }
-                if old_n_past > common && !s.engine.kv_remove(seq_id, common as i32, -1) {
-                    bail!(
-                        "este modelo não aceita recuar o prefixo da sessão {}",
-                        sid_key
-                    );
-                }
-                s.sessions.get_mut(&sid_key).unwrap().n_past = common;
-            }
-            s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
+            prefix = s.adopt_prompt_prefix(&sid_key, tokens, want_reuse)?;
         }
     }
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
-    let expected_pos = start_pos.unwrap_or_else(|| chunk_index * chunk_size);
+    let expected_pos = expected_prefill_pos(
+        start_pos,
+        chunk_index,
+        chunk_size,
+        s.sessions[&sid_key].n_past,
+    );
     {
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
@@ -3055,7 +3453,7 @@ fn prefill_blocking(
                 "refazendo chunk {chunk_index} da sessão {}… (pos {expected_pos})",
                 &sid_key[..8.min(sid_key.len())]
             );
-            let seq_id = session.seq_id;
+            let seq_id = session.seq_id();
             if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                 bail!(
                     "este modelo não aceita descartar posições do meio do cache, \
@@ -3087,7 +3485,7 @@ fn prefill_blocking(
         } else {
             vec![]
         };
-        (session.n_past, session.seq_id, toks)
+        (session.n_past, session.seq_id(), toks)
     };
 
     // Onde parar, quando o remetente pediu menos que a fatia inteira. Antes do
@@ -3173,6 +3571,13 @@ fn prefill_blocking(
     if owns_tokens && !more {
         is_final_chunk = true;
     }
+    // A fronteira entre prompt e geração, anotada por cada peer no pedaço em
+    // que o prompt acaba. É para cá que o fim do turno devolve a sessão, e é o
+    // que o `/v1/session/rewind` confere. Hops do meio não tokenizam nada, e
+    // por isso recebem `is_final_chunk` da cabeça em vez de deduzi-lo.
+    if is_final_chunk {
+        s.sessions.get_mut(&sid_key).unwrap().prompt_len = n_past_now;
+    }
 
     // ── Sampling / residual ──────────────────────────────────────────────────
     let sampling = s.sampling.clone();
@@ -3180,11 +3585,9 @@ fn prefill_blocking(
     if is_last {
         if !is_final_chunk {
             let encode_started = Instant::now();
-            let bytes = wire::encode(
-                &json!({"done": false, "more_chunks": more}),
-                None,
-                wire_dtype,
-            )?;
+            let mut partial = json!({"done": false, "more_chunks": more});
+            apply_prefix_decision(&mut partial, chunk_index, prefix);
+            let bytes = wire::encode(&partial, None, wire_dtype)?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
             return Ok(TimedReply { bytes, timings });
         }
@@ -3215,8 +3618,14 @@ fn prefill_blocking(
             .push(next_id);
         // A réplica de um grupo TP não encerra sessão: quem decide o fim da
         // geração é o rank 0. Ver `tp::is_replica`.
+        //
+        // Encerrar aqui destruía a sessão antes de o rewind do gateway chegar,
+        // e o rewind respondia "sessão desconhecida" - o prefixo nunca entrava
+        // no cache. O fim do turno agora **retém** o prompt: some só a
+        // sequência da geração. Liberar de vez continua sendo ato explícito do
+        // gateway (`/v1/session/release`).
         if done && !crate::tp::is_replica() {
-            s.finish(&sid_key);
+            s.retain_prompt(&sid_key);
         }
         timings.sampling_us += logits_access_us
             + sampling_timing.logits_clone_us
@@ -3242,6 +3651,7 @@ fn prefill_blocking(
             expected_pos + n_tokens as u32,
             done,
         );
+        apply_prefix_decision(&mut reply, chunk_index, prefix);
         reply["token_id"] = json!(next_id);
         reply["text"] = json!(text);
         let bytes = wire::encode(&reply, None, wire_dtype)?;
@@ -3272,6 +3682,7 @@ fn prefill_blocking(
         // `handle_prefill`.
         "owns_tokens": owns_tokens,
     });
+    apply_prefix_decision(&mut reply_meta, chunk_index, prefix);
     // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
     // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
     // meio ecoam o que receberam.
@@ -3296,6 +3707,9 @@ struct PreparedPrefill {
     n_past: u32,
     n_tokens: usize,
     start_pos: u32,
+    chunk_index: u32,
+    /// O que este peer executou com o prefixo retido - ver `apply_prefix_decision`.
+    prefix: PrefixDecision,
     is_last: bool,
     is_final_chunk: bool,
     owns_tokens: bool,
@@ -3342,7 +3756,11 @@ fn prefill_batch_blocking(
         } = job;
 
         let result = (|| -> Result<PreparedPrefill> {
-            s.get_or_create(&sid_key, chunk_index == 0 && !reuse_prefix)?;
+            // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
+            // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
+            let want_reuse = reuse_prefix && chunk_index == 0 && s.sessions.contains_key(&sid_key);
+            s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
+            let mut prefix = PrefixDecision::default();
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
                     let use_tmpl = use_chat_template(chat_template, s.chat_template);
@@ -3353,45 +3771,20 @@ fn prefill_batch_blocking(
                         text.to_string()
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
-                    if reuse_prefix {
-                        let (common, old_n_past, seq_id) = {
-                            let session = s.sessions.get(&sid_key).unwrap();
-                            (
-                                session
-                                    .prompt_tokens
-                                    .iter()
-                                    .zip(&tokens)
-                                    .take_while(|(old, new)| old == new)
-                                    .count() as u32,
-                                session.n_past,
-                                session.seq_id,
-                            )
-                        };
-                        if old_n_past < common {
-                            bail!(
-                                "prefixo cacheado maior que a sessão {}: {} < {} tokens",
-                                sid_key,
-                                old_n_past,
-                                common
-                            );
-                        }
-                        if old_n_past > common && !s.engine.kv_remove(seq_id, common as i32, -1) {
-                            bail!(
-                                "este modelo não aceita recuar o prefixo da sessão {}",
-                                sid_key
-                            );
-                        }
-                        s.sessions.get_mut(&sid_key).unwrap().n_past = common;
-                    }
-                    s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
+                    prefix = s.adopt_prompt_prefix(&sid_key, tokens, want_reuse)?;
                 }
             }
 
-            let expected_pos = start_pos.unwrap_or_else(|| chunk_index.saturating_mul(chunk_size));
+            let expected_pos = expected_prefill_pos(
+                start_pos,
+                chunk_index,
+                chunk_size,
+                s.sessions[&sid_key].n_past,
+            );
             {
                 let session = s.sessions.get(&sid_key).unwrap();
                 if session.n_past > expected_pos {
-                    let seq_id = session.seq_id;
+                    let seq_id = session.seq_id();
                     if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                         bail!(
                             "este modelo não aceita descartar posições do meio do cache, \
@@ -3428,7 +3821,7 @@ fn prefill_batch_blocking(
                         );
                     }
                     (
-                        session.seq_id,
+                        session.seq_id(),
                         session.n_past,
                         Vec::new(),
                         PreparedPrefillInput::Hidden(hidden),
@@ -3447,7 +3840,7 @@ fn prefill_batch_blocking(
                     }
                     let n_tokens = tokens.len();
                     (
-                        session.seq_id,
+                        session.seq_id(),
                         session.n_past,
                         tokens.clone(),
                         PreparedPrefillInput::Tokens(tokens),
@@ -3464,6 +3857,8 @@ fn prefill_batch_blocking(
                 n_past,
                 n_tokens,
                 start_pos: expected_pos,
+                chunk_index,
+                prefix,
                 is_last,
                 is_final_chunk,
                 owns_tokens,
@@ -3608,6 +4003,10 @@ fn prefill_batch_blocking(
             if item.owns_tokens && !more {
                 is_final_chunk = true;
             }
+            // Ver `prefill_blocking`: a fronteira prompt/geração desta sessão.
+            if is_final_chunk {
+                s.sessions.get_mut(&item.sid_key).unwrap().prompt_len = n_past_now;
+            }
 
             let mut timings = NodeTimings {
                 selected_path,
@@ -3628,16 +4027,14 @@ fn prefill_batch_blocking(
             if item.is_last {
                 if !is_final_chunk {
                     let started = Instant::now();
-                    let bytes = wire::encode(
-                        &json!({
-                            "done": false,
-                            "more_chunks": more,
-                            "start_pos": item.start_pos,
-                            "next_pos": item.start_pos + item.n_tokens as u32,
-                        }),
-                        None,
-                        item.wire_dtype,
-                    )?;
+                    let mut meta = json!({
+                        "done": false,
+                        "more_chunks": more,
+                        "start_pos": item.start_pos,
+                        "next_pos": item.start_pos + item.n_tokens as u32,
+                    });
+                    apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                    let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                     timings.encode_us = started.elapsed().as_micros() as u64;
                     return Ok(TimedReply { bytes, timings });
                 }
@@ -3673,8 +4070,10 @@ fn prefill_batch_blocking(
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
+                // Ver `prefill_blocking`: o fim do turno retém o prompt em vez
+                // de destruir a sessão.
                 if done && !crate::tp::is_replica() {
-                    s.finish(&item.sid_key);
+                    s.retain_prompt(&item.sid_key);
                 }
                 timings.logits_clone_us = sampling_timing.logits_clone_us;
                 timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
@@ -3689,18 +4088,17 @@ fn prefill_batch_blocking(
                     + sampling_timing.top_p_us
                     + sampling_timing.selection_us;
                 let token_text_started = Instant::now();
-                let bytes = wire::encode(
-                    &json!({
-                        "done": done,
-                        "token_id": next_id,
-                        "text": text,
-                        "more_chunks": false,
-                        "start_pos": item.start_pos,
-                        "next_pos": item.start_pos + item.n_tokens as u32,
-                    }),
-                    None,
-                    item.wire_dtype,
-                )?;
+                let mut meta = json!({
+                    "done": done,
+                    "token_id": next_id,
+                    "text": text,
+                    "more_chunks": false,
+                    "n_prompt_tokens": total_tokens,
+                    "start_pos": item.start_pos,
+                    "next_pos": item.start_pos + item.n_tokens as u32,
+                });
+                apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                 timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
                 timings.encode_us = 0;
                 return Ok(TimedReply { bytes, timings });
@@ -3722,6 +4120,7 @@ fn prefill_batch_blocking(
                 "next_pos": n_past_now,
                 "owns_tokens": item.owns_tokens,
             });
+            apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
             if item.owns_tokens {
                 meta["tokens"] = json!(item.tokens_for_chunk);
             } else if let Some(tokens) = &item.chunk_tokens {
@@ -3789,11 +4188,14 @@ fn step_batch_blocking(
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
+            // Tudo daqui em diante é token gerado, então nada mais toca a
+            // sequência do prompt - ver `InferState::open_generation`.
+            s.open_generation(&sid_key)?;
             let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
                 anyhow::anyhow!("sessão '{}' desconhecida - faça o prefill antes", sid_key)
             })?;
             session.last_used = Instant::now();
-            let seq_id = session.seq_id;
+            let seq_id = session.seq_id();
             let n_past = session.n_past;
             let input = if let Some((hidden, shape)) = tensor {
                 if shape[0] == 0 || shape[1] != s.engine.n_embd {
@@ -4012,8 +4414,9 @@ fn step_batch_blocking(
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
+                // Fim de turno retém o prompt - ver `InferState::retain_prompt`.
                 if done && !crate::tp::is_replica() {
-                    s.finish(&item.sid_key);
+                    s.retain_prompt(&item.sid_key);
                 }
                 timings.logits_clone_us = sampling_timing.logits_clone_us;
                 timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
@@ -4983,12 +5386,16 @@ fn step_blocking(
     timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
+    // A geração deste turno corre numa cópia do KV do prompt: a partir daqui
+    // nada mais escreve na sequência do prompt, e é isso que a deixa
+    // reutilizável no turno seguinte sem remover nada do cache.
+    s.open_generation(&sid_key)?;
     let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
         anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
     })?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
-    let seq_id = session.seq_id;
+    let seq_id = session.seq_id();
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     let n_tokens;
@@ -5249,9 +5656,10 @@ fn step_blocking(
                 .unwrap()
                 .recent_tokens
                 .extend_from_slice(accepted_ids);
-            // Ver a nota gêmea abaixo: réplica não encerra sessão.
+            // Ver a nota gêmea abaixo: réplica não encerra sessão. E o fim de
+            // turno retém o prompt - ver `InferState::retain_prompt`.
             if done && !crate::tp::is_replica() {
-                s.finish(&sid_key);
+                s.retain_prompt(&sid_key);
             }
 
             let accepted: Vec<Value> = accepted_ids
@@ -5301,9 +5709,10 @@ fn step_blocking(
             .recent_tokens
             .push(next_id);
         // A réplica de um grupo TP não encerra sessão: quem decide o fim da
-        // geração é o rank 0. Ver `tp::is_replica`.
+        // geração é o rank 0. Ver `tp::is_replica`. E o fim de turno retém o
+        // prompt - ver `InferState::retain_prompt`.
         if done && !crate::tp::is_replica() {
-            s.finish(&sid_key);
+            s.retain_prompt(&sid_key);
         }
         timings.sampling_us += logits_access_us
             + sampling_timing.logits_clone_us

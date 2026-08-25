@@ -376,10 +376,13 @@ unsafe extern "C" fn capture_callback(
 ///
 /// A ordem sai certa porque `split_simple` do llama.cpp fatia o lote em índices
 /// crescentes e contíguos, que é exatamente a ordem das linhas que
-/// `BatchLayout` usa para reencontrar cada item. Ver o defeito anotado sobre
-/// `max_sessions > 1` no `AGENTS.md` desta pasta: com vários streams o
-/// llama.cpp usa `split_equal`, que agrupa por sequência, e aí esta ordem
-/// deixa de valer.
+/// `BatchLayout` usa para reencontrar cada item. O llama.cpp só escolhe
+/// `split_simple` quando o cache tem um stream só
+/// (`n_stream = kv_unified ? 1 : n_seq_max`); com vários streams ele usa
+/// `split_equal`, que agrupa por sequência e trocaria o residual de cada item
+/// sem erro nenhum. **É por isso que `kv_unified` é ligado incondicionalmente**
+/// nos dois pontos que criam contexto - ver `kv_seq_budget`. Mexer nisso quebra
+/// esta função em silêncio.
 fn accumulate_capture(slot: &mut CaptureSlot, floats: Vec<f32>) {
     if let Some(expected) = slot.expected_floats {
         let current = slot.buf.as_ref().map_or(0, Vec::len);
@@ -513,6 +516,47 @@ pub struct LoadedModel {
 unsafe impl Send for LoadedModel {}
 unsafe impl Sync for LoadedModel {}
 
+/// Primeiro palpite para o buffer do template de chat. Não é limite: quando o
+/// llama.cpp informa que precisa de mais, `apply_chat_template` realoca com o
+/// tamanho exato e renderiza de novo.
+const CHAT_TEMPLATE_INITIAL_BUF: usize = 65536;
+
+/// Quantas sequências de KV o contexto precisa reservar para `max_sessions`
+/// sessões simultâneas.
+///
+/// **Duas por sessão**: uma guarda o prompt e ninguém escreve nela; a outra
+/// recebe a geração do turno e é apagada inteira no fim (ver
+/// `LlmEngine::kv_copy_seq` e `infer_server::InferState::open_generation`). O
+/// par é fixo - a sequência de geração da sessão que ocupa `seq` é
+/// `seq + max_sessions` -, então nunca falta slot de geração para uma sessão
+/// que já tem slot de prompt.
+///
+/// Vem sempre acompanhado de `kv_unified = true`: sem ele o llama.cpp fatia
+/// `n_ctx` por sequência (`n_ctx_seq = n_ctx / n_seq_max`) e dobrar as
+/// sequências cortaria a janela de prompt pela metade. Unificado, as duas
+/// sequências dividem as mesmas células, a janela continua sendo `n_ctx`
+/// inteiro e a cópia prompt→geração não move tensor nenhum.
+///
+/// **O que isto custa, declarado.** Duas famílias de cache não compartilham
+/// células e passam a reservar de verdade duas fatias por sessão:
+///
+/// - o estado recorrente (`llama_memory_recurrent`, dimensionado por
+///   `n_seq_max`), porque estado de prompt e estado de geração são estados
+///   diferentes - não há como um modelo Mamba/GDN reter o prompt sem guardar o
+///   estado dele em separado;
+/// - o cache DSV4, que hoje ignora o pedido de unificação
+///   (`llama-kv-cache-dsv4.h`, `unified_raw = false`) e mantém um stream por
+///   sequência.
+///
+/// Em ambos os casos o `fit_memory` (`llama_rs_fit_params`, que recebe estes
+/// mesmos `cparams`) dimensiona o contexto já contando as duas sequências, e
+/// `/health` publica `n_seq_max` para o operador conferir. A alternativa seria
+/// oferecer o cache só a alguns modelos, que é exatamente o que a decisão de
+/// produto recusou.
+pub fn kv_seq_budget(max_sessions: u32) -> u32 {
+    max_sessions.max(1).saturating_mul(2)
+}
+
 const DEFAULT_GPU_LAYERS: i32 = 99;
 const FIT_MEMORY_MARGIN_BYTES: usize = 1024 * 1024 * 1024;
 const FIT_MIN_CONTEXT: u32 = 4096;
@@ -599,7 +643,8 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     cparams.n_ctx = cfg.n_ctx;
     cparams.n_batch = cfg.n_batch;
     cparams.n_ubatch = effective_n_ubatch(cfg);
-    cparams.n_seq_max = cfg.max_sessions.max(1);
+    cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
+    cparams.kv_unified = true;
     cparams.offload_kqv = cfg.offload_kqv;
     apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
     cparams.embeddings = cfg.need_embeddings;
@@ -1095,7 +1140,8 @@ impl LlmEngine {
         cparams.n_ctx = cfg.n_ctx;
         cparams.n_batch = cfg.n_batch;
         cparams.n_ubatch = effective_n_ubatch(cfg);
-        cparams.n_seq_max = cfg.max_sessions.max(1);
+        cparams.n_seq_max = kv_seq_budget(cfg.max_sessions);
+        cparams.kv_unified = true;
         cparams.offload_kqv = cfg.offload_kqv;
         apply_cache_types(&mut cparams, cfg.cache_type_k, cfg.cache_type_v);
         cparams.embeddings = cfg.need_embeddings;
@@ -1143,10 +1189,12 @@ impl LlmEngine {
         unsafe { sys::llama_set_causal_attn(ctx, true) };
 
         let actual_n_ctx = unsafe { sys::llama_n_ctx(ctx) };
-        let n_ctx_seq = actual_n_ctx / cfg.max_sessions.max(1);
+        // Cache unificado: as sequências dividem as mesmas células, então a
+        // janela por sequência é o contexto inteiro - ver `kv_seq_budget`.
+        let n_ctx_seq = actual_n_ctx;
         tracing::info!(
             "llama context ready: n_seq_max={} n_ctx={} n_ctx_seq={} capture={}",
-            cfg.max_sessions,
+            kv_seq_budget(cfg.max_sessions),
             actual_n_ctx,
             n_ctx_seq,
             if capture_ok {
@@ -1521,8 +1569,16 @@ impl LlmEngine {
             .map(|c| c.into_raw() as *const i8)
             .unwrap_or(ptr::null());
 
-        let mut out_buf = vec![0u8; 65536];
-        let n = unsafe {
+        // `llama_chat_apply_template` devolve **sempre** o tamanho completo do
+        // texto renderizado e copia no máximo `length` bytes (`strncpy` em
+        // `llama.cpp`). Um buffer fixo, portanto, não é um limite: é um corte
+        // silencioso pelo fim. Com 65536 bytes fixos, dois prompts distintos de
+        // ~126 KB rendiam exatamente os mesmos 12941 tokens - a última mensagem
+        // do usuário simplesmente não chegava ao modelo, e o prefixo do turno
+        // seguinte ficava idêntico ao do anterior. Pedir de novo com o tamanho
+        // informado é o contrato: a segunda chamada cabe por construção.
+        let mut out_buf = vec![0u8; CHAT_TEMPLATE_INITIAL_BUF];
+        let mut n = unsafe {
             sys::llama_chat_apply_template(
                 tmpl_ptr,
                 raw_msgs.as_ptr(),
@@ -1532,6 +1588,19 @@ impl LlmEngine {
                 out_buf.len() as i32,
             )
         };
+        if n > 0 && (n as usize) > out_buf.len() {
+            out_buf = vec![0u8; n as usize];
+            n = unsafe {
+                sys::llama_chat_apply_template(
+                    tmpl_ptr,
+                    raw_msgs.as_ptr(),
+                    raw_msgs.len(),
+                    add_generation_prompt,
+                    out_buf.as_mut_ptr() as *mut i8,
+                    out_buf.len() as i32,
+                )
+            };
+        }
 
         // Reclaim tmpl_ptr if we allocated one.
         if !tmpl_ptr.is_null() {
@@ -1539,7 +1608,15 @@ impl LlmEngine {
         }
 
         let mut text = if n > 0 {
-            out_buf.truncate(n as usize);
+            let escrito = (n as usize).min(out_buf.len());
+            if escrito < n as usize {
+                bail!(
+                    "llama_chat_apply_template pediu {n} bytes e o buffer tem {}; \
+                     renderizar o prompt cortado entregaria a conversa pela metade",
+                    out_buf.len()
+                );
+            }
+            out_buf.truncate(escrito);
             String::from_utf8_lossy(&out_buf).into_owned()
         } else {
             bail!(
@@ -2047,6 +2124,33 @@ impl LlmEngine {
                 return false;
             }
             sys::llama_memory_seq_rm(mem, seq_id as i32, from, to)
+        }
+    }
+
+    /// Compartilha o KV de `src` com `dst`, sequência inteira.
+    ///
+    /// É o que permite **não gerar dentro da sequência do prompt**: o prompt
+    /// fica numa sequência que ninguém estende, a geração corre numa cópia, e
+    /// no fim do turno a cópia some inteira - remoção total, que todo motor
+    /// aceita, inclusive os recorrentes que recusam remoção parcial (ver
+    /// `kv_remove`). Sem isto o reuso de prefixo dependeria de o modelo aceitar
+    /// recuar o cache, e essa é justamente a dependência que o desenho remove.
+    ///
+    /// Custo: com o cache unificado (`kv_unified`, ver `llama_context_params`)
+    /// as duas sequências dividem as mesmas células e a cópia é só metadado -
+    /// nenhum tensor é duplicado. O llama.cpp faz cópia-na-escrita quando a
+    /// geração escreve por cima de uma célula compartilhada, inclusive no
+    /// estado recorrente (`llama_memory_recurrent::find_slot`).
+    pub fn kv_copy_seq(&self, src: u32, dst: u32) {
+        if src == dst {
+            return;
+        }
+        unsafe {
+            let mem = sys::llama_get_memory(self.ctx);
+            if mem.is_null() {
+                return;
+            }
+            sys::llama_memory_seq_cp(mem, src as i32, dst as i32, -1, -1);
         }
     }
 

@@ -84,14 +84,28 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
   O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
   `start_pos`/`next_pos` nos chunks seguintes, para que os peers que recebem
-  hidden state mantenham a mesma posição KV da cabeça.
+  hidden state mantenham a mesma posição KV da cabeça. O `reuse_prefix` que os
+  hops seguintes recebem é o que a **cabeça executou**, lido da resposta dela
+  (`cached_tokens_of`, `head_reused_prefix`), não o que o gateway pediu.
+  `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
+  não foram reprocessados.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
-  contém peso, tensor ou transporte de arquivo.
-- `prefix_cache_lab.rs` - autoteste diferencial da política do cache. A
-  referência acompanha lookup, insert, busy, release e eviction; o proxy
-  propositalmente quebra `cached_tokens` e a bateria precisa registrar a
-  divergência.
+  contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
+  mensagens (`openai::conversation_cache_key`), não do prompt renderizado.
+- `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
+  **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
+  o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
+  divergência. Nenhum defeito de execução é alcançável por ele.
+- `prefix_reuse_lab.rs` - a bancada da **execução**: uma conversa de quatro
+  turnos pelo caminho de `/v1/chat/completions`, com dois hops, nos três
+  transportes (hub, anel, direto). Afirma que do turno 2 em diante
+  `cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
+  e que nenhum hop recebeu pedido de remoção parcial de KV. Os hops falsos
+  imitam o motor mais restrito que o produto atende - o recorrente, que recusa
+  remoção parcial - e usam as funções de produção nos pontos de decisão
+  (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
+  `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
@@ -303,6 +317,23 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `infer_server.rs`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
+- `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde só o
+  prefill escreve, e `gen_seq`, aberta por `open_generation` na primeira
+  decodificação de token gerado, como cópia da primeira. `seq_id()` devolve a
+  que vale para o passo atual. É o que permite reter o prompt entre turnos sem
+  nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para o par de
+  sequências e o que ele custa.
+- `retain_prompt` - fim de turno: apaga a sequência da geração inteira (remoção
+  total, que todo motor aceita) e devolve a sessão a `prompt_len`. O EOS chama
+  isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do
+  gateway chegar a uma "sessão desconhecida". `finish` continua sendo a
+  liberação de vez (release explícito, cancelamento, erro).
+- `plan_prefix_reuse` / `expected_prefill_pos` - a regra do reuso e a posição do
+  pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
+  fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a
+  requisição.
+- `evict_retained` - uma sessão retida é cache reclamável: quando falta slot de
+  sequência, ela cede antes de a requisição falhar com "seq pool esgotado".
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
@@ -705,21 +736,17 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-- **A captura do residual assume a ordem do `split_simple`, que só vale com
-  `max_sessions = 1`.** `capture_callback` acumula um microlote por disparo e
-  `BatchLayout` reencontra cada item por deslocamento de linha; isso casa
-  porque o llama.cpp fatia o lote em índices crescentes e contíguos. Mas ele só
-  usa `split_simple` quando o cache KV tem um stream só, e
-  `n_stream = kv_unified ? 1 : n_seq_max` - o projeto nunca liga `kv_unified`
-  (o padrão do `llama_context_default_params` é `false`), então **com
-  `max_sessions > 1` o llama.cpp passa a usar `split_equal`**, que agrupa por
-  sequência e concatena os grupos: a ordem das linhas capturadas deixa de ser a
-  do lote, e o residual de cada item sai trocado - sem erro, só resposta
-  errada. O padrão de `max_sessions` é `1` (`runtime.rs`,
-  `default_max_sessions`), então o caminho de hoje é o correto; quem for
-  levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
-  mapeando o microlote de volta às posições. Ver `split_equal` em
-  `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.
+Nenhum no momento.
+
+O que estava anotado aqui - "a captura do residual assume a ordem do
+`split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o
+cache de prefixo passou a exigir duas sequências de KV por sessão: os dois
+pontos que criam contexto agora ligam `kv_unified` incondicionalmente
+(`llm::kv_seq_budget`), e com `kv_unified` o cache tem um stream só
+(`n_stream = kv_unified ? 1 : n_seq_max`) qualquer que seja `max_sessions`. O
+llama.cpp continua, portanto, usando `split_simple`, que é a ordem de linhas que
+`BatchLayout` espera. Desligar `kv_unified` reintroduz o defeito em silêncio -
+está dito no doc de `accumulate_capture`.
 
 ## Manutenção deste arquivo
 

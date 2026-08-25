@@ -34,6 +34,11 @@ const PIPELINE_HEALTH_TIMEOUT: Duration = Duration::from_secs(10);
 /// request this guard exists to stop.
 const CHARS_PER_TOKEN: usize = 3;
 
+/// Prazo do `/v1/session/rewind`. Curto de propósito: o evento final do stream
+/// espera por ele (ver `generate_stream_inner`), e do outro lado é só apagar
+/// uma sequência de KV.
+const REWIND_TIMEOUT: Duration = Duration::from_secs(3);
+
 // ── State ────────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
@@ -539,6 +544,16 @@ pub(crate) struct GenerationInput {
     pub(crate) chat_template: bool,
     pub(crate) max_tokens: u32,
     pub(crate) stops: Vec<String>,
+    /// Como o cache de prefixo reconhece que esta requisição continua a
+    /// anterior. `None` usa o próprio prompt.
+    ///
+    /// O texto renderizado não serve como chave: `render_prompt` devolve uma
+    /// mensagem de usuário solitária **crua** e rotula a partir da segunda, de
+    /// modo que o prompt do turno 1 não é prefixo do prompt do turno 2 e a
+    /// transição 1→2 de qualquer chat nunca acertava. A chave vem do array de
+    /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
+    /// ferramentas. Ver `crate::openai::conversation_cache_key`.
+    pub(crate) cache_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -788,6 +803,7 @@ async fn generate_stream_inner(
         chat_template,
         max_tokens,
         stops,
+        cache_key,
     } = input;
     if cancellation.is_cancelled() {
         return;
@@ -871,14 +887,15 @@ async fn generate_stream_inner(
             )
         }),
     );
-    // A hit reuses the peer session that was rewound to the end of the prior
+    // A hit reuses the peer session that stayed parked at the end of the prior
     // prompt. A miss gets a fresh id and is published only after this turn has
     // completed its prefill, so an incomplete session cannot enter the cache.
-    let prefix_lease = state
-        .prefix_cache
-        .acquire(prefix_key, &prompt, Uuid::new_v4().to_string());
+    let cache_prompt = cache_key.unwrap_or_else(|| prompt.clone());
+    let prefix_lease =
+        state
+            .prefix_cache
+            .acquire(prefix_key, &cache_prompt, Uuid::new_v4().to_string());
     let session_id = prefix_lease.session_id().to_string();
-    let cache_prompt = prompt.clone();
     // A sessão não pode trocar de réplica depois que o primeiro prefill criou
     // o KV. O plano é fixado uma vez e esta afinidade é a referência explícita
     // usada para revisar qualquer transformação futura da rota.
@@ -922,6 +939,11 @@ async fn generate_stream_inner(
     let mut tokens_generated: u32 = 0;
     let max_tokens = max_tokens.max(1);
     let mut retained_prefix_tokens: Option<u32> = None;
+    // Quantos tokens do prompt a cabeça de fato não reprocessou. Não é a
+    // escolha do cache, é o que o pipeline executou - ver
+    // `PrefillOutcome::cached_tokens`. Sai no `GenSummary` e daí para
+    // `usage.prompt_tokens_details.cached_tokens`.
+    let mut honored_cached_tokens: u32 = 0;
 
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
@@ -966,6 +988,36 @@ async fn generate_stream_inner(
 
     let mut stop_matcher = StopMatcher::new(stops);
 
+    // O evento final não pode sair antes de a sessão estar arrumada.
+    //
+    // Um chat manda o turno seguinte assim que o stream fecha. Enquanto o
+    // rewind e a liberação rodavam *depois* do `[DONE]`, a requisição seguinte
+    // chegava no meio deles - medido: 54 ms antes de a liberação do turno
+    // anterior terminar - e pegava o cache num estado que ninguém tinha
+    // acabado de escrever. Aqui os eventos de token seguem na hora, ao vivo, e
+    // só o terminal (`Done`/`Failed`) espera a arrumação.
+    let client_tx = tx;
+    let (tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
+    let pump = {
+        let client_tx = client_tx.clone();
+        tokio::spawn(async move {
+            let mut terminal = None;
+            while let Some(event) = inner_rx.recv().await {
+                match event {
+                    event @ (GenEvent::Done(_) | GenEvent::Failed(_)) => terminal = Some(event),
+                    event => {
+                        if client_tx.send(event).await.is_err() {
+                            // Cliente foi embora. Fechar o lado de cá é o que
+                            // faz o laço de geração perceber e cancelar.
+                            break;
+                        }
+                    }
+                }
+            }
+            terminal
+        })
+    };
+
     // Whatever ends this generation — EOS, the token limit, the client hanging
     // up, or a peer erroring — every peer has to get its KV slot back. Only the
     // sampling peer used to free anything, and only on EOS, so the first peer
@@ -973,31 +1025,48 @@ async fn generate_stream_inner(
     async {
         // ── Prefill: the prompt goes in chunk by chunk, and the last peer hands
         // back the first token once the whole prompt is in.
-        let first = match crate::prefill::run(
-            &plan,
-            model,
-            &session_id,
-            &prompt,
-            chat_template,
-            chunk_tokens,
-            dtype,
-            &state.peer_http,
-            &state.network.routes,
-            direct.as_ref(),
-            state.tunnel_tx.as_ref(),
-            &cancellation,
-            reuse_prefix,
-        )
-        .await
-        {
+        // Reusar prefixo é otimização, nunca motivo para a requisição falhar.
+        // Um peer pode ter despejado a sessão, reiniciado ou divergido do que
+        // este gateway acha que ele guarda; nesse caso a primeira tentativa
+        // morre com posições fora de ordem. A segunda vai fria, que é
+        // exatamente o comportamento de antes desta funcionalidade existir.
+        let prefill_attempt = |reuse: bool| {
+            crate::prefill::run(
+                &plan,
+                model,
+                &session_id,
+                &prompt,
+                chat_template,
+                chunk_tokens,
+                dtype,
+                &state.peer_http,
+                &state.network.routes,
+                direct.as_ref(),
+                state.tunnel_tx.as_ref(),
+                &cancellation,
+                reuse,
+            )
+        };
+        let mut prefill_result = prefill_attempt(reuse_prefix).await;
+        if reuse_prefix {
+            if let Err(e) = &prefill_result {
+                if !crate::prefill::is_cancelled(e) {
+                    warn!("prefill com prefixo reaproveitado falhou ({e}); repetindo do zero");
+                    prefill_result = prefill_attempt(false).await;
+                }
+            }
+        }
+        let first = match prefill_result {
             Ok(o) => {
                 info!(
-                    "📥 prompt de {} tokens em {} pedaço(s) · {:.1}s até a primeira palavra",
+                    "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
                     o.prompt_tokens,
                     o.chunks,
+                    o.cached_tokens,
                     gen_start.elapsed().as_secs_f64(),
                 );
                 retained_prefix_tokens = Some(o.prompt_tokens);
+                honored_cached_tokens = o.cached_tokens;
                 o
             }
             Err(e) if crate::prefill::is_cancelled(&e) => {
@@ -1442,23 +1511,43 @@ async fn generate_stream_inner(
     }
     .await;
 
+    drop(tx);
+    let terminal = pump.await.ok().flatten();
+
+    // O lease sai daqui de um jeito só: publicado se todos os hops confirmaram
+    // que a sessão ficou parada no fim do prompt, descartado com a sessão
+    // liberada em qualquer outro caso.
+    let mut lease = Some(prefix_lease);
     if let Some(prompt_tokens) = retained_prefix_tokens {
         if rewind_sessions(&plan, &session_id, prompt_tokens, &state.peer_http).await {
-            prefix_lease.commit(cache_prompt, prompt_tokens);
-            return;
+            if let Some(lease) = lease.take() {
+                lease.commit(cache_prompt, prompt_tokens);
+            }
+        } else {
+            warn!(
+                "não foi possível preservar o prefixo da sessão {}; liberando KV",
+                &session_id[..8.min(session_id.len())]
+            );
         }
-        warn!(
-            "não foi possível preservar o prefixo da sessão {}; liberando KV",
-            &session_id[..8.min(session_id.len())]
-        );
     }
-    prefix_lease.discard();
-    release_sessions(&plan, &session_id, &state.peer_http).await;
+    if let Some(lease) = lease.take() {
+        lease.discard();
+        release_sessions(&plan, &session_id, &state.peer_http).await;
+    }
+
+    if let Some(event) = terminal {
+        let _ = client_tx.send(event).await;
+    }
 }
 
-/// Remove os tokens produzidos depois do prompt, deixando cada peer pronto
-/// para estender a mesma sessão no próximo turno. Falha em um hop invalida a
-/// entrada inteira: manter só parte da cadeia criaria um buraco silencioso.
+/// Confirma em cada peer que a sessão ficou parada no fim do prompt, pronta
+/// para o turno seguinte. Falha em um hop invalida a entrada inteira: manter só
+/// parte da cadeia criaria um buraco silencioso.
+///
+/// Do lado do peer isto **não** recua nada - a geração correu numa sequência de
+/// KV separada e some inteira (ver `infer_server::handle_rewind`). Por isso o
+/// prazo aqui é curto: é escrituração, não inferência, e o evento final do
+/// stream espera por ela.
 async fn rewind_sessions(
     plan: &PipelinePlan,
     session_id: &str,
@@ -1478,7 +1567,7 @@ async fn rewind_sessions(
                 "session_id": session_id,
                 "n_tokens": prompt_tokens,
             }))
-            .timeout(Duration::from_secs(10));
+            .timeout(REWIND_TIMEOUT);
         match clients
             .authorize_inference_request(request)
             .await
@@ -1931,6 +2020,9 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             chat_template: true,
             max_tokens,
             stops,
+            // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
+            // o próprio texto.
+            cache_key: None,
         },
     )
     .await

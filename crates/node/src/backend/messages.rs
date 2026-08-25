@@ -233,6 +233,41 @@ pub struct CountTokensRequest {
 /// peer already applies the model's chat template once, so a second one here
 /// would nest inside it. A lone user message with no system prompt and no
 /// tools passes through untouched.
+/// Chave do cache de prefixo para uma conversa Anthropic.
+///
+/// Mesma razão e mesma forma da versão OpenAI - ver
+/// `crate::openai::conversation_cache_key`, que documenta por que o texto
+/// renderizado não serve como chave.
+pub fn conversation_cache_key(
+    system: Option<&SystemPrompt>,
+    messages: &[AnthropicMessage],
+    tools: &[ToolDef],
+) -> String {
+    let mut key = String::new();
+    for tool in tools {
+        key.push_str("tool\u{1f}");
+        key.push_str(&tool.name);
+        key.push('\u{1f}');
+        key.push_str(&tool.input_schema.to_string());
+        key.push('\u{1e}');
+    }
+    if let Some(system) = system {
+        key.push_str("system\u{1f}");
+        key.push_str(&system.as_text());
+        key.push('\u{1e}');
+    }
+    for message in messages
+        .iter()
+        .filter(|m| !m.content.as_text().trim().is_empty())
+    {
+        key.push_str(&message.role);
+        key.push('\u{1f}');
+        key.push_str(&message.content.as_text());
+        key.push('\u{1e}');
+    }
+    key
+}
+
 pub fn render_prompt(
     system: Option<&SystemPrompt>,
     messages: &[AnthropicMessage],
@@ -253,14 +288,9 @@ pub fn render_prompt(
     }
     let system_text = system_text.trim();
 
-    if system_text.is_empty() {
-        if let [only] = non_empty.as_slice() {
-            if only.role == "user" {
-                return only.content.as_text();
-            }
-        }
-    }
-
+    // Todo turno é rotulado, inclusive o primeiro - ver
+    // `crate::openai::render_prompt`, que documenta por que a passagem crua da
+    // mensagem solitária quebrava o reuso de prefixo na transição 1→2.
     let mut out = String::new();
     if !system_text.is_empty() {
         out.push_str(system_text);
@@ -329,6 +359,8 @@ async fn messages(
         _ => state.active_model().await,
     };
     let prompt = render_prompt(req.system.as_ref(), &req.messages, &req.tools);
+    // Ver `conversation_cache_key`: a chave do cache vem das mensagens.
+    let cache_key = conversation_cache_key(req.system.as_ref(), &req.messages, &req.tools);
     let max_tokens = req.clamped_max_tokens();
     let stops = req.stop_sequences.clone();
     let input_tokens = approx_tokens(&prompt);
@@ -353,6 +385,7 @@ async fn messages(
             id,
             input_tokens,
             stops,
+            Some(cache_key),
         )
     } else {
         blocking_response(
@@ -364,6 +397,7 @@ async fn messages(
             id,
             input_tokens,
             stops,
+            Some(cache_key),
         )
         .await
     }
@@ -399,6 +433,7 @@ async fn blocking_response(
     id: String,
     input_tokens: u32,
     stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         "/v1/messages",
@@ -410,6 +445,7 @@ async fn blocking_response(
             chat_template: true,
             max_tokens,
             stops,
+            cache_key,
         },
     )
     .await
@@ -430,6 +466,15 @@ async fn blocking_response(
                     "usage": {
                         "input_tokens": input_tokens,
                         "output_tokens": summary.tokens_generated,
+                        // Quantos tokens do prompt o pipeline não reprocessou,
+                        // medido no lado que executa. Ver
+                        // `RequestTrace::cached_tokens`. O nome segue o campo
+                        // de leitura de cache da Anthropic.
+                        "cache_read_input_tokens": summary
+                            .trace
+                            .as_ref()
+                            .map(|trace| trace.cached_tokens)
+                            .unwrap_or(0),
                     },
                     // Not part of the Anthropic schema; kept so the hop chain
                     // that proves distributed execution stays visible.
@@ -459,6 +504,7 @@ fn stream_response(
     id: String,
     input_tokens: u32,
     stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -471,6 +517,7 @@ fn stream_response(
             chat_template: true,
             max_tokens,
             stops,
+            cache_key,
         },
         tx,
     );
@@ -774,11 +821,30 @@ mod tests {
     // ── render_prompt ────────────────────────────────────────────────────────
 
     #[test]
-    fn single_user_message_with_no_system_passes_through_unchanged() {
+    fn single_user_message_is_labelled_like_every_other_turn() {
+        // Ver `crate::openai::render_prompt`: o rótulo desde o primeiro turno é
+        // o que faz um prompt ser prefixo exato do prompt do turno seguinte.
         assert_eq!(
             render_prompt(None, &[msg("user", "O que e inferencia distribuida?")], &[]),
-            "O que e inferencia distribuida?"
+            "User: O que e inferencia distribuida?"
         );
+    }
+
+    /// A propriedade de que o reuso de prefixo depende, no caminho Anthropic.
+    #[test]
+    fn every_extra_turn_only_appends_to_the_previous_prompt() {
+        let turno1 = vec![msg("user", "1+1?")];
+        let mut turno2 = turno1.clone();
+        turno2.push(msg("assistant", "2"));
+        turno2.push(msg("user", "e 2+2?"));
+
+        let p1 = render_prompt(None, &turno1, &[]);
+        let p2 = render_prompt(None, &turno2, &[]);
+        assert!(p2.starts_with(&p1), "turno 2 não continua o turno 1");
+
+        let k1 = conversation_cache_key(None, &turno1, &[]);
+        let k2 = conversation_cache_key(None, &turno2, &[]);
+        assert!(k2.starts_with(&k1));
     }
 
     #[test]

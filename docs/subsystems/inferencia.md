@@ -283,21 +283,63 @@ Em um miss, uma entrada ociosa pode ser reciclada antes do prefill novo, o que
 mantém o caminho compatível com `max_sessions=1` sem compartilhar entrada
 ocupada.
 
-Depois de um prefill bem-sucedido, `/v1/session/rewind` remove em cada peer o
-sufixo gerado e exige a confirmação do `n_past` igual ao tamanho do prompt. Se
-qualquer hop falhar, o gateway invalida o lease inteiro e libera a sessão. No
-turno seguinte, o primeiro frame leva `reuse_prefix`; a cabeça compara os
-tokens do novo prompt com os tokens guardados na sessão, remove do KV qualquer
-sufixo que deixou de ser comum e responde com `start_pos`/`next_pos`. O gateway
-usa essa posição no chunk seguinte, e o relay preserva os campos até cada hop.
-Assim, um peer que só recebe estado oculto não precisa tokenizar, mas também não
-pode começar numa posição diferente da cabeça.
+**A geração não acontece na sequência do prompt.** Cada sessão de um peer tem
+duas sequências de KV: `prompt_seq`, onde só o prefill escreve, e `gen_seq`,
+aberta na primeira decodificação de token gerado como cópia da primeira
+(`llama_memory_seq_cp`, metadado apenas - as duas dividem as mesmas células com
+`kv_unified`). No fim do turno some a sequência da geração **inteira**, que é
+remoção total e todo motor aceita, e `prompt_seq` continua exatamente com o
+prompt. É por isso que o reuso não depende de o modelo aceitar remover posições
+do meio do cache - uma operação que `llama_memory_recurrent::seq_rm` recusa
+sempre que o recuo passa da janela de snapshots (`n_rs_seq`), ou seja em
+qualquer geração de tamanho real num modelo híbrido/recorrente como o
+Qwen3-Next/Ornith. O custo declarado é uma segunda sequência por sessão
+(`llm::kv_seq_budget`), que o `fit_memory` já contabiliza.
+
+Reter é ato local do peer: no EOS a sessão **não** é destruída, ela volta para
+`prompt_len`. `/v1/session/rewind` confere esse estado e cobre as paradas que
+não passam por EOS (limite de tokens, sequência de parada, cliente que
+desligou); é idempotente e não recua nada. Liberar de vez continua sendo ato
+explícito do gateway, por `/v1/session/release`.
+
+No turno seguinte o primeiro frame leva `reuse_prefix`. A regra da cabeça é **só
+acrescentar** (`plan_prefix_reuse`): o prefixo serve quando os tokens retidos
+são prefixo exato dos novos e acabam antes deles; qualquer outro caso -
+divergência no meio, prompt idêntico ao retido, sessão sem prompt - recomeça a
+sessão do zero, o que custa o reuso daquele turno e nunca a requisição. A
+resposta declara o que foi **executado** (`reuse_prefix`, `cached_tokens`) e é
+essa decisão, não o pedido do gateway, que os hops seguintes obedecem: quem
+tokeniza é quem sabe. `start_pos`/`next_pos` viajam junto, e no pedaço 0 a
+posição é onde a sessão está - julgá-lo por `chunk_index * chunk_size` = 0
+apagava o KV reaproveitado uma linha depois de aproveitá-lo.
+
+Se ainda assim o prefill falhar com o prefixo ligado - um peer que despejou a
+sessão, reiniciou ou divergiu -, o gateway repete a rodada inteira do zero antes
+de devolver erro. Reusar é otimização, nunca motivo para a requisição falhar.
+
+O prompt que o cache reconhece vem do **array de mensagens**
+(`openai::conversation_cache_key`), não do texto renderizado, e `render_prompt`
+rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
+prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
+rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
 
 O cache é uma otimização interna. O envelope binário `frame/v1-batch` e as APIs
-públicas não mudaram. `prefix_cache_lab.rs` compara cada operação com uma
+públicas não mudaram, mas a economia agora é **publicada**:
+`usage.prompt_tokens_details.cached_tokens` (OpenAI),
+`usage.cache_read_input_tokens` (Anthropic) e `x_pom.trace.cached_tokens`
+reportam tokens de prompt que o pipeline não reprocessou - medida do executado,
+não da escolha. `/health` publica `sessions_retained`,
+`prefix_tokens_retained` e `kv_seq_max`.
+
+`prefix_cache_lab.rs` compara cada operação do cache em memória com uma
 referência e contém um proxy propositalmente quebrado que precisa disparar a
-bateria. Não há número de desempenho nesta fase: o captain fará a medição
-posterior usando o método da Fase 0.
+bateria - ele valida a **escolha**. `prefix_reuse_lab.rs` valida a **execução**:
+uma conversa de quatro turnos pelo caminho de `/v1/chat/completions`, nos três
+transportes (hub, anel, resposta direta) e com dois hops, afirmando que do turno
+2 em diante `cached_tokens > 0`, que o trabalho por turno para de crescer com a
+conversa e que nenhum hop recebeu pedido de remoção parcial de KV. Os hops
+falsos dessa bancada imitam o motor mais restrito que o produto tem que
+atender - o recorrente que recusa remoção parcial.
 
 ### 3.2 Seleção do executor
 

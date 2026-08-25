@@ -140,7 +140,13 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking_with_stops` collapses it. When the stream receiver closes,
+  /`Failed`; `generate_blocking_with_stops` collapses it. The terminal event
+  (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
+  (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
+  the next turn the instant the stream closes and used to arrive in the middle
+  of it; token events still go out live. A prefill that fails with the prefix
+  enabled is retried once from scratch - reusing is an optimisation, never a
+  reason for the request to fail. When the stream receiver closes,
   `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers
@@ -159,9 +165,15 @@ behind an auth extractor.
   valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
   prefill no orçamento total, sem o overshoot histórico de 513 tokens;
 - `openai.rs` - `DEFAULT_MAX_TOKENS=512`, `HARD_MAX_TOKENS=4096`;
-  `render_prompt` flattens the conversation into one user message (single
-  lone user message with no tools passes through byte-identical to
-  `/api/generate`); `approx_tokens` = chars/4; `model_ids` from peers + active
+  `render_prompt` flattens the conversation into one user message, labelling
+  **every** turn including the first, so one turn's prompt is an exact prefix of
+  the next one's - the property the prefix cache rests on; raw, unlabelled text
+  is what `/v1/completions` and `/api/generate` are for.
+  `conversation_cache_key` is what the prefix cache keys on (the message array,
+  not the rendered text) and travels as `GenerationInput::cache_key`.
+  `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
+  pipeline did not reprocess, read from the trace - the executed number, not the
+  cache's choice; `approx_tokens` = chars/4; `model_ids` from peers + active
   model; `resolve_model` maps unknown names to the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
@@ -171,7 +183,9 @@ behind an auth extractor.
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
   `POST /v1/messages/count_tokens`; its own `render_prompt` (system/messages/
-  tools split), `content_blocks` for tool_use/tool_result, `stop_reason`
+  tools split, every turn labelled, same reason as `openai.rs`) and
+  `conversation_cache_key`; `usage.cache_read_input_tokens` carries the honoured
+  prefix reuse; `content_blocks` for tool_use/tool_result, `stop_reason`
   (end_turn / max_tokens / tool_use / stop_sequence), `blocking_response` and
   `stream_response` with the Anthropic SSE event names. `tool_choice` is
   parsed-and-ignored; `stop_sequences` is applied by the gateway matcher.

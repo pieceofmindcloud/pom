@@ -122,6 +122,14 @@ pub struct PrefillOutcome {
     pub done: bool,
     /// Prompt length as counted by the peer that tokenised it.
     pub prompt_tokens: u32,
+    /// Quantos tokens do prompt a cabeça **não** reprocessou porque já estavam
+    /// no KV desta sessão.
+    ///
+    /// É a medida do que foi *executado*, não do que o gateway escolheu: quem
+    /// tokeniza é quem decide se o prefixo retido servia. Zero num turno frio,
+    /// num prefixo que divergiu e num modelo qualquer que tenha recomeçado a
+    /// sessão. Vai para o log e para `usage.prompt_tokens_details.cached_tokens`.
+    pub cached_tokens: u32,
     pub chunks: u32,
     pub trace: RequestTrace,
 }
@@ -500,6 +508,15 @@ pub struct HopTrace {
 pub struct RequestTrace {
     pub model: String,
     pub input_tokens: u32,
+    /// Quantos dos `input_tokens` a cabeça **não** reprocessou porque já
+    /// estavam no KV da sessão reaproveitada.
+    ///
+    /// Medida do executado, não da escolha: quem a preenche é a resposta da
+    /// cabeça (`PrefillOutcome::cached_tokens`). Um turno frio, um prefixo que
+    /// divergiu e um peer que recomeçou a sessão contam todos zero. Era
+    /// exatamente esta a lacuna que fazia o cache parecer estar funcionando -
+    /// o log dizia "sessão reusada" e a economia era nenhuma.
+    pub cached_tokens: u32,
     pub output_tokens: u32,
     pub prefill_ms: u64,
     pub total_bytes_sent: u64,
@@ -633,6 +650,7 @@ impl RequestTrace {
         Self {
             model: model.into(),
             input_tokens: 0,
+            cached_tokens: 0,
             output_tokens: 0,
             prefill_ms: 0,
             total_bytes_sent: 0,
@@ -779,6 +797,24 @@ fn head_prefill_meta(
     })
 }
 
+/// Quantos tokens de prompt a cabeça informou ter aproveitado neste pedaço.
+///
+/// Só o pedaço 0 traz o campo, e só a cabeça o preenche. Peer que não o mande
+/// (ou que tenha recomeçado a sessão) conta zero, que é a leitura conservadora
+/// certa: telemetria de cache nunca deve inventar economia.
+fn cached_tokens_of(meta: &serde_json::Value) -> u32 {
+    meta.get("cached_tokens")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0) as u32
+}
+
+/// Se a cabeça de fato aproveitou o prefixo. Ver `cached_tokens_of`.
+fn head_reused_prefix(meta: &serde_json::Value, requested: bool) -> bool {
+    meta.get("reuse_prefix")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(requested)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     plan: &PipelinePlan,
@@ -839,6 +875,7 @@ pub async fn run(
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
@@ -877,6 +914,15 @@ pub async fn run(
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // A decisão da cabeça, lida do meta dela e não do que este gateway
+        // pediu: os hops seguintes obedecem a esta, e a telemetria reporta
+        // esta. Ver `infer_server::apply_prefix_decision`.
+        let head_reused = if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&meta);
+            head_reused_prefix(&meta, reuse_prefix)
+        } else {
+            false
+        };
         let more = meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
@@ -907,7 +953,7 @@ pub async fn run(
                 "chunk_size": chunk_size,
                 "is_last": is_last,
                 "is_final_chunk": is_final_chunk,
-                "reuse_prefix": reuse_prefix && chunk_index == 0,
+                "reuse_prefix": head_reused,
                 "start_pos": chunk_start_pos,
                 "scale": 1.0,
             });
@@ -953,9 +999,11 @@ pub async fn run(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
@@ -993,6 +1041,7 @@ async fn run_ring(
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
@@ -1047,6 +1096,11 @@ async fn run_ring(
         if let Some(n) = sent.meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // No anel a cabeça repassa a própria decisão adiante; aqui só se lê o
+        // que ela executou, para a telemetria. Ver `cached_tokens_of`.
+        if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&sent.meta);
+        }
         let more = sent
             .meta
             .get("more_chunks")
@@ -1085,9 +1139,11 @@ async fn run_ring(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 prompt_tokens,
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
@@ -1127,6 +1183,7 @@ async fn run_direct(
 
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
+    let mut cached_tokens: u32 = 0;
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
@@ -1196,6 +1253,11 @@ async fn run_direct(
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
+        // A cabeça repassa a própria decisão adiante (`forward` em
+        // `handle_prefill`); a cauda a devolve em `prompt_progress`.
+        if chunk_index == 0 {
+            cached_tokens = cached_tokens_of(&meta);
+        }
         let more = meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
@@ -1221,9 +1283,11 @@ async fn run_direct(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                cached_tokens,
                 chunks,
                 trace: {
                     trace.input_tokens = prompt_tokens;
+                    trace.cached_tokens = cached_tokens;
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },

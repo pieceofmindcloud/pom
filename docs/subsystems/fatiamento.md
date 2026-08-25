@@ -145,6 +145,17 @@ plano: a tela nomeia os papéis ("processa o prompt" / "gera os tokens").
 
 ## 4. Execução do fatiamento
 
+### Cortes escolhidos durante a implantação
+
+O deploy de um modelo inteiro consulta `GgufLayout::valid_prefix_end_layers`
+antes de oferecer um slider. Em layout denso, todo fim de camada inteira é
+aceito; em layout híbrido, só são aceitos os fins derivados das fronteiras
+arquiteturais reais. `prefix_cut_granularity` é apenas uma descrição quando o
+espaçamento é uniforme: cortes irregulares continuam sendo representados pela
+lista explícita. `POST /api/ui/model-layer-options` expõe essa lista, e
+`POST /api/ui/slice-ranges` usa as faixas selecionadas para executar o mesmo
+fatiador local e selar o manifesto antes da transferência.
+
 `extract_shard` (`plan.rs`) roda `splitter::split` num `spawn_blocking` e apaga o
 arquivo parcial no erro - senão a próxima varredura o tomaria por fatia válida.
 O corte sai numa pasta de trabalho (`pom::scratch_dir`), cada parte gravada
@@ -365,6 +376,8 @@ RAM física.
 | `GET /api/ui/models` | catálogo local (modelos + shard_sets + diretórios varridos) |
 | `POST /api/ui/slice/plan` | prévia de fatiamento (`plan_by_size`/`plan_equal`) |
 | `POST /api/ui/slice` | executa o fatiamento local (`slice_locally` -> `extract_shard`) |
+| `POST /api/ui/model-layer-options` | cortes de prefixo aceitos pelo GGUF inteiro selecionado |
+| `POST /api/ui/slice-ranges` | materializa faixas do GGUF inteiro e devolve caminhos por hash |
 | `POST /api/ui/plan` | plano por orçamento do cluster (delega ao peer dono do GGUF quando preciso) |
 | `POST /api/ui/apply` | aplica uma fatia (`skip_split`, `extract_shard` ou `merge_parts`) |
 

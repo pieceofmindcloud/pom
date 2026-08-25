@@ -10,9 +10,9 @@
  *   a single range covering every layer, so the plan that comes back has the
  *   same shape and the same route validates it; nothing here recomputes it.
  *   What the screen drops is the questions that have only one answer. There is
- *   no order to choose in a pipeline of one, and no subset of layers to tick:
- *   the coverage ribbon would be a solid bar and the "included" column a single
- *   permanently-ticked box, which is noise dressed as a choice.
+ *   no order to choose in a pipeline of one, and no per-layer checklist: when
+ *   another peer lacks a slice, the machine inspector offers a discrete slider
+ *   over the cut points the backend read from the selected GGUF.
  *
  * The rest of this comment is about the slice case, which is the one with
  * decisions in it.
@@ -79,6 +79,7 @@ import type {
   InferenceMode,
   RuntimeParams,
   TpLaunch,
+  WholeSliceSelection,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -349,6 +350,8 @@ export function DeployModel() {
   const [pickedKind, setPickedKind] = useState<DeployKind | null>(null);
   /** `null` means "whatever the node suggests" — the default, few-clicks path. */
   const [selection, setSelection] = useState<DeploySelection[] | null>(null);
+  /** A whole-model prefix cut requested for a destination without that slice. */
+  const [wholeSlice, setWholeSlice] = useState<WholeSliceSelection | null>(null);
   /** `null` means "the node's own defaults", which is what most deploys want. */
   const [params, setParams] = useState<RuntimeParams | null>(null);
   const nodeParams = useRef<RuntimeParams | null>(null);
@@ -433,6 +436,10 @@ export function DeployModel() {
         ? tpGroup?.group ?? ""
         : wholeName || wholes[0]?.name || ""
       : group || groups[0]?.key || "";
+
+  useEffect(() => {
+    setWholeSlice(null);
+  }, [chosen, kind]);
   const defaultDeploymentName = useRef("");
   useEffect(() => {
     if (!chosen) return;
@@ -501,6 +508,7 @@ export function DeployModel() {
       deploymentName,
       strategy,
       JSON.stringify(preferredNodeIds),
+      wholeSlice ? JSON.stringify(wholeSlice) : "sem-corte-do-inteiro",
       // TP: o plano revalida quando o primary/workers mudam — a checagem de
       // shardabilidade roda no nó, então a troca precisa re-disparar a query.
       isTp ? JSON.stringify(tpPayload()) : "sem-tp",
@@ -514,6 +522,7 @@ export function DeployModel() {
         preferred_node_ids: preferredNodeIds,
         ...(settled ? { selection: settled } : {}),
         ...(settledParams ? { params: settledParams } : {}),
+        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
         // A whole model is one machine, so there is nothing to join and the
         // toggle is not on screen. Sending it anyway would be sending a value
@@ -734,6 +743,9 @@ export function DeployModel() {
   const labelOf = (id: string) =>
     p?.machines.find((m) => m.node_id === id)?.label ?? id.slice(0, 8);
 
+  const wholeLayerOptions = isWhole ? p?.layer_options ?? undefined : undefined;
+  const wholeSourceNodeId = wholeLayerOptions?.source_node_id ?? wholeModel?.holders[0] ?? "";
+
   const tpRankRows = useMemo(() => {
     if (p?.tp_targets && p.tp_targets.length > 0) {
       return p.tp_targets.slice().sort((a, b) => a.rank - b.rank);
@@ -811,6 +823,18 @@ export function DeployModel() {
       (item) => item.start_layer === startLayer && item.end_layer === endLayer,
     );
     if (!candidate) return;
+    const wholeOptions = isWhole ? p?.layer_options : undefined;
+    if (
+      isWhole
+      && candidate.start_layer === 0
+      && wholeOptions
+      && candidate.end_layer + 1 < wholeOptions.total_layers
+      && wholeOptions.cuts.some((cut) => cut.end_layer === candidate.end_layer)
+    ) {
+      assignWholeCut(nodeId, candidate.end_layer);
+      return;
+    }
+    setWholeSlice(null);
     setSelection((current) => {
       const base = (current ?? rows)
         .filter(
@@ -853,6 +877,7 @@ export function DeployModel() {
    * tirar uma camada não é o mesmo gesto que "Remover da implantação".
    */
   function unassignRangeFromMachine(startLayer: number, endLayer: number, nodeId: string) {
+    setWholeSlice(null);
     edit((base) =>
       base.filter(
         (row) =>
@@ -866,6 +891,7 @@ export function DeployModel() {
   }
 
   function assignWhole(nodeId: string) {
+    setWholeSlice(null);
     const candidate = p?.available[0] ?? (
       wholeModel?.total_layers != null
         ? { start_layer: 0, end_layer: wholeModel.total_layers - 1 }
@@ -882,6 +908,41 @@ export function DeployModel() {
     }]);
   }
 
+  /**
+   * Pick one of the cuts the GGUF layout accepts. The slider index is an
+   * index into those cuts, never an invented layer number, so hybrid models
+   * jump over their real architectural blocks instead of cutting inside one.
+   */
+  function assignWholeCut(targetNodeId: string, endLayer: number) {
+    const options = p?.layer_options;
+    const sourceNodeId = options?.source_node_id ?? wholeModel?.holders[0];
+    const totalLayers = options?.total_layers ?? wholeModel?.total_layers;
+    if (!options || !sourceNodeId || totalLayers == null || sourceNodeId === targetNodeId) return;
+    const cut = options.cuts.find((candidate) => candidate.end_layer === endLayer);
+    if (!cut) return;
+    const template = rows[0];
+    const next: DeploySelection[] = [{
+      start_layer: 0,
+      end_layer: cut.end_layer,
+      target_node_id: targetNodeId,
+      n_gpu_layers: template?.n_gpu_layers ?? null,
+      offload_kqv: template?.offload_kqv ?? null,
+    }];
+    if (cut.end_layer + 1 < totalLayers) {
+      next.push({
+        start_layer: cut.end_layer + 1,
+        end_layer: totalLayers - 1,
+        target_node_id: sourceNodeId,
+        n_gpu_layers: template?.n_gpu_layers ?? null,
+        offload_kqv: template?.offload_kqv ?? null,
+      });
+    }
+    setWholeSlice({ source_node_id: sourceNodeId, target_node_id: targetNodeId, end_layer: cut.end_layer });
+    setSelection(next);
+    setInspectedNodeId(targetNodeId);
+    setInspectorTab("machine");
+  }
+
   async function deploy() {
     setRunning(true);
     setAsked(false);
@@ -893,6 +954,7 @@ export function DeployModel() {
         strategy,
         preferred_node_ids: preferredNodeIds,
         ...(selection ? { selection: rows } : {}),
+        ...(wholeSlice ? { whole_slice: wholeSlice } : {}),
         ...(params ? { params } : {}),
         ...(merge != null && !isWhole ? { merge } : {}),
         ...(isTp ? { tp: tpPayload() } : {}),
@@ -943,6 +1005,7 @@ export function DeployModel() {
 
   function restoreNodePlan() {
     setSelection(null);
+    setWholeSlice(null);
     const defaults = nodeParams.current ?? p?.params ?? null;
     setParams(defaults);
     setDrafts(defaults ? { n_ctx: String(defaults.n_ctx) } : {});
@@ -966,6 +1029,7 @@ export function DeployModel() {
           : undefined
       );
       if (candidate) {
+        setWholeSlice(null);
         setSelection((current) => {
           const base = current ?? rows;
           if (base.some((row) => row.target_node_id === nodeId)) return base;
@@ -1065,6 +1129,7 @@ export function DeployModel() {
                   onClick={() => {
                     setPickedKind(value);
                     setSelection(null);
+                    setWholeSlice(null);
                     setPreferredNodeIds([]);
                     setJobId(null);
                   }}
@@ -1086,6 +1151,7 @@ export function DeployModel() {
                   else if (isTp) setWholeName(event.target.value);
                   else setGroup(event.target.value);
                   setSelection(null);
+                  setWholeSlice(null);
                   setPreferredNodeIds([]);
                 }}
                 className="h-9 min-w-0 flex-1 text-[0.78rem]"
@@ -1126,6 +1192,7 @@ export function DeployModel() {
                   onClick={() => {
                     setStrategy(value);
                     setSelection(null);
+                    setWholeSlice(null);
                     setPreferredNodeIds((current) =>
                       isTp ? current : value === "complete" ? liveMachines.map((machine) => machine.node_id) : [],
                     );
@@ -1517,6 +1584,19 @@ export function DeployModel() {
               const first = taking[0];
               if (!machine) return <p className="py-4 text-[0.68rem] text-faint">Selecione uma máquina no canvas.</p>;
               const availableForMachine = p?.available.filter((candidate) => candidate.holders.includes(machine.node_id)) ?? [];
+              const wholeCuts = wholeLayerOptions?.cuts ?? [];
+              const selectedWholeCutIndex = wholeSlice?.target_node_id === machine.node_id
+                ? wholeCuts.findIndex((cut) => cut.end_layer === wholeSlice.end_layer)
+                : -1;
+              const wholeCutIndex = selectedWholeCutIndex >= 0
+                ? selectedWholeCutIndex
+                : Math.max(0, wholeCuts.length - 1);
+              const wholeCut = wholeCuts[wholeCutIndex];
+              const showWholeSlider = isWhole
+                && machine.node_id !== wholeSourceNodeId
+                && availableForMachine.length === 0
+                && !!wholeCut
+                && !wholeLayerOptions?.reason;
               return (
                 <section className="border border-aqua/20 bg-aqua/[0.035] pt-0">
                   <div className="flex items-center justify-between gap-2 border-b border-aqua/20 bg-aqua/10 px-2 py-1.5">
@@ -1585,6 +1665,43 @@ export function DeployModel() {
                           }) : <span className="text-[0.64rem] text-faint">Nenhuma fatia disponível</span>}
                         </div>
                       </div>
+                      {isWhole && wholeLayerOptions?.reason && machine.node_id !== wholeSourceNodeId && (
+                        <p role="alert" className="mt-3 border-t border-amber/20 pt-2 text-[0.62rem] leading-relaxed text-amber">
+                          Não foi possível confirmar os cortes reais deste modelo: {wholeLayerOptions.reason}
+                        </p>
+                      )}
+                      {showWholeSlider && (
+                        <div className="mt-3 border-t border-iris/20 pt-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="min-w-0">
+                              <p className="text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-iris">Enviar camadas para este peer</p>
+                              <p className="mt-1 text-[0.62rem] leading-relaxed text-muted">
+                                {layerRange(0, wholeCut.end_layer)} para {machine.label}; o restante fica em {labelOf(wholeSourceNodeId)}.
+                              </p>
+                            </div>
+                            <span className="shrink-0 font-mono text-[0.62rem] text-iris">{wholeCut.layers} camadas</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={wholeCuts.length - 1}
+                            step={1}
+                            value={wholeCutIndex}
+                            aria-label={`Camadas a enviar para ${machine.label}`}
+                            onChange={(event) => {
+                              const cut = wholeCuts[Number(event.target.value)];
+                              if (cut) assignWholeCut(machine.node_id, cut.end_layer);
+                            }}
+                            className="mt-2 w-full accent-iris"
+                          />
+                          <p className="mt-1 text-[0.58rem] leading-relaxed text-faint">
+                            {wholeLayerOptions?.rule}. {wholeLayerOptions?.granularity
+                              ? `Passo real: ${wholeLayerOptions.granularity} camadas.`
+                              : "Os cortes disponíveis podem ter tamanhos diferentes."}
+                            {" "}O fatiamento acontece localmente na máquina que propôs o modelo antes da transferência.
+                          </p>
+                        </div>
+                      )}
                     </>
                   )}
                   {first && (

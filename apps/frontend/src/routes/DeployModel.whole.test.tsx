@@ -58,6 +58,19 @@ function wholePlan(target = "ksia"): DeployPlan {
   return {
     group: "qwen3.5-9b",
     kind: "whole",
+    layer_options: {
+      source_node_id: "ksia",
+      total_layers: 32,
+      cuts: [
+        { end_layer: 3, layers: 4, size_bytes: 700_000_000, remainder_bytes: 4_300_000_000 },
+        { end_layer: 7, layers: 8, size_bytes: 1_300_000_000, remainder_bytes: 3_700_000_000 },
+        { end_layer: 15, layers: 16, size_bytes: 2_500_000_000, remainder_bytes: 2_500_000_000 },
+        { end_layer: 31, layers: 32, size_bytes: 5_000_000_000, remainder_bytes: 0 },
+      ],
+      granularity: 4,
+      rule: "modelo híbrido: cortes apenas nas fronteiras arquiteturais reais do GGUF",
+      reason: null,
+    },
     total_layers: 32,
     total_layers_inferred: false,
     steps: [
@@ -397,6 +410,106 @@ describe("DeployModel · modelo inteiro", () => {
         },
       ]);
     });
+  });
+
+  it("mostra cortes reais no slider e envia o prefixo para o destino", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    const slider = await screen.findByRole("slider", { name: /Camadas a enviar para mac/ });
+    expect(slider.getAttribute("max")).toBe("3");
+    expect(screen.getByText(/Passo real: 4 camadas/)).toBeTruthy();
+
+    fireEvent.change(slider, { target: { value: "0" } });
+    await waitFor(() => {
+      const request = planCalls().find(([, body]) => {
+        const typed = body as {
+          whole_slice?: { end_layer: number };
+          selection?: unknown[];
+        };
+        return typed.whole_slice?.end_layer === 3 && typed.selection?.length === 2;
+      });
+      expect(request?.[1]).toMatchObject({
+        whole_slice: {
+          source_node_id: "ksia",
+          target_node_id: "mac",
+          end_layer: 3,
+        },
+        selection: [
+          { start_layer: 0, end_layer: 3, target_node_id: "mac" },
+          { start_layer: 4, end_layer: 31, target_node_id: "ksia" },
+        ],
+      });
+    });
+  });
+
+  it("oculta o slider quando o destino já tem uma fatia", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
+      if (body?.kind === "whole") {
+        plan.available.push({
+          start_layer: 0,
+          end_layer: 3,
+          total_layers: 32,
+          name: "qwen3.5-9b L0-3",
+          size_bytes: 700_000_000,
+          holders: ["mac"],
+          selected: false,
+        });
+      }
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    const available = await screen.findByRole("button", { name: /Atribuir L0–3 a mac/ });
+    expect(available).toBeTruthy();
+    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
+    fireEvent.click(available);
+    await waitFor(() => {
+      const request = planCalls().find(([, body]) => {
+        const typed = body as { selection?: Array<{ target_node_id: string; end_layer: number }> };
+        return typed.selection?.some((row) => row.target_node_id === "mac" && row.end_layer === 3);
+      });
+      expect(request).toBeTruthy();
+    });
+  });
+
+  it("mostra por que não há slider quando a leitura do GGUF é indeterminada", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
+      if (body?.kind === "whole") {
+        plan.layer_options = {
+          source_node_id: "ksia",
+          total_layers: 32,
+          cuts: [],
+          granularity: null,
+          rule: "não foi possível confirmar as regras reais deste GGUF",
+          reason: "o peer não respondeu ao catálogo do GGUF",
+        };
+      }
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/peer não respondeu/);
+    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
   });
 
   it("adiciona uma réplica do modelo inteiro ao incluir outra máquina no mapa", async () => {

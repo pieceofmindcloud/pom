@@ -71,7 +71,8 @@ use crate::network::PeerInfo;
 use crate::plan::DEFAULT_RESERVE_PCT;
 use crate::webui::{
     jobs, launch, new_job, set_job, set_job_progress, InferenceMode, LaunchRequest, LaunchTarget,
-    MergeSource, RuntimeParams, PEER_TIMEOUT,
+    LayerCut, MergeSource, ModelLayerOptions, RuntimeParams, SliceRange, SliceRangesRequest,
+    PEER_TIMEOUT,
 };
 
 const MIB: u64 = 1024 * 1024;
@@ -452,6 +453,10 @@ pub struct DeployRequest {
     /// decides, and the screen shows the decision.
     #[serde(default)]
     pub selection: Option<Vec<SelectedSlice>>,
+    /// Prefix cut requested from a whole model proposer. The remainder stays
+    /// on that proposer as the next pipeline stage.
+    #[serde(default)]
+    pub whole_slice: Option<WholeSliceSelection>,
     /// Join adjacent slices assigned to the same machine into a single file,
     /// so that run becomes one pipeline step. `false` keeps each selected
     /// range as its own pipeline step.
@@ -462,6 +467,23 @@ pub struct DeployRequest {
     /// workers extraem o próprio shard de tensor.
     #[serde(default)]
     pub tp: Option<TpLaunch>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct WholeSliceSelection {
+    pub source_node_id: String,
+    pub target_node_id: String,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WholeLayerOptions {
+    pub source_node_id: String,
+    pub total_layers: u32,
+    pub cuts: Vec<LayerCut>,
+    pub granularity: Option<u32>,
+    pub rule: String,
+    pub reason: Option<String>,
 }
 
 /// Especificação de um grupo de tensor parallelism para o deploy.
@@ -517,6 +539,9 @@ struct HeldShard {
     sha256: Option<String>,
     /// Identidade da rodada de fatiamento que produziu a parte.
     pom_id: Option<String>,
+    /// Planner-only range backed by a whole GGUF that still needs local
+    /// materialization before it can be transferred or loaded.
+    virtual_slice: bool,
     /// Rank TP desta parte, quando a rodada foi fatiada para tensor parallelism.
     tp_rank: Option<u32>,
     /// Número total de ranks desta rodada TP.
@@ -596,6 +621,11 @@ impl Machine {
         self.held
             .iter()
             .find(|s| s.start_layer == start && s.end_layer == end)
+    }
+    fn holds_ready(&self, start: u32, end: u32) -> Option<&HeldShard> {
+        self.held
+            .iter()
+            .find(|s| s.start_layer == start && s.end_layer == end && !s.virtual_slice)
     }
     fn holds_tp(&self, start: u32, end: u32, rank: u32, size: u32) -> Option<&HeldShard> {
         self.held.iter().find(|s| {
@@ -791,13 +821,38 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     })
                     .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
                     .collect(),
-                DeployKind::Whole => body
-                    .get("models")
-                    .and_then(|v| v.as_array())
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|m| parse_whole(m, &group))
-                    .collect(),
+                DeployKind::Whole => {
+                    let mut models = body
+                        .get("models")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|m| parse_whole(m, &group))
+                        .collect::<Vec<_>>();
+                    let mut slices = body
+                        .get("shard_sets")
+                        .and_then(|v| v.as_array())
+                        .into_iter()
+                        .flatten()
+                        .filter(|set| {
+                            set.get("group").and_then(|value| value.as_str())
+                                == Some(group.as_str())
+                                || set.get("model_label").and_then(|value| value.as_str())
+                                    == Some(group.as_str())
+                        })
+                        .flat_map(|set| {
+                            let pom_id = set.get("pom_id").and_then(|value| value.as_str());
+                            set.get("shards")
+                                .and_then(|v| v.as_array())
+                                .into_iter()
+                                .flatten()
+                                .map(move |shard| (shard, pom_id))
+                        })
+                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
+                        .collect::<Vec<_>>();
+                    models.append(&mut slices);
+                    models
+                }
                 DeployKind::TensorParallel => {
                     let parts: Vec<HeldShard> = body
                         .get("shard_sets")
@@ -957,6 +1012,7 @@ fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard>
             .filter(|h| crate::pom::is_sha256_hex(h))
             .map(|h| h.to_string()),
         pom_id: pom_id.map(str::to_string),
+        virtual_slice: false,
         tp_rank: v
             .get("tp_rank")
             .and_then(|rank| rank.as_u64())
@@ -1013,6 +1069,7 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,
         pom_id: None,
+        virtual_slice: false,
         tp_rank: None,
         tp_size: None,
         is_moe: v
@@ -1098,6 +1155,9 @@ pub struct StepPart {
     /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
     /// arquivo solto, e sabe conferir o que chegou.
     source_sha256: Option<String>,
+    /// True when the source is a virtual range that still has to be cut out
+    /// of its whole GGUF before it can be transferred or launched.
+    source_needs_split: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1124,6 +1184,8 @@ pub struct Step {
     /// destino grava em `<shard_dir>/<modelo>/<sha>.gguf` em vez de largar o
     /// arquivo solto, e sabe conferir o que chegou.
     source_sha256: Option<String>,
+    /// True when the source is a virtual range backed by a whole GGUF.
+    source_needs_split: bool,
     /// Where it will be on the target once it lands, when known up front.
     target_path: Option<String>,
     /// Entry point of the pipeline — whoever holds layer 0.
@@ -1189,6 +1251,9 @@ pub struct Plan {
     inference_mode_reason: Option<String>,
     /// Capacidades condicionais apuradas para os alvos deste plano.
     capabilities: crate::capabilities::DeploymentCapabilities,
+    /// Real cut points from the whole GGUF proposer, when this model can be
+    /// split locally for a destination that lacks the selected slice.
+    layer_options: Option<WholeLayerOptions>,
     /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
     /// usa isto para gerar os alvos dos workers.
     tp: Option<TpLaunch>,
@@ -1519,7 +1584,7 @@ fn target_capacity_mb(machine: &Machine) -> u64 {
 
 fn target_capacity_class(candidate: &Candidate, machine: &Machine) -> u8 {
     if machine
-        .holds(candidate.start_layer, candidate.end_layer)
+        .holds_ready(candidate.start_layer, candidate.end_layer)
         .is_some()
     {
         return 0;
@@ -1645,6 +1710,7 @@ fn plan_with_options(
         deployment_name,
         preferred_node_ids,
         &PairwiseRtt::default(),
+        None,
     )
 }
 
@@ -1792,7 +1858,7 @@ fn no_embeddings_topology(
     kind: DeployKind,
 ) -> crate::capabilities::NoEmbeddingsEvaluation {
     let mut ranges = Vec::new();
-    if kind == DeployKind::Shards {
+    if kind == DeployKind::Shards || (kind == DeployKind::Whole && steps.len() > 1) {
         for step in steps {
             let range = (step.start_layer, step.end_layer);
             if !ranges.contains(&range) {
@@ -1983,6 +2049,7 @@ fn plan_with_rtt_options(
     deployment_name: &str,
     preferred_node_ids: &[String],
     pairwise_rtt: &PairwiseRtt,
+    layer_options: Option<WholeLayerOptions>,
 ) -> Plan {
     let mut available = candidates(machines);
     let size = model_size(&available);
@@ -2247,16 +2314,21 @@ fn plan_with_rtt_options(
             for (i, _, _) in &grp {
                 let c = &available[*i];
                 let part_ready =
-                    target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                    target.is_some_and(|t| t.holds_ready(c.start_layer, c.end_layer).is_some());
                 let source = if part_ready {
                     None
                 } else {
                     machines.iter().find(|m| {
-                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                        (Some(&m.node_id) != target.map(|t| &t.node_id)
+                            || m.holds(c.start_layer, c.end_layer)
+                                .is_some_and(|shard| shard.virtual_slice))
                             && m.holds(c.start_layer, c.end_layer).is_some()
                     })
                 };
-                if !part_ready && target.is_some() {
+                if !part_ready
+                    && target.is_some()
+                    && source.is_none_or(|source| source.node_id != *target_id)
+                {
                     transfer_bytes += c.size_bytes;
                 }
                 parts.push(StepPart {
@@ -2273,6 +2345,10 @@ fn plan_with_rtt_options(
                     source_sha256: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .and_then(|s| s.sha256.clone()),
+                    source_needs_split: source.is_some_and(|m| {
+                        m.holds(c.start_layer, c.end_layer)
+                            .is_some_and(|shard| shard.virtual_slice)
+                    }),
                 });
             }
 
@@ -2361,6 +2437,7 @@ fn plan_with_rtt_options(
                 source_host: None,
                 source_path: None,
                 source_sha256: None,
+                source_needs_split: false,
                 target_path: None,
                 primary: start_layer == 0,
                 n_gpu_layers: grp[0].2.n_gpu_layers,
@@ -2377,16 +2454,23 @@ fn plan_with_rtt_options(
             for (i, target_id, over) in &grp {
                 let c = &available[*i];
                 let target = machines.iter().find(|m| &m.node_id == target_id);
-                let ready = target.is_some_and(|t| t.holds(c.start_layer, c.end_layer).is_some());
+                let ready =
+                    target.is_some_and(|t| t.holds_ready(c.start_layer, c.end_layer).is_some());
                 let source = if ready {
                     None
                 } else {
                     machines.iter().find(|m| {
-                        Some(&m.node_id) != target.map(|t| &t.node_id)
+                        (Some(&m.node_id) != target.map(|t| &t.node_id)
+                            || m.holds(c.start_layer, c.end_layer)
+                                .is_some_and(|shard| shard.virtual_slice))
                             && m.holds(c.start_layer, c.end_layer).is_some()
                     })
                 };
-                if !tp_pre_sliced && !ready && target.is_some() {
+                if !tp_pre_sliced
+                    && !ready
+                    && target.is_some()
+                    && source.is_none_or(|source| source.node_id != *target_id)
+                {
                     transfer_bytes += c.size_bytes;
                 }
 
@@ -2467,8 +2551,12 @@ fn plan_with_rtt_options(
                     source_sha256: source
                         .and_then(|m| m.holds(c.start_layer, c.end_layer))
                         .and_then(|s| s.sha256.clone()),
+                    source_needs_split: source.is_some_and(|m| {
+                        m.holds(c.start_layer, c.end_layer)
+                            .is_some_and(|shard| shard.virtual_slice)
+                    }),
                     target_path: target
-                        .and_then(|t| t.holds(c.start_layer, c.end_layer))
+                        .and_then(|t| t.holds_ready(c.start_layer, c.end_layer))
                         .map(|s| s.path.clone()),
                     primary: c.start_layer == 0,
                     n_gpu_layers: over.n_gpu_layers,
@@ -2682,6 +2770,7 @@ fn plan_with_rtt_options(
         inference_mode_supported,
         inference_mode_reason,
         capabilities,
+        layer_options,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -2723,7 +2812,7 @@ fn alternatives(c: &Candidate, machines: &[Machine], kind: DeployKind) -> Vec<Al
     machines
         .iter()
         .map(|m| {
-            let has = m.holds(c.start_layer, c.end_layer).is_some();
+            let has = m.holds_ready(c.start_layer, c.end_layer).is_some();
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
             let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
@@ -2764,7 +2853,7 @@ fn merged_alternatives(parts: &[StepPart], machines: &[Machine]) -> Vec<Alternat
         .map(|m| {
             let has = parts
                 .iter()
-                .all(|p| m.holds(p.start_layer, p.end_layer).is_some());
+                .all(|p| m.holds_ready(p.start_layer, p.end_layer).is_some());
             let no_disk = !has && m.disk_free_mb > 0 && need > m.disk_free_mb;
             let tight = target_capacity_mb(m) > 0 && need > usable_mb(target_capacity_mb(m));
             Alternative {
@@ -2890,8 +2979,19 @@ async fn plan_endpoint(
             Err(error) => return bad(json!({ "error": error })),
         };
     let survey = survey(&state, &req.group, req.kind).await;
-    let machines = survey.machines;
+    let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
+    let layer_options = if req.kind == DeployKind::Whole {
+        whole_layer_options_for_plan(&state, &machines, &req.group).await
+    } else {
+        None
+    };
+    if let (Some(selection), Some(options)) = (&req.whole_slice, &layer_options) {
+        if let Err(error) = add_virtual_whole_slices(&mut machines, &req.group, selection, options)
+        {
+            return bad(json!({ "error": error }));
+        }
+    }
     let params = effective_params_for_kind(req.kind, &req.params);
     let mut p = plan_with_rtt_options(
         &req.group,
@@ -2905,6 +3005,7 @@ async fn plan_endpoint(
         &deployment_name,
         &req.preferred_node_ids,
         &pairwise_rtt,
+        layer_options,
     );
     if req.kind == DeployKind::TensorParallel && p.blocked.is_none() && !has_tp_parts(&machines) {
         if let Some(tp) = &req.tp {
@@ -2929,8 +3030,19 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let survey = survey(&state, &req.group, req.kind).await;
-    let machines = survey.machines;
+    let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
+    let layer_options = if req.kind == DeployKind::Whole {
+        whole_layer_options_for_plan(&state, &machines, &req.group).await
+    } else {
+        None
+    };
+    if let (Some(selection), Some(options)) = (&req.whole_slice, &layer_options) {
+        if let Err(error) = add_virtual_whole_slices(&mut machines, &req.group, selection, options)
+        {
+            return bad(json!({ "error": error }));
+        }
+    }
     let deployment_name =
         match normalize_deployment_name(req.deployment_name.as_deref(), &req.group) {
             Ok(name) => name,
@@ -2949,6 +3061,7 @@ async fn deploy_endpoint(
         &deployment_name,
         &req.preferred_node_ids,
         &pairwise_rtt,
+        layer_options,
     );
 
     // A checagem de shardabilidade lê o GGUF no primary; o deploy re-faz tudo
@@ -3377,7 +3490,7 @@ fn launch_targets(
     }
     let pipeline_peer_count = pipeline_ranges.len() as u32;
     let pipeline_fields = |step: &Step| {
-        if kind != DeployKind::Shards {
+        if kind != DeployKind::Shards && !(kind == DeployKind::Whole && steps.len() > 1) {
             return (None, None);
         }
         let index = pipeline_ranges
@@ -3397,7 +3510,7 @@ fn launch_targets(
             let mut merge: Vec<MergeSource> = Vec::new();
             for part in &step.parts {
                 let path = target_machine
-                    .and_then(|m| m.holds(part.start_layer, part.end_layer))
+                    .and_then(|m| m.holds_ready(part.start_layer, part.end_layer))
                     .map(|s| s.path.clone())
                     .ok_or_else(|| {
                         format!(
@@ -3442,7 +3555,7 @@ fn launch_targets(
         }
 
         let held = target_machine
-            .and_then(|m| m.holds(step.start_layer, step.end_layer))
+            .and_then(|m| m.holds_ready(step.start_layer, step.end_layer))
             .ok_or_else(|| {
                 format!(
                     "{} não achou {} depois da cópia",
@@ -3482,7 +3595,7 @@ fn launch_targets(
                 .find(|m| m.node_id == *worker_id)
                 .ok_or_else(|| format!("worker {worker_id} não está no cluster"))?;
             let path = worker_machine
-                .holds(head.start_layer, head.end_layer)
+                .holds_ready(head.start_layer, head.end_layer)
                 .map(|s| s.path.clone())
                 .ok_or_else(|| {
                     format!(
@@ -3548,6 +3661,268 @@ fn planned_model_paths(plan: &Plan) -> Vec<(String, String)> {
         );
     }
     paths
+}
+
+async fn whole_layer_options_for_plan(
+    state: &GatewayState,
+    machines: &[Machine],
+    group: &str,
+) -> Option<WholeLayerOptions> {
+    let source = machines.iter().find_map(|machine| {
+        machine
+            .held
+            .iter()
+            .find(|shard| shard.start_layer == 0 && shard.total_layers == Some(shard.end_layer + 1))
+            .map(|shard| (machine, shard.path.clone(), shard.total_layers.unwrap_or(0)))
+    })?;
+    let (machine, path, total_layers) = source;
+    let result: Result<ModelLayerOptions, String> = if machine.node_id == state.network.node_id {
+        crate::webui::model_layer_options_local(state, &path).await
+    } else {
+        let Some(base) = machine.gateway_url.clone() else {
+            return Some(WholeLayerOptions {
+                source_node_id: machine.node_id.clone(),
+                total_layers,
+                cuts: Vec::new(),
+                granularity: None,
+                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                reason: Some(format!("{} não anuncia gateway", machine.label())),
+            });
+        };
+        let Ok(client) = state.peer_http.for_peer(&machine.node_id) else {
+            return Some(WholeLayerOptions {
+                source_node_id: machine.node_id.clone(),
+                total_layers,
+                cuts: Vec::new(),
+                granularity: None,
+                rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                reason: Some(format!("não foi possível falar com {}", machine.label())),
+            });
+        };
+        let key = state.auth.read().await.connection_key.clone();
+        let response = client
+            .post(format!("{base}/api/ui/model-layer-options"))
+            .bearer_auth(key)
+            .json(&crate::webui::ModelLayerOptionsRequest { path })
+            .timeout(PEER_TIMEOUT * 4)
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "não foi possível ler as regras de fatiamento em {}: {error}",
+                    machine.label()
+                )
+            });
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => {
+                return Some(WholeLayerOptions {
+                    source_node_id: machine.node_id.clone(),
+                    total_layers,
+                    cuts: Vec::new(),
+                    granularity: None,
+                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    reason: Some(error),
+                })
+            }
+        };
+        let status = response.status();
+        let body = match response.json::<serde_json::Value>().await {
+            Ok(body) => body,
+            Err(error) => {
+                return Some(WholeLayerOptions {
+                    source_node_id: machine.node_id.clone(),
+                    total_layers,
+                    cuts: Vec::new(),
+                    granularity: None,
+                    rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+                    reason: Some(format!(
+                        "resposta inválida das regras de fatiamento: {error}"
+                    )),
+                })
+            }
+        };
+        if !status.is_success() {
+            Err(body
+                .get("error")
+                .and_then(|value| value.as_str())
+                .unwrap_or("o peer recusou a leitura das regras de fatiamento")
+                .to_string())
+        } else {
+            serde_json::from_value::<ModelLayerOptions>(body)
+                .map_err(|error| format!("resposta inválida das regras de fatiamento: {error}"))
+        }
+    };
+    match result {
+        Ok(options) => Some(WholeLayerOptions {
+            source_node_id: machine.node_id.clone(),
+            total_layers: options.total_layers,
+            cuts: options.cuts,
+            granularity: options.granularity,
+            rule: options.rule,
+            reason: None,
+        }),
+        Err(error) => Some(WholeLayerOptions {
+            source_node_id: machine.node_id.clone(),
+            total_layers,
+            cuts: Vec::new(),
+            granularity: None,
+            rule: "não foi possível confirmar as regras reais deste GGUF".to_string(),
+            reason: Some(format!("{}: {}", group, error)),
+        }),
+    }
+}
+
+fn add_virtual_whole_slices(
+    machines: &mut [Machine],
+    group: &str,
+    selection: &WholeSliceSelection,
+    options: &WholeLayerOptions,
+) -> Result<(), String> {
+    if let Some(reason) = &options.reason {
+        return Err(format!(
+            "não é possível escolher camadas de {}: {}",
+            group, reason
+        ));
+    }
+    let cut = options
+        .cuts
+        .iter()
+        .find(|cut| cut.end_layer == selection.end_layer)
+        .ok_or_else(|| {
+            format!(
+                "o corte na camada L{} não respeita as regras reais do GGUF",
+                selection.end_layer
+            )
+        })?;
+    if selection.source_node_id == selection.target_node_id {
+        return Err(
+            "a máquina de origem e a máquina de destino precisam ser diferentes".to_string(),
+        );
+    }
+    let source = machines
+        .iter()
+        .find(|machine| machine.node_id == selection.source_node_id)
+        .ok_or_else(|| "a máquina que propõe o modelo não está no cluster".to_string())?;
+    let whole = source
+        .held
+        .iter()
+        .find(|shard| {
+            shard.start_layer == 0
+                && shard.end_layer + 1 == options.total_layers
+                && !shard.virtual_slice
+        })
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "{} não tem o modelo inteiro selecionado para fatiar",
+                source.label()
+            )
+        })?;
+    if !machines
+        .iter()
+        .any(|machine| machine.node_id == selection.target_node_id)
+    {
+        return Err("a máquina de destino não está no cluster".to_string());
+    }
+
+    let mut ranges = vec![(0, cut.end_layer, cut.size_bytes)];
+    if cut.end_layer + 1 < options.total_layers {
+        ranges.push((
+            cut.end_layer + 1,
+            options.total_layers - 1,
+            cut.remainder_bytes,
+        ));
+    }
+    let source = machines
+        .iter_mut()
+        .find(|machine| machine.node_id == selection.source_node_id)
+        .expect("origem validada");
+    for (start_layer, end_layer, size_bytes) in ranges {
+        if source.holds_ready(start_layer, end_layer).is_some()
+            || source
+                .holds(start_layer, end_layer)
+                .is_some_and(|shard| shard.virtual_slice)
+        {
+            continue;
+        }
+        source.held.push(HeldShard {
+            start_layer,
+            end_layer,
+            total_layers: Some(options.total_layers),
+            name: format!("{group} L{start_layer}-{end_layer}"),
+            path: whole.path.clone(),
+            size_bytes,
+            sha256: None,
+            pom_id: None,
+            virtual_slice: true,
+            tp_rank: None,
+            tp_size: None,
+            is_moe: whole.is_moe,
+            model_capabilities: whole.model_capabilities.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Cut virtual ranges on the peer that owns the whole GGUF. The actual
+/// fatiador remains in `webui`, so deploy only coordinates the local operation
+/// and receives the content-addressed paths that transfer already understands.
+async fn materialize_slices_on_peer(
+    state: &GatewayState,
+    source_node_id: &str,
+    request: &SliceRangesRequest,
+) -> Result<crate::webui::SliceRangesResponse, String> {
+    if source_node_id == state.network.node_id {
+        return crate::webui::materialize_slice_ranges(state, request).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == source_node_id)
+        .ok_or_else(|| format!("a máquina de origem {source_node_id} não está no cluster"))?;
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(source_node_id)
+        .map_err(|error| format!("sem cliente para {}: {error}", peer.hostname))?;
+    let key = state.auth.read().await.connection_key.clone();
+    let response = client
+        .post(format!("{base}/api/ui/slice-ranges"))
+        .bearer_auth(key)
+        .timeout(Duration::from_secs(3600))
+        .json(request)
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "não foi possível fatiar o modelo em {}: {error}",
+                peer.hostname
+            )
+        })?;
+    let status = response.status();
+    let body: serde_json::Value = response.json().await.map_err(|error| {
+        format!(
+            "{} respondeu uma materialização inválida: {error}",
+            peer.hostname
+        )
+    })?;
+    if !status.is_success() {
+        return Err(body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .unwrap_or("o peer recusou o fatiamento local")
+            .to_string());
+    }
+    serde_json::from_value(body).map_err(|error| {
+        format!(
+            "resposta inválida do fatiamento em {}: {error}",
+            peer.hostname
+        )
+    })
 }
 
 async fn model_identity_on_peer(
@@ -3957,6 +4332,7 @@ async fn run(
         source_path: String,
         /// Hash da parte, quando a origem a tem endereçada por conteúdo.
         source_sha256: Option<String>,
+        source_needs_split: bool,
         name: String,
         start_layer: u32,
         end_layer: u32,
@@ -3982,6 +4358,7 @@ async fn run(
                 source_node_id: source_node.clone(),
                 source_path: source_path.clone(),
                 source_sha256: target.source_sha256.clone(),
+                source_needs_split: false,
                 name: target.name.clone(),
                 start_layer: target.start_layer,
                 end_layer: target.end_layer,
@@ -4008,6 +4385,7 @@ async fn run(
                         source_node_id: source_node.clone(),
                         source_path: source_path.clone(),
                         source_sha256: part.source_sha256.clone(),
+                        source_needs_split: part.source_needs_split,
                         name: part.name.clone(),
                         start_layer: part.start_layer,
                         end_layer: part.end_layer,
@@ -4028,12 +4406,85 @@ async fn run(
                     source_node_id: source_node.clone(),
                     source_path: source_path.clone(),
                     source_sha256: step.source_sha256.clone(),
+                    source_needs_split: step.source_needs_split,
                     name: step.name.clone(),
                     start_layer: step.start_layer,
                     end_layer: step.end_layer,
                 });
             }
         }
+    }
+
+    // Virtual ranges are backed by the proposer's whole GGUF. Materialize all
+    // of them on that peer before any destination asks the transfer service to
+    // pull a path. Grouping keeps one source read/manifest operation per
+    // source model even when the selected pipeline has several ranges.
+    let mut materializations: HashMap<(String, String, u32, String), Vec<SliceRange>> =
+        HashMap::new();
+    for pull in &pulls {
+        if pull.source_needs_split {
+            let ranges = materializations
+                .entry((
+                    pull.source_node_id.clone(),
+                    pull.source_path.clone(),
+                    plan.total_layers.ok_or_else(|| {
+                        format!("as fatias de {} não dizem o total de camadas", plan.group)
+                    })?,
+                    plan.group.clone(),
+                ))
+                .or_default();
+            if !ranges.iter().any(|range| {
+                range.start_layer == pull.start_layer && range.end_layer == pull.end_layer
+            }) {
+                ranges.push(SliceRange {
+                    start_layer: pull.start_layer,
+                    end_layer: pull.end_layer,
+                });
+            }
+        }
+    }
+    for ((source_node_id, source_path, total_layers, name), ranges) in materializations {
+        set_job(
+            job_id,
+            "running",
+            "fatiando modelo inteiro",
+            &format!(
+                "materializando {} faixa(s) na máquina que propôs o modelo",
+                ranges.len()
+            ),
+        )
+        .await;
+        let response = materialize_slices_on_peer(
+            &state,
+            &source_node_id,
+            &SliceRangesRequest {
+                model_path: source_path.clone(),
+                name: name.clone(),
+                total_layers,
+                ranges,
+            },
+        )
+        .await?;
+        for materialized in response.slices {
+            let Some(pull) = pulls.iter_mut().find(|pull| {
+                pull.source_needs_split
+                    && pull.source_node_id == source_node_id
+                    && pull.source_path == source_path
+                    && pull.start_layer == materialized.start_layer
+                    && pull.end_layer == materialized.end_layer
+            }) else {
+                return Err(format!(
+                    "o fatiador devolveu uma faixa L{}-{} que não estava no plano",
+                    materialized.start_layer, materialized.end_layer
+                ));
+            };
+            pull.source_path = materialized.path;
+            pull.source_sha256 = Some(materialized.sha256);
+            pull.source_needs_split = false;
+        }
+    }
+    if pulls.iter().any(|pull| pull.source_needs_split) {
+        return Err("o fatiamento local não devolveu todas as faixas pedidas".to_string());
     }
 
     // ── Phase 1: transfers ───────────────────────────────────────────────────
@@ -4058,6 +4509,9 @@ async fn run(
         // certificado dele - uma URL sozinha não tem identidade a verificar.
         let mut watching: Vec<(String, String, String)> = Vec::new();
         for pull in &pulls {
+            if pull.target_node_id == pull.source_node_id {
+                continue;
+            }
             let gateway = gateway_of(&state, &pull.target_node_id)
                 .await
                 .ok_or_else(|| format!("{} não anuncia porta de gateway", pull.target_host))?;
@@ -6348,6 +6802,7 @@ mod tests {
                         path: format!("/models/m_{a}_{b}.gguf"),
                         sha256: None,
                         pom_id: None,
+                        virtual_slice: false,
                         tp_rank: None,
                         tp_size: None,
                         is_moe: false,
@@ -6441,6 +6896,60 @@ mod tests {
             crate::capabilities::CapabilityState::Unknown
         );
         assert!(p.capabilities.mtp.warning.is_some());
+    }
+
+    #[test]
+    fn whole_model_cut_creates_virtual_ranges_for_local_materialization() {
+        let mut machines = build(vec![
+            m("source", 900_000, &[(0, 31)]),
+            m("target", 900_000, &[]),
+        ]);
+        let options = WholeLayerOptions {
+            source_node_id: "source".to_string(),
+            total_layers: 32,
+            cuts: vec![LayerCut {
+                end_layer: 3,
+                layers: 4,
+                size_bytes: GIB,
+                remainder_bytes: GIB,
+            }],
+            granularity: Some(4),
+            rule: "fronteiras reais".to_string(),
+            reason: None,
+        };
+        super::add_virtual_whole_slices(
+            &mut machines,
+            "model",
+            &WholeSliceSelection {
+                source_node_id: "source".to_string(),
+                target_node_id: "target".to_string(),
+                end_layer: 3,
+            },
+            &options,
+        )
+        .expect("corte válido");
+
+        assert!(machines[0]
+            .holds(0, 3)
+            .is_some_and(|shard| shard.virtual_slice));
+        assert!(machines[0]
+            .holds(4, 31)
+            .is_some_and(|shard| shard.virtual_slice));
+        let selection = [pick(0, 3, "target"), pick(4, 31, "source")];
+        let plan = super::plan(
+            "model",
+            &machines,
+            Some(&selection),
+            &RuntimeParams::default(),
+            false,
+            DeployKind::Whole,
+            None,
+        );
+        assert!(plan.blocked.is_none(), "{:?}", plan.blocked);
+        assert_eq!(plan.steps.len(), 2);
+        assert!(plan.steps.iter().all(|step| !step.ready));
+        assert!(plan.steps[0].source_needs_split);
+        assert!(plan.steps[1].source_needs_split);
     }
 
     /// The knobs are their own axis; every test below is about the placement,
@@ -7215,6 +7724,7 @@ mod tests {
             "qwen",
             &[],
             &rtts,
+            None,
         );
         let values: Vec<_> = p.route_options.iter().map(|route| route.rtt_ms).collect();
         assert_eq!(values, vec![Some(11.5), Some(22.5), Some(33.5)]);
@@ -7598,6 +8108,7 @@ mod tests {
                 vec![HeldShard {
                     sha256: None,
                     pom_id: None,
+                    virtual_slice: false,
                     tp_rank: None,
                     tp_size: None,
                     is_moe: false,
@@ -7629,6 +8140,7 @@ mod tests {
             size_bytes: 2 * GIB,
             sha256: Some(format!("{:064x}", rank + 1)),
             pom_id: None,
+            virtual_slice: false,
             tp_rank: Some(rank),
             tp_size: Some(2),
             is_moe: false,
@@ -8122,6 +8634,7 @@ mod tests {
             held: vec![HeldShard {
                 sha256: None,
                 pom_id: None,
+                virtual_slice: false,
                 tp_rank: None,
                 tp_size: None,
                 is_moe: false,

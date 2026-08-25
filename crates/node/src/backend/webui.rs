@@ -140,6 +140,8 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
         .route("/api/ui/model-identity", post(model_identity))
+        .route("/api/ui/model-layer-options", post(model_layer_options))
+        .route("/api/ui/slice-ranges", post(slice_ranges))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
@@ -2200,6 +2202,54 @@ pub(crate) struct ModelIdentityResponse {
     pub sha256: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct LayerCut {
+    pub end_layer: u32,
+    pub layers: u32,
+    pub size_bytes: u64,
+    pub remainder_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ModelLayerOptions {
+    pub total_layers: u32,
+    pub cuts: Vec<LayerCut>,
+    pub granularity: Option<u32>,
+    pub rule: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelLayerOptionsRequest {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SliceRange {
+    pub start_layer: u32,
+    pub end_layer: u32,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct SliceRangesRequest {
+    pub model_path: String,
+    pub name: String,
+    pub total_layers: u32,
+    pub ranges: Vec<SliceRange>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MaterializedSlice {
+    pub start_layer: u32,
+    pub end_layer: u32,
+    pub path: String,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct SliceRangesResponse {
+    pub slices: Vec<MaterializedSlice>,
+}
+
 /// Proves the identity of a file selected for deployment without hashing the
 /// catalog during ordinary polling. The path must already be in this peer's
 /// catalog, so a caller cannot turn the route into an arbitrary file reader.
@@ -2248,6 +2298,71 @@ pub(crate) async fn model_identity_local(
     Ok(ModelIdentityResponse {
         canonical_path: canonical.to_string_lossy().into_owned(),
         sha256,
+    })
+}
+
+async fn model_layer_options(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelLayerOptionsRequest>,
+) -> Response {
+    match model_layer_options_local(&state, &req.path).await {
+        Ok(options) => Json(options).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn model_layer_options_local(
+    state: &GatewayState,
+    requested: &str,
+) -> Result<ModelLayerOptions, String> {
+    let requested_path = std::path::Path::new(requested);
+    let canonical = requested_path
+        .canonicalize()
+        .map_err(|e| format!("não foi possível resolver o modelo inteiro: {e}"))?;
+    let catalog = local_catalog(state).await;
+    let listed = catalog.models.iter().any(|model| {
+        std::path::Path::new(&model.path)
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == canonical)
+            && model.shard_range.is_none()
+    });
+    if !listed {
+        return Err(format!(
+            "o arquivo {} não é um modelo inteiro do catálogo deste peer",
+            requested_path.display()
+        ));
+    }
+    let layout = layout_of(&canonical).await?;
+    let total_layers = layout.layer_count();
+    if total_layers == 0 {
+        return Err("o GGUF não declara camadas para fatiar".to_string());
+    }
+    let cuts = layout
+        .valid_prefix_end_layers()
+        .into_iter()
+        .map(|end_layer| LayerCut {
+            end_layer,
+            layers: end_layer + 1,
+            size_bytes: layout.slice_bytes(0, end_layer, end_layer + 1 >= total_layers),
+            remainder_bytes: if end_layer + 1 < total_layers {
+                layout.slice_bytes(end_layer + 1, total_layers - 1, true)
+            } else {
+                0
+            },
+        })
+        .collect::<Vec<_>>();
+    let rule = if layout.arch_boundaries().is_empty() {
+        "modelo denso: qualquer corte em camada inteira".to_string()
+    } else {
+        "modelo híbrido: cortes apenas nas fronteiras arquiteturais reais do GGUF".to_string()
+    };
+    Ok(ModelLayerOptions {
+        total_layers,
+        cuts,
+        granularity: layout.prefix_cut_granularity(),
+        rule,
     })
 }
 
@@ -3307,6 +3422,137 @@ async fn run_slice(
     invalidate_catalog().await;
 
     Ok(manifesto)
+}
+
+/// Materialize the exact ranges selected by deploy from a local whole model.
+/// The deploy coordinator calls this on the peer that proposed the model before
+/// asking the destination to pull the resulting slice files.
+async fn slice_ranges(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SliceRangesRequest>,
+) -> Response {
+    match materialize_slice_ranges(&state, &req).await {
+        Ok(response) => Json(response).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn materialize_slice_ranges(
+    state: &GatewayState,
+    req: &SliceRangesRequest,
+) -> Result<SliceRangesResponse, String> {
+    if req.ranges.is_empty() || req.ranges.len() > 64 {
+        return Err("o fatiamento precisa de entre 1 e 64 faixas".to_string());
+    }
+    if req.name.trim().is_empty() {
+        return Err("o fatiamento precisa do nome do modelo".to_string());
+    }
+    let options = model_layer_options_local(state, &req.model_path).await?;
+    let source = std::path::Path::new(&req.model_path)
+        .canonicalize()
+        .map_err(|error| format!("não foi possível resolver o modelo inteiro: {error}"))?;
+    let layout = layout_of(&source).await?;
+    if req.total_layers != options.total_layers {
+        return Err(format!(
+            "o modelo declara {} camadas, mas a implantação pediu {}",
+            options.total_layers, req.total_layers
+        ));
+    }
+    for range in &req.ranges {
+        if range.start_layer > range.end_layer || range.end_layer >= req.total_layers {
+            return Err(format!(
+                "faixa L{}-{} fora do modelo de {} camadas",
+                range.start_layer, range.end_layer, req.total_layers
+            ));
+        }
+        if !layout.is_valid_slice_start(range.start_layer) {
+            return Err(format!(
+                "a faixa L{}-{} começa fora de uma fronteira arquitetural real do modelo",
+                range.start_layer, range.end_layer
+            ));
+        }
+        if layout.snap_end_layer(range.start_layer, range.end_layer, req.total_layers)
+            != range.end_layer
+        {
+            return Err(format!(
+                "a faixa L{}-{} não respeita as fronteiras arquiteturais reais do modelo",
+                range.start_layer, range.end_layer
+            ));
+        }
+    }
+    let source = source;
+    let source_sha256 = source_model_sha256(&source)
+        .await
+        .map_err(|error| format!("não foi possível identificar o modelo inteiro: {error:#}"))?;
+    let shard_dir = state.shard_dir().await;
+    let scratch = crate::pom::scratch_dir(&shard_dir);
+    let job_id = uuid::Uuid::new_v4().simple().to_string();
+    jobs().write().await.insert(
+        job_id.clone(),
+        new_job(
+            &job_id,
+            "slice",
+            format!("Fatiando {} para a implantação", req.name),
+            "preparando",
+        ),
+    );
+    let ranges = req
+        .ranges
+        .iter()
+        .map(|range| (range.start_layer, range.end_layer))
+        .collect();
+    let result = run_slice(
+        state.clone(),
+        source,
+        shard_dir.clone(),
+        scratch,
+        req.name.clone(),
+        req.name.clone(),
+        ranges,
+        req.total_layers,
+        state.network.node_id.clone(),
+        source_sha256,
+        &job_id,
+    )
+    .await;
+    let manifest = match result {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+            return Err(format!(
+                "não foi possível fatiar o modelo inteiro: {error:#}"
+            ));
+        }
+    };
+    let directory = crate::pom::dir_for(&shard_dir, &manifest);
+    let slices = manifest
+        .parts
+        .iter()
+        .map(|part| {
+            crate::pom::part_path(&directory, &part.sha256)
+                .map(|path| MaterializedSlice {
+                    start_layer: part.start_layer,
+                    end_layer: part.end_layer,
+                    path: path.to_string_lossy().into_owned(),
+                    sha256: part.sha256.clone(),
+                })
+                .map_err(|error| {
+                    format!("não foi possível localizar a fatia materializada: {error}")
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    set_job(
+        &job_id,
+        "done",
+        "pronto",
+        &format!(
+            "{} fatia(s) materializada(s) para a implantação",
+            slices.len()
+        ),
+    )
+    .await;
+    Ok(SliceRangesResponse { slices })
 }
 
 // ── Cluster launch ───────────────────────────────────────────────────────────

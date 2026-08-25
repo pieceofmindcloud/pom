@@ -109,6 +109,14 @@ Per-file list:
   silence the screen. Deploy memory is namespaced `whole:<name>`, because a
   shard set and a model routinely share a name. Tests:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
+  Quando a máquina selecionada não tem uma fatia, o inspetor de máquina expõe
+  um slider indexado pelos cortes que o backend leu do GGUF. O índice não é uma
+  camada cravada: em modelos densos os cortes podem ser camada a camada, e em
+  modelos híbridos saltam pelas fronteiras arquiteturais reais. A seleção envia
+  `whole_slice`; o backend materializa prefixo e restante na máquina que tem o
+  modelo inteiro e só então usa a transferência existente. Se o destino já tem
+  a faixa, a lista "Camadas disponíveis neste peer" continua sendo o controle e
+  o slider fica oculto; falha na leitura aparece no inspetor com o motivo.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
   For a real MoE model, identified by `DeployPlan.is_moe` from GGUF metadata,

@@ -31,7 +31,10 @@ do modelo e nomes maiores que 128 caracteres são recusados. `group` continua
 sendo a identidade técnica usada pelo catálogo, gossip e roteamento. A estratégia
 simples usa o menor conjunto suficiente de peers; a completa prefere os cortes
 existentes mais finos e distribui a carga entre mais máquinas. Nenhuma estratégia
-cria limites novos de GGUF: para isso continua existindo a tela de Fatiar.
+de fatias cria limites novos de GGUF: para isso continua existindo a tela de
+Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pede
+um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
+materializa as faixas no peer que possui o arquivo.
 
 Três regras saem da arquitetura, não do gosto:
 
@@ -85,6 +88,23 @@ sentido **puxar**, que `transfer::safe_model_path` prende à pasta de fatias de
 quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
+
+### 1.1.1 Escolha de camadas a partir do modelo inteiro
+
+`POST /api/ui/deploy/plan` pode receber `whole_slice` com
+`{source_node_id, target_node_id, end_layer}`. A origem precisa anunciar o
+modelo inteiro selecionado. `model-layer-options` lê o GGUF nessa origem e
+devolve os fins de prefixo aceitos: qualquer fim de camada inteira em layout
+denso, ou somente as fronteiras arquiteturais de `arch_boundaries` em layout
+híbrido. O frontend usa esses pontos como posições do slider; nunca converte o
+slider em um passo fixo.
+
+Ao executar, `deploy` cria uma faixa virtual para o prefixo e outra para o
+restante, chama `slice-ranges` na origem e espera o fatiador selar um manifesto
+com `sha256` antes de iniciar `transfer/pull`. Se uma faixa já existir no
+destino, ela permanece na lista de camadas disponíveis e não há slider para
+ela. Falha ou ausência de leitura do GGUF é uma recusa nominal, com o motivo
+visível no inspetor.
 
 ## 1.2 Tensor parallel: grupo de ranks
 

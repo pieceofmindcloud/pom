@@ -1001,6 +1001,31 @@ export interface DeploySelection {
   offload_kqv?: boolean | null;
 }
 
+/** Prefix cut selected from a whole GGUF proposer during deployment. */
+export interface WholeSliceSelection {
+  source_node_id: string;
+  target_node_id: string;
+  end_layer: number;
+}
+
+/** A cut accepted by the model's real GGUF layout. */
+export interface LayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
+}
+
+export interface WholeLayerOptions {
+  source_node_id: string;
+  total_layers: number;
+  cuts: LayerCut[];
+  /** Set only when all valid cut distances share one common step. */
+  granularity: number | null;
+  rule: string;
+  reason?: string | null;
+}
+
 /**
  * What is being put into service. `src/backend/deploy.rs` — `DeployKind`.
  *
@@ -1046,6 +1071,8 @@ export interface DeployPlan {
   inference_mode_reason?: string | null;
   /** Capacidades condicionais apuradas pelo backend para os alvos atuais. */
   capabilities?: DeploymentCapabilities;
+  /** Real cut points reported by the peer holding the whole GGUF. */
+  layer_options?: WholeLayerOptions | null;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

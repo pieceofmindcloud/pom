@@ -634,6 +634,53 @@ impl GgufLayout {
             .collect()
     }
 
+    /// Ends at which a prefix can be cut without splitting an architectural
+    /// run. The final layer is always valid because it leaves no suffix.
+    ///
+    /// This is the same boundary rule consumed by `snap_end_layer`; exposing
+    /// the actual cut points lets the deploy UI use a discrete slider without
+    /// guessing a model-specific multiple.
+    pub fn valid_prefix_end_layers(&self) -> Vec<u32> {
+        let total = self.layer_count();
+        if total == 0 {
+            return Vec::new();
+        }
+        let boundaries = self.arch_boundaries();
+        let mut ends = if boundaries.is_empty() {
+            (0..total).collect::<Vec<_>>()
+        } else {
+            boundaries
+                .into_iter()
+                .filter(|boundary| *boundary > 0 && *boundary < total)
+                .map(|boundary| boundary - 1)
+                .collect::<Vec<_>>()
+        };
+        ends.push(total - 1);
+        ends.sort_unstable();
+        ends.dedup();
+        ends
+    }
+
+    /// Whether a slice can begin at this layer without changing the kind
+    /// sequence when the fatiador renumbers its blocks.
+    pub fn is_valid_slice_start(&self, start: u32) -> bool {
+        if start >= self.layer_count() {
+            return false;
+        }
+        self.arch_boundaries().is_empty() || start == 0 || self.arch_boundaries().contains(&start)
+    }
+
+    /// Uniform layer distance when the model's valid prefix cuts are evenly
+    /// spaced. `None` means the architecture has irregular boundaries; callers
+    /// should use `valid_prefix_end_layers` rather than inventing a step.
+    pub fn prefix_cut_granularity(&self) -> Option<u32> {
+        let ends = self.valid_prefix_end_layers();
+        let mut distances = ends.windows(2).map(|window| window[1] - window[0]);
+        let first = distances.next()?;
+        let gcd = distances.fold(first, gcd_u32);
+        (ends.windows(2).all(|window| window[1] - window[0] == gcd)).then_some(gcd)
+    }
+
     /// Snap `end` so that `end + 1` falls on a valid slice-start position.
     ///
     /// Valid starts are layer 0, every architectural boundary, and `total_layers`
@@ -679,6 +726,15 @@ impl GgufLayout {
             .unwrap_or(0);
         layers + self.embedding_bytes + if is_last { self.head_bytes } else { 0 }
     }
+}
+
+fn gcd_u32(mut left: u32, mut right: u32) -> u32 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
 }
 
 fn align_up_layout(n: u64) -> u64 {
@@ -1102,6 +1158,34 @@ mod tests {
         assert_eq!(layout.slice_bytes(0, 1, false), 250);
         // Last slice also carries the output head.
         assert_eq!(layout.slice_bytes(2, 3, true), 280);
+    }
+
+    #[test]
+    fn valid_prefix_cuts_follow_dense_and_hybrid_layouts() {
+        let dense = GgufLayout {
+            layer_bytes: vec![100; 4],
+            layer_kinds: vec![vec!["dense".into()]; 4],
+            ..Default::default()
+        };
+        assert_eq!(dense.valid_prefix_end_layers(), vec![0, 1, 2, 3]);
+        assert_eq!(dense.prefix_cut_granularity(), Some(1));
+
+        let hybrid = GgufLayout {
+            layer_bytes: vec![100; 8],
+            layer_kinds: vec![
+                vec!["mamba".into()],
+                vec!["mamba".into()],
+                vec!["attention".into()],
+                vec!["attention".into()],
+                vec!["mamba".into()],
+                vec!["mamba".into()],
+                vec!["attention".into()],
+                vec!["attention".into()],
+            ],
+            ..Default::default()
+        };
+        assert_eq!(hybrid.valid_prefix_end_layers(), vec![1, 3, 5, 7]);
+        assert_eq!(hybrid.prefix_cut_granularity(), Some(2));
     }
 
     #[test]

@@ -183,6 +183,8 @@ behind an auth extractor.
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
+  `model-layer-options` (POST, cortes reais do GGUF) e `slice-ranges` (POST,
+  materialização local de faixas escolhidas a partir de um modelo inteiro),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),

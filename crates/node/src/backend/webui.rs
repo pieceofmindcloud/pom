@@ -139,6 +139,7 @@ pub fn routes() -> Router<GatewayState> {
         .route("/api/ui/plan", post(plan_split_endpoint))
         .route("/api/ui/apply", post(apply))
         .route("/api/ui/launch", post(launch))
+        .route("/api/ui/model-identity", post(model_identity))
         .route("/api/ui/stop-inference", post(stop_inference))
         .route("/api/ui/slice", post(slice_locally))
         .route("/api/ui/slice/plan", post(slice_plan))
@@ -2184,6 +2185,70 @@ async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
     tokio::task::spawn_blocking(move || crate::pom::hash_file(&path).map(|(sha256, _)| sha256))
         .await
         .context("calcular o hash do modelo original")?
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub(crate) struct ModelIdentityRequest {
+    pub path: String,
+    #[serde(default = "default_true")]
+    pub hash: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct ModelIdentityResponse {
+    pub canonical_path: String,
+    pub sha256: Option<String>,
+}
+
+/// Proves the identity of a file selected for deployment without hashing the
+/// catalog during ordinary polling. The path must already be in this peer's
+/// catalog, so a caller cannot turn the route into an arbitrary file reader.
+async fn model_identity(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<ModelIdentityRequest>,
+) -> Response {
+    match model_identity_local(&state, &req.path, req.hash).await {
+        Ok(identity) => Json(identity).into_response(),
+        Err(error) => bad_request(error),
+    }
+}
+
+pub(crate) async fn model_identity_local(
+    state: &GatewayState,
+    requested: &str,
+    calculate_hash: bool,
+) -> Result<ModelIdentityResponse, String> {
+    let requested = std::path::Path::new(requested);
+    let canonical = requested
+        .canonicalize()
+        .map_err(|e| format!("não foi possível resolver o arquivo do modelo: {e}"))?;
+    let catalog = local_catalog(state).await;
+    let listed = catalog.models.iter().any(|model| {
+        std::path::Path::new(&model.path)
+            .canonicalize()
+            .ok()
+            .is_some_and(|path| path == canonical)
+    });
+    if !listed {
+        return Err(format!(
+            "o arquivo {} não pertence ao catálogo deste peer",
+            requested.display()
+        ));
+    }
+    let sha256 = if calculate_hash {
+        Some(
+            source_model_sha256(&canonical)
+                .await
+                .map_err(|e| format!("não foi possível calcular a identidade do GGUF: {e}"))?,
+        )
+    } else {
+        None
+    };
+    Ok(ModelIdentityResponse {
+        canonical_path: canonical.to_string_lossy().into_owned(),
+        sha256,
+    })
 }
 
 /// Sela uma parte cortada aqui no manifesto do modelo original.

@@ -333,6 +333,22 @@ fatias é o que a tela de Modelos faz, com o seu próprio pedido de confirmaçã
 - A liberação vai pelo `/api/ui/unload` do próprio peer (a mesma rota do botão de
   uma máquina só), que continua valendo para qualquer nó.
 
+## 7.1 Reimplantar o mesmo modelo
+
+`POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
+ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF
+inteiro, é o SHA-256 calculado no arquivo selecionado. O nome do modelo nunca é
+prova. Registros antigos sem identidade só podem usar o caminho canônico quando
+o caminho pertence ao mesmo peer; se não houver prova, a ação é recusada com o
+motivo visível e nenhuma máquina é descarregada.
+
+Quando a implantação ativa é comprovadamente a mesma, o fluxo chama
+`/api/ui/unload` em todos os peers correspondentes e consulta `/api/ui/node` até
+cada um anunciar `config: null`, estado `disabled` e nenhum modelo ou deployment
+ativo. A espera tem limite de 30 segundos por rodada; se um peer continuar
+ocupado, o job falha nomeando a máquina e seu último estado. Falha de unload
+também bloqueia a nova implantação e preserva no job o motivo retornado.
+
 ## 8. Aplicar e servir uma fatia (`webui.rs`)
 
 `POST /api/ui/apply` (aplicado pelo `deploy` a cada alvo) leva um `ApplyRequest`:

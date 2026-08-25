@@ -60,6 +60,11 @@ só expõe as partes cujo arquivo existe no disco. `catalog::ShardSet` mantém a
 duas listas separadas e preserva `tp_rank`/`tp_size` para a UI agrupar por
 tamanho e exibir `1ofN`.
 
+`deployment::DeploymentIdentity` persiste a prova do artefato que entrou em
+serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. Registros
+antigos sem essa prova só podem ser associados por caminho canônico no mesmo
+peer, nunca por nome.
+
 A última entrada de um plano por tamanho é sempre o resto do modelo. O limite
 de armazenamento vale somente para a pasta de fatias; pastas de modelos
 inteiros são somente leitura e nunca entram na retenção automática.

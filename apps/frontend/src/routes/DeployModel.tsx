@@ -1172,13 +1172,18 @@ export function DeployModel() {
           </div>
         )}
         {job && (
-          <div className="shrink-0 border-b border-line bg-ink/70 px-4 py-1.5 text-[0.62rem] sm:px-5">
+          <div className={`shrink-0 border-b px-4 py-1.5 text-[0.62rem] sm:px-5 ${job.state === "failed" ? "border-rose/40 bg-rose/[0.06]" : "border-line bg-ink/70"}`}>
             <div className="flex items-center justify-between gap-2 text-muted">
               <span className="truncate">{job.step || job.message}</span>
               <span className="shrink-0 font-mono text-faint">
                 {job.progress == null ? job.state : `${job.progress.toFixed(0)}%`}
               </span>
             </div>
+            {job.state === "failed" && job.message && (
+              <p role="alert" className="mt-1 break-words leading-relaxed text-rose">
+                {job.message}
+              </p>
+            )}
             {job.state === "running" && (
               <div className="mt-1 h-1 overflow-hidden rounded-full bg-line">
                 <div

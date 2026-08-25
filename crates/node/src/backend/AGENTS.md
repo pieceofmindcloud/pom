@@ -62,6 +62,10 @@ behind an auth extractor.
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
+  GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
+  ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e
+  timeouts ficam no job com o peer e o motivo.
   Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
   rank e transfere pelo hash do arquivo original; o `apply` usa
   `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
@@ -174,6 +178,8 @@ behind an auth extractor.
 - `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
+  `model-identity` (POST, prova um arquivo já catalogado por caminho canônico
+  e opcionalmente calcula seu SHA-256),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),

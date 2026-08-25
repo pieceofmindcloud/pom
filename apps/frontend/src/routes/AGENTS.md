@@ -132,7 +132,9 @@ Per-file list:
   `split-mode tensor`.
   Plan edits are debounced 260 ms and validated by `POST /api/ui/deploy/plan`;
   the deploy itself re-surveys the cluster via `POST /api/ui/deploy`, returning
-  a job shown through `useJobs`. Restores the last deploy from localStorage via
+  a job shown through `useJobs`. A failed preflight keeps the backend's reason
+  visible in the rose job banner, including the peer that stayed occupied.
+  Restores the last deploy from localStorage via
   `../lib/deployMemory` (`recallDeploy`/`rememberDeploy`/`usableSelection`),
   after the first plan, pruned against what still exists.
 - The TP inspector never offers pipeline layer buttons. It lists available and

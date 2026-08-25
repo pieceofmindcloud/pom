@@ -515,6 +515,8 @@ struct HeldShard {
     /// `Machine::holds`. `None` num modelo inteiro, que não é parte de rodada
     /// nenhuma.
     sha256: Option<String>,
+    /// Identidade da rodada de fatiamento que produziu a parte.
+    pom_id: Option<String>,
     /// Rank TP desta parte, quando a rodada foi fatiada para tensor parallelism.
     tp_rank: Option<u32>,
     /// Número total de ranks desta rodada TP.
@@ -780,12 +782,14 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     .flatten()
                     .filter(|set| set.get("group").and_then(|g| g.as_str()) == Some(group.as_str()))
                     .flat_map(|set| {
+                        let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                         set.get("shards")
                             .and_then(|v| v.as_array())
                             .into_iter()
                             .flatten()
+                            .map(move |shard| (shard, pom_id))
                     })
-                    .filter_map(parse_shard)
+                    .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
                     .collect(),
                 DeployKind::Whole => body
                     .get("models")
@@ -806,12 +810,14 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                                     == Some(group.as_str())
                         })
                         .flat_map(|set| {
+                            let pom_id = set.get("pom_id").and_then(|value| value.as_str());
                             set.get("tp_parts")
                                 .and_then(|v| v.as_array())
                                 .into_iter()
                                 .flatten()
+                                .map(move |shard| (shard, pom_id))
                         })
-                        .filter_map(parse_shard)
+                        .filter_map(|(shard, pom_id)| parse_shard(shard, pom_id))
                         .collect();
                     if parts.is_empty() {
                         body.get("models")
@@ -932,7 +938,7 @@ fn memory_capacity(system: Option<&serde_json::Value>) -> (u64, u64) {
     (gpu, ram)
 }
 
-fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
+fn parse_shard(v: &serde_json::Value, pom_id: Option<&str>) -> Option<HeldShard> {
     let range = v.get("shard_range")?.as_array()?;
     Some(HeldShard {
         start_layer: range.first()?.as_u64()? as u32,
@@ -950,6 +956,7 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .and_then(|h| h.as_str())
             .filter(|h| crate::pom::is_sha256_hex(h))
             .map(|h| h.to_string()),
+        pom_id: pom_id.map(str::to_string),
         tp_rank: v
             .get("tp_rank")
             .and_then(|rank| rank.as_u64())
@@ -1005,6 +1012,7 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
         size_bytes: v.get("size_bytes").and_then(|s| s.as_u64()).unwrap_or(0),
         // Modelo inteiro não é parte de rodada nenhuma: não tem hash de parte.
         sha256: None,
+        pom_id: None,
         tp_rank: None,
         tp_size: None,
         is_moe: v
@@ -1250,6 +1258,79 @@ pub struct LoadDistribution {
     projected: u32,
     selected: bool,
 }
+
+#[derive(Debug, Clone)]
+struct RequestedModelIdentity {
+    proof: Option<crate::deployment::DeploymentIdentity>,
+    /// Caminhos só valem como prova no peer que os anunciou. Eles existem
+    /// mesmo quando o hash não pôde ser calculado, para a reserva aprovada.
+    paths_by_peer: HashMap<String, String>,
+}
+
+fn deployment_identity_matches(
+    desired: &RequestedModelIdentity,
+    current: &crate::deployment::DeploymentModel,
+    peer_id: &str,
+    current_path: Option<&str>,
+) -> bool {
+    let known_current = current.identity.clone().or_else(|| {
+        current
+            .pom_id
+            .clone()
+            .map(|pom_id| crate::deployment::DeploymentIdentity::PomId { pom_id })
+    });
+    if desired.proof.is_some() && desired.proof == known_current {
+        return true;
+    }
+    desired
+        .paths_by_peer
+        .get(peer_id)
+        .zip(current_path)
+        .is_some_and(|(desired_path, current_path)| desired_path == current_path)
+}
+
+fn node_is_idle(snapshot: &serde_json::Value) -> bool {
+    snapshot
+        .get("config")
+        .is_some_and(|config| config.is_null())
+        && snapshot
+            .pointer("/status/state")
+            .and_then(|state| state.as_str())
+            == Some("disabled")
+        && snapshot
+            .get("active_deployment")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .is_empty()
+        && snapshot
+            .get("active_model")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .is_empty()
+}
+
+fn node_state_detail(snapshot: &serde_json::Value) -> String {
+    format!(
+        "estado={}, modelo={}, implantação={}",
+        snapshot
+            .pointer("/status/state")
+            .and_then(|value| value.as_str())
+            .unwrap_or("desconhecido"),
+        snapshot
+            .get("active_model")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("nenhum"),
+        snapshot
+            .get("active_deployment")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .unwrap_or("nenhuma"),
+    )
+}
+
+const DEPLOY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const DEPLOY_IDLE_POLL: Duration = Duration::from_millis(250);
 
 /// Every distinct range anyone holds, in layer order.
 fn candidates(machines: &[Machine]) -> Vec<Candidate> {
@@ -2897,6 +2978,14 @@ async fn deploy_endpoint(
             .into_response();
     }
 
+    // A identidade é resolvida antes de criar o job e antes de tocar em um
+    // peer. Se o GGUF não puder ser provado por hash, ou a fatia não trouxer
+    // pom_id, o operador recebe a recusa na própria ação de implantar.
+    let identity = match resolve_requested_model_identity(&state, &plan, &machines).await {
+        Ok(identity) => identity,
+        Err(error) => return bad(json!({ "error": error })),
+    };
+
     let job_id = uuid::Uuid::new_v4().to_string();
     // A whole model is one machine, and "em 1 nós" is the kind of seam that
     // makes an operator wonder what else was written for the other case.
@@ -2916,7 +3005,7 @@ async fn deploy_endpoint(
     let deploy_id = crate::deployment::new_deploy_id();
     let id = job_id.clone();
     tokio::spawn(async move {
-        match run(state, plan, params, &deploy_id, &id).await {
+        match run(state, plan, params, identity, &deploy_id, &id).await {
             Ok(()) => set_job(&id, "done", "pronto", "o modelo está atendendo na rede").await,
             Err(e) => {
                 warn!("implantação falhou: {e}");
@@ -3424,14 +3513,439 @@ fn launch_targets(
     Ok(targets)
 }
 
+fn planned_model_paths(plan: &Plan) -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    let mut add = |node_id: &str, path: Option<&String>| {
+        if !node_id.is_empty() {
+            if let Some(path) = path.filter(|path| !path.is_empty()) {
+                if !paths
+                    .iter()
+                    .any(|(node, existing)| node == node_id && existing == path)
+                {
+                    paths.push((node_id.to_string(), path.clone()));
+                }
+            }
+        }
+    };
+    for step in &plan.steps {
+        add(&step.target_node_id, step.target_path.as_ref());
+        add(
+            &step.source_node_id.clone().unwrap_or_default(),
+            step.source_path.as_ref(),
+        );
+        for part in &step.parts {
+            add(
+                &part.source_node_id.clone().unwrap_or_default(),
+                part.source_path.as_ref(),
+            );
+        }
+    }
+    for target in &plan.tp_targets {
+        add(&target.target_node_id, target.target_path.as_ref());
+        add(
+            &target.source_node_id.clone().unwrap_or_default(),
+            target.source_path.as_ref(),
+        );
+    }
+    paths
+}
+
+async fn model_identity_on_peer(
+    state: &GatewayState,
+    node_id: &str,
+    path: &str,
+    hash: bool,
+) -> Result<crate::webui::ModelIdentityResponse, String> {
+    if node_id == state.network.node_id {
+        return crate::webui::model_identity_local(state, path, hash).await;
+    }
+    let peer = state
+        .all_peers()
+        .await
+        .into_iter()
+        .find(|peer| peer.node_id == node_id)
+        .ok_or_else(|| format!("peer {node_id} não está no cluster"))?;
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(node_id)
+        .map_err(|e| format!("sem cliente para {node_id}: {e}"))?;
+    let key = state.auth.read().await.connection_key.clone();
+    let response = client
+        .post(format!("{base}/api/ui/model-identity"))
+        .bearer_auth(key)
+        .timeout(PEER_TIMEOUT)
+        .json(&crate::webui::ModelIdentityRequest {
+            path: path.to_string(),
+            hash,
+        })
+        .send()
+        .await
+        .map_err(|e| format!("não foi possível consultar a identidade em {node_id}: {e}"))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))?;
+    if !status.is_success() {
+        return Err(body
+            .get("error")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("peer respondeu HTTP {status}")));
+    }
+    serde_json::from_value(body)
+        .map_err(|e| format!("resposta de identidade inválida de {node_id}: {e}"))
+}
+
+async fn resolve_requested_model_identity(
+    state: &GatewayState,
+    plan: &Plan,
+    machines: &[Machine],
+) -> Result<RequestedModelIdentity, String> {
+    let mut pom_ids = Vec::new();
+    for machine in machines {
+        for shard in &machine.held {
+            if let Some(pom_id) = shard.pom_id.as_deref() {
+                if !pom_ids.iter().any(|known| known == pom_id) {
+                    pom_ids.push(pom_id.to_string());
+                }
+            }
+        }
+    }
+
+    let paths = planned_model_paths(plan);
+    if paths.is_empty() {
+        return Err(format!(
+            "identidade indisponível: o plano de {} não informa o arquivo selecionado",
+            plan.group
+        ));
+    }
+
+    let mut paths_by_peer = HashMap::new();
+    let needs_hash = if pom_ids.is_empty() {
+        match plan.kind {
+            DeployKind::Whole => true,
+            DeployKind::TensorParallel if plan.tp_targets.is_empty() => true,
+            DeployKind::Shards | DeployKind::TensorParallel => {
+                return Err(format!(
+                    "identidade indisponível: o plano de {} usa fatias sem pom_id; não é seguro provar o mesmo modelo por hash de uma fatia",
+                    plan.group
+                ));
+            }
+        }
+    } else {
+        false
+    };
+    let mut proof = if pom_ids.len() == 1 {
+        Some(crate::deployment::DeploymentIdentity::PomId {
+            pom_id: pom_ids.remove(0),
+        })
+    } else if pom_ids.len() > 1 {
+        return Err(format!(
+            "identidade indisponível: o plano de {} mistura mais de um pom_id",
+            plan.group
+        ));
+    } else {
+        None
+    };
+
+    let mut first_hash_error = None;
+    for (index, (node_id, path)) in paths.iter().enumerate() {
+        let ask_hash = needs_hash && index == 0;
+        let identity = match model_identity_on_peer(state, node_id, path, ask_hash).await {
+            Ok(identity) => identity,
+            Err(error) if ask_hash => {
+                first_hash_error = Some(error);
+                model_identity_on_peer(state, node_id, path, false)
+                    .await
+                    .map_err(|fallback| {
+                        format!(
+                            "identidade indisponível para {}: {} (reserva de caminho também falhou: {})",
+                            plan.group,
+                            first_hash_error.as_deref().unwrap_or("hash não calculado"),
+                            fallback
+                        )
+                    })?
+            }
+            Err(error) => {
+                return Err(format!(
+                    "identidade indisponível para {} em {}: {}",
+                    plan.group, node_id, error
+                ));
+            }
+        };
+        if let Some(sha256) = identity.sha256 {
+            proof = Some(crate::deployment::DeploymentIdentity::Sha256 { sha256 });
+        }
+        paths_by_peer.insert(node_id.clone(), identity.canonical_path);
+    }
+
+    if proof.is_none() && needs_hash {
+        info!(
+            model = %plan.group,
+            error = ?first_hash_error,
+            "usando caminho canônico como prova de reserva no peer de origem"
+        );
+    }
+
+    Ok(RequestedModelIdentity {
+        proof,
+        paths_by_peer,
+    })
+}
+
+async fn peer_node_snapshot(
+    state: &GatewayState,
+    peer: &PeerInfo,
+) -> Result<serde_json::Value, String> {
+    if peer.node_id == state.network.node_id {
+        let config = state.runtime.config().await;
+        let active_deployment = config
+            .as_ref()
+            .map(|config| config.deployment_name.clone())
+            .unwrap_or_default();
+        return Ok(json!({
+            "config": config,
+            "status": state.runtime.status().await,
+            "active_model": state.active_model().await,
+            "active_deployment": active_deployment,
+        }));
+    }
+    let base = peer
+        .gateway_url()
+        .ok_or_else(|| format!("{} não anuncia porta de gateway", peer.hostname))?;
+    let client = state
+        .peer_http
+        .for_peer(&peer.node_id)
+        .map_err(|e| format!("sem cliente para {}: {e}", peer.hostname))?;
+    let response = client
+        .get(format!("{base}/api/ui/node"))
+        .timeout(PEER_TIMEOUT)
+        .send()
+        .await
+        .map_err(|e| format!("{} não respondeu: {e}", peer.hostname))?;
+    let status = response.status();
+    let body: serde_json::Value = response
+        .json()
+        .await
+        .map_err(|e| format!("{} respondeu estado inválido: {e}", peer.hostname))?;
+    if !status.is_success() {
+        return Err(format!("{} respondeu HTTP {status}", peer.hostname));
+    }
+    Ok(body)
+}
+
+async fn canonical_current_path(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    snapshot: &serde_json::Value,
+) -> Result<Option<String>, String> {
+    let Some(path) = snapshot
+        .pointer("/config/model_path")
+        .and_then(|value| value.as_str())
+        .filter(|path| !path.is_empty())
+    else {
+        return Ok(None);
+    };
+    Ok(Some(
+        model_identity_on_peer(state, &peer.node_id, path, false)
+            .await?
+            .canonical_path,
+    ))
+}
+
+async fn wait_for_peer_idle_with_timeout(
+    state: &GatewayState,
+    peer: &PeerInfo,
+    timeout: Duration,
+) -> Result<(), String> {
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        let last = match peer_node_snapshot(state, peer).await {
+            Ok(snapshot) if node_is_idle(&snapshot) => return Ok(()),
+            Ok(snapshot) => node_state_detail(&snapshot),
+            Err(error) => error,
+        };
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            return Err(format!(
+                "{} não ficou ocioso dentro do limite de {}s; ficou ocupado: {}",
+                if peer.hostname.is_empty() {
+                    &peer.node_id
+                } else {
+                    &peer.hostname
+                },
+                timeout.as_secs(),
+                last
+            ));
+        }
+        tokio::time::sleep(DEPLOY_IDLE_POLL.min(deadline - now)).await;
+    }
+}
+
+async fn prepare_existing_model(
+    state: &GatewayState,
+    group: &str,
+    desired: &RequestedModelIdentity,
+    job_id: &str,
+) -> Result<(), String> {
+    let peers = state.all_peers().await;
+    let mut to_release = Vec::new();
+
+    for peer in peers.into_iter().filter(|peer| peer.total_layers > 0) {
+        if peer.model.is_empty() {
+            return Err(format!(
+                "não foi possível provar a identidade antes de implantar {}: {} está ocupado, mas não anuncia qual modelo está servindo",
+                group, peer.hostname
+            ));
+        }
+        if peer.model != group {
+            continue;
+        }
+
+        let record = if peer.deploy_id.is_empty() {
+            None
+        } else {
+            find_record(state, &peer.deploy_id).await
+        };
+        let known_identity = record.as_ref().and_then(|record| {
+            record.model.identity.clone().or_else(|| {
+                record
+                    .model
+                    .pom_id
+                    .clone()
+                    .map(|pom_id| crate::deployment::DeploymentIdentity::PomId { pom_id })
+            })
+        });
+        if desired.proof.is_some() && desired.proof == known_identity {
+            to_release.push(peer);
+            continue;
+        }
+        if desired.proof.is_some() && known_identity.is_some() && desired.proof != known_identity {
+            continue;
+        }
+
+        let snapshot = peer_node_snapshot(state, &peer).await.map_err(|error| {
+            format!(
+                "não foi possível provar a identidade do modelo em {}: {}",
+                peer.hostname, error
+            )
+        })?;
+        let current_path = canonical_current_path(state, &peer, &snapshot)
+            .await
+            .map_err(|error| {
+                format!(
+                    "não foi possível provar a identidade do modelo em {}: {}",
+                    peer.hostname, error
+                )
+            })?;
+        let current_model = record
+            .as_ref()
+            .map(|record| record.model.clone())
+            .unwrap_or_else(|| crate::deployment::DeploymentModel {
+                label: peer.model.clone(),
+                total_layers: peer.total_layers,
+                pom_id: None,
+                identity: None,
+            });
+        if deployment_identity_matches(
+            desired,
+            &current_model,
+            &peer.node_id,
+            current_path.as_deref(),
+        ) {
+            to_release.push(peer);
+        } else {
+            return Err(format!(
+                "não foi possível provar que o modelo ativo em {} é o mesmo que {}: o registro não tem hash/pom_id e o caminho canônico não coincide",
+                peer.hostname, group
+            ));
+        }
+    }
+
+    if to_release.is_empty() {
+        return Ok(());
+    }
+
+    set_job(
+        job_id,
+        "running",
+        "desimplantando",
+        &format!(
+            "liberando {} máquina(s) que já servem este modelo",
+            to_release.len()
+        ),
+    )
+    .await;
+    let key = state.auth.read().await.connection_key.clone();
+    let self_id = state.network.node_id.clone();
+    let releases = futures::future::join_all(to_release.iter().map(|peer| {
+        let key = key.clone();
+        let self_id = self_id.clone();
+        async move { (peer, release_one(state, peer, &key, &self_id).await) }
+    }))
+    .await;
+    let failures: Vec<String> = releases
+        .iter()
+        .filter_map(|(peer, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{}: {}", peer.hostname, error))
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(format!(
+            "a nova implantação foi recusada porque a desimplantação falhou: {}",
+            failures.join("; ")
+        ));
+    }
+
+    set_job(
+        job_id,
+        "running",
+        "aguardando recursos ociosos",
+        "esperando as máquinas liberarem memória e encerrarem a inferência",
+    )
+    .await;
+    let waits = futures::future::join_all(to_release.iter().map(|peer| async move {
+        (
+            peer,
+            wait_for_peer_idle_with_timeout(state, peer, DEPLOY_IDLE_TIMEOUT).await,
+        )
+    }))
+    .await;
+    let failures: Vec<String> = waits
+        .iter()
+        .filter_map(|(peer, result)| {
+            result
+                .as_ref()
+                .err()
+                .map(|error| format!("{}: {}", peer.hostname, error))
+        })
+        .collect();
+    if !failures.is_empty() {
+        return Err(format!(
+            "a nova implantação foi recusada porque as máquinas não ficaram ociosas: {}",
+            failures.join("; ")
+        ));
+    }
+    Ok(())
+}
+
 /// Copy what has to be copied, then bind every peer to its range.
 async fn run(
     state: GatewayState,
     plan: Plan,
     params: RuntimeParams,
+    identity: RequestedModelIdentity,
     deploy_id: &str,
     job_id: &str,
 ) -> Result<(), String> {
+    prepare_existing_model(&state, &plan.group, &identity, job_id).await?;
     let key = state.auth.read().await.connection_key.clone();
 
     // One unit of movement: a slice that has to reach a target. A merged step
@@ -3646,6 +4160,7 @@ async fn run(
         &machines,
         total_layers,
         &params,
+        &identity,
         &state.network.node_id,
     );
 
@@ -3691,6 +4206,7 @@ fn build_record(
     machines: &[Machine],
     total_layers: u32,
     params: &RuntimeParams,
+    identity: &RequestedModelIdentity,
     created_by: &str,
 ) -> crate::deployment::Deployment {
     let kind = match plan.kind {
@@ -3732,7 +4248,13 @@ fn build_record(
         crate::deployment::DeploymentModel {
             label: plan.group.clone(),
             total_layers,
-            pom_id: None,
+            pom_id: match identity.proof.as_ref() {
+                Some(crate::deployment::DeploymentIdentity::PomId { pom_id }) => {
+                    Some(pom_id.clone())
+                }
+                _ => None,
+            },
+            identity: identity.proof.clone(),
         },
         created_by,
         nodes,
@@ -4113,6 +4635,7 @@ mod deployments_tests {
                 label: rotulo.into(),
                 total_layers: 32,
                 pom_id: None,
+                identity: None,
             },
             "coordenador",
             vec![no("n1", 0, 31)],
@@ -5338,7 +5861,311 @@ mod undeploy_tests {
 }
 
 #[cfg(test)]
+mod redeploy_preflight_tests {
+    use super::*;
+    use crate::deployment::{Deployment, DeploymentIdentity, DeploymentKind, DeploymentNode};
+    use crate::gateway::testkit::state_with;
+    use axum::routing::{get as axum_get, post as axum_post};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+    use std::sync::Arc;
+
+    async fn peer_with_deployment(
+        identity: Option<DeploymentIdentity>,
+        unload_status: axum::http::StatusCode,
+        identity_path: &'static str,
+    ) -> (u16, Arc<AtomicU32>) {
+        let released = Arc::new(AtomicBool::new(false));
+        let unload_hits = Arc::new(AtomicU32::new(0));
+        let record = Deployment::new(
+            "d-aaaaaaaa".into(),
+            DeploymentKind::Whole,
+            crate::deployment::DeploymentModel {
+                label: "qwen".into(),
+                total_layers: 32,
+                pom_id: None,
+                identity,
+            },
+            "coordinator",
+            vec![DeploymentNode {
+                node_id: "peer-a".into(),
+                hostname: "ksia".into(),
+                start_layer: 0,
+                end_layer: 31,
+                peer_index: 0,
+                peer_count: 1,
+                primary: true,
+                part_sha256: None,
+                tp_rank: None,
+                config: RuntimeParams::default(),
+            }],
+        );
+        let deployments = json!({ "deployments": [record] });
+        let released_for_unload = released.clone();
+        let unload_hits_for_route = unload_hits.clone();
+        let released_for_node = released.clone();
+        let app = Router::new()
+            .route(
+                "/api/ui/deployments",
+                axum_get(move || {
+                    let deployments = deployments.clone();
+                    async move { Json(deployments) }
+                }),
+            )
+            .route(
+                "/api/ui/unload",
+                axum_post(move || {
+                    let released = released_for_unload.clone();
+                    let hits = unload_hits_for_route.clone();
+                    async move {
+                        hits.fetch_add(1, Ordering::SeqCst);
+                        if unload_status.is_success() {
+                            released.store(true, Ordering::SeqCst);
+                        }
+                        (
+                            unload_status,
+                            Json(json!({ "unloaded": unload_status.is_success() })),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/node",
+                axum_get(move || {
+                    let released = released_for_node.clone();
+                    async move {
+                        if released.load(Ordering::SeqCst) {
+                            Json(json!({
+                                "config": null,
+                                "status": {"state": "disabled"},
+                                "active_model": "",
+                                "active_deployment": ""
+                            }))
+                        } else {
+                            Json(json!({
+                                "config": {"model_path": "/models/active.gguf"},
+                                "status": {"state": "ready"},
+                                "active_model": "qwen",
+                                "active_deployment": "d-aaaaaaaa"
+                            }))
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/api/ui/model-identity",
+                axum_post(move || async move {
+                    Json(json!({
+                        "canonical_path": identity_path,
+                        "sha256": serde_json::Value::Null
+                    }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (port, unload_hits)
+    }
+
+    fn serving_peer(port: u16) -> PeerInfo {
+        let mut peer = crate::gateway::testkit::peer("peer-a", "ksia", port);
+        peer.model = "qwen".into();
+        peer.deploy_id = "d-aaaaaaaa".into();
+        peer.start_layer = 0;
+        peer.end_layer = 31;
+        peer.total_layers = 32;
+        peer
+    }
+
+    fn desired(hash: char) -> RequestedModelIdentity {
+        RequestedModelIdentity {
+            proof: Some(DeploymentIdentity::Sha256 {
+                sha256: hash.to_string().repeat(64),
+            }),
+            paths_by_peer: HashMap::new(),
+        }
+    }
+
+    async fn install_job(state: &GatewayState, id: &str) {
+        jobs()
+            .write()
+            .await
+            .insert(id.into(), new_job(id, "deploy", "teste", "preparando"));
+        let _ = state;
+    }
+
+    #[tokio::test]
+    async fn same_proven_model_is_released_and_waited_before_continue() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::OK,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-same").await;
+
+        prepare_existing_model(&state, "qwen", &desired('a'), "preflight-same")
+            .await
+            .expect("a implantação igual deve ser liberada");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn identity_failure_is_visible_and_does_not_unload() {
+        let (port, hits) =
+            peer_with_deployment(None, axum::http::StatusCode::OK, "/models/different.gguf").await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-unknown").await;
+        let error = prepare_existing_model(
+            &state,
+            "qwen",
+            &RequestedModelIdentity {
+                proof: Some(DeploymentIdentity::Sha256 {
+                    sha256: "a".repeat(64),
+                }),
+                paths_by_peer: [("peer-a".into(), "/models/qwen.gguf".into())]
+                    .into_iter()
+                    .collect(),
+            },
+            "preflight-unknown",
+        )
+        .await
+        .expect_err("sem prova, não pode desimplantar");
+        assert!(error.contains("não foi possível provar"), "{error}");
+        assert_eq!(hits.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn failed_unload_is_visible_and_blocks_the_new_deploy() {
+        let (port, hits) = peer_with_deployment(
+            Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            "/models/active.gguf",
+        )
+        .await;
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        install_job(&state, "preflight-failed").await;
+        let error = prepare_existing_model(&state, "qwen", &desired('a'), "preflight-failed")
+            .await
+            .expect_err("falha de unload bloqueia o deploy");
+        assert!(error.contains("desimplantação falhou"), "{error}");
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn idle_timeout_names_the_peer_and_the_occupied_state() {
+        let app = Router::new().route(
+            "/api/ui/node",
+            axum_get(|| async {
+                Json(json!({
+                    "config": {"model_path": "/models/active.gguf"},
+                    "status": {"state": "ready"},
+                    "active_model": "qwen",
+                    "active_deployment": "d-aaaaaaaa"
+                }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let state = state_with("coordinator", vec![serving_peer(port)]).await;
+        let error =
+            wait_for_peer_idle_with_timeout(&state, &serving_peer(port), Duration::from_millis(10))
+                .await
+                .expect_err("peer ocupado deve estourar o limite");
+        assert!(
+            error.contains("ksia") && error.contains("ocupado"),
+            "{error}"
+        );
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    use crate::deployment::{DeploymentIdentity, DeploymentModel};
+
+    #[test]
+    fn model_identity_requires_proof_and_allows_same_peer_path_fallback() {
+        let desired = super::RequestedModelIdentity {
+            proof: Some(DeploymentIdentity::Sha256 {
+                sha256: "a".repeat(64),
+            }),
+            paths_by_peer: [("peer-a".into(), "/models/qwen.gguf".into())]
+                .into_iter()
+                .collect(),
+        };
+        let same = DeploymentModel {
+            label: "qwen".into(),
+            total_layers: 32,
+            pom_id: None,
+            identity: desired.proof.clone(),
+        };
+        assert!(super::deployment_identity_matches(
+            &desired,
+            &same,
+            "peer-a",
+            Some("/other/path.gguf")
+        ));
+
+        let unknown = DeploymentModel {
+            identity: None,
+            ..same.clone()
+        };
+        assert!(super::deployment_identity_matches(
+            &desired,
+            &unknown,
+            "peer-a",
+            Some("/models/qwen.gguf")
+        ));
+        assert!(!super::deployment_identity_matches(
+            &desired,
+            &unknown,
+            "peer-b",
+            Some("/models/qwen.gguf")
+        ));
+        assert!(!super::deployment_identity_matches(
+            &desired,
+            &DeploymentModel {
+                identity: Some(DeploymentIdentity::Sha256 {
+                    sha256: "b".repeat(64),
+                }),
+                ..same
+            },
+            "peer-a",
+            None
+        ));
+    }
+
+    #[test]
+    fn node_idle_requires_disabled_status_and_no_configuration() {
+        assert!(super::node_is_idle(&serde_json::json!({
+            "config": null,
+            "status": {"state": "disabled"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+        assert!(!super::node_is_idle(&serde_json::json!({
+            "config": null,
+            "status": {"state": "starting"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+        assert!(!super::node_is_idle(&serde_json::json!({
+            "config": {"model_path": "/models/qwen.gguf"},
+            "status": {"state": "disabled"},
+            "active_deployment": "",
+            "active_model": ""
+        })));
+    }
+
     #[test]
     fn deployment_request_defaults_to_simple_and_normalizes_name() {
         let req: super::DeployRequest = serde_json::from_value(serde_json::json!({
@@ -5520,6 +6347,7 @@ mod tests {
                         name: format!("m_{a}_{b}.gguf"),
                         path: format!("/models/m_{a}_{b}.gguf"),
                         sha256: None,
+                        pom_id: None,
                         tp_rank: None,
                         tp_size: None,
                         is_moe: false,
@@ -6713,23 +7541,29 @@ mod tests {
     /// answers `null`. Both mean "this file does not say".
     #[test]
     fn a_shard_that_reports_zero_layers_is_a_shard_with_no_total() {
-        let shard = parse_shard(&json!({
-            "shard_range": [0, 15],
-            "total_layers": 0,
-            "name": "qwen_0_15.gguf",
-            "path": "/models/qwen/qwen_0_15.gguf",
-            "size_bytes": 2569314208u64,
-        }))
+        let shard = parse_shard(
+            &json!({
+                "shard_range": [0, 15],
+                "total_layers": 0,
+                "name": "qwen_0_15.gguf",
+                "path": "/models/qwen/qwen_0_15.gguf",
+                "size_bytes": 2569314208u64,
+            }),
+            None,
+        )
         .expect("a fatia é válida, só não diz o total");
         assert_eq!(shard.total_layers, None);
 
-        let declared = parse_shard(&json!({
-            "shard_range": [0, 5],
-            "total_layers": 40,
-            "name": "phi_0_5.gguf",
-            "path": "/models/phi/phi_0_5.gguf",
-            "size_bytes": 1u64,
-        }))
+        let declared = parse_shard(
+            &json!({
+                "shard_range": [0, 5],
+                "total_layers": 40,
+                "name": "phi_0_5.gguf",
+                "path": "/models/phi/phi_0_5.gguf",
+                "size_bytes": 1u64,
+            }),
+            None,
+        )
         .unwrap();
         assert_eq!(declared.total_layers, Some(40));
     }
@@ -6763,6 +7597,7 @@ mod tests {
             held: if has {
                 vec![HeldShard {
                     sha256: None,
+                    pom_id: None,
                     tp_rank: None,
                     tp_size: None,
                     is_moe: false,
@@ -6793,6 +7628,7 @@ mod tests {
             path: format!("/{id}/rank-{rank}.gguf"),
             size_bytes: 2 * GIB,
             sha256: Some(format!("{:064x}", rank + 1)),
+            pom_id: None,
             tp_rank: Some(rank),
             tp_size: Some(2),
             is_moe: false,
@@ -7285,6 +8121,7 @@ mod tests {
             load: 0,
             held: vec![HeldShard {
                 sha256: None,
+                pom_id: None,
                 tp_rank: None,
                 tp_size: None,
                 is_moe: false,

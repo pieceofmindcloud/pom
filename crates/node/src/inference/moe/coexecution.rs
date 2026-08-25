@@ -192,6 +192,92 @@ impl<T> Default for DoubleBuffer<T> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RouteLaneSplit {
+    pub gpu_experts: Vec<u32>,
+    pub cpu_experts: Vec<u32>,
+    pub gpu_fraction: f32,
+}
+
+/// Divide experts by key, never by occurrence, so repeated routes do not load
+/// one expert into both caches during the same forward.
+pub fn split_route_experts(
+    experts: &[u32],
+    resident_gpu_experts: &[u32],
+    profile: Option<BandwidthProfile>,
+) -> Result<RouteLaneSplit, BandwidthError> {
+    let mut unique = Vec::new();
+    for &expert in experts {
+        if !unique.contains(&expert) {
+            unique.push(expert);
+        }
+    }
+
+    let mut gpu_experts = Vec::new();
+    let mut misses = Vec::new();
+    for expert in unique {
+        if resident_gpu_experts.contains(&expert) {
+            gpu_experts.push(expert);
+        } else {
+            misses.push(expert);
+        }
+    }
+
+    let split = match profile {
+        Some(profile) => profile.split_misses(&misses)?,
+        None => super::bandwidth::MissSplit {
+            gpu: misses,
+            cpu: Vec::new(),
+            gpu_fraction: 1.0,
+        },
+    };
+    gpu_experts.extend(split.gpu);
+    Ok(RouteLaneSplit {
+        gpu_experts,
+        cpu_experts: split.cpu,
+        gpu_fraction: split.gpu_fraction,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LaneOutputError {
+    Shape {
+        cpu: usize,
+        gpu: usize,
+        expected: usize,
+    },
+}
+
+impl fmt::Display for LaneOutputError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Shape { cpu, gpu, expected } => write!(
+                formatter,
+                "saídas CPU/GPU têm formas incompatíveis: cpu={cpu}, gpu={gpu}, esperado={expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LaneOutputError {}
+
+pub fn combine_lane_outputs(
+    cpu: &[f32],
+    gpu: &[f32],
+    tokens: usize,
+    hidden: usize,
+) -> Result<Vec<f32>, LaneOutputError> {
+    let expected = tokens.saturating_mul(hidden);
+    if cpu.len() != expected || gpu.len() != expected {
+        return Err(LaneOutputError::Shape {
+            cpu: cpu.len(),
+            gpu: gpu.len(),
+            expected,
+        });
+    }
+    Ok(cpu.iter().zip(gpu).map(|(cpu, gpu)| cpu + gpu).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +352,36 @@ mod tests {
             })
         ));
         assert!(DoubleBuffer::<u8>::with_budget(9, 18).is_ok());
+    }
+
+    #[test]
+    fn divide_experts_unicos_preserva_hits_na_gpu() {
+        let profile = crate::moe::bandwidth::BandwidthProfile {
+            cpu_overlap_bytes_per_sec: 1.0,
+            transfer_overlap_bytes_per_sec: 1.0,
+            cpu_bytes_per_sec: 1.0,
+            transfer_bytes_per_sec: 1.0,
+        };
+        let split = split_route_experts(&[2, 3, 2, 4], &[3], Some(profile)).unwrap();
+        assert_eq!(split.gpu_experts, vec![3, 2]);
+        assert_eq!(split.cpu_experts, vec![4]);
+    }
+
+    #[test]
+    fn combina_saidas_das_lanes_por_token() {
+        let cpu = [1.0, 2.0, 3.0, 4.0];
+        let gpu = [10.0, 20.0, 30.0, 40.0];
+        assert_eq!(
+            combine_lane_outputs(&cpu, &gpu, 2, 2).unwrap(),
+            [11.0, 22.0, 33.0, 44.0]
+        );
+    }
+
+    #[test]
+    fn combina_saidas_recusa_largura_diferente() {
+        assert!(matches!(
+            combine_lane_outputs(&[1.0], &[2.0, 3.0], 1, 1),
+            Err(LaneOutputError::Shape { .. })
+        ));
     }
 }

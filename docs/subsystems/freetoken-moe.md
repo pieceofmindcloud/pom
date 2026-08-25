@@ -18,8 +18,8 @@ O goal será entregue em fases coesas:
    de prefill e stop strings;
 3. detecção de MoE com bifurcação reversível;
 4. motor MoE próprio com um formato de quantização por vez e cache LRU global;
-5. co-execução CPU/GPU baseada em banda medida, ainda pendente de um executor
-   GPU concreto.
+5. co-execução CPU/GPU baseada em banda medida, inicialmente no executor NVFP4
+   CUDA.
 
 ### Fase 1: S9 entregue
 
@@ -717,7 +717,7 @@ por impacto observado, não por facilidade de implementação.
 | 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
 | 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF; a ponte CUDA cobre NVFP4, escalares, Q4_K/Q6_K e IQ3_S/IQ2_S/IQ4_XS após provas diferenciais, enquanto os demais dtypes publicam `CPUReference` com recusa nominal. | A linha de base histórica do Qwen UD-IQ3_S em `CPUReference` não é uma previsão do ganho atual: a ponte IQ foi aceita somente após comparar os três estágios na GPU real. |
 | 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | No perfil histórico, foi o maior componente do prefill: `3622,166 ms`. Isso não foi confirmado no estado atual de `38,4 tok/s`; o ganho real de reutilizar descritores e buffers depende do novo perfil. |
-| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | A política de banda e o double buffer continuam andaime documentado, sem perfil persistido consumido pelo runtime. O caminho atual faz staging por chamada e não escolhe CPU/GPU pela banda medida. | Os números de H2D e kernel registrados no documento são históricos. Nenhum ganho ou gargalo atual deve ser inferido deles até o novo perfil do estado `38,4 tok/s`. |
+| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | `BandwidthProfile` persiste as bandas, `coexecution.rs` divide misses únicos e executa lanes CPU/GPU em paralelo no NVFP4; `DoubleBuffer` valida a reserva de dois slots. | A costura ainda precisa da prova CUDA desta revisão. Os números de H2D e kernel registrados no documento são históricos e não são uma promessa de ganho. |
 | 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
 
 #### Item 1: cache em VRAM
@@ -1363,10 +1363,39 @@ O ponto `gemma4_batch8` satisfaz o critério medido: `180,647 / max(168,081,
 3,036) = 1,075`, abaixo de `1,10`, e o `buffer_mask=3` prova o uso dos dois
 slots. O ponto de um token ainda fica em `28,768 / 22,553 = 1,276`, e o ponto
 pequeno em `16,260 / 6,053 = 2,686`; portanto o resultado não autoriza
-declarar a F5.2 inteira pronta. O pipeline está integrado ao runtime e a
-telemetria registra os slots, mas o perfil ainda não é persistido/carregado e
-a seleção CPU/GPU ainda não consome tempos comparáveis medidos para os dois
-backends. Esses são os próximos gates da fase.
+declarar a F5.2 inteira pronta. Na revisão que produziu essa medição, o
+pipeline estava integrado ao runtime e a telemetria registrava os slots, mas o
+perfil ainda não era persistido/carregado e a seleção CPU/GPU ainda não
+consumia tempos comparáveis medidos para os dois backends. A entrega F5.2b
+abaixo fecha essa lacuna de seleção e deixa a medição CUDA como gate restante.
+
+#### F5.2b: co-execução NVFP4 por banda medida
+
+Esta entrega fecha a costura operacional seguinte, sem declarar ganho de
+desempenho antes da medição. `BandwidthProfile` persiste no sidecar CUDA as
+bandas CPU e transferência medidas em isolamento e sob disputa; quando as
+bandas sobrepostas existem, elas têm precedência. A fração de misses enviada à
+GPU é `transfer/(cpu+transfer)`, limitada ao intervalo `[0, 1]`, e a política
+divide experts únicos em ordem determinística. Hits já residentes no cache de
+device permanecem na GPU, portanto um expert repetido na mesma rota não é
+admitido nas duas lanes.
+
+O runtime carrega o perfil uma vez por modelo NVFP4 e o passa a cada bloco. No
+forward de rota, a lane CPU usa o `ExpertCache` global de RAM e o decoder
+NVFP4 Rust; a lane GPU usa o cache residente e o kernel CUDA. As duas funções
+rodam em threads irmãs e a saída é somada por token, com validação da largura
+antes da combinação. O caminho unitário converte a rota em um lote de um token,
+para não abrir uma exceção sem co-execução. Ausência de perfil mantém todos os
+misses na GPU, preservando o comportamento anterior; perfil inválido recusa a
+carga nominalmente.
+
+Os diagnósticos agora expõem `cpu_expert_calls`, `gpu_expert_calls` e
+`coexecution_gpu_fraction`, além das medições CUDA já existentes. Os testes
+unitários cobrem a política de banda, duplicatas, erro de uma lane, reserva do
+double buffer, soma das lanes e persistência do sidecar. A compilação CUDA e
+os testes de integração desta revisão ainda precisam ser executados na ksia;
+nenhuma velocidade ou sobreposição efetiva é afirmada neste texto antes dessa
+prova.
 
 4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
    operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto

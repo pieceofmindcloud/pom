@@ -8,9 +8,15 @@
 //! da multiplicação. `.input_scale` continua obrigatório e preservado, mas não
 //! é aplicado ao hidden neste FFN.
 
+#[cfg(feature = "cuda")]
+use super::bandwidth::BandwidthProfile;
 use super::cache::{CacheError, ExpertCache, ExpertKey, ExpertLease};
+#[cfg(feature = "cuda")]
+use super::coexecution::{combine_lane_outputs, run_overlap, split_route_experts};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
 use memmap2::Mmap;
+#[cfg(feature = "cuda")]
+use std::collections::HashMap;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
@@ -52,6 +58,7 @@ impl std::error::Error for Nvfp4Error {}
 #[derive(Debug)]
 pub enum Nvfp4ExecuteError {
     Cache(CacheError),
+    Coexecution(String),
     Format(Nvfp4Error),
     Source(Q4LoadError),
     #[cfg(feature = "cuda")]
@@ -66,6 +73,7 @@ impl fmt::Display for Nvfp4ExecuteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Cache(error) => error.fmt(formatter),
+            Self::Coexecution(error) => write!(formatter, "co-execução NVFP4 falhou: {error}"),
             Self::Format(error) => error.fmt(formatter),
             Self::Source(error) => error.fmt(formatter),
             #[cfg(feature = "cuda")]
@@ -1007,6 +1015,8 @@ pub struct Nvfp4Executor {
     hidden: usize,
     intermediate: usize,
     backend: Nvfp4Backend,
+    #[cfg(feature = "cuda")]
+    coexecution_profile: Option<BandwidthProfile>,
     host_diagnostics: Mutex<Nvfp4HostDiagnostics>,
 }
 
@@ -1016,6 +1026,8 @@ pub struct Nvfp4HostDiagnostics {
     pub expert_load_ms: f64,
     pub cache_admit_ms: f64,
     pub aggregation_ms: f64,
+    pub cpu_expert_calls: u64,
+    pub coexecution_gpu_fraction: Option<f32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1048,6 +1060,8 @@ impl Nvfp4Executor {
             hidden,
             intermediate,
             backend: Nvfp4Backend::Cpu,
+            #[cfg(feature = "cuda")]
+            coexecution_profile: None,
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
@@ -1083,6 +1097,8 @@ impl Nvfp4Executor {
             hidden,
             intermediate,
             backend,
+            #[cfg(feature = "cuda")]
+            coexecution_profile: None,
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
@@ -1093,6 +1109,7 @@ impl Nvfp4Executor {
         device_cache: Arc<super::cache::DeviceExpertCache>,
         hidden: usize,
         intermediate: usize,
+        coexecution_profile: Option<BandwidthProfile>,
     ) -> Result<Self, Nvfp4Error> {
         Nvfp4Expert::packed_bytes(hidden, intermediate)?;
         let cpu_requested = std::env::var("POM_MOE_NVFP4_BACKEND")
@@ -1111,6 +1128,7 @@ impl Nvfp4Executor {
             hidden,
             intermediate,
             backend,
+            coexecution_profile,
             host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
@@ -1270,54 +1288,283 @@ impl Nvfp4Executor {
         hidden: &[f32],
         tokens: usize,
     ) -> Result<Vec<f32>, Nvfp4ExecuteError> {
-        if experts.is_empty() {
-            return Err(Nvfp4Error::Payload("batch de rotas vazio").into());
-        }
-        if experts.len() != token_ids.len() || experts.len() != weights.len() {
-            return Err(Nvfp4Error::Payload(
-                "batch de rotas tem descritores com tamanhos diferentes",
+        self.validate_route_batch(experts, token_ids, weights, token_offsets, hidden, tokens)?;
+        let Nvfp4Backend::Cuda(_) = &self.backend else {
+            return Err(Nvfp4Error::BackendUnavailable(
+                "lote de rotas requer executor CUDA residente".into(),
             )
             .into());
-        }
-        if let Nvfp4Backend::Cuda(executor) = &self.backend {
-            let mut resident = Vec::with_capacity(experts.len());
-            for &expert in experts {
-                let key = ExpertKey::new(model, layer, expert, "nvfp4");
-                if let Some(lease) = executor.resident_lookup(&key) {
-                    resident.push(lease);
-                    continue;
-                }
+        };
 
-                let load_started = Instant::now();
-                let payload = source.load_expert(layer, expert)?;
-                let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
-                self.host_diagnostics
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .expert_load_ms += expert_load_ms;
-                Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
-                resident.push(
-                    executor
-                        .resident_admit(key, &payload)
-                        .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?,
-                );
-            }
-            return executor
-                .run_route_batch_resident(
-                    &resident,
-                    token_ids,
-                    weights,
-                    token_offsets,
-                    hidden,
-                    tokens,
-                )
-                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+        if let Some(profile) = self.coexecution_profile {
+            return self.run_route_batch_coexecuted_from_source(
+                source,
+                model,
+                layer,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+                profile,
+            );
         }
 
-        Err(
-            Nvfp4Error::BackendUnavailable("lote de rotas requer executor CUDA residente".into())
-                .into(),
+        self.run_route_batch_cuda_from_source(
+            source,
+            model,
+            layer,
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            hidden,
+            tokens,
         )
+    }
+
+    #[cfg(feature = "cuda")]
+    fn validate_route_batch(
+        &self,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<(), Nvfp4ExecuteError> {
+        if experts.is_empty()
+            || experts.len() != token_ids.len()
+            || experts.len() != weights.len()
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(Nvfp4Error::Payload("batch de rotas NVFP4 inválido").into());
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(Nvfp4Error::Payload("batch de rotas tem peso não finito").into());
+        }
+        let expected = tokens.saturating_mul(self.hidden);
+        if hidden.len() != expected {
+            return Err(Nvfp4ExecuteError::HiddenWidth {
+                expected,
+                actual: hidden.len(),
+            });
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_route_batch_cuda_from_source(
+        &self,
+        source: &Nvfp4Source,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, Nvfp4ExecuteError> {
+        let Nvfp4Backend::Cuda(executor) = &self.backend else {
+            return Err(
+                Nvfp4Error::BackendUnavailable("executor CUDA NVFP4 ausente".into()).into(),
+            );
+        };
+        let mut resident = Vec::with_capacity(experts.len());
+        for &expert in experts {
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            if let Some(lease) = executor.resident_lookup(&key) {
+                resident.push(lease);
+                continue;
+            }
+
+            let load_started = Instant::now();
+            let payload = source.load_expert(layer, expert)?;
+            let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
+            self.host_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .expert_load_ms += expert_load_ms;
+            Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
+            resident.push(
+                executor
+                    .resident_admit(key, &payload)
+                    .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?,
+            );
+        }
+        executor
+            .run_route_batch_resident(&resident, token_ids, weights, token_offsets, hidden, tokens)
+            .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_route_batch_coexecuted_from_source(
+        &self,
+        source: &Nvfp4Source,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        profile: BandwidthProfile,
+    ) -> Result<Vec<f32>, Nvfp4ExecuteError> {
+        let Nvfp4Backend::Cuda(executor) = &self.backend else {
+            return Err(
+                Nvfp4Error::BackendUnavailable("executor CUDA NVFP4 ausente".into()).into(),
+            );
+        };
+        let mut resident_gpu_experts = Vec::new();
+        for &expert in experts {
+            if resident_gpu_experts.contains(&expert) {
+                continue;
+            }
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            if executor.resident_lookup(&key).is_some() {
+                resident_gpu_experts.push(expert);
+            }
+        }
+        let split = split_route_experts(experts, &resident_gpu_experts, Some(profile))
+            .map_err(|error| Nvfp4ExecuteError::Coexecution(error.to_string()))?;
+        self.host_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .coexecution_gpu_fraction = Some(split.gpu_fraction);
+
+        let cpu_route = filter_route(
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            &split.cpu_experts,
+            tokens,
+        );
+        let gpu_route = filter_route(
+            experts,
+            token_ids,
+            weights,
+            token_offsets,
+            &split.gpu_experts,
+            tokens,
+        );
+        let cpu_route = cpu_route;
+        let gpu_route = gpu_route;
+        let (cpu_output, gpu_output) = run_overlap(
+            || {
+                if cpu_route.0.is_empty() {
+                    Ok(vec![0.0; hidden.len()])
+                } else {
+                    self.run_cpu_route_batch_from_source(
+                        source,
+                        model,
+                        layer,
+                        &cpu_route.0,
+                        &cpu_route.1,
+                        &cpu_route.2,
+                        hidden,
+                    )
+                }
+            },
+            || {
+                if gpu_route.0.is_empty() {
+                    Ok(vec![0.0; hidden.len()])
+                } else {
+                    self.run_route_batch_cuda_from_source(
+                        source,
+                        model,
+                        layer,
+                        &gpu_route.0,
+                        &gpu_route.1,
+                        &gpu_route.2,
+                        &gpu_route.3,
+                        hidden,
+                        tokens,
+                    )
+                }
+            },
+        )
+        .map_err(|error| Nvfp4ExecuteError::Coexecution(error.to_string()))?;
+        combine_lane_outputs(&cpu_output, &gpu_output, tokens, self.hidden)
+            .map_err(|error| Nvfp4ExecuteError::Coexecution(error.to_string()))
+    }
+
+    #[cfg(feature = "cuda")]
+    fn run_cpu_route_batch_from_source(
+        &self,
+        source: &Nvfp4Source,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, Nvfp4ExecuteError> {
+        let mut leases = HashMap::<u32, ExpertLease>::new();
+        for &expert in experts {
+            if leases.contains_key(&expert) {
+                continue;
+            }
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            let lookup_started = Instant::now();
+            let cached = self.cache.lookup(&key);
+            let cache_lookup_ms = lookup_started.elapsed().as_secs_f64() * 1_000.0;
+            let (lease, expert_load_ms, cache_admit_ms) = match cached {
+                Some(lease) => (lease, 0.0, 0.0),
+                None => {
+                    let load_started = Instant::now();
+                    let payload = source.load_expert(layer, expert)?;
+                    let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
+                    let admit_started = Instant::now();
+                    let lease = self
+                        .cache
+                        .admit(key, payload)
+                        .map_err(Nvfp4ExecuteError::Cache)?;
+                    let cache_admit_ms = admit_started.elapsed().as_secs_f64() * 1_000.0;
+                    (lease, expert_load_ms, cache_admit_ms)
+                }
+            };
+            let mut host = self
+                .host_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            host.cache_lookup_ms += cache_lookup_ms;
+            host.expert_load_ms += expert_load_ms;
+            host.cache_admit_ms += cache_admit_ms;
+            leases.insert(expert, lease);
+        }
+
+        let mut output = vec![0.0; hidden.len()];
+        for index in 0..experts.len() {
+            let token = token_ids[index] as usize;
+            let token_start = token * self.hidden;
+            let token_hidden = &hidden[token_start..token_start + self.hidden];
+            let expert = experts[index];
+            let lease = leases
+                .get(&expert)
+                .ok_or(Nvfp4ExecuteError::Coexecution("expert CPU ausente".into()))?;
+            let values = Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?
+                .run(token_hidden)?;
+            let target = &mut output[token_start..token_start + self.hidden];
+            let weight = weights[index];
+            for (slot, value) in target.iter_mut().zip(values) {
+                *slot += weight * value;
+            }
+        }
+        let mut host = self
+            .host_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        host.cpu_expert_calls = host.cpu_expert_calls.saturating_add(experts.len() as u64);
+        Ok(output)
     }
 
     fn run_with_loader<F>(
@@ -1363,6 +1610,40 @@ impl Nvfp4Executor {
             Nvfp4Backend::Cuda(_) => unreachable!("o caminho CUDA usa o cache residente"),
         }
     }
+}
+
+#[cfg(feature = "cuda")]
+fn filter_route(
+    experts: &[u32],
+    token_ids: &[u32],
+    weights: &[f32],
+    token_offsets: &[usize],
+    allowed: &[u32],
+    tokens: usize,
+) -> (Vec<u32>, Vec<u32>, Vec<f32>, Vec<usize>) {
+    let mut filtered_experts = Vec::new();
+    let mut filtered_token_ids = Vec::new();
+    let mut filtered_weights = Vec::new();
+    let mut filtered_offsets = Vec::with_capacity(tokens + 1);
+    filtered_offsets.push(0);
+    for token in 0..tokens {
+        let start = token_offsets[token];
+        let end = token_offsets[token + 1];
+        for index in start..end {
+            if allowed.contains(&experts[index]) {
+                filtered_experts.push(experts[index]);
+                filtered_token_ids.push(token_ids[index]);
+                filtered_weights.push(weights[index]);
+            }
+        }
+        filtered_offsets.push(filtered_experts.len());
+    }
+    (
+        filtered_experts,
+        filtered_token_ids,
+        filtered_weights,
+        filtered_offsets,
+    )
 }
 
 fn select_backend_kind(

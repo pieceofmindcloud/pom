@@ -3,6 +3,7 @@
 #![cfg(feature = "cuda")]
 
 use super::admission::MemoryAccount;
+use super::bandwidth::BandwidthProfile;
 use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
 use super::format_k_quants::KQuantFormat;
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
@@ -34,6 +35,8 @@ pub struct CudaTransferProfile {
     pub cuda_transfer_span_ms: f64,
     pub cpu_wall_ms: Option<f64>,
     pub buffer_mask: u64,
+    #[serde(default)]
+    pub bandwidth: Option<BandwidthProfile>,
 }
 
 impl CudaTransferProfile {
@@ -55,6 +58,7 @@ impl CudaTransferProfile {
             cuda_transfer_span_ms,
             cpu_wall_ms,
             buffer_mask,
+            bandwidth: None,
         };
         profile.validate()?;
         Ok(profile)
@@ -65,6 +69,15 @@ impl CudaTransferProfile {
             Some(cpu_wall_ms) => self.cuda_wall_ms <= cpu_wall_ms,
             None => true,
         }
+    }
+
+    pub fn with_bandwidth(mut self, bandwidth: BandwidthProfile) -> Result<Self, String> {
+        bandwidth
+            .gpu_fraction()
+            .map_err(|error| error.to_string())?;
+        self.bandwidth = Some(bandwidth);
+        self.validate()?;
+        Ok(self)
     }
 
     pub fn sidecar_path(model_path: impl AsRef<Path>) -> PathBuf {
@@ -134,6 +147,11 @@ impl CudaTransferProfile {
         }
         if self.buffer_mask == 0 {
             return Err("buffer_mask vazio".into());
+        }
+        if let Some(bandwidth) = self.bandwidth {
+            bandwidth
+                .gpu_fraction()
+                .map_err(|error| error.to_string())?;
         }
         Ok(())
     }
@@ -2515,6 +2533,32 @@ mod tests {
         assert_eq!(loaded, profile);
         assert!(!loaded.prefers_cuda());
 
+        std::fs::remove_file(sidecar).unwrap();
+    }
+
+    #[test]
+    fn perfil_cuda_persiste_bandas_para_coexecucao() {
+        let model = std::env::temp_dir().join(format!(
+            "pom-cuda-bandwidth-profile-{}.gguf",
+            std::process::id()
+        ));
+        let sidecar = CudaTransferProfile::sidecar_path(&model);
+        let bandwidth = crate::moe::bandwidth::BandwidthProfile {
+            cpu_overlap_bytes_per_sec: 3.0,
+            transfer_overlap_bytes_per_sec: 1.0,
+            cpu_bytes_per_sec: 30.0,
+            transfer_bytes_per_sec: 10.0,
+        };
+        let profile = CudaTransferProfile::new(2_816, 704, 12.0, 8.0, 2.0, None, 3)
+            .unwrap()
+            .with_bandwidth(bandwidth)
+            .unwrap();
+        profile.save(&sidecar).unwrap();
+        let loaded = CudaTransferProfile::load_for_model(&model)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.bandwidth, Some(bandwidth));
+        assert!((loaded.bandwidth.unwrap().gpu_fraction().unwrap() - 0.25).abs() < 1e-6);
         std::fs::remove_file(sidecar).unwrap();
     }
 

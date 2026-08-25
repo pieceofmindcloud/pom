@@ -70,6 +70,9 @@ pub struct MoeExecutorTelemetry {
 pub struct MoeExecutorDiagnostics {
     pub profiled: bool,
     pub calls: u64,
+    pub cpu_expert_calls: u64,
+    pub gpu_expert_calls: u64,
+    pub coexecution_gpu_fraction: Option<f32>,
     pub cache_hits: u64,
     pub cache_misses: u64,
     pub cache_admissions: u64,
@@ -796,9 +799,14 @@ impl MoeRuntime {
                     )));
                 }
                 #[cfg(feature = "cuda")]
-                let profile_requests_cpu = CudaTransferProfile::load_for_model(&path)
-                    .map_err(MoeRuntimeError::Block)?
+                let cuda_profile =
+                    CudaTransferProfile::load_for_model(&path).map_err(MoeRuntimeError::Block)?;
+                #[cfg(feature = "cuda")]
+                let profile_requests_cpu = cuda_profile
+                    .as_ref()
                     .is_some_and(|profile| !profile.prefers_cuda());
+                #[cfg(feature = "cuda")]
+                let coexecution_profile = cuda_profile.and_then(|profile| profile.bandwidth);
                 #[cfg(feature = "cuda")]
                 let device_cache = if std::env::var("POM_MOE_NVFP4_BACKEND")
                     .is_ok_and(|value| value.eq_ignore_ascii_case("cpu"))
@@ -820,6 +828,7 @@ impl MoeRuntime {
                             top_k,
                             source.hidden(),
                             source.intermediate(),
+                            coexecution_profile,
                         )
                     } else if profile_requests_cpu {
                         Nvfp4MoeBlock::new_cpu(
@@ -1372,6 +1381,8 @@ impl MoeRuntime {
                 };
                 diagnostics.profiled |= cuda.calls > 0;
                 diagnostics.calls = diagnostics.calls.saturating_add(cuda.calls);
+                diagnostics.gpu_expert_calls =
+                    diagnostics.gpu_expert_calls.saturating_add(cuda.calls);
                 diagnostics.payload_validation_ms += cuda.payload_validation_ms;
                 diagnostics.cuda_alloc_ms += cuda.alloc_ms;
                 diagnostics.cuda_h2d_ms += cuda.h2d_ms;
@@ -1411,6 +1422,10 @@ impl MoeRuntime {
                     diagnostics.host_expert_load_ms += host.expert_load_ms;
                     diagnostics.host_cache_admit_ms += host.cache_admit_ms;
                     diagnostics.host_aggregation_ms += host.aggregation_ms;
+                    diagnostics.cpu_expert_calls = diagnostics
+                        .cpu_expert_calls
+                        .saturating_add(host.cpu_expert_calls);
+                    diagnostics.coexecution_gpu_fraction = host.coexecution_gpu_fraction;
                 }
             }
         }

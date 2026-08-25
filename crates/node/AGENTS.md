@@ -38,6 +38,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
   rodar `cargo build -p node`. O procedimento completo está em
   `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
+- Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
+  validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
+  envolve o `nvcc`. O procedimento e o target separado estão em
+  `docs/subsystems/build-execucao.md`.
 
 ## src/main.rs - fluxo de arranque e CLI
 

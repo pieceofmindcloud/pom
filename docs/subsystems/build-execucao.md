@@ -63,15 +63,19 @@ interativa. A invocação reproduzível é:
 ```bash
 ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
   export PATH=/usr/local/cuda-12/bin:\$PATH && \
+  export CUDAARCHS=120 && \
   export CUDACXX=/usr/local/cuda-12/bin/nvcc && \
+  export CCACHE=ccache && \
   CARGO_TARGET_DIR=/data/ftk-cuda-target \
   cargo build --release --features vulkan,cuda"'
 ```
 
 O `PATH` é necessário porque o `build.rs` executa o programa `nvcc`
 diretamente; `CUDACXX` também deve ser definido para os sub-builds que
-consumirem a convenção CMake. `/data/ksia-target` fica reservado ao binário
-servido e nunca é usado para validar uma revisão.
+consumirem a convenção CMake. `CUDAARCHS=120` limita o kernel MoE à GPU da
+ksia. `CCACHE=ccache` faz o `build.rs` executar `ccache nvcc`; o target Rust
+continua em `/data/ftk-cuda-target`. `/data/ksia-target` fica reservado ao
+binário servido e nunca é usado para validar uma revisão.
 
 ## Identidade do produto (`brand.json`)
 

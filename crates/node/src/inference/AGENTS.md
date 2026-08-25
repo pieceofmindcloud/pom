@@ -138,6 +138,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  `bandwidth.rs` transforma medições concorrentes CPU/transferência em uma
+  fração determinística dos misses; `coexecution.rs` divide por expert,
+  executa as duas lanes em paralelo e soma saídas com largura validada.
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
   `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
@@ -193,10 +196,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   agora usa dois slots CUDA persistentes, streams separados e buffers host
   pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,
   `kernel_span_ms` e `transfer_span_ms` distinguem sobreposição de trabalho
-  apenas somado. O perfil ainda não é persistido nem carregado pelo runtime, e
-  a seleção CPU/GPU ainda não consome tempos comparáveis dos dois backends,
-  portanto a co-execução CPU/GPU da Fase 5 ainda não está declarada pronta. A
-  medição e os números observados vivem em `docs/subsystems/freetoken-moe.md`.
+  apenas somado. `CudaTransferProfile` persiste opcionalmente as quatro bandas
+  medidas, e `runtime.rs` passa esse perfil ao NVFP4. Em uma rota NVFP4 CUDA,
+  experts residentes ficam na GPU, misses são divididos pela fração medida e
+  as lanes CPU e GPU executam em paralelo; a telemetria publica chamadas de
+  cada lane e a fração escolhida. A validação CUDA e os números observados
+  vivem em `docs/subsystems/freetoken-moe.md`.
   O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
   Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os

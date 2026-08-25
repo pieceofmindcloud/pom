@@ -26,7 +26,6 @@ use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{dispatch_route, dispatch_top_k, select_top_k, DispatchError, RouteError};
 use std::fmt;
 use std::sync::Arc;
-use std::time::Instant;
 
 #[derive(Debug)]
 pub enum MoeBlockError {
@@ -821,6 +820,7 @@ impl Nvfp4MoeBlock {
         top_k: usize,
         hidden: usize,
         intermediate: usize,
+        coexecution_profile: Option<super::bandwidth::BandwidthProfile>,
     ) -> Result<Self, String> {
         Ok(Self {
             model: model.into(),
@@ -831,6 +831,7 @@ impl Nvfp4MoeBlock {
                 device_cache,
                 hidden,
                 intermediate,
+                coexecution_profile,
             )
             .map_err(|error| error.to_string())?,
         })
@@ -895,35 +896,23 @@ impl Nvfp4MoeBlock {
         if weights.iter().any(|weight| !weight.is_finite()) {
             return Err(MoeBlockError::Route(RouteError::InvalidWeightSum));
         }
+        #[cfg(feature = "cuda")]
         if matches!(self.executor.backend_kind(), Nvfp4BackendKind::Cuda) {
-            let outputs = self
+            let token_ids = vec![0; ids.len()];
+            return self
                 .executor
-                .run_batch_from_source(source, &self.model, self.layer, ids, hidden)
-                .map_err(MoeBlockError::from)?;
-            if outputs.len() != ids.len() {
-                return Err(MoeBlockError::Executor(format!(
-                    "batch CUDA retornou {} experts, esperado {}",
-                    outputs.len(),
-                    ids.len()
-                )));
-            }
-            let aggregation_started = Instant::now();
-            let mut output = None::<Vec<f32>>;
-            for (values, &weight) in outputs.into_iter().zip(weights) {
-                let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
-                if target.len() != values.len() {
-                    return Err(MoeBlockError::Route(RouteError::OutputWidth {
-                        expected: target.len(),
-                        actual: values.len(),
-                    }));
-                }
-                for (slot, value) in target.iter_mut().zip(values) {
-                    *slot += weight * value;
-                }
-            }
-            self.executor
-                .record_aggregation_ms(aggregation_started.elapsed().as_secs_f64() * 1_000.0);
-            return output.ok_or(MoeBlockError::Route(RouteError::InvalidWeightSum));
+                .run_route_batch_from_source(
+                    source,
+                    &self.model,
+                    self.layer,
+                    ids,
+                    &token_ids,
+                    weights,
+                    &[0, ids.len()],
+                    hidden,
+                    1,
+                )
+                .map_err(MoeBlockError::from);
         }
         let model = &self.model;
         let layer = self.layer;

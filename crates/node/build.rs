@@ -29,6 +29,7 @@ fn build_moe_cuda() {
     if std::env::var_os("CARGO_FEATURE_CUDA").is_none() {
         return;
     }
+    println!("cargo:rerun-if-env-changed=CCACHE");
 
     let source = Path::new("src/inference/moe/cuda_kernels.cu");
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR"));
@@ -44,7 +45,13 @@ fn build_moe_cuda() {
                 .map(|path| path.join("bin/nvcc"))
         })
         .unwrap_or_else(|| PathBuf::from("nvcc"));
-    let mut compile = Command::new(&nvcc);
+    let mut compile = if let Some(wrapper) = std::env::var_os("CCACHE") {
+        let mut command = Command::new(wrapper);
+        command.arg(&nvcc);
+        command
+    } else {
+        Command::new(&nvcc)
+    };
     compile.args([
         "-c",
         source.to_str().expect("caminho CUDA UTF-8"),

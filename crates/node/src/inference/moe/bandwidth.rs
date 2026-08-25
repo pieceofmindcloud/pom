@@ -4,9 +4,10 @@
 //! ensaio injeta as quatro taxas e a política só transforma os números em uma
 //! fração determinística dos experts que serão buscados na GPU.
 
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct BandwidthProfile {
     /// GEMV de expert na CPU durante a disputa real com a transferência.
     pub cpu_overlap_bytes_per_sec: f64,

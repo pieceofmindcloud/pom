@@ -1054,6 +1054,15 @@ mod tests {
             .unwrap();
         for layer in 0..source.layer_count() {
             let payload = source.load_expert(layer, 0).unwrap();
+            let payload_scales = (0..SCALE_COUNT)
+                .map(|index| {
+                    let start = 8 + index * 4;
+                    f32::from_le_bytes(payload[start..start + 4].try_into().unwrap())
+                })
+                .collect::<Vec<_>>();
+            eprintln!(
+                "llama.cpp oracle diagnostic layer={layer} expert=0 scales={payload_scales:?}"
+            );
             let expert =
                 Nvfp4Expert::from_payload(source.hidden(), source.intermediate(), &payload)
                     .unwrap();

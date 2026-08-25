@@ -51,20 +51,6 @@ impl Nvfp4CudaDiagnostics {
         self.d2h_bytes = self.d2h_bytes.saturating_add(call.d2h_bytes);
         self.free_ms += call.free_ms;
     }
-
-    pub fn add_total(&mut self, other: Self) {
-        self.calls = self.calls.saturating_add(other.calls);
-        self.payload_validation_ms += other.payload_validation_ms;
-        self.alloc_ms += other.alloc_ms;
-        self.h2d_ms += other.h2d_ms;
-        self.h2d_bytes = self.h2d_bytes.saturating_add(other.h2d_bytes);
-        self.kernel_ms += other.kernel_ms;
-        self.launch_ms += other.launch_ms;
-        self.sync_ms += other.sync_ms;
-        self.d2h_ms += other.d2h_ms;
-        self.d2h_bytes = self.d2h_bytes.saturating_add(other.d2h_bytes);
-        self.free_ms += other.free_ms;
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

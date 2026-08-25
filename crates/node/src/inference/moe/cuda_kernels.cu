@@ -967,14 +967,14 @@ struct Nvfp4RoutePipeline {
 };
 
 void destroy_route_events(Nvfp4RouteSlot *slot) {
-    cudaEventDestroy(slot->d2h_end);
-    cudaEventDestroy(slot->d2h_start);
-    cudaEventDestroy(slot->down_end);
-    cudaEventDestroy(slot->down_start);
-    cudaEventDestroy(slot->gate_end);
-    cudaEventDestroy(slot->gate_start);
-    cudaEventDestroy(slot->h2d_end);
-    cudaEventDestroy(slot->h2d_start);
+    if (slot->d2h_end != nullptr) cudaEventDestroy(slot->d2h_end);
+    if (slot->d2h_start != nullptr) cudaEventDestroy(slot->d2h_start);
+    if (slot->down_end != nullptr) cudaEventDestroy(slot->down_end);
+    if (slot->down_start != nullptr) cudaEventDestroy(slot->down_start);
+    if (slot->gate_end != nullptr) cudaEventDestroy(slot->gate_end);
+    if (slot->gate_start != nullptr) cudaEventDestroy(slot->gate_start);
+    if (slot->h2d_end != nullptr) cudaEventDestroy(slot->h2d_end);
+    if (slot->h2d_start != nullptr) cudaEventDestroy(slot->h2d_start);
     slot->d2h_end = nullptr;
     slot->d2h_start = nullptr;
     slot->down_end = nullptr;
@@ -990,26 +990,26 @@ void release_route_slot(Nvfp4RouteSlot *slot) {
         cudaStreamSynchronize(slot->stream);
     }
     destroy_route_events(slot);
-    cudaFree(slot->d_output);
-    cudaFree(slot->d_pair_output);
-    cudaFree(slot->d_activated_qs);
-    cudaFree(slot->d_activated_scales);
-    cudaFree(slot->d_activated);
-    cudaFree(slot->d_gate_up_values);
-    cudaFree(slot->d_token_offsets);
-    cudaFree(slot->d_weights);
-    cudaFree(slot->d_token_ids);
-    cudaFree(slot->d_payloads);
-    cudaFree(slot->d_hidden_qs);
-    cudaFree(slot->d_hidden_scales);
-    cudaFree(slot->d_hidden);
-    cudaFreeHost(slot->h_output);
-    cudaFreeHost(slot->h_token_offsets);
-    cudaFreeHost(slot->h_weights);
-    cudaFreeHost(slot->h_token_ids);
-    cudaFreeHost(slot->h_payloads);
-    cudaFreeHost(slot->h_hidden);
-    cudaStreamDestroy(slot->stream);
+    if (slot->d_output != nullptr) cudaFree(slot->d_output);
+    if (slot->d_pair_output != nullptr) cudaFree(slot->d_pair_output);
+    if (slot->d_activated_qs != nullptr) cudaFree(slot->d_activated_qs);
+    if (slot->d_activated_scales != nullptr) cudaFree(slot->d_activated_scales);
+    if (slot->d_activated != nullptr) cudaFree(slot->d_activated);
+    if (slot->d_gate_up_values != nullptr) cudaFree(slot->d_gate_up_values);
+    if (slot->d_token_offsets != nullptr) cudaFree(slot->d_token_offsets);
+    if (slot->d_weights != nullptr) cudaFree(slot->d_weights);
+    if (slot->d_token_ids != nullptr) cudaFree(slot->d_token_ids);
+    if (slot->d_payloads != nullptr) cudaFree(slot->d_payloads);
+    if (slot->d_hidden_qs != nullptr) cudaFree(slot->d_hidden_qs);
+    if (slot->d_hidden_scales != nullptr) cudaFree(slot->d_hidden_scales);
+    if (slot->d_hidden != nullptr) cudaFree(slot->d_hidden);
+    if (slot->h_output != nullptr) cudaFreeHost(slot->h_output);
+    if (slot->h_token_offsets != nullptr) cudaFreeHost(slot->h_token_offsets);
+    if (slot->h_weights != nullptr) cudaFreeHost(slot->h_weights);
+    if (slot->h_token_ids != nullptr) cudaFreeHost(slot->h_token_ids);
+    if (slot->h_payloads != nullptr) cudaFreeHost(slot->h_payloads);
+    if (slot->h_hidden != nullptr) cudaFreeHost(slot->h_hidden);
+    if (slot->stream != nullptr) cudaStreamDestroy(slot->stream);
     *slot = {};
 }
 

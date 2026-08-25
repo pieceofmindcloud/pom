@@ -57,7 +57,7 @@ import { recallDeploy, rememberDeploy, usableSelection } from "../lib/deployMemo
 import { useToast } from "../lib/toast";
 import { bytes, layerRange, megabytes } from "../lib/format";
 import { Confirm } from "../components/Confirm";
-import { MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
+import { CapabilitySwitch, MTP_MIN_PROBABILITY } from "../components/RuntimeParamsForm";
 import { DeployNetworkCanvas } from "../components/DeployNetworkCanvas";
 import { trackOf } from "../components/PipelineRail";
 import { tensorParallelModelsOf, wholeModelsOf } from "../lib/wholeModels";
@@ -1260,9 +1260,9 @@ export function DeployModel() {
                     <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
-                <Switch checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
-                <Switch checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
-                <Switch checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
+                <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
+                <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
+                <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />
               </div>
             </section>
 
@@ -1413,12 +1413,15 @@ export function DeployModel() {
 
             <section className="border-b border-line py-3">
               <p className="mb-1.5 text-[0.6rem] font-semibold uppercase tracking-[0.12em] text-faint">Execução</p>
-              <Switch
+              <CapabilitySwitch
+                capability={p?.capabilities?.speculative_decoding}
                 checked={eff.speculative_decoding_enabled ?? false}
                 onChange={(value) => setParams({ ...eff, speculative_decoding_enabled: value })}
                 label="Decodificação especulativa"
               />
-              {eff.speculative_decoding_enabled && (
+              {eff.speculative_decoding_enabled &&
+                p?.capabilities?.speculative_decoding?.state !== "unsupported" &&
+                p?.capabilities?.speculative_decoding?.state !== "unknown" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
@@ -1431,7 +1434,8 @@ export function DeployModel() {
                 </div>
               )}
               <div className="mt-2">
-                <Switch
+                <CapabilitySwitch
+                  capability={p?.capabilities?.mtp}
                   checked={eff.mtp_enabled ?? false}
                   onChange={(value) => setParams({
                     ...eff,
@@ -1441,7 +1445,9 @@ export function DeployModel() {
                   label="Predição multi-token (MTP)"
                 />
               </div>
-              {eff.mtp_enabled && (
+              {eff.mtp_enabled &&
+                p?.capabilities?.mtp?.state !== "unsupported" &&
+                p?.capabilities?.mtp?.state !== "unknown" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>

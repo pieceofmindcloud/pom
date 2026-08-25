@@ -962,6 +962,22 @@ export interface RuntimeParams {
   mtp_min_probability: number;
 }
 
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+
+export interface RuntimeCapability {
+  state: CapabilityState;
+  source: string;
+  reason: string;
+}
+
+export interface DeploymentCapabilities {
+  fit_memory: RuntimeCapability;
+  no_thinking: RuntimeCapability;
+  no_embeddings: RuntimeCapability;
+  speculative_decoding: RuntimeCapability;
+  mtp: RuntimeCapability;
+}
+
 export type InferenceMode = "auto" | "dense" | "moe";
 
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
@@ -1024,6 +1040,8 @@ export interface DeployPlan {
   inference_mode_supported?: boolean;
   /** Why the selected inference mode cannot be honored, when applicable. */
   inference_mode_reason?: string | null;
+  /** Capacidades condicionais apuradas pelo backend para os alvos atuais. */
+  capabilities?: DeploymentCapabilities;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

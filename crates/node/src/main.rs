@@ -9,6 +9,8 @@ mod admin;
 mod auth;
 #[path = "utils/brand.rs"]
 mod brand;
+#[path = "backend/capabilities.rs"]
+mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "inference/collective.rs"]

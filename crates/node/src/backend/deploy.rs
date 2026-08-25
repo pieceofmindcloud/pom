@@ -521,6 +521,8 @@ struct HeldShard {
     tp_size: Option<u32>,
     /// Whether the actual GGUF metadata identifies this model as MoE.
     is_moe: bool,
+    /// Evidência do modelo lida no GGUF, quando o peer conseguiu apurá-la.
+    model_capabilities: Option<crate::gguf::ModelCapabilityEvidence>,
 }
 
 /// A machine in the cluster, with the slices of this set it already holds.
@@ -540,6 +542,8 @@ struct Machine {
     /// inferência, preservadas para o grupo TP.
     libp2p_peer_id: Option<String>,
     supports_tunnel: bool,
+    /// Capacidades runtime anunciadas pelo peer selecionado.
+    inference_capabilities: Option<Vec<String>>,
     /// Memory the weights would have to fit in: free VRAM on a machine with a
     /// discrete GPU, available RAM anywhere else. `0` means the machine did not
     /// answer, and nothing is inferred from that.
@@ -747,6 +751,19 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                         .iter()
                         .any(|value| value == crate::pipeline::CAP_LIBP2P_TUNNEL)
                 });
+            let inference_capabilities = node
+                .get("inference_frame_capabilities")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(str::to_string))
+                        .collect::<Vec<_>>()
+                })
+                .or_else(|| {
+                    (!peer.inference_frame_capabilities.is_empty())
+                        .then(|| peer.inference_frame_capabilities.clone())
+                });
             let rtt_report = match rtt {
                 Ok(response) if response.status().is_success() => {
                     response.json::<RttReport>().await.ok()
@@ -827,6 +844,7 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     addr_candidates,
                     libp2p_peer_id,
                     supports_tunnel,
+                    inference_capabilities,
                     hostname: if peer.hostname.is_empty() && is_self {
                         body.get("hostname")
                             .and_then(|h| h.as_str())
@@ -944,6 +962,9 @@ fn parse_shard(v: &serde_json::Value) -> Option<HeldShard> {
             .get("is_moe")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        model_capabilities: v
+            .get("capabilities")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     })
 }
 
@@ -990,6 +1011,9 @@ fn parse_whole(v: &serde_json::Value, group: &str) -> Option<HeldShard> {
             .get("is_moe")
             .and_then(|value| value.as_bool())
             .unwrap_or(false),
+        model_capabilities: v
+            .get("capabilities")
+            .and_then(|value| serde_json::from_value(value.clone()).ok()),
     })
 }
 
@@ -1155,6 +1179,8 @@ pub struct Plan {
     inference_mode_supported: bool,
     /// Explicit reason when the selected execution mode cannot be honored.
     inference_mode_reason: Option<String>,
+    /// Capacidades condicionais apuradas para os alvos deste plano.
+    capabilities: crate::capabilities::DeploymentCapabilities,
     /// Grupo de tensor parallelism, quando kind == tensor_parallel. O launch
     /// usa isto para gerar os alvos dos workers.
     tp: Option<TpLaunch>,
@@ -1539,6 +1565,246 @@ fn plan_with_options(
         preferred_node_ids,
         &PairwiseRtt::default(),
     )
+}
+
+fn combine_known(values: impl Iterator<Item = Option<bool>>) -> Option<bool> {
+    let mut found = false;
+    for value in values {
+        found = true;
+        if value == Some(false) {
+            return Some(false);
+        }
+        if value.is_none() {
+            return None;
+        }
+    }
+    found.then_some(true)
+}
+
+fn selected_model_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    select: impl Fn(&crate::gguf::ModelCapabilityEvidence) -> Option<bool>,
+) -> Option<bool> {
+    let mut values = Vec::new();
+    for step in steps {
+        let ranges = if step.parts.is_empty() {
+            vec![(step.start_layer, step.end_layer)]
+        } else {
+            step.parts
+                .iter()
+                .map(|part| (part.start_layer, part.end_layer))
+                .collect()
+        };
+        for (start_layer, end_layer) in ranges {
+            let evidence = machines
+                .iter()
+                .find(|machine| machine.node_id == step.target_node_id)
+                .and_then(|machine| machine.holds(start_layer, end_layer))
+                .or_else(|| {
+                    machines
+                        .iter()
+                        .find_map(|machine| machine.holds(start_layer, end_layer))
+                })
+                .and_then(|shard| shard.model_capabilities.as_ref())
+                .and_then(&select);
+            values.push(evidence);
+        }
+    }
+    combine_known(values.into_iter())
+}
+
+fn selected_runtime_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    capability: &str,
+) -> Option<bool> {
+    combine_known(steps.iter().map(|step| {
+        machines
+            .iter()
+            .find(|machine| machine.node_id == step.target_node_id)
+            .and_then(|machine| machine.inference_capabilities.as_ref())
+            .map(|caps| caps.iter().any(|candidate| candidate == capability))
+    }))
+}
+
+fn capability_from_bool(
+    value: Option<bool>,
+    source: &str,
+    supported_reason: &str,
+    unsupported_reason: &str,
+    unknown_reason: &str,
+) -> crate::capabilities::Capability {
+    match value {
+        Some(true) => crate::capabilities::supported(source, supported_reason),
+        Some(false) => crate::capabilities::unsupported(source, unsupported_reason),
+        None => crate::capabilities::unknown(source, unknown_reason),
+    }
+}
+
+fn no_embeddings_topology(
+    steps: &[Step],
+    total_layers: Option<u32>,
+    kind: DeployKind,
+) -> crate::capabilities::NoEmbeddingsEvaluation {
+    let mut ranges = Vec::new();
+    if kind == DeployKind::Shards {
+        for step in steps {
+            let range = (step.start_layer, step.end_layer);
+            if !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    } else if !steps.is_empty() {
+        ranges.push((steps[0].start_layer, steps[0].end_layer));
+    }
+    let count = if ranges.is_empty() {
+        None
+    } else {
+        Some(ranges.len() as u32)
+    };
+    let peers = steps
+        .iter()
+        .map(|step| {
+            let index = ranges
+                .iter()
+                .position(|range| *range == (step.start_layer, step.end_layer))
+                .map(|value| value as u32);
+            crate::capabilities::PeerTopology {
+                node_id: step.target_node_id.clone(),
+                start_layer: Some(step.start_layer),
+                end_layer: Some(step.end_layer),
+                total_layers,
+                peer_index: index,
+                peer_count: count,
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::capabilities::evaluate_no_embeddings(&peers)
+}
+
+fn capabilities_for_plan(
+    steps: &[Step],
+    machines: &[Machine],
+    total_layers: Option<u32>,
+    kind: DeployKind,
+) -> (
+    crate::capabilities::DeploymentCapabilities,
+    crate::capabilities::NoEmbeddingsEvaluation,
+) {
+    let no_embeddings = no_embeddings_topology(steps, total_layers, kind);
+    let no_thinking = capability_from_bool(
+        selected_model_capability(steps, machines, |evidence| evidence.thinking),
+        "GGUF tokenizer.chat_template + tokenizer.ggml.tokens",
+        "o template e o vocabulário do modelo permitem o controle de thinking",
+        "o template e o vocabulário do modelo não oferecem o controle de thinking",
+        "o template ou o vocabulário do modelo não pôde ser confirmado",
+    );
+    let lookup = selected_runtime_capability(steps, machines, "speculate/v1-lookup");
+    let speculative_decoding = capability_from_bool(
+        lookup,
+        "capacidades runtime dos peers selecionados",
+        "todos os peers selecionados anunciam lookup especulativo",
+        "pelo menos um peer selecionado não anuncia lookup especulativo",
+        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+    );
+    let model_mtp = selected_model_capability(steps, machines, |evidence| evidence.mtp);
+    let final_mtp_capability = steps.last().and_then(|step| {
+        machines
+            .iter()
+            .find(|machine| machine.node_id == step.target_node_id)
+            .and_then(|machine| machine.inference_capabilities.as_ref())
+            .map(|caps| {
+                let required = if steps.len() <= 1 {
+                    "speculate/v1-mtp"
+                } else {
+                    "speculate/v1-mtp-sliced"
+                };
+                caps.iter().any(|candidate| candidate == required)
+            })
+    });
+    let mtp = capability_from_bool(
+        combine_known([model_mtp, final_mtp_capability].into_iter()),
+        "GGUF nextn metadata/tensores + capacidades runtime do peer final",
+        "o modelo traz previsão nextn e o peer final anuncia MTP",
+        "o modelo ou o peer final não oferece MTP neste plano",
+        "a metadata nextn ou a capacidade runtime do peer final não pôde ser confirmada",
+    );
+    let mut no_embeddings = no_embeddings.capability.clone();
+    let unsafe_peers = no_embeddings_topology(steps, total_layers, kind)
+        .peers
+        .into_iter()
+        .filter(|peer| peer.safe == Some(false))
+        .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
+        .collect::<Vec<_>>();
+    if !unsafe_peers.is_empty() {
+        no_embeddings.reason = format!(
+            "controle visível, mas estes peers precisam manter embeddings: {}",
+            unsafe_peers.join("; ")
+        );
+    }
+    (
+        crate::capabilities::DeploymentCapabilities {
+            fit_memory: if kind == DeployKind::TensorParallel {
+                crate::capabilities::unsupported(
+                    "estratégia Tensor Parallelism",
+                    "o ajuste automático de memória não é compatível com Tensor Parallelism",
+                )
+            } else {
+                crate::capabilities::supported(
+                    "estratégia do plano",
+                    "esta estratégia permite o ajuste automático de memória",
+                )
+            },
+            no_thinking,
+            no_embeddings,
+            speculative_decoding,
+            mtp,
+        },
+        no_embeddings_topology(steps, total_layers, kind),
+    )
+}
+
+fn requested_capability_block(
+    params: &RuntimeParams,
+    capabilities: &crate::capabilities::DeploymentCapabilities,
+    no_embeddings: &crate::capabilities::NoEmbeddingsEvaluation,
+) -> Option<String> {
+    let requested = [
+        (
+            params.no_thinking,
+            "Desativar thinking",
+            &capabilities.no_thinking,
+        ),
+        (
+            params.speculative_decoding_enabled,
+            "Decodificação especulativa",
+            &capabilities.speculative_decoding,
+        ),
+        (params.mtp_enabled, "MTP", &capabilities.mtp),
+    ];
+    for (enabled, label, capability) in requested {
+        if enabled && capability.state == crate::capabilities::CapabilityState::Unknown {
+            return Some(format!(
+                "{label} não pode ser habilitado: {}. Fonte: {}",
+                capability.reason, capability.source
+            ));
+        }
+    }
+    crate::capabilities::validate_no_embeddings(no_embeddings, params.no_embeddings)
+        .err()
+        .or_else(|| {
+            if params.fit_memory
+                && capabilities.fit_memory.state == crate::capabilities::CapabilityState::Unknown
+            {
+                Some(format!(
+                    "Ajustar à memória não pode ser confirmado: {}",
+                    capabilities.fit_memory.reason
+                ))
+            } else {
+                None
+            }
+        })
 }
 
 fn plan_with_rtt_options(
@@ -2179,6 +2445,18 @@ fn plan_with_rtt_options(
             stage_ranges.push(range);
         }
     }
+    let (capabilities, no_embeddings_evaluation) =
+        capabilities_for_plan(&steps, machines, total_layers, kind);
+    if let Some(reason) =
+        requested_capability_block(params, &capabilities, &no_embeddings_evaluation)
+    {
+        if blocked.is_none() {
+            blocked = Some(reason);
+        } else {
+            warnings.push(reason);
+        }
+    }
+
     let mut route_options = Vec::new();
     for pair in stage_ranges.windows(2) {
         let from_range = pair[0];
@@ -2239,6 +2517,7 @@ fn plan_with_rtt_options(
         is_moe,
         inference_mode_supported,
         inference_mode_reason,
+        capabilities,
         total_layers,
         total_layers_inferred: size.inferred(),
         complete,
@@ -2895,6 +3174,7 @@ fn launch_targets(
                 merge: None,
                 n_gpu_layers: target.n_gpu_layers,
                 offload_kqv: target.offload_kqv,
+                no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(
@@ -2981,6 +3261,7 @@ fn launch_targets(
                 merge: Some(merge),
                 n_gpu_layers: step.n_gpu_layers,
                 offload_kqv: step.offload_kqv,
+                no_embeddings: None,
                 peer_index,
                 peer_count,
                 tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
@@ -3011,6 +3292,7 @@ fn launch_targets(
             merge: None,
             n_gpu_layers: step.n_gpu_layers,
             offload_kqv: step.offload_kqv,
+            no_embeddings: None,
             peer_index,
             peer_count,
             tp: tp.map(|t| tp_identity(t.size, &step.name, 0, "primary", &membros)),
@@ -3048,6 +3330,7 @@ fn launch_targets(
                 merge: None,
                 n_gpu_layers: head.n_gpu_layers,
                 offload_kqv: head.offload_kqv,
+                no_embeddings: None,
                 peer_index: None,
                 peer_count: None,
                 tp: Some(tp_identity(tp.size, &head.name, rank, "worker", &membros)),
@@ -3238,13 +3521,21 @@ async fn run(
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
     let machines = survey(&state, &plan.group, plan.kind).await.machines;
-    let targets = launch_targets(
+    let mut targets = launch_targets(
         &plan.steps,
         &machines,
         plan.kind,
         plan.tp.as_ref(),
         &plan.tp_targets,
     )?;
+    if params.no_embeddings {
+        // O planner já validou atomicamente a topologia. Marcar cada alvo
+        // explicitamente evita que um interruptor global seja reinterpretado
+        // de forma diferente por um peer.
+        for target in &mut targets {
+            target.no_embeddings = Some(true);
+        }
+    }
 
     // The pipeline is the layer order, so the entry point is whoever holds
     // layer 0 — the same machine the screen marks "processa o prompt".
@@ -4019,6 +4310,7 @@ async fn add_node_endpoint(
                 merge: None,
                 n_gpu_layers: None,
                 offload_kqv: None,
+                no_embeddings: None,
                 // Um alvo por requisição, mas a posição é a do pipeline: sem
                 // isto o nó somado se diz o último da divisão.
                 peer_index: Some(peer_index),
@@ -4586,6 +4878,10 @@ mod whole_route_tests {
                     "quant": "Q4_K_M",
                     "shard_range": serde_json::Value::Null,
                     "shard_group": serde_json::Value::Null,
+                    "capabilities": {
+                        "thinking": true,
+                        "mtp": false,
+                    },
                 },
                 {
                     "id": "2",
@@ -5124,6 +5420,7 @@ mod tests {
                 addr_candidates: Vec::new(),
                 libp2p_peer_id: None,
                 supports_tunnel: false,
+                inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
                 mem_free_mb: s.mem_free_mb,
                 gpu_free_mb: s.mem_free_mb,
                 ram_free_mb: s.mem_free_mb,
@@ -5143,6 +5440,10 @@ mod tests {
                         tp_rank: None,
                         tp_size: None,
                         is_moe: false,
+                        model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                            thinking: Some(true),
+                            mtp: Some(false),
+                        }),
                         size_bytes: GIB,
                     })
                     .collect(),
@@ -6298,6 +6599,7 @@ mod tests {
             addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
+            inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
             mem_free_mb,
             gpu_free_mb: mem_free_mb,
             ram_free_mb: mem_free_mb,
@@ -6310,6 +6612,10 @@ mod tests {
                     tp_rank: None,
                     tp_size: None,
                     is_moe: false,
+                    model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                        thinking: Some(true),
+                        mtp: Some(false),
+                    }),
                     start_layer: 0,
                     end_layer: 31,
                     total_layers: Some(32),
@@ -6336,6 +6642,10 @@ mod tests {
             tp_rank: Some(rank),
             tp_size: Some(2),
             is_moe: false,
+            model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                thinking: Some(true),
+                mtp: Some(false),
+            }),
         });
         machine
     }
@@ -6812,6 +7122,7 @@ mod tests {
             addr_candidates: Vec::new(),
             libp2p_peer_id: None,
             supports_tunnel: false,
+            inference_capabilities: Some(vec!["speculate/v1-lookup".to_string()]),
             mem_free_mb: 900_000,
             gpu_free_mb: 900_000,
             ram_free_mb: 900_000,
@@ -6823,6 +7134,10 @@ mod tests {
                 tp_rank: None,
                 tp_size: None,
                 is_moe: false,
+                model_capabilities: Some(crate::gguf::ModelCapabilityEvidence {
+                    thinking: Some(true),
+                    mtp: Some(false),
+                }),
                 start_layer: 0,
                 end_layer: 31,
                 total_layers: Some(32),

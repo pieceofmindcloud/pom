@@ -7,6 +7,7 @@
 //! Only the KV section is parsed; the tensor table and tensor data are skipped.
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -69,6 +70,13 @@ pub struct GgufInfo {
     pub expert_count: Option<u32>,
     /// `<arch>.expert_used_count`, the number selected by the router per token.
     pub expert_used_count: Option<u32>,
+    /// Template Jinja real do tokenizer, quando o GGUF o declara.
+    pub chat_template: Option<String>,
+    /// Tokens de controle de thinking encontrados no vocabulário real. `None`
+    /// significa que o GGUF não permitiu confirmar o vocabulário.
+    pub thinking_control_tokens: Option<Vec<String>>,
+    /// `<arch>.nextn_predict_layers`, quando presente no cabeçalho.
+    pub nextn_predict_layers: Option<u32>,
     /// `pom.tp_format`/`pom.tp_size`/`pom.tp_rank` de um shard de tensor
     /// parallelism: qual versão da regra de fatiamento escreveu este arquivo, e
     /// que posição do grupo ele é.
@@ -127,6 +135,23 @@ impl GgufInfo {
     /// architecture name.
     pub fn is_moe(&self) -> bool {
         self.model_architecture().is_moe()
+    }
+
+    /// A capacidade de desativar thinking só é afirmada quando o template e
+    /// os tokens de controle usados pelo runtime estão ambos no GGUF.
+    pub fn thinking_capability(&self) -> Option<bool> {
+        let template = self.chat_template.as_deref()?;
+        let tokens = self.thinking_control_tokens.as_ref()?;
+        let has = |token: &str| tokens.iter().any(|value| value == token);
+        let generic = template.contains("<think>") && template.contains("</think>");
+        let gemma4 = template.contains("enable_thinking") && template.contains("<|think|>");
+        if generic {
+            Some(has("<think>") && has("</think>"))
+        } else if gemma4 {
+            Some(has("<|think|>"))
+        } else {
+            Some(false)
+        }
     }
 
     /// Layers of the *whole* model: the shard metadata when present, else the
@@ -210,6 +235,15 @@ impl GgufInfo {
         }
         Ok(value)
     }
+}
+
+/// Evidência de capacidade lida diretamente da metadata e da tabela de
+/// tensores do GGUF. `None` em uma capacidade significa que a leitura não
+/// conseguiu provar o estado, não que a capacidade está presente.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ModelCapabilityEvidence {
+    pub thinking: Option<bool>,
+    pub mtp: Option<bool>,
 }
 
 struct Reader<R: Read + Seek> {
@@ -313,6 +347,32 @@ impl<R: Read + Seek> Reader<R> {
         }
         Ok(Some(values))
     }
+
+    fn string_array_matches(&mut self, vtype: u32, wanted: &[&str]) -> Result<Option<Vec<String>>> {
+        if vtype != T_ARRAY {
+            self.skip_value(vtype)?;
+            return Ok(None);
+        }
+        let element_type = self.u32()?;
+        let count = self.u64()?;
+        if element_type != T_STRING {
+            for _ in 0..count {
+                self.skip_value(element_type)?;
+            }
+            return Ok(None);
+        }
+        if count > 1_000_000 {
+            bail!("implausible GGUF string array length {count}");
+        }
+        let mut matches = Vec::new();
+        for _ in 0..count {
+            let value = self.string()?;
+            if wanted.iter().any(|candidate| *candidate == value) {
+                matches.push(value);
+            }
+        }
+        Ok(Some(matches))
+    }
 }
 
 /// Parse the KV header of a GGUF file.
@@ -350,6 +410,15 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             "general.architecture" if vtype == T_STRING => info.architecture = Some(r.string()?),
             "general.name" if vtype == T_STRING => info.name = Some(r.string()?),
             "general.size_label" if vtype == T_STRING => info.size_label = Some(r.string()?),
+            "tokenizer.chat_template" if vtype == T_STRING => {
+                info.chat_template = Some(r.string()?)
+            }
+            "tokenizer.ggml.tokens" => {
+                info.thinking_control_tokens = Some(
+                    r.string_array_matches(vtype, &["<think>", "</think>", "<|think|>"])?
+                        .unwrap_or_default(),
+                )
+            }
             // Chaves nossas: o prefixo vem da marca (`brand.json`), não de um
             // literal, para renomear o produto não deixar metade do leitor
             // procurando o nome velho.
@@ -372,6 +441,9 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".expert_count") => info.expert_count = r.value_as_u32(vtype)?,
             k if k.ends_with(".expert_used_count") => {
                 info.expert_used_count = r.value_as_u32(vtype)?
+            }
+            k if k.ends_with(".nextn_predict_layers") => {
+                info.nextn_predict_layers = r.value_as_u32(vtype)?
             }
             k if k.ends_with(".attention.head_count_kv") => {
                 info.attention_head_count_kv = r.values_as_u32(vtype)?
@@ -482,6 +554,8 @@ pub struct GgufLayout {
     /// the model's last layer must carry this hyperparameter zeroed or
     /// llama.cpp aborts the load looking for `blk.<last>.nextn.*`.
     pub nextn_predict_layers: u32,
+    /// Há tensores `nextn` reais na tabela do arquivo.
+    pub has_nextn_tensors: bool,
 }
 
 impl GgufLayout {
@@ -608,6 +682,9 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         };
 
         layout.total_bytes += bytes;
+        if name.split('.').any(|part| part == "nextn") {
+            layout.has_nextn_tensors = true;
+        }
 
         if let Some(n) = block_index(&name) {
             *layers.entry(n).or_insert(0) += bytes;
@@ -639,6 +716,21 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     }
 
     Ok(layout)
+}
+
+/// Read the model-level evidence used by the deployment planner.
+pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> {
+    let info = read_info(path)?;
+    let layout = read_layout(path)?;
+    let mtp = if info.nextn_predict_layers.unwrap_or(0) == 0 {
+        Some(false)
+    } else {
+        Some(layout.has_nextn_tensors)
+    };
+    Ok(ModelCapabilityEvidence {
+        thinking: info.thinking_capability(),
+        mtp,
+    })
 }
 
 /// `blk.17.attn_q.weight` → `Some(17)`.
@@ -698,6 +790,7 @@ mod tests {
             total_bytes: 480,
             layer_kinds: vec![],
             nextn_predict_layers: 0,
+            has_nextn_tensors: false,
         };
         // Middle slice: 2 layers + embedding.
         assert_eq!(layout.slice_bytes(0, 1, false), 250);
@@ -731,6 +824,69 @@ mod tests {
             b.extend_from_slice(v);
         }
         b
+    }
+
+    fn string_array(values: &[&str]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&T_STRING.to_le_bytes());
+        b.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            b.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            b.extend_from_slice(value.as_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn thinking_capability_requires_real_template_and_vocabulary_tokens() {
+        let dir = std::env::temp_dir();
+        let supported = dir.join("pom-thinking-supported.gguf");
+        std::fs::write(
+            &supported,
+            header_only_gguf(&[
+                (
+                    "tokenizer.chat_template",
+                    T_STRING,
+                    "{% if enable_thinking %}<|think|>{% endif %}".into(),
+                ),
+                (
+                    "tokenizer.ggml.tokens",
+                    T_ARRAY,
+                    string_array(&["<|think|>"]),
+                ),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            read_info(&supported).unwrap().thinking_capability(),
+            Some(true)
+        );
+
+        let unsupported = dir.join("pom-thinking-unsupported.gguf");
+        std::fs::write(
+            &unsupported,
+            header_only_gguf(&[
+                (
+                    "tokenizer.chat_template",
+                    T_STRING,
+                    "{% if enable_thinking %}<|think|>{% endif %}".into(),
+                ),
+                ("tokenizer.ggml.tokens", T_ARRAY, string_array(&["foo"])),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            read_info(&unsupported).unwrap().thinking_capability(),
+            Some(false)
+        );
+
+        let unknown = dir.join("pom-thinking-unknown.gguf");
+        std::fs::write(&unknown, header_only_gguf(&[])).unwrap();
+        assert_eq!(read_info(&unknown).unwrap().thinking_capability(), None);
+
+        let _ = std::fs::remove_file(supported);
+        let _ = std::fs::remove_file(unsupported);
+        let _ = std::fs::remove_file(unknown);
     }
 
     fn u32_array(values: &[u32]) -> Vec<u8> {

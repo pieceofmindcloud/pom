@@ -248,6 +248,14 @@ behind an auth extractor.
   experts identifica MoE. O plano expõe `inference_mode_supported` e
   `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
   enquanto esse caminho não for suportado.
+  O mesmo `DeployPlan` expõe `capabilities` em estado `supported`,
+  `unsupported` ou `unknown`, com origem e motivo: thinking vem do template e
+  vocabulário GGUF, MTP da metadata `nextn` e do peer final, lookup das
+  capacidades runtime de todos os alvos, e fit-memory da estratégia. O
+  `no_embeddings` é avaliado por posição real na cadeia; quando solicitado,
+  `launch` valida todos os peers antes de parar qualquer processo e envia o
+  override por alvo, recusando intermediários que precisam exportar residual ou
+  topologia indeterminada.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

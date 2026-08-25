@@ -447,7 +447,15 @@ impressão digital é só modelo + conjunto de faixas.
   fatiado e Tensor Parallelism. Em modelo denso a seção fica oculta. Se a
   combinação escolhida não for suportada, o seletor continua visível com a
   razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
-  sobre o motor executado.
+  sobre o motor executado. As demais opções condicionais recebem
+  `DeployPlan.capabilities` do backend: `no_thinking` usa
+  `tokenizer.chat_template` e o vocabulário GGUF, MTP usa metadata/tensores
+  `nextn` e a capacidade runtime do peer final, e lookup usa as capacidades
+  runtime de todos os alvos. O estado `unsupported` oculta a opção; `unknown`
+  deixa-a visível, desabilitada e com fonte/motivo. O switch
+  `no_embeddings` permanece visível: ligado, só passa quando a topologia prova
+  que cada peer pode dispensar a exportação de residual, com recusa nominal e
+  atômica para intermediários ou topologia indeterminada.
   **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
   (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
   o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque

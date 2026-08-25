@@ -26,7 +26,7 @@
 //!   locations on Linux. Weights are blobs addressed by digest, so the friendly
 //!   name is recovered by reading the manifest tree.
 
-use crate::gguf::{self, GgufInfo};
+use crate::gguf::{self, GgufInfo, ModelCapabilityEvidence};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -101,6 +101,10 @@ pub struct DiscoveredModel {
     pub tp_rank: Option<u32>,
     #[serde(default)]
     pub tp_size: Option<u32>,
+    /// Evidência de capacidades derivada do header e da tabela de tensores do
+    /// GGUF. Ausente quando a leitura não pôde ser confirmada.
+    #[serde(default)]
+    pub capabilities: Option<ModelCapabilityEvidence>,
 }
 
 impl DiscoveredModel {
@@ -509,6 +513,7 @@ fn describe(
         tensor_parallel: part.is_some_and(|c| c.tensor_parallel),
         tp_rank: part.and_then(|c| c.tp_rank),
         tp_size: part.and_then(|c| c.tp_size),
+        capabilities: gguf::read_capability_evidence(path).ok(),
     })
 }
 
@@ -1039,6 +1044,7 @@ mod tests {
             tensor_parallel: false,
             tp_rank: None,
             tp_size: None,
+            capabilities: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1070,6 +1076,7 @@ mod tests {
                 tensor_parallel,
                 tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
                 tp_size: tensor_parallel.then_some(2),
+                capabilities: None,
             };
             if tensor_parallel {
                 model.name = format!("{id}-tp.gguf");
@@ -1191,6 +1198,7 @@ mod tests {
             tensor_parallel: false,
             tp_rank: None,
             tp_size: None,
+            capabilities: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

@@ -275,7 +275,10 @@ Key logic carriers:
   representa uma implantação ainda não aplicada.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  mantém os ajustes por máquina fora do bloco global.
+  mantém os ajustes por máquina fora do bloco global. `CapabilitySwitch` usa o
+  estado tri-state retornado pelo plano: oculta incompatíveis, mantém
+  indeterminados visíveis com alerta e desabilitados, e preserva sempre o
+  controle `no_embeddings`.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /

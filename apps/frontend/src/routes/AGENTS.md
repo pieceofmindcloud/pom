@@ -163,6 +163,11 @@ Per-file list:
   `model_label` como texto; quando há duas rodadas do mesmo modelo, o seletor
   mostra o prefixo do `pom_id` para desambiguar sem trocar o grupo enviado ao
   backend.
+- As opções globais condicionadas pelo modelo usam `DeployPlan.capabilities`:
+  `unsupported` fica oculto; `unknown` permanece visível, desabilitado e
+  explica a fonte e o motivo. `no_embeddings` é a exceção de produto:
+  permanece visível, e o backend valida atomicamente a topologia por peer antes
+  de aplicar o controle.
 - O fechamento do inspetor é uma barra visual de 3px em altura total, com uma
   área de clique e foco maior e invisível. Ela fica fora do scroll do conteúdo,
   então continua ancorada na altura da tela durante rolagem e resize; ao fechar,

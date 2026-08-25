@@ -1855,6 +1855,17 @@ impl ApplyRequest {
             !self.single_peer() && self.is_last_peer()
         }
     }
+
+    fn no_embeddings_evaluation(&self) -> crate::capabilities::NoEmbeddingsEvaluation {
+        crate::capabilities::evaluate_no_embeddings(&[crate::capabilities::PeerTopology {
+            node_id: self.base_name.clone(),
+            start_layer: Some(self.start_layer),
+            end_layer: Some(self.end_layer),
+            total_layers: Some(self.total_layers),
+            peer_index: Some(self.peer_index),
+            peer_count: Some(self.peer_count),
+        }])
+    }
 }
 
 fn model_label(req: &ApplyRequest) -> String {
@@ -2085,6 +2096,13 @@ async fn apply(
     State(state): State<GatewayState>,
     Json(req): Json<ApplyRequest>,
 ) -> Response {
+    if req.params.no_embeddings {
+        if let Err(reason) =
+            crate::capabilities::validate_no_embeddings(&req.no_embeddings_evaluation(), true)
+        {
+            return bad_request(reason);
+        }
+    }
     // A merge request lists the files it needs instead of pointing at one; the
     // guard below checks whichever set is actually going to be read.
     if let Some(parts) = &req.merge {
@@ -3739,6 +3757,10 @@ pub struct LaunchTarget {
     /// pipeline não podem estar as duas certas sobre onde ele cabe.
     #[serde(default)]
     pub offload_kqv: Option<bool>,
+    /// Override por alvo, calculado a partir da topologia do plano. `None`
+    /// preserva o comportamento automático do peer final.
+    #[serde(default)]
+    pub no_embeddings: Option<bool>,
     /// Posição deste peer no pipeline, quando ela não é a posição dele nesta
     /// requisição.
     ///
@@ -3797,7 +3819,54 @@ pub(crate) fn params_for(base: &RuntimeParams, target: &LaunchTarget) -> Runtime
     if let Some(kqv) = target.offload_kqv {
         params.offload_kqv = kqv;
     }
+    if let Some(no_embeddings) = target.no_embeddings {
+        params.no_embeddings = no_embeddings;
+    }
     params
+}
+
+fn launch_no_embeddings_evaluation(
+    req: &LaunchRequest,
+) -> crate::capabilities::NoEmbeddingsEvaluation {
+    let mut ranges = Vec::new();
+    for target in &req.targets {
+        if target.tp.is_none() {
+            let range = (target.start_layer, target.end_layer);
+            if !ranges.contains(&range) {
+                ranges.push(range);
+            }
+        }
+    }
+    let pipeline_count = ranges.len() as u32;
+    let peers = req
+        .targets
+        .iter()
+        .map(|target| {
+            let derived_index = if target.tp.is_some() {
+                Some(0)
+            } else {
+                ranges
+                    .iter()
+                    .position(|range| *range == (target.start_layer, target.end_layer))
+                    .map(|value| value as u32)
+            };
+            crate::capabilities::PeerTopology {
+                node_id: target.node_id.clone(),
+                start_layer: Some(target.start_layer),
+                end_layer: Some(target.end_layer),
+                total_layers: Some(req.total_layers),
+                peer_index: target.peer_index.or(derived_index),
+                peer_count: target.peer_count.or_else(|| {
+                    if target.tp.is_some() {
+                        Some(1)
+                    } else {
+                        Some(pipeline_count)
+                    }
+                }),
+            }
+        })
+        .collect::<Vec<_>>();
+    crate::capabilities::evaluate_no_embeddings(&peers)
 }
 
 /// Dispatch the planned configuration to every peer, including this one.
@@ -3829,6 +3898,15 @@ pub(crate) async fn launch(
             "a fatia L{}-{} passa do fim de um modelo de {} camadas",
             t.start_layer, t.end_layer, req.total_layers
         ));
+    }
+
+    if req.params.no_embeddings {
+        if let Err(reason) = crate::capabilities::validate_no_embeddings(
+            &launch_no_embeddings_evaluation(&req),
+            true,
+        ) {
+            return bad_request(reason);
+        }
     }
 
     let peers = state.all_peers().await;
@@ -4682,6 +4760,7 @@ mod tests {
             merge: None,
             n_gpu_layers: gpu,
             offload_kqv: kqv,
+            no_embeddings: None,
             peer_index: None,
             peer_count: None,
             tp: None,

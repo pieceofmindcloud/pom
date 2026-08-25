@@ -10,7 +10,10 @@ transferência.
   `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.
 - `gguf.rs` - lê a geometria de KV escalar ou por camada
   (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
-  MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos.
+  MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
+  lê `tokenizer.chat_template`, tokens de controle reais e os campos/tensores
+  `nextn` para produzir a evidência de thinking e MTP usada pelo planner; a
+  ausência de leitura permanece indeterminada.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

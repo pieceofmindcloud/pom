@@ -138,6 +138,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
+  `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
+  `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
+  é prova de correção: IQ2_S e IQ4_XS permanecem `CPUReference` até uma prova
+  CUDA real contra o oráculo GGML; a instrumentação não altera esse dispatch.
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
   Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
   camada: somente camadas com ponte device têm seus experts omitidos do

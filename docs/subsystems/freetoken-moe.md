@@ -1432,6 +1432,51 @@ BF16. A build e esse teste ainda precisam passar no worktree de validação, em
 três dtypes. Sem CUDA, ou se a admissão por orçamento medido recusar o payload,
 a posse permanece no llama.cpp e a telemetria informa o motivo.
 
+### Diagnóstico diferencial IQ - 2026-08-25
+
+O commit `d631442` tornou a comparação IQ diagnosticável por dtype e estágio:
+o teste CPU informa o primeiro valor não finito, e a prova CUDA registra o
+primeiro índice divergente em `gate`, `up`, ativação ou `down`, com valor atual,
+esperado, erro absoluto e erro relativo. A fixture CPU isolada passou:
+
+```text
+CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom cada_iq_priorizado_tem_bloco_e_dequantizacao_determinados -- --nocapture
+1 passed, 891 filtered out
+```
+
+A prova obrigatória não foi executada. O comando foi rodado exatamente como
+exigido, com `CARGO_TARGET_DIR=/data/ftk-cuda-target` e
+`CUDACXX=/usr/local/cuda-12/bin/nvcc`, e terminou antes do build/teste com:
+
+```text
+error: failed to create directory `/data`
+
+Caused by:
+  Read-only file system (os error 30)
+```
+
+Esta é a saída observada pelo comando, não uma conclusão sobre a configuração
+do host. Sem a execução CUDA não há dtype, estágio ou correção de kernel
+comprovados. IQ2_S e IQ4_XS continuam em `CPUReference`; nenhum dtype foi
+reativado pela instrumentação.
+
+Na mesma rodada, a suíte densa local foi executada com
+`CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom`:
+`879 passed`, `4 failed`, `9 ignored`, de `892` testes. As falhas observadas
+foram:
+
+- `gguf::tests::canonical_qwen35_nextn_metadata_and_tensor_names_prove_mtp`:
+  `GGUF truncado antes da seção de dados` em `gguf.rs:1202:52`;
+- `gguf::tests::mtp_is_proven_by_real_nextn_tensors_even_without_metadata`:
+  `GGUF truncado antes da seção de dados` em `gguf.rs:1174:52`;
+- `gguf::tests::read_layout_sees_nextn_predict_layers`:
+  `GGUF truncado antes da seção de dados` em `gguf.rs:1325:38`;
+- `webui::tests::merge_parts_joins_two_slices_into_a_whole`:
+  `array metadata 'llama.attention.head_count_kv_by_layer' tem comprimento 16; esperado 1 ou 32 (contagem original de blocos)` em `webui.rs:5114:61`.
+
+Essas falhas ficaram fora dos arquivos de diagnóstico IQ. Elas não constituem
+prova da ponte CUDA nem alteram a salvaguarda.
+
 ### Fases e critérios de pronto
 
 1. **Inventário e conformance.** Mapear todos os IDs ativos da enumeração,
@@ -1774,3 +1819,8 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
   que aquecer o cache altere os pesos. O aquecimento usa a mesma admissão e o
   mesmo payload do caminho sob demanda; a correção numérica desses dois testes
   continua pendente e não deve ser mascarada por tolerância mais larga.
+- A prova CUDA IQ da rodada `d631442` não chegou a iniciar: o comando exigido
+  retornou literalmente `error: failed to create directory \`/data\`` e
+  `Read-only file system (os error 30)`. A causa do retorno não foi inferida;
+  até haver uma execução real, IQ2_S e IQ4_XS permanecem protegidos pela
+  salvaguarda.

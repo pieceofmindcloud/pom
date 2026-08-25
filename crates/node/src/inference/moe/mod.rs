@@ -5,8 +5,10 @@
 //! CPU para o primeiro formato suportado.
 
 pub mod admission;
+pub mod bandwidth;
 pub mod block;
 pub mod cache;
+pub mod coexecution;
 #[cfg(feature = "cuda")]
 pub(crate) mod cuda;
 pub mod format_heterogeneous;

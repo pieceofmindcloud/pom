@@ -633,6 +633,73 @@ vez de ocultá-la. O executor observado foi `cuda`, dtype `[40]`,
 O maior próximo alvo medido é reduzir a transferência e a preparação do lote,
 mas esta medição não inicia F5-E2 nem afirma ganho dela.
 
+### Diagnóstico do prefill após a cobertura escalar - 2026-08-25
+
+O benchmark mais recente do captain mediu três rodadas válidas do Gemma4 no
+gateway: `38,4 tok/s` de prefill e `23,0 tok/s` de decode. Isso equivale a
+`26,042 ms/token` e `43,478 ms/token`, respectivamente. A referência histórica
+do `llama.cpp` é `49,0/20,4 tok/s` e a do FreeToken é `359,1/47,7 tok/s`.
+Portanto o prefill atual está `1,276x` mais lento que o `llama.cpp` e `9,352x`
+abaixo do FreeToken; o decode está `1,127x` acima do `llama.cpp` e ainda
+`2,074x` abaixo do FreeToken. O benchmark novo não trouxe tamanho do prompt,
+`n_ubatch` efetivo nem o trace interno, então esses números não autorizam
+atribuir a diferença a uma única hipótese.
+
+As hipóteses foram confrontadas com o caminho real:
+
+1. **Prefill token a token.** Refutada no nível do servidor. `prefill::run`
+   envia um pedaço inteiro e `prefill_blocking` chama `decode_tokens` uma vez
+   com todos os tokens daquele pedaço. O padrão do pedaço é 512 e ele é
+   limitado por `n_batch`; o `llama_batch` recebe o lote inteiro. Isso não
+   significa um único cálculo físico: o `llama.cpp` processa o lote em
+   microbatches e o hook externo é chamado dentro de cada um. O CUDA agrupado
+   recebe `n_tokens` do microbatch e processa as rotas daquele lote em quatro
+   kernels, não uma chamada por token.
+
+2. **`n_ubatch=128`.** Confirmada como limitador potencial, não como causa
+   suficiente. `effective_n_ubatch` reduz `n_batch=512` para 128 quando
+   `fit_memory=true`; para um prompt maior que 128, o grafo é repetido em
+   `ceil(tokens/128)` microbatches e o callback MoE repete a preparação de
+   rotas, transferências de descritores e sincronização por microbatch. O
+   perfil instrumentado que temos como quebra completa tinha 22 tokens, logo
+   cabia em um único microbatch, e mesmo assim a preparação de lote dominou.
+   O tamanho do prompt do benchmark novo não foi fornecido, então a fração
+   atual atribuível a esse limitador permanece não medida.
+
+3. **Sincronização por camada no prefill.** Existe sincronização no executor
+   externo, mas não é o gargalo observado. Cada chamada FFI CUDA registra
+   `sync_count=1` e executa `cudaDeviceSynchronize` depois dos quatro kernels;
+   como o callback está dentro do grafo, isso ocorre por camada e microbatch.
+   No perfil completo, `sync_ms=6,492 ms` no prefill, contra `cuda_call_wall_ms=
+   2836,915 ms`; no delta de decode foram `16,399 ms` contra `3086,384 ms`.
+   A diferença não sustenta a hipótese de que a espera de sincronização seja
+   o custo principal do prefill.
+
+A quebra não sobreposta disponível para o prefill, em uma carga anterior de
+22 tokens após o agrupamento, foi:
+
+| componente | tempo | fração do backend total |
+|---|---:|---:|
+| restante do `llama.cpp` fora do forward MoE | `236,518 ms` | `2,942%` |
+| lookup do cache | `1,263 ms` | `0,016%` |
+| leitura do expert no GGUF | `501,936 ms` | `6,244%` |
+| admissão no cache RAM | `696,284 ms` | `8,661%` |
+| preparação do lote no host | `3622,166 ms` | `45,055%` |
+| parede da chamada CUDA | `2836,915 ms` | `35,288%` |
+| cópia do resultado no host | `6,197 ms` | `0,077%` |
+| agregação ponderada | `2,229 ms` | `0,028%` |
+| restante da orquestração do runtime | `135,860 ms` | `1,690%` |
+| **backend total** | **`8039,369 ms`** | **`100%`** |
+
+Essa tabela é evidência de estrutura, não uma decomposição inventada do
+benchmark novo. Ela aponta a preparação do lote no host como o maior alvo
+medido e a parede CUDA como o segundo. O contrafactual mínimo para fechar a
+atribuição no benchmark atual é repetir exatamente as três rodadas com o
+mesmo prompt, habilitando `POM_MOE_CUDA_PROFILE=1`, e registrar o tamanho do
+prompt, `n_batch`, `n_ubatch`, número de callbacks e a quebra acima. Só depois
+de essa coleta, com a placa livre, será possível decidir entre aumentar o
+microbatch, reutilizar a preparação de host ou alterar a sincronização.
+
 ### Análise formal de lacunas: FreeToken versus o caminho MoE atual
 
 Esta análise foi feita em 2026-08-25, sem alterar código e sem acessar a ksia.

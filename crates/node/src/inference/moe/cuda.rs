@@ -24,10 +24,12 @@ pub struct CudaMoeCallTiming {
     pub h2d_ms: f64,
     pub h2d_bytes: u64,
     pub kernel_ms: f64,
+    pub kernel_span_ms: f64,
     pub launch_ms: f64,
     pub sync_ms: f64,
     pub d2h_ms: f64,
     pub d2h_bytes: u64,
+    pub transfer_span_ms: f64,
     pub free_ms: f64,
     pub buffer_mask: u64,
     pub buffer_switches: u64,
@@ -43,10 +45,12 @@ pub struct Nvfp4CudaDiagnostics {
     pub h2d_ms: f64,
     pub h2d_bytes: u64,
     pub kernel_ms: f64,
+    pub kernel_span_ms: f64,
     pub launch_ms: f64,
     pub sync_ms: f64,
     pub d2h_ms: f64,
     pub d2h_bytes: u64,
+    pub transfer_span_ms: f64,
     pub free_ms: f64,
     pub host_batch_prepare_ms: f64,
     pub host_result_copy_ms: f64,
@@ -68,10 +72,12 @@ impl Nvfp4CudaDiagnostics {
         self.h2d_ms += call.h2d_ms;
         self.h2d_bytes = self.h2d_bytes.saturating_add(call.h2d_bytes);
         self.kernel_ms += call.kernel_ms;
+        self.kernel_span_ms += call.kernel_span_ms;
         self.launch_ms += call.launch_ms;
         self.sync_ms += call.sync_ms;
         self.d2h_ms += call.d2h_ms;
         self.d2h_bytes = self.d2h_bytes.saturating_add(call.d2h_bytes);
+        self.transfer_span_ms += call.transfer_span_ms;
         self.free_ms += call.free_ms;
         self.buffer_mask |= call.buffer_mask;
         self.buffer_switches = self.buffer_switches.saturating_add(call.buffer_switches);
@@ -2325,10 +2331,12 @@ mod tests {
             h2d_ms: 3.0,
             h2d_bytes: 10,
             kernel_ms: 4.0,
+            kernel_span_ms: 4.0,
             launch_ms: 5.0,
             sync_ms: 6.0,
             d2h_ms: 7.0,
             d2h_bytes: 8,
+            transfer_span_ms: 10.0,
             free_ms: 9.0,
             buffer_mask: 1,
             buffer_switches: 1,
@@ -2342,10 +2350,12 @@ mod tests {
             h2d_ms: 30.0,
             h2d_bytes: 100,
             kernel_ms: 40.0,
+            kernel_span_ms: 40.0,
             launch_ms: 50.0,
             sync_ms: 60.0,
             d2h_ms: 70.0,
             d2h_bytes: 80,
+            transfer_span_ms: 100.0,
             free_ms: 90.0,
             buffer_mask: 2,
             buffer_switches: 1,
@@ -2358,7 +2368,9 @@ mod tests {
         assert_eq!(total.d2h_bytes, 88);
         assert_eq!(total.h2d_ms, 33.0);
         assert_eq!(total.kernel_ms, 44.0);
+        assert_eq!(total.kernel_span_ms, 44.0);
         assert_eq!(total.sync_ms, 66.0);
+        assert_eq!(total.transfer_span_ms, 110.0);
         assert_eq!(total.buffer_mask, 3);
         assert_eq!(total.buffer_switches, 2);
     }
@@ -2428,7 +2440,7 @@ mod tests {
             let h2d_gb_s = diagnostics.h2d_bytes as f64 / (diagnostics.h2d_ms * 1_000_000.0);
             let d2h_gb_s = diagnostics.d2h_bytes as f64 / (diagnostics.d2h_ms * 1_000_000.0);
             eprintln!(
-                "CUDA_BANDWIDTH case={label} hidden={hidden} intermediate={intermediate} tokens={tokens} active_experts={active_experts} calls={} buffer_mask={} buffer_switches={} h2d_bytes={} h2d_ms={:.3} effective_h2d_GB_s={:.3} d2h_bytes={} d2h_ms={:.3} effective_d2h_GB_s={:.3} kernel_ms={:.3} wall_ms={:.3}",
+                "CUDA_BANDWIDTH case={label} hidden={hidden} intermediate={intermediate} tokens={tokens} active_experts={active_experts} calls={} buffer_mask={} buffer_switches={} h2d_bytes={} h2d_ms={:.3} effective_h2d_GB_s={:.3} d2h_bytes={} d2h_ms={:.3} effective_d2h_GB_s={:.3} kernel_ms={:.3} kernel_span_ms={:.3} transfer_span_ms={:.3} wall_ms={:.3}",
                 diagnostics.calls,
                 diagnostics.buffer_mask,
                 diagnostics.buffer_switches,
@@ -2439,6 +2451,8 @@ mod tests {
                 diagnostics.d2h_ms,
                 d2h_gb_s,
                 diagnostics.kernel_ms,
+                diagnostics.kernel_span_ms,
+                diagnostics.transfer_span_ms,
                 diagnostics.cuda_call_wall_ms,
             );
         }

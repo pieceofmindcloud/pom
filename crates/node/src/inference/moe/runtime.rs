@@ -89,10 +89,12 @@ pub struct MoeExecutorDiagnostics {
     pub cuda_h2d_ms: f64,
     pub cuda_h2d_bytes: u64,
     pub cuda_kernel_ms: f64,
+    pub cuda_kernel_span_ms: f64,
     pub cuda_launch_ms: f64,
     pub cuda_sync_ms: f64,
     pub cuda_d2h_ms: f64,
     pub cuda_d2h_bytes: u64,
+    pub cuda_transfer_span_ms: f64,
     pub cuda_free_ms: f64,
     pub cuda_buffer_mask: u64,
     pub cuda_buffer_switches: u64,
@@ -1346,11 +1348,13 @@ impl MoeRuntime {
                 diagnostics.cuda_h2d_bytes =
                     diagnostics.cuda_h2d_bytes.saturating_add(cuda.h2d_bytes);
                 diagnostics.cuda_kernel_ms += cuda.kernel_ms;
+                diagnostics.cuda_kernel_span_ms += cuda.kernel_span_ms;
                 diagnostics.cuda_launch_ms += cuda.launch_ms;
                 diagnostics.cuda_sync_ms += cuda.sync_ms;
                 diagnostics.cuda_d2h_ms += cuda.d2h_ms;
                 diagnostics.cuda_d2h_bytes =
                     diagnostics.cuda_d2h_bytes.saturating_add(cuda.d2h_bytes);
+                diagnostics.cuda_transfer_span_ms += cuda.transfer_span_ms;
                 diagnostics.cuda_free_ms += cuda.free_ms;
                 diagnostics.cuda_buffer_mask |= cuda.buffer_mask;
                 diagnostics.cuda_buffer_switches = diagnostics

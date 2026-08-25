@@ -34,10 +34,12 @@ struct CudaMoeCallTiming {
     double h2d_ms;
     uint64_t h2d_bytes;
     double kernel_ms;
+    double kernel_span_ms;
     double launch_ms;
     double sync_ms;
     double d2h_ms;
     uint64_t d2h_bytes;
+    double transfer_span_ms;
     double free_ms;
     uint64_t buffer_mask;
     uint64_t buffer_switches;
@@ -1298,11 +1300,15 @@ int collect_route_chunk(
             route_count * sizeof(*slot->d_token_ids) +
             route_count * sizeof(*slot->d_weights) +
             (chunk_tokens + 1) * sizeof(*slot->d_token_offsets));
-        timing->kernel_ms += gate_ms + down_ms;
+        const double chunk_kernel_ms = static_cast<double>(gate_ms + down_ms);
+        const double chunk_transfer_ms = static_cast<double>(h2d_ms + d2h_ms);
+        timing->kernel_ms += chunk_kernel_ms;
+        timing->kernel_span_ms = std::max(timing->kernel_span_ms, chunk_kernel_ms);
         timing->d2h_ms += d2h_ms;
         timing->d2h_bytes += static_cast<uint64_t>(
             chunk_tokens * hidden_width * sizeof(float));
-        timing->sync_ms += std::max(0.0, sync_ms - static_cast<double>(gate_ms + down_ms));
+        timing->transfer_span_ms = std::max(timing->transfer_span_ms, chunk_transfer_ms);
+        timing->sync_ms += std::max(0.0, sync_ms - chunk_kernel_ms);
     }
     return 0;
 }

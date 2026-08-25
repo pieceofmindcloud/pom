@@ -1165,13 +1165,6 @@ impl Nvfp4Executor {
         }
     }
 
-    pub fn record_aggregation_ms(&self, elapsed_ms: f64) {
-        self.host_diagnostics
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .aggregation_ms += elapsed_ms;
-    }
-
     pub fn run_from_source(
         &self,
         source: &Nvfp4Source,
@@ -1189,90 +1182,6 @@ impl Nvfp4Executor {
             },
             hidden,
         )
-    }
-
-    pub fn run_batch_from_source(
-        &self,
-        source: &Nvfp4Source,
-        model: &str,
-        layer: u32,
-        experts: &[u32],
-        hidden: &[f32],
-    ) -> Result<Vec<Vec<f32>>, Nvfp4ExecuteError> {
-        if experts.is_empty() {
-            return Err(Nvfp4Error::Payload("batch de experts vazio").into());
-        }
-
-        #[cfg(feature = "cuda")]
-        if let Nvfp4Backend::Cuda(executor) = &self.backend {
-            let mut resident = Vec::with_capacity(experts.len());
-            for &expert in experts {
-                let key = ExpertKey::new(model, layer, expert, "nvfp4");
-                if let Some(lease) = executor.resident_lookup(&key) {
-                    resident.push(lease);
-                    continue;
-                }
-
-                let load_started = Instant::now();
-                let payload = source.load_expert(layer, expert)?;
-                let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
-                self.host_diagnostics
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .expert_load_ms += expert_load_ms;
-                Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
-                resident.push(
-                    executor
-                        .resident_admit(key, &payload)
-                        .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?,
-                );
-            }
-            return executor
-                .run_batch_resident(&resident, hidden)
-                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
-        }
-
-        let mut leases = Vec::<ExpertLease>::with_capacity(experts.len());
-        for &expert in experts {
-            let key = ExpertKey::new(model, layer, expert, "nvfp4");
-            let lookup_started = Instant::now();
-            let cached = self.cache.lookup(&key);
-            let cache_lookup_ms = lookup_started.elapsed().as_secs_f64() * 1_000.0;
-            let (lease, expert_load_ms, cache_admit_ms) = match cached {
-                Some(lease) => (lease, 0.0, 0.0),
-                None => {
-                    let load_started = Instant::now();
-                    let payload = source.load_expert(layer, expert)?;
-                    let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
-                    let admit_started = Instant::now();
-                    let lease = self
-                        .cache
-                        .admit(key, payload)
-                        .map_err(Nvfp4ExecuteError::Cache)?;
-                    let cache_admit_ms = admit_started.elapsed().as_secs_f64() * 1_000.0;
-                    (lease, expert_load_ms, cache_admit_ms)
-                }
-            };
-            let mut host = self
-                .host_diagnostics
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            host.cache_lookup_ms += cache_lookup_ms;
-            host.expert_load_ms += expert_load_ms;
-            host.cache_admit_ms += cache_admit_ms;
-            leases.push(lease);
-        }
-        match &self.backend {
-            Nvfp4Backend::Cpu => leases
-                .iter()
-                .map(|lease| {
-                    Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?
-                        .run(hidden)
-                })
-                .collect(),
-            #[cfg(feature = "cuda")]
-            Nvfp4Backend::Cuda(_) => unreachable!("o lote CUDA usa o cache residente"),
-        }
     }
 
     #[cfg(feature = "cuda")]

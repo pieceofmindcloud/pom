@@ -53,6 +53,7 @@ where
     })
 }
 
+#[cfg(test)]
 #[derive(Debug)]
 pub enum MeasuredOverlapError<CE, GE> {
     Profile(BandwidthError),
@@ -73,6 +74,7 @@ impl<CE: fmt::Debug + fmt::Display, GE: fmt::Debug + fmt::Display> std::error::E
 {
 }
 
+#[cfg(test)]
 pub fn run_measured<CT, GT, CE, GE, CF, GF>(
     profile: BandwidthProfile,
     misses: &[u32],
@@ -93,6 +95,7 @@ where
     run_overlap(|| cpu(&split.cpu), || gpu(&split.gpu)).map_err(MeasuredOverlapError::Workers)
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BufferError {
     InvalidSlot(usize),
@@ -119,17 +122,20 @@ impl fmt::Display for BufferError {
 
 impl std::error::Error for BufferError {}
 
+#[cfg(test)]
 #[derive(Debug)]
 struct BufferSlot<T> {
     value: Option<T>,
     in_flight: bool,
 }
 
+#[cfg(test)]
 pub struct DoubleBuffer<T> {
     slots: [BufferSlot<T>; 2],
     next: usize,
 }
 
+#[cfg(test)]
 impl<T> DoubleBuffer<T> {
     pub fn new() -> Self {
         Self {
@@ -186,6 +192,7 @@ impl<T> DoubleBuffer<T> {
     }
 }
 
+#[cfg(test)]
 impl<T> Default for DoubleBuffer<T> {
     fn default() -> Self {
         Self::new()

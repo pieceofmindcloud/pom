@@ -236,7 +236,7 @@ impl<'a> Nvfp4Expert<'a> {
         let gated = gate
             .iter()
             .zip(&up)
-            .map(|(&gate, &up)| gelu(gate) * up)
+            .map(|(&gate, &up)| ggml_geglu_value(gate, up))
             .collect::<Vec<_>>();
         let output = mat_vec_nvfp4(self.down, self.hidden, self.intermediate, &gated)
             .into_iter()
@@ -799,39 +799,75 @@ fn f16_to_f32(bits: u16) -> f32 {
     }
 }
 
-fn mat_vec_nvfp4(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
-    let row_size = columns / BLOCK_ELEMENTS * BLOCK_BYTES;
-    (0..rows)
-        .map(|row| {
-            let row_bytes = &matrix[row * row_size..(row + 1) * row_size];
-            row_bytes
-                .chunks_exact(BLOCK_BYTES)
-                .enumerate()
-                .map(|(block, packed)| {
-                    let mut result = 0.0;
-                    for subblock in 0..(BLOCK_ELEMENTS / SUBBLOCK_ELEMENTS) {
-                        let scale = ue4m3_to_f32(packed[subblock]);
-                        let values = &packed[4 + subblock * (SUBBLOCK_ELEMENTS / 2)
-                            ..4 + (subblock + 1) * (SUBBLOCK_ELEMENTS / 2)];
-                        let input_start = block * BLOCK_ELEMENTS + subblock * SUBBLOCK_ELEMENTS;
-                        for (index, &quant) in values.iter().enumerate() {
-                            result += scale * fp4_value(quant & 0x0f) * input[input_start + index];
-                            result += scale
-                                * fp4_value(quant >> 4)
-                                * input[input_start + index + SUBBLOCK_ELEMENTS / 2];
-                        }
-                    }
-                    result
-                })
-                .sum()
+#[derive(Clone, Copy)]
+struct Q8Block {
+    d: f32,
+    qs: [i8; 32],
+}
+
+fn quantize_q8_0(input: &[f32]) -> Vec<Q8Block> {
+    assert!(input.len().is_multiple_of(32));
+    input
+        .chunks_exact(32)
+        .map(|chunk| {
+            let amax = chunk
+                .iter()
+                .map(|value| value.abs())
+                .fold(0.0_f32, f32::max);
+            let d = amax / 127.0;
+            let id = if d != 0.0 { 1.0 / d } else { 0.0 };
+            let d = f16_to_f32(ggml_f32_to_f16_bits(d));
+            let mut qs = [0_i8; 32];
+            for (quantized, &value) in qs.iter_mut().zip(chunk) {
+                *quantized = (value * id).round() as i8;
+            }
+            Q8Block { d, qs }
         })
         .collect()
 }
 
+// GGML_TYPE_NVFP4's CPU dot product is NVFP4 x Q8_0, not a direct F32 dot.
+// Keep the quantization, integer accumulation and block order identical to
+// ggml_vec_dot_nvfp4_q8_0_generic so the Rust reference is numerically
+// comparable to the native backend.
+fn mat_vec_nvfp4(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
+    let row_size = columns / BLOCK_ELEMENTS * BLOCK_BYTES;
+    let input_q8 = quantize_q8_0(input);
+    (0..rows)
+        .map(|row| {
+            let row_bytes = &matrix[row * row_size..(row + 1) * row_size];
+            let mut result = 0.0_f32;
+            for (block, packed) in row_bytes.chunks_exact(BLOCK_BYTES).enumerate() {
+                for subblock in 0..(BLOCK_ELEMENTS / SUBBLOCK_ELEMENTS) {
+                    let scale = ue4m3_to_f32(packed[subblock]);
+                    let q8_block = block * 2 + subblock / 2;
+                    let q8_offset = (subblock % 2) * SUBBLOCK_ELEMENTS;
+                    let q8 = input_q8[q8_block];
+                    let values = &packed[4 + subblock * (SUBBLOCK_ELEMENTS / 2)
+                        ..4 + (subblock + 1) * (SUBBLOCK_ELEMENTS / 2)];
+                    let mut sum_lo = 0_i32;
+                    let mut sum_hi = 0_i32;
+                    for (index, &quant) in values.iter().enumerate() {
+                        let quant_lo = i32::from(fp4_value_i8(quant & 0x0f));
+                        let quant_hi = i32::from(fp4_value_i8(quant >> 4));
+                        sum_lo += i32::from(q8.qs[q8_offset + index]) * quant_lo;
+                        sum_hi +=
+                            i32::from(q8.qs[q8_offset + index + SUBBLOCK_ELEMENTS / 2]) * quant_hi;
+                    }
+                    result += q8.d * scale * (sum_lo + sum_hi) as f32;
+                }
+            }
+            result
+        })
+        .collect()
+}
+
+fn fp4_value_i8(value: u8) -> i8 {
+    [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12][value as usize]
+}
+
 fn fp4_value(value: u8) -> f32 {
-    [
-        0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 0.0, -1.0, -2.0, -3.0, -4.0, -6.0, -8.0, -12.0,
-    ][value as usize]
+    f32::from(fp4_value_i8(value))
 }
 
 fn ue4m3_to_f32(value: u8) -> f32 {
@@ -848,8 +884,55 @@ fn ue4m3_to_f32(value: u8) -> f32 {
     raw * 0.5
 }
 
-fn gelu(value: f32) -> f32 {
-    0.5 * value * (1.0 + (0.797_884_6 * (value + 0.044_715 * value.powi(3))).tanh())
+fn ggml_f32_to_f16_bits(value: f32) -> u16 {
+    // This is the conversion used by ggml_compute_fp32_to_fp16. In
+    // particular, it preserves ggml's round-to-nearest behavior instead of
+    // silently substituting a different half implementation in the oracle.
+    let scale_to_inf = f32::from_bits(0x7780_0000);
+    let scale_to_zero = f32::from_bits(0x0880_0000);
+    let base = (value.abs() * scale_to_inf) * scale_to_zero;
+    let bits = value.to_bits();
+    let shl1_bits = bits.wrapping_add(bits);
+    let sign = bits & 0x8000_0000;
+    let mut bias = shl1_bits & 0xff00_0000;
+    if bias < 0x7100_0000 {
+        bias = 0x7100_0000;
+    }
+    let base = f32::from_bits((bias >> 1) + 0x0780_0000) + base;
+    let bits = base.to_bits();
+    let exponent_bits = (bits >> 13) & 0x0000_7c00;
+    let mantissa_bits = bits & 0x0000_0fff;
+    let nonsign = exponent_bits + mantissa_bits;
+    ((sign >> 16) as u16)
+        | if shl1_bits > 0xff00_0000 {
+            0x7e00
+        } else {
+            nonsign as u16
+        }
+}
+
+fn ggml_gelu_f32(value: f32) -> f32 {
+    0.5_f32
+        * value
+        * (1.0_f32
+            + (0.797_884_560_802_865_4_f32 * value * (1.0_f32 + 0.044_715_f32 * value * value))
+                .tanh())
+}
+
+fn ggml_gelu_f16(value: f32) -> f32 {
+    let input = f16_to_f32(ggml_f32_to_f16_bits(value));
+    let gelu = ggml_gelu_f32(input);
+    f16_to_f32(ggml_f32_to_f16_bits(gelu))
+}
+
+fn ggml_geglu_value(gate: f32, up: f32) -> f32 {
+    if gate <= -10.0 {
+        0.0
+    } else if gate >= 10.0 {
+        gate * up
+    } else {
+        ggml_gelu_f16(gate) * up
+    }
 }
 
 pub struct Nvfp4Executor {
@@ -1180,6 +1263,27 @@ mod tests {
         assert_eq!(fp4_value(7), 12.0);
         assert_eq!(fp4_value(9), -1.0);
         assert_eq!(ue4m3_to_f32(0x38), 0.5);
+    }
+
+    #[test]
+    fn nvfp4_reproduz_quantizacao_q8_0_do_ggml() {
+        let mut input = [0.0_f32; 32];
+        input[0] = 1.0;
+        input[1] = 0.5;
+        input[2] = -0.5;
+        let block = quantize_q8_0(&input)[0];
+
+        assert_eq!(block.d, f16_to_f32(ggml_f32_to_f16_bits(1.0 / 127.0)));
+        assert_eq!(block.qs[0], 127);
+        assert_eq!(block.qs[1], 64);
+        assert_eq!(block.qs[2], -64);
+    }
+
+    #[test]
+    fn nvfp4_reproduz_geglu_fp16_do_ggml() {
+        assert_eq!(ggml_f32_to_f16_bits(1.0), 0x3c00);
+        assert_eq!(ggml_gelu_f16(1.0), 0.84130859375);
+        assert_eq!(ggml_geglu_value(1.0, 2.0), 1.6826171875);
     }
 
     #[test]

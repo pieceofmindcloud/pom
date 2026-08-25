@@ -495,6 +495,40 @@ números não devem ser usados como ganho de uma implementação correta até o
 perfil ser repetido. A próxima etapa aprovada é agrupar o trabalho preservando
 primeiro a prova numérica; F5-E2 e a residência em VRAM vêm depois.
 
+### Primeira validação do agrupamento CUDA
+
+O commit `379ce6a` agrupou os experts ativos de uma rota em uma chamada CUDA:
+o hidden é quantizado uma vez, os payloads são copiados em um bloco contíguo e
+gate/up, GeGLU e down usam índices `(expert, linha)`. A chamada agrupada faz
+cinco lançamentos de kernel e duas sincronizações para o lote inteiro, em vez
+de repetir a sequência por expert. A soma ponderada continua no Rust, na ordem
+original do roteamento. O agrupamento é genérico por contagem e geometria do
+lote; não há ramo por arquitetura ou dtype.
+
+O primeiro teste CUDA revelou um defeito específico da nova indexação: a
+quantização Q8_0 comparava o índice global do lote com o comprimento de um
+único vetor, deixando os vetores a partir do segundo sem valores. `379ce6a`
+separa o deslocamento dentro do vetor do índice global. O caso de dois experts
+falhava antes e passou depois da correção, sem mudar a fórmula de quantização.
+
+Na revisão final `fb8da96`, validada na ksia, os resultados foram:
+
+- `cargo build --release --features vulkan,cuda`: passou em `3m22s`, com os
+  dois avisos conhecidos de `Nvfp4Trace` e `fp4_value` não consumidos;
+- os três testes CUDA sintéticos, incluindo o lote, `3 passed, 0 failed`;
+- lote CUDA com dois experts extraídos do GGUF real Gemma4, dimensões derivadas
+  do arquivo: `1 passed, 0 failed`;
+- comparação real camada a camada contra o oráculo ggml do mesmo Gemma4:
+  `1 passed, 0 failed`.
+
+O teste real do lote compara os mesmos bytes e hidden entre CUDA e o decoder
+CPU, enquanto a prova do oráculo compara o decoder CPU com o llama.cpp. Essa
+separação evita que o teste CUDA valide o próprio oráculo. Ainda não há número
+de tok/s atribuído ao agrupamento: a redução de lançamentos é uma propriedade
+do código, mas a medição E2E deve ser refeita em uma carga servida antes de
+declarar ganho. O cache continua em RAM, sem residência de experts em VRAM;
+F5-E2 permanece posterior ao agrupamento.
+
 Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
 cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
 selecionado. A correção do ponteiro `gate_up` é uma etapa de correção numérica,

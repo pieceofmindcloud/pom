@@ -118,11 +118,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   política do cache.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e GeGLU com arredondamento FP16. O
-  kernel atual lança uma thread por linha de saída e descompacta o expert em
-  cada uso; ainda não há lote de experts, cache residente em VRAM ou tile
-  cooperativo. Depois de qualquer mudança CUDA, execute a build com
+  caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`,
+  copia o lote de payloads uma vez e usa cinco lançamentos de kernel e duas
+  sincronizações por lote. A descompactação ainda ocorre no kernel a cada uso,
+  sem cache residente em VRAM ou tile cooperativo. Depois de qualquer mudança
+  CUDA, execute a build com
   `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
-  quanto a prova real `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
+  quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`
+  e `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o

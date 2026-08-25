@@ -109,6 +109,17 @@ pub struct Nvfp4Expert<'a> {
     down_input_scale: f32,
 }
 
+/// Valores intermediários de um expert, usados pela prova diferencial contra
+/// o caminho nativo do llama.cpp. A ordem é deliberada: a primeira divergência
+/// identifica se o defeito está na decodificação, ativação ou projeção down.
+#[derive(Debug)]
+pub struct Nvfp4Trace {
+    pub gate: Vec<f32>,
+    pub up: Vec<f32>,
+    pub activated: Vec<f32>,
+    pub output: Vec<f32>,
+}
+
 impl<'a> Nvfp4Expert<'a> {
     pub fn packed_bytes(hidden: usize, intermediate: usize) -> Result<usize, Nvfp4Error> {
         if hidden == 0 || intermediate == 0 {
@@ -192,6 +203,10 @@ impl<'a> Nvfp4Expert<'a> {
     }
 
     pub fn run(&self, hidden: &[f32]) -> Result<Vec<f32>, Nvfp4ExecuteError> {
+        Ok(self.run_trace(hidden)?.output)
+    }
+
+    pub fn run_trace(&self, hidden: &[f32]) -> Result<Nvfp4Trace, Nvfp4ExecuteError> {
         if hidden.len() != self.hidden {
             return Err(Nvfp4ExecuteError::HiddenWidth {
                 expected: self.hidden,
@@ -225,17 +240,21 @@ impl<'a> Nvfp4Expert<'a> {
         .map(|value| value * self.up_scale)
         .collect::<Vec<_>>();
         let gated = gate
-            .into_iter()
-            .zip(up)
-            .map(|(gate, up)| gelu(gate) * up)
+            .iter()
+            .zip(&up)
+            .map(|(&gate, &up)| gelu(gate) * up)
             .map(|value| value * self.down_input_scale)
             .collect::<Vec<_>>();
-        Ok(
-            mat_vec_nvfp4(self.down, self.hidden, self.intermediate, &gated)
-                .into_iter()
-                .map(|value| value * self.down_scale)
-                .collect(),
-        )
+        let output = mat_vec_nvfp4(self.down, self.hidden, self.intermediate, &gated)
+            .into_iter()
+            .map(|value| value * self.down_scale)
+            .collect();
+        Ok(Nvfp4Trace {
+            gate,
+            up,
+            activated: gated,
+            output,
+        })
     }
 }
 
@@ -949,6 +968,126 @@ fn select_backend_kind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    unsafe extern "C" {
+        fn llama_rs_moe_reference_expert(
+            model: *const llama_cpp_sys_2::llama_model,
+            layer: i32,
+            expert: u32,
+            hidden: *const f32,
+            hidden_count: usize,
+            activation: i32,
+            gate: *mut f32,
+            gate_capacity: usize,
+            up: *mut f32,
+            up_capacity: usize,
+            activated: *mut f32,
+            activated_capacity: usize,
+            output: *mut f32,
+            output_capacity: usize,
+        ) -> i32;
+    }
+
+    fn assert_close(stage: &str, layer: u32, ours: &[f32], reference: &[f32]) {
+        assert_eq!(ours.len(), reference.len(), "{stage} layer {layer} length");
+        let mut max_abs = 0.0f32;
+        let mut max_rel = 0.0f32;
+        let mut worst = 0usize;
+        for (index, (&actual, &expected)) in ours.iter().zip(reference).enumerate() {
+            assert!(
+                actual.is_finite() && expected.is_finite(),
+                "{stage} layer {layer} non-finite at {index}: ours={actual} reference={expected}"
+            );
+            let abs = (actual - expected).abs();
+            let rel = abs / actual.abs().max(expected.abs()).max(1.0e-12);
+            if abs > max_abs {
+                max_abs = abs;
+                worst = index;
+            }
+            max_rel = max_rel.max(rel);
+        }
+        assert!(
+            max_abs <= 1.0e-4 || max_rel <= 2.0e-3,
+            "{stage} layer {layer} diverged at {worst}: max_abs={max_abs} max_rel={max_rel}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a real GGUF and the llama.cpp reference helper"]
+    fn nvfp4_matches_llama_cpp_from_first_layer_and_stage() {
+        let path = std::env::var_os("POM_MOE_NUMERIC_MODEL")
+            .expect("POM_MOE_NUMERIC_MODEL must name a real MoE GGUF");
+        let path = std::path::PathBuf::from(path);
+        let file = std::fs::File::open(&path).unwrap();
+        // The test derives the count from the real GGUF instead of encoding a
+        // model's expert count in the harness.
+        let mmap = unsafe { memmap2::Mmap::map(&file) }.unwrap();
+        let (_, tensors) = parse_tensor_table(&mmap).unwrap();
+        let experts = tensors
+            .iter()
+            .find(|tensor| {
+                tensor.name.ends_with("ffn_gate_up_exps.weight")
+                    || tensor.name.ends_with("ffn_gate_exps.weight")
+            })
+            .and_then(|tensor| tensor.dims.get(2).copied())
+            .and_then(|count| u32::try_from(count).ok())
+            .expect("real GGUF must expose expert count in the gate tensor");
+        drop(mmap);
+        let source = Nvfp4Source::open_infer(&path, experts).unwrap();
+        let hidden = (0..source.hidden())
+            .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
+            .collect::<Vec<_>>();
+
+        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        let path_c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();
+        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        params.n_gpu_layers = 0;
+        params.moe_external_executor = false;
+        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path_c.as_ptr(), params) };
+        assert!(!model.is_null(), "llama.cpp reference model failed to load");
+
+        let activation = std::env::var("POM_MOE_NUMERIC_ACTIVATION")
+            .expect("POM_MOE_NUMERIC_ACTIVATION must name the GGUF FFN activation")
+            .parse::<i32>()
+            .unwrap();
+        for layer in 0..source.layer_count() {
+            let payload = source.load_expert(layer, 0).unwrap();
+            let expert =
+                Nvfp4Expert::from_payload(source.hidden(), source.intermediate(), &payload)
+                    .unwrap();
+            let ours = expert.run_trace(&hidden).unwrap();
+            let mut gate = vec![0.0; source.intermediate()];
+            let mut up = vec![0.0; source.intermediate()];
+            let mut activated = vec![0.0; source.intermediate()];
+            let mut output = vec![0.0; source.hidden()];
+            let status = unsafe {
+                llama_rs_moe_reference_expert(
+                    model,
+                    layer as i32,
+                    0,
+                    hidden.as_ptr(),
+                    hidden.len(),
+                    activation,
+                    gate.as_mut_ptr(),
+                    gate.len(),
+                    up.as_mut_ptr(),
+                    up.len(),
+                    activated.as_mut_ptr(),
+                    activated.len(),
+                    output.as_mut_ptr(),
+                    output.len(),
+                )
+            };
+            assert_eq!(status, 0, "llama.cpp reference failed at layer {layer}");
+
+            assert_close("gate", layer, &ours.gate, &gate);
+            assert_close("up", layer, &ours.up, &up);
+            assert_close("activated", layer, &ours.activated, &activated);
+            assert_close("output", layer, &ours.output, &output);
+        }
+
+        unsafe { llama_cpp_sys_2::llama_free_model(model) };
+    }
 
     fn packed_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
         let row_size = columns / BLOCK_ELEMENTS * BLOCK_BYTES;

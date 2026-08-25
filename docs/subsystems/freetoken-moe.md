@@ -388,6 +388,45 @@ não contígua, o grafo cria uma cópia `ggml_cont` inevitável antes do reshape
 `llama.cpp/tests/test-moe-route-layout.cpp` cobre as duas disposições sem
 assumir arquitetura ou dtype.
 
+#### Prova numérica antes de desempenho
+
+A resposta coerente do caminho MoE não prova que o callback calculou o FFN:
+telemetria só prova seleção e execução. A regressão numérica começa na primeira
+camada e no primeiro estágio, e só avança quando a comparação passa. O teste
+ignorado `nvfp4_matches_llama_cpp_from_first_layer_and_stage` recebe um GGUF
+real por `POM_MOE_NUMERIC_MODEL`, deriva a quantidade de experts dos tensores do
+arquivo e percorre as camadas em ordem. Para cada expert e hidden determinísticos
+iguais, ele compara `gate`, `up`, ativação e `down` do decoder Rust CPU com um
+oráculo construído pelo próprio ggml/llama.cpp sobre os mesmos tensores do
+modelo. O estágio que falhar primeiro é o diagnóstico publicado antes de
+qualquer correção.
+
+O critério inicial é `abs(a-b) <= 1e-4` ou erro relativo `<= 2e-3` para os
+formatos quantizados; F32 usa `1e-5` absoluto e relativo. Valores não finitos
+ou uma divergência acima do limite falham com camada, estágio, índice, erro
+absoluto e relativo. A mesma matriz será repetida com o executor CUDA contra o
+Rust CPU depois que a matriz CPU Rust versus llama.cpp estiver verde. Isso
+separa erro de descompactação/escala, erro de geometria ou roteamento e erro
+do kernel CUDA sem atribuir desempenho a um resultado incorreto.
+
+Comando da prova real, fora da suíte padrão por exigir um arquivo grande:
+
+```bash
+POM_MOE_NUMERIC_MODEL=/caminho/modelo.gguf \
+POM_MOE_NUMERIC_ACTIVATION=2 \
+cargo test -p node nvfp4_matches_llama_cpp_from_first_layer_and_stage -- --ignored --nocapture
+```
+
+`POM_MOE_NUMERIC_ACTIVATION` é dado do GGUF, não uma seleção por arquitetura no
+executor. A captura de rota não é usada como oráculo: o teste primeiro usa o
+mesmo hidden, expert e pesos de um caso isolado; a prova E2E posterior reutiliza
+o hidden real de cada camada. O `ggml_cont` da correção de layout só é chamado
+quando `ggml_is_contiguous` é falso. Como o defeito original era exatamente um
+reshape de view não contígua, aquela requisição necessariamente pagou uma cópia
+de grafo para a rota afetada; o caso contíguo não paga cópia. O custo por
+camada/token ainda precisa ser medido separadamente, pois a telemetria atual
+não conta bytes ou tempo dessa cópia.
+
 Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
 `executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
 decode contra F5.0. O grafo denso deve continuar sem callback e sem regressão.

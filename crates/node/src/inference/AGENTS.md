@@ -117,6 +117,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   CPU/GPU da Fase 5 ainda não está declarada pronta. O wire continua em f16 e
   nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
+  A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
+  ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e
+  `POM_MOE_NUMERIC_ACTIVATION`, ela compara camada a camada `gate`, `up`,
+  ativação e `down` do decoder CPU com o oráculo ggml do llama.cpp antes de
+  qualquer comparação CUDA. O primeiro estágio divergente deve ser reportado,
+  não corrigido silenciosamente.
   No NVFP4, o parser respeita a ordem GGUF `[input, output, experts]`: gate/up
   são `[hidden, intermediate, experts]` e down é
   `[intermediate, hidden, experts]`. A inversão desses eixos faz o runtime

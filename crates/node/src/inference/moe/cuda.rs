@@ -490,7 +490,31 @@ impl IqQuantCudaExecutor {
                 format.name()
             )));
         }
-        Ok(Self {
+        Ok(Self::new_unchecked(
+            format,
+            hidden,
+            intermediate,
+            resident_cache,
+        ))
+    }
+
+    #[cfg(test)]
+    fn new_for_differential_test(
+        format: super::format_iq_quants::IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Self {
+        Self::new_unchecked(format, hidden, intermediate, resident_cache)
+    }
+
+    fn new_unchecked(
+        format: super::format_iq_quants::IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Self {
+        Self {
             hidden,
             intermediate,
             format,
@@ -498,7 +522,7 @@ impl IqQuantCudaExecutor {
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
-        })
+        }
     }
 
     pub fn resident_lookup(
@@ -1574,13 +1598,12 @@ mod tests {
                 .unwrap()
                 .run(&hidden_values)
                 .unwrap();
-            let executor = IqQuantCudaExecutor::new_with_cache(
+            let executor = IqQuantCudaExecutor::new_for_differential_test(
                 format,
                 hidden,
                 intermediate,
                 measured_device_cache(1_000_000).unwrap(),
-            )
-            .unwrap();
+            );
             let lease = executor
                 .resident_admit(
                     super::super::cache::ExpertKey::new("cuda-iq-test", 0, 0, format.name()),
@@ -1635,13 +1658,12 @@ mod tests {
                 .collect::<Vec<_>>();
             let expected_output =
                 iq_mat_vec(format, &down, hidden, intermediate, &expected_activated);
-            let executor = IqQuantCudaExecutor::new_with_cache(
+            let executor = IqQuantCudaExecutor::new_for_differential_test(
                 format,
                 hidden,
                 intermediate,
                 measured_device_cache(1_000_000).unwrap(),
-            )
-            .unwrap();
+            );
             let lease = executor
                 .resident_admit(
                     super::super::cache::ExpertKey::new(

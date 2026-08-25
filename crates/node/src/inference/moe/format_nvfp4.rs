@@ -1049,9 +1049,15 @@ mod tests {
             .expect("real GGUF must expose expert count in the gate tensor");
         drop(mmap);
         let source = Nvfp4Source::open_infer(&path, experts).unwrap();
-        let hidden = (0..source.hidden())
-            .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
-            .collect::<Vec<_>>();
+        let hidden = if std::env::var("POM_MOE_NUMERIC_INPUT").as_deref() == Ok("ones") {
+            // Every Q8_0 block represents this input exactly. This diagnostic
+            // removes input quantization from the native ggml matmul.
+            vec![1.0; source.hidden()]
+        } else {
+            (0..source.hidden())
+                .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
+                .collect::<Vec<_>>()
+        };
 
         unsafe { llama_cpp_sys_2::llama_backend_init() };
         let path_c = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap();

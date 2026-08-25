@@ -463,10 +463,14 @@ extern "C" int llama_rs_moe_reference_expert(
             return 3;
         }
 
-        ggml_backend_tensor_get(gate_node, gate, 0, intermediate * sizeof(float));
-        ggml_backend_tensor_get(up_node, up, 0, intermediate * sizeof(float));
-        ggml_backend_tensor_get(activated_node, activated, 0, intermediate * sizeof(float));
-        ggml_backend_tensor_get(down_node, output, 0, output_width * sizeof(float));
+        // `ggml_graph_compute_with_ctx` executes this private oracle on the
+        // CPU context directly. Those tensors have host `data`, but no
+        // backend buffer, so `ggml_backend_tensor_get` would assert instead
+        // of copying the computed values.
+        std::memcpy(gate, gate_node->data, intermediate * sizeof(float));
+        std::memcpy(up, up_node->data, intermediate * sizeof(float));
+        std::memcpy(activated, activated_node->data, intermediate * sizeof(float));
+        std::memcpy(output, down_node->data, output_width * sizeof(float));
         ggml_free(ctx);
         return 0;
     } catch (...) {

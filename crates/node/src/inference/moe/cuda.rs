@@ -2582,7 +2582,7 @@ mod tests {
             "bandwidth": {
                 "cpu_overlap_bytes_per_sec": -1.0,
                 "transfer_overlap_bytes_per_sec": 1.0,
-                "cpu_bytes_per_sec": 1.0,
+                "cpu_bytes_per_sec": -1.0,
                 "transfer_bytes_per_sec": 1.0
             }
         });

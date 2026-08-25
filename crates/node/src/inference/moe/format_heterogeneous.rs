@@ -254,7 +254,10 @@ impl HeterogeneousMoeSource {
                         "gate e up têm geometrias diferentes",
                     ));
                 }
-                (dimension(gate_tensor, 1)?, dimension(gate_tensor, 0)?)
+                // GGML matrices use ne[0] as the input width and ne[1] as
+                // the output width. The down tensor below cross-checks this
+                // geometry before any payload is decoded.
+                (dimension(gate_tensor, 0)?, dimension(gate_tensor, 1)?)
             };
             let down = down.ok_or_else(|| {
                 Q4LoadError::MissingTensor(format!("blk.{layer}.ffn_down_exps.weight"))

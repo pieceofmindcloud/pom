@@ -12,6 +12,10 @@ export interface StreamMetrics {
 export interface RequestTrace {
   model: string;
   input_tokens: number;
+  /** Tokens do prompt que o pipeline não reprocessou porque já estavam no KV
+   *  da sessão do turno anterior. Medida do executado, não da escolha do
+   *  cache. Ausente em trace de nó antigo. */
+  cached_tokens?: number;
   output_tokens: number;
   prefill_ms: number;
   total_bytes_sent: number;

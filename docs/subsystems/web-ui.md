@@ -289,7 +289,10 @@ guarda além das falas:
 
 - **A telemetria da execução chega fechada** (`ExecutionTelemetry`): a tabela
   de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
-  abrir é um clique.
+  abrir é um clique. A linha de resumo mostra `N do cache` ao lado dos tokens
+  de entrada quando o turno reaproveitou o prefixo do turno anterior
+  (`trace.cached_tokens`); é o que o pipeline **executou**, não o que o cache
+  escolheu, e some quando não houve reuso - ver `inferencia.md`, seção 3.1.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids

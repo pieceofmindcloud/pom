@@ -159,6 +159,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the GGUF selection, while `executed_engine` and `executed_engines` are the
   backend facts (`llama.cpp`, `moe` or unknown when absent). The mismatch and
   mixed flags are evidence from the request, not a UI guess.
+  `RequestTrace.cached_tokens` is optional on purpose: a node that does not
+  report prefix reuse means "unknown", and the chat shows nothing rather than
+  claiming savings it cannot prove.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

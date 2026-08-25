@@ -2,9 +2,13 @@
 
 #![cfg(feature = "cuda")]
 
+use super::admission::MemoryAccount;
+use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use std::fmt;
-use std::sync::Mutex;
+use std::io;
+use std::os::raw::c_void;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[repr(C)]
@@ -69,7 +73,8 @@ pub enum CudaMoeError {
     Geometry(String),
     Payload(String),
     PayloadLength { expected: usize, actual: usize },
-    BackendUnavailable,
+    BackendUnavailable(String),
+    Cache(String),
     HiddenWidth { expected: usize, actual: usize },
     Launch(i32),
 }
@@ -83,9 +88,10 @@ impl fmt::Display for CudaMoeError {
                 formatter,
                 "payload CUDA NVFP4 tem {actual} bytes, mas a geometria exige {expected}"
             ),
-            Self::BackendUnavailable => formatter.write_str(
-                "executor CUDA NVFP4 indisponível: o backend CUDA não está disponível para este binário"
-            ),
+            Self::BackendUnavailable(reason) => {
+                write!(formatter, "backend CUDA NVFP4 indisponível: {reason}")
+            }
+            Self::Cache(reason) => write!(formatter, "cache CUDA NVFP4 recusou o expert: {reason}"),
             Self::HiddenWidth { expected, actual } => {
                 write!(
                     formatter,
@@ -107,7 +113,7 @@ impl From<Nvfp4Error> for CudaMoeError {
             Nvfp4Error::PayloadLength { expected, actual } => {
                 Self::PayloadLength { expected, actual }
             }
-            Nvfp4Error::BackendUnavailable => Self::BackendUnavailable,
+            Nvfp4Error::BackendUnavailable(reason) => Self::BackendUnavailable(reason),
         }
     }
 }
@@ -116,19 +122,52 @@ pub struct Nvfp4CudaExecutor {
     hidden: usize,
     intermediate: usize,
     profile: bool,
+    resident_cache: Arc<DeviceExpertCache>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
 impl Nvfp4CudaExecutor {
-    pub fn new(hidden: usize, intermediate: usize) -> Self {
+    pub fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
         debug_assert!(Nvfp4Expert::packed_bytes(hidden, intermediate).is_ok());
-        Self {
+        let resident_cache = measured_device_cache()?;
+        Self::new_with_cache(hidden, intermediate, resident_cache)
+    }
+
+    pub fn new_with_cache(
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Result<Self, CudaMoeError> {
+        debug_assert!(Nvfp4Expert::packed_bytes(hidden, intermediate).is_ok());
+        Ok(Self {
             hidden,
             intermediate,
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            resident_cache,
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
-        }
+        })
+    }
+
+    pub fn resident_lookup(
+        &self,
+        key: &super::cache::ExpertKey,
+    ) -> Option<super::cache::DeviceExpertLease> {
+        self.resident_cache.lookup(key)
+    }
+
+    pub fn resident_admit(
+        &self,
+        key: super::cache::ExpertKey,
+        payload: &[u8],
+    ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        self.resident_cache
+            .admit(key, payload)
+            .map_err(|error| CudaMoeError::Cache(error.to_string()))
+    }
+
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.resident_cache.stats()
     }
 
     pub fn run(&self, payload: &[u8], hidden: &[f32]) -> Result<Vec<f32>, CudaMoeError> {
@@ -269,12 +308,164 @@ impl Nvfp4CudaExecutor {
         Ok(output)
     }
 
+    pub fn run_resident(
+        &self,
+        payload: &super::cache::DeviceExpertLease,
+        hidden: &[f32],
+    ) -> Result<Vec<f32>, CudaMoeError> {
+        self.run_batch_resident(std::slice::from_ref(payload), hidden)
+            .map(|mut outputs| outputs.remove(0))
+    }
+
+    pub fn run_batch_resident(
+        &self,
+        payloads: &[super::cache::DeviceExpertLease],
+        hidden: &[f32],
+    ) -> Result<Vec<Vec<f32>>, CudaMoeError> {
+        if payloads.is_empty() {
+            return Err(CudaMoeError::Payload(
+                "batch residente de experts vazio".into(),
+            ));
+        }
+        if hidden.len() != self.hidden {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: self.hidden,
+                actual: hidden.len(),
+            });
+        }
+        let handles = payloads
+            .iter()
+            .map(|payload| payload.handle() as *const u8)
+            .collect::<Vec<_>>();
+        let mut flat_output = vec![0.0f32; self.hidden * payloads.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: payloads.len() as u64,
+            ..CudaMoeCallTiming::default()
+        };
+        let cuda_started = Instant::now();
+        let status = unsafe {
+            pom_moe_nvfp4_forward_batch_resident(
+                handles.as_ptr(),
+                payloads.len(),
+                hidden.as_ptr(),
+                hidden.len(),
+                flat_output.as_mut_ptr(),
+                flat_output.len(),
+                self.hidden,
+                self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
+        }
+        Ok(flat_output
+            .chunks_exact(self.hidden)
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
     pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
         self.diagnostics
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .to_owned()
     }
+}
+
+struct CudaDeviceAllocation {
+    handle: usize,
+    bytes: usize,
+}
+
+// The CUDA allocation is independent of the Rust thread that owns its lease;
+// the CUDA runtime accepts freeing it from another host thread after the
+// kernel call has completed.
+unsafe impl Send for CudaDeviceAllocation {}
+unsafe impl Sync for CudaDeviceAllocation {}
+
+impl DeviceAllocation for CudaDeviceAllocation {
+    fn bytes(&self) -> usize {
+        self.bytes
+    }
+
+    fn handle(&self) -> usize {
+        self.handle
+    }
+}
+
+impl Drop for CudaDeviceAllocation {
+    fn drop(&mut self) {
+        unsafe { pom_moe_device_free(self.handle as *mut c_void) };
+    }
+}
+
+struct CudaDeviceAllocator;
+
+impl DeviceAllocator for CudaDeviceAllocator {
+    fn device_name(&self) -> &str {
+        "CUDA device 0"
+    }
+
+    fn free_bytes(&self) -> io::Result<u64> {
+        let mut free = 0u64;
+        let status = unsafe { pom_moe_device_free_bytes(&mut free) };
+        if status == 0 {
+            Ok(free)
+        } else {
+            Err(io::Error::other(format!(
+                "cudaMemGetInfo retornou {status}"
+            )))
+        }
+    }
+
+    fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String> {
+        let mut handle = std::ptr::null_mut();
+        let status = unsafe { pom_moe_device_upload(payload.as_ptr(), payload.len(), &mut handle) };
+        if status != 0 {
+            return Err(format!("upload CUDA retornou {status}"));
+        }
+        if handle.is_null() {
+            return Err("upload CUDA retornou handle nulo".into());
+        }
+        Ok(Box::new(CudaDeviceAllocation {
+            handle: handle as usize,
+            bytes: payload.len(),
+        }))
+    }
+}
+
+fn measured_device_cache() -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+    let allocator: Arc<dyn DeviceAllocator> = Arc::new(CudaDeviceAllocator);
+    let baseline_free_bytes = allocator
+        .free_bytes()
+        .map_err(|error| CudaMoeError::BackendUnavailable(error.to_string()))?;
+    Ok(DeviceExpertCache::new(
+        MemoryAccount {
+            baseline_free_bytes,
+            weights_bytes: 0,
+            fixed_bytes: 0,
+            reserve_bytes: 0,
+        },
+        allocator,
+    ))
+}
+
+pub fn create_device_cache() -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+    measured_device_cache()
 }
 
 #[cfg(feature = "cuda")]
@@ -303,6 +494,22 @@ unsafe extern "C" {
         intermediate_width: usize,
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
+
+    fn pom_moe_nvfp4_forward_batch_resident(
+        payloads: *const *const u8,
+        payload_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
+    fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
+    fn pom_moe_device_free(handle: *mut c_void);
 }
 
 #[cfg(test)]

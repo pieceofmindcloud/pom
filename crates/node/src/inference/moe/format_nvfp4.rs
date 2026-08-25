@@ -28,7 +28,7 @@ pub enum Nvfp4Error {
     Geometry(&'static str),
     Payload(&'static str),
     PayloadLength { expected: usize, actual: usize },
-    BackendUnavailable,
+    BackendUnavailable(String),
 }
 
 impl fmt::Display for Nvfp4Error {
@@ -40,9 +40,9 @@ impl fmt::Display for Nvfp4Error {
                 formatter,
                 "payload NVFP4 tem {actual} bytes, mas a geometria exige {expected}"
             ),
-            Self::BackendUnavailable => formatter.write_str(
-                "executor CUDA NVFP4 indisponível: o binário não foi compilado com a feature cuda; compile com --features cuda ou peça o fallback explícito com POM_MOE_NVFP4_BACKEND=cpu",
-            ),
+            Self::BackendUnavailable(reason) => {
+                write!(formatter, "executor CUDA NVFP4 indisponível: {reason}")
+            }
         }
     }
 }
@@ -1049,9 +1049,10 @@ impl Nvfp4Executor {
         #[cfg(feature = "cuda")]
         let backend = match backend_kind {
             Nvfp4BackendKind::CpuReference => Nvfp4Backend::Cpu,
-            Nvfp4BackendKind::Cuda => {
-                Nvfp4Backend::Cuda(super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate))
-            }
+            Nvfp4BackendKind::Cuda => Nvfp4Backend::Cuda(
+                super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate)
+                    .map_err(|error| Nvfp4Error::BackendUnavailable(error.to_string()))?,
+            ),
         };
         #[cfg(not(feature = "cuda"))]
         let backend = match backend_kind {
@@ -1059,6 +1060,34 @@ impl Nvfp4Executor {
             Nvfp4BackendKind::Cuda => unreachable!("CUDA não compilado não pode ser selecionado"),
         };
 
+        Ok(Self {
+            cache,
+            hidden,
+            intermediate,
+            backend,
+            host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, Nvfp4Error> {
+        Nvfp4Expert::packed_bytes(hidden, intermediate)?;
+        let cpu_requested = std::env::var("POM_MOE_NVFP4_BACKEND")
+            .map(|value| value.eq_ignore_ascii_case("cpu"))
+            .unwrap_or(false);
+        let backend_kind = select_backend_kind(true, cpu_requested)?;
+        let backend = match backend_kind {
+            Nvfp4BackendKind::CpuReference => Nvfp4Backend::Cpu,
+            Nvfp4BackendKind::Cuda => Nvfp4Backend::Cuda(
+                super::cuda::Nvfp4CudaExecutor::new_with_cache(hidden, intermediate, device_cache)
+                    .map_err(|error| Nvfp4Error::BackendUnavailable(error.to_string()))?,
+            ),
+        };
         Ok(Self {
             cache,
             hidden,
@@ -1090,6 +1119,14 @@ impl Nvfp4Executor {
             .host_diagnostics
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        match &self.backend {
+            Nvfp4Backend::Cpu => super::cache::DeviceCacheStats::default(),
+            Nvfp4Backend::Cuda(executor) => executor.resident_cache_stats(),
+        }
     }
 
     pub fn record_aggregation_ms(&self, elapsed_ms: f64) {
@@ -1129,6 +1166,36 @@ impl Nvfp4Executor {
         if experts.is_empty() {
             return Err(Nvfp4Error::Payload("batch de experts vazio").into());
         }
+
+        #[cfg(feature = "cuda")]
+        if let Nvfp4Backend::Cuda(executor) = &self.backend {
+            let mut resident = Vec::with_capacity(experts.len());
+            for &expert in experts {
+                let key = ExpertKey::new(model, layer, expert, "nvfp4");
+                if let Some(lease) = executor.resident_lookup(&key) {
+                    resident.push(lease);
+                    continue;
+                }
+
+                let load_started = Instant::now();
+                let payload = source.load_expert(layer, expert)?;
+                let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
+                self.host_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .expert_load_ms += expert_load_ms;
+                Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
+                resident.push(
+                    executor
+                        .resident_admit(key, &payload)
+                        .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?,
+                );
+            }
+            return executor
+                .run_batch_resident(&resident, hidden)
+                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+        }
+
         let mut leases = Vec::<ExpertLease>::with_capacity(experts.len());
         for &expert in experts {
             let key = ExpertKey::new(model, layer, expert, "nvfp4");
@@ -1168,12 +1235,7 @@ impl Nvfp4Executor {
                 })
                 .collect(),
             #[cfg(feature = "cuda")]
-            Nvfp4Backend::Cuda(executor) => {
-                let payloads = leases.iter().map(ExpertLease::bytes).collect::<Vec<_>>();
-                executor
-                    .run_batch(&payloads, hidden)
-                    .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))
-            }
+            Nvfp4Backend::Cuda(_) => unreachable!("o lote CUDA usa o cache residente"),
         }
     }
 
@@ -1186,6 +1248,23 @@ impl Nvfp4Executor {
     where
         F: FnOnce() -> Result<Vec<u8>, Nvfp4ExecuteError>,
     {
+        #[cfg(feature = "cuda")]
+        if let Nvfp4Backend::Cuda(executor) = &self.backend {
+            let resident = match executor.resident_lookup(&key) {
+                Some(lease) => lease,
+                None => {
+                    let payload = load()?;
+                    Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
+                    executor
+                        .resident_admit(key, &payload)
+                        .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?
+                }
+            };
+            return executor
+                .run_resident(&resident, hidden)
+                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+        }
+
         let lease = match self.cache.lookup(&key) {
             Some(lease) => lease,
             None => self
@@ -1200,9 +1279,7 @@ impl Nvfp4Executor {
                 expert.run(hidden)
             }
             #[cfg(feature = "cuda")]
-            Nvfp4Backend::Cuda(executor) => executor
-                .run(lease.bytes(), hidden)
-                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string())),
+            Nvfp4Backend::Cuda(_) => unreachable!("o caminho CUDA usa o cache residente"),
         }
     }
 }
@@ -1216,7 +1293,9 @@ fn select_backend_kind(
     } else if cuda_compiled {
         Ok(Nvfp4BackendKind::Cuda)
     } else {
-        Err(Nvfp4Error::BackendUnavailable)
+        Err(Nvfp4Error::BackendUnavailable(
+            "o binário não foi compilado com a feature cuda; compile com --features cuda ou peça o fallback explícito com POM_MOE_NVFP4_BACKEND=cpu".into(),
+        ))
     }
 }
 
@@ -1470,7 +1549,7 @@ mod tests {
         #[cfg(not(feature = "cuda"))]
         assert!(matches!(
             select_backend_kind(false, false),
-            Err(Nvfp4Error::BackendUnavailable)
+            Err(Nvfp4Error::BackendUnavailable(_))
         ));
     }
 

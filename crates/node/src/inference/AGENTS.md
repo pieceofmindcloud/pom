@@ -121,16 +121,19 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   política do cache.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
   acumulação inteira por subbloco NVFP4 e GeGLU com arredondamento FP16. O
-  caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`,
-  copia o lote de payloads uma vez e usa cinco lançamentos de kernel e duas
-  sincronizações por lote. O perfil publica `cuda_call_wall_ms` como parede
-  externa não sobreposta da chamada FFI, separada de H2D, kernel, lançamentos,
-  sincronização, D2H e liberação, que são submedições internas. O runtime
+  caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`;
+  depois do cache residente, o payload de peso é enviado uma vez por miss e o
+  lote recebe ponteiros de device nos hits. O caminho usa cinco lançamentos de
+  kernel e duas sincronizações por lote. O perfil publica `cuda_call_wall_ms`
+  como parede externa não sobreposta da chamada FFI, separada de H2D, kernel,
+  lançamentos, sincronização, D2H e liberação, que são submedições internas. O runtime
   também publica `runtime_forward_ms`, `host_batch_prepare_ms`,
   `host_result_copy_ms` e `host_aggregation_ms` para fechar a conta do forward
   MoE sem somar relógios sobrepostos.
-  A descompactação ainda ocorre no kernel a cada uso, sem cache residente em
-  VRAM ou tile cooperativo. Depois de qualquer mudança
+  A descompactação ainda ocorre no kernel a cada uso, mas os bytes quantizados
+  do expert ficam residentes no device entre usos quando a ponte CUDA e o
+  orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
+  estatísticas separadas. Depois de qualquer mudança
   CUDA, execute a build com
   `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
   quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`

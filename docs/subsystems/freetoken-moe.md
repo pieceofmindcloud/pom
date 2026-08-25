@@ -633,6 +633,240 @@ vez de ocultá-la. O executor observado foi `cuda`, dtype `[40]`,
 O maior próximo alvo medido é reduzir a transferência e a preparação do lote,
 mas esta medição não inicia F5-E2 nem afirma ganho dela.
 
+### Análise formal de lacunas: FreeToken versus o caminho MoE atual
+
+Esta análise foi feita em 2026-08-25, sem alterar código e sem acessar a ksia.
+A fonte do lado FreeToken é o relatório de estudo em
+`/Users/jairpereira/Sites/firstmate/data/rdma-freetoken-estudo/report.md`,
+que leu o commit `bd372b630a028e3faa51f4ab0ef6a98c2f2de501`. A fonte do lado
+local são os commits e perfis registrados neste documento. A ordem abaixo é
+por impacto observado, não por facilidade de implementação.
+
+| prioridade | lacuna | FreeToken tem | rdma-p2p tem | custo observado e ganho esperado |
+|---|---|---|---|---|
+| 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
+| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF, mas a ponte CUDA real cobre somente NVFP4. IQ e outros dtypes publicam `CPUReference` com recusa explicada para a ausência da ponte, em vez de fingir CUDA. | No Qwen UD-IQ3_S medido, CPUReference custou aproximadamente `5284 ms/token` de prefill e `4990 ms/token` de decode. Isso prova um custo enorme para dtypes sem ponte, mas não autoriza projetar o ganho de uma ponte nova: cada dtype exige prova numérica independente, e a lista do FreeToken não prova cobertura de IQ3/IQ2/IQ4. |
+| 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | É o maior componente do prefill atual: `3622,166 ms` (`45,055%` do backend, `164,644 ms/token`) e o segundo maior no decode: `2166,206 ms` (`36,230%`, `74,697 ms/token`). Reutilizar descritores e buffers pode remover até esse componente em hipótese ideal, mas o ganho real precisa ser medido porque parte da montagem pode ser necessária para rotas dinâmicas. |
+| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | A política de banda e o double buffer continuam andaime documentado, sem perfil persistido consumido pelo runtime. O caminho atual faz staging por chamada e não escolhe CPU/GPU pela banda medida. | No decode, a parede CUDA foi `106,427 ms/token`, enquanto H2D interno foi `90,309` e kernel `7,734 ms/token`; o limite ideal de sobreposição desses dois subcustos seria `90,309 ms/token`, uma diferença de `16,118 ms/token` dentro da parede CUDA. Isso é um limite de modelo, não ganho medido. No prefill, a preparação host domina antes que double buffer possa ser declarado solução. |
+| 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
+
+#### Item 1: cache em VRAM
+
+O ponto do captain está confirmado e é estrutural. O hit do nosso LRU significa
+que evitamos reler e descompactar o payload do GGUF, não que o device já possui
+o peso. O caminho `lookup -> admit -> staging H2D` preserva o hit em RAM, mas
+repete a travessia PCIe. O perfil anterior também mediu `805601280` bytes por
+token antes do agrupamento; o agrupamento reduziu lançamentos, não o volume de
+peso transferido. F5-E2, que remove a residência dos experts do carregador
+llama.cpp, evita residência dupla no modelo, mas não transforma o LRU Rust em
+cache de VRAM. São problemas distintos e ambos precisam aparecer na medição.
+
+#### Item 2: banda medida e double buffer
+
+O ponto também está confirmado, com uma correção de escopo. O FreeToken não
+simplesmente escolhe sempre GPU: ele mede a banda de CPU e PCIe por formato e
+GPU, ignora perfil de outra placa e usa a fração calculada para decidir o
+trabalho híbrido. O nosso executor tem os campos de diagnóstico e a intenção
+documentada, mas não um perfil de banda carregado pelo runtime nem dois buffers
+CUDA alternados em produção. O double buffer do relatório é principalmente
+prefetch entre camadas durante o prefill; ele não é equivalente a apenas
+agrupar experts em uma chamada.
+
+#### Item 3: CUDA Graphs
+
+Também está confirmado, mas o impacto atual é menor que a cópia H2D e a
+preparação host. O agrupamento já reduziu o número de lançamentos. Assim, um
+graph deve ser medido depois de o layout dos buffers ser estável e depois da
+residência em VRAM; capturar uma rota dinâmica antes disso arriscaria recapturas
+frequentes e esconderia o custo que realmente domina.
+
+#### Item 4: kernels por formato
+
+O relatório confirma seis bancos próprios do FreeToken, não uma prova de todos
+os dtypes GGUF existentes. A comparação correta é: nós já temos uma camada de
+decodificação CPU mais ampla e recusa nominal por tensor, mas somente NVFP4
+atravessa a ponte CUDA. Isso explica por que Gemma4 pode publicar
+`moe_executor=cuda` e o Qwen UD-IQ3_S publica `CPUReference`. A ordem de ataque
+deve ser determinada por modelos reais e por prova numérica, não pela lista
+do relatório como se ela cobrisse automaticamente IQ-quants.
+
+#### Item 5: montagem do lote no host
+
+O FreeToken oferece evidência de uma organização GPU-cêntrica com views de
+bancos, prefetch e streams, mas o relatório não mede uma caixa equivalente a
+`host_batch_prepare_ms`. Portanto a afirmação segura é que o nosso custo foi
+medido e o deles não foi decomposto dessa forma, não que o FreeToken "monta
+tudo na GPU". A lacuna local é objetiva: no nosso perfil o host prepara o
+lote por token antes da chamada CUDA e ocupa mais tempo que o kernel. Qualquer
+ganho atribuído a mover essa montagem precisa preservar a rota dinâmica, a
+ordem dos experts e a prova numérica por dtype.
+
+#### Histórico do número de 9,3 tok/s e da execução duplicada
+
+Não existe no repositório, no status persistido ou na documentação uma linha
+que associe explicitamente o número `9,3 tok/s` a um SHA de implantação. O
+estado duplicado que é possível provar no código e que corresponde ao período
+anterior ao hook do fork é `5304228c0cf45dc729524bee21c217dd346be0af`,
+commitado em 2026-08-24 às 18:15:18, com a ressalva de que o log de deploy que
+ligaria esse SHA ao número 9,3 não foi preservado.
+
+Nesse commit, `infer_server.rs` fazia primeiro `decode_hidden` ou
+`decode_tokens` (`linhas 2870-2887`), isto é, deixava o llama.cpp executar o
+grafo completo. No terminal, depois desse retorno, fazia
+`take_residual` e chamava `apply_moe_hidden`, mas descartava o resultado com
+`let _ = s.apply_moe_hidden(...)` (`linhas 2889-2892`). Logo depois, os logits
+eram lidos de `s.engine.logits_ith(...)` e amostrados (`linhas 2936-2941`),
+sem usar a saída do executor externo. Para uma requisição terminal de um hop,
+a resposta vinha do llama.cpp; a passada externa era trabalho adicional
+descartado. O commit ainda não tinha o callback opt-in
+`moe_external_executor` que hoje permite impedir o bloco nativo.
+
+A leitura do captain precisa de uma correção de precisão: naquele commit a
+telemetria não reportava somente o caminho escolhido. Ela já serializava
+`selected_path` e `executed_engine`, mas `record_terminal_engine` marcava
+`executed_engine=moe` quando a passada externa terminava (`linhas 1188-1196`),
+sem registrar que o llama.cpp também havia executado o grafo. Assim, o rótulo
+`moe` era uma evidência de que a passada externa ocorreu, não de que ela era o
+único executor nem de que sua saída alimentou a amostragem. Não havia detecção
+de duplicação ou de mistura nesse caso.
+
+Portanto, a afirmação forte "9,3 era a vazão do nosso motor" é incorreta para
+esse estado duplicado. A afirmação mais precisa é: se o ensaio de 9,3 foi feito
+no estado `5304228`, a resposta terminal não foi produzida pelo nosso executor
+MoE e esse número não é baseline de velocidade do motor próprio. O repositório
+não permite afirmar, sem o log de deploy, que `5304228` foi exatamente o SHA
+do ensaio de 9,3; afirmar esse vínculo como fato seria inventar evidência.
+
+O perfil honesto posterior é comparável por fase, não pelo tok/s agregado de
+uma conversa: a medição agrupada registrou `316,455 ms/token` de prefill e
+`186,069 ms/token` de decode, contra `1689,3` e `1738,7 ms/token` antes do
+agrupamento. A repetição instrumentada registrou `365,426` e `206,173
+ms/token`. Logo, nesses números por token o estado honesto posterior é melhor,
+não pior. O `tok/s` agregado pode cair quando o prompt é longo porque inclui o
+prefill; ele não invalida essa comparação por fase.
+
+#### Decisão de prioridade
+
+O próximo ganho mensurável deve começar pelo cache residente em VRAM, porque é
+o único item que já tem custo direto de `766 MiB` de peso por token medido. Em
+impacto de throughput entre modelos, a ponte CUDA por dtype vem logo depois:
+o Qwen UD mediu segundos por token em `CPUReference`. Dentro do Gemma NVFP4, a
+preparação host é o próximo alvo, seguida da política de banda e do double
+buffer reais. Cada ponte de dtype exige prova numérica por formato. CUDA Graphs
+fica depois de estabilizar residência, layout e política, pois os lançamentos
+já agrupados são uma parcela pequena do tempo explicitamente medido.
+
+### Objetivo formal: inversão da residência dos experts
+
+O estado atual é consequência histórica, não uma decisão de produto. O cache
+foi criado em `7a09d316befc51a2cbaf97775ece9caaab933f28` (2026-08-24,
+`feat: adicionar cache global de experts q4_0`) quando o executor era CPU. O
+`ExpertCache` guardava `Arc<[u8]>`, e a sonda padrão era `SystemFreeMemory`, que
+lia `MemAvailable` no Linux, `vm_stat` no macOS e memória física disponível no
+Windows. O próprio comentário dizia que uma sonda de VRAM seria uma integração
+futura. Nesse contexto, manter o payload em RAM era coerente: era o cache do
+decodificador de referência, funcionava sem CUDA e não assumia GPU discreta.
+
+A ponte CUDA entrou depois, em `c782e557a8738d44afdc8505de7cba75261aa793`
+(2026-08-24 às 20:14:30). Ela recebia `lease.bytes()` do cache e alocava os
+buffers CUDA dentro de cada execução. Não houve nesse commit mudança de
+residência em `cache.rs`, sonda de device ou política de admissão. O perfil
+posterior confirmou a consequência: hits do LRU evitavam leitura e
+descompactação no host, mas ainda transferiam o peso para a GPU. Portanto a
+explicação do captain está correta: houve inércia de integração entre a Fase 4
+CPU e a Fase 5 CUDA, não uma limitação técnica que obrigasse o cache a ficar em
+RAM.
+
+O segundo lado da inversão também tem causa histórica objetiva. No carregador
+da fase CPU, `llama_model_default_params` recebia `n_gpu_layers=-1` durante o
+ajuste de memória e não havia `moe_external_executor`; o carregamento normal do
+llama.cpp podia colocar os tensores de experts em `CUDA0`. A opção de não
+alocar experts foi adicionada depois como F5-E2. Assim, a residência do
+llama.cpp na placa e a residência do nosso cache em RAM foram duas decisões
+independentes que nunca foram fechadas como um único orçamento de device.
+
+Este objetivo corrige a inversão como contrato do caminho MoE, sem alterar o
+caminho denso:
+
+1. O cache global de experts do executor próprio torna-se residente na VRAM do
+   device que executará o lote. Um hit devolve ponteiros ou handles de device e
+   não faz H2D. Um miss admite o expert uma vez, aguarda a conclusão do evento
+   CUDA antes de publicar o lease e só então o reutiliza entre tokens e
+   sessões.
+2. F5-E2 deixa de ser apenas higiene de memória e vira pré-requisito. Quando o
+   executor externo está selecionado, o loader do llama.cpp não aloca nem
+   gerencia os pesos de experts em qualquer buffer de device. Ele conserva
+   somente metadata e descriptors necessários ao hook; a fonte GGUF e o cache
+   próprio continuam responsáveis pelos bytes. Sem o opt-in, o llama.cpp
+   permanece byte a byte no comportamento denso atual.
+3. A fronteira é genérica. A chave de residência inclui modelo, device,
+   camada, expert, tensor/papel, dtype e geometria efetiva. Arquitetura,
+   convenção gate/up e formato são dados do descriptor do hook. Um dtype,
+   tensor, geometria ou arquitetura que não tenha decoder compatível recusa
+   nominalmente no limite de admissão, nomeando o item; nunca reativa os pesos
+   nativos nem assume CPU ou H2D silenciosamente.
+4. A admissão usa orçamento real de VRAM, não constante. Para CUDA, cada miss
+   consulta a memória livre do device e desconta pesos que continuam no
+   llama.cpp, buffers fixos, KV, ativações, staging e uma reserva operacional.
+   Após F5-E2, o termo de pesos de experts do llama.cpp deve ser zero. O limite
+   é recalculado quando a memória externa muda e a eviction só pode remover
+   entries sem lease e sem operação CUDA pendente.
+
+#### Desenho de armazenamento e fluxo
+
+O cache lógico atual será separado da representação física. A chave, LRU,
+leases e estatísticas continuam comuns; a entrada passa a conter um backend de
+armazenamento por device, um handle de alocação, bytes residentes, dtype,
+geometria, evento de prontidão e último uso. O payload mmapado do GGUF pode
+continuar como fonte fria ou fallback CPU explícito, mas não é confundido com
+o cache quente CUDA.
+
+```text
+GGUF mmap / fonte fria
+        |
+        | miss + orçamento de VRAM medido
+        v
+cache de device: aloca -> H2D uma vez -> evento pronto -> lease
+        |
+        | hit: lease do mesmo device pointer, sem H2D
+        v
+kernel agrupado por dtype -> agregação -> release do lease
+```
+
+O descriptor não pode publicar um handle antes do H2D e dos sidecars do
+expert estarem prontos no stream correto. A eviction deve esperar o evento de
+uso, não apenas observar `active == 0`; isso evita reutilizar uma alocação
+enquanto o kernel ainda está lendo. Quando um expert não cabe mesmo depois de
+eviction ociosa, o erro deve nomear `device`, `dtype`, tensor, camada, expert,
+bytes solicitados e orçamento disponível.
+
+#### Fases e critério de pronto
+
+- **R0, contrato e orçamento.** Definir a trait de device allocator/probe,
+  separar bytes frios de handles residentes, e testar a aritmética com probes
+  falsos. Pronto quando a decisão de admissão for reproduzível sem CUDA e
+  nenhuma constante de VRAM existir no executor.
+- **R1, F5-E2 do loader.** Ativar a opção externa no fork, manter metadata em
+  contexto `no_alloc` e impedir buffers de experts do llama.cpp. Pronto quando
+  o caminho MoE não mostrar bytes de experts em `CUDA0` ou `CUDA_Host`, enquanto
+  o denso continuar carregando e executando sem a opção.
+- **R2, cache CUDA residente.** Implementar a residência para o descriptor
+  genérico e validar primeiro NVFP4 por ser o único dtype CUDA já provado. Uma
+  sequência warm-up seguida de hits deve mostrar H2D de pesos igual a zero por
+  uso, e um miss deve mostrar exatamente uma admissão por tensor residente.
+  Pronto também exige a comparação numérica camada a camada já aprovada.
+- **R3, formatos e arquiteturas.** Conectar cada ponte CUDA adicional por
+  tensor e dtype, começando pelos modelos reais restantes. Cada bloco precisa
+  de prova CPU Rust versus llama.cpp, CPU versus CUDA, recusa nominal para
+  combinação não atendida e E2E coerente; não há promoção por fixture
+  homogêneo.
+- **R4, prova de inversão.** Na ksia, registrar antes/depois com a mesma
+  build: `CUDA0`, `CUDA_Host`, CPU, RSS/PSS, bytes do cache de device, hits,
+  misses, H2D de pesos e H2D de ativações. O critério é `llama.cpp expert
+  bytes on device = 0`, cache MoE residente maior que zero, H2D de peso zero
+  nos hits, e ausência de uma segunda residência. Medir prefill e decode por
+  token no mesmo ensaio, sem atribuir ganho antes de fechar essa contabilidade.
+
 ### Goal retomado: executor CUDA e co-execução CPU/GPU
 
 Este é o novo goal formal da Fase 5, decidido pelo captain depois da medição
@@ -657,13 +891,13 @@ Triton e o FreeToken como motor externo estão fora do escopo. O FreeToken é
 somente fonte de desenho e algoritmo; nenhum código é copiado. O caminho denso
 continua em `llama.cpp` sem alteração de seleção ou de comportamento.
 
-O executor GPU reutilizará o `ExpertCache` LRU global existente. A entrada
-canônica continua residente em CPU/RAM e com lease por requisição; os buffers
-CUDA são staging temporário por camada e expert, com capacidade determinada
-pelo orçamento medido, sem transformar a rede ou o cache em transporte de
-pesos. O router e a política de admissão continuam no Rust. Cada forward
-publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
-`buffer_index`, tempo de sobreposição e o motivo de qualquer fallback.
+O estado instrumentado atual ainda reutiliza o `ExpertCache` global com entrada
+canônica em CPU/RAM e buffers CUDA de staging temporário. Isso é precisamente a
+lacuna coberta pelo objetivo formal de inversão acima, não o desenho final. O
+router e a política de admissão continuam no Rust. Cada forward deve publicar
+`gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H, `buffer_index`,
+tempo de sobreposição, bytes residentes por device e o motivo de qualquer
+fallback.
 
 ### Objetivo formal: substituir execução e carga dos experts
 
@@ -817,6 +1051,48 @@ PSS do processo, mais prefill e decode por token. A prova deve mostrar que os
 buffers de experts do `llama.cpp` desaparecem e que não existe residência dupla
 com o cache do executor. Nenhum ganho será atribuído à supressão de carga sem
 comparar esses números isoladamente aos números obtidos após F5-E1.
+
+#### Implementação local da residência de device
+
+O F5-E2 do loader já está no fork publicado em `03902a5ba` e o ramo Rust já
+propaga `EngineConfig::moe_external_executor` até ele. A implementação nova
+separa o armazenamento quente da fonte fria: `DeviceExpertCache` guarda apenas
+um handle opaco do backend e seus leases, enquanto `ExpertCache` continua sendo
+a LRU de RAM para os caminhos CPU. No caminho CUDA, um miss lê o payload da
+fonte GGUF e o descarta depois do upload. A LRU de device é criada uma
+vez por `MoeRuntime` NVFP4 e compartilhada por todas as camadas, portanto não
+há uma LRU independente por camada.
+
+O contrato é deliberadamente independente de CUDA e NVFP4. `DeviceAllocator`
+mede memória livre, faz upload e devolve uma alocação com tamanho e handle;
+qualquer backend futuro pode implementar a mesma fronteira. A implementação
+CUDA atual usa `cudaMemGetInfo`, `cudaMalloc`, `cudaMemcpy` apenas na admissão e
+`cudaFree` na eviction. O orçamento parte da memória livre observada depois da
+carga do modelo e é recalculado a cada miss; não há capacidade fixa de placa.
+Uma recusa nomeia o device, a chave do expert, os bytes pedidos e o limite
+medido. Payload vazio, falha de sonda, upload incompleto ou handle nulo também
+recusam explicitamente.
+
+No NVFP4, o lote agora envia a lista pequena de ponteiros residentes para a
+GPU. O H2D interno do lote contém hidden e ponteiros, não os pesos; `upload_ms`
+e `upload_bytes` ficam separados nas estatísticas `device_cache_*`. O primeiro
+acesso de uma chave é um miss e faz uma admissão/upload; hits posteriores não
+fazem H2D de peso. A vida de um handle é protegida por lease, e a eviction só
+remove entrada sem lease. A contiguidade, a geometria e a validação numérica do
+payload continuam sendo verificadas antes da admissão, então a residência não
+relaxa a prova de correção.
+
+O teste unitário `cache_device_hit_reutiliza_handle_sem_novo_upload` usa um
+allocator falso e prova um upload para dois acessos; os testes adjacentes
+provam lease ativo e recusa pelo orçamento medido. Esses testes não substituem
+a validação CUDA. Ainda falta compilar este commit na ksia com
+`--features vulkan,cuda`; nenhum deploy, troca de modelo ou medição de
+throughput foi feito nesta etapa porque a placa está sendo usada pelo captain.
+
+O fork não mudou nesta etapa: a ABI genérica de substituição e o loader
+metadata-only já estão em `03902a5ba`. Se a build CUDA revelar incompatibilidade
+da ABI do kernel, ela será um commit separado no fork e será publicada antes da
+promoção do ramo Rust.
 
 #### F5-E3: regressão e publicação
 

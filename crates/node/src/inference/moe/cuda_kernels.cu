@@ -178,6 +178,37 @@ __global__ void gate_up_kernel(
     gate_up_values[expert * rows_per_expert + row] = value * (is_up ? up_scale : gate_scale);
 }
 
+__global__ void gate_up_resident_kernel(
+    const uint8_t * const * payloads,
+    int batch,
+    int intermediate,
+    int hidden,
+    const int8_t * hidden_values,
+    const float * hidden_scales,
+    float * gate_up_values
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows_per_expert = 2 * intermediate;
+    const int expert = index / rows_per_expert;
+    const int row = index % rows_per_expert;
+    if (expert >= batch) {
+        return;
+    }
+    const uint8_t * payload = payloads[expert];
+    const uint8_t * gate_up = payload + kPayloadHeaderBytes;
+    const float gate_scale = payload_scale(payload, 0);
+    const float up_scale = payload_scale(payload, 1);
+    const bool is_up = row >= intermediate;
+    const float value = dot_nvfp4(
+        gate_up,
+        row,
+        hidden,
+        hidden_values,
+        hidden_scales
+    );
+    gate_up_values[expert * rows_per_expert + row] = value * (is_up ? up_scale : gate_scale);
+}
+
 __device__ float ggml_gelu_f16(float value) {
     const float input = round_to_f16(value);
     const float gelu = 0.5f * input *
@@ -226,6 +257,36 @@ __global__ void down_kernel(
         return;
     }
     const uint8_t * payload = payloads + expert * payload_stride;
+    const std::size_t gate_up_len = static_cast<std::size_t>(payload[0]) |
+        (static_cast<std::size_t>(payload[1]) << 8) |
+        (static_cast<std::size_t>(payload[2]) << 16) |
+        (static_cast<std::size_t>(payload[3]) << 24);
+    const uint8_t * down = payload + kPayloadHeaderBytes + gate_up_len;
+    output[expert * hidden + row] = dot_nvfp4(
+        down,
+        row,
+        intermediate,
+        activated_values + expert * intermediate,
+        activated_scales + expert * (intermediate / 32)
+    ) * payload_scale(payload, 2);
+}
+
+__global__ void down_resident_kernel(
+    const uint8_t * const * payloads,
+    int batch,
+    int hidden,
+    int intermediate,
+    const int8_t * activated_values,
+    const float * activated_scales,
+    float * output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int expert = index / hidden;
+    const int row = index % hidden;
+    if (expert >= batch) {
+        return;
+    }
+    const uint8_t * payload = payloads[expert];
     const std::size_t gate_up_len = static_cast<std::size_t>(payload[0]) |
         (static_cast<std::size_t>(payload[1]) << 8) |
         (static_cast<std::size_t>(payload[2]) << 16) |
@@ -453,6 +514,237 @@ extern "C" int pom_moe_nvfp4_forward_batch(
         timing->free_ms = elapsed_ms(free_start, Clock::now());
     }
     return result;
+}
+
+extern "C" int pom_moe_nvfp4_forward_batch_resident(
+    const uint8_t * const * payloads,
+    std::size_t payload_count,
+    const float * hidden,
+    std::size_t hidden_len,
+    float * output,
+    std::size_t output_len,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    CudaMoeCallTiming * timing
+) {
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(payload_count);
+        timing->kernel_launches = 5;
+        timing->sync_count = 2;
+    }
+    if (payloads == nullptr || hidden == nullptr || output == nullptr || payload_count == 0 ||
+        hidden_width == 0 || intermediate_width == 0 ||
+        hidden_width % kBlockElements != 0 || intermediate_width % kBlockElements != 0 ||
+        hidden_len != hidden_width || output_len != hidden_width * payload_count) {
+        return 1;
+    }
+    for (std::size_t expert = 0; expert < payload_count; ++expert) {
+        if (payloads[expert] == nullptr) {
+            return 1;
+        }
+    }
+
+    float * d_hidden = nullptr;
+    float * d_hidden_scales = nullptr;
+    int8_t * d_hidden_qs = nullptr;
+    const uint8_t ** d_payloads = nullptr;
+    float * d_gate_up_values = nullptr;
+    float * d_activated = nullptr;
+    float * d_activated_scales = nullptr;
+    int8_t * d_activated_qs = nullptr;
+    float * d_output = nullptr;
+    cudaEvent_t gate_start = nullptr;
+    cudaEvent_t gate_end = nullptr;
+    cudaEvent_t down_start = nullptr;
+    cudaEvent_t down_end = nullptr;
+    int result = 0;
+
+    do {
+        const auto alloc_start = Clock::now();
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_width * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden_scales), hidden_width / 32 * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden_qs), hidden_width * sizeof(int8_t)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_payloads), payload_count * sizeof(*d_payloads)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up_values),
+            2 * intermediate_width * payload_count * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated),
+            intermediate_width * payload_count * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated_scales),
+            intermediate_width / 32 * payload_count * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated_qs),
+            intermediate_width * payload_count * sizeof(int8_t)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output),
+            hidden_width * payload_count * sizeof(float)));
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->alloc_ms = elapsed_ms(alloc_start, Clock::now());
+            result = cuda_status(cudaEventCreate(&gate_start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&gate_end));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&down_start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&down_end));
+            if (result != 0) break;
+        }
+
+        const auto h2d_start = Clock::now();
+        result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_width * sizeof(float), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_payloads, payloads,
+            payload_count * sizeof(*d_payloads), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->h2d_ms = elapsed_ms(h2d_start, Clock::now());
+            timing->h2d_bytes = static_cast<uint64_t>(hidden_width * sizeof(float) +
+                payload_count * sizeof(*d_payloads));
+        }
+
+        const int block_size = 128;
+        const auto gate_launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(gate_start));
+            if (result != 0) break;
+        }
+        quantize_q8_0_kernel<<<(hidden_width + 31) / 32, 32>>>(
+            d_hidden, static_cast<int>(hidden_width), d_hidden_scales, d_hidden_qs, 1);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        gate_up_resident_kernel<<<(2 * intermediate_width * payload_count + block_size - 1) / block_size, block_size>>>(
+            d_payloads, static_cast<int>(payload_count),
+            static_cast<int>(intermediate_width), static_cast<int>(hidden_width),
+            d_hidden_qs, d_hidden_scales, d_gate_up_values);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->launch_ms += elapsed_ms(gate_launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(gate_end));
+            if (result != 0) break;
+        }
+        const auto gate_sync_start = Clock::now();
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, gate_start, gate_end));
+            if (result != 0) break;
+            timing->kernel_ms += kernel_ms;
+            timing->sync_ms += std::max(0.0, elapsed_ms(gate_sync_start, Clock::now()) - static_cast<double>(kernel_ms));
+        }
+
+        const auto down_launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(down_start));
+            if (result != 0) break;
+        }
+        geglu_kernel<<<(intermediate_width * payload_count + block_size - 1) / block_size, block_size>>>(
+            d_gate_up_values, static_cast<int>(payload_count),
+            static_cast<int>(intermediate_width), d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        quantize_q8_0_kernel<<<((intermediate_width + 31) / 32) * payload_count, 32>>>(
+            d_activated, static_cast<int>(intermediate_width), d_activated_scales,
+            d_activated_qs, static_cast<int>(payload_count));
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        down_resident_kernel<<<(hidden_width * payload_count + block_size - 1) / block_size, block_size>>>(
+            d_payloads, static_cast<int>(payload_count),
+            static_cast<int>(hidden_width), static_cast<int>(intermediate_width),
+            d_activated_qs, d_activated_scales, d_output);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->launch_ms += elapsed_ms(down_launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(down_end));
+            if (result != 0) break;
+        }
+        const auto down_sync_start = Clock::now();
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, down_start, down_end));
+            if (result != 0) break;
+            timing->kernel_ms += kernel_ms;
+            timing->sync_ms += std::max(0.0, elapsed_ms(down_sync_start, Clock::now()) - static_cast<double>(kernel_ms));
+        }
+        const auto d2h_start = Clock::now();
+        result = cuda_status(cudaMemcpy(output, d_output,
+            hidden_width * payload_count * sizeof(float), cudaMemcpyDeviceToHost));
+        if (timing != nullptr) {
+            timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
+            timing->d2h_bytes = static_cast<uint64_t>(hidden_width * payload_count * sizeof(float));
+        }
+    } while (false);
+
+    if (gate_start != nullptr) cudaEventDestroy(gate_start);
+    if (gate_end != nullptr) cudaEventDestroy(gate_end);
+    if (down_start != nullptr) cudaEventDestroy(down_start);
+    if (down_end != nullptr) cudaEventDestroy(down_end);
+    const auto free_start = Clock::now();
+    cudaFree(d_output);
+    cudaFree(d_activated_qs);
+    cudaFree(d_activated_scales);
+    cudaFree(d_activated);
+    cudaFree(d_gate_up_values);
+    cudaFree(d_payloads);
+    cudaFree(d_hidden_qs);
+    cudaFree(d_hidden_scales);
+    cudaFree(d_hidden);
+    if (timing != nullptr) {
+        timing->free_ms = elapsed_ms(free_start, Clock::now());
+    }
+    return result;
+}
+
+extern "C" int pom_moe_device_free_bytes(std::uint64_t * free_bytes) {
+    if (free_bytes == nullptr) {
+        return 1;
+    }
+    std::size_t free = 0;
+    std::size_t total = 0;
+    const auto status = cudaMemGetInfo(&free, &total);
+    if (status != cudaSuccess) {
+        return cuda_status(status);
+    }
+    *free_bytes = static_cast<std::uint64_t>(free);
+    return 0;
+}
+
+extern "C" int pom_moe_device_upload(
+    const std::uint8_t * payload,
+    std::size_t payload_len,
+    void ** out
+) {
+    if (payload == nullptr || payload_len == 0 || out == nullptr) {
+        return 1;
+    }
+    *out = nullptr;
+    auto status = cuda_status(cudaMalloc(out, payload_len));
+    if (status != 0) {
+        return status;
+    }
+    status = cuda_status(cudaMemcpy(*out, payload, payload_len, cudaMemcpyHostToDevice));
+    if (status != 0) {
+        cudaFree(*out);
+        *out = nullptr;
+    }
+    return status;
+}
+
+extern "C" void pom_moe_device_free(void * handle) {
+    if (handle != nullptr) {
+        cudaFree(handle);
+    }
 }
 
 extern "C" int pom_moe_nvfp4_forward(

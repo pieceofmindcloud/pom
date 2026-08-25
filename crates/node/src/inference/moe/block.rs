@@ -526,6 +526,30 @@ impl Nvfp4MoeBlock {
         })
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            executor: Nvfp4Executor::new_with_device_cache(
+                cache,
+                device_cache,
+                hidden,
+                intermediate,
+            )
+            .map_err(|error| error.to_string())?,
+        })
+    }
+
     pub fn forward_from_source(
         &self,
         source: &Nvfp4Source,
@@ -559,6 +583,11 @@ impl Nvfp4MoeBlock {
     #[cfg(feature = "cuda")]
     pub fn host_diagnostics(&self) -> super::format_nvfp4::Nvfp4HostDiagnostics {
         self.executor.host_diagnostics()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.executor.resident_cache_stats()
     }
 
     pub fn forward_from_source_with_route(

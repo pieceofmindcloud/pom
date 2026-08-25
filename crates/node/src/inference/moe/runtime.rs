@@ -64,6 +64,15 @@ pub struct MoeExecutorDiagnostics {
     pub cache_rejections: u64,
     pub cache_entries: usize,
     pub cache_resident_bytes: usize,
+    pub device_cache_hits: u64,
+    pub device_cache_misses: u64,
+    pub device_cache_admissions: u64,
+    pub device_cache_evictions: u64,
+    pub device_cache_rejections: u64,
+    pub device_cache_uploads: u64,
+    pub device_cache_upload_bytes: u64,
+    pub device_cache_upload_ms: f64,
+    pub device_cache_resident_bytes: usize,
     pub payload_validation_ms: f64,
     pub cuda_alloc_ms: f64,
     pub cuda_h2d_ms: f64,
@@ -420,9 +429,31 @@ impl MoeRuntime {
                         "GGUF MoE sem camadas",
                     )));
                 }
+                #[cfg(feature = "cuda")]
+                let device_cache = if std::env::var("POM_MOE_NVFP4_BACKEND")
+                    .is_ok_and(|value| value.eq_ignore_ascii_case("cpu"))
+                {
+                    None
+                } else {
+                    Some(
+                        super::cuda::create_device_cache()
+                            .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
+                    )
+                };
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
-                    blocks.push(MoeBlock::Nvfp4(
+                    #[cfg(feature = "cuda")]
+                    let block = if let Some(device_cache) = device_cache.as_ref() {
+                        Nvfp4MoeBlock::new_with_device_cache(
+                            Arc::clone(&cache),
+                            Arc::clone(device_cache),
+                            &model,
+                            layer,
+                            top_k,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                    } else {
                         Nvfp4MoeBlock::new(
                             Arc::clone(&cache),
                             &model,
@@ -431,8 +462,19 @@ impl MoeRuntime {
                             source.hidden(),
                             source.intermediate(),
                         )
-                        .map_err(MoeRuntimeError::Block)?,
-                    ));
+                    }
+                    .map_err(MoeRuntimeError::Block)?;
+                    #[cfg(not(feature = "cuda"))]
+                    let block = Nvfp4MoeBlock::new(
+                        Arc::clone(&cache),
+                        &model,
+                        layer,
+                        top_k,
+                        source.hidden(),
+                        source.intermediate(),
+                    )
+                    .map_err(MoeRuntimeError::Block)?;
+                    blocks.push(MoeBlock::Nvfp4(block));
                 }
                 Ok(Self {
                     source: MoeSource::Nvfp4(source),
@@ -689,6 +731,31 @@ impl MoeRuntime {
                 diagnostics.host_expert_load_ms += host.expert_load_ms;
                 diagnostics.host_cache_admit_ms += host.cache_admit_ms;
                 diagnostics.host_aggregation_ms += host.aggregation_ms;
+                let device = block.resident_cache_stats();
+                diagnostics.device_cache_hits =
+                    diagnostics.device_cache_hits.saturating_add(device.hits);
+                diagnostics.device_cache_misses = diagnostics
+                    .device_cache_misses
+                    .saturating_add(device.misses);
+                diagnostics.device_cache_admissions = diagnostics
+                    .device_cache_admissions
+                    .saturating_add(device.admissions);
+                diagnostics.device_cache_evictions = diagnostics
+                    .device_cache_evictions
+                    .saturating_add(device.evictions);
+                diagnostics.device_cache_rejections = diagnostics
+                    .device_cache_rejections
+                    .saturating_add(device.rejections);
+                diagnostics.device_cache_uploads = diagnostics
+                    .device_cache_uploads
+                    .saturating_add(device.uploads);
+                diagnostics.device_cache_upload_bytes = diagnostics
+                    .device_cache_upload_bytes
+                    .saturating_add(device.upload_bytes);
+                diagnostics.device_cache_upload_ms += device.upload_ms;
+                diagnostics.device_cache_resident_bytes = diagnostics
+                    .device_cache_resident_bytes
+                    .saturating_add(device.resident_bytes);
             }
         }
 

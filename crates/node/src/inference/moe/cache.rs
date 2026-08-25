@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ExpertKey {
@@ -384,6 +385,303 @@ impl Drop for ExpertLease {
     }
 }
 
+/// Uma alocação opaca no device que executa os experts.
+///
+/// O cache não conhece CUDA, Vulkan, Metal, arquitetura ou dtype. O backend
+/// devolve apenas o handle que o kernel entende e o tamanho que deve ser
+/// contabilizado no orçamento. A implementação é dona de liberar o handle no
+/// `Drop` do objeto concreto.
+pub trait DeviceAllocation: Send + Sync {
+    fn bytes(&self) -> usize;
+    fn handle(&self) -> usize;
+}
+
+/// Operações mínimas que um backend precisa oferecer ao cache residente.
+pub trait DeviceAllocator: Send + Sync {
+    fn device_name(&self) -> &str;
+    fn free_bytes(&self) -> io::Result<u64>;
+    fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceCacheError {
+    EmptyExpert {
+        key: ExpertKey,
+    },
+    MemoryProbe {
+        device: String,
+        reason: String,
+    },
+    Upload {
+        key: ExpertKey,
+        device: String,
+        reason: String,
+    },
+    NoBudget {
+        key: ExpertKey,
+        device: String,
+        bytes: usize,
+        limit: u64,
+    },
+    BusyAndNoEviction {
+        key: ExpertKey,
+        device: String,
+        bytes: usize,
+        limit: u64,
+    },
+}
+
+impl fmt::Display for DeviceCacheError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyExpert { key } => write!(formatter, "expert vazio não pode entrar no cache de device: {key:?}"),
+            Self::MemoryProbe { device, reason } => {
+                write!(formatter, "não foi possível medir memória livre de {device}: {reason}")
+            }
+            Self::Upload { key, device, reason } => {
+                write!(formatter, "upload do expert {key:?} para {device} falhou: {reason}")
+            }
+            Self::NoBudget {
+                key,
+                device,
+                bytes,
+                limit,
+            } => write!(
+                formatter,
+                "expert {key:?} de {bytes} bytes não cabe no orçamento medido de {limit} bytes em {device}"
+            ),
+            Self::BusyAndNoEviction {
+                key,
+                device,
+                bytes,
+                limit,
+            } => write!(
+                formatter,
+                "não há entrada ociosa para admitir expert {key:?} de {bytes} bytes no limite de {limit} bytes em {device}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DeviceCacheError {}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DeviceCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub admissions: u64,
+    pub evictions: u64,
+    pub rejections: u64,
+    pub uploads: u64,
+    pub upload_bytes: u64,
+    pub upload_ms: f64,
+    pub resident_bytes: usize,
+    pub entries: usize,
+}
+
+struct DeviceEntry {
+    allocation: Box<dyn DeviceAllocation>,
+    active: usize,
+    last_used: u64,
+}
+
+struct DeviceState {
+    entries: HashMap<ExpertKey, DeviceEntry>,
+    clock: u64,
+    stats: DeviceCacheStats,
+}
+
+/// LRU global de handles residentes no device.
+///
+/// A fonte fria continua sendo lida pelo executor somente em um miss. O
+/// payload não fica preso neste struct: depois do upload, a entrada mantém só
+/// o handle concreto do backend. Isso impede que um hit de CUDA seja confundido
+/// com um hit da LRU de RAM.
+pub struct DeviceExpertCache {
+    account: MemoryAccount,
+    allocator: Arc<dyn DeviceAllocator>,
+    state: Mutex<DeviceState>,
+}
+
+impl DeviceExpertCache {
+    pub fn new(account: MemoryAccount, allocator: Arc<dyn DeviceAllocator>) -> Arc<Self> {
+        Arc::new(Self {
+            account,
+            allocator,
+            state: Mutex::new(DeviceState {
+                entries: HashMap::new(),
+                clock: 0,
+                stats: DeviceCacheStats::default(),
+            }),
+        })
+    }
+
+    pub fn lookup(self: &Arc<Self>, key: &ExpertKey) -> Option<DeviceExpertLease> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.saturating_add(1);
+        let now = state.clock;
+        let handle = {
+            let entry = state.entries.get_mut(key)?;
+            entry.active = entry.active.saturating_add(1);
+            entry.last_used = now;
+            entry.allocation.handle()
+        };
+        state.stats.hits = state.stats.hits.saturating_add(1);
+        Some(DeviceExpertLease {
+            cache: Arc::clone(self),
+            key: key.clone(),
+            handle,
+        })
+    }
+
+    pub fn stats(&self) -> DeviceCacheStats {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stats
+    }
+
+    pub fn admit(
+        self: &Arc<Self>,
+        key: ExpertKey,
+        payload: &[u8],
+    ) -> Result<DeviceExpertLease, DeviceCacheError> {
+        if payload.is_empty() {
+            return Err(DeviceCacheError::EmptyExpert { key });
+        }
+        let bytes = payload.len();
+        let device = self.allocator.device_name().to_owned();
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        state.clock = state.clock.saturating_add(1);
+        let now = state.clock;
+
+        if let Some(entry) = state.entries.get_mut(&key) {
+            entry.active = entry.active.saturating_add(1);
+            entry.last_used = now;
+            let handle = entry.allocation.handle();
+            state.stats.hits = state.stats.hits.saturating_add(1);
+            return Ok(DeviceExpertLease {
+                cache: Arc::clone(self),
+                key,
+                handle,
+            });
+        }
+
+        state.stats.misses = state.stats.misses.saturating_add(1);
+        let current_free =
+            self.allocator
+                .free_bytes()
+                .map_err(|error| DeviceCacheError::MemoryProbe {
+                    device: device.clone(),
+                    reason: error.to_string(),
+                })?;
+        let limit = self
+            .account
+            .cache_limit_bytes(current_free, state.stats.resident_bytes as u64)
+            .unwrap_or(0);
+        if bytes as u64 > limit {
+            state.stats.rejections = state.stats.rejections.saturating_add(1);
+            return Err(DeviceCacheError::NoBudget {
+                key,
+                device,
+                bytes,
+                limit,
+            });
+        }
+
+        while state.stats.resident_bytes.saturating_add(bytes) as u64 > limit {
+            let victim = state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.active == 0)
+                .min_by_key(|(_, entry)| entry.last_used)
+                .map(|(key, _)| key.clone());
+            let Some(victim) = victim else {
+                state.stats.rejections = state.stats.rejections.saturating_add(1);
+                return Err(DeviceCacheError::BusyAndNoEviction {
+                    key,
+                    device,
+                    bytes,
+                    limit,
+                });
+            };
+            if let Some(entry) = state.entries.remove(&victim) {
+                state.stats.resident_bytes = state
+                    .stats
+                    .resident_bytes
+                    .saturating_sub(entry.allocation.bytes());
+                state.stats.entries = state.stats.entries.saturating_sub(1);
+                state.stats.evictions = state.stats.evictions.saturating_add(1);
+            }
+        }
+
+        let upload_started = Instant::now();
+        let allocation =
+            self.allocator
+                .upload(payload)
+                .map_err(|reason| DeviceCacheError::Upload {
+                    key: key.clone(),
+                    device,
+                    reason,
+                })?;
+        if allocation.bytes() != bytes {
+            return Err(DeviceCacheError::Upload {
+                key,
+                device: self.allocator.device_name().to_owned(),
+                reason: format!(
+                    "backend alocou {} bytes para payload de {bytes}",
+                    allocation.bytes()
+                ),
+            });
+        }
+        let handle = allocation.handle();
+        state.stats.resident_bytes = state.stats.resident_bytes.saturating_add(bytes);
+        state.stats.entries = state.entries.len().saturating_add(1);
+        state.stats.admissions = state.stats.admissions.saturating_add(1);
+        state.stats.uploads = state.stats.uploads.saturating_add(1);
+        state.stats.upload_bytes = state.stats.upload_bytes.saturating_add(bytes as u64);
+        state.stats.upload_ms += upload_started.elapsed().as_secs_f64() * 1_000.0;
+        state.entries.insert(
+            key.clone(),
+            DeviceEntry {
+                allocation,
+                active: 1,
+                last_used: now,
+            },
+        );
+        Ok(DeviceExpertLease {
+            cache: Arc::clone(self),
+            key,
+            handle,
+        })
+    }
+
+    fn release(&self, key: &ExpertKey) {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(entry) = state.entries.get_mut(key) {
+            entry.active = entry.active.saturating_sub(1);
+        }
+    }
+}
+
+pub struct DeviceExpertLease {
+    cache: Arc<DeviceExpertCache>,
+    key: ExpertKey,
+    handle: usize,
+}
+
+impl DeviceExpertLease {
+    pub fn handle(&self) -> usize {
+        self.handle
+    }
+}
+
+impl Drop for DeviceExpertLease {
+    fn drop(&mut self) {
+        self.cache.release(&self.key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -506,5 +804,103 @@ mod tests {
             Err(CacheError::BusyAndNoEviction { .. })
         ));
         assert!(cache.lookup(&key(1)).is_some());
+    }
+
+    struct FakeDeviceAllocation {
+        handle: usize,
+        bytes: usize,
+    }
+
+    impl DeviceAllocation for FakeDeviceAllocation {
+        fn bytes(&self) -> usize {
+            self.bytes
+        }
+
+        fn handle(&self) -> usize {
+            self.handle
+        }
+    }
+
+    struct FakeDeviceAllocator {
+        free: AtomicU64,
+        uploads: AtomicU64,
+    }
+
+    impl FakeDeviceAllocator {
+        fn new(free: u64) -> Arc<Self> {
+            Arc::new(Self {
+                free: AtomicU64::new(free),
+                uploads: AtomicU64::new(0),
+            })
+        }
+    }
+
+    impl DeviceAllocator for FakeDeviceAllocator {
+        fn device_name(&self) -> &str {
+            "fake-device"
+        }
+
+        fn free_bytes(&self) -> io::Result<u64> {
+            Ok(self.free.load(Ordering::Relaxed))
+        }
+
+        fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String> {
+            self.uploads.fetch_add(1, Ordering::Relaxed);
+            Ok(Box::new(FakeDeviceAllocation {
+                handle: self.uploads.load(Ordering::Relaxed) as usize,
+                bytes: payload.len(),
+            }))
+        }
+    }
+
+    fn device_cache(allocator: &Arc<FakeDeviceAllocator>, baseline: u64) -> Arc<DeviceExpertCache> {
+        DeviceExpertCache::new(
+            MemoryAccount {
+                baseline_free_bytes: baseline,
+                weights_bytes: 0,
+                fixed_bytes: 0,
+                reserve_bytes: 0,
+            },
+            Arc::clone(allocator) as Arc<dyn DeviceAllocator>,
+        )
+    }
+
+    #[test]
+    fn cache_device_hit_reutiliza_handle_sem_novo_upload() {
+        let allocator = FakeDeviceAllocator::new(100);
+        let cache = device_cache(&allocator, 100);
+        let first = cache.admit(key(1), &[1, 2, 3]).unwrap();
+        let handle = first.handle();
+        drop(first);
+
+        let second = cache.lookup(&key(1)).unwrap();
+        assert_eq!(second.handle(), handle);
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 1);
+        assert_eq!(cache.stats().upload_bytes, 3);
+    }
+
+    #[test]
+    fn cache_device_nao_expulsa_lease_ativo() {
+        let allocator = FakeDeviceAllocator::new(4);
+        let cache = device_cache(&allocator, 4);
+        let active = cache.admit(key(1), &[1, 1, 1]).unwrap();
+        assert!(matches!(
+            cache.admit(key(2), &[2, 2]),
+            Err(DeviceCacheError::BusyAndNoEviction { .. })
+        ));
+        drop(active);
+    }
+
+    #[test]
+    fn cache_device_recusa_payload_que_nao_cabe_no_orcamento_medido() {
+        let allocator = FakeDeviceAllocator::new(2);
+        let cache = device_cache(&allocator, 2);
+        let error = match cache.admit(key(1), &[1, 2, 3]) {
+            Ok(_) => panic!("payload fora do orçamento foi admitido"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, DeviceCacheError::NoBudget { .. }));
+        assert!(error.to_string().contains("fake-device"));
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
     }
 }

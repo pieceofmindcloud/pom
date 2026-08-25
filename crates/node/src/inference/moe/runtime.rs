@@ -766,30 +766,31 @@ impl MoeRuntime {
                 diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
-                diagnostics.device_cache_hits =
-                    diagnostics.device_cache_hits.saturating_add(device.hits);
+                diagnostics.device_cache_hits = diagnostics
+                    .device_cache_hits
+                    .saturating_add(device_cache.hits);
                 diagnostics.device_cache_misses = diagnostics
                     .device_cache_misses
-                    .saturating_add(device.misses);
+                    .saturating_add(device_cache.misses);
                 diagnostics.device_cache_admissions = diagnostics
                     .device_cache_admissions
-                    .saturating_add(device.admissions);
+                    .saturating_add(device_cache.admissions);
                 diagnostics.device_cache_evictions = diagnostics
                     .device_cache_evictions
-                    .saturating_add(device.evictions);
+                    .saturating_add(device_cache.evictions);
                 diagnostics.device_cache_rejections = diagnostics
                     .device_cache_rejections
-                    .saturating_add(device.rejections);
+                    .saturating_add(device_cache.rejections);
                 diagnostics.device_cache_uploads = diagnostics
                     .device_cache_uploads
-                    .saturating_add(device.uploads);
+                    .saturating_add(device_cache.uploads);
                 diagnostics.device_cache_upload_bytes = diagnostics
                     .device_cache_upload_bytes
-                    .saturating_add(device.upload_bytes);
-                diagnostics.device_cache_upload_ms += device.upload_ms;
+                    .saturating_add(device_cache.upload_bytes);
+                diagnostics.device_cache_upload_ms += device_cache.upload_ms;
                 diagnostics.device_cache_resident_bytes = diagnostics
                     .device_cache_resident_bytes
-                    .saturating_add(device.resident_bytes);
+                    .saturating_add(device_cache.resident_bytes);
                 if let MoeBlock::Nvfp4(block) = block {
                     let host = block.host_diagnostics();
                     diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;

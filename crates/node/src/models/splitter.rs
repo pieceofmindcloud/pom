@@ -2243,6 +2243,9 @@ mod tests {
         bytes.extend_from_slice(&0u64.to_le_bytes());
         bytes.extend_from_slice(&3u64.to_le_bytes());
         bytes.extend_from_slice(&kv);
+        while bytes.len() % ALIGN != 0 {
+            bytes.push(0);
+        }
         bytes
     }
 

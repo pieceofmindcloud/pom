@@ -648,8 +648,9 @@ formato.
 O teste ignorado
 `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige
 `POM_REAL_MOE_GGUF` e o arquivo real
-`Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; ele valida 40 camadas, 128 experts e os
-dtypes `{21, 22, 23}`. A abertura local sem esse arquivo não é considerada
+`Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; ele valida 40 camadas, 256 experts e os
+dtypes `{21, 22, 23}`. A geometria observada é `[2048, 512, 256]` em
+gate/up e `[512, 2048, 256]` em down. A abertura local sem esse arquivo não é considerada
 prova. A prova E2E deve executar a mesma revisão do código no host que contém
 o GGUF e mostrar resposta, `executed_engine=moe`, sem divergência e com
 `input_tokens > 0`.

@@ -650,9 +650,9 @@ mod tests {
     fn qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor() {
         let path = std::env::var_os("POM_REAL_MOE_GGUF")
             .expect("POM_REAL_MOE_GGUF deve apontar para o GGUF real");
-        let source = HeterogeneousMoeSource::open_infer(path, 128)
+        let source = HeterogeneousMoeSource::open_infer(path, 256)
             .expect("o GGUF real UD-IQ3_S deve abrir com inventário heterogêneo");
-        assert_eq!(source.experts(), 128);
+        assert_eq!(source.experts(), 256);
         assert_eq!(source.layer_count(), 40);
         let dtypes = source
             .tensors

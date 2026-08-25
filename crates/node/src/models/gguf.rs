@@ -267,7 +267,6 @@ struct ArrayShape {
 struct LayoutTensor {
     name: String,
     dims: Vec<u64>,
-    dtype: u32,
     bytes: u64,
 }
 
@@ -857,15 +856,15 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         let mut scalar_u32 = None;
         let mut array = None;
         match vtype {
-            T_STR => {
+            T_STRING => {
                 let value = r.string()?;
                 if key == "general.architecture" {
                     architecture = value;
                 }
             }
-            T_U32 => scalar_u32 = Some(r.u32()?),
-            T_U64 => scalar_u32 = Some(r.u64()? as u32),
-            T_ARR => {
+            T_UINT32 => scalar_u32 = Some(r.u32()?),
+            T_UINT64 => scalar_u32 = Some(r.u64()? as u32),
+            T_ARRAY => {
                 let element_type = r.u32()?;
                 let count = r.u64()?;
                 r.skip_array_payload(element_type, count)?;
@@ -930,10 +929,9 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 
     let layout_tensors: Vec<LayoutTensor> = tensors
         .into_iter()
-        .map(|(name, dims, dtype, offset)| LayoutTensor {
+        .map(|(name, dims, _dtype, offset)| LayoutTensor {
             name,
             dims,
-            dtype,
             bytes: size_map.get(&offset).copied().unwrap_or(0),
         })
         .collect();

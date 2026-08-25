@@ -402,7 +402,7 @@ impl PlainMoeBlock {
             leases.push(lease);
         }
         cuda.run_route_batch_resident(&leases, token_ids, weights, token_offsets, hidden, tokens)
-            .map_err(MoeBlockError::from)
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))
     }
 }
 

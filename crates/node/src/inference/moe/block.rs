@@ -22,6 +22,7 @@ use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
 use super::router::{dispatch_route, dispatch_top_k, select_top_k, DispatchError, RouteError};
 use std::fmt;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug)]
 pub enum MoeBlockError {
@@ -591,6 +592,7 @@ impl Nvfp4MoeBlock {
                     ids.len()
                 )));
             }
+            let aggregation_started = Instant::now();
             let mut output = None::<Vec<f32>>;
             for (values, &weight) in outputs.into_iter().zip(weights) {
                 let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
@@ -604,6 +606,8 @@ impl Nvfp4MoeBlock {
                     *slot += weight * value;
                 }
             }
+            self.executor
+                .record_aggregation_ms(aggregation_started.elapsed().as_secs_f64() * 1_000.0);
             return output.ok_or(MoeBlockError::Route(RouteError::InvalidWeightSum));
         }
         let model = &self.model;

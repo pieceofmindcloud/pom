@@ -1015,6 +1015,7 @@ pub struct Nvfp4HostDiagnostics {
     pub cache_lookup_ms: f64,
     pub expert_load_ms: f64,
     pub cache_admit_ms: f64,
+    pub aggregation_ms: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1089,6 +1090,13 @@ impl Nvfp4Executor {
             .host_diagnostics
             .lock()
             .unwrap_or_else(|error| error.into_inner())
+    }
+
+    pub fn record_aggregation_ms(&self, elapsed_ms: f64) {
+        self.host_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .aggregation_ms += elapsed_ms;
     }
 
     pub fn run_from_source(

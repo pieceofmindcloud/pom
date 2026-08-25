@@ -42,6 +42,8 @@ pub struct Nvfp4CudaDiagnostics {
     pub free_ms: f64,
     pub host_batch_prepare_ms: f64,
     pub host_result_copy_ms: f64,
+    /// Parede externa da chamada FFI, sem somar submedições internas.
+    pub cuda_call_wall_ms: f64,
 }
 
 impl Nvfp4CudaDiagnostics {
@@ -146,6 +148,7 @@ impl Nvfp4CudaExecutor {
             payload_validation_ms,
             ..CudaMoeCallTiming::default()
         };
+        let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_nvfp4_forward(
                 payload.as_ptr(),
@@ -163,14 +166,17 @@ impl Nvfp4CudaExecutor {
                 },
             )
         };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
         }
         if self.profile {
-            self.diagnostics
+            let mut diagnostics = self
+                .diagnostics
                 .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .add_call(timing);
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
         Ok(output)
     }
@@ -217,6 +223,7 @@ impl Nvfp4CudaExecutor {
             payload_validation_ms,
             ..CudaMoeCallTiming::default()
         };
+        let cuda_started = Instant::now();
         let status = unsafe {
             pom_moe_nvfp4_forward_batch(
                 flat_payloads.as_ptr(),
@@ -235,6 +242,7 @@ impl Nvfp4CudaExecutor {
                 },
             )
         };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
         }
@@ -245,6 +253,7 @@ impl Nvfp4CudaExecutor {
                 .unwrap_or_else(|error| error.into_inner());
             diagnostics.add_call(timing);
             diagnostics.host_batch_prepare_ms += host_batch_prepare_ms;
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
         }
         let host_result_copy_started = Instant::now();
         let output = flat_output

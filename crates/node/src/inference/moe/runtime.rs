@@ -22,7 +22,7 @@ use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoeExecutorKind {
@@ -79,6 +79,14 @@ pub struct MoeExecutorDiagnostics {
     pub host_cache_admit_ms: f64,
     pub host_batch_prepare_ms: f64,
     pub host_result_copy_ms: f64,
+    pub host_aggregation_ms: f64,
+    pub cuda_call_wall_ms: f64,
+    pub runtime_forward_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct MoeRuntimeDiagnostics {
+    runtime_forward_ms: f64,
 }
 
 impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
@@ -250,6 +258,7 @@ pub struct MoeRuntime {
     source: MoeSource,
     blocks: Vec<MoeBlock>,
     cache: Arc<ExpertCache>,
+    runtime_diagnostics: Mutex<MoeRuntimeDiagnostics>,
 }
 
 pub struct MoeRouteBatch<'a> {
@@ -320,6 +329,7 @@ impl MoeRuntime {
                     source: MoeSource::Legacy(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
@@ -363,6 +373,7 @@ impl MoeRuntime {
                     source: MoeSource::Plain(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Q4_0 => {
@@ -393,6 +404,7 @@ impl MoeRuntime {
                     source: MoeSource::Q4(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Nvfp4 => {
@@ -426,6 +438,7 @@ impl MoeRuntime {
                     source: MoeSource::Nvfp4(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Mxfp4
@@ -475,6 +488,7 @@ impl MoeRuntime {
                     source: MoeSource::LowBit(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Q2K
@@ -526,6 +540,7 @@ impl MoeRuntime {
                     source: MoeSource::K(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Iq2XXS
@@ -583,6 +598,7 @@ impl MoeRuntime {
                     source: MoeSource::Iq(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
             ExpertFormat::Heterogeneous => {
@@ -606,6 +622,7 @@ impl MoeRuntime {
                     source: MoeSource::Heterogeneous(source),
                     blocks,
                     cache: Arc::clone(&cache),
+                    runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
                 })
             }
         }
@@ -632,6 +649,11 @@ impl MoeRuntime {
             cache_rejections: cache.rejections,
             cache_entries: cache.entries,
             cache_resident_bytes: cache.resident_bytes,
+            runtime_forward_ms: self
+                .runtime_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .runtime_forward_ms,
             ..MoeExecutorDiagnostics::default()
         };
 
@@ -659,12 +681,14 @@ impl MoeRuntime {
                 diagnostics.cuda_d2h_bytes =
                     diagnostics.cuda_d2h_bytes.saturating_add(cuda.d2h_bytes);
                 diagnostics.cuda_free_ms += cuda.free_ms;
+                diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
                 let host = block.host_diagnostics();
                 diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;
                 diagnostics.host_expert_load_ms += host.expert_load_ms;
                 diagnostics.host_cache_admit_ms += host.cache_admit_ms;
+                diagnostics.host_aggregation_ms += host.aggregation_ms;
             }
         }
 
@@ -731,6 +755,7 @@ impl MoeRuntime {
         &self,
         route: MoeRouteBatch<'_>,
     ) -> Result<Vec<f32>, MoeRuntimeError> {
+        let runtime_started = std::time::Instant::now();
         let MoeRouteBatch {
             layer,
             hidden,
@@ -826,6 +851,11 @@ impl MoeRuntime {
             };
             output.extend(values);
         }
+        let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+        self.runtime_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .runtime_forward_ms += elapsed_ms;
         Ok(output)
     }
 

@@ -119,6 +119,23 @@ impl<'a> R<'a> {
         }
         Ok(())
     }
+
+    fn skip_array_payload(&mut self, element_type: u32, count: u64) -> Result<(usize, usize)> {
+        let start = self.pos;
+        if let Some(size) = scalar_size(element_type) {
+            let bytes = count
+                .checked_mul(size as u64)
+                .ok_or_else(|| anyhow::anyhow!("overflow no array GGUF"))?;
+            self.take(
+                usize::try_from(bytes).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?,
+            )?;
+        } else {
+            for _ in 0..count {
+                self.skip_value(element_type)?;
+            }
+        }
+        Ok((start, self.pos))
+    }
 }
 
 // ── Data structures ───────────────────────────────────────────────────────────
@@ -175,6 +192,23 @@ enum KvOut {
     Encoded(Vec<u8>),
 }
 
+#[derive(Clone, Copy)]
+struct ArraySource {
+    element_type: u32,
+    count: u64,
+    payload_start: usize,
+    payload_end: usize,
+}
+
+struct KvSource {
+    start: usize,
+    end: usize,
+    key: String,
+    vtype: u32,
+    value_start: usize,
+    array: Option<ArraySource>,
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn align_up(n: u64) -> u64 {
@@ -204,6 +238,80 @@ fn encode_kv_u32_array(key: &str, values: &[u32]) -> Vec<u8> {
         buf.extend_from_slice(&v.to_le_bytes());
     }
     buf
+}
+
+fn source_scalar_u32(mm: &[u8], entry: &KvSource) -> Option<u32> {
+    match entry.vtype {
+        T_U32 => mm
+            .get(entry.value_start..entry.value_start + 4)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u32::from_le_bytes),
+        T_U64 => mm
+            .get(entry.value_start..entry.value_start + 8)
+            .and_then(|bytes| bytes.try_into().ok())
+            .map(u64::from_le_bytes)
+            .and_then(|value| u32::try_from(value).ok()),
+        _ => None,
+    }
+}
+
+fn source_string(mm: &[u8], entry: &KvSource) -> Option<String> {
+    if entry.vtype != T_STR || entry.value_start + 8 > mm.len() {
+        return None;
+    }
+    let length = u64::from_le_bytes(
+        mm[entry.value_start..entry.value_start + 8]
+            .try_into()
+            .ok()?,
+    ) as usize;
+    let start = entry.value_start + 8;
+    let bytes = mm.get(start..start.checked_add(length)?)?;
+    Some(std::str::from_utf8(bytes).ok()?.to_owned())
+}
+
+fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Result<Vec<u8>> {
+    let array = entry
+        .array
+        .ok_or_else(|| anyhow::anyhow!("array GGUF ausente para '{}'", entry.key))?;
+    let element_size = scalar_size(array.element_type).ok_or_else(|| {
+        anyhow::anyhow!(
+            "array GGUF '{}' tem elementos aninhados; comprimento {} não pode ser fatiado",
+            entry.key,
+            array.count
+        )
+    })?;
+    let start = usize::try_from(start).map_err(|_| anyhow::anyhow!("índice de array inválido"))?;
+    let count = usize::try_from(count).map_err(|_| anyhow::anyhow!("array GGUF grande demais"))?;
+    let byte_start = start
+        .checked_mul(element_size)
+        .and_then(|offset| array.payload_start.checked_add(offset))
+        .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
+    let byte_len = count
+        .checked_mul(element_size)
+        .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
+    let byte_end = byte_start
+        .checked_add(byte_len)
+        .ok_or_else(|| anyhow::anyhow!("overflow no array '{}'", entry.key))?;
+    if byte_end > array.payload_end {
+        bail!("array '{}' truncado", entry.key);
+    }
+    let source = mm
+        .get(byte_start..byte_end)
+        .ok_or_else(|| anyhow::anyhow!("array '{}' truncado", entry.key))?;
+
+    let key = entry.key.as_bytes();
+    let mut encoded = Vec::with_capacity(8 + key.len() + 4 + 4 + 8 + source.len());
+    encoded.extend_from_slice(&(key.len() as u64).to_le_bytes());
+    encoded.extend_from_slice(key);
+    encoded.extend_from_slice(&T_ARR.to_le_bytes());
+    encoded.extend_from_slice(&array.element_type.to_le_bytes());
+    encoded.extend_from_slice(&(count as u64).to_le_bytes());
+    encoded.extend_from_slice(source);
+    Ok(encoded)
+}
+
+fn is_global_array(key: &str, arch: &str) -> bool {
+    !key.starts_with(&format!("{arch}.")) || key.contains(".rope.")
 }
 
 /// The absolute layer index of a `blk.N.ssm_conv1d.weight` tensor, if `name`
@@ -353,79 +461,99 @@ pub fn split(
     // Pass most entries through as raw byte slices. Only modify *.block_count
     // and strip/replace pom.* entries.
 
-    let mut arch = "llama".to_string();
-    let mut hidden_dim: u32 = 4096;
-    let mut original_block_count: Option<u32> = None;
-    let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
-    let mut block_count_updated = false;
-
+    let mut entries = Vec::with_capacity(n_kv);
     for _ in 0..n_kv {
-        let kv_start = r.pos;
+        let start = r.pos;
         let key = r.string()?;
         let vtype = r.u32()?;
-
-        if key == "general.architecture" && vtype == T_STR {
-            arch = r.string()?;
-            kv_out.push(KvOut::Raw(kv_start, r.pos));
-        } else if key.ends_with(".embedding_length") {
-            hidden_dim = match vtype {
-                T_U32 => u32::from_le_bytes(r.take(4)?.try_into().unwrap()),
-                T_U64 => r.u64()? as u32,
-                _ => {
-                    r.skip_value(vtype)?;
-                    hidden_dim
-                }
-            };
-            kv_out.push(KvOut::Raw(kv_start, r.pos));
-        } else if key == crate::brand::gguf_key("original_block_count") {
-            original_block_count = match vtype {
-                T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
-                _ => {
-                    r.skip_value(vtype)?;
-                    None
-                }
-            };
-            // Drop — re-added below with updated values
-        } else if key.starts_with(&format!("{}.", crate::brand::slug())) {
-            r.skip_value(vtype)?;
-            // Drop all pom.* — re-added below
-        } else if key.ends_with(".nextn_predict_layers") {
-            // NextN/MTP (Qwen3.5+): the predictor block lives only at the very
-            // end of the model. llama.cpp derives the expected `blk.<last>.
-            // nextn.*` tensors from this hyperparameter and aborts the load
-            // ("missing tensor") when they are absent — a non-last slice has
-            // them absent by construction. Zero it there; the last slice keeps
-            // the original value and carries the real block.
-            r.skip_value(vtype)?;
-            kv_out.push(if is_last {
-                KvOut::Raw(kv_start, r.pos)
-            } else {
-                KvOut::Encoded(encode_kv_u32(&key, 0))
-            });
-        } else if key.ends_with(".block_count") {
-            // Record original block count from the source file's header
-            let source_bc = match vtype {
-                T_U32 => Some(u32::from_le_bytes(r.take(4)?.try_into().unwrap())),
-                T_U64 => Some(r.u64()? as u32),
-                _ => {
-                    r.skip_value(vtype)?;
-                    None
-                }
-            };
-            if original_block_count.is_none() {
-                original_block_count = source_bc;
-            }
-            // Replace with the split layer count
-            kv_out.push(KvOut::Encoded(encode_kv_u32(&key, n_split)));
-            block_count_updated = true;
-        } else if key.ends_with(".attention.recurrent_layers") {
-            r.skip_value(vtype)?;
-            // Dropped — its length is tied to the source's block count, not
-            // this slice's. Recomputed below from tensor ground truth.
+        let value_start = r.pos;
+        let array = if vtype == T_ARR {
+            let element_type = r.u32()?;
+            let count = r.u64()?;
+            let (payload_start, payload_end) = r.skip_array_payload(element_type, count)?;
+            Some(ArraySource {
+                element_type,
+                count,
+                payload_start,
+                payload_end,
+            })
         } else {
             r.skip_value(vtype)?;
-            kv_out.push(KvOut::Raw(kv_start, r.pos));
+            None
+        };
+        entries.push(KvSource {
+            start,
+            end: r.pos,
+            key,
+            vtype,
+            value_start,
+            array,
+        });
+    }
+
+    let arch = entries
+        .iter()
+        .find(|entry| entry.key == "general.architecture")
+        .and_then(|entry| source_string(mm, entry))
+        .unwrap_or_else(|| "llama".to_string());
+    let hidden_dim = entries
+        .iter()
+        .find(|entry| entry.key.ends_with(".embedding_length"))
+        .and_then(|entry| source_scalar_u32(mm, entry))
+        .unwrap_or(4096);
+    let original_block_count = entries
+        .iter()
+        .find(|entry| entry.key.ends_with(".block_count"))
+        .and_then(|entry| source_scalar_u32(mm, entry));
+
+    let mut kv_out: Vec<KvOut> = Vec::with_capacity(n_kv + 4);
+    let mut block_count_updated = false;
+    let pom_prefix = format!("{}.", crate::brand::slug());
+    for entry in &entries {
+        let key = &entry.key;
+        if *key == crate::brand::gguf_key("original_block_count") || key.starts_with(&pom_prefix) {
+            continue;
         }
+        if key.ends_with(".nextn_predict_layers") {
+            kv_out.push(if is_last {
+                KvOut::Raw(entry.start, entry.end)
+            } else {
+                KvOut::Encoded(encode_kv_u32(key, 0))
+            });
+            continue;
+        }
+        if key.ends_with(".block_count") {
+            kv_out.push(KvOut::Encoded(encode_kv_u32(key, n_split)));
+            block_count_updated = true;
+            continue;
+        }
+        if key.ends_with(".attention.recurrent_layers") {
+            // Recomputed below from the actual ssm_conv1d tensors.
+            continue;
+        }
+        if let Some(array) = entry.array {
+            let original = original_block_count.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
+                    key,
+                    array.count
+                )
+            })?;
+            if array.count == original as u64 {
+                let sliced = encode_array_slice(mm, entry, start_layer, n_split)?;
+                kv_out.push(KvOut::Encoded(sliced));
+                continue;
+            }
+            if array.count != 1 && !is_global_array(key, &arch) {
+                bail!(
+                    "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
+                    key,
+                    array.count,
+                    original
+                );
+            }
+        }
+        kv_out.push(KvOut::Raw(entry.start, entry.end));
     }
 
     if !block_count_updated {
@@ -1698,6 +1826,24 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         v.extend_from_slice(&val.to_le_bytes());
         v
     };
+    let u32_array_kv = |key: &str, values: &[u32]| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_ARR.to_le_bytes());
+        v.extend_from_slice(&T_U32.to_le_bytes());
+        v.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        for value in values {
+            v.extend_from_slice(&value.to_le_bytes());
+        }
+        v
+    };
+    let bool_array_kv = |key: &str, values: &[bool]| {
+        let mut v = s(key);
+        v.extend_from_slice(&T_ARR.to_le_bytes());
+        v.extend_from_slice(&T_BOOL.to_le_bytes());
+        v.extend_from_slice(&(values.len() as u64).to_le_bytes());
+        v.extend(values.iter().map(|value| u8::from(*value)));
+        v
+    };
 
     let kv: Vec<Vec<u8>> = vec![
         str_kv("general.architecture", "llama"),
@@ -1710,6 +1856,16 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.attention.head_count", 4),
         u32_kv("llama.attention.head_count_kv", 2),
         u32_kv("llama.feed_forward_length", 4),
+        u32_array_kv(
+            "llama.attention.head_count_kv_by_layer",
+            &(0..n_blocks).collect::<Vec<_>>(),
+        ),
+        bool_array_kv(
+            "llama.attention.sliding_window_pattern",
+            &(0..n_blocks)
+                .map(|layer| layer % 2 == 0)
+                .collect::<Vec<_>>(),
+        ),
         u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
     ];
 
@@ -2029,6 +2185,67 @@ mod tests {
         None
     }
 
+    fn kv_bool_array(mm: &[u8], want: &str) -> Option<Vec<bool>> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        let _n_tensors = r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            if key == want && vtype == T_ARR {
+                if r.u32().ok()? != T_BOOL {
+                    return None;
+                }
+                let count = r.u64().ok()? as usize;
+                return (0..count).map(|_| Some(r.take(1).ok()?[0] != 0)).collect();
+            }
+            r.skip_value(vtype).ok()?;
+        }
+        None
+    }
+
+    fn unknown_layer_array_gguf() -> Vec<u8> {
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut kv = Vec::new();
+        let mut push_string = |key: &str, value: &str| {
+            kv.extend_from_slice(&string(key));
+            kv.extend_from_slice(&T_STR.to_le_bytes());
+            kv.extend_from_slice(&string(value));
+        };
+        push_string("general.architecture", "llama");
+
+        kv.extend_from_slice(&string("llama.block_count"));
+        kv.extend_from_slice(&T_U32.to_le_bytes());
+        kv.extend_from_slice(&4u32.to_le_bytes());
+
+        kv.extend_from_slice(&string("llama.future_layer_metadata"));
+        kv.extend_from_slice(&T_ARR.to_le_bytes());
+        kv.extend_from_slice(&T_U32.to_le_bytes());
+        kv.extend_from_slice(&3u64.to_le_bytes());
+        kv.extend_from_slice(
+            &[1u32, 2, 3]
+                .into_iter()
+                .flat_map(u32::to_le_bytes)
+                .collect::<Vec<_>>(),
+        );
+
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&0u64.to_le_bytes());
+        bytes.extend_from_slice(&3u64.to_le_bytes());
+        bytes.extend_from_slice(&kv);
+        bytes
+    }
+
     fn tensor_data<'a>(mm: &'a [u8], p: &MergedSrc, name: &str) -> &'a [u8] {
         let t = p
             .tensors
@@ -2037,6 +2254,27 @@ mod tests {
             .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
         &mm[p.data_start + t.src_offset as usize
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
+    }
+
+    #[test]
+    fn per_layer_arrays_are_sliced_without_naming_specific_keys() {
+        let dir = std::env::temp_dir().join(format!("pom-array-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        std::fs::write(&whole, test_gguf_bytes(4)).unwrap();
+
+        split(&whole, &out, 1, 2, false, false, |_| {}).unwrap();
+        let bytes = std::fs::read(&out).unwrap();
+        assert_eq!(
+            kv_u32_array(&bytes, "llama.attention.head_count_kv_by_layer"),
+            Some(vec![1, 2])
+        );
+        assert_eq!(
+            kv_bool_array(&bytes, "llama.attention.sliding_window_pattern"),
+            Some(vec![false, true])
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     /// Splitting 0-1 and 2-3 off one model and joining them back has to give
@@ -2563,5 +2801,90 @@ mod tests {
         let junk = dir.join("junk.bin");
         std::fs::write(&junk, b"not a gguf").unwrap();
         assert!(validate_tensor_parallel(&junk, 2).is_err());
+    }
+
+    #[test]
+    fn preview_size_matches_the_serialized_slice() {
+        let dir = std::env::temp_dir().join(format!("pom-slice-size-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        std::fs::write(&whole, test_gguf_bytes(2)).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        let estimated = layout.slice_bytes(0, 0, false);
+        let written = split(&whole, &out, 0, 0, true, false, |_| {}).unwrap();
+
+        assert_eq!(
+            estimated, written.bytes,
+            "a preview is only valid when it equals the file on disk"
+        );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn preview_refuses_an_unknown_dtype_by_name() {
+        let mut bytes = test_gguf_bytes(1);
+        let mut reader = R {
+            data: &bytes,
+            pos: 0,
+        };
+        reader.u32().unwrap();
+        reader.u32().unwrap();
+        let n_tensors = reader.u64().unwrap() as usize;
+        let n_kv = reader.u64().unwrap() as usize;
+        for _ in 0..n_kv {
+            reader.string().unwrap();
+            let kind = reader.u32().unwrap();
+            reader.skip_value(kind).unwrap();
+        }
+        let mut dtype_pos = None;
+        for _ in 0..n_tensors {
+            let name = reader.string().unwrap();
+            let n_dims = reader.u32().unwrap() as usize;
+            for _ in 0..n_dims {
+                reader.u64().unwrap();
+            }
+            let pos = reader.pos;
+            reader.u32().unwrap();
+            reader.u64().unwrap();
+            if name == "token_embd.weight" {
+                dtype_pos = Some(pos);
+            }
+        }
+        let dtype_pos = dtype_pos.unwrap();
+        bytes[dtype_pos..dtype_pos + 4].copy_from_slice(&99u32.to_le_bytes());
+
+        let dir = std::env::temp_dir().join(format!("pom-slice-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("unknown.gguf");
+        std::fs::write(&path, bytes).unwrap();
+        let error = crate::gguf::read_layout(&path).unwrap_err().to_string();
+        assert!(error.contains("dtype GGML 99") && error.contains("token_embd.weight"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn unknown_architecture_array_length_is_refused_by_name() {
+        let bytes = unknown_layer_array_gguf();
+        let dir = std::env::temp_dir().join(format!("pom-array-unknown-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        std::fs::write(&whole, bytes).unwrap();
+
+        let layout_error = crate::gguf::read_layout(&whole).unwrap_err().to_string();
+        assert!(
+            layout_error.contains("llama.future_layer_metadata")
+                && layout_error.contains("comprimento 3")
+        );
+        let split_error = split(&whole, &out, 0, 0, true, true, |_| {})
+            .unwrap_err()
+            .to_string();
+        assert!(
+            split_error.contains("llama.future_layer_metadata")
+                && split_error.contains("comprimento 3")
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -13,7 +13,10 @@ transferência.
   MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
   lê `tokenizer.chat_template`, tokens de controle reais e os campos/tensores
   `nextn` para produzir a evidência de thinking e MTP usada pelo planner; a
-  ausência de leitura permanece indeterminada.
+  ausência de leitura permanece indeterminada. `read_layout` valida os dtypes
+  contra a tabela GGML suportada, usa offsets físicos para o custo dos tensores
+  e calcula o tamanho serializado de cada fatia, incluindo cabeçalho, globais,
+  alinhamento e duplicações.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
@@ -65,6 +68,13 @@ janela e limites do microbatch) também sobrevivem a um reinício e voltam com a
 mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
 os repõe a partir do `pom.json` antes de carregar o modelo.
+
+O fatiador trata arrays GGUF sob o namespace da arquitetura como metadata por
+camada quando o comprimento é a contagem original de blocos e os reescreve para
+a faixa local. Comprimento 1 é broadcast e permanece igual; arrays estruturais
+de rope e namespaces globais não são arrays por camada. Qualquer outro
+comprimento sob a arquitetura é recusa nominal com chave e tamanho, para que um
+metadado novo não seja copiado cru para uma fatia que não carrega.
 
 ## Manutenção deste arquivo
 

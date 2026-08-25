@@ -505,7 +505,10 @@ pub struct SizedRange {
 #[derive(Debug, Clone, Serialize)]
 pub struct SizePlan {
     pub total_layers: u32,
+    /// Sum of the exact serialized files represented by `ranges`.
     pub model_bytes: u64,
+    /// Size of the source GGUF payload before slice-only duplication.
+    pub source_model_bytes: u64,
     pub ranges: Vec<SizedRange>,
     pub covered_layers: u32,
     pub complete: bool,
@@ -671,9 +674,16 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         }
     }
 
+    let planned_bytes = ranges
+        .iter()
+        .filter(|range| !range.empty)
+        .map(|range| range.bytes)
+        .sum();
+
     Ok(SizePlan {
         total_layers,
-        model_bytes: layout.total_bytes,
+        model_bytes: planned_bytes,
+        source_model_bytes: layout.source_file_bytes.max(layout.total_bytes),
         ranges,
         covered_layers,
         complete,
@@ -781,10 +791,12 @@ mod tests {
             head_bytes: (100.0 * MB) as u64,
             other_bytes: 0,
             total_bytes: per * n as u64 + (200.0 * MB) as u64,
+            source_file_bytes: 0,
             // Homogeneous stack: period 1, so cuts are unconstrained.
             layer_kinds: vec![vec!["attn.weight".to_string()]; n as usize],
             nextn_predict_layers: 0,
             has_nextn_tensors: false,
+            serialized: None,
         }
     }
 

@@ -720,6 +720,8 @@ export interface SizePlan {
   mode?: "pipeline";
   total_layers: number;
   model_bytes: number;
+  /** Source GGUF size before embeddings and slice metadata are duplicated. */
+  source_model_bytes?: number;
   ranges: SizedRange[];
   covered_layers: number;
   complete: boolean;

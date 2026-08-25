@@ -250,7 +250,32 @@ struct Reader<R: Read + Seek> {
     inner: R,
 }
 
+#[derive(Debug, Clone)]
+struct LayoutKv {
+    key: String,
+    raw_bytes: u64,
+    array: Option<ArrayShape>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ArrayShape {
+    element_type: u32,
+    count: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LayoutTensor {
+    name: String,
+    dims: Vec<u64>,
+    dtype: u32,
+    bytes: u64,
+}
+
 impl<R: Read + Seek> Reader<R> {
+    fn position(&mut self) -> Result<u64> {
+        Ok(self.inner.stream_position()?)
+    }
+
     fn u32(&mut self) -> Result<u32> {
         let mut b = [0u8; 4];
         self.inner.read_exact(&mut b)?;
@@ -303,6 +328,18 @@ impl<R: Read + Seek> Reader<R> {
             }
             other => bail!("unknown GGUF value type {other}"),
         }
+    }
+
+    fn skip_array_payload(&mut self, element_type: u32, count: u64) -> Result<u64> {
+        let start = self.position()?;
+        if let Some(sz) = scalar_size(element_type) {
+            self.skip(sz.saturating_mul(count))?;
+        } else {
+            for _ in 0..count {
+                self.skip_value(element_type)?;
+            }
+        }
+        Ok(self.position()? - start)
     }
 
     /// Read a scalar as u32 when it is an integer type; otherwise skip it.
@@ -522,6 +559,9 @@ fn ggml_type_info(t: u32) -> Option<(u64, u64)> {
         34 => (54, 256),  // TQ1_0
         35 => (66, 256),  // TQ2_0
         39 => (17, 32),   // MXFP4
+        40 => (36, 64),   // NVFP4
+        41 => (18, 128),  // Q1_0
+        42 => (18, 64),   // Q2_0
         _ => return None,
     })
 }
@@ -543,6 +583,8 @@ pub struct GgufLayout {
     pub other_bytes: u64,
     /// Sum of everything, i.e. the size of the full model's weights.
     pub total_bytes: u64,
+    /// Exact byte length of the source GGUF, when read from disk.
+    pub source_file_bytes: u64,
     /// `layer_kinds[n]` — sorted tensor suffixes of `blk.<n>.*`, so two layers
     /// that are different *kinds* of layer compare unequal. Hybrid models
     /// (attention interleaved with Gated DeltaNet / Mamba) are not a stack of
@@ -556,6 +598,19 @@ pub struct GgufLayout {
     pub nextn_predict_layers: u32,
     /// Há tensores `nextn` reais na tabela do arquivo.
     pub has_nextn_tensors: bool,
+    /// Metadata and tensor table needed to price the exact serialized slice.
+    /// It is populated by `read_layout`; hand-built layouts in unit tests use
+    /// the legacy payload-only fallback.
+    pub(crate) serialized: Option<SerializedLayout>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SerializedLayout {
+    architecture: String,
+    hidden_dim: u32,
+    original_block_count: u32,
+    kv: Vec<LayoutKv>,
+    tensors: Vec<LayoutTensor>,
 }
 
 impl GgufLayout {
@@ -608,9 +663,14 @@ impl GgufLayout {
 
     /// Bytes a slice covering `start..=end` would occupy on disk.
     ///
-    /// Mirrors what `split_model.py` writes: the layers in range, plus
-    /// `token_embd` on every slice, plus the output head on the last one.
+    /// Mirrors the Rust splitter. For a layout read from a real GGUF this
+    /// includes the rewritten header, tensor table, padding, global tensors,
+    /// duplicated embeddings and the synthetic norm on non-final slices. A
+    /// hand-built test layout retains the older payload-only fallback.
     pub fn slice_bytes(&self, start: u32, end: u32, is_last: bool) -> u64 {
+        if let Some(serialized) = &self.serialized {
+            return serialized.slice_bytes(start, end, is_last);
+        }
         let lo = start as usize;
         let hi = (end as usize).min(self.layer_bytes.len().saturating_sub(1));
         let layers: u64 = self
@@ -622,11 +682,150 @@ impl GgufLayout {
     }
 }
 
+fn align_up_layout(n: u64) -> u64 {
+    (n + 31) & !31
+}
+
+fn tensor_header_size_layout(name: &str, dims: &[u64]) -> u64 {
+    8 + name.len() as u64 + 4 + 8 * dims.len() as u64 + 4 + 8
+}
+
+fn remap_layout_name(name: &str, start: u32) -> String {
+    let Some(rest) = name.strip_prefix("blk.") else {
+        return name.to_string();
+    };
+    let Some(dot) = rest.find('.') else {
+        return name.to_string();
+    };
+    let Ok(index) = rest[..dot].parse::<u32>() else {
+        return name.to_string();
+    };
+    format!("blk.{}{}", index - start, &rest[dot..])
+}
+
+fn layout_block_index(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix("blk.")?;
+    let dot = rest.find('.')?;
+    rest[..dot].parse().ok()
+}
+
+fn layout_wants_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
+    if let Some(index) = layout_block_index(name) {
+        return (start..=end).contains(&index);
+    }
+    match name {
+        "token_embd.weight" => true,
+        "output_norm.weight" | "output_norm.bias" | "output.weight" => is_last,
+        n if n.contains("rope") || n.contains("pos_embd") => true,
+        _ => false,
+    }
+}
+
+impl SerializedLayout {
+    fn encoded_u32_size(key: &str) -> u64 {
+        8 + key.len() as u64 + 4 + 4
+    }
+
+    fn encoded_u32_array_size(key: &str, count: u32) -> u64 {
+        8 + key.len() as u64 + 4 + 4 + 8 + 4 * count as u64
+    }
+
+    fn kv_bytes(&self, start: u32, end: u32, is_last: bool) -> u64 {
+        let slice_layers = end.saturating_sub(start).saturating_add(1);
+        let pom_prefix = format!("{}.", crate::brand::slug());
+        let mut bytes = 0u64;
+        let mut had_recurrent_key = false;
+
+        for entry in &self.kv {
+            if entry.key == crate::brand::gguf_key("original_block_count")
+                || entry.key.starts_with(&pom_prefix)
+            {
+                continue;
+            }
+            if entry.key.ends_with(".attention.recurrent_layers") {
+                had_recurrent_key = true;
+                continue;
+            }
+            if entry.key.ends_with(".nextn_predict_layers") && !is_last {
+                bytes += Self::encoded_u32_size(&entry.key);
+                continue;
+            }
+            if entry.key.ends_with(".block_count") {
+                bytes += Self::encoded_u32_size(&entry.key);
+                continue;
+            }
+            if let Some(array) = entry.array {
+                if array.count == self.original_block_count as u64 {
+                    if let Some(element_size) = scalar_size(array.element_type) {
+                        bytes += 8
+                            + entry.key.len() as u64
+                            + 4
+                            + 4
+                            + 8
+                            + element_size * slice_layers as u64;
+                        continue;
+                    }
+                }
+            }
+            bytes += entry.raw_bytes;
+        }
+
+        // The splitter derives this array from actual ssm_conv1d tensors. A
+        // source that has the key but no such tensor gets no replacement.
+        if had_recurrent_key || self.has_recurrent_tensors() {
+            bytes += Self::encoded_u32_array_size(
+                &format!("{}.attention.recurrent_layers", self.architecture),
+                slice_layers,
+            );
+        }
+        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("original_block_count"));
+        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("start_layer"));
+        bytes += Self::encoded_u32_size(&crate::brand::gguf_key("end_layer"));
+        bytes
+    }
+
+    fn has_recurrent_tensors(&self) -> bool {
+        self.tensors
+            .iter()
+            .any(|tensor| tensor.name.ends_with(".ssm_conv1d.weight"))
+    }
+
+    fn slice_bytes(&self, start: u32, end: u32, is_last: bool) -> u64 {
+        let slice_layers = end.saturating_sub(start).saturating_add(1);
+        let mut headers = 0u64;
+        let mut payload = 0u64;
+        let mut has_output_norm = false;
+
+        for tensor in &self.tensors {
+            if !layout_wants_tensor(&tensor.name, start, end, is_last) {
+                continue;
+            }
+            headers +=
+                tensor_header_size_layout(&remap_layout_name(&tensor.name, start), &tensor.dims);
+            payload += align_up_layout(tensor.bytes);
+            has_output_norm |= tensor.name == "output_norm.weight";
+        }
+
+        // Non-final slices carry an F32 identity norm exactly as splitter::split
+        // does. The source norm's dtype is deliberately not reused here.
+        if !is_last {
+            let hidden = self.hidden_dim as u64;
+            headers += tensor_header_size_layout("output_norm.weight", &[hidden]);
+            payload += align_up_layout(hidden * 4);
+        }
+
+        let _ = (slice_layers, has_output_norm);
+        let meta_size = 4 + 4 + 8 + 8 + self.kv_bytes(start, end, is_last) + headers;
+        align_up_layout(meta_size) + payload
+    }
+}
+
 /// Read the tensor table and total up the bytes each transformer block costs.
 ///
 /// Reads the header only — the tensor *data* is never touched.
 pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let source_file_bytes = file.metadata()?.len();
     let mut r = Reader {
         inner: BufReader::with_capacity(1 << 16, file),
     };
@@ -635,29 +834,65 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     if magic != GGUF_MAGIC {
         bail!("not a GGUF file (magic {magic:#x})");
     }
-    let _version = r.u32()?;
+    let version = r.u32()?;
+    if version != 2 && version != 3 {
+        bail!("unsupported GGUF version {version} (expected 2 or 3)");
+    }
     let n_tensors = r.u64()?;
     let n_kv = r.u64()?;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
         bail!("implausible GGUF header (tensors={n_tensors}, kv={n_kv})");
     }
 
-    // Skip the KV section wholesale — `read_info` is the one that reads it.
-    // The exception is the NextN hyperparameter: it has no tensor of its own,
-    // yet it decides whether a slice loads at all (see `nextn_predict_layers`).
     let mut layout = GgufLayout::default();
+    layout.source_file_bytes = source_file_bytes;
+    let mut architecture = "llama".to_string();
+    let mut hidden_dim = 4096u32;
+    let mut source_block_count = None;
+    let mut kv = Vec::with_capacity(n_kv);
     for _ in 0..n_kv {
+        let kv_start = r.position()?;
         let key = r.string()?;
         let vtype = r.u32()?;
-        if key.ends_with(".nextn_predict_layers") {
-            layout.nextn_predict_layers = r.value_as_u32(vtype)?.unwrap_or(0);
-        } else {
-            r.skip_value(vtype)?;
+        let mut scalar_u32 = None;
+        let mut array = None;
+        match vtype {
+            T_STR => {
+                let value = r.string()?;
+                if key == "general.architecture" {
+                    architecture = value;
+                }
+            }
+            T_U32 => scalar_u32 = Some(r.u32()?),
+            T_U64 => scalar_u32 = Some(r.u64()? as u32),
+            T_ARR => {
+                let element_type = r.u32()?;
+                let count = r.u64()?;
+                r.skip_array_payload(element_type, count)?;
+                array = Some(ArrayShape {
+                    element_type,
+                    count,
+                });
+            }
+            _ => r.skip_value(vtype)?,
         }
+        if key.ends_with(".nextn_predict_layers") {
+            layout.nextn_predict_layers = scalar_u32.unwrap_or(0);
+        }
+        if key.ends_with(".block_count") {
+            source_block_count = scalar_u32;
+        }
+        if key.ends_with(".embedding_length") {
+            hidden_dim = scalar_u32.unwrap_or(hidden_dim);
+        }
+        kv.push(LayoutKv {
+            key,
+            raw_bytes: r.position()? - kv_start,
+            array,
+        });
     }
-    let mut layers: HashMap<u32, u64> = HashMap::new();
-    let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
-    let mut max_layer: i64 = -1;
+
+    let mut tensors = Vec::with_capacity(n_tensors);
 
     for _ in 0..n_tensors {
         let name = r.string()?;
@@ -665,37 +900,63 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         if n_dims > 8 {
             bail!("implausible tensor rank {n_dims} for {name}");
         }
-        let mut elements: u64 = 1;
-        for _ in 0..n_dims {
-            elements = elements.saturating_mul(r.u64()?);
-        }
+        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
         let dtype = r.u32()?;
-        let _offset = r.u64()?;
+        if ggml_type_info(dtype).is_none() {
+            bail!(
+                "dtype GGML {dtype} desconhecido no tensor '{name}'; estimativa de tamanho recusada"
+            );
+        }
+        let src_offset = r.u64()?;
+        tensors.push((name, dims, dtype, src_offset));
+    }
 
-        let bytes = match ggml_type_info(dtype) {
-            Some((block_bytes, block_elems)) if block_elems > 0 => {
-                elements / block_elems * block_bytes
-            }
-            // Unknown quantisation: better to under-report this tensor than to
-            // invent a size, and the caller sees it in `other_bytes`.
-            _ => 0,
-        };
+    let data_start = align_up_layout(r.position()?);
+    if data_start > source_file_bytes {
+        bail!("GGUF truncado antes da seção de dados");
+    }
+    let total_data = source_file_bytes - data_start;
+    let mut unique_offsets: Vec<u64> = tensors.iter().map(|t| t.3).collect();
+    unique_offsets.sort_unstable();
+    unique_offsets.dedup();
+    let size_map: HashMap<u64, u64> = unique_offsets
+        .iter()
+        .enumerate()
+        .map(|(index, &offset)| {
+            let next = unique_offsets.get(index + 1).copied().unwrap_or(total_data);
+            (offset, next.saturating_sub(offset))
+        })
+        .collect();
 
+    let layout_tensors: Vec<LayoutTensor> = tensors
+        .into_iter()
+        .map(|(name, dims, dtype, offset)| LayoutTensor {
+            name,
+            dims,
+            dtype,
+            bytes: size_map.get(&offset).copied().unwrap_or(0),
+        })
+        .collect();
+
+    let mut layers: HashMap<u32, u64> = HashMap::new();
+    let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
+    let mut max_layer: i64 = -1;
+    for tensor in &layout_tensors {
+        let bytes = tensor.bytes;
         layout.total_bytes += bytes;
-        if name.split('.').any(|part| part == "nextn") {
+        if tensor.name.split('.').any(|part| part == "nextn") {
             layout.has_nextn_tensors = true;
         }
 
-        if let Some(n) = block_index(&name) {
+        if let Some(n) = block_index(&tensor.name) {
             *layers.entry(n).or_insert(0) += bytes;
-            // `blk.12.attn_q.weight` -> `attn_q.weight`
-            if let Some(suffix) = name.splitn(3, '.').nth(2) {
+            if let Some(suffix) = tensor.name.splitn(3, '.').nth(2) {
                 kinds.entry(n).or_default().push(suffix.to_string());
             }
             max_layer = max_layer.max(n as i64);
-        } else if name == "token_embd.weight" {
+        } else if tensor.name == "token_embd.weight" {
             layout.embedding_bytes += bytes;
-        } else if name == "output.weight" || name == "output_norm.weight" {
+        } else if tensor.name == "output.weight" || tensor.name == "output_norm.weight" {
             layout.head_bytes += bytes;
         } else {
             layout.other_bytes += bytes;
@@ -714,6 +975,44 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             })
             .collect();
     }
+
+    let original_block_count = source_block_count.unwrap_or_else(|| {
+        if max_layer >= 0 {
+            max_layer as u32 + 1
+        } else {
+            0
+        }
+    });
+    let arch_prefix = format!("{architecture}.");
+    for entry in &kv {
+        let Some(array) = entry.array else {
+            continue;
+        };
+        if !entry.key.starts_with(&arch_prefix) || entry.key.contains(".rope.") {
+            continue;
+        }
+        if array.count != 1 && array.count != original_block_count as u64 {
+            bail!(
+                "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
+                entry.key,
+                array.count,
+                original_block_count
+            );
+        }
+        if array.count == original_block_count as u64 && scalar_size(array.element_type).is_none() {
+            bail!(
+                "array metadata '{}' tem elementos aninhados e não pode ser fatiado por camada",
+                entry.key
+            );
+        }
+    }
+    layout.serialized = Some(SerializedLayout {
+        architecture,
+        hidden_dim,
+        original_block_count,
+        kv,
+        tensors: layout_tensors,
+    });
 
     Ok(layout)
 }
@@ -788,9 +1087,11 @@ mod tests {
             head_bytes: 30,
             other_bytes: 0,
             total_bytes: 480,
+            source_file_bytes: 0,
             layer_kinds: vec![],
             nextn_predict_layers: 0,
             has_nextn_tensors: false,
+            serialized: None,
         };
         // Middle slice: 2 layers + embedding.
         assert_eq!(layout.slice_bytes(0, 1, false), 250);
@@ -1031,6 +1332,9 @@ mod tests {
         (34, 54, 256, "TQ1_0"),
         (35, 66, 256, "TQ2_0"),
         (39, 17, 32, "MXFP4"),
+        (40, 36, 64, "NVFP4"),
+        (41, 18, 128, "Q1_0"),
+        (42, 18, 64, "Q2_0"),
     ];
 
     #[test]
@@ -1049,7 +1353,7 @@ mod tests {
     /// invented here would be spent slicing it into garbage instead.
     #[test]
     fn removed_and_uncited_ggml_types_stay_unknown() {
-        for code in [4, 5, 31, 32, 33, 36, 37, 38, 40, 41, 42, 99] {
+        for code in [4, 5, 31, 32, 33, 36, 37, 38, 99] {
             assert_eq!(ggml_type_info(code), None, "type {code} should be unknown");
         }
     }

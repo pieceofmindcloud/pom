@@ -122,6 +122,13 @@ alvo pedido, a faixa que saiu e o tamanho real.
   `POST /api/ui/slice/plan` (a tela chama a cada tecla, com o layout em cache por
   arquivo).
 
+  `SizePlan.model_bytes` é a soma dos arquivos GGUF que as faixas vão escrever,
+  incluindo embeddings repetidos, tensores globais, cabeçalho, tabela de
+  tensores, alinhamento e o norm sintético das fatias não finais.
+  `source_model_bytes` conserva o tamanho do GGUF de origem para comparação.
+  O custo recusa nominalmente qualquer dtype GGML desconhecido; nenhum tipo
+  desconhecido entra como zero na prévia.
+
 `POST /api/ui/slice/plan` também aceita `{ mode: "tensor_parallel", tp_size }`.
 Nesse caso a resposta é um `TpSlicePlan` com um item por rank, todos cobrindo
 `0..total_layers-1`. `POST /api/ui/slice` usa o mesmo modo para escrever todos

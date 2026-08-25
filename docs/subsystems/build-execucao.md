@@ -404,6 +404,39 @@ Note o sufixo `a` de `120a`/`121a` na lista do llama.cpp: ele liga instruções
 específicas da arquitetura. O CMake só aceita esse sufixo a partir da 3.30, então
 numa máquina com CMake mais antigo o valor possível é `120`, sem o `a`.
 
+**Quanto custa a lista larga.** Medido na ksia em 25/08/2026, mesmo código, mesma
+máquina, ~141 objetos CUDA gerados uma vez por arquitetura:
+
+| Configuração | Tempo |
+|---|---|
+| dez arquiteturas (sem `CUDAARCHS`) | 24+ min, ainda não tinha terminado |
+| `CUDAARCHS=120` | 10m29s |
+| `CUDAARCHS=120` com ccache já povoado | 6m00s |
+
+Ou seja: **compilar sem `CUDAARCHS` é quase sempre desperdício**. A lista larga
+só se justifica para um binário que vai ser distribuído para hardware
+desconhecido - o caso do release.
+
+Arquitetura de cada máquina do cluster:
+
+| Máquina | GPU | `CUDAARCHS` |
+|---|---|---|
+| ksia | RTX 5060 Ti | `120` |
+| salem | - | `86` |
+
+Para um binário que precisa rodar nas duas, use as duas juntas:
+`CUDAARCHS="120;86"`. Para validação e desenvolvimento local - o caso comum -
+use só a da máquina.
+
+O `ccache` está instalado na ksia, com cache em `/data/ccache`, e o sistema de
+compilação do llama.cpp o detecta sozinho. Ele **não** acelera a parte Rust; só
+C/C++/CUDA, que é justamente o passo caro.
+
+**Pegadinha** (também anotada no `pom-ksia.sh` do operador, fora do
+repositório): trocar o valor de `CUDAARCHS` invalida o build nativo anterior, e o
+cargo sozinho não percebe a troca - o build nativo do llama.cpp precisa ser
+refeito à mão.
+
 ### O pacote
 
 Binário na raiz do pacote com `apps/` ao lado, para `project_root()` achar a UI

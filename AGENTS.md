@@ -76,6 +76,14 @@ RUST_LOG=debug ./target/release/pom ...
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
+**Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
+o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
+a arquitetura de cada máquina em `docs/subsystems/build-execucao.md`
+("Arquiteturas de GPU"). Em desenvolvimento, fixe só a arquitetura da máquina
+(`CUDAARCHS=120` na ksia, `86` no salem; `CUDAARCHS="120;86"` para um binário
+que roda nas duas). A lista larga só vale para release. Trocar o valor invalida
+o build nativo anterior e o cargo não percebe a troca.
+
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução
 (`config::ui_dist_dir()`, `$POM_UI_DIST` sobrescreve), não embutida no
 binário: `cargo build` não reconstrói a tela e não precisa de Node.

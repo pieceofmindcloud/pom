@@ -86,13 +86,26 @@ impl IqQuantFormat {
             Self::Iq1M => 56,
         }
     }
+
+    /// Ponte CUDA dirigida pelo dtype. Os três formatos são os IQ presentes
+    /// nos modelos UD priorizados; os outros IQ continuam recusados pela
+    /// ponte até terem decoder próprio, sem fallback implícito.
+    #[cfg(feature = "cuda")]
+    pub fn cuda_supported(self) -> bool {
+        matches!(self, Self::Iq3S | Self::Iq2S | Self::Iq4XS)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IqQuantError {
     Geometry(&'static str),
     Payload(&'static str),
-    PayloadLength { expected: usize, actual: usize },
+    PayloadLength {
+        expected: usize,
+        actual: usize,
+    },
+    #[cfg(feature = "cuda")]
+    BackendUnavailable(String),
 }
 
 impl fmt::Display for IqQuantError {
@@ -104,6 +117,10 @@ impl fmt::Display for IqQuantError {
                 formatter,
                 "payload IQ-quant tem {actual} bytes, mas a geometria exige {expected}"
             ),
+            #[cfg(feature = "cuda")]
+            Self::BackendUnavailable(reason) => {
+                write!(formatter, "backend CUDA IQ-quant indisponível: {reason}")
+            }
         }
     }
 }
@@ -115,7 +132,12 @@ pub enum IqQuantExecuteError {
     Cache(CacheError),
     Format(IqQuantError),
     Source(Q4LoadError),
-    HiddenWidth { expected: usize, actual: usize },
+    HiddenWidth {
+        expected: usize,
+        actual: usize,
+    },
+    #[cfg(feature = "cuda")]
+    Cuda(String),
 }
 
 impl fmt::Display for IqQuantExecuteError {
@@ -130,6 +152,8 @@ impl fmt::Display for IqQuantExecuteError {
                     "hidden IQ-quant tem {actual} elementos, esperado {expected}"
                 )
             }
+            #[cfg(feature = "cuda")]
+            Self::Cuda(error) => write!(formatter, "executor CUDA IQ-quant recusou: {error}"),
         }
     }
 }
@@ -709,6 +733,8 @@ pub struct IqQuantExecutor {
     format: IqQuantFormat,
     hidden: usize,
     intermediate: usize,
+    #[cfg(feature = "cuda")]
+    cuda: Option<super::cuda::IqQuantCudaExecutor>,
 }
 
 impl IqQuantExecutor {
@@ -724,7 +750,55 @@ impl IqQuantExecutor {
             format,
             hidden,
             intermediate,
+            #[cfg(feature = "cuda")]
+            cuda: None,
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        format: IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, IqQuantError> {
+        IqQuantExpert::packed_bytes(format, hidden, intermediate)?;
+        let cuda = super::cuda::IqQuantCudaExecutor::new_with_cache(
+            format,
+            hidden,
+            intermediate,
+            device_cache,
+        )
+        .map_err(|error| IqQuantError::BackendUnavailable(error.to_string()))?;
+        Ok(Self {
+            cache,
+            format,
+            hidden,
+            intermediate,
+            cuda: Some(cuda),
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.cuda.is_some()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::IqQuantCudaExecutor::diagnostics,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::IqQuantCudaExecutor::resident_cache_stats,
+        )
     }
 
     pub fn run_from_source(
@@ -735,6 +809,20 @@ impl IqQuantExecutor {
         hidden: &[f32],
     ) -> Result<Vec<f32>, IqQuantExecuteError> {
         let expert = key.expert;
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return self.run_route_batch_from_source(
+                source,
+                &key.model,
+                layer,
+                &[expert],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                hidden,
+                1,
+            );
+        }
         let lease = match self.cache.lookup(&key) {
             Some(lease) => lease,
             None => self
@@ -749,6 +837,44 @@ impl IqQuantExecutor {
         };
         IqQuantExpert::from_payload(self.format, self.hidden, self.intermediate, lease.bytes())?
             .run(hidden)
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn run_route_batch_from_source(
+        &self,
+        source: &IqQuantSource,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, IqQuantExecuteError> {
+        let Some(cuda) = self.cuda.as_ref() else {
+            return Err(IqQuantExecuteError::Cuda(
+                "backend CUDA IQ-quant não foi selecionado".into(),
+            ));
+        };
+        let mut resident = Vec::with_capacity(experts.len());
+        for &expert in experts {
+            let key = ExpertKey::new(model, layer, expert, self.format.name());
+            if let Some(lease) = cuda.resident_lookup(&key) {
+                resident.push(lease);
+                continue;
+            }
+            let payload = source
+                .load_expert(layer, expert)
+                .map_err(IqQuantExecuteError::Source)?;
+            IqQuantExpert::from_payload(self.format, self.hidden, self.intermediate, &payload)?;
+            resident.push(
+                cuda.resident_admit(key, &payload)
+                    .map_err(|error| IqQuantExecuteError::Cuda(error.to_string()))?,
+            );
+        }
+        cuda.run_route_batch_resident(&resident, token_ids, weights, token_offsets, hidden, tokens)
+            .map_err(|error| IqQuantExecuteError::Cuda(error.to_string()))
     }
 }
 

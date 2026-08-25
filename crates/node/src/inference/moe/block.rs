@@ -327,6 +327,47 @@ impl IqQuantMoeBlock {
         })
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, IqQuantError> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: IqQuantExecutor::new_with_device_cache(
+                cache,
+                device_cache,
+                format,
+                hidden,
+                intermediate,
+            )?,
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.executor.uses_cuda()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.executor.cuda_diagnostics()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.executor.resident_cache_stats()
+    }
+
     pub fn forward_from_source(
         &self,
         source: &IqQuantSource,
@@ -361,6 +402,37 @@ impl IqQuantMoeBlock {
             let key = ExpertKey::new(model, layer, expert, format);
             self.executor.run_from_source(source, key, layer, hidden)
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route(
+        &self,
+        source: &IqQuantSource,
+        hidden: &[f32],
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if !self.uses_cuda() {
+            return Err(MoeBlockError::Executor(
+                "lote CUDA IQ-quant solicitado sem ponte CUDA ativa".into(),
+            ));
+        }
+        self.executor
+            .run_route_batch_from_source(
+                source,
+                &self.model,
+                self.layer,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+            )
+            .map_err(MoeBlockError::from)
     }
 }
 

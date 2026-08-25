@@ -85,9 +85,9 @@ __global__ void quantize_q8_0_kernel(
     if (vector >= vector_count) {
         return;
     }
-    const int start = vector * length + block * 32;
-    const int index = start + lane;
-    const float value = index < length ? input[index] : 0.0f;
+    const int offset = block * 32 + lane;
+    const int index = vector * length + offset;
+    const float value = offset < length ? input[index] : 0.0f;
     maxima[lane] = fabsf(value);
     __syncthreads();
 
@@ -106,7 +106,7 @@ __global__ void quantize_q8_0_kernel(
     }
     __syncthreads();
 
-    if (index < length) {
+    if (offset < length) {
         const float inverse_scale = max_scalar != 0.0f ? 127.0f / max_scalar : 0.0f;
         int quantized = __float2int_rn(input[index] * inverse_scale);
         quantized = max(-128, min(127, quantized));

@@ -476,7 +476,7 @@ impl PhaseTrace {
             self.moe_executor_reason = next.moe_executor_reason.clone();
         }
         if next.moe_executor_diagnostics.is_some() {
-            self.moe_executor_diagnostics = next.moe_executor_diagnostics;
+            self.moe_executor_diagnostics = next.moe_executor_diagnostics.clone();
         }
         self.refresh_percentiles();
     }

@@ -97,7 +97,7 @@ impl MoeTimings {
             }
         }
         if telemetry.diagnostics.is_some() {
-            self.diagnostics = telemetry.diagnostics;
+            self.diagnostics = telemetry.diagnostics.clone();
         }
     }
 
@@ -127,7 +127,7 @@ impl MoeTimings {
             }
         }
         if other.diagnostics.is_some() {
-            self.diagnostics = other.diagnostics;
+            self.diagnostics = other.diagnostics.clone();
         }
     }
 }

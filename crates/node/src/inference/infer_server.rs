@@ -72,12 +72,28 @@ fn configured_inference_mode(
 struct MoeTimings {
     forward_us: u64,
     executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+    dtypes: Vec<u32>,
+    reasons: Vec<String>,
 }
 
 impl MoeTimings {
     fn record_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
         if !self.executors.contains(&executor) {
             self.executors.push(executor);
+        }
+    }
+
+    fn record_telemetry(&mut self, telemetry: &crate::moe::runtime::MoeExecutorTelemetry) {
+        self.record_executor(telemetry.executor);
+        for dtype in &telemetry.dtypes {
+            if !self.dtypes.contains(dtype) {
+                self.dtypes.push(*dtype);
+            }
+        }
+        if let Some(reason) = &telemetry.reason {
+            if !self.reasons.contains(reason) {
+                self.reasons.push(reason.clone());
+            }
         }
     }
 
@@ -89,6 +105,16 @@ impl MoeTimings {
         self.forward_us = self.forward_us.saturating_add(other.forward_us);
         for executor in &other.executors {
             self.record_executor(*executor);
+        }
+        for dtype in &other.dtypes {
+            if !self.dtypes.contains(dtype) {
+                self.dtypes.push(*dtype);
+            }
+        }
+        for reason in &other.reasons {
+            if !self.reasons.contains(reason) {
+                self.reasons.push(reason.clone());
+            }
         }
     }
 }
@@ -160,6 +186,10 @@ impl NodeTimings {
         self.moe.record_executor(executor);
     }
 
+    fn record_moe_telemetry(&mut self, telemetry: crate::moe::runtime::MoeExecutorTelemetry) {
+        self.moe.record_telemetry(&telemetry);
+    }
+
     fn record_moe_forward(&mut self, elapsed_us: u64) {
         self.moe.record_forward(elapsed_us);
     }
@@ -173,6 +203,9 @@ impl NodeTimings {
             self.record_moe_forward(other.moe_forward_us);
             for executor in &other.moe_executors {
                 self.record_moe_executor(*executor);
+            }
+            if let Some(telemetry) = &other.moe_executor {
+                self.record_moe_telemetry(telemetry.clone());
             }
             self.record_engine(crate::executor::ExecutionEngine::Moe);
         }
@@ -221,6 +254,9 @@ impl NodeTimings {
                 .iter()
                 .map(|executor| executor.as_str())
                 .collect::<Vec<_>>(),
+            "moe_executor_dtypes": self.moe.dtypes,
+            "moe_executor_reason": self.moe.reasons.first(),
+            "moe_executor_reasons": self.moe.reasons,
             "selected_path": self.selected_path.as_str(),
             "executed_engine": self.executed_engine().as_str(),
             "executed_engines": self
@@ -737,6 +773,33 @@ mod tests {
         assert_eq!(value["moe_executor"], "cuda");
         assert_eq!(value["moe_executors"], serde_json::json!(["cuda"]));
         assert_eq!(value["moe_forward_ms"].as_f64(), Some(12.345));
+    }
+
+    #[test]
+    fn telemetria_nomeia_dtype_e_motivo_do_executor_cpu() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_moe_telemetry(crate::moe::runtime::MoeExecutorTelemetry {
+            executor: crate::moe::runtime::MoeExecutorKind::CpuReference,
+            dtypes: vec![21, 22, 23],
+            reason: Some(
+                "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado".into(),
+            ),
+        });
+
+        let value = timings.json();
+
+        assert_eq!(value["moe_executor"], "cpu-reference");
+        assert_eq!(
+            value["moe_executor_dtypes"],
+            serde_json::json!([21, 22, 23])
+        );
+        assert_eq!(
+            value["moe_executor_reason"],
+            "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+        );
     }
 
     #[test]
@@ -1416,7 +1479,7 @@ impl InferState {
         let output = moe
             .forward_batch(layer, &hidden, n_tokens)
             .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))?;
-        timings.record_moe_executor(moe.executor_kind());
+        timings.record_moe_telemetry(moe.executor_telemetry());
         timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
         timings.record_engine(crate::executor::ExecutionEngine::Moe);
         Ok(output)

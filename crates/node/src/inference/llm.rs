@@ -760,6 +760,7 @@ pub struct DecodeTimings {
     pub residual_capture_d2h_sync_us: u64,
     pub moe_forward_us: u64,
     pub moe_executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+    pub moe_executor: Option<crate::moe::runtime::MoeExecutorTelemetry>,
 }
 
 /// **Ligado por padrão** desde 2026-08-13; `POM_PROFILE_SYNC=0` desliga.
@@ -875,6 +876,7 @@ impl LlmEngine {
         }
         timings.moe_forward_us = telemetry.forward_us;
         timings.moe_executors = telemetry.executors;
+        timings.moe_executor = Some(state.runtime.executor_telemetry());
         Ok(())
     }
 }

@@ -210,6 +210,10 @@ pub struct PhaseTrace {
     pub executed_engines: Vec<crate::executor::ExecutionEngine>,
     pub engine_mismatch: bool,
     pub mixed_execution: bool,
+    pub moe_executor: Option<String>,
+    pub moe_executors: Vec<String>,
+    pub moe_executor_dtypes: Vec<u32>,
+    pub moe_executor_reason: Option<String>,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
     #[serde(skip)]
@@ -256,6 +260,37 @@ impl PhaseTrace {
                     .filter(|engine| *engine != crate::executor::ExecutionEngine::Unknown)
                     .collect()
             });
+        let moe_executor = node
+            .get("moe_executor")
+            .and_then(|value| value.as_str())
+            .filter(|value| *value != "not-run")
+            .map(str::to_owned);
+        let moe_executors = node
+            .get("moe_executors")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let moe_executor_dtypes = node
+            .get("moe_executor_dtypes")
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(|value| value.as_u64())
+                    .filter_map(|value| u32::try_from(value).ok())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let moe_executor_reason = node
+            .get("moe_executor_reason")
+            .and_then(|value| value.as_str())
+            .map(str::to_owned);
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -297,7 +332,35 @@ impl PhaseTrace {
         for engine in engines {
             self.observe_engine(engine);
         }
+        self.observe_moe_executor(moe_executor);
+        for executor in moe_executors {
+            self.observe_moe_executor(Some(executor));
+        }
+        for dtype in moe_executor_dtypes {
+            if !self.moe_executor_dtypes.contains(&dtype) {
+                self.moe_executor_dtypes.push(dtype);
+            }
+        }
+        if let Some(reason) = moe_executor_reason {
+            if self.moe_executor_reason.is_none() {
+                self.moe_executor_reason = Some(reason);
+            }
+        }
         self.refresh_percentiles();
+    }
+
+    fn observe_moe_executor(&mut self, next: Option<String>) {
+        let Some(next) = next else {
+            return;
+        };
+        if !self.moe_executors.contains(&next) {
+            self.moe_executors.push(next);
+        }
+        self.moe_executor = match self.moe_executors.as_slice() {
+            [executor] => Some(executor.clone()),
+            [] => None,
+            _ => Some("mixed".to_owned()),
+        };
     }
 
     fn observe_engine(&mut self, next: crate::executor::ExecutionEngine) {
@@ -385,6 +448,18 @@ impl PhaseTrace {
         }
         for engine in &next.executed_engines {
             self.observe_engine(*engine);
+        }
+        self.observe_moe_executor(next.moe_executor.clone());
+        for executor in &next.moe_executors {
+            self.observe_moe_executor(Some(executor.clone()));
+        }
+        for dtype in &next.moe_executor_dtypes {
+            if !self.moe_executor_dtypes.contains(dtype) {
+                self.moe_executor_dtypes.push(*dtype);
+            }
+        }
+        if self.moe_executor_reason.is_none() {
+            self.moe_executor_reason = next.moe_executor_reason.clone();
         }
         self.refresh_percentiles();
     }
@@ -2144,6 +2219,38 @@ mod tests {
         assert_eq!(
             old.hops[0].decode.executed_engine,
             crate::executor::ExecutionEngine::Unknown
+        );
+    }
+
+    #[test]
+    fn hop_trace_propaga_executor_moe_dtype_e_motivo_por_fase() {
+        let mut trace = RequestTrace::new("qwen", &[("moe", 0, 39)]);
+        trace.record_hop_from_json(
+            0,
+            Phase::Decode,
+            &json!({
+                "round_trip_ms": 10,
+                "processing_ms": 9,
+                "bytes_sent": 1,
+                "bytes_received": 2,
+                "node_timings": {
+                    "selected_path": "moe/q4_0",
+                    "executed_engine": "moe",
+                    "moe_executor": "cpu-reference",
+                    "moe_executors": ["cpu-reference"],
+                    "moe_executor_dtypes": [21, 22, 23],
+                    "moe_executor_reason": "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+                }
+            }),
+        );
+
+        let phase = &trace.hops[0].decode;
+        assert_eq!(phase.moe_executor.as_deref(), Some("cpu-reference"));
+        assert_eq!(phase.moe_executors, vec!["cpu-reference"]);
+        assert_eq!(phase.moe_executor_dtypes, vec![21, 22, 23]);
+        assert_eq!(
+            phase.moe_executor_reason.as_deref(),
+            Some("dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado")
         );
     }
 

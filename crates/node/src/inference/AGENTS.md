@@ -40,10 +40,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   depois de retornar. Atenção, logits e demais operações continuam no
   `LlmEngine`, que fornece a fronteira de cálculo restante. Os
   handlers publicam `selected_path`, `executed_engine`, `executed_engines`,
-  `moe_executor`, `moe_executors` e `moe_forward_ms`, além das flags
+  `moe_executor`, `moe_executors`, `moe_executor_dtypes`,
+  `moe_executor_reason` e `moe_forward_ms`, além das flags
   `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
   apenas o caminho selecionado, pois não representa uma requisição. `cuda`
-  só é publicado depois do forward NVFP4 real; `not-run` expõe a ausência de
+  só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os
+  dtypes GGML e o motivo da ausência de ponte CUDA. O `PhaseTrace` do gateway
+  preserva esses campos por hop e por fase; `not-run` expõe a ausência de
   execução e não há fallback implícito para CPU.
   Os handlers decodificam o frame e entregam
   comandos a uma fila local limitada; o worker seleciona uma entrada por

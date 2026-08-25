@@ -278,13 +278,37 @@ divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótul
 ### Diagnóstico do executor CUDA
 
 O primeiro instrumento da Fase 5 publica também `moe_executor`,
-`moe_executors` e `moe_forward_ms`. O backend só entra nesses campos depois de
+`moe_executors`, `moe_executor_dtypes`, `moe_executor_reason` e
+`moe_forward_ms`. O backend só entra nesses campos depois de
 `MoeRuntime::forward_batch` retornar com sucesso. `cuda` significa o executor
-CUDA NVFP4; `cpu-reference` significa o decoder de referência; `not-run` é uma
-seleção MoE sem forward registrado e `mixed` denuncia mais de um backend no
-mesmo hop. Um binário sem a feature `cuda` não transforma NVFP4 em CPU por
+CUDA NVFP4; `cpu-reference` significa o decoder de referência; nesse caso a
+telemetria lista os dtypes GGML concretos e informa que não há ponte CUDA;
+`not-run` é uma seleção MoE sem forward registrado e `mixed` denuncia mais de
+um backend no mesmo hop. O `PhaseTrace` do gateway preserva os campos por hop
+e por fase. Um binário sem a feature `cuda` não transforma NVFP4 em CPU por
 acidente: ele recusa a carga com a mensagem nominal do executor, salvo quando
-`POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o fallback de referência.
+`POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o executor de referência.
+
+No Qwen3.6-35B-A3B-UD-IQ3_S real, a telemetria agora deve mostrar
+`moe_executor=cpu-reference`, `moe_executor_dtypes=[21,22,23]` e o motivo
+`IQ3_S`, `IQ2_S` e `IQ4_XS` sem ponte CUDA. Isso é uma escolha explícita do
+decoder CPU heterogêneo, não uma falha de lançamento CUDA escondida.
+
+### Fase 5.1: ponte CUDA por dtype
+
+Esta é a próxima fase formal do goal. O executor CUDA atual cobre somente
+NVFP4 (40); IQ-quants, K-quants, legacy, low-bit e escalares continuam no
+`CPUReference`, com a escolha visível na telemetria. A fase deve adicionar a
+ponte por dtype sem assumir homogeneidade em arquivos UD: cada tensor conserva
+seu dtype, o decoder CUDA correspondente é escolhido por tensor e um dtype
+sem kernel recusa nominalmente com o dtype e o motivo.
+
+Critério de pronto por bloco: prova numérica contra o oráculo GGML para cada
+dtype, telemetria por hop/fase mostrando `cuda` sem `moe_executor_reason` de
+CPU, prova E2E com GGUF real heterogêneo quando disponível e medição na ksia
+de prefill, decode, bytes H2D/D2H, alocações e banda. A comparação deve
+separar custo de kernel e transferência; nenhum ganho de desempenho será
+afirmado apenas por suite verde.
 
 A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
 otimização de kernel. O contexto captura `l_out-29`, mas em

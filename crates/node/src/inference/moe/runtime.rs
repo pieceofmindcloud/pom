@@ -38,6 +38,19 @@ impl MoeExecutorKind {
     }
 }
 
+/// Evidência do executor que realmente processou os experts de um forward.
+///
+/// `dtypes` é uma lista, não um único valor: arquivos UD podem misturar IQ3_S,
+/// IQ2_S e IQ4_XS no mesmo modelo. `reason` fica preenchido quando o caminho
+/// CPUReference é escolhido por falta de ponte CUDA, para que a telemetria não
+/// transforme o caminho lento em uma escolha invisível.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoeExecutorTelemetry {
+    pub executor: MoeExecutorKind,
+    pub dtypes: Vec<u32>,
+    pub reason: Option<String>,
+}
+
 impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
     fn from(kind: super::format_nvfp4::Nvfp4BackendKind) -> Self {
         match kind {
@@ -165,6 +178,22 @@ impl MoeSource {
             Self::LowBit(source) => source.format().dtype(),
             Self::Heterogeneous(_) => 0,
         }
+    }
+
+    fn dtypes(&self) -> Vec<u32> {
+        let mut dtypes = match self {
+            Self::Legacy(source) => vec![source.format().dtype()],
+            Self::Plain(source) => vec![source.format().dtype()],
+            Self::Q4(_) => vec![2],
+            Self::K(source) => vec![source.format().dtype()],
+            Self::Iq(source) => vec![source.format().dtype()],
+            Self::Nvfp4(_) => vec![40],
+            Self::LowBit(source) => vec![source.format().dtype()],
+            Self::Heterogeneous(source) => source.dtypes(),
+        };
+        dtypes.sort_unstable();
+        dtypes.dedup();
+        dtypes
     }
 
     fn activation(&self) -> Option<i32> {
@@ -551,6 +580,40 @@ impl MoeRuntime {
         match self.blocks.first() {
             Some(MoeBlock::Nvfp4(block)) => block.executor_kind().into(),
             Some(_) | None => MoeExecutorKind::CpuReference,
+        }
+    }
+
+    pub fn executor_telemetry(&self) -> MoeExecutorTelemetry {
+        let executor = self.executor_kind();
+        let dtypes = self.source.dtypes();
+        let reason = match executor {
+            MoeExecutorKind::Cuda => None,
+            MoeExecutorKind::CpuReference => {
+                let names = dtypes
+                    .iter()
+                    .map(|dtype| {
+                        format!("{} ({dtype})", super::format_q4_0::ggml_type_name(*dtype))
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let explicit_cpu = matches!(self.source, MoeSource::Nvfp4(_))
+                    && std::env::var("POM_MOE_NVFP4_BACKEND")
+                        .is_ok_and(|value| value.eq_ignore_ascii_case("cpu"));
+                if explicit_cpu {
+                    Some(format!(
+                        "dtype(s) {names}: CPUReference solicitado por POM_MOE_NVFP4_BACKEND=cpu"
+                    ))
+                } else {
+                    Some(format!(
+                        "dtype(s) {names} sem ponte CUDA; CPUReference selecionado"
+                    ))
+                }
+            }
+        };
+        MoeExecutorTelemetry {
+            executor,
+            dtypes,
+            reason,
         }
     }
 

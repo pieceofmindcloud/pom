@@ -329,6 +329,22 @@ impl HeterogeneousMoeSource {
         self.layers.len() as u32
     }
 
+    pub fn dtypes(&self) -> Vec<u32> {
+        let mut dtypes = self
+            .layers
+            .iter()
+            .flat_map(|layer| {
+                [layer.gate_up, layer.gate, layer.up, layer.down]
+                    .into_iter()
+                    .flatten()
+                    .map(|tensor| tensor.decoder.dtype())
+            })
+            .collect::<Vec<_>>();
+        dtypes.sort_unstable();
+        dtypes.dedup();
+        dtypes
+    }
+
     pub fn layer_geometry(&self, layer: u32) -> Result<(usize, usize), Q4LoadError> {
         let inventory = self
             .layers

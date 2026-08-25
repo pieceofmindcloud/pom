@@ -558,6 +558,11 @@ impl Nvfp4MoeBlock {
         self.executor.backend_kind()
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.executor.cuda_diagnostics()
+    }
+
     pub fn forward_from_source_with_route(
         &self,
         source: &Nvfp4Source,

@@ -1,9 +1,11 @@
 #include <cuda_runtime.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <chrono>
 
 namespace {
 
@@ -11,6 +13,25 @@ constexpr int kBlockElements = 64;
 constexpr int kSubblockElements = 16;
 constexpr int kBlockBytes = 36;
 constexpr int kPayloadHeaderBytes = 32;
+
+struct CudaMoeCallTiming {
+    double payload_validation_ms;
+    double alloc_ms;
+    double h2d_ms;
+    uint64_t h2d_bytes;
+    double kernel_ms;
+    double launch_ms;
+    double sync_ms;
+    double d2h_ms;
+    uint64_t d2h_bytes;
+    double free_ms;
+};
+
+using Clock = std::chrono::steady_clock;
+
+double elapsed_ms(Clock::time_point start, Clock::time_point end) {
+    return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 __device__ float fp4_value(uint8_t value) {
     constexpr float values[16] = {
@@ -130,8 +151,12 @@ extern "C" int pom_moe_nvfp4_forward(
     float * output,
     std::size_t output_len,
     std::size_t hidden_width,
-    std::size_t intermediate_width
+    std::size_t intermediate_width,
+    CudaMoeCallTiming * timing
 ) {
+    if (timing != nullptr) {
+        *timing = {};
+    }
     if (payload == nullptr || hidden == nullptr || output == nullptr ||
         hidden_width == 0 || intermediate_width == 0 ||
         hidden_width % kBlockElements != 0 || intermediate_width % kBlockElements != 0 ||
@@ -163,9 +188,14 @@ extern "C" int pom_moe_nvfp4_forward(
     uint8_t * d_down = nullptr;
     float * d_gate_up_values = nullptr;
     float * d_output = nullptr;
+    cudaEvent_t gate_start = nullptr;
+    cudaEvent_t gate_end = nullptr;
+    cudaEvent_t down_start = nullptr;
+    cudaEvent_t down_end = nullptr;
     int result = 0;
 
     do {
+        const auto alloc_start = Clock::now();
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_width * sizeof(float)));
         if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_len));
@@ -176,39 +206,108 @@ extern "C" int pom_moe_nvfp4_forward(
         if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), hidden_width * sizeof(float)));
         if (result != 0) break;
+        if (timing != nullptr) {
+            timing->alloc_ms = elapsed_ms(alloc_start, Clock::now());
+        }
+
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventCreate(&gate_start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&gate_end));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&down_start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&down_end));
+            if (result != 0) break;
+        }
+
+        const auto h2d_start = Clock::now();
         result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_width * sizeof(float), cudaMemcpyHostToDevice));
         if (result != 0) break;
         result = cuda_status(cudaMemcpy(d_gate_up, gate_up, gate_up_len, cudaMemcpyHostToDevice));
         if (result != 0) break;
         result = cuda_status(cudaMemcpy(d_down, down, down_len, cudaMemcpyHostToDevice));
         if (result != 0) break;
+        if (timing != nullptr) {
+            timing->h2d_ms = elapsed_ms(h2d_start, Clock::now());
+            timing->h2d_bytes = static_cast<uint64_t>(hidden_width * sizeof(float) + gate_up_len + down_len);
+        }
 
         float scales_host[6];
         std::memcpy(scales_host, payload + 8, sizeof(scales_host));
 
         const int block_size = 128;
+        const auto gate_launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(gate_start));
+            if (result != 0) break;
+        }
         gate_up_kernel<<<(2 * intermediate_width + block_size - 1) / block_size, block_size>>>(
             gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width), d_hidden,
             scales_host[0], scales_host[1], d_gate_up_values);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
+        if (timing != nullptr) {
+            timing->launch_ms += elapsed_ms(gate_launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(gate_end));
+            if (result != 0) break;
+        }
+        const auto gate_sync_start = Clock::now();
         result = cuda_status(cudaDeviceSynchronize());
         if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, gate_start, gate_end));
+            if (result != 0) break;
+            timing->kernel_ms += kernel_ms;
+            timing->sync_ms += std::max(0.0, elapsed_ms(gate_sync_start, Clock::now()) - static_cast<double>(kernel_ms));
+        }
 
+        const auto down_launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(down_start));
+            if (result != 0) break;
+        }
         down_kernel<<<(hidden_width + block_size - 1) / block_size, block_size>>>(
             d_down, static_cast<int>(hidden_width), static_cast<int>(intermediate_width), d_gate_up_values,
             scales_host[2], d_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
+        if (timing != nullptr) {
+            timing->launch_ms += elapsed_ms(down_launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(down_end));
+            if (result != 0) break;
+        }
+        const auto down_sync_start = Clock::now();
         result = cuda_status(cudaDeviceSynchronize());
         if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, down_start, down_end));
+            if (result != 0) break;
+            timing->kernel_ms += kernel_ms;
+            timing->sync_ms += std::max(0.0, elapsed_ms(down_sync_start, Clock::now()) - static_cast<double>(kernel_ms));
+        }
+        const auto d2h_start = Clock::now();
         result = cuda_status(cudaMemcpy(output, d_output, hidden_width * sizeof(float), cudaMemcpyDeviceToHost));
+        if (timing != nullptr) {
+            timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
+            timing->d2h_bytes = static_cast<uint64_t>(hidden_width * sizeof(float));
+        }
     } while (false);
 
+    if (gate_start != nullptr) cudaEventDestroy(gate_start);
+    if (gate_end != nullptr) cudaEventDestroy(gate_end);
+    if (down_start != nullptr) cudaEventDestroy(down_start);
+    if (down_end != nullptr) cudaEventDestroy(down_end);
+    const auto free_start = Clock::now();
     cudaFree(d_output);
     cudaFree(d_gate_up_values);
     cudaFree(d_down);
     cudaFree(d_gate_up);
     cudaFree(d_hidden);
+    if (timing != nullptr) {
+        timing->free_ms = elapsed_ms(free_start, Clock::now());
+    }
     return result;
 }

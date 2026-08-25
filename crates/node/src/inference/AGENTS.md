@@ -111,6 +111,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
+  A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
+  ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
+  kernel, sincronização e liberação. O perfil é opt-in por
+  `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
+  política do cache.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o

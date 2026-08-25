@@ -181,14 +181,14 @@ impl fmt::Display for CacheError {
 impl std::error::Error for CacheError {}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-struct ExpertCacheStats {
-    hits: u64,
-    misses: u64,
-    admissions: u64,
-    evictions: u64,
-    rejections: u64,
-    resident_bytes: usize,
-    entries: usize,
+pub struct ExpertCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+    pub admissions: u64,
+    pub evictions: u64,
+    pub rejections: u64,
+    pub resident_bytes: usize,
+    pub entries: usize,
 }
 
 struct Entry {
@@ -261,6 +261,15 @@ impl ExpertCache {
             key: key.clone(),
             payload,
         })
+    }
+
+    /// Snapshot monotônico das operações do LRU compartilhado pelo runtime.
+    /// O contador é diagnóstico: não participa da política de admissão.
+    pub fn stats(&self) -> ExpertCacheStats {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .stats
     }
 
     pub fn admit(
@@ -420,6 +429,24 @@ mod tests {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stats
+    }
+
+    #[test]
+    fn stats_expoem_hits_misses_e_residencia_do_cache_global() {
+        let probe = Arc::new(FixedProbe::new(100));
+        let cache = cache_with_baseline(&probe, 100);
+        let first = cache.admit(key(1), vec![1, 2, 3]).unwrap();
+        drop(first);
+        let hit = cache.lookup(&key(1)).unwrap();
+        drop(hit);
+
+        let snapshot = cache.stats();
+
+        assert_eq!(snapshot.hits, 1);
+        assert_eq!(snapshot.misses, 1);
+        assert_eq!(snapshot.admissions, 1);
+        assert_eq!(snapshot.resident_bytes, 3);
+        assert_eq!(snapshot.entries, 1);
     }
 
     fn key(expert: u32) -> ExpertKey {

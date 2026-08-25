@@ -4,6 +4,68 @@
 
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use std::fmt;
+use std::sync::Mutex;
+use std::time::Instant;
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CudaMoeCallTiming {
+    pub payload_validation_ms: f64,
+    pub alloc_ms: f64,
+    pub h2d_ms: f64,
+    pub h2d_bytes: u64,
+    pub kernel_ms: f64,
+    pub launch_ms: f64,
+    pub sync_ms: f64,
+    pub d2h_ms: f64,
+    pub d2h_bytes: u64,
+    pub free_ms: f64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Nvfp4CudaDiagnostics {
+    pub calls: u64,
+    pub payload_validation_ms: f64,
+    pub alloc_ms: f64,
+    pub h2d_ms: f64,
+    pub h2d_bytes: u64,
+    pub kernel_ms: f64,
+    pub launch_ms: f64,
+    pub sync_ms: f64,
+    pub d2h_ms: f64,
+    pub d2h_bytes: u64,
+    pub free_ms: f64,
+}
+
+impl Nvfp4CudaDiagnostics {
+    pub fn add_call(&mut self, call: CudaMoeCallTiming) {
+        self.calls = self.calls.saturating_add(1);
+        self.payload_validation_ms += call.payload_validation_ms;
+        self.alloc_ms += call.alloc_ms;
+        self.h2d_ms += call.h2d_ms;
+        self.h2d_bytes = self.h2d_bytes.saturating_add(call.h2d_bytes);
+        self.kernel_ms += call.kernel_ms;
+        self.launch_ms += call.launch_ms;
+        self.sync_ms += call.sync_ms;
+        self.d2h_ms += call.d2h_ms;
+        self.d2h_bytes = self.d2h_bytes.saturating_add(call.d2h_bytes);
+        self.free_ms += call.free_ms;
+    }
+
+    pub fn add_total(&mut self, other: Self) {
+        self.calls = self.calls.saturating_add(other.calls);
+        self.payload_validation_ms += other.payload_validation_ms;
+        self.alloc_ms += other.alloc_ms;
+        self.h2d_ms += other.h2d_ms;
+        self.h2d_bytes = self.h2d_bytes.saturating_add(other.h2d_bytes);
+        self.kernel_ms += other.kernel_ms;
+        self.launch_ms += other.launch_ms;
+        self.sync_ms += other.sync_ms;
+        self.d2h_ms += other.d2h_ms;
+        self.d2h_bytes = self.d2h_bytes.saturating_add(other.d2h_bytes);
+        self.free_ms += other.free_ms;
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CudaMoeError {
@@ -56,6 +118,8 @@ impl From<Nvfp4Error> for CudaMoeError {
 pub struct Nvfp4CudaExecutor {
     hidden: usize,
     intermediate: usize,
+    profile: bool,
+    diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
 impl Nvfp4CudaExecutor {
@@ -64,6 +128,9 @@ impl Nvfp4CudaExecutor {
         Self {
             hidden,
             intermediate,
+            profile: std::env::var("POM_MOE_CUDA_PROFILE")
+                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         }
     }
 
@@ -74,9 +141,15 @@ impl Nvfp4CudaExecutor {
                 actual: hidden.len(),
             });
         }
+        let validation_started = Instant::now();
         Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
+        let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
 
         let mut output = vec![0.0f32; self.hidden];
+        let mut timing = CudaMoeCallTiming {
+            payload_validation_ms,
+            ..CudaMoeCallTiming::default()
+        };
         let status = unsafe {
             pom_moe_nvfp4_forward(
                 payload.as_ptr(),
@@ -87,12 +160,30 @@ impl Nvfp4CudaExecutor {
                 output.len(),
                 self.hidden,
                 self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
             )
         };
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
         }
+        if self.profile {
+            self.diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .add_call(timing);
+        }
         Ok(output)
+    }
+
+    pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .to_owned()
     }
 }
 
@@ -107,6 +198,7 @@ unsafe extern "C" {
         output_len: usize,
         hidden_width: usize,
         intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
     ) -> i32;
 }
 
@@ -157,5 +249,41 @@ mod tests {
         for (actual, expected) in gpu.iter().zip(cpu) {
             assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
         }
+    }
+
+    #[test]
+    fn diagnostico_cuda_acumula_fases_e_bytes_por_chamada() {
+        let mut total = Nvfp4CudaDiagnostics::default();
+        total.add_call(CudaMoeCallTiming {
+            payload_validation_ms: 1.0,
+            alloc_ms: 2.0,
+            h2d_ms: 3.0,
+            h2d_bytes: 10,
+            kernel_ms: 4.0,
+            launch_ms: 5.0,
+            sync_ms: 6.0,
+            d2h_ms: 7.0,
+            d2h_bytes: 8,
+            free_ms: 9.0,
+        });
+        total.add_call(CudaMoeCallTiming {
+            payload_validation_ms: 10.0,
+            alloc_ms: 20.0,
+            h2d_ms: 30.0,
+            h2d_bytes: 100,
+            kernel_ms: 40.0,
+            launch_ms: 50.0,
+            sync_ms: 60.0,
+            d2h_ms: 70.0,
+            d2h_bytes: 80,
+            free_ms: 90.0,
+        });
+
+        assert_eq!(total.calls, 2);
+        assert_eq!(total.h2d_bytes, 110);
+        assert_eq!(total.d2h_bytes, 88);
+        assert_eq!(total.h2d_ms, 33.0);
+        assert_eq!(total.kernel_ms, 44.0);
+        assert_eq!(total.sync_ms, 66.0);
     }
 }

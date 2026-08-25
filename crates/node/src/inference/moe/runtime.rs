@@ -19,6 +19,7 @@ use super::format_nvfp4::Nvfp4Source;
 use super::format_plain::{PlainFormat, PlainSource};
 use super::format_q4_0::{detect_expert_format, ExpertFormat};
 use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
+use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
@@ -44,11 +45,35 @@ impl MoeExecutorKind {
 /// IQ2_S e IQ4_XS no mesmo modelo. `reason` fica preenchido quando o caminho
 /// CPUReference é escolhido por falta de ponte CUDA, para que a telemetria não
 /// transforme o caminho lento em uma escolha invisível.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct MoeExecutorTelemetry {
     pub executor: MoeExecutorKind,
     pub dtypes: Vec<u32>,
     pub reason: Option<String>,
+    pub diagnostics: Option<MoeExecutorDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct MoeExecutorDiagnostics {
+    pub profiled: bool,
+    pub calls: u64,
+    pub cache_hits: u64,
+    pub cache_misses: u64,
+    pub cache_admissions: u64,
+    pub cache_evictions: u64,
+    pub cache_rejections: u64,
+    pub cache_entries: usize,
+    pub cache_resident_bytes: usize,
+    pub payload_validation_ms: f64,
+    pub cuda_alloc_ms: f64,
+    pub cuda_h2d_ms: f64,
+    pub cuda_h2d_bytes: u64,
+    pub cuda_kernel_ms: f64,
+    pub cuda_launch_ms: f64,
+    pub cuda_sync_ms: f64,
+    pub cuda_d2h_ms: f64,
+    pub cuda_d2h_bytes: u64,
+    pub cuda_free_ms: f64,
 }
 
 impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
@@ -219,6 +244,7 @@ enum MoeBlock {
 pub struct MoeRuntime {
     source: MoeSource,
     blocks: Vec<MoeBlock>,
+    cache: Arc<ExpertCache>,
 }
 
 pub struct MoeRouteBatch<'a> {
@@ -288,6 +314,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Legacy(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
@@ -330,6 +357,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Plain(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Q4_0 => {
@@ -359,6 +387,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Q4(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Nvfp4 => {
@@ -391,6 +420,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Nvfp4(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Mxfp4
@@ -439,6 +469,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::LowBit(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Q2K
@@ -489,6 +520,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::K(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Iq2XXS
@@ -545,6 +577,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Iq(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
             ExpertFormat::Heterogeneous => {
@@ -567,6 +600,7 @@ impl MoeRuntime {
                 Ok(Self {
                     source: MoeSource::Heterogeneous(source),
                     blocks,
+                    cache: Arc::clone(&cache),
                 })
             }
         }
@@ -581,6 +615,46 @@ impl MoeRuntime {
             Some(MoeBlock::Nvfp4(block)) => block.executor_kind().into(),
             Some(_) | None => MoeExecutorKind::CpuReference,
         }
+    }
+
+    fn executor_diagnostics(&self) -> MoeExecutorDiagnostics {
+        let cache = self.cache.stats();
+        let mut diagnostics = MoeExecutorDiagnostics {
+            cache_hits: cache.hits,
+            cache_misses: cache.misses,
+            cache_admissions: cache.admissions,
+            cache_evictions: cache.evictions,
+            cache_rejections: cache.rejections,
+            cache_entries: cache.entries,
+            cache_resident_bytes: cache.resident_bytes,
+            ..MoeExecutorDiagnostics::default()
+        };
+
+        #[cfg(feature = "cuda")]
+        if matches!(&self.source, MoeSource::Nvfp4(_)) {
+            for block in &self.blocks {
+                let MoeBlock::Nvfp4(block) = block else {
+                    continue;
+                };
+                let cuda = block.cuda_diagnostics();
+                diagnostics.profiled |= cuda.calls > 0;
+                diagnostics.calls = diagnostics.calls.saturating_add(cuda.calls);
+                diagnostics.payload_validation_ms += cuda.payload_validation_ms;
+                diagnostics.cuda_alloc_ms += cuda.alloc_ms;
+                diagnostics.cuda_h2d_ms += cuda.h2d_ms;
+                diagnostics.cuda_h2d_bytes =
+                    diagnostics.cuda_h2d_bytes.saturating_add(cuda.h2d_bytes);
+                diagnostics.cuda_kernel_ms += cuda.kernel_ms;
+                diagnostics.cuda_launch_ms += cuda.launch_ms;
+                diagnostics.cuda_sync_ms += cuda.sync_ms;
+                diagnostics.cuda_d2h_ms += cuda.d2h_ms;
+                diagnostics.cuda_d2h_bytes =
+                    diagnostics.cuda_d2h_bytes.saturating_add(cuda.d2h_bytes);
+                diagnostics.cuda_free_ms += cuda.free_ms;
+            }
+        }
+
+        diagnostics
     }
 
     pub fn executor_telemetry(&self) -> MoeExecutorTelemetry {
@@ -614,6 +688,7 @@ impl MoeRuntime {
             executor,
             dtypes,
             reason,
+            diagnostics: Some(self.executor_diagnostics()),
         }
     }
 

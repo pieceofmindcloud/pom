@@ -1065,6 +1065,14 @@ impl Nvfp4Executor {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        match &self.backend {
+            Nvfp4Backend::Cpu => super::cuda::Nvfp4CudaDiagnostics::default(),
+            Nvfp4Backend::Cuda(executor) => executor.diagnostics(),
+        }
+    }
+
     pub fn run_from_source(
         &self,
         source: &Nvfp4Source,

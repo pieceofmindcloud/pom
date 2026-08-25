@@ -214,6 +214,7 @@ pub struct PhaseTrace {
     pub moe_executors: Vec<String>,
     pub moe_executor_dtypes: Vec<u32>,
     pub moe_executor_reason: Option<String>,
+    pub moe_executor_diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
     #[serde(skip)]
@@ -291,6 +292,9 @@ impl PhaseTrace {
             .get("moe_executor_reason")
             .and_then(|value| value.as_str())
             .map(str::to_owned);
+        let moe_executor_diagnostics = node
+            .get("moe_executor_diagnostics")
+            .and_then(|value| serde_json::from_value(value.clone()).ok());
 
         self.processing_ms += processing_ms;
         self.round_trip_ms += round_trip_ms;
@@ -345,6 +349,9 @@ impl PhaseTrace {
             if self.moe_executor_reason.is_none() {
                 self.moe_executor_reason = Some(reason);
             }
+        }
+        if moe_executor_diagnostics.is_some() {
+            self.moe_executor_diagnostics = moe_executor_diagnostics;
         }
         self.refresh_percentiles();
     }
@@ -460,6 +467,9 @@ impl PhaseTrace {
         }
         if self.moe_executor_reason.is_none() {
             self.moe_executor_reason = next.moe_executor_reason.clone();
+        }
+        if next.moe_executor_diagnostics.is_some() {
+            self.moe_executor_diagnostics = next.moe_executor_diagnostics;
         }
         self.refresh_percentiles();
     }

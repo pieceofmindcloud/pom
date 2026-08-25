@@ -74,6 +74,7 @@ struct MoeTimings {
     executors: Vec<crate::moe::runtime::MoeExecutorKind>,
     dtypes: Vec<u32>,
     reasons: Vec<String>,
+    diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
 }
 
 impl MoeTimings {
@@ -95,6 +96,9 @@ impl MoeTimings {
                 self.reasons.push(reason.clone());
             }
         }
+        if telemetry.diagnostics.is_some() {
+            self.diagnostics = telemetry.diagnostics;
+        }
     }
 
     fn record_forward(&mut self, elapsed_us: u64) {
@@ -115,6 +119,9 @@ impl MoeTimings {
             if !self.reasons.contains(reason) {
                 self.reasons.push(reason.clone());
             }
+        }
+        if other.diagnostics.is_some() {
+            self.diagnostics = other.diagnostics;
         }
     }
 }
@@ -257,6 +264,7 @@ impl NodeTimings {
             "moe_executor_dtypes": self.moe.dtypes,
             "moe_executor_reason": self.moe.reasons.first(),
             "moe_executor_reasons": self.moe.reasons,
+            "moe_executor_diagnostics": self.moe.diagnostics,
             "selected_path": self.selected_path.as_str(),
             "executed_engine": self.executed_engine().as_str(),
             "executed_engines": self
@@ -787,6 +795,7 @@ mod tests {
             reason: Some(
                 "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado".into(),
             ),
+            diagnostics: None,
         });
 
         let value = timings.json();

@@ -1341,6 +1341,33 @@ isso não há sobreposição nesta medição. Nos dois pontos representativos,
 `185,358 / 162,502 = 1,141`, respectivamente. Ambos falham o critério de
 `1,10`; a F5.2 continua aberta e nenhum ganho de co-execução foi declarado.
 
+#### Medição após os dois slots CUDA - 2026-08-25
+
+O commit `00bf6f1` substituiu o caminho de rota por um pipeline com dois slots
+persistentes. Cada slot tem stream, buffers de device e buffers host pinned;
+quando há pelo menos dois grupos de tokens com rotas, o segundo grupo é
+preparado e transferido enquanto o primeiro calcula. A telemetria passou a
+separar `kernel_ms` (trabalho somado), `kernel_span_ms` (janela crítica entre
+slots) e `transfer_span_ms` (H2D mais D2H da janela crítica), além de publicar
+`buffer_mask` e `buffer_switches`.
+
+Na mesma ksia, GPU e comando da medição anterior, a saída foi:
+
+```text
+CUDA_BANDWIDTH case=tiny hidden=64 intermediate=64 tokens=2 active_experts=2 calls=400 buffer_mask=3 buffer_switches=100 h2d_bytes=60800 h2d_ms=2.885 effective_h2d_GB_s=0.021 d2h_bytes=51200 d2h_ms=0.795 effective_d2h_GB_s=0.064 kernel_ms=8.576 kernel_span_ms=6.053 transfer_span_ms=1.959 wall_ms=16.260
+CUDA_BANDWIDTH case=gemma4_token hidden=2816 intermediate=704 tokens=1 active_experts=8 calls=800 buffer_mask=3 buffer_switches=0 h2d_bytes=1140800 h2d_ms=1.840 effective_h2d_GB_s=0.620 d2h_bytes=1126400 d2h_ms=0.472 effective_d2h_GB_s=2.387 kernel_ms=22.553 kernel_span_ms=22.553 transfer_span_ms=2.312 wall_ms=28.768
+CUDA_BANDWIDTH case=gemma4_batch8 hidden=2816 intermediate=704 tokens=8 active_experts=8 calls=6400 buffer_mask=3 buffer_switches=100 h2d_bytes=9121600 h2d_ms=4.120 effective_h2d_GB_s=2.214 d2h_bytes=9011200 d2h_ms=1.386 effective_d2h_GB_s=6.502 kernel_ms=333.662 kernel_span_ms=168.081 transfer_span_ms=3.036 wall_ms=180.647
+```
+
+O ponto `gemma4_batch8` satisfaz o critério medido: `180,647 / max(168,081,
+3,036) = 1,075`, abaixo de `1,10`, e o `buffer_mask=3` prova o uso dos dois
+slots. O ponto de um token ainda fica em `28,768 / 22,553 = 1,276`, e o ponto
+pequeno em `16,260 / 6,053 = 2,686`; portanto o resultado não autoriza
+declarar a F5.2 inteira pronta. O pipeline está integrado ao runtime e a
+telemetria registra os slots, mas o perfil ainda não é persistido/carregado e
+a seleção CPU/GPU ainda não consome tempos comparáveis medidos para os dois
+backends. Esses são os próximos gates da fase.
+
 4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
    operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto
    somente quando a média de prefill, com a mesma definição da referência,

@@ -14,7 +14,8 @@ use memmap2::Mmap;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 const BLOCK_ELEMENTS: usize = 64;
 const SUBBLOCK_ELEMENTS: usize = 16;
@@ -1006,6 +1007,14 @@ pub struct Nvfp4Executor {
     hidden: usize,
     intermediate: usize,
     backend: Nvfp4Backend,
+    host_diagnostics: Mutex<Nvfp4HostDiagnostics>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Nvfp4HostDiagnostics {
+    pub cache_lookup_ms: f64,
+    pub expert_load_ms: f64,
+    pub cache_admit_ms: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1054,6 +1063,7 @@ impl Nvfp4Executor {
             hidden,
             intermediate,
             backend,
+            host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
         })
     }
 
@@ -1071,6 +1081,14 @@ impl Nvfp4Executor {
             Nvfp4Backend::Cpu => super::cuda::Nvfp4CudaDiagnostics::default(),
             Nvfp4Backend::Cuda(executor) => executor.diagnostics(),
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn host_diagnostics(&self) -> Nvfp4HostDiagnostics {
+        *self
+            .host_diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
     }
 
     pub fn run_from_source(
@@ -1106,13 +1124,31 @@ impl Nvfp4Executor {
         let mut leases = Vec::<ExpertLease>::with_capacity(experts.len());
         for &expert in experts {
             let key = ExpertKey::new(model, layer, expert, "nvfp4");
-            let lease = match self.cache.lookup(&key) {
-                Some(lease) => lease,
-                None => self
-                    .cache
-                    .admit(key, source.load_expert(layer, expert)?)
-                    .map_err(Nvfp4ExecuteError::Cache)?,
+            let lookup_started = Instant::now();
+            let cached = self.cache.lookup(&key);
+            let cache_lookup_ms = lookup_started.elapsed().as_secs_f64() * 1_000.0;
+            let (lease, expert_load_ms, cache_admit_ms) = match cached {
+                Some(lease) => (lease, 0.0, 0.0),
+                None => {
+                    let load_started = Instant::now();
+                    let payload = source.load_expert(layer, expert)?;
+                    let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
+                    let admit_started = Instant::now();
+                    let lease = self
+                        .cache
+                        .admit(key, payload)
+                        .map_err(Nvfp4ExecuteError::Cache)?;
+                    let cache_admit_ms = admit_started.elapsed().as_secs_f64() * 1_000.0;
+                    (lease, expert_load_ms, cache_admit_ms)
+                }
             };
+            let mut host = self
+                .host_diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            host.cache_lookup_ms += cache_lookup_ms;
+            host.expert_load_ms += expert_load_ms;
+            host.cache_admit_ms += cache_admit_ms;
             leases.push(lease);
         }
         match &self.backend {

@@ -115,7 +115,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
   A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
   ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
-  kernel, sincronização e liberação. O perfil é opt-in por
+  kernel, sincronização, liberação, busca/admissão e carregamento de experts no
+  host, preparação do lote e cópia dos resultados para vetores Rust. O perfil é opt-in por
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,

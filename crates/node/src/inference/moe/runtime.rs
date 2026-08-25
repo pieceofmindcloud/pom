@@ -74,6 +74,11 @@ pub struct MoeExecutorDiagnostics {
     pub cuda_d2h_ms: f64,
     pub cuda_d2h_bytes: u64,
     pub cuda_free_ms: f64,
+    pub host_cache_lookup_ms: f64,
+    pub host_expert_load_ms: f64,
+    pub host_cache_admit_ms: f64,
+    pub host_batch_prepare_ms: f64,
+    pub host_result_copy_ms: f64,
 }
 
 impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
@@ -619,7 +624,7 @@ impl MoeRuntime {
 
     fn executor_diagnostics(&self) -> MoeExecutorDiagnostics {
         let cache = self.cache.stats();
-        let mut diagnostics = MoeExecutorDiagnostics {
+        let diagnostics = MoeExecutorDiagnostics {
             cache_hits: cache.hits,
             cache_misses: cache.misses,
             cache_admissions: cache.admissions,
@@ -629,6 +634,9 @@ impl MoeRuntime {
             cache_resident_bytes: cache.resident_bytes,
             ..MoeExecutorDiagnostics::default()
         };
+
+        #[cfg(feature = "cuda")]
+        let mut diagnostics = diagnostics;
 
         #[cfg(feature = "cuda")]
         if matches!(&self.source, MoeSource::Nvfp4(_)) {
@@ -651,6 +659,12 @@ impl MoeRuntime {
                 diagnostics.cuda_d2h_bytes =
                     diagnostics.cuda_d2h_bytes.saturating_add(cuda.d2h_bytes);
                 diagnostics.cuda_free_ms += cuda.free_ms;
+                diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
+                diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
+                let host = block.host_diagnostics();
+                diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;
+                diagnostics.host_expert_load_ms += host.expert_load_ms;
+                diagnostics.host_cache_admit_ms += host.cache_admit_ms;
             }
         }
 

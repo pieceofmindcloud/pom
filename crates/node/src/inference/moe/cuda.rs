@@ -40,6 +40,8 @@ pub struct Nvfp4CudaDiagnostics {
     pub d2h_ms: f64,
     pub d2h_bytes: u64,
     pub free_ms: f64,
+    pub host_batch_prepare_ms: f64,
+    pub host_result_copy_ms: f64,
 }
 
 impl Nvfp4CudaDiagnostics {
@@ -134,6 +136,7 @@ impl Nvfp4CudaExecutor {
                 actual: hidden.len(),
             });
         }
+        let host_prepare_started = Instant::now();
         let validation_started = Instant::now();
         Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
         let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
@@ -208,6 +211,7 @@ impl Nvfp4CudaExecutor {
             flat_payloads.extend_from_slice(payload);
         }
         let mut flat_output = vec![0.0f32; self.hidden * payloads.len()];
+        let host_batch_prepare_ms = host_prepare_started.elapsed().as_secs_f64() * 1_000.0;
         let mut timing = CudaMoeCallTiming {
             expert_calls: payloads.len() as u64,
             payload_validation_ms,
@@ -235,15 +239,25 @@ impl Nvfp4CudaExecutor {
             return Err(CudaMoeError::Launch(status));
         }
         if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.host_batch_prepare_ms += host_batch_prepare_ms;
+        }
+        let host_result_copy_started = Instant::now();
+        let output = flat_output
+            .chunks_exact(self.hidden)
+            .map(ToOwned::to_owned)
+            .collect();
+        if self.profile {
             self.diagnostics
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
-                .add_call(timing);
+                .host_result_copy_ms += host_result_copy_started.elapsed().as_secs_f64() * 1_000.0;
         }
-        Ok(flat_output
-            .chunks_exact(self.hidden)
-            .map(ToOwned::to_owned)
-            .collect())
+        Ok(output)
     }
 
     pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {

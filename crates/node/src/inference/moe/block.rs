@@ -555,6 +555,11 @@ impl Nvfp4MoeBlock {
         self.executor.cuda_diagnostics()
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn host_diagnostics(&self) -> super::format_nvfp4::Nvfp4HostDiagnostics {
+        self.executor.host_diagnostics()
+    }
+
     pub fn forward_from_source_with_route(
         &self,
         source: &Nvfp4Source,

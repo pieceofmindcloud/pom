@@ -32,8 +32,10 @@ behind an auth extractor.
 - `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
   licença, detalhes, espaço e downloads remotos. Injeta `DynModelProvider`, usa
   `webui::Job` como estado persistente, `CancellationToken` por download e
-  semáforo de dois processos; não monta comandos nem expõe token, stderr ou
-  caminho local. O status estruturado em
+  semáforo de dois processos; não monta comandos nem expõe token ou stderr.
+  Cada download escolhe a primeira pasta de modelos não vazia resolvida da
+  configuração, passa essa pasta ao provider e registra o destino no job. A
+  resposta de storage expõe as pastas elegíveis. O status estruturado em
   `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
   login necessário e sessão autenticada.
   `GET` e `POST /api/ui/model-provider/config` expõem somente a máscara e a

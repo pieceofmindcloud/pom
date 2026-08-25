@@ -302,10 +302,12 @@ Key logic carriers:
   valor salvo nunca é pré-preenchido nem renderizado: a API fornece só máscara
   e fonte efetiva, e o painel invalida status/configuração depois de salvar.
 - `DownloadModelDialog.tsx` - confirmação do download remoto; chama somente a
-  API estruturada e mostra espaço disponível sem aceitar caminho do navegador.
-- `ModelDownloadsPanel.tsx` - progresso, cancelamento e retry de jobs
-  `model_download` vindos de `useJobs`; a fonte de verdade é o nó e o painel
-  não cria downloader local.
+  API estruturada, mostra espaço disponível e as pastas de modelos resolvidas
+  pelo backend, sem aceitar caminho do navegador.
+- `ModelDownloadsPanel.tsx` - progresso, destino local, cancelamento e retry de
+  jobs `model_download` vindos de `useModelDownloads`; é reutilizado em Modelos
+  remotos e Transferências. A fonte de verdade é o nó e o painel não cria
+  downloader local.
 
 Links to other folders: everything imports `../lib/*` — `api.ts` (HTTP client
 with connection-key auth), `queries.ts` (all React Query hooks: `useNode`,

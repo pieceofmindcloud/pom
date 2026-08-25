@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import { NAV, navForProfile } from "./nav";
 
 describe("navigation structure", () => {
-  it("keeps slicing destinations together under Models in operator order", () => {
+  it("puts Hugging Face model search first under Models", () => {
     const models = NAV.find((section) => section.labelKey === "nav.models");
 
     expect(models?.children?.map((child) => child.to)).toEqual([
-      "/modelos",
       "/modelos/remotos",
+      "/modelos",
       "/modelos/fatiar",
       "/fatias",
     ]);
+    expect(models?.children?.[0]?.labelKey).toBe("nav.remoteModels");
     expect(NAV.some((section) => section.labelKey === "nav.shardedModels")).toBe(false);
     expect(NAV.flatMap((section) => section.children ?? []).some(
       (child) => child.to === "/fatias/andamento",
@@ -41,8 +42,8 @@ describe("navForProfile", () => {
     expect(labels).toContain("nav.settings");
     const models = sections.find((s) => s.labelKey === "nav.models");
     expect(models?.children?.map((c) => c.to)).toEqual([
-      "/modelos",
       "/modelos/remotos",
+      "/modelos",
       "/modelos/fatiar",
       "/fatias",
     ]);

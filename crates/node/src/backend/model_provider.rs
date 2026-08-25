@@ -203,6 +203,7 @@ pub(crate) struct GgufFileView {
 pub(crate) struct StorageResponse {
     pub available_bytes: Option<u64>,
     pub destination_available: bool,
+    pub destination_paths: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -530,7 +531,8 @@ async fn start_download(
             );
         }
     }
-    let Some(destination) = state.model_dirs().await.into_iter().next() else {
+    let destinations = configured_model_destinations(state.model_dirs().await);
+    let Some(destination) = configured_model_destination(&destinations) else {
         return conflict(
             "destination_unavailable",
             "nenhuma pasta de modelos está configurada".into(),
@@ -555,6 +557,12 @@ async fn start_download(
     job.quantization = request.quantization.clone();
     job.download_status = Some("queued");
     job.total_bytes = file.size_bytes;
+    job.local_path = Some(
+        destination
+            .join(&identity.filename)
+            .to_string_lossy()
+            .into_owned(),
+    );
     webui::jobs().write().await.insert(id.clone(), job);
 
     let cancel = CancellationToken::new();
@@ -826,7 +834,10 @@ async fn complete_download(
         (result.duration_ms > 0)
             .then_some(result.total_bytes.saturating_mul(1000) / result.duration_ms),
         None,
-        None,
+        result
+            .local_paths
+            .first()
+            .map(|path| path.to_string_lossy().into_owned()),
         None,
     )
     .await;
@@ -984,10 +995,29 @@ async fn gguf_views(
 }
 
 async fn storage_response(state: &GatewayState) -> StorageResponse {
+    let destinations = configured_model_destinations(state.model_dirs().await);
     StorageResponse {
         available_bytes: disk_free_bytes().await,
-        destination_available: state.model_dirs().await.into_iter().next().is_some(),
+        destination_available: configured_model_destination(&destinations).is_some(),
+        destination_paths: destinations
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect(),
     }
+}
+
+fn configured_model_destinations(directories: Vec<PathBuf>) -> Vec<PathBuf> {
+    directories
+        .into_iter()
+        .filter(|path| !path.as_os_str().is_empty())
+        .collect()
+}
+
+fn configured_model_destination(directories: &[PathBuf]) -> Option<PathBuf> {
+    directories
+        .iter()
+        .find(|path| !path.as_os_str().is_empty())
+        .cloned()
 }
 
 async fn disk_free_bytes() -> Option<u64> {
@@ -1169,8 +1199,8 @@ fn public_error_message_code(code: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::model_provider::{
-        DownloadOptions, DownloadResult, HfCliStatus, ModelFiles, ModelInfo, ModelProvider,
-        ModelSummary, ProgressSender,
+        DownloadOptions, DownloadResult, GgufFile, HfCliStatus, ModelFile, ModelFiles, ModelInfo,
+        ModelProvider, ModelSummary, ProgressSender,
     };
     use async_trait::async_trait;
     use axum::{body::Body, http::Request};
@@ -1236,6 +1266,73 @@ mod tests {
 
         async fn check_authentication(&self) -> Result<HfCliStatus, HfError> {
             Ok(self.status.clone())
+        }
+    }
+
+    struct DestinationProvider;
+
+    #[async_trait]
+    impl ModelProvider for DestinationProvider {
+        async fn search_models(&self, query: &str) -> Result<Vec<ModelSummary>, HfError> {
+            unreachable_provider_call(query)
+        }
+
+        async fn get_model_info(&self, repo_id: &str) -> Result<ModelInfo, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn list_files(
+            &self,
+            repo_id: &str,
+            revision: Option<&str>,
+        ) -> Result<ModelFiles, HfError> {
+            Ok(ModelFiles {
+                repo_id: repo_id.to_string(),
+                revision: revision.map(str::to_string),
+                files: vec![ModelFile {
+                    filename: "model.gguf".into(),
+                    size_bytes: Some(1),
+                    sha256: None,
+                    lfs: None,
+                }],
+                gguf_files: vec![GgufFile {
+                    filename: "model.gguf".into(),
+                    size_bytes: Some(1),
+                    quantization: None,
+                    parameter_size: None,
+                    base_name: None,
+                }],
+            })
+        }
+
+        async fn download_file(
+            &self,
+            _repo_id: &str,
+            _filename: &str,
+            _options: DownloadOptions,
+            _progress: Option<ProgressSender>,
+            _cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            Err(HfError::Cancelled)
+        }
+
+        async fn download_model(
+            &self,
+            repo_id: &str,
+            options: DownloadOptions,
+            progress: Option<ProgressSender>,
+            cancel: CancellationToken,
+        ) -> Result<DownloadResult, HfError> {
+            self.download_file(repo_id, "model.gguf", options, progress, cancel)
+                .await
+        }
+
+        async fn get_license(&self, repo_id: &str) -> Result<ModelLicense, HfError> {
+            unreachable_provider_call(repo_id)
+        }
+
+        async fn check_authentication(&self) -> Result<HfCliStatus, HfError> {
+            Ok(HfCliStatus::not_installed())
         }
     }
 
@@ -1338,6 +1435,45 @@ mod tests {
         assert_eq!(license_calls.load(Ordering::SeqCst), 1);
     }
 
+    #[tokio::test]
+    async fn start_download_records_the_configured_folder_as_destination() {
+        let destination = std::env::temp_dir().join(format!(
+            "pom-model-destination-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        tokio::fs::create_dir_all(&destination).await.unwrap();
+        let mut state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        state.auth.write().await.model_dirs =
+            Some(vec![destination.to_string_lossy().into_owned()]);
+        state.model_service = Arc::new(ModelService::new(Arc::new(DestinationProvider)));
+
+        let response = start_download(
+            ConnectionAuth,
+            State(state),
+            Json(DownloadRequest {
+                repo_id: "owner/model".into(),
+                revision: None,
+                filename: "model.gguf".into(),
+                quantization: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        let download_id = body["download_id"].as_str().unwrap().to_string();
+        let expected_path = destination.join("model.gguf");
+
+        let job = webui::jobs()
+            .read()
+            .await
+            .get(&download_id)
+            .cloned()
+            .unwrap();
+        assert_eq!(job.local_path.as_deref(), expected_path.to_str());
+
+        tokio::fs::remove_dir_all(destination).await.unwrap();
+    }
+
     #[test]
     fn structured_download_identity_rejects_traversal() {
         let valid = DownloadRequest {
@@ -1392,6 +1528,37 @@ mod tests {
         let job = webui::new_job("job-1", MODEL_DOWNLOAD_KIND, "Qwen/model", "queued");
         assert_eq!(job.kind, MODEL_DOWNLOAD_KIND);
         assert_eq!(job.download_status, None);
+    }
+
+    #[test]
+    fn model_download_destination_uses_only_configured_folders() {
+        let configured = vec![
+            PathBuf::from("/models/primary"),
+            PathBuf::from("/models/backup"),
+        ];
+
+        assert_eq!(
+            configured_model_destination(&configured),
+            Some(PathBuf::from("/models/primary"))
+        );
+        assert_eq!(configured_model_destination(&[]), None);
+        assert_eq!(configured_model_destination(&[PathBuf::new()]), None);
+    }
+
+    #[tokio::test]
+    async fn storage_response_reports_resolved_model_destinations() {
+        let state = crate::gateway::testkit::state_with("eu", vec![]).await;
+        {
+            let mut config = state.auth.write().await;
+            config.model_dirs = Some(vec!["/models/primary".into(), "/models/backup".into()]);
+        }
+
+        let response = storage_response(&state).await;
+
+        assert_eq!(
+            response.destination_paths,
+            vec!["/models/primary".to_string(), "/models/backup".to_string()]
+        );
     }
 
     #[test]

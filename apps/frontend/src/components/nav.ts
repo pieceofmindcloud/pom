@@ -45,12 +45,12 @@ export const NAV: NavSection[] = [
   { labelKey: "nav.dashboard", icon: Gauge, to: "/" },
   { labelKey: "nav.testChat", icon: MessagesSquare, to: "/chat" },
   {
-    labelKey: "nav.models",
-    icon: Boxes,
-    children: [
-      { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
-      { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
-      { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
+      labelKey: "nav.models",
+      icon: Boxes,
+      children: [
+        { labelKey: "nav.remoteModels", to: "/modelos/remotos", icon: Search },
+        { labelKey: "nav.fullModels", to: "/modelos", icon: Boxes, end: true },
+        { labelKey: "nav.sliceModels", to: "/modelos/fatiar", icon: Scissors },
       { labelKey: "nav.shards", to: "/fatias", icon: Layers, end: true },
     ],
   },

@@ -10,6 +10,8 @@ use super::block::{
     Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
 };
 use super::cache::{CacheError, ExpertCache};
+#[cfg(feature = "cuda")]
+use super::cache::{DeviceWarmupOptions, DeviceWarmupReport, DeviceWarmupStop, ExpertKey};
 use super::format_heterogeneous::{HeterogeneousMoeSource, TensorRole};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
@@ -23,9 +25,15 @@ use super::format_q4_0::{
 };
 use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "cuda")]
+use std::collections::VecDeque;
 use std::fmt;
 use std::path::Path;
+#[cfg(feature = "cuda")]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "cuda")]
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoeExecutorKind {
@@ -56,7 +64,7 @@ pub struct MoeExecutorTelemetry {
     pub diagnostics: Option<MoeExecutorDiagnostics>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MoeExecutorDiagnostics {
     pub profiled: bool,
     pub calls: u64,
@@ -94,11 +102,59 @@ pub struct MoeExecutorDiagnostics {
     pub host_aggregation_ms: f64,
     pub cuda_call_wall_ms: f64,
     pub runtime_forward_ms: f64,
+    pub warmup_status: String,
+    pub warmup_candidates: u64,
+    pub warmup_admitted: u64,
+    pub warmup_admitted_bytes: u64,
+    pub warmup_resident_bytes: usize,
+    pub warmup_elapsed_ms: f64,
+    pub warmup_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MoeRuntimeDiagnostics {
     runtime_forward_ms: f64,
+}
+
+#[cfg(feature = "cuda")]
+#[derive(Debug, Clone, Default)]
+struct MoeWarmupState {
+    status: String,
+    candidates: u64,
+    admitted: u64,
+    admitted_bytes: u64,
+    resident_bytes: usize,
+    elapsed_ms: f64,
+    error: Option<String>,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+#[cfg(feature = "cuda")]
+impl MoeWarmupState {
+    fn new() -> Self {
+        Self {
+            status: "disabled".to_owned(),
+            ..Self::default()
+        }
+    }
+
+    fn apply(&mut self, report: DeviceWarmupReport) {
+        self.status = match report.stop {
+            DeviceWarmupStop::Completed => "completed",
+            DeviceWarmupStop::BudgetExhausted => "budget-exhausted",
+            DeviceWarmupStop::Cancelled => "cancelled",
+            DeviceWarmupStop::TimedOut => "timed-out",
+            DeviceWarmupStop::Failed => "failed",
+        }
+        .to_owned();
+        self.candidates = report.candidates;
+        self.admitted = report.admitted;
+        self.admitted_bytes = report.admitted_bytes;
+        self.resident_bytes = report.resident_bytes;
+        self.elapsed_ms = report.elapsed_ms;
+        self.error = report.error;
+        self.cancellation = None;
+    }
 }
 
 impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
@@ -271,6 +327,131 @@ impl MoeSource {
             _ => Some(1), // LLM_FFN_SILU, as implemented by the other decoders
         }
     }
+
+    #[cfg(feature = "cuda")]
+    fn warmup_payloads(
+        &self,
+        layer: u32,
+        expert: u32,
+        model: &str,
+    ) -> Result<Vec<(ExpertKey, Vec<u8>)>, String> {
+        match self {
+            Self::Plain(source) => source
+                .load_expert(layer, expert)
+                .map(|payload| {
+                    vec![(
+                        ExpertKey::new(model, layer, expert, source.format().name()),
+                        payload,
+                    )]
+                })
+                .map_err(|error| error.to_string()),
+            Self::K(source) => source
+                .load_expert(layer, expert)
+                .map(|payload| {
+                    vec![(
+                        ExpertKey::new(model, layer, expert, source.format().name()),
+                        payload,
+                    )]
+                })
+                .map_err(|error| error.to_string()),
+            Self::Iq(source) => source
+                .load_expert(layer, expert)
+                .map(|payload| {
+                    vec![(
+                        ExpertKey::new(model, layer, expert, source.format().name()),
+                        payload,
+                    )]
+                })
+                .map_err(|error| error.to_string()),
+            Self::Nvfp4(source) => source
+                .load_expert(layer, expert)
+                .map(|payload| vec![(ExpertKey::new(model, layer, expert, "nvfp4"), payload)])
+                .map_err(|error| error.to_string()),
+            Self::Heterogeneous(source) => source
+                .load_expert_tensors(layer, expert)
+                .map(|payloads| {
+                    payloads
+                        .into_iter()
+                        .map(|payload| {
+                            (
+                                ExpertKey::new(
+                                    model,
+                                    layer,
+                                    expert,
+                                    format!(
+                                        "heterogeneous:{}:{}",
+                                        payload.role.as_str(),
+                                        payload.dtype
+                                    ),
+                                ),
+                                payload.bytes,
+                            )
+                        })
+                        .collect()
+                })
+                .map_err(|error| error.to_string()),
+            Self::Legacy(_) | Self::Q4(_) | Self::LowBit(_) => Err(
+                "aquecimento de device recusado: a fonte não possui ponte CUDA residente".into(),
+            ),
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+struct DeviceWarmupCandidates<'a> {
+    source: &'a MoeSource,
+    model: &'a str,
+    layers: u32,
+    experts: u32,
+    layer: u32,
+    expert: u32,
+    pending: VecDeque<Result<(ExpertKey, Vec<u8>), String>>,
+}
+
+#[cfg(feature = "cuda")]
+impl<'a> DeviceWarmupCandidates<'a> {
+    fn new(source: &'a MoeSource, model: &'a str, layers: u32, experts: u32) -> Self {
+        Self {
+            source,
+            model,
+            layers,
+            experts,
+            layer: 0,
+            expert: 0,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+#[cfg(feature = "cuda")]
+impl Iterator for DeviceWarmupCandidates<'_> {
+    type Item = Result<(ExpertKey, Vec<u8>), String>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if let Some(candidate) = self.pending.pop_front() {
+            return Some(candidate);
+        }
+        if self.layer >= self.layers || self.expert >= self.experts {
+            return None;
+        }
+
+        let layer = self.layer;
+        let expert = self.expert;
+        self.expert = self.expert.saturating_add(1);
+        if self.expert >= self.experts {
+            self.expert = 0;
+            self.layer = self.layer.saturating_add(1);
+        }
+        match self.source.warmup_payloads(layer, expert, self.model) {
+            Ok(payloads) => {
+                self.pending.extend(payloads.into_iter().map(Ok));
+                self.pending.pop_front()
+            }
+            Err(error) => Some(Err(format!(
+                "aquecimento do expert {expert} da camada {layer}: {error}"
+            ))),
+        }
+    }
 }
 
 enum MoeBlock {
@@ -289,6 +470,12 @@ pub struct MoeRuntime {
     blocks: Vec<MoeBlock>,
     cache: Arc<ExpertCache>,
     runtime_diagnostics: Mutex<MoeRuntimeDiagnostics>,
+    #[cfg(feature = "cuda")]
+    model: String,
+    #[cfg(feature = "cuda")]
+    device_cache: Option<Arc<super::cache::DeviceExpertCache>>,
+    #[cfg(feature = "cuda")]
+    warmup: Arc<Mutex<MoeWarmupState>>,
 }
 
 pub struct MoeRouteBatch<'a> {
@@ -466,6 +653,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: None,
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => {
@@ -522,6 +715,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: device_cache.clone(),
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Q4_0 => {
@@ -553,6 +752,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: None,
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Nvfp4 => {
@@ -617,6 +822,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: device_cache.clone(),
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Mxfp4
@@ -667,6 +878,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: None,
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Q2K
@@ -749,6 +966,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: device_cache.clone(),
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Iq2XXS
@@ -837,6 +1060,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: device_cache.clone(),
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
             ExpertFormat::Heterogeneous => {
@@ -871,6 +1100,12 @@ impl MoeRuntime {
                     blocks,
                     cache: Arc::clone(&cache),
                     runtime_diagnostics: Mutex::new(MoeRuntimeDiagnostics::default()),
+                    #[cfg(feature = "cuda")]
+                    model: model.clone(),
+                    #[cfg(feature = "cuda")]
+                    device_cache: device_cache.clone(),
+                    #[cfg(feature = "cuda")]
+                    warmup: Arc::new(Mutex::new(MoeWarmupState::new())),
                 })
             }
         }
@@ -879,6 +1114,139 @@ impl MoeRuntime {
     pub fn layers(&self) -> u32 {
         self.blocks.len() as u32
     }
+
+    #[cfg(feature = "cuda")]
+    fn warmup_max_duration() -> Duration {
+        const DEFAULT_MAX_MS: u64 = 30_000;
+        match std::env::var("POM_MOE_WARMUP_MAX_MS") {
+            Ok(value) => match value.parse::<u64>() {
+                Ok(milliseconds) if milliseconds > 0 => Duration::from_millis(milliseconds),
+                _ => {
+                    tracing::warn!(
+                        value = %value,
+                        default_ms = DEFAULT_MAX_MS,
+                        "POM_MOE_WARMUP_MAX_MS inválido; usando o prazo padrão"
+                    );
+                    Duration::from_millis(DEFAULT_MAX_MS)
+                }
+            },
+            Err(std::env::VarError::NotPresent) => Duration::from_millis(DEFAULT_MAX_MS),
+            Err(error) => {
+                tracing::warn!(
+                    error = %error,
+                    default_ms = DEFAULT_MAX_MS,
+                    "não foi possível ler POM_MOE_WARMUP_MAX_MS; usando o prazo padrão"
+                );
+                Duration::from_millis(DEFAULT_MAX_MS)
+            }
+        }
+    }
+
+    /// Inicia o preenchimento assíncrono do cache residente no device.
+    ///
+    /// O carregamento do modelo não espera o banco inteiro: a thread percorre
+    /// a fonte fria até a reserva medida ser atingida, o prazo vencer ou o
+    /// cancelamento ser solicitado. O estado fica nos diagnósticos do runtime
+    /// e cada payload é admitido pela mesma política de memória usada no
+    /// caminho quente.
+    #[cfg(feature = "cuda")]
+    pub fn start_device_warmup(self: &Arc<Self>) {
+        let Some(device_cache) = self.device_cache.clone() else {
+            return;
+        };
+        let options = DeviceWarmupOptions::new(Self::warmup_max_duration());
+        let cancellation = Arc::clone(&options.cancellation);
+        {
+            let mut state = self
+                .warmup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if let Some(previous) = state.cancellation.replace(Arc::clone(&cancellation)) {
+                previous.store(true, Ordering::Release);
+            }
+            state.status = "running".to_owned();
+            state.candidates = 0;
+            state.admitted = 0;
+            state.admitted_bytes = 0;
+            state.resident_bytes = device_cache.stats().resident_bytes;
+            state.elapsed_ms = 0.0;
+            state.error = None;
+        }
+
+        tracing::info!(
+            model = %self.model,
+            max_ms = options.max_duration.as_millis() as u64,
+            "aquecimento do cache MoE residente iniciado"
+        );
+        let runtime = Arc::clone(self);
+        let options_for_thread = options.clone();
+        let spawn = std::thread::Builder::new()
+            .name("pom-moe-cache-warmup".to_owned())
+            .spawn(move || {
+                let candidates = DeviceWarmupCandidates::new(
+                    &runtime.source,
+                    &runtime.model,
+                    runtime.layers(),
+                    runtime.source.experts(),
+                );
+                let report = device_cache.warm(candidates, &options_for_thread);
+                let status = report.stop;
+                let admitted_bytes = report.admitted_bytes;
+                let remaining_reason = match status {
+                    DeviceWarmupStop::BudgetExhausted => "o orçamento medido foi atingido",
+                    DeviceWarmupStop::Cancelled => "o cancelamento foi solicitado",
+                    DeviceWarmupStop::TimedOut => "o prazo configurado venceu",
+                    DeviceWarmupStop::Completed => "todos os candidatos visitados foram aquecidos",
+                    DeviceWarmupStop::Failed => "a fonte ou o upload falhou",
+                };
+                {
+                    let mut state = runtime
+                        .warmup
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
+                    state.apply(report);
+                }
+                tracing::info!(
+                    model = %runtime.model,
+                    status = ?status,
+                    admitted_bytes,
+                    reason = remaining_reason,
+                    "aquecimento do cache MoE residente terminou"
+                );
+            });
+        if let Err(error) = spawn {
+            let mut state = self
+                .warmup
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            state.status = "failed".to_owned();
+            state.error = Some(format!(
+                "não foi possível iniciar a thread de aquecimento: {error}"
+            ));
+            state.cancellation = None;
+            tracing::warn!(error = %error, "aquecimento do cache MoE não iniciou");
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn start_device_warmup(&self) {}
+
+    /// Interrompe o aquecimento sem desalojar as entradas já admitidas.
+    #[cfg(feature = "cuda")]
+    pub fn cancel_device_warmup(&self) {
+        if let Some(cancellation) = self
+            .warmup
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .cancellation
+            .clone()
+        {
+            cancellation.store(true, Ordering::Release);
+        }
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    pub fn cancel_device_warmup(&self) {}
 
     pub fn executor_kind(&self) -> MoeExecutorKind {
         match self.blocks.first() {
@@ -910,6 +1278,7 @@ impl MoeRuntime {
                 .lock()
                 .unwrap_or_else(|error| error.into_inner())
                 .runtime_forward_ms,
+            warmup_status: "disabled".to_owned(),
             ..MoeExecutorDiagnostics::default()
         };
 
@@ -918,6 +1287,24 @@ impl MoeRuntime {
 
         #[cfg(feature = "cuda")]
         {
+            let warmup = self
+                .warmup
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .clone();
+            diagnostics.warmup_status = if warmup.status.is_empty() {
+                "disabled".to_owned()
+            } else {
+                warmup.status
+            };
+            diagnostics.warmup_candidates = warmup.candidates;
+            diagnostics.warmup_admitted = warmup.admitted;
+            diagnostics.warmup_admitted_bytes = warmup.admitted_bytes;
+            diagnostics.warmup_resident_bytes = warmup.resident_bytes;
+            diagnostics.warmup_elapsed_ms = warmup.elapsed_ms;
+            diagnostics.warmup_error = warmup.error;
+
+            let mut device_cache_recorded = false;
             for block in &self.blocks {
                 let (cuda, device_cache) = match block {
                     MoeBlock::Nvfp4(block) => {
@@ -954,31 +1341,18 @@ impl MoeRuntime {
                 diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
-                diagnostics.device_cache_hits = diagnostics
-                    .device_cache_hits
-                    .saturating_add(device_cache.hits);
-                diagnostics.device_cache_misses = diagnostics
-                    .device_cache_misses
-                    .saturating_add(device_cache.misses);
-                diagnostics.device_cache_admissions = diagnostics
-                    .device_cache_admissions
-                    .saturating_add(device_cache.admissions);
-                diagnostics.device_cache_evictions = diagnostics
-                    .device_cache_evictions
-                    .saturating_add(device_cache.evictions);
-                diagnostics.device_cache_rejections = diagnostics
-                    .device_cache_rejections
-                    .saturating_add(device_cache.rejections);
-                diagnostics.device_cache_uploads = diagnostics
-                    .device_cache_uploads
-                    .saturating_add(device_cache.uploads);
-                diagnostics.device_cache_upload_bytes = diagnostics
-                    .device_cache_upload_bytes
-                    .saturating_add(device_cache.upload_bytes);
-                diagnostics.device_cache_upload_ms += device_cache.upload_ms;
-                diagnostics.device_cache_resident_bytes = diagnostics
-                    .device_cache_resident_bytes
-                    .saturating_add(device_cache.resident_bytes);
+                if !device_cache_recorded {
+                    diagnostics.device_cache_hits = device_cache.hits;
+                    diagnostics.device_cache_misses = device_cache.misses;
+                    diagnostics.device_cache_admissions = device_cache.admissions;
+                    diagnostics.device_cache_evictions = device_cache.evictions;
+                    diagnostics.device_cache_rejections = device_cache.rejections;
+                    diagnostics.device_cache_uploads = device_cache.uploads;
+                    diagnostics.device_cache_upload_bytes = device_cache.upload_bytes;
+                    diagnostics.device_cache_upload_ms = device_cache.upload_ms;
+                    diagnostics.device_cache_resident_bytes = device_cache.resident_bytes;
+                    device_cache_recorded = true;
+                }
                 if let MoeBlock::Nvfp4(block) = block {
                     let host = block.host_diagnostics();
                     diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;

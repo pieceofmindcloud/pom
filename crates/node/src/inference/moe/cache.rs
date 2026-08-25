@@ -9,7 +9,11 @@ use super::admission::MemoryAccount;
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
+#[cfg(any(feature = "cuda", test))]
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(any(feature = "cuda", test))]
+use std::time::Duration;
 #[cfg(any(feature = "cuda", test))]
 use std::time::Instant;
 
@@ -514,6 +518,45 @@ pub struct DeviceExpertCache {
 }
 
 #[cfg(any(feature = "cuda", test))]
+#[derive(Debug, Clone)]
+pub struct DeviceWarmupOptions {
+    pub max_duration: Duration,
+    pub cancellation: Arc<AtomicBool>,
+}
+
+#[cfg(any(feature = "cuda", test))]
+impl DeviceWarmupOptions {
+    pub fn new(max_duration: Duration) -> Self {
+        Self {
+            max_duration,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+#[cfg(any(feature = "cuda", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeviceWarmupStop {
+    Completed,
+    BudgetExhausted,
+    Cancelled,
+    TimedOut,
+    Failed,
+}
+
+#[cfg(any(feature = "cuda", test))]
+#[derive(Debug, Clone)]
+pub struct DeviceWarmupReport {
+    pub stop: DeviceWarmupStop,
+    pub candidates: u64,
+    pub admitted: u64,
+    pub admitted_bytes: u64,
+    pub error: Option<String>,
+    pub elapsed_ms: f64,
+    pub resident_bytes: usize,
+}
+
+#[cfg(any(feature = "cuda", test))]
 impl DeviceExpertCache {
     pub fn new(account: MemoryAccount, allocator: Arc<dyn DeviceAllocator>) -> Arc<Self> {
         Arc::new(Self {
@@ -550,6 +593,78 @@ impl DeviceExpertCache {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .stats
+    }
+
+    /// Admite candidatos lazily até o orçamento, um prazo ou cancelamento.
+    ///
+    /// O iterador só produz o próximo payload depois da verificação de
+    /// cancelamento e prazo. Assim o aquecimento não precisa materializar o
+    /// banco inteiro de experts em RAM e pode parar sem consumir mais disco,
+    /// CPU ou VRAM do que o orçamento medido permite.
+    pub fn warm<I>(
+        self: &Arc<Self>,
+        candidates: I,
+        options: &DeviceWarmupOptions,
+    ) -> DeviceWarmupReport
+    where
+        I: IntoIterator<Item = Result<(ExpertKey, Vec<u8>), String>>,
+    {
+        let started = Instant::now();
+        let mut report = DeviceWarmupReport {
+            stop: DeviceWarmupStop::Completed,
+            candidates: 0,
+            admitted: 0,
+            admitted_bytes: 0,
+            error: None,
+            elapsed_ms: 0.0,
+            resident_bytes: self.stats().resident_bytes,
+        };
+        let mut candidates = candidates.into_iter();
+
+        loop {
+            if options.cancellation.load(Ordering::Acquire) {
+                report.stop = DeviceWarmupStop::Cancelled;
+                break;
+            }
+            if started.elapsed() >= options.max_duration {
+                report.stop = DeviceWarmupStop::TimedOut;
+                break;
+            }
+            let Some(candidate) = candidates.next() else {
+                break;
+            };
+            report.candidates = report.candidates.saturating_add(1);
+            let (key, payload) = match candidate {
+                Ok(candidate) => candidate,
+                Err(error) => {
+                    report.stop = DeviceWarmupStop::Failed;
+                    report.error = Some(error);
+                    break;
+                }
+            };
+            let bytes = payload.len() as u64;
+            match self.admit(key, &payload) {
+                Ok(lease) => {
+                    report.admitted = report.admitted.saturating_add(1);
+                    report.admitted_bytes = report.admitted_bytes.saturating_add(bytes);
+                    drop(lease);
+                }
+                Err(DeviceCacheError::NoBudget { .. })
+                | Err(DeviceCacheError::BusyAndNoEviction { .. }) => {
+                    report.stop = DeviceWarmupStop::BudgetExhausted;
+                    break;
+                }
+                Err(error) => {
+                    report.stop = DeviceWarmupStop::Failed;
+                    report.error = Some(error.to_string());
+                    break;
+                }
+            }
+        }
+
+        report.elapsed_ms = started.elapsed().as_secs_f64() * 1_000.0;
+        report.resident_bytes = self.stats().resident_bytes;
+        report
     }
 
     pub fn admit(
@@ -934,6 +1049,54 @@ mod tests {
         assert!(matches!(error, DeviceCacheError::NoBudget { limit: 0, .. }));
         assert!(error.to_string().contains("Gemma4"));
         assert!(error.to_string().contains("nvfp4"));
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn warmup_admite_ate_o_orcamento_e_reporta_limite() {
+        let allocator = FakeDeviceAllocator::new(5);
+        let cache = device_cache(&allocator, 5);
+        let candidates = vec![Ok((key(1), vec![1; 3])), Ok((key(2), vec![2; 6]))];
+
+        let report = cache.warm(
+            candidates,
+            &DeviceWarmupOptions::new(Duration::from_secs(1)),
+        );
+
+        assert_eq!(report.stop, DeviceWarmupStop::BudgetExhausted);
+        assert_eq!(report.candidates, 2);
+        assert_eq!(report.admitted, 1);
+        assert_eq!(report.admitted_bytes, 3);
+        assert_eq!(report.resident_bytes, 3);
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn warmup_cancelado_nao_carrega_o_primeiro_payload() {
+        let allocator = FakeDeviceAllocator::new(10);
+        let cache = device_cache(&allocator, 10);
+        let options = DeviceWarmupOptions::new(Duration::from_secs(1));
+        options.cancellation.store(true, Ordering::Release);
+
+        let report = cache.warm(vec![Ok((key(1), vec![1; 3]))], &options);
+
+        assert_eq!(report.stop, DeviceWarmupStop::Cancelled);
+        assert_eq!(report.candidates, 0);
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn warmup_com_prazo_zero_e_observavel() {
+        let allocator = FakeDeviceAllocator::new(10);
+        let cache = device_cache(&allocator, 10);
+
+        let report = cache.warm(
+            vec![Ok((key(1), vec![1; 3]))],
+            &DeviceWarmupOptions::new(Duration::ZERO),
+        );
+
+        assert_eq!(report.stop, DeviceWarmupStop::TimedOut);
+        assert_eq!(report.candidates, 0);
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
     }
 }

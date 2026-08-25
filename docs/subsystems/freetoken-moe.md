@@ -1583,6 +1583,44 @@ prova. A prova E2E deve executar a mesma revisão do código no host que contém
 o GGUF e mostrar resposta, `executed_engine=moe`, sem divergência e com
 `input_tokens > 0`.
 
+### Aquecimento do cache residente - F5-E3a
+
+O cache de device começa vazio por desenho: a carga do modelo cria o
+`DeviceExpertCache`, mas a primeira admissão acontecia somente quando uma rota
+selecionava um expert. Isso deixava a VRAM baixa após o carregamento e fazia as
+primeiras requisições pagarem a leitura do GGUF e o upload dos pesos.
+
+O `MoeRuntime` agora inicia, somente quando existe uma ponte CUDA para a fonte
+selecionada, uma thread de aquecimento assíncrona no carregamento do modelo.
+Ela percorre os experts por camada e índice, pede ao próprio loader o payload
+canônico de cada tensor e chama a mesma admissão do caminho quente. O dispatch
+é por `MoeSource` e pelos metadados do tensor; não há ramo por arquitetura,
+modelo ou versão de quantização. Em um GGUF heterogêneo, cada papel e dtype
+recebe a mesma chave e descriptor que o forward usa.
+
+O limite continua sendo o orçamento de VRAM medido, incluindo a reserva de
+compute já reportada pelo `llama.cpp`. Quando a admissão devolve
+`NoBudget`/`BusyAndNoEviction`, o aquecimento para com
+`budget-exhausted`; os candidatos ainda não visitados ficam explicitamente
+fora do aquecimento e continuam sujeitos ao LRU sob demanda. Ele não falha o
+carregamento por o modelo inteiro não caber.
+
+O prazo padrão é 30.000 ms e pode ser ajustado por
+`POM_MOE_WARMUP_MAX_MS`. A thread verifica o prazo e um `AtomicBool` antes de
+cada candidato; `MoeRuntime::cancel_device_warmup` permite cancelamento
+cooperativo sem remover entradas já admitidas. Logs de início e fim registram
+modelo, status, bytes admitidos e motivo de parada. A telemetria
+`moe_executor_diagnostics` publica `warmup_status`, candidatos visitados,
+experts admitidos, bytes residentes, duração e erro. Assim uma subida não fica
+bloqueada indefinidamente e uma parada por orçamento, prazo ou erro não vira
+cache frio silencioso.
+
+Os testes de cache cobrem aquecimento até o orçamento, cancelamento antes do
+primeiro payload e prazo zero. A validação CUDA da integração e a comparação
+E2E do Qwen UD após o aquecimento ainda precisam ser executadas no diretório
+isolado `/data/ftk-cuda-target`; nenhum número de ganho é afirmado antes dessa
+medição.
+
 ## Fase 0: baseline local
 
 ### Método reproduzível

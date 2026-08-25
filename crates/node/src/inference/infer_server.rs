@@ -1729,6 +1729,7 @@ pub async fn run(
     };
 
     if let Some(runtime) = moe.as_ref() {
+        runtime.start_device_warmup();
         engine.set_moe_runtime(Arc::clone(runtime))?;
     }
     let moe_fallback_reason = moe_plan

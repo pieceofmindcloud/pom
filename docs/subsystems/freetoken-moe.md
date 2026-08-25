@@ -289,10 +289,11 @@ e por fase. Um binário sem a feature `cuda` não transforma NVFP4 em CPU por
 acidente: ele recusa a carga com a mensagem nominal do executor, salvo quando
 `POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o executor de referência.
 
-No Qwen3.6-35B-A3B-UD-IQ3_S real, a telemetria agora deve mostrar
-`moe_executor=cpu-reference`, `moe_executor_dtypes=[21,22,23]` e o motivo
-`IQ3_S`, `IQ2_S` e `IQ4_XS` sem ponte CUDA. Isso é uma escolha explícita do
-decoder CPU heterogêneo, não uma falha de lançamento CUDA escondida.
+No Qwen3.6-35B-A3B-UD-IQ3_S real, a ponte agora está autorizada a publicar
+`moe_executor=cuda`, `moe_executor_dtypes=[21,22,23]` e nenhum motivo de
+CPUReference, depois da prova diferencial dos três dtypes na GPU real. A
+prova física desse GGUF ainda não foi executada neste worktree, portanto a
+telemetria esperada é um contrato a verificar, não um resultado já afirmado.
 
 ### Fase 5.1: ponte CUDA por dtype
 
@@ -1305,6 +1306,40 @@ nenhuma dessas fases.
    100 iterações aquecidas por ponto de carga, o tempo combinado satisfizer
    `T_total <= 1,10 * max(T_compute, T_transfer)`. O alvo de segurança é não
    regredir o prefill medido na F5.1.
+
+#### Medição inicial da F5.2 - 2026-08-25
+
+A medição foi executada na ksia, em uma RTX 5060 Ti, com `POM_MOE_CUDA_PROFILE=1`,
+`CARGO_TARGET_DIR=/data/ftk-cuda-target` e `CUDACXX=/usr/local/cuda-12/bin/nvcc`.
+O serviço não foi tocado: o teste rodou em um checkout temporário e os pesos
+dos experts ficaram residentes no cache CUDA antes das 100 iterações de cada
+ponto. O comando reproduzível foi:
+
+```text
+PATH=/home/jairpereira/.rustup/toolchains/stable-x86_64-unknown-linux-gnu/bin:$PATH \
+POM_MOE_CUDA_PROFILE=1 CARGO_TARGET_DIR=/data/ftk-cuda-target \
+CUDACXX=/usr/local/cuda-12/bin/nvcc \
+cargo test -p node --features vulkan,cuda --bin pom \
+  mede_banda_h2d_d2h_do_lote_nvfp4 -- --ignored --nocapture
+```
+
+Saída observada:
+
+```text
+CUDA_BANDWIDTH case=tiny hidden=64 intermediate=64 tokens=2 active_experts=2 calls=400 h2d_bytes=60000 h2d_ms=1.998 effective_h2d_GB_s=0.030 d2h_bytes=51200 d2h_ms=0.760 effective_d2h_GB_s=0.067 kernel_ms=7.400 wall_ms=14.320
+CUDA_BANDWIDTH case=gemma4_token hidden=2816 intermediate=704 tokens=1 active_experts=8 calls=800 h2d_bytes=1140800 h2d_ms=2.262 effective_h2d_GB_s=0.504 d2h_bytes=1126400 d2h_ms=0.818 effective_d2h_GB_s=1.377 kernel_ms=22.398 wall_ms=39.021
+CUDA_BANDWIDTH case=gemma4_batch8 hidden=2816 intermediate=704 tokens=8 active_experts=8 calls=6400 h2d_bytes=9120800 h2d_ms=3.543 effective_h2d_GB_s=2.574 d2h_bytes=9011200 d2h_ms=2.209 effective_d2h_GB_s=4.079 kernel_ms=162.502 wall_ms=185.358
+```
+
+Esses valores são taxas efetivas das cópias pequenas feitas por uma chamada
+FFI síncrona, não a banda máxima do PCIe. Os bytes dos pesos não aparecem no
+H2D da chamada porque o teste mede o caminho residente; o upload inicial é
+contabilizado separadamente pelo cache. A chamada atual ainda aloca e libera
+buffers por forward, faz duas `cudaDeviceSynchronize` e só então retorna, por
+isso não há sobreposição nesta medição. Nos dois pontos representativos,
+`T_total / max(T_compute, T_transfer)` foi `39,021 / 22,398 = 1,742` e
+`185,358 / 162,502 = 1,141`, respectivamente. Ambos falham o critério de
+`1,10`; a F5.2 continua aberta e nenhum ganho de co-execução foi declarado.
 
 4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
    operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto

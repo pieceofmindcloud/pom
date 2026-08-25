@@ -186,10 +186,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
   dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
-  nos caminhos unitário e batch. O executor CUDA ainda não tem perfil de banda,
-  double buffer ou medição de prefill carregados, portanto a co-execução
-  CPU/GPU da Fase 5 ainda não está declarada pronta. O wire continua em f16 e
-  nenhum peso trafega; a costura não substitui ainda
+  nos caminhos unitário e batch. O teste ignorado
+  `mede_banda_h2d_d2h_do_lote_nvfp4`, executado explicitamente com
+  `POM_MOE_CUDA_PROFILE=1`, mede H2D, D2H, kernel e parede externa em
+  geometrias pequena e Gemma4 após o aquecimento do cache de device. O perfil
+  ainda não é persistido nem carregado pelo runtime, e o executor ainda não tem
+  double buffer assíncrono ou medição de prefill carregados, portanto a
+  co-execução CPU/GPU da Fase 5 ainda não está declarada pronta. A medição e os
+  números observados vivem em `docs/subsystems/freetoken-moe.md`. O wire continua
+  em f16 e nenhum peso trafega; a costura não substitui ainda
   atenção, demais camadas ou a amostragem do `LlmEngine`.
   Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os
   payloads canônicos por camada, expert, papel e dtype em uma thread separada,

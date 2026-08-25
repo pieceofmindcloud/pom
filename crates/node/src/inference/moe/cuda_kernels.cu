@@ -14,8 +14,8 @@ constexpr int kPayloadHeaderBytes = 32;
 
 __device__ float fp4_value(uint8_t value) {
     constexpr float values[16] = {
-        0.0f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f, 4.0f, 6.0f,
-        0.0f, -0.5f, -1.0f, -1.5f, -2.0f, -3.0f, -4.0f, -6.0f,
+        0.0f, 1.0f, 2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f,
+        0.0f, -1.0f, -2.0f, -3.0f, -4.0f, -6.0f, -8.0f, -12.0f,
     };
     return values[value & 0x0f];
 }
@@ -36,8 +36,7 @@ __device__ float dot_nvfp4(
     const uint8_t * matrix,
     int row,
     int columns,
-    const float * input,
-    float input_scale
+    const float * input
 ) {
     const int row_bytes = (columns / kBlockElements) * kBlockBytes;
     const uint8_t * encoded = matrix + row * row_bytes;
@@ -49,8 +48,8 @@ __device__ float dot_nvfp4(
             const uint8_t * values = packed + 4 + subblock * (kSubblockElements / 2);
             int input_start = block * kBlockElements + subblock * kSubblockElements;
             for (int index = 0; index < kSubblockElements / 2; ++index) {
-                result += scale * fp4_value(values[index]) * input[input_start + index] * input_scale;
-                result += scale * fp4_value(values[index] >> 4) * input[input_start + index + kSubblockElements / 2] * input_scale;
+                result += scale * fp4_value(values[index]) * input[input_start + index];
+                result += scale * fp4_value(values[index] >> 4) * input[input_start + index + kSubblockElements / 2];
             }
         }
     }
@@ -64,8 +63,6 @@ __global__ void gate_up_kernel(
     const float * hidden_values,
     float gate_scale,
     float up_scale,
-    float gate_input_scale,
-    float up_input_scale,
     float * gate_up_values
 ) {
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
@@ -77,8 +74,7 @@ __global__ void gate_up_kernel(
         gate_up,
         row,
         hidden,
-        hidden_values,
-        is_up ? up_input_scale : gate_input_scale
+        hidden_values
     );
     gate_up_values[row] = value * (is_up ? up_scale : gate_scale);
 }
@@ -93,7 +89,6 @@ __global__ void down_kernel(
     int intermediate,
     const float * gate_up_values,
     float down_scale,
-    float down_input_scale,
     float * output
 ) {
     const int row = blockIdx.x * blockDim.x + threadIdx.x;
@@ -110,8 +105,8 @@ __global__ void down_kernel(
             const uint8_t * values = packed + 4 + subblock * (kSubblockElements / 2);
             int input_start = block * kBlockElements + subblock * kSubblockElements;
             for (int index = 0; index < kSubblockElements / 2; ++index) {
-                const float first = gelu(gate_up_values[input_start]) * gate_up_values[intermediate + input_start] * down_input_scale;
-                const float second = gelu(gate_up_values[input_start + kSubblockElements / 2]) * gate_up_values[intermediate + input_start + kSubblockElements / 2] * down_input_scale;
+                const float first = gelu(gate_up_values[input_start]) * gate_up_values[intermediate + input_start];
+                const float second = gelu(gate_up_values[input_start + kSubblockElements / 2]) * gate_up_values[intermediate + input_start + kSubblockElements / 2];
                 result += scale * fp4_value(values[index]) * first;
                 result += scale * fp4_value(values[index] >> 4) * second;
                 ++input_start;
@@ -194,7 +189,7 @@ extern "C" int pom_moe_nvfp4_forward(
         const int block_size = 128;
         gate_up_kernel<<<(2 * intermediate_width + block_size - 1) / block_size, block_size>>>(
             gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width), d_hidden,
-            scales_host[0], scales_host[1], scales_host[3], scales_host[4], d_gate_up_values);
+            scales_host[0], scales_host[1], d_gate_up_values);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         result = cuda_status(cudaDeviceSynchronize());
@@ -202,7 +197,7 @@ extern "C" int pom_moe_nvfp4_forward(
 
         down_kernel<<<(hidden_width + block_size - 1) / block_size, block_size>>>(
             d_down, static_cast<int>(hidden_width), static_cast<int>(intermediate_width), d_gate_up_values,
-            scales_host[2], scales_host[5], d_output);
+            scales_host[2], d_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         result = cuda_status(cudaDeviceSynchronize());

@@ -4,6 +4,9 @@
 //! valores, uma para cada subbloco de 16, seguidas por 32 bytes de nibbles
 //! E2M1. As escalas `.scale` e `.input_scale` por expert são preservadas no
 //! payload do cache, em vez de serem confundidas com os bytes quantizados.
+//! Nesta operação, a semântica nativa do llama.cpp usa apenas `.scale` depois
+//! da multiplicação. `.input_scale` continua obrigatório e preservado, mas não
+//! é aplicado ao hidden neste FFN.
 
 use super::cache::{CacheError, ExpertCache, ExpertKey};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
@@ -104,9 +107,6 @@ pub struct Nvfp4Expert<'a> {
     gate_scale: f32,
     up_scale: f32,
     down_scale: f32,
-    gate_input_scale: f32,
-    up_input_scale: f32,
-    down_input_scale: f32,
 }
 
 /// Valores intermediários de um expert, usados pela prova diferencial contra
@@ -196,9 +196,6 @@ impl<'a> Nvfp4Expert<'a> {
             gate_scale: scales[0],
             up_scale: scales[1],
             down_scale: scales[2],
-            gate_input_scale: scales[3],
-            up_input_scale: scales[4],
-            down_input_scale: scales[5],
         })
     }
 
@@ -213,19 +210,16 @@ impl<'a> Nvfp4Expert<'a> {
                 actual: hidden.len(),
             });
         }
-        let gate_input: Vec<f32> = hidden
-            .iter()
-            .map(|value| value * self.gate_input_scale)
-            .collect();
-        let up_input: Vec<f32> = hidden
-            .iter()
-            .map(|value| value * self.up_input_scale)
-            .collect();
+        // llama.cpp's native expert matmul consumes the normalized hidden
+        // directly and applies the per-expert `.scale` after the matmul.
+        // The GGUF `.input_scale` sidecars are metadata used by other
+        // quantized paths; the native MoE graph does not feed them into this
+        // FFN operation, so applying them here would change the model.
         let gate = mat_vec_nvfp4(
             &self.gate_up[..self.intermediate * row_bytes(self.hidden).unwrap()],
             self.intermediate,
             self.hidden,
-            &gate_input,
+            hidden,
         )
         .into_iter()
         .map(|value| value * self.gate_scale)
@@ -234,7 +228,7 @@ impl<'a> Nvfp4Expert<'a> {
             &self.gate_up[self.intermediate * row_bytes(self.hidden).unwrap()..],
             self.intermediate,
             self.hidden,
-            &up_input,
+            hidden,
         )
         .into_iter()
         .map(|value| value * self.up_scale)
@@ -243,7 +237,6 @@ impl<'a> Nvfp4Expert<'a> {
             .iter()
             .zip(&up)
             .map(|(&gate, &up)| gelu(gate) * up)
-            .map(|value| value * self.down_input_scale)
             .collect::<Vec<_>>();
         let output = mat_vec_nvfp4(self.down, self.hidden, self.intermediate, &gated)
             .into_iter()
@@ -837,7 +830,7 @@ fn mat_vec_nvfp4(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> V
 
 fn fp4_value(value: u8) -> f32 {
     [
-        0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, 0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0,
+        0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 0.0, -1.0, -2.0, -3.0, -4.0, -6.0, -8.0, -12.0,
     ][value as usize]
 }
 
@@ -1056,22 +1049,6 @@ mod tests {
             .expect("real GGUF must expose expert count in the gate tensor");
         drop(mmap);
         let source = Nvfp4Source::open_infer(&path, experts).unwrap();
-        for tensor in source.tensors.iter().filter(|tensor| {
-            tensor.name.starts_with("blk.0.ffn_gate_exps")
-                || tensor.name.starts_with("blk.0.ffn_up_exps")
-                || tensor.name.starts_with("blk.0.ffn_down_exps")
-        }) {
-            let values = if tensor.name.ends_with(".scale") || tensor.name.ends_with(".input_scale")
-            {
-                source.read_scale_vector(tensor).ok()
-            } else {
-                None
-            };
-            eprintln!(
-                "GGUF tensor diagnostic name={} dtype={} dims={:?} scalar_values={values:?}",
-                tensor.name, tensor.dtype, tensor.dims
-            );
-        }
         let hidden = (0..source.hidden())
             .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
             .collect::<Vec<_>>();
@@ -1096,9 +1073,11 @@ mod tests {
                     f32::from_le_bytes(payload[start..start + 4].try_into().unwrap())
                 })
                 .collect::<Vec<_>>();
-            eprintln!(
-                "llama.cpp oracle diagnostic layer={layer} expert=0 scales={payload_scales:?}"
-            );
+            if layer == 0 {
+                eprintln!(
+                    "llama.cpp oracle diagnostic layer={layer} expert=0 scales={payload_scales:?}"
+                );
+            }
             let expert =
                 Nvfp4Expert::from_payload(source.hidden(), source.intermediate(), &payload)
                     .unwrap();
@@ -1160,6 +1139,15 @@ mod tests {
         assert_eq!(output.len(), hidden);
         assert!(output.iter().all(|value| value.is_finite()));
         assert!(output.iter().all(|value| *value > 0.0));
+    }
+
+    #[test]
+    fn nvfp4_segue_convencao_native_do_ggml() {
+        assert_eq!(fp4_value(0), 0.0);
+        assert_eq!(fp4_value(1), 1.0);
+        assert_eq!(fp4_value(7), 12.0);
+        assert_eq!(fp4_value(9), -1.0);
+        assert_eq!(ue4m3_to_f32(0x38), 0.5);
     }
 
     #[test]

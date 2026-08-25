@@ -409,6 +409,33 @@ Rust CPU depois que a matriz CPU Rust versus llama.cpp estiver verde. Isso
 separa erro de descompactação/escala, erro de geometria ou roteamento e erro
 do kernel CUDA sem atribuir desempenho a um resultado incorreto.
 
+##### Convenção NVFP4 usada pela prova
+
+A resolução dos sidecars é genérica: para um tensor base `X.weight`, o nome
+canônico de um sidecar é `X.scale` ou `X.input_scale`. O loader recusa o
+tensor canônico ausente, nomeando-o; ele não transforma ausência em escala 1.
+Os seis sidecars por expert são preservados no payload: `.scale` e
+`.input_scale` para gate, up e down.
+
+O cálculo externo segue a semântica observada no oráculo nativo do fork. O
+`build_lora_mm_id` faz a multiplicação com o peso NVFP4 e aplica o `.scale`
+correspondente depois do resultado por expert. O campo `.input_scale` é
+carregado pelo modelo, mas não é consumido pelo `build_moe_ffn` nativo nem
+aparece em outra operação desse FFN. Por isso o executor externo não o aplica
+ao hidden, ao gate/up ou à ativação down. Isso não descarta o metadata: se uma
+futura operação GGML declarar explicitamente esse campo como parte da
+quantização de entrada, a regra será aplicá-lo antes da multiplicação daquela
+operação, com uma prova independente; não se deve reutilizar esta decisão sem
+essa evidência.
+
+Para os valores E2M1, o fork define `kvalues_fp4` como os valores dobrados
+`[0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12]`. A escala UE4M3
+é convertida para o valor bruto dividido por dois. A tabela dobrada e o fator
+`0.5` são uma única convenção do ggml, compartilhada por NVFP4 e MXFP4; usar a
+tabela E2M1 pela metade junto com UE4M3 dividido por dois aplica uma redução
+dupla. CPU Rust e CUDA usam agora exatamente essa convenção, protegida por
+teste unitário e pela comparação contra o ggml.
+
 Comando da prova real, fora da suíte padrão por exigir um arquivo grande:
 
 ```bash

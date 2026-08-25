@@ -1811,6 +1811,8 @@ mod tests {
                 2,
             )
             .unwrap();
+        eprintln!("route actual[0..8]={:?} expected[0..8]={:?}", &actual[..8], &expected[0][..8]);
+        eprintln!("route actual[64..72]={:?} expected[64..72]={:?}", &actual[64..72], &expected[1][..8]);
         for (actual, expected) in actual.chunks_exact(hidden).zip(expected) {
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");

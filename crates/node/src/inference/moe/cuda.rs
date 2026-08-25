@@ -285,6 +285,9 @@ unsafe extern "C" {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::inference::moe::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
+    use crate::inference::moe::format_q4_0::parse_tensor_table;
+    use memmap2::Mmap;
 
     fn packed_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {
         let row_size = columns / 64 * 36;
@@ -380,6 +383,59 @@ mod tests {
             assert_eq!(actual.len(), expected.len());
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real NVFP4 GGUF and a CUDA device"]
+    fn executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real() {
+        let path = std::env::var_os("POM_MOE_NUMERIC_MODEL")
+            .expect("POM_MOE_NUMERIC_MODEL must name a real MoE GGUF");
+        let path = std::path::PathBuf::from(path);
+        let file = std::fs::File::open(&path).unwrap();
+        let mmap = unsafe { Mmap::map(&file) }.unwrap();
+        let (_, tensors) = parse_tensor_table(&mmap).unwrap();
+        let experts = tensors
+            .iter()
+            .find(|tensor| {
+                tensor.name.ends_with("ffn_gate_up_exps.weight")
+                    || tensor.name.ends_with("ffn_gate_exps.weight")
+            })
+            .and_then(|tensor| tensor.dims.get(2).copied())
+            .and_then(|count| u32::try_from(count).ok())
+            .expect("real GGUF must expose expert count in the gate tensor");
+        drop(mmap);
+
+        let source = Nvfp4Source::open_infer(&path, experts).unwrap();
+        let hidden = (0..source.hidden())
+            .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let payloads = [
+            source.load_expert(0, 0).unwrap(),
+            source.load_expert(0, 1).unwrap(),
+        ];
+        let cpu = payloads
+            .iter()
+            .map(|payload| {
+                Nvfp4Expert::from_payload(source.hidden(), source.intermediate(), payload)
+                    .unwrap()
+                    .run(&hidden)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let gpu = Nvfp4CudaExecutor::new(source.hidden(), source.intermediate())
+            .run_batch(&[payloads[0].as_slice(), payloads[1].as_slice()], &hidden)
+            .unwrap();
+
+        assert_eq!(gpu.len(), cpu.len());
+        for (actual, expected) in gpu.iter().zip(cpu) {
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() <= 2.0e-3,
+                    "real GGUF CUDA batch diverged: {actual} != {expected}"
+                );
             }
         }
     }

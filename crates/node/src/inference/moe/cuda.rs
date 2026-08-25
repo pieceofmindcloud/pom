@@ -2268,4 +2268,68 @@ mod tests {
         assert_eq!(total.kernel_ms, 44.0);
         assert_eq!(total.sync_ms, 66.0);
     }
+
+    #[test]
+    #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
+    fn mede_banda_h2d_d2h_do_lote_nvfp4() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
+        let leases = vec![
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-bandwidth-test", 0, 0, "nvfp4"),
+                    &first,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-bandwidth-test", 0, 1, "nvfp4"),
+                    &second,
+                )
+                .unwrap(),
+        ];
+        let tokens = 2;
+        let hidden_values = (0..tokens * hidden)
+            .map(|index| (index as f32 % 31.0 - 15.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let token_ids = [0, 1];
+        let weights = [1.0, 1.0];
+        let token_offsets = [0, 1, 2];
+
+        for _ in 0..100 {
+            executor
+                .run_route_batch_resident(
+                    &leases,
+                    &token_ids,
+                    &weights,
+                    &token_offsets,
+                    &hidden_values,
+                    tokens,
+                )
+                .unwrap();
+        }
+
+        let diagnostics = executor.diagnostics();
+        assert!(diagnostics.h2d_bytes > 0);
+        assert!(diagnostics.d2h_bytes > 0);
+        assert!(diagnostics.h2d_ms > 0.0);
+        assert!(diagnostics.d2h_ms > 0.0);
+        let h2d_gb_s = diagnostics.h2d_bytes as f64 / (diagnostics.h2d_ms * 1_000_000.0);
+        let d2h_gb_s = diagnostics.d2h_bytes as f64 / (diagnostics.d2h_ms * 1_000_000.0);
+        eprintln!(
+            "CUDA_BANDWIDTH calls={} h2d_bytes={} h2d_ms={:.3} h2d_GB_s={:.3} d2h_bytes={} d2h_ms={:.3} d2h_GB_s={:.3} kernel_ms={:.3} wall_ms={:.3}",
+            diagnostics.calls,
+            diagnostics.h2d_bytes,
+            diagnostics.h2d_ms,
+            h2d_gb_s,
+            diagnostics.d2h_bytes,
+            diagnostics.d2h_ms,
+            d2h_gb_s,
+            diagnostics.kernel_ms,
+            diagnostics.cuda_call_wall_ms,
+        );
+    }
 }

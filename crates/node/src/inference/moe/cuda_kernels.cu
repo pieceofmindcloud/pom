@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <cuda_fp16.h>
 
 #include <algorithm>
 #include <cmath>
@@ -53,11 +54,53 @@ __device__ float ue4m3_to_f32(uint8_t value) {
     return raw * 0.5f;
 }
 
+__device__ __forceinline__ float round_to_f16(float value) {
+    return __half2float(__float2half_rn(value));
+}
+
+__global__ void quantize_q8_0_kernel(
+    const float * input,
+    int length,
+    float * scales,
+    int8_t * values
+) {
+    __shared__ float maxima[32];
+    const int lane = threadIdx.x;
+    const int start = blockIdx.x * 32;
+    const int index = start + lane;
+    const float value = index < length ? input[index] : 0.0f;
+    maxima[lane] = fabsf(value);
+    __syncthreads();
+
+    for (int stride = 16; stride > 0; stride >>= 1) {
+        if (lane < stride) {
+            maxima[lane] = fmaxf(maxima[lane], maxima[lane + stride]);
+        }
+        __syncthreads();
+    }
+
+    const float max_scalar = maxima[0];
+    const float unrounded_scale = max_scalar / 127.0f;
+    const float scale = round_to_f16(unrounded_scale);
+    if (lane == 0) {
+        scales[blockIdx.x] = scale;
+    }
+    __syncthreads();
+
+    if (index < length) {
+        const float inverse_scale = max_scalar != 0.0f ? 127.0f / max_scalar : 0.0f;
+        int quantized = __float2int_rn(input[index] * inverse_scale);
+        quantized = max(-128, min(127, quantized));
+        values[index] = static_cast<int8_t>(quantized);
+    }
+}
+
 __device__ float dot_nvfp4(
     const uint8_t * matrix,
     int row,
     int columns,
-    const float * input
+    const int8_t * input_values,
+    const float * input_scales
 ) {
     const int row_bytes = (columns / kBlockElements) * kBlockBytes;
     const uint8_t * encoded = matrix + row * row_bytes;
@@ -67,11 +110,18 @@ __device__ float dot_nvfp4(
         for (int subblock = 0; subblock < kBlockElements / kSubblockElements; ++subblock) {
             const float scale = ue4m3_to_f32(packed[subblock]);
             const uint8_t * values = packed + 4 + subblock * (kSubblockElements / 2);
-            int input_start = block * kBlockElements + subblock * kSubblockElements;
+            const int q8_block = block * 2 + subblock / 2;
+            const int q8_start = q8_block * 32 + (subblock % 2) * kSubblockElements;
+            const float input_scale = input_scales[q8_block];
+            int sum_lo = 0;
+            int sum_hi = 0;
             for (int index = 0; index < kSubblockElements / 2; ++index) {
-                result += scale * fp4_value(values[index]) * input[input_start + index];
-                result += scale * fp4_value(values[index] >> 4) * input[input_start + index + kSubblockElements / 2];
+                sum_lo += static_cast<int>(input_values[q8_start + index]) *
+                    static_cast<int>(fp4_value(values[index]));
+                sum_hi += static_cast<int>(input_values[q8_start + index + kSubblockElements / 2]) *
+                    static_cast<int>(fp4_value(values[index] >> 4));
             }
+            result += input_scale * scale * static_cast<float>(sum_lo + sum_hi);
         }
     }
     return result;
@@ -81,7 +131,8 @@ __global__ void gate_up_kernel(
     const uint8_t * gate_up,
     int intermediate,
     int hidden,
-    const float * hidden_values,
+    const int8_t * hidden_values,
+    const float * hidden_scales,
     float gate_scale,
     float up_scale,
     float * gate_up_values
@@ -95,20 +146,45 @@ __global__ void gate_up_kernel(
         gate_up,
         row,
         hidden,
-        hidden_values
+        hidden_values,
+        hidden_scales
     );
     gate_up_values[row] = value * (is_up ? up_scale : gate_scale);
 }
 
-__device__ float gelu(float value) {
-    return 0.5f * value * (1.0f + tanhf(0.7978846f * (value + 0.044715f * value * value * value)));
+__device__ float ggml_gelu_f16(float value) {
+    const float input = round_to_f16(value);
+    const float gelu = 0.5f * input *
+        (1.0f + tanhf(0.7978845608028654f * input *
+            (1.0f + 0.044715f * input * input)));
+    return round_to_f16(gelu);
+}
+
+__global__ void geglu_kernel(
+    const float * gate_up_values,
+    int intermediate,
+    float * activated
+) {
+    const int row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= intermediate) {
+        return;
+    }
+    const float gate = gate_up_values[row];
+    const float up = gate_up_values[intermediate + row];
+    const float activated_gate = gate <= -10.0f
+        ? 0.0f
+        : gate >= 10.0f
+            ? gate
+            : ggml_gelu_f16(gate);
+    activated[row] = activated_gate * up;
 }
 
 __global__ void down_kernel(
     const uint8_t * down,
     int hidden,
     int intermediate,
-    const float * gate_up_values,
+    const int8_t * activated_values,
+    const float * activated_scales,
     float down_scale,
     float * output
 ) {
@@ -116,25 +192,7 @@ __global__ void down_kernel(
     if (row >= hidden) {
         return;
     }
-    const int row_bytes = (intermediate / kBlockElements) * kBlockBytes;
-    const uint8_t * encoded = down + row * row_bytes;
-    float result = 0.0f;
-    for (int block = 0; block < intermediate / kBlockElements; ++block) {
-        const uint8_t * packed = encoded + block * kBlockBytes;
-        for (int subblock = 0; subblock < kBlockElements / kSubblockElements; ++subblock) {
-            const float scale = ue4m3_to_f32(packed[subblock]);
-            const uint8_t * values = packed + 4 + subblock * (kSubblockElements / 2);
-            int input_start = block * kBlockElements + subblock * kSubblockElements;
-            for (int index = 0; index < kSubblockElements / 2; ++index) {
-                const float first = gelu(gate_up_values[input_start]) * gate_up_values[intermediate + input_start];
-                const float second = gelu(gate_up_values[input_start + kSubblockElements / 2]) * gate_up_values[intermediate + input_start + kSubblockElements / 2];
-                result += scale * fp4_value(values[index]) * first;
-                result += scale * fp4_value(values[index] >> 4) * second;
-                ++input_start;
-            }
-        }
-    }
-    output[row] = result * down_scale;
+    output[row] = dot_nvfp4(down, row, intermediate, activated_values, activated_scales) * down_scale;
 }
 
 int cuda_status(cudaError_t error) {
@@ -184,9 +242,14 @@ extern "C" int pom_moe_nvfp4_forward(
     const auto * gate_up = payload + kPayloadHeaderBytes;
     const auto * down = gate_up + gate_up_len;
     float * d_hidden = nullptr;
+    float * d_hidden_scales = nullptr;
+    int8_t * d_hidden_qs = nullptr;
     uint8_t * d_gate_up = nullptr;
     uint8_t * d_down = nullptr;
     float * d_gate_up_values = nullptr;
+    float * d_activated = nullptr;
+    float * d_activated_scales = nullptr;
+    int8_t * d_activated_qs = nullptr;
     float * d_output = nullptr;
     cudaEvent_t gate_start = nullptr;
     cudaEvent_t gate_end = nullptr;
@@ -198,11 +261,21 @@ extern "C" int pom_moe_nvfp4_forward(
         const auto alloc_start = Clock::now();
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_width * sizeof(float)));
         if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden_scales), hidden_width / 32 * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden_qs), hidden_width * sizeof(int8_t)));
+        if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_len));
         if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_down), down_len));
         if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up_values), 2 * intermediate_width * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated), intermediate_width * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated_scales), intermediate_width / 32 * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated_qs), intermediate_width * sizeof(int8_t)));
         if (result != 0) break;
         result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), hidden_width * sizeof(float)));
         if (result != 0) break;
@@ -242,9 +315,13 @@ extern "C" int pom_moe_nvfp4_forward(
             result = cuda_status(cudaEventRecord(gate_start));
             if (result != 0) break;
         }
+        quantize_q8_0_kernel<<<(hidden_width + 31) / 32, 32>>>(
+            d_hidden, static_cast<int>(hidden_width), d_hidden_scales, d_hidden_qs);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
         gate_up_kernel<<<(2 * intermediate_width + block_size - 1) / block_size, block_size>>>(
-            d_gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width), d_hidden,
-            scales_host[0], scales_host[1], d_gate_up_values);
+            d_gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width),
+            d_hidden_qs, d_hidden_scales, scales_host[0], scales_host[1], d_gate_up_values);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         if (timing != nullptr) {
@@ -268,9 +345,17 @@ extern "C" int pom_moe_nvfp4_forward(
             result = cuda_status(cudaEventRecord(down_start));
             if (result != 0) break;
         }
+        geglu_kernel<<<(intermediate_width + block_size - 1) / block_size, block_size>>>(
+            d_gate_up_values, static_cast<int>(intermediate_width), d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        quantize_q8_0_kernel<<<(intermediate_width + 31) / 32, 32>>>(
+            d_activated, static_cast<int>(intermediate_width), d_activated_scales, d_activated_qs);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
         down_kernel<<<(hidden_width + block_size - 1) / block_size, block_size>>>(
-            d_down, static_cast<int>(hidden_width), static_cast<int>(intermediate_width), d_gate_up_values,
-            scales_host[2], d_output);
+            d_down, static_cast<int>(hidden_width), static_cast<int>(intermediate_width),
+            d_activated_qs, d_activated_scales, scales_host[2], d_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         if (timing != nullptr) {
@@ -302,9 +387,14 @@ extern "C" int pom_moe_nvfp4_forward(
     if (down_end != nullptr) cudaEventDestroy(down_end);
     const auto free_start = Clock::now();
     cudaFree(d_output);
+    cudaFree(d_activated_qs);
+    cudaFree(d_activated_scales);
+    cudaFree(d_activated);
     cudaFree(d_gate_up_values);
     cudaFree(d_down);
     cudaFree(d_gate_up);
+    cudaFree(d_hidden_qs);
+    cudaFree(d_hidden_scales);
     cudaFree(d_hidden);
     if (timing != nullptr) {
         timing->free_ms = elapsed_ms(free_start, Clock::now());

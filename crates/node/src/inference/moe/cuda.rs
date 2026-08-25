@@ -238,6 +238,25 @@ mod tests {
     }
 
     #[test]
+    fn executor_cuda_nvfp4_preserva_quantizacao_q8_e_gelu_fp16() {
+        let hidden = 64;
+        let intermediate = 64;
+        let payload = payload(hidden, intermediate);
+        let hidden_values = vec![0.125f32; hidden];
+        let cpu = Nvfp4Expert::from_payload(hidden, intermediate, &payload)
+            .unwrap()
+            .run(&hidden_values)
+            .unwrap();
+        let gpu = Nvfp4CudaExecutor::new(hidden, intermediate)
+            .run(&payload, &hidden_values)
+            .unwrap();
+        assert_eq!(gpu.len(), cpu.len());
+        for (actual, expected) in gpu.iter().zip(cpu) {
+            assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
     fn diagnostico_cuda_acumula_fases_e_bytes_por_chamada() {
         let mut total = Nvfp4CudaDiagnostics::default();
         total.add_call(CudaMoeCallTiming {

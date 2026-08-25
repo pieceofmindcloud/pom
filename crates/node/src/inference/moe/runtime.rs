@@ -1793,7 +1793,7 @@ mod tests {
     fn dtypes_heterogeneos_com_iq_nao_validado_ficam_nativos() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
-            vec![21, 22, 23],
+            vec![21, 18, 23],
             3,
             true,
             false,
@@ -1801,7 +1801,7 @@ mod tests {
         assert!(!plan.enabled());
         assert_eq!(plan.layers, vec![0, 0, 0]);
         let reason = plan.reason.unwrap();
-        assert!(reason.contains("22 (IQ2_S)"));
+        assert!(reason.contains("18 (IQ3_XXS)"));
         assert!(reason.contains("23 (IQ4_XS)"));
     }
 

@@ -743,7 +743,7 @@ mod tests {
             .collect::<Vec<_>>();
         for format in [KQuantFormat::Q4K, KQuantFormat::Q6K] {
             let payload = k_payload(format, hidden, intermediate);
-            let expected = KQuantExpert::from_payload(hidden, intermediate, &payload)
+            let expected = KQuantExpert::from_payload(format, hidden, intermediate, &payload)
                 .unwrap()
                 .run(&hidden_values)
                 .unwrap();

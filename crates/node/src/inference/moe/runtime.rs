@@ -94,6 +94,8 @@ pub struct MoeExecutorDiagnostics {
     pub cuda_d2h_ms: f64,
     pub cuda_d2h_bytes: u64,
     pub cuda_free_ms: f64,
+    pub cuda_buffer_mask: u64,
+    pub cuda_buffer_switches: u64,
     pub host_cache_lookup_ms: f64,
     pub host_expert_load_ms: f64,
     pub host_cache_admit_ms: f64,
@@ -1350,6 +1352,10 @@ impl MoeRuntime {
                 diagnostics.cuda_d2h_bytes =
                     diagnostics.cuda_d2h_bytes.saturating_add(cuda.d2h_bytes);
                 diagnostics.cuda_free_ms += cuda.free_ms;
+                diagnostics.cuda_buffer_mask |= cuda.buffer_mask;
+                diagnostics.cuda_buffer_switches = diagnostics
+                    .cuda_buffer_switches
+                    .saturating_add(cuda.buffer_switches);
                 diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;

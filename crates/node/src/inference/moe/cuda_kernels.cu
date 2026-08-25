@@ -8,6 +8,7 @@
 #include <cstring>
 #include <chrono>
 #include <limits>
+#include <new>
 
 // Os layouts e codebooks IQ são parte da convenção GGML. Incluí-los aqui
 // evita uma segunda tabela que poderia divergir do decoder de referência;
@@ -38,6 +39,8 @@ struct CudaMoeCallTiming {
     double d2h_ms;
     uint64_t d2h_bytes;
     double free_ms;
+    uint64_t buffer_mask;
+    uint64_t buffer_switches;
 };
 
 struct CudaHeterogeneousTensor {
@@ -921,6 +924,384 @@ __global__ void heterogeneous_iq_down_route_kernel(
 
 int cuda_status(cudaError_t error) {
     return error == cudaSuccess ? 0 : static_cast<int>(error);
+}
+
+struct Nvfp4RouteSlot {
+    cudaStream_t stream = nullptr;
+    cudaEvent_t h2d_start = nullptr;
+    cudaEvent_t h2d_end = nullptr;
+    cudaEvent_t gate_start = nullptr;
+    cudaEvent_t gate_end = nullptr;
+    cudaEvent_t down_start = nullptr;
+    cudaEvent_t down_end = nullptr;
+    cudaEvent_t d2h_start = nullptr;
+    cudaEvent_t d2h_end = nullptr;
+    float * d_hidden = nullptr;
+    float * d_hidden_scales = nullptr;
+    int8_t * d_hidden_qs = nullptr;
+    const uint8_t ** d_payloads = nullptr;
+    uint32_t * d_token_ids = nullptr;
+    float * d_weights = nullptr;
+    std::size_t * d_token_offsets = nullptr;
+    float * d_gate_up_values = nullptr;
+    float * d_activated = nullptr;
+    float * d_activated_scales = nullptr;
+    int8_t * d_activated_qs = nullptr;
+    float * d_pair_output = nullptr;
+    float * d_output = nullptr;
+    float * h_hidden = nullptr;
+    const uint8_t ** h_payloads = nullptr;
+    uint32_t * h_token_ids = nullptr;
+    float * h_weights = nullptr;
+    std::size_t * h_token_offsets = nullptr;
+    float * h_output = nullptr;
+};
+
+struct Nvfp4RoutePipeline {
+    std::size_t hidden_width;
+    std::size_t intermediate_width;
+    std::size_t token_capacity = 0;
+    std::size_t route_capacity = 0;
+    std::size_t next_slot = 0;
+    Nvfp4RouteSlot slots[2];
+};
+
+void destroy_route_events(Nvfp4RouteSlot *slot) {
+    cudaEventDestroy(slot->d2h_end);
+    cudaEventDestroy(slot->d2h_start);
+    cudaEventDestroy(slot->down_end);
+    cudaEventDestroy(slot->down_start);
+    cudaEventDestroy(slot->gate_end);
+    cudaEventDestroy(slot->gate_start);
+    cudaEventDestroy(slot->h2d_end);
+    cudaEventDestroy(slot->h2d_start);
+    slot->d2h_end = nullptr;
+    slot->d2h_start = nullptr;
+    slot->down_end = nullptr;
+    slot->down_start = nullptr;
+    slot->gate_end = nullptr;
+    slot->gate_start = nullptr;
+    slot->h2d_end = nullptr;
+    slot->h2d_start = nullptr;
+}
+
+void release_route_slot(Nvfp4RouteSlot *slot) {
+    if (slot->stream != nullptr) {
+        cudaStreamSynchronize(slot->stream);
+    }
+    destroy_route_events(slot);
+    cudaFree(slot->d_output);
+    cudaFree(slot->d_pair_output);
+    cudaFree(slot->d_activated_qs);
+    cudaFree(slot->d_activated_scales);
+    cudaFree(slot->d_activated);
+    cudaFree(slot->d_gate_up_values);
+    cudaFree(slot->d_token_offsets);
+    cudaFree(slot->d_weights);
+    cudaFree(slot->d_token_ids);
+    cudaFree(slot->d_payloads);
+    cudaFree(slot->d_hidden_qs);
+    cudaFree(slot->d_hidden_scales);
+    cudaFree(slot->d_hidden);
+    cudaFreeHost(slot->h_output);
+    cudaFreeHost(slot->h_token_offsets);
+    cudaFreeHost(slot->h_weights);
+    cudaFreeHost(slot->h_token_ids);
+    cudaFreeHost(slot->h_payloads);
+    cudaFreeHost(slot->h_hidden);
+    cudaStreamDestroy(slot->stream);
+    *slot = {};
+}
+
+int allocate_route_slot(
+    Nvfp4RouteSlot *slot,
+    std::size_t hidden,
+    std::size_t intermediate,
+    std::size_t tokens,
+    std::size_t routes
+) {
+    const std::size_t hidden_values = tokens * hidden;
+    const std::size_t hidden_scales = tokens * (hidden / 32);
+    const std::size_t gate_up_values = 2 * intermediate * routes;
+    const std::size_t activated_values = intermediate * routes;
+    const std::size_t activated_scales = routes * (intermediate / 32);
+    const std::size_t pair_output = hidden * routes;
+
+    int result = cuda_status(cudaStreamCreateWithFlags(&slot->stream, cudaStreamNonBlocking));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_hidden),
+        hidden_values * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_hidden_scales),
+        hidden_scales * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_hidden_qs),
+        hidden_values * sizeof(int8_t)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_payloads),
+        routes * sizeof(*slot->d_payloads)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_token_ids),
+        routes * sizeof(*slot->d_token_ids)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_weights),
+        routes * sizeof(*slot->d_weights)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_token_offsets),
+        (tokens + 1) * sizeof(*slot->d_token_offsets)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_gate_up_values),
+        gate_up_values * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_activated),
+        activated_values * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_activated_scales),
+        activated_scales * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_activated_qs),
+        activated_values * sizeof(int8_t)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_pair_output),
+        pair_output * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&slot->d_output),
+        hidden_values * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_hidden),
+        hidden_values * sizeof(float)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_payloads),
+        routes * sizeof(*slot->h_payloads)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_token_ids),
+        routes * sizeof(*slot->h_token_ids)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_weights),
+        routes * sizeof(*slot->h_weights)));
+    if (result != 0) return result;
+    result = cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_token_offsets),
+        (tokens + 1) * sizeof(*slot->h_token_offsets)));
+    if (result != 0) return result;
+    return cuda_status(cudaMallocHost(reinterpret_cast<void **>(&slot->h_output),
+        hidden_values * sizeof(float)));
+}
+
+int ensure_route_pipeline_capacity(
+    Nvfp4RoutePipeline *pipeline,
+    std::size_t tokens,
+    std::size_t routes
+) {
+    if (pipeline->token_capacity >= tokens && pipeline->route_capacity >= routes) {
+        return 0;
+    }
+    release_route_slot(&pipeline->slots[0]);
+    release_route_slot(&pipeline->slots[1]);
+    pipeline->token_capacity = tokens;
+    pipeline->route_capacity = routes;
+    int result = allocate_route_slot(&pipeline->slots[0], pipeline->hidden_width,
+        pipeline->intermediate_width, tokens, routes);
+    if (result != 0) {
+        release_route_slot(&pipeline->slots[0]);
+        pipeline->token_capacity = 0;
+        pipeline->route_capacity = 0;
+        return result;
+    }
+    result = allocate_route_slot(&pipeline->slots[1], pipeline->hidden_width,
+        pipeline->intermediate_width, tokens, routes);
+    if (result != 0) {
+        release_route_slot(&pipeline->slots[0]);
+        release_route_slot(&pipeline->slots[1]);
+        pipeline->token_capacity = 0;
+        pipeline->route_capacity = 0;
+    }
+    return result;
+}
+
+int ensure_route_timing_events(Nvfp4RouteSlot *slot) {
+    int result = cuda_status(cudaEventCreate(&slot->h2d_start));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->h2d_end));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->gate_start));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->gate_end));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->down_start));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->down_end));
+    if (result != 0) return result;
+    result = cuda_status(cudaEventCreate(&slot->d2h_start));
+    if (result != 0) return result;
+    return cuda_status(cudaEventCreate(&slot->d2h_end));
+}
+
+void copy_route_chunk_to_host(
+    Nvfp4RouteSlot *slot,
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    const float *weights,
+    const std::size_t *token_offsets,
+    const float *hidden,
+    std::size_t token_start,
+    std::size_t chunk_tokens,
+    std::size_t route_start,
+    std::size_t route_count,
+    std::size_t hidden_width
+) {
+    std::memcpy(slot->h_hidden, hidden + token_start * hidden_width,
+        chunk_tokens * hidden_width * sizeof(float));
+    for (std::size_t route = 0; route < route_count; ++route) {
+        const std::size_t source = route_start + route;
+        slot->h_payloads[route] = payloads[source];
+        slot->h_token_ids[route] = static_cast<uint32_t>(token_ids[source] - token_start);
+        slot->h_weights[route] = weights[source];
+    }
+    for (std::size_t token = 0; token <= chunk_tokens; ++token) {
+        slot->h_token_offsets[token] = token_offsets[token_start + token] - route_start;
+    }
+}
+
+int enqueue_route_chunk(
+    Nvfp4RouteSlot *slot,
+    std::size_t chunk_tokens,
+    std::size_t route_count,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    CudaMoeCallTiming *timing
+) {
+    if (timing != nullptr && slot->h2d_start == nullptr) {
+        int result = ensure_route_timing_events(slot);
+        if (result != 0) return result;
+        result = cuda_status(cudaEventRecord(slot->h2d_start, slot->stream));
+        if (result != 0) return result;
+    }
+    int result = cuda_status(cudaMemcpyAsync(slot->d_hidden, slot->h_hidden,
+        chunk_tokens * hidden_width * sizeof(float), cudaMemcpyHostToDevice, slot->stream));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpyAsync(slot->d_payloads, slot->h_payloads,
+        route_count * sizeof(*slot->d_payloads), cudaMemcpyHostToDevice, slot->stream));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpyAsync(slot->d_token_ids, slot->h_token_ids,
+        route_count * sizeof(*slot->d_token_ids), cudaMemcpyHostToDevice, slot->stream));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpyAsync(slot->d_weights, slot->h_weights,
+        route_count * sizeof(*slot->d_weights), cudaMemcpyHostToDevice, slot->stream));
+    if (result != 0) return result;
+    result = cuda_status(cudaMemcpyAsync(slot->d_token_offsets, slot->h_token_offsets,
+        (chunk_tokens + 1) * sizeof(*slot->d_token_offsets), cudaMemcpyHostToDevice, slot->stream));
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(slot->h2d_end, slot->stream));
+        if (result != 0) return result;
+        result = cuda_status(cudaEventRecord(slot->gate_start, slot->stream));
+        if (result != 0) return result;
+    }
+
+    const int block_size = 128;
+    const auto gate_launch_start = Clock::now();
+    quantize_q8_0_kernel<<<chunk_tokens * ((hidden_width + 31) / 32), 32, 0, slot->stream>>>(
+        slot->d_hidden, static_cast<int>(hidden_width), slot->d_hidden_scales,
+        slot->d_hidden_qs, static_cast<int>(chunk_tokens));
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    gate_up_route_batch_resident_kernel<<<
+        (2 * intermediate_width * route_count + block_size - 1) / block_size,
+        block_size, 0, slot->stream>>>(
+            slot->d_payloads, slot->d_token_ids, static_cast<int>(route_count),
+            static_cast<int>(intermediate_width), static_cast<int>(hidden_width),
+            slot->d_hidden_qs, slot->d_hidden_scales, slot->d_gate_up_values);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(slot->gate_end, slot->stream));
+        if (result != 0) return result;
+        result = cuda_status(cudaEventRecord(slot->down_start, slot->stream));
+        if (result != 0) return result;
+    }
+    const auto down_launch_start = Clock::now();
+    geglu_kernel<<<(intermediate_width * route_count + block_size - 1) / block_size,
+        block_size, 0, slot->stream>>>(
+            slot->d_gate_up_values, static_cast<int>(route_count),
+            static_cast<int>(intermediate_width), slot->d_activated);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    quantize_q8_0_kernel<<<((intermediate_width + 31) / 32) * route_count, 32, 0, slot->stream>>>(
+        slot->d_activated, static_cast<int>(intermediate_width), slot->d_activated_scales,
+        slot->d_activated_qs, static_cast<int>(route_count));
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    down_route_batch_resident_kernel<<<
+        (hidden_width * route_count + block_size - 1) / block_size,
+        block_size, 0, slot->stream>>>(
+            slot->d_payloads, static_cast<int>(route_count), static_cast<int>(hidden_width),
+            static_cast<int>(intermediate_width), slot->d_activated_qs,
+            slot->d_activated_scales, slot->d_pair_output);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    aggregate_route_batch_kernel<<<
+        (chunk_tokens * hidden_width + block_size - 1) / block_size,
+        block_size, 0, slot->stream>>>(
+            slot->d_pair_output, slot->d_weights, slot->d_token_offsets,
+            static_cast<int>(chunk_tokens), static_cast<int>(hidden_width), slot->d_output);
+    result = cuda_status(cudaGetLastError());
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        timing->launch_ms += elapsed_ms(gate_launch_start, Clock::now());
+        result = cuda_status(cudaEventRecord(slot->down_end, slot->stream));
+        if (result != 0) return result;
+    }
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(slot->d2h_start, slot->stream));
+        if (result != 0) return result;
+    }
+    result = cuda_status(cudaMemcpyAsync(slot->h_output, slot->d_output,
+        chunk_tokens * hidden_width * sizeof(float), cudaMemcpyDeviceToHost, slot->stream));
+    if (result != 0) return result;
+    if (timing != nullptr) {
+        result = cuda_status(cudaEventRecord(slot->d2h_end, slot->stream));
+    }
+    return result;
+}
+
+int collect_route_chunk(
+    Nvfp4RouteSlot *slot,
+    std::size_t chunk_tokens,
+    std::size_t route_count,
+    std::size_t hidden_width,
+    CudaMoeCallTiming *timing
+) {
+    const auto sync_start = Clock::now();
+    int result = cuda_status(cudaStreamSynchronize(slot->stream));
+    if (result != 0) return result;
+    const double sync_ms = elapsed_ms(sync_start, Clock::now());
+    if (timing != nullptr) {
+        float h2d_ms = 0.0f;
+        float gate_ms = 0.0f;
+        float down_ms = 0.0f;
+        float d2h_ms = 0.0f;
+        result = cuda_status(cudaEventElapsedTime(&h2d_ms, slot->h2d_start, slot->h2d_end));
+        if (result != 0) return result;
+        result = cuda_status(cudaEventElapsedTime(&gate_ms, slot->gate_start, slot->gate_end));
+        if (result != 0) return result;
+        result = cuda_status(cudaEventElapsedTime(&down_ms, slot->down_start, slot->down_end));
+        if (result != 0) return result;
+        result = cuda_status(cudaEventElapsedTime(&d2h_ms, slot->d2h_start, slot->d2h_end));
+        if (result != 0) return result;
+        timing->h2d_ms += h2d_ms;
+        timing->h2d_bytes += static_cast<uint64_t>(
+            chunk_tokens * hidden_width * sizeof(float) +
+            route_count * sizeof(*slot->d_payloads) +
+            route_count * sizeof(*slot->d_token_ids) +
+            route_count * sizeof(*slot->d_weights) +
+            (chunk_tokens + 1) * sizeof(*slot->d_token_offsets));
+        timing->kernel_ms += gate_ms + down_ms;
+        timing->d2h_ms += d2h_ms;
+        timing->d2h_bytes += static_cast<uint64_t>(
+            chunk_tokens * hidden_width * sizeof(float));
+        timing->sync_ms += std::max(0.0, sync_ms - static_cast<double>(gate_ms + down_ms));
+    }
+    return 0;
 }
 
 } // namespace
@@ -2391,6 +2772,152 @@ extern "C" int pom_moe_nvfp4_forward_route_batch_resident(
         timing->free_ms = elapsed_ms(free_start, Clock::now());
     }
     return result;
+}
+
+extern "C" int pom_moe_nvfp4_route_pipeline_create(
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    void ** out
+) {
+    if (out == nullptr || hidden_width == 0 || intermediate_width == 0 ||
+        hidden_width % kBlockElements != 0 || intermediate_width % kBlockElements != 0) {
+        return 1;
+    }
+    *out = nullptr;
+    auto * pipeline = new (std::nothrow) Nvfp4RoutePipeline{
+        hidden_width,
+        intermediate_width,
+    };
+    if (pipeline == nullptr) {
+        return 2;
+    }
+    *out = pipeline;
+    return 0;
+}
+
+extern "C" int pom_moe_nvfp4_route_pipeline_run(
+    void * handle,
+    const uint8_t * const * payloads,
+    std::size_t payload_count,
+    const uint32_t * token_ids,
+    const float * weights,
+    const std::size_t * token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float * hidden,
+    std::size_t hidden_len,
+    float * output,
+    std::size_t output_len,
+    CudaMoeCallTiming * timing
+) {
+    auto * pipeline = static_cast<Nvfp4RoutePipeline *>(handle);
+    if (pipeline == nullptr || payloads == nullptr || token_ids == nullptr ||
+        weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
+        output == nullptr || payload_count == 0 || token_count == 0 ||
+        token_offsets_len != token_count + 1 ||
+        hidden_len != token_count * pipeline->hidden_width ||
+        output_len != hidden_len || token_offsets[0] != 0 ||
+        token_offsets[token_count] != payload_count) {
+        return 1;
+    }
+    for (std::size_t route = 0; route < payload_count; ++route) {
+        if (payloads[route] == nullptr || token_ids[route] >= token_count ||
+            !std::isfinite(weights[route])) {
+            return 1;
+        }
+    }
+    for (std::size_t token = 0; token < token_count; ++token) {
+        if (token_offsets[token] > token_offsets[token + 1]) {
+            return 1;
+        }
+    }
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(payload_count);
+    }
+
+    int result = ensure_route_pipeline_capacity(pipeline, token_count, payload_count);
+    if (result != 0) return result;
+
+    const std::size_t split = token_count / 2;
+    const bool two_chunks = token_count > 1 && token_offsets[split] > token_offsets[0] &&
+        token_offsets[token_count] > token_offsets[split];
+    const std::size_t chunk_count = two_chunks ? 2 : 1;
+    const std::size_t chunk_starts[2] = {0, split};
+    const std::size_t chunk_ends[2] = {two_chunks ? split : token_count, token_count};
+    const std::size_t first_slot = pipeline->next_slot;
+    if (timing != nullptr) {
+        timing->kernel_launches = static_cast<uint64_t>(6 * chunk_count);
+        timing->sync_count = static_cast<uint64_t>(chunk_count);
+        timing->buffer_switches = chunk_count > 1 ? chunk_count - 1 : 0;
+    }
+
+    for (std::size_t chunk = 0; chunk < chunk_count; ++chunk) {
+        const std::size_t token_start = chunk_starts[chunk];
+        const std::size_t token_end = chunk_ends[chunk];
+        const std::size_t route_start = token_offsets[token_start];
+        const std::size_t route_end = token_offsets[token_end];
+        const std::size_t route_count = route_end - route_start;
+        const std::size_t slot_index = (first_slot + chunk) % 2;
+        for (std::size_t route = route_start; route < route_end; ++route) {
+            if (token_ids[route] < token_start || token_ids[route] >= token_end) {
+                return 1;
+            }
+        }
+        auto * slot = &pipeline->slots[slot_index];
+        copy_route_chunk_to_host(
+            slot,
+            payloads,
+            token_ids,
+            weights,
+            token_offsets,
+            hidden,
+            token_start,
+            token_end - token_start,
+            route_start,
+            route_count,
+            pipeline->hidden_width);
+        if (timing != nullptr) {
+            timing->buffer_mask |= static_cast<uint64_t>(1) << slot_index;
+        }
+        result = enqueue_route_chunk(
+            slot,
+            token_end - token_start,
+            route_count,
+            pipeline->hidden_width,
+            pipeline->intermediate_width,
+            timing);
+        if (result != 0) return result;
+    }
+
+    for (std::size_t chunk = 0; chunk < chunk_count; ++chunk) {
+        const std::size_t token_start = chunk_starts[chunk];
+        const std::size_t token_end = chunk_ends[chunk];
+        const std::size_t route_count = token_offsets[token_end] - token_offsets[token_start];
+        const std::size_t slot_index = (first_slot + chunk) % 2;
+        auto * slot = &pipeline->slots[slot_index];
+        result = collect_route_chunk(
+            slot,
+            token_end - token_start,
+            route_count,
+            pipeline->hidden_width,
+            timing);
+        if (result != 0) return result;
+        std::memcpy(
+            output + token_start * pipeline->hidden_width,
+            slot->h_output,
+            (token_end - token_start) * pipeline->hidden_width * sizeof(float));
+    }
+    pipeline->next_slot = (first_slot + chunk_count) % 2;
+    return 0;
+}
+
+extern "C" void pom_moe_nvfp4_route_pipeline_destroy(void * handle) {
+    auto * pipeline = static_cast<Nvfp4RoutePipeline *>(handle);
+    if (pipeline == nullptr) return;
+    release_route_slot(&pipeline->slots[0]);
+    release_route_slot(&pipeline->slots[1]);
+    delete pipeline;
 }
 
 // Diagnóstico por estágio para comparar o decoder CUDA com o oráculo GGML.

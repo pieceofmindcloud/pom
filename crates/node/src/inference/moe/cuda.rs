@@ -29,6 +29,8 @@ pub struct CudaMoeCallTiming {
     pub d2h_ms: f64,
     pub d2h_bytes: u64,
     pub free_ms: f64,
+    pub buffer_mask: u64,
+    pub buffer_switches: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -50,6 +52,10 @@ pub struct Nvfp4CudaDiagnostics {
     pub host_result_copy_ms: f64,
     /// Parede externa da chamada FFI, sem somar submedições internas.
     pub cuda_call_wall_ms: f64,
+    /// Bits dos slots de buffer usados desde o início do executor.
+    pub buffer_mask: u64,
+    /// Quantidade de alternâncias entre slots observada pelo executor.
+    pub buffer_switches: u64,
 }
 
 impl Nvfp4CudaDiagnostics {
@@ -67,6 +73,8 @@ impl Nvfp4CudaDiagnostics {
         self.d2h_ms += call.d2h_ms;
         self.d2h_bytes = self.d2h_bytes.saturating_add(call.d2h_bytes);
         self.free_ms += call.free_ms;
+        self.buffer_mask |= call.buffer_mask;
+        self.buffer_switches = self.buffer_switches.saturating_add(call.buffer_switches);
     }
 }
 
@@ -147,11 +155,80 @@ impl From<Nvfp4Error> for CudaMoeError {
     }
 }
 
+struct Nvfp4RoutePipelineHandle {
+    handle: *mut c_void,
+}
+
+unsafe impl Send for Nvfp4RoutePipelineHandle {}
+
+impl Nvfp4RoutePipelineHandle {
+    fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+        let mut handle = std::ptr::null_mut();
+        let status =
+            unsafe { pom_moe_nvfp4_route_pipeline_create(hidden, intermediate, &mut handle) };
+        if status != 0 {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "pipeline CUDA MoE não pôde ser criado (código {status})"
+            )));
+        }
+        if handle.is_null() {
+            return Err(CudaMoeError::BackendUnavailable(
+                "pipeline CUDA MoE retornou handle nulo".into(),
+            ));
+        }
+        Ok(Self { handle })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn run(
+        &mut self,
+        payloads: *const *const u8,
+        payload_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32 {
+        unsafe {
+            pom_moe_nvfp4_route_pipeline_run(
+                self.handle,
+                payloads,
+                payload_count,
+                token_ids,
+                weights,
+                token_offsets,
+                token_offsets_len,
+                token_count,
+                hidden,
+                hidden_len,
+                output,
+                output_len,
+                timing,
+            )
+        }
+    }
+}
+
+impl Drop for Nvfp4RoutePipelineHandle {
+    fn drop(&mut self) {
+        if !self.handle.is_null() {
+            unsafe { pom_moe_nvfp4_route_pipeline_destroy(self.handle) };
+        }
+    }
+}
+
 pub struct Nvfp4CudaExecutor {
     hidden: usize,
     intermediate: usize,
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
+    route_pipeline: Mutex<Nvfp4RoutePipelineHandle>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
 }
 
@@ -848,6 +925,7 @@ impl Nvfp4CudaExecutor {
             profile: std::env::var("POM_MOE_CUDA_PROFILE")
                 .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
             resident_cache,
+            route_pipeline: Mutex::new(Nvfp4RoutePipelineHandle::new(hidden, intermediate)?),
             diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
         })
     }
@@ -993,8 +1071,11 @@ impl Nvfp4CudaExecutor {
             ..CudaMoeCallTiming::default()
         };
         let cuda_started = Instant::now();
-        let status = unsafe {
-            pom_moe_nvfp4_forward_route_batch_resident(
+        let status = self
+            .route_pipeline
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .run(
                 handles.as_ptr(),
                 payloads.len(),
                 token_ids.as_ptr(),
@@ -1006,15 +1087,12 @@ impl Nvfp4CudaExecutor {
                 hidden.len(),
                 output.as_mut_ptr(),
                 output.len(),
-                self.hidden,
-                self.intermediate,
                 if self.profile {
                     &mut timing
                 } else {
                     std::ptr::null_mut()
                 },
-            )
-        };
+            );
         let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
         if status != 0 {
             return Err(CudaMoeError::Launch(status));
@@ -1148,6 +1226,30 @@ unsafe extern "C" {
         intermediate_width: usize,
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
+
+    fn pom_moe_nvfp4_route_pipeline_create(
+        hidden_width: usize,
+        intermediate_width: usize,
+        out: *mut *mut c_void,
+    ) -> i32;
+
+    fn pom_moe_nvfp4_route_pipeline_run(
+        handle: *mut c_void,
+        payloads: *const *const u8,
+        payload_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_nvfp4_route_pipeline_destroy(handle: *mut c_void);
 
     fn pom_moe_kquant_forward_route_batch_resident(
         dtype: u32,
@@ -2242,6 +2344,8 @@ mod tests {
             d2h_ms: 7.0,
             d2h_bytes: 8,
             free_ms: 9.0,
+            buffer_mask: 1,
+            buffer_switches: 1,
         });
         total.add_call(CudaMoeCallTiming {
             expert_calls: 1,
@@ -2257,6 +2361,8 @@ mod tests {
             d2h_ms: 70.0,
             d2h_bytes: 80,
             free_ms: 90.0,
+            buffer_mask: 2,
+            buffer_switches: 1,
         });
 
         assert_eq!(total.calls, 2);
@@ -2267,6 +2373,8 @@ mod tests {
         assert_eq!(total.h2d_ms, 33.0);
         assert_eq!(total.kernel_ms, 44.0);
         assert_eq!(total.sync_ms, 66.0);
+        assert_eq!(total.buffer_mask, 3);
+        assert_eq!(total.buffer_switches, 2);
     }
 
     #[test]

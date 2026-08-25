@@ -176,6 +176,24 @@ impl From<MoeBlockError> for MoeRuntimeError {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
+fn require_cuda_compute_bytes(compute_bytes: Option<u64>) -> Result<u64, MoeRuntimeError> {
+    compute_bytes.filter(|bytes| *bytes > 0).ok_or_else(|| {
+        MoeRuntimeError::Block(
+            "executor CUDA recusado: llama.cpp não reportou um compute buffer CUDA medido".into(),
+        )
+    })
+}
+
+#[cfg(feature = "cuda")]
+fn create_measured_device_cache(
+    compute_bytes: Option<u64>,
+) -> Result<Arc<super::cache::DeviceExpertCache>, MoeRuntimeError> {
+    let compute_bytes = require_cuda_compute_bytes(compute_bytes)?;
+    super::cuda::create_device_cache(compute_bytes)
+        .map_err(|error| MoeRuntimeError::Block(error.to_string()))
+}
+
 enum MoeSource {
     Legacy(LegacyQuantSource),
     Plain(PlainSource),
@@ -291,7 +309,10 @@ impl MoeRuntime {
         experts: u32,
         top_k: usize,
         weights_bytes: u64,
+        cuda_compute_bytes: Option<u64>,
     ) -> Result<Self, MoeRuntimeError> {
+        #[cfg(not(feature = "cuda"))]
+        let _ = cuda_compute_bytes;
         let cache = ExpertCache::measured_system(weights_bytes, 0, 0)?;
         let model = model.into();
         let detected = detect_expert_format(&path)?;
@@ -435,10 +456,7 @@ impl MoeRuntime {
                 {
                     None
                 } else {
-                    Some(
-                        super::cuda::create_device_cache()
-                            .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
-                    )
+                    Some(create_measured_device_cache(cuda_compute_bytes)?)
                 };
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
@@ -565,10 +583,7 @@ impl MoeRuntime {
                 }
                 #[cfg(feature = "cuda")]
                 let device_cache = if format.cuda_supported() {
-                    Some(
-                        super::cuda::create_device_cache()
-                            .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
-                    )
+                    Some(create_measured_device_cache(cuda_compute_bytes)?)
                 } else {
                     None
                 };
@@ -656,10 +671,7 @@ impl MoeRuntime {
                 }
                 #[cfg(feature = "cuda")]
                 let device_cache = if format.cuda_supported() {
-                    Some(
-                        super::cuda::create_device_cache()
-                            .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
-                    )
+                    Some(create_measured_device_cache(cuda_compute_bytes)?)
                 } else {
                     None
                 };
@@ -1166,11 +1178,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn executor_cuda_recusa_relatorio_sem_compute_medido() {
+        let error = require_cuda_compute_bytes(None).unwrap_err();
+        assert!(error.to_string().contains("compute buffer CUDA medido"));
+    }
+
+    #[test]
     fn runtime_mantem_forma_do_batch_de_hidden_states() {
         let path =
             std::env::temp_dir().join(format!("pom-ftk-moe-runtime-{}.gguf", std::process::id()));
         let (hidden, _) = write_q4_source(&path);
-        let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+        let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
         let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
         assert_eq!(output.len(), hidden * 2);
         assert!(runtime.forward_batch(1, &[1.0; 32], 1).is_err());
@@ -1194,7 +1212,7 @@ mod tests {
                 std::process::id()
             ));
             write_k_source(&path, dtype, format);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
             assert_eq!(runtime.layers(), 1, "formato {expected}");
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {expected}");
@@ -1221,7 +1239,7 @@ mod tests {
                 std::process::id()
             ));
             write_iq_source(&path, dtype, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
             assert_eq!(runtime.layers(), 1, "formato {}", format.name());
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {}", format.name());
@@ -1238,7 +1256,7 @@ mod tests {
                 std::process::id()
             ));
             write_plain_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 4], 2).unwrap();
             assert_eq!(output.len(), 4, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
@@ -1259,7 +1277,7 @@ mod tests {
                 std::process::id()
             ));
             write_legacy_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 64], 2).unwrap();
             assert_eq!(output.len(), 64, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();
@@ -1281,7 +1299,7 @@ mod tests {
                 std::process::id()
             ));
             write_low_bit_source(&path, format, false);
-            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0).unwrap();
+            let runtime = MoeRuntime::open(&path, "fixture", 2, 1, 0, Some(1_000_000)).unwrap();
             let output = runtime.forward_batch(0, &[1.0; 512], 2).unwrap();
             assert_eq!(output.len(), 512, "formato {}", format.name());
             std::fs::remove_file(path).unwrap();

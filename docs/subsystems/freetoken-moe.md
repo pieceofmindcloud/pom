@@ -1073,6 +1073,28 @@ Uma recusa nomeia o device, a chave do expert, os bytes pedidos e o limite
 medido. Payload vazio, falha de sonda, upload incompleto ou handle nulo também
 recusam explicitamente.
 
+#### Correção de admissão por workspace medido
+
+O orçamento agora também preserva o workspace transitório que o próprio
+`llama.cpp` mediu depois de construir o contexto. `LlmEngine::cuda_compute_bytes`
+extrai os buffers `CUDA*` de `llama_rs_context_memory_json`, soma apenas o
+campo `compute` residente no device e ignora `CUDA_Host`; relatório ausente,
+incompleto ou sem bytes CUDA positivos recusa o executor CUDA com mensagem
+explícita. A reserva é `ceil(1,25 * compute_bytes)` usando aritmética inteira,
+uma margem relativa de 25% para crescimento do grafo e fragmentação, e não uma
+capacidade fixa de placa, contexto ou modelo.
+
+O `DeviceExpertCache` usa essa reserva tanto no teto inicial quanto na nova
+medição de memória livre de cada miss. Se o expert nomeado pela chave
+`modelo/camada/expert/formato` não couber depois da reserva e da eviction de
+entradas ociosas, a admissão recusa e inclui device, chave, bytes solicitados e
+limite disponível. Não há tentativa de alocação para descobrir se cabe, nem
+fallback silencioso para uma residência que consumiria o workspace do grafo.
+O teste `cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento`
+cobre o caso apertado com allocator falso. Esta correção está em implementação
+local; a promoção exige build CUDA no ramo de checagem e validação no ambiente
+real, sem alterar o serviço durante a medição do captain.
+
 No NVFP4, o lote agora envia a lista pequena de ponteiros residentes para a
 GPU. O H2D interno do lote contém hidden e ponteiros, não os pesos; `upload_ms`
 e `upload_bytes` ficam separados nas estatísticas `device_cache_*`. O primeiro
@@ -1130,6 +1152,16 @@ executor MoE honesto está em `5,4 tok/s`, contra `20,7 tok/s` do llama.cpp e
 e `325 tok/s`, respectivamente. Os dtypes IQ do Qwen UD ficaram em
 `CPUReference`, aproximadamente cinco segundos por token, portanto a ponte
 CUDA por dtype vem antes de graphs.
+
+Após a execução agrupada e a residência em device, a medição mais recente do
+chat na mesma máquina registrou `23,3 tok/s` no MoE contra `26,7 tok/s` no
+llama.cpp. No prefill foram `449,8 ms` para 23 tokens no MoE
+(`19,56 ms/token`) contra `172,3 ms` (`7,49 ms/token`) no denso, e o decode
+p50 foi `29,712 ms` contra `29,231 ms`. O p95 do MoE foi `38,363 ms`, contra
+`29,521 ms` no denso; isso caracteriza cauda pior, mas não prova sozinho um
+miss de cache. A quebra de colocação observada foi 30 camadas com peso em GPU
+no MoE contra 23 em GPU e 7 mistas no denso. Esses números são linha de base,
+não declaração de que a reserva de VRAM já foi validada.
 
 A ordem concreta é Q4_K (`dtype=12`) e Q6_K (`dtype=14`), usados pelo Qwen3.6
 Q4_K_M, seguidos por IQ3_S (`21`), IQ2_S (`22`) e IQ4_XS (`23`), usados pelos

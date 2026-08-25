@@ -95,6 +95,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
+  no caminho CUDA, a admissão também preserva uma reserva derivada do compute
+  buffer CUDA medido pelo `llama.cpp`, com margem relativa e recusa nominal se
+  o relatório não existir ou o expert não couber;
   `format_q4_0.rs` compartilha o parser GGUF, o inventário de dtypes e o
   decoder Q4_0, `format_plain.rs` implementa os bancos escalares F32/F16/BF16,
   `format_legacy_quants.rs` implementa Q4_1/Q5_0/Q5_1/Q8_0,

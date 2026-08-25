@@ -1673,6 +1673,7 @@ pub async fn run(
         let weights_bytes = std::fs::metadata(&cfg.model_path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
+        let cuda_compute_bytes = engine.cuda_compute_bytes();
         Some(Arc::new(
             crate::moe::runtime::MoeRuntime::open(
                 &cfg.model_path,
@@ -1680,6 +1681,7 @@ pub async fn run(
                 experts,
                 top_k,
                 weights_bytes,
+                cuda_compute_bytes,
             )
             .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
         ))

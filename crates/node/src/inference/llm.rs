@@ -1286,6 +1286,15 @@ impl LlmEngine {
         unsafe { json_from_wrapper(|out| sys::llama_rs_context_memory_json(self.ctx, out)) }
     }
 
+    /// Compute buffer CUDA medido pelo próprio llama.cpp para este contexto.
+    ///
+    /// O valor alimenta o orçamento do cache residente de experts. Se a ponte
+    /// de memória não reportar um buffer CUDA completo, devolve `None` para que
+    /// o caminho CUDA seja recusado nominalmente.
+    pub fn cuda_compute_bytes(&self) -> Option<u64> {
+        crate::moe::admission::cuda_compute_bytes_from_llama_memory(&self.context_memory()?)
+    }
+
     pub fn eos_token(&self) -> i32 {
         unsafe { sys::llama_vocab_eos(self.loaded.vocab) }
     }

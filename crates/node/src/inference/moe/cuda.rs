@@ -430,9 +430,13 @@ impl IqQuantCudaExecutor {
 }
 
 impl Nvfp4CudaExecutor {
-    pub fn new(hidden: usize, intermediate: usize) -> Result<Self, CudaMoeError> {
+    pub fn new(
+        hidden: usize,
+        intermediate: usize,
+        compute_bytes: u64,
+    ) -> Result<Self, CudaMoeError> {
         debug_assert!(Nvfp4Expert::packed_bytes(hidden, intermediate).is_ok());
-        let resident_cache = measured_device_cache()?;
+        let resident_cache = measured_device_cache(compute_bytes)?;
         Self::new_with_cache(hidden, intermediate, resident_cache)
     }
 
@@ -700,24 +704,22 @@ impl DeviceAllocator for CudaDeviceAllocator {
     }
 }
 
-fn measured_device_cache() -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+fn measured_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
     let allocator: Arc<dyn DeviceAllocator> = Arc::new(CudaDeviceAllocator);
     let baseline_free_bytes = allocator
         .free_bytes()
         .map_err(|error| CudaMoeError::BackendUnavailable(error.to_string()))?;
-    Ok(DeviceExpertCache::new(
-        MemoryAccount {
-            baseline_free_bytes,
-            weights_bytes: 0,
-            fixed_bytes: 0,
-            reserve_bytes: 0,
-        },
-        allocator,
-    ))
+    let account =
+        MemoryAccount::for_device_cache(baseline_free_bytes, compute_bytes).ok_or_else(|| {
+            CudaMoeError::BackendUnavailable(format!(
+                "compute buffer CUDA medido inválido: {compute_bytes} bytes"
+            ))
+        })?;
+    Ok(DeviceExpertCache::new(account, allocator))
 }
 
-pub fn create_device_cache() -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
-    measured_device_cache()
+pub fn create_device_cache(compute_bytes: u64) -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
+    measured_device_cache(compute_bytes)
 }
 
 #[cfg(feature = "cuda")]
@@ -942,7 +944,7 @@ mod tests {
             .unwrap()
             .run(&hidden_values)
             .unwrap();
-        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
         let gpu = run_resident(&executor, &[payload.as_slice()], &hidden_values)
             .into_iter()
             .next()
@@ -970,7 +972,7 @@ mod tests {
                 format,
                 hidden,
                 intermediate,
-                measured_device_cache().unwrap(),
+                measured_device_cache(1_000_000).unwrap(),
             )
             .unwrap();
             let lease = executor
@@ -1010,7 +1012,7 @@ mod tests {
                 format,
                 hidden,
                 intermediate,
-                measured_device_cache().unwrap(),
+                measured_device_cache(1_000_000).unwrap(),
             )
             .unwrap();
             let lease = executor
@@ -1039,7 +1041,7 @@ mod tests {
             .unwrap()
             .run(&hidden_values)
             .unwrap();
-        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
         let gpu = run_resident(&executor, &[payload.as_slice()], &hidden_values)
             .into_iter()
             .next()
@@ -1068,7 +1070,7 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
         let gpu = run_resident(
             &executor,
             &[first.as_slice(), second.as_slice()],
@@ -1135,7 +1137,7 @@ mod tests {
                 .map(|(first, second)| 0.60 * first + 0.40 * second)
                 .collect::<Vec<_>>(),
         ];
-        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
         let leases = vec![
             executor
                 .resident_admit(
@@ -1216,7 +1218,8 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let executor = Nvfp4CudaExecutor::new(source.hidden(), source.intermediate()).unwrap();
+        let executor =
+            Nvfp4CudaExecutor::new(source.hidden(), source.intermediate(), 1_000_000).unwrap();
         let gpu = run_resident(
             &executor,
             &[payloads[0].as_slice(), payloads[1].as_slice()],

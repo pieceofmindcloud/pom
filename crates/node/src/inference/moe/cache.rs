@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::io;
 use std::sync::{Arc, Mutex};
+#[cfg(any(feature = "cuda", test))]
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -391,18 +392,21 @@ impl Drop for ExpertLease {
 /// devolve apenas o handle que o kernel entende e o tamanho que deve ser
 /// contabilizado no orçamento. A implementação é dona de liberar o handle no
 /// `Drop` do objeto concreto.
+#[cfg(any(feature = "cuda", test))]
 pub trait DeviceAllocation: Send + Sync {
     fn bytes(&self) -> usize;
     fn handle(&self) -> usize;
 }
 
 /// Operações mínimas que um backend precisa oferecer ao cache residente.
+#[cfg(any(feature = "cuda", test))]
 pub trait DeviceAllocator: Send + Sync {
     fn device_name(&self) -> &str;
     fn free_bytes(&self) -> io::Result<u64>;
     fn upload(&self, payload: &[u8]) -> Result<Box<dyn DeviceAllocation>, String>;
 }
 
+#[cfg(any(feature = "cuda", test))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceCacheError {
     EmptyExpert {
@@ -431,6 +435,7 @@ pub enum DeviceCacheError {
     },
 }
 
+#[cfg(any(feature = "cuda", test))]
 impl fmt::Display for DeviceCacheError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -463,8 +468,10 @@ impl fmt::Display for DeviceCacheError {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
 impl std::error::Error for DeviceCacheError {}
 
+#[cfg(any(feature = "cuda", test))]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct DeviceCacheStats {
     pub hits: u64,
@@ -479,12 +486,14 @@ pub struct DeviceCacheStats {
     pub entries: usize,
 }
 
+#[cfg(any(feature = "cuda", test))]
 struct DeviceEntry {
     allocation: Box<dyn DeviceAllocation>,
     active: usize,
     last_used: u64,
 }
 
+#[cfg(any(feature = "cuda", test))]
 struct DeviceState {
     entries: HashMap<ExpertKey, DeviceEntry>,
     clock: u64,
@@ -497,12 +506,14 @@ struct DeviceState {
 /// payload não fica preso neste struct: depois do upload, a entrada mantém só
 /// o handle concreto do backend. Isso impede que um hit de CUDA seja confundido
 /// com um hit da LRU de RAM.
+#[cfg(any(feature = "cuda", test))]
 pub struct DeviceExpertCache {
     account: MemoryAccount,
     allocator: Arc<dyn DeviceAllocator>,
     state: Mutex<DeviceState>,
 }
 
+#[cfg(any(feature = "cuda", test))]
 impl DeviceExpertCache {
     pub fn new(account: MemoryAccount, allocator: Arc<dyn DeviceAllocator>) -> Arc<Self> {
         Arc::new(Self {
@@ -664,18 +675,21 @@ impl DeviceExpertCache {
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
 pub struct DeviceExpertLease {
     cache: Arc<DeviceExpertCache>,
     key: ExpertKey,
     handle: usize,
 }
 
+#[cfg(any(feature = "cuda", test))]
 impl DeviceExpertLease {
     pub fn handle(&self) -> usize {
         self.handle
     }
 }
 
+#[cfg(any(feature = "cuda", test))]
 impl Drop for DeviceExpertLease {
     fn drop(&mut self) {
         self.cache.release(&self.key);
@@ -901,6 +915,25 @@ mod tests {
         };
         assert!(matches!(error, DeviceCacheError::NoBudget { .. }));
         assert!(error.to_string().contains("fake-device"));
+        assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn cache_device_recusa_expert_quando_workspace_medido_consumiu_o_orcamento() {
+        let allocator = FakeDeviceAllocator::new(1_250);
+        let account = MemoryAccount::for_device_cache(1_250, 1_000).unwrap();
+        let cache =
+            DeviceExpertCache::new(account, Arc::clone(&allocator) as Arc<dyn DeviceAllocator>);
+        let key = ExpertKey::new("Gemma4", 29, 7, "nvfp4");
+
+        let error = match cache.admit(key, &[1]) {
+            Ok(_) => panic!("expert foi admitido sem orçamento para o workspace"),
+            Err(error) => error,
+        };
+
+        assert!(matches!(error, DeviceCacheError::NoBudget { limit: 0, .. }));
+        assert!(error.to_string().contains("Gemma4"));
+        assert!(error.to_string().contains("nvfp4"));
         assert_eq!(allocator.uploads.load(Ordering::Relaxed), 0);
     }
 }

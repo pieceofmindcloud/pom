@@ -1049,10 +1049,12 @@ impl Nvfp4Executor {
         #[cfg(feature = "cuda")]
         let backend = match backend_kind {
             Nvfp4BackendKind::CpuReference => Nvfp4Backend::Cpu,
-            Nvfp4BackendKind::Cuda => Nvfp4Backend::Cuda(
-                super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate)
-                    .map_err(|error| Nvfp4Error::BackendUnavailable(error.to_string()))?,
-            ),
+            Nvfp4BackendKind::Cuda => {
+                return Err(Nvfp4Error::BackendUnavailable(
+                    "compute buffer CUDA medido ausente; use o construtor com orçamento do contexto"
+                        .into(),
+                ));
+            }
         };
         #[cfg(not(feature = "cuda"))]
         let backend = match backend_kind {

@@ -39,6 +39,19 @@ struct CudaMoeCallTiming {
     double free_ms;
 };
 
+struct CudaHeterogeneousTensor {
+    const uint8_t * data;
+    std::size_t bytes;
+    uint32_t dtype;
+};
+
+struct CudaHeterogeneousExpert {
+    CudaHeterogeneousTensor gate_up;
+    CudaHeterogeneousTensor gate;
+    CudaHeterogeneousTensor up;
+    CudaHeterogeneousTensor down;
+};
+
 using Clock = std::chrono::steady_clock;
 
 double elapsed_ms(Clock::time_point start, Clock::time_point end) {
@@ -731,6 +744,88 @@ __global__ void iquant_down_route_kernel(
         activated + pair * intermediate);
 }
 
+__global__ void heterogeneous_iq_gate_up_route_kernel(
+    const CudaHeterogeneousExpert * experts,
+    const uint32_t * token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const float * hidden_values,
+    float * gate_up_values
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows_per_pair = 2 * intermediate;
+    const int pair = index / rows_per_pair;
+    const int row = index % rows_per_pair;
+    if (pair >= pair_count) {
+        return;
+    }
+    const CudaHeterogeneousExpert expert = experts[pair];
+    const float * input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
+    const int component_row = row % intermediate;
+    float gate;
+    float up;
+    if (expert.gate_up.data != nullptr) {
+        gate = iq_dot(expert.gate_up.dtype, expert.gate_up.data, component_row, hidden, input);
+        up = iq_dot(expert.gate_up.dtype, expert.gate_up.data,
+            intermediate + component_row, hidden, input);
+    } else {
+        gate = iq_dot(expert.gate.dtype, expert.gate.data, component_row, hidden, input);
+        up = iq_dot(expert.up.dtype, expert.up.data, component_row, hidden, input);
+    }
+    gate_up_values[pair * rows_per_pair + row] = row < intermediate ? gate : up;
+}
+
+__device__ float heterogeneous_activation(float value, int activation) {
+    if (activation == 2) {
+        return 0.5f * value *
+            (1.0f + tanhf(0.7978845608028654f * value *
+                (1.0f + 0.044715f * value * value)));
+    }
+    return value / (1.0f + expf(-value));
+}
+
+__global__ void heterogeneous_activation_kernel(
+    const float * gate_up_values,
+    int pair_count,
+    int intermediate,
+    int activation,
+    float * activated
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair = index / intermediate;
+    const int row = index % intermediate;
+    if (pair >= pair_count) {
+        return;
+    }
+    const float * gate_up = gate_up_values + pair * 2 * intermediate;
+    activated[pair * intermediate + row] =
+        heterogeneous_activation(gate_up[row], activation) * gate_up[intermediate + row];
+}
+
+__global__ void heterogeneous_iq_down_route_kernel(
+    const CudaHeterogeneousExpert * experts,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    const float * activated,
+    float * pair_output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair = index / hidden;
+    const int row = index % hidden;
+    if (pair >= pair_count) {
+        return;
+    }
+    const CudaHeterogeneousExpert expert = experts[pair];
+    pair_output[pair * hidden + row] = iq_dot(
+        expert.down.dtype,
+        expert.down.data,
+        row,
+        intermediate,
+        activated + pair * intermediate);
+}
+
 int cuda_status(cudaError_t error) {
     return error == cudaSuccess ? 0 : static_cast<int>(error);
 }
@@ -1114,6 +1209,228 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
     cudaFree(d_token_ids);
     cudaFree(d_payloads);
     cudaFree(d_hidden);
+    if (timing != nullptr) {
+        timing->free_ms = elapsed_ms(free_start, Clock::now());
+    }
+    return result;
+}
+
+extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
+    const CudaHeterogeneousExpert * experts,
+    std::size_t expert_count,
+    const uint32_t * token_ids,
+    const float * weights,
+    const std::size_t * token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float * hidden,
+    std::size_t hidden_len,
+    float * output,
+    std::size_t output_len,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    int activation,
+    CudaMoeCallTiming * timing
+) {
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(expert_count);
+        timing->kernel_launches = 4;
+        timing->sync_count = 1;
+    }
+    if (experts == nullptr || token_ids == nullptr || weights == nullptr ||
+        token_offsets == nullptr || hidden == nullptr || output == nullptr ||
+        expert_count == 0 || token_count == 0 || hidden_width == 0 ||
+        intermediate_width == 0 || hidden_width % 256 != 0 ||
+        intermediate_width % 256 != 0 || token_offsets_len != token_count + 1 ||
+        hidden_len != token_count * hidden_width || output_len != hidden_len ||
+        token_offsets[0] != 0 || token_offsets[token_count] != expert_count ||
+        (activation != 1 && activation != 2)) {
+        return 1;
+    }
+
+    const auto valid_dtype = [](uint32_t dtype) {
+        return dtype == 21 || dtype == 22 || dtype == 23;
+    };
+    const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
+        const std::size_t block_bytes = dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
+        return (columns / 256) * block_bytes;
+    };
+    const auto valid_tensor = [&](const CudaHeterogeneousTensor & tensor,
+                                  std::size_t rows,
+                                  std::size_t columns) {
+        if (tensor.data == nullptr || !valid_dtype(tensor.dtype) ||
+            columns == 0 || columns % 256 != 0) {
+            return false;
+        }
+        return tensor.bytes == rows * row_bytes(tensor.dtype, columns);
+    };
+    for (std::size_t pair = 0; pair < expert_count; ++pair) {
+        const auto & expert = experts[pair];
+        if (token_ids[pair] >= token_count || !std::isfinite(weights[pair])) {
+            return 1;
+        }
+        if (!valid_tensor(expert.down, hidden_width, intermediate_width)) {
+            return 1;
+        }
+        const bool fused = expert.gate_up.data != nullptr;
+        if (fused) {
+            if (expert.gate.data != nullptr || expert.up.data != nullptr ||
+                !valid_tensor(expert.gate_up, 2 * intermediate_width, hidden_width)) {
+                return 1;
+            }
+        } else if (!valid_tensor(expert.gate, intermediate_width, hidden_width) ||
+                   !valid_tensor(expert.up, intermediate_width, hidden_width)) {
+            return 1;
+        }
+    }
+    for (std::size_t token = 0; token < token_count; ++token) {
+        if (token_offsets[token] > token_offsets[token + 1]) {
+            return 1;
+        }
+    }
+
+    const int pair_count = static_cast<int>(expert_count);
+    const int hidden_i = static_cast<int>(hidden_width);
+    const int intermediate_i = static_cast<int>(intermediate_width);
+    const int block_size = 128;
+    const std::size_t hidden_bytes = hidden_len * sizeof(float);
+    const std::size_t gate_up_bytes = 2 * intermediate_width * expert_count * sizeof(float);
+    const std::size_t activated_bytes = intermediate_width * expert_count * sizeof(float);
+    const std::size_t pair_output_bytes = hidden_width * expert_count * sizeof(float);
+
+    CudaHeterogeneousExpert * d_experts = nullptr;
+    float * d_hidden = nullptr;
+    uint32_t * d_token_ids = nullptr;
+    float * d_weights = nullptr;
+    std::size_t * d_token_offsets = nullptr;
+    float * d_gate_up = nullptr;
+    float * d_activated = nullptr;
+    float * d_pair_output = nullptr;
+    float * d_output = nullptr;
+    cudaEvent_t start = nullptr;
+    cudaEvent_t end = nullptr;
+    int result = 0;
+
+    do {
+        const auto alloc_start = Clock::now();
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_experts),
+            expert_count * sizeof(*d_experts)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_ids),
+            expert_count * sizeof(*d_token_ids)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_weights),
+            expert_count * sizeof(*d_weights)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_offsets),
+            token_offsets_len * sizeof(*d_token_offsets)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated), activated_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_pair_output), pair_output_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), hidden_bytes));
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->alloc_ms = elapsed_ms(alloc_start, Clock::now());
+            result = cuda_status(cudaEventCreate(&start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&end));
+            if (result != 0) break;
+        }
+
+        const auto h2d_start = Clock::now();
+        result = cuda_status(cudaMemcpy(d_experts, experts,
+            expert_count * sizeof(*d_experts), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_ids, token_ids,
+            expert_count * sizeof(*d_token_ids), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_weights, weights,
+            expert_count * sizeof(*d_weights), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_offsets, token_offsets,
+            token_offsets_len * sizeof(*d_token_offsets), cudaMemcpyHostToDevice));
+        if (timing != nullptr) {
+            timing->h2d_ms = elapsed_ms(h2d_start, Clock::now());
+            timing->h2d_bytes = static_cast<uint64_t>(
+                expert_count * sizeof(*d_experts) + hidden_bytes +
+                expert_count * sizeof(*d_token_ids) + expert_count * sizeof(*d_weights) +
+                token_offsets_len * sizeof(*d_token_offsets));
+        }
+        if (result != 0) break;
+
+        const auto launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(start));
+            if (result != 0) break;
+        }
+        heterogeneous_iq_gate_up_route_kernel<<<
+            (2 * intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_experts, d_token_ids, pair_count, intermediate_i,
+                hidden_i, d_hidden, d_gate_up);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        heterogeneous_activation_kernel<<<
+            (intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_gate_up, pair_count, intermediate_i, activation, d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        heterogeneous_iq_down_route_kernel<<<
+            (hidden_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_experts, pair_count, hidden_i, intermediate_i,
+                d_activated, d_pair_output);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        aggregate_route_batch_kernel<<<
+            (static_cast<int>(token_count) * hidden_i + block_size - 1) / block_size,
+            block_size>>>(d_pair_output, d_weights, d_token_offsets,
+                static_cast<int>(token_count), hidden_i, d_output);
+        result = cuda_status(cudaGetLastError());
+        if (timing != nullptr) {
+            timing->launch_ms = elapsed_ms(launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(end));
+            if (result != 0) break;
+        }
+        const auto sync_start = Clock::now();
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, start, end));
+            if (result != 0) break;
+            timing->kernel_ms = kernel_ms;
+            timing->sync_ms = std::max(0.0, elapsed_ms(sync_start, Clock::now()) -
+                static_cast<double>(kernel_ms));
+        }
+
+        const auto d2h_start = Clock::now();
+        result = cuda_status(cudaMemcpy(output, d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+        if (timing != nullptr) {
+            timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
+            timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+        }
+    } while (false);
+
+    if (start != nullptr) cudaEventDestroy(start);
+    if (end != nullptr) cudaEventDestroy(end);
+    const auto free_start = Clock::now();
+    cudaFree(d_output);
+    cudaFree(d_pair_output);
+    cudaFree(d_activated);
+    cudaFree(d_gate_up);
+    cudaFree(d_token_offsets);
+    cudaFree(d_weights);
+    cudaFree(d_token_ids);
+    cudaFree(d_hidden);
+    cudaFree(d_experts);
     if (timing != nullptr) {
         timing->free_ms = elapsed_ms(free_start, Clock::now());
     }

@@ -348,7 +348,11 @@ fn make_external_executor_plan(
                 && single_dtype
                 && IqQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
         }
-        ExpertFormat::Heterogeneous => false,
+        ExpertFormat::Heterogeneous => {
+            cuda_compiled
+                && !dtypes.is_empty()
+                && dtypes.iter().all(|dtype| matches!(dtype, 21 | 22 | 23))
+        }
         _ => false,
     };
     if bridge_supported {
@@ -359,13 +363,13 @@ fn make_external_executor_plan(
         };
     }
 
-    let reason = if detected == ExpertFormat::Heterogeneous {
+    let reason = if !cuda_compiled {
         format!(
-            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: ponte por tensor ainda não disponível; experts permanecem no llama.cpp"
+            "executor CUDA recusado para dtype(s) [{dtype_list}]: binário sem feature cuda; experts permanecem no llama.cpp"
         )
-    } else if !cuda_compiled {
+    } else if detected == ExpertFormat::Heterogeneous {
         format!(
-            "executor CUDA recusado para dtype [{dtype_list}]: binário sem feature cuda; experts permanecem no llama.cpp"
+            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: a ponte por tensor cobre somente IQ3_S (21), IQ2_S (22) e IQ4_XS (23); experts permanecem no llama.cpp"
         )
     } else if detected == ExpertFormat::Nvfp4 && nvfp4_cpu_requested {
         format!(
@@ -830,14 +834,24 @@ impl MoeRuntime {
                         "GGUF MoE sem camadas",
                     )));
                 }
+                #[cfg(feature = "cuda")]
+                let device_cache = Some(create_measured_device_cache(cuda_compute_bytes)?);
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
-                    blocks.push(MoeBlock::Heterogeneous(HeterogeneousMoeBlock::new(
+                    #[cfg(feature = "cuda")]
+                    let block = HeterogeneousMoeBlock::new_with_device_cache(
                         Arc::clone(&cache),
+                        Arc::clone(device_cache.as_ref().expect("cache CUDA heterogêneo")),
                         &model,
                         layer,
                         top_k,
-                    )));
+                        source.layer_geometry(layer)?.0,
+                        source.layer_geometry(layer)?.1,
+                    );
+                    #[cfg(not(feature = "cuda"))]
+                    let block =
+                        HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k);
+                    blocks.push(MoeBlock::Heterogeneous(block));
                 }
                 Ok(Self {
                     source: MoeSource::Heterogeneous(source),
@@ -860,6 +874,8 @@ impl MoeRuntime {
             Some(MoeBlock::K(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             #[cfg(feature = "cuda")]
             Some(MoeBlock::Iq(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
+            #[cfg(feature = "cuda")]
+            Some(MoeBlock::Heterogeneous(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             Some(_) | None => MoeExecutorKind::CpuReference,
         }
     }
@@ -896,6 +912,9 @@ impl MoeRuntime {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     MoeBlock::Iq(block) if block.uses_cuda() => {
+                        (block.cuda_diagnostics(), block.resident_cache_stats())
+                    }
+                    MoeBlock::Heterogeneous(block) if block.uses_cuda() => {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     _ => continue,
@@ -1161,6 +1180,36 @@ impl MoeRuntime {
             }
         }
 
+        #[cfg(feature = "cuda")]
+        if let (MoeSource::Heterogeneous(source), MoeBlock::Heterogeneous(block)) =
+            (&self.source, block)
+        {
+            if block.uses_cuda() {
+                let token_ids = (0..tokens)
+                    .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                    .collect::<Vec<_>>();
+                let token_offsets = (0..=tokens)
+                    .map(|token| token.saturating_mul(expert_count_used))
+                    .collect::<Vec<_>>();
+                let output = block.forward_batch_from_source_with_route(
+                    source,
+                    &resolved_ids,
+                    &token_ids,
+                    weights,
+                    &token_offsets,
+                    hidden,
+                    tokens,
+                    activation,
+                )?;
+                let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+                self.runtime_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .runtime_forward_ms += elapsed_ms;
+                return Ok(output);
+            }
+        }
+
         let hidden_width = self.source.hidden();
         let mut output = Vec::with_capacity(hidden.len());
         for token in 0..tokens {
@@ -1296,7 +1345,7 @@ mod tests {
     fn dtypes_heterogeneos_nao_externalizam_parcialmente() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
-            vec![21, 22, 23],
+            vec![12, 21, 23],
             3,
             true,
             false,
@@ -1304,9 +1353,23 @@ mod tests {
         assert!(!plan.enabled());
         assert_eq!(plan.layers, vec![0, 0, 0]);
         let reason = plan.reason.unwrap();
+        assert!(reason.contains("12 (Q4_K)"));
         assert!(reason.contains("21 (IQ3_S)"));
-        assert!(reason.contains("22 (IQ2_S)"));
         assert!(reason.contains("23 (IQ4_XS)"));
+    }
+
+    #[test]
+    fn dtypes_heterogeneos_iq_priorizados_externalizam_todas_as_camadas() {
+        let plan = make_external_executor_plan(
+            ExpertFormat::Heterogeneous,
+            vec![21, 22, 23],
+            3,
+            true,
+            false,
+        );
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]

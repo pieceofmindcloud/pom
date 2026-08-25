@@ -172,6 +172,20 @@ struct LayerInventory {
     intermediate: usize,
 }
 
+/// Payload de um tensor de expert individual, pronto para uma ponte device.
+///
+/// O dtype e a geometria acompanham cada papel porque um GGUF UD pode trocar
+/// o formato entre gate, up e down. O cache de device usa uma entrada por
+/// papel e expert, nunca uma premissa de dtype único para o modelo.
+#[cfg(feature = "cuda")]
+pub(crate) struct HeterogeneousTensorPayload {
+    pub role: TensorRole,
+    pub dtype: u32,
+    pub rows: usize,
+    pub columns: usize,
+    pub bytes: Vec<u8>,
+}
+
 pub struct HeterogeneousMoeSource {
     mmap: Mmap,
     data_start: usize,
@@ -381,6 +395,62 @@ impl HeterogeneousMoeSource {
             }
         }
         Ok(())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub(crate) fn load_expert_tensors(
+        &self,
+        layer: u32,
+        expert: u32,
+    ) -> Result<Vec<HeterogeneousTensorPayload>, Q4LoadError> {
+        let inventory = self
+            .layers
+            .get(layer as usize)
+            .ok_or(Q4LoadError::InvalidTensor(
+                "camada MoE fora do inventário heterogêneo",
+            ))?;
+        let entries = [
+            (
+                TensorRole::GateUp,
+                inventory.gate_up,
+                2 * inventory.intermediate,
+                inventory.hidden,
+            ),
+            (
+                TensorRole::Gate,
+                inventory.gate,
+                inventory.intermediate,
+                inventory.hidden,
+            ),
+            (
+                TensorRole::Up,
+                inventory.up,
+                inventory.intermediate,
+                inventory.hidden,
+            ),
+            (
+                TensorRole::Down,
+                inventory.down,
+                inventory.hidden,
+                inventory.intermediate,
+            ),
+        ];
+        entries
+            .into_iter()
+            .filter_map(|(role, entry, rows, columns)| {
+                entry.map(|entry| (role, entry, rows, columns))
+            })
+            .map(|(role, entry, rows, columns)| {
+                let tensor = &self.tensors[entry.spec_index];
+                Ok(HeterogeneousTensorPayload {
+                    role,
+                    dtype: entry.decoder.dtype(),
+                    rows,
+                    columns,
+                    bytes: self.tensor_slice(entry, expert, rows, columns)?,
+                })
+            })
+            .collect()
     }
 
     fn entry_for_role(&self, inventory: &LayerInventory, role: TensorRole) -> Option<ExpertTensor> {

@@ -1308,9 +1308,10 @@ A ordem vigente passa a ser:
 1. **Salvaguarda por dtype e reserva de VRAM.** A reserva medida de
    `53decb4` e o ownership por camada chegam juntos. Somente uma camada cujos
    tensores de experts tenham executor device disponível pode ser retirada do
-   llama.cpp. Dtypes sem cache device, inclusive qualquer combinação
-   heterogênea ainda sem ponte, permanecem com o llama.cpp. A recusa ou a
-   preservação deve nomear os dtypes concretos, nunca deixar a placa sem dono.
+   llama.cpp. Dtypes sem cache device, inclusive combinações heterogêneas que
+   incluam um dtype fora de IQ3_S/IQ2_S/IQ4_XS, permanecem com o llama.cpp. A
+   recusa ou a preservação deve nomear os dtypes concretos, nunca deixar a
+   placa sem dono.
 2. **Cobertura do marco.** NVFP4, Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
    por tensor, incluindo o cache device e a combinação heterogênea usada pelos
    dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
@@ -1325,6 +1326,25 @@ Esta reorganização substitui a fila anterior como ordem de entrega, mas não
 remove o inventário completo nem a recusa nominal: os demais dtypes continuam
 listados e explicitamente protegidos, e voltam à implementação depois que os
 quatro modelos do marco tiverem números honestos.
+
+### Estado da cobertura IQ heterogênea - 2026-08-25
+
+A ponte device da fase seguinte está implementada localmente para os dtypes
+IQ3_S (21), IQ2_S (22) e IQ4_XS (23), tanto em arquivos homogêneos quanto em
+GGUF heterogêneo. No caso heterogêneo, o cache mantém uma entrada residente
+por `(modelo, camada, expert, papel, dtype)`; o kernel recebe descritores
+separados para `gate_up` fundido ou `gate`/`up` separados e `down`, e escolhe
+o codebook pelo dtype de cada tensor. Isso evita transformar o UD em um
+payload homogêneo no host e evita transferência de pesos em hits do cache.
+
+O plano só externaliza uma combinação heterogênea quando todos os dtypes dos
+experts pertencem ao conjunto suportado. Uma combinação como `[12, 21, 23]`
+fica inteira com o llama.cpp e publica a recusa nominal; não há externalização
+parcial que pudesse remover um tensor sem executor. A comparação unitária
+CUDA usa gate IQ3_S, up IQ2_S e down IQ4_XS, com a mesma entrada e pesos da
+referência CPU. A cobertura CUDA e a prova E2E nos GGUF reais dos dois UD ainda
+precisam ser executadas no diretório de validação antes de promover esta fase;
+os números do marco continuam em aberto.
 
 ### Fases e critérios de pronto
 

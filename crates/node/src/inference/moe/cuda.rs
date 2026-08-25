@@ -83,28 +83,55 @@ pub enum CudaMoeError {
 impl fmt::Display for CudaMoeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Geometry(reason) => write!(formatter, "geometria CUDA NVFP4 inválida: {reason}"),
-            Self::Payload(reason) => write!(formatter, "payload CUDA NVFP4 inválido: {reason}"),
+            Self::Geometry(reason) => write!(formatter, "geometria CUDA MoE inválida: {reason}"),
+            Self::Payload(reason) => write!(formatter, "payload CUDA MoE inválido: {reason}"),
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
-                "payload CUDA NVFP4 tem {actual} bytes, mas a geometria exige {expected}"
+                "payload CUDA MoE tem {actual} bytes, mas a geometria exige {expected}"
             ),
             Self::BackendUnavailable(reason) => {
-                write!(formatter, "backend CUDA NVFP4 indisponível: {reason}")
+                write!(formatter, "backend CUDA MoE indisponível: {reason}")
             }
-            Self::Cache(reason) => write!(formatter, "cache CUDA NVFP4 recusou o expert: {reason}"),
+            Self::Cache(reason) => write!(formatter, "cache CUDA MoE recusou o expert: {reason}"),
             Self::HiddenWidth { expected, actual } => {
                 write!(
                     formatter,
-                    "hidden CUDA NVFP4 tem {actual}, esperado {expected}"
+                    "hidden CUDA MoE tem {actual}, esperado {expected}"
                 )
             }
-            Self::Launch(code) => write!(formatter, "kernel CUDA NVFP4 falhou (código {code})"),
+            Self::Launch(code) => write!(formatter, "kernel CUDA MoE falhou (código {code})"),
         }
     }
 }
 
 impl std::error::Error for CudaMoeError {}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct CudaHeterogeneousTensor {
+    pub data: *const u8,
+    pub bytes: usize,
+    pub dtype: u32,
+}
+
+impl Default for CudaHeterogeneousTensor {
+    fn default() -> Self {
+        Self {
+            data: std::ptr::null(),
+            bytes: 0,
+            dtype: 0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub(crate) struct CudaHeterogeneousExpert {
+    pub gate_up: CudaHeterogeneousTensor,
+    pub gate: CudaHeterogeneousTensor,
+    pub up: CudaHeterogeneousTensor,
+    pub down: CudaHeterogeneousTensor,
+}
 
 impl From<Nvfp4Error> for CudaMoeError {
     fn from(error: Nvfp4Error) -> Self {
@@ -427,6 +454,217 @@ impl IqQuantCudaExecutor {
             .unwrap_or_else(|error| error.into_inner())
             .to_owned()
     }
+}
+
+/// Executor CUDA para uma rota cujos tensores podem usar IQ3_S, IQ2_S ou
+/// IQ4_XS independentemente por papel. Os descritores carregam ponteiro,
+/// tamanho e dtype de cada tensor; o cache residente mantém os bytes no
+/// device entre tokens.
+pub struct HeterogeneousIqCudaExecutor {
+    hidden: usize,
+    intermediate: usize,
+    profile: bool,
+    resident_cache: Arc<DeviceExpertCache>,
+    diagnostics: Mutex<Nvfp4CudaDiagnostics>,
+}
+
+impl HeterogeneousIqCudaExecutor {
+    pub fn new_with_cache(
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Self {
+        Self {
+            hidden,
+            intermediate,
+            profile: std::env::var("POM_MOE_CUDA_PROFILE")
+                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            resident_cache,
+            diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
+        }
+    }
+
+    pub fn resident_lookup(
+        &self,
+        key: &super::cache::ExpertKey,
+    ) -> Option<super::cache::DeviceExpertLease> {
+        self.resident_cache.lookup(key)
+    }
+
+    pub fn resident_admit(
+        &self,
+        key: super::cache::ExpertKey,
+        payload: &[u8],
+    ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        self.resident_cache
+            .admit(key, payload)
+            .map_err(|error| CudaMoeError::Cache(error.to_string()))
+    }
+
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.resident_cache.stats()
+    }
+
+    pub fn run_route_batch_resident(
+        &self,
+        experts: &[CudaHeterogeneousExpert],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+    ) -> Result<Vec<f32>, CudaMoeError> {
+        if experts.is_empty()
+            || experts.len() != token_ids.len()
+            || experts.len() != weights.len()
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA heterogêneo tem rotas inválidas".into(),
+            ));
+        }
+        if !matches!(activation, 1 | 2) {
+            return Err(CudaMoeError::Payload(format!(
+                "ativação heterogênea {activation} não suportada pelo kernel CUDA"
+            )));
+        }
+        if hidden.len() != tokens.saturating_mul(self.hidden) {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: tokens.saturating_mul(self.hidden),
+                actual: hidden.len(),
+            });
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA heterogêneo tem peso de rota não finito".into(),
+            ));
+        }
+
+        for (index, expert) in experts.iter().enumerate() {
+            validate_heterogeneous_tensor(
+                expert.down,
+                self.hidden,
+                self.intermediate,
+                &format!("rota {index} down"),
+            )?;
+            if !expert.gate_up.data.is_null() {
+                if !expert.gate.data.is_null() || !expert.up.data.is_null() {
+                    return Err(CudaMoeError::Payload(format!(
+                        "rota {index} mistura gate_up fundido com gate/up separados"
+                    )));
+                }
+                validate_heterogeneous_tensor(
+                    expert.gate_up,
+                    2 * self.intermediate,
+                    self.hidden,
+                    &format!("rota {index} gate_up"),
+                )?;
+            } else {
+                validate_heterogeneous_tensor(
+                    expert.gate,
+                    self.intermediate,
+                    self.hidden,
+                    &format!("rota {index} gate"),
+                )?;
+                validate_heterogeneous_tensor(
+                    expert.up,
+                    self.intermediate,
+                    self.hidden,
+                    &format!("rota {index} up"),
+                )?;
+            }
+        }
+
+        let mut output = vec![0.0f32; hidden.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: experts.len() as u64,
+            ..CudaMoeCallTiming::default()
+        };
+        let cuda_started = Instant::now();
+        let status = unsafe {
+            pom_moe_heterogeneous_iq_forward_route_batch_resident(
+                experts.as_ptr(),
+                experts.len(),
+                token_ids.as_ptr(),
+                weights.as_ptr(),
+                token_offsets.as_ptr(),
+                token_offsets.len(),
+                tokens,
+                hidden.as_ptr(),
+                hidden.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                self.hidden,
+                self.intermediate,
+                activation,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
+        }
+        Ok(output)
+    }
+
+    pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .to_owned()
+    }
+}
+
+fn validate_heterogeneous_tensor(
+    tensor: CudaHeterogeneousTensor,
+    rows: usize,
+    columns: usize,
+    label: &str,
+) -> Result<(), CudaMoeError> {
+    let row_bytes = match tensor.dtype {
+        21 => 110,
+        22 => 82,
+        23 => 136,
+        dtype => {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "dtype GGML {dtype} em {label} não tem ponte CUDA heterogênea"
+            )))
+        }
+    };
+    if tensor.data.is_null() || columns == 0 || !columns.is_multiple_of(256) {
+        return Err(CudaMoeError::Geometry(format!(
+            "{label} tem ponte nula ou colunas que não fecham blocos de 256"
+        )));
+    }
+    let expected = rows
+        .checked_mul(columns / 256)
+        .and_then(|blocks| blocks.checked_mul(row_bytes))
+        .ok_or_else(|| CudaMoeError::Geometry(format!("overflow na geometria de {label}")))?;
+    if tensor.bytes != expected {
+        return Err(CudaMoeError::PayloadLength {
+            expected,
+            actual: tensor.bytes,
+        });
+    }
+    Ok(())
 }
 
 impl Nvfp4CudaExecutor {
@@ -789,6 +1027,24 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
+    fn pom_moe_heterogeneous_iq_forward_route_batch_resident(
+        experts: *const CudaHeterogeneousExpert,
+        expert_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        activation: i32,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
     fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
     fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
     fn pom_moe_device_free(handle: *mut c_void);
@@ -796,7 +1052,7 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
-    use super::super::format_iq_quants::{IqQuantExpert, IqQuantFormat};
+    use super::super::format_iq_quants::{dequantize_row, row_bytes, IqQuantExpert, IqQuantFormat};
     use super::super::format_k_quants::{KQuantExpert, KQuantFormat};
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
     use super::super::format_q4_0::parse_tensor_table;
@@ -914,6 +1170,45 @@ mod tests {
         payload
     }
 
+    fn split_iq_payload(
+        format: IqQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        let payload = iq_payload(format, hidden, intermediate);
+        let gate_up_len = u32::from_le_bytes(payload[..4].try_into().unwrap()) as usize;
+        let down_len = u32::from_le_bytes(payload[4..8].try_into().unwrap()) as usize;
+        let gate_up = &payload[8..8 + gate_up_len];
+        let gate_bytes = gate_up.len() / 2;
+        assert_eq!(gate_bytes * 2, gate_up.len());
+        assert_eq!(down_len, payload.len() - 8 - gate_up_len);
+        (
+            gate_up[..gate_bytes].to_vec(),
+            gate_up[gate_bytes..].to_vec(),
+            payload[8 + gate_up_len..].to_vec(),
+        )
+    }
+
+    fn iq_mat_vec(
+        format: IqQuantFormat,
+        matrix: &[u8],
+        rows: usize,
+        columns: usize,
+        input: &[f32],
+    ) -> Vec<f32> {
+        let row_size = row_bytes(format, columns).unwrap();
+        (0..rows)
+            .map(|row| {
+                dequantize_row(format, &matrix[row * row_size..(row + 1) * row_size])
+                    .unwrap()
+                    .iter()
+                    .zip(input)
+                    .map(|(weight, value)| weight * value)
+                    .sum()
+            })
+            .collect()
+    }
+
     fn run_resident(
         executor: &Nvfp4CudaExecutor,
         payloads: &[&[u8]],
@@ -1028,6 +1323,93 @@ mod tests {
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
             }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype() {
+        let hidden = 256;
+        let intermediate = 256;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 127.0) * 0.0078125)
+            .collect::<Vec<_>>();
+        let (gate, _, _) = split_iq_payload(IqQuantFormat::Iq3S, hidden, intermediate);
+        let (_, up, _) = split_iq_payload(IqQuantFormat::Iq2S, hidden, intermediate);
+        let (_, _, down) = split_iq_payload(IqQuantFormat::Iq4XS, hidden, intermediate);
+        let gate_values = iq_mat_vec(
+            IqQuantFormat::Iq3S,
+            &gate,
+            intermediate,
+            hidden,
+            &hidden_values,
+        );
+        let up_values = iq_mat_vec(
+            IqQuantFormat::Iq2S,
+            &up,
+            intermediate,
+            hidden,
+            &hidden_values,
+        );
+        let activated = gate_values
+            .iter()
+            .zip(up_values)
+            .map(|(gate, up)| gate / (1.0 + (-gate).exp()) * up)
+            .collect::<Vec<_>>();
+        let expected = iq_mat_vec(
+            IqQuantFormat::Iq4XS,
+            &down,
+            hidden,
+            intermediate,
+            &activated,
+        );
+
+        let executor = HeterogeneousIqCudaExecutor::new_with_cache(
+            hidden,
+            intermediate,
+            measured_device_cache(1_000_000).unwrap(),
+        );
+        let gate_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-test", 0, 0, "gate-21"),
+                &gate,
+            )
+            .unwrap();
+        let up_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-test", 0, 0, "up-22"),
+                &up,
+            )
+            .unwrap();
+        let down_lease = executor
+            .resident_admit(
+                super::super::cache::ExpertKey::new("cuda-heterogeneous-test", 0, 0, "down-23"),
+                &down,
+            )
+            .unwrap();
+        let descriptor = CudaHeterogeneousExpert {
+            gate: CudaHeterogeneousTensor {
+                data: gate_lease.handle() as *const u8,
+                bytes: gate.len(),
+                dtype: 21,
+            },
+            up: CudaHeterogeneousTensor {
+                data: up_lease.handle() as *const u8,
+                bytes: up.len(),
+                dtype: 22,
+            },
+            down: CudaHeterogeneousTensor {
+                data: down_lease.handle() as *const u8,
+                bytes: down.len(),
+                dtype: 23,
+            },
+            ..CudaHeterogeneousExpert::default()
+        };
+        let actual = executor
+            .run_route_batch_resident(&[descriptor], &[0], &[1.0], &[0, 1], &hidden_values, 1, 1)
+            .unwrap();
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
         }
     }
 

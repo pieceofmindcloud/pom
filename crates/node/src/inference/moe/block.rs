@@ -5,7 +5,11 @@
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
 use super::cache::{ExpertCache, ExpertKey};
+#[cfg(feature = "cuda")]
+use super::cuda::{CudaHeterogeneousExpert, CudaHeterogeneousTensor};
 use super::format_heterogeneous::HeterogeneousMoeSource;
+#[cfg(feature = "cuda")]
+use super::format_heterogeneous::{HeterogeneousTensorPayload, TensorRole};
 use super::format_iq_quants::{
     IqQuantError, IqQuantExecuteError, IqQuantExecutor, IqQuantFormat, IqQuantSource,
 };
@@ -854,6 +858,8 @@ pub struct HeterogeneousMoeBlock {
     layer: u32,
     top_k: usize,
     cache: Arc<ExpertCache>,
+    #[cfg(feature = "cuda")]
+    cuda: Option<super::cuda::HeterogeneousIqCudaExecutor>,
 }
 
 impl HeterogeneousMoeBlock {
@@ -868,7 +874,53 @@ impl HeterogeneousMoeBlock {
             layer,
             top_k,
             cache,
+            #[cfg(feature = "cuda")]
+            cuda: None,
         }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            layer,
+            top_k,
+            cache,
+            cuda: Some(super::cuda::HeterogeneousIqCudaExecutor::new_with_cache(
+                hidden,
+                intermediate,
+                device_cache,
+            )),
+        }
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.cuda.is_some()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::HeterogeneousIqCudaExecutor::diagnostics,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::HeterogeneousIqCudaExecutor::resident_cache_stats,
+        )
     }
 
     pub fn forward_from_source_with_route(
@@ -902,6 +954,102 @@ impl HeterogeneousMoeBlock {
                 activation,
             )
             .map_err(MoeBlockError::Executor)
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route(
+        &self,
+        source: &HeterogeneousMoeSource,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+        activation: i32,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if experts.is_empty() || experts.len() != token_ids.len() || experts.len() != weights.len()
+        {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: experts.len(),
+                weights: weights.len(),
+            }));
+        }
+        if experts.len() > self.top_k.saturating_mul(tokens.max(1)) {
+            return Err(MoeBlockError::Route(RouteError::InvalidTopK {
+                top_k: experts.len(),
+                experts: self.top_k,
+            }));
+        }
+        let Some(cuda) = self.cuda.as_ref() else {
+            return Err(MoeBlockError::Executor(
+                "executor CUDA heterogêneo não foi selecionado".into(),
+            ));
+        };
+
+        let mut descriptors = Vec::with_capacity(experts.len());
+        let mut leases = Vec::new();
+        for &expert in experts {
+            let payloads = source
+                .load_expert_tensors(self.layer, expert)
+                .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+            let mut descriptor = CudaHeterogeneousExpert::default();
+            for payload in payloads {
+                let HeterogeneousTensorPayload {
+                    role,
+                    dtype,
+                    rows: _,
+                    columns: _,
+                    bytes,
+                } = payload;
+                let key = ExpertKey::new(
+                    &self.model,
+                    self.layer,
+                    expert,
+                    format!("heterogeneous:{}:{dtype}", role.as_str()),
+                );
+                let lease = match cuda.resident_lookup(&key) {
+                    Some(lease) => lease,
+                    None => cuda
+                        .resident_admit(key, &bytes)
+                        .map_err(|error| MoeBlockError::Executor(error.to_string()))?,
+                };
+                let tensor = CudaHeterogeneousTensor {
+                    data: lease.handle() as *const u8,
+                    bytes: bytes.len(),
+                    dtype,
+                };
+                match role {
+                    TensorRole::GateUp if descriptor.gate_up.data.is_null() => {
+                        descriptor.gate_up = tensor
+                    }
+                    TensorRole::Gate if descriptor.gate.data.is_null() => descriptor.gate = tensor,
+                    TensorRole::Up if descriptor.up.data.is_null() => descriptor.up = tensor,
+                    TensorRole::Down if descriptor.down.data.is_null() => descriptor.down = tensor,
+                    role => {
+                        return Err(MoeBlockError::Executor(format!(
+                            "papel de tensor heterogêneo duplicado: {}",
+                            role.as_str()
+                        )))
+                    }
+                }
+                leases.push(lease);
+            }
+            descriptors.push(descriptor);
+        }
+        let output = cuda
+            .run_route_batch_resident(
+                &descriptors,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+                activation,
+            )
+            .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        drop(leases);
+        Ok(output)
     }
 }
 

@@ -170,144 +170,6 @@ impl Nvfp4CudaExecutor {
         self.resident_cache.stats()
     }
 
-    pub fn run(&self, payload: &[u8], hidden: &[f32]) -> Result<Vec<f32>, CudaMoeError> {
-        if hidden.len() != self.hidden {
-            return Err(CudaMoeError::HiddenWidth {
-                expected: self.hidden,
-                actual: hidden.len(),
-            });
-        }
-        let validation_started = Instant::now();
-        Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
-        let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
-
-        let mut output = vec![0.0f32; self.hidden];
-        let mut timing = CudaMoeCallTiming {
-            expert_calls: 1,
-            payload_validation_ms,
-            ..CudaMoeCallTiming::default()
-        };
-        let cuda_started = Instant::now();
-        let status = unsafe {
-            pom_moe_nvfp4_forward(
-                payload.as_ptr(),
-                payload.len(),
-                hidden.as_ptr(),
-                hidden.len(),
-                output.as_mut_ptr(),
-                output.len(),
-                self.hidden,
-                self.intermediate,
-                if self.profile {
-                    &mut timing
-                } else {
-                    std::ptr::null_mut()
-                },
-            )
-        };
-        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
-        if status != 0 {
-            return Err(CudaMoeError::Launch(status));
-        }
-        if self.profile {
-            let mut diagnostics = self
-                .diagnostics
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            diagnostics.add_call(timing);
-            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
-        }
-        Ok(output)
-    }
-
-    pub fn run_batch(
-        &self,
-        payloads: &[&[u8]],
-        hidden: &[f32],
-    ) -> Result<Vec<Vec<f32>>, CudaMoeError> {
-        if payloads.is_empty() {
-            return Err(CudaMoeError::Payload("batch de experts vazio".into()));
-        }
-        if hidden.len() != self.hidden {
-            return Err(CudaMoeError::HiddenWidth {
-                expected: self.hidden,
-                actual: hidden.len(),
-            });
-        }
-        let host_prepare_started = Instant::now();
-        let validation_started = Instant::now();
-        let mut payload_len = None;
-        for payload in payloads {
-            Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
-            if let Some(expected) = payload_len {
-                if payload.len() != expected {
-                    return Err(CudaMoeError::Payload(
-                        "payloads NVFP4 do batch têm tamanhos diferentes".into(),
-                    ));
-                }
-            } else {
-                payload_len = Some(payload.len());
-            }
-        }
-        let payload_len = payload_len.expect("batch não vazio foi validado");
-        let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
-        let mut flat_payloads = Vec::with_capacity(payload_len * payloads.len());
-        for payload in payloads {
-            flat_payloads.extend_from_slice(payload);
-        }
-        let mut flat_output = vec![0.0f32; self.hidden * payloads.len()];
-        let host_batch_prepare_ms = host_prepare_started.elapsed().as_secs_f64() * 1_000.0;
-        let mut timing = CudaMoeCallTiming {
-            expert_calls: payloads.len() as u64,
-            payload_validation_ms,
-            ..CudaMoeCallTiming::default()
-        };
-        let cuda_started = Instant::now();
-        let status = unsafe {
-            pom_moe_nvfp4_forward_batch(
-                flat_payloads.as_ptr(),
-                payload_len,
-                payloads.len(),
-                hidden.as_ptr(),
-                hidden.len(),
-                flat_output.as_mut_ptr(),
-                flat_output.len(),
-                self.hidden,
-                self.intermediate,
-                if self.profile {
-                    &mut timing
-                } else {
-                    std::ptr::null_mut()
-                },
-            )
-        };
-        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
-        if status != 0 {
-            return Err(CudaMoeError::Launch(status));
-        }
-        if self.profile {
-            let mut diagnostics = self
-                .diagnostics
-                .lock()
-                .unwrap_or_else(|error| error.into_inner());
-            diagnostics.add_call(timing);
-            diagnostics.host_batch_prepare_ms += host_batch_prepare_ms;
-            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
-        }
-        let host_result_copy_started = Instant::now();
-        let output = flat_output
-            .chunks_exact(self.hidden)
-            .map(ToOwned::to_owned)
-            .collect();
-        if self.profile {
-            self.diagnostics
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .host_result_copy_ms += host_result_copy_started.elapsed().as_secs_f64() * 1_000.0;
-        }
-        Ok(output)
-    }
-
     pub fn run_resident(
         &self,
         payload: &super::cache::DeviceExpertLease,
@@ -470,31 +332,6 @@ pub fn create_device_cache() -> Result<Arc<DeviceExpertCache>, CudaMoeError> {
 
 #[cfg(feature = "cuda")]
 unsafe extern "C" {
-    fn pom_moe_nvfp4_forward(
-        payload: *const u8,
-        payload_len: usize,
-        hidden: *const f32,
-        hidden_len: usize,
-        output: *mut f32,
-        output_len: usize,
-        hidden_width: usize,
-        intermediate_width: usize,
-        timing: *mut CudaMoeCallTiming,
-    ) -> i32;
-
-    fn pom_moe_nvfp4_forward_batch(
-        payloads: *const u8,
-        payload_len: usize,
-        payload_count: usize,
-        hidden: *const f32,
-        hidden_len: usize,
-        output: *mut f32,
-        output_len: usize,
-        hidden_width: usize,
-        intermediate_width: usize,
-        timing: *mut CudaMoeCallTiming,
-    ) -> i32;
-
     fn pom_moe_nvfp4_forward_batch_resident(
         payloads: *const *const u8,
         payload_count: usize,
@@ -549,6 +386,26 @@ mod tests {
         payload
     }
 
+    fn run_resident(
+        executor: &Nvfp4CudaExecutor,
+        payloads: &[&[u8]],
+        hidden: &[f32],
+    ) -> Vec<Vec<f32>> {
+        let leases = payloads
+            .iter()
+            .enumerate()
+            .map(|(expert, payload)| {
+                executor
+                    .resident_admit(
+                        super::super::cache::ExpertKey::new("cuda-test", 0, expert as u32, "nvfp4"),
+                        payload,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        executor.run_batch_resident(&leases, hidden).unwrap()
+    }
+
     #[test]
     fn executor_cuda_nvfp4_preserva_o_forward_do_decoder_cpu() {
         let hidden = 64;
@@ -559,8 +416,10 @@ mod tests {
             .unwrap()
             .run(&hidden_values)
             .unwrap();
-        let gpu = Nvfp4CudaExecutor::new(hidden, intermediate)
-            .run(&payload, &hidden_values)
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let gpu = run_resident(&executor, &[payload.as_slice()], &hidden_values)
+            .into_iter()
+            .next()
             .unwrap();
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {
@@ -578,8 +437,10 @@ mod tests {
             .unwrap()
             .run(&hidden_values)
             .unwrap();
-        let gpu = Nvfp4CudaExecutor::new(hidden, intermediate)
-            .run(&payload, &hidden_values)
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let gpu = run_resident(&executor, &[payload.as_slice()], &hidden_values)
+            .into_iter()
+            .next()
             .unwrap();
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {
@@ -605,9 +466,12 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let gpu = Nvfp4CudaExecutor::new(hidden, intermediate)
-            .run_batch(&[first.as_slice(), second.as_slice()], &hidden_values)
-            .unwrap();
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let gpu = run_resident(
+            &executor,
+            &[first.as_slice(), second.as_slice()],
+            &hidden_values,
+        );
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {
             assert_eq!(actual.len(), expected.len());
@@ -654,9 +518,12 @@ mod tests {
                     .unwrap()
             })
             .collect::<Vec<_>>();
-        let gpu = Nvfp4CudaExecutor::new(source.hidden(), source.intermediate())
-            .run_batch(&[payloads[0].as_slice(), payloads[1].as_slice()], &hidden)
-            .unwrap();
+        let executor = Nvfp4CudaExecutor::new(source.hidden(), source.intermediate()).unwrap();
+        let gpu = run_resident(
+            &executor,
+            &[payloads[0].as_slice(), payloads[1].as_slice()],
+            &hidden,
+        );
 
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {

@@ -219,10 +219,13 @@ Per-file list:
   `SlicingJobsPanel` is shown only while at least one slicing job is running.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
   can be sliced.
-- `Transfers.tsx` — Three panels: pending offers (accept/reject via
+- `Transfers.tsx` — Shows remote model downloads from `useModelDownloads` in
+  the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +
   speed + ETA + cancel via `POST /api/transfer/jobs/:id/cancel`), and finished
-  ones. State classification from `../lib/transferStatus`. `cancelled` é
+  ones. Model downloads reuse `ModelDownloadsPanel`, so their backend progress,
+  configured destination path and cancel/retry actions stay visible here.
+  State classification from `../lib/transferStatus`. `cancelled` é
   mostrada como **recusada**, em âmbar, e não como falha vermelha: foi decisão
   de alguém, não erro. Fatias aparecem por modelo e faixa de camadas
   (`../lib/transferLabel`), com o hash curto ao lado.
@@ -234,8 +237,9 @@ Per-file list:
   depois busca com debounce em `/api/ui/model-provider/search`, filtro GGUF,
   ordenação, paginação por URL, detalhes lazy e confirmação de download. O
   detalhe resolve a licença pelo provider e marca modelos gated antes do
-  download. Os jobs aparecem no `ModelDownloadsPanel`, então trocar de rota ou
-  recarregar não perde uma transferência.
+  download. O diálogo mostra as pastas de modelos resolvidas pelo backend. Os
+  jobs aparecem no `ModelDownloadsPanel`, também em Transferências, então trocar
+  de rota ou recarregar não perde uma transferência.
 
 Key logic carriers:
 

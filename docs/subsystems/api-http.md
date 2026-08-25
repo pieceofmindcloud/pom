@@ -125,7 +125,10 @@ alheio (o painel só fala com o próprio nó).
 
 As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
 `/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar
-comandos ou tokens do provider. **`GET /api/ui/model-provider/status`** exige
+comandos ou tokens do provider. `/storage` informa as pastas de modelos
+resolvidas da configuração. Um download escolhe a primeira pasta elegível,
+registra o caminho no `Job.local_path` e aparece em `GET /api/ui/jobs`, que é a
+fonte de progresso, cancelamento e retry da UI. **`GET /api/ui/model-provider/status`** exige
 `ConnectionAuth` e devolve `{ cli: { installed, version, authenticated,
 username } }`: CLI ausente é um estado estruturado, enquanto login necessário
 e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta

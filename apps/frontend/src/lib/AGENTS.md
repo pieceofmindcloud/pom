@@ -31,6 +31,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `queries.ts` - every read the panel does, as react-query hooks with polling
   intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
   jobs and offers slow to 10s when idle and return to 2s while active.
+  `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
+  is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
   deployment inspector, not a per-machine launch parameter.

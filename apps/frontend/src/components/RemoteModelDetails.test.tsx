@@ -37,7 +37,11 @@ vi.mock("../lib/queries", () => ({
           download_id: null,
         },
       ],
-      storage: { available_bytes: 10_000, destination_available: true },
+      storage: {
+        available_bytes: 10_000,
+        destination_available: true,
+        destination_paths: ["/models"],
+      },
     },
     isLoading: false,
     isError: false,

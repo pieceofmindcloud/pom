@@ -542,6 +542,7 @@ export interface RemoteGgufFile {
 export interface RemoteStorage {
   available_bytes: number | null;
   destination_available: boolean;
+  destination_paths: string[];
 }
 
 export interface RemoteModelProviderStatus {

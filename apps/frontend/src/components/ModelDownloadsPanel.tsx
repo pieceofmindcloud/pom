@@ -71,6 +71,11 @@ function DownloadRow({ job, onRefresh }: { job: Job; onRefresh: () => void }) {
           {job.speed_bytes_per_sec != null && <span>{t("remoteModels.speed")} {rate(job.speed_bytes_per_sec)}</span>}
           {job.eta_seconds != null && <span>{t("remoteModels.remaining", { time: duration(job.eta_seconds) })}</span>}
         </div>
+        {job.local_path && (
+          <p className="break-path mt-2 text-xs text-muted" title={job.local_path}>
+            {t("remoteModels.savedTo")} <span className="font-mono text-fg">{job.local_path}</span>
+          </p>
+        )}
         {job.error && <p className="break-path mt-2 text-xs text-rose">{job.error}</p>}
         <div className="mt-3 flex flex-wrap gap-2">
           {active && (

@@ -61,8 +61,8 @@ conteúdo `immutable` por 1 ano.
 
 `src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
 `labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. Dentro de `Modelos`, a ordem é `Modelos inteiros`, `Fatiar
-modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
+`src/App.tsx`. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
+inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
 somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
 receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
@@ -94,6 +94,13 @@ sessão está autenticada. Depois da busca, o detalhe resolve a licença pelo
 provider e exibe o marcador de modelo gated antes da confirmação de download;
 assim a tela não presume uma licença nem inicia uma operação protegida sem
 explicar a autenticação exigida.
+
+O título da tela é "Encontrar modelos no Hugging Face". O detalhe consulta
+`GET /api/ui/model-provider/storage` e mostra as pastas de modelos resolvidas da
+configuração antes de iniciar. O download escolhe uma dessas pastas; o job
+persistido em `GET /api/ui/jobs` registra o caminho final e o
+`ModelDownloadsPanel` mostra progresso, cancelamento e retry. Esse painel
+também aparece em `/transferencias`, junto das transferências de arquivos.
 
 Em `/config/rede`, o `HuggingFaceSettingsPanel` oferece o token opcional para
 modelos privados e gated. O campo é `password`, começa vazio e mostra apenas a
@@ -489,7 +496,8 @@ impressão digital é só modelo + conjunto de faixas.
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
   interna em viewport estreito para não cortar cards nem criar overflow na página.
-- **Transferir** (`Transfers`/`SendFile`/`Notifications`): ofertas pendentes
+- **Transferir** (`Transfers`/`SendFile`/`Notifications`): downloads de modelos
+  remotos com progresso e cancelamento, ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
   ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")
   oferece qualquer caminho legível via `POST /api/transfer/send`; o receptor

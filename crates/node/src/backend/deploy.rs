@@ -1614,6 +1614,30 @@ fn selected_model_capability(
     combine_known(values.into_iter())
 }
 
+fn selected_final_model_capability(
+    steps: &[Step],
+    machines: &[Machine],
+    select: impl Fn(&crate::gguf::ModelCapabilityEvidence) -> Option<bool>,
+) -> Option<bool> {
+    let step = steps.last()?;
+    let (start_layer, end_layer) = step
+        .parts
+        .last()
+        .map(|part| (part.start_layer, part.end_layer))
+        .unwrap_or((step.start_layer, step.end_layer));
+    machines
+        .iter()
+        .find(|machine| machine.node_id == step.target_node_id)
+        .and_then(|machine| machine.holds(start_layer, end_layer))
+        .or_else(|| {
+            machines
+                .iter()
+                .find_map(|machine| machine.holds(start_layer, end_layer))
+        })
+        .and_then(|shard| shard.model_capabilities.as_ref())
+        .and_then(select)
+}
+
 fn selected_runtime_capability(
     steps: &[Step],
     machines: &[Machine],
@@ -1626,6 +1650,45 @@ fn selected_runtime_capability(
             .and_then(|machine| machine.inference_capabilities.as_ref())
             .map(|caps| caps.iter().any(|candidate| candidate == capability))
     }))
+}
+
+fn selected_runtime_capability_for_step(
+    step: &Step,
+    machines: &[Machine],
+    capability: &str,
+) -> Option<bool> {
+    machines
+        .iter()
+        .find(|machine| machine.node_id == step.target_node_id)
+        .and_then(|machine| machine.inference_capabilities.as_ref())
+        .map(|caps| caps.iter().any(|candidate| candidate == capability))
+}
+
+fn runtime_capability_for_ui(
+    value: Option<bool>,
+    source: &str,
+    supported_reason: &str,
+    unsupported_reason: &str,
+    unknown_reason: &str,
+) -> crate::capabilities::Capability {
+    match value {
+        Some(true) => crate::capabilities::supported(source, supported_reason),
+        Some(false) => {
+            let mut capability = crate::capabilities::supported(source, unsupported_reason);
+            capability.warning = Some(format!(
+                "Limitação do runtime: {unsupported_reason}; a opção permanece acionável e pode não ser executada."
+            ));
+            capability
+        }
+        None => {
+            let mut capability = crate::capabilities::unknown(source, unknown_reason);
+            capability.warning = Some(
+                "O runtime não confirmou esta capacidade; ligá-la é por conta e risco do usuário."
+                    .to_string(),
+            );
+            capability
+        }
+    }
 }
 
 fn capability_from_bool(
@@ -1701,35 +1764,65 @@ fn capabilities_for_plan(
         "o template ou o vocabulário do modelo não pôde ser confirmado",
     );
     let lookup = selected_runtime_capability(steps, machines, "speculate/v1-lookup");
-    let speculative_decoding = capability_from_bool(
+    let speculative_decoding = runtime_capability_for_ui(
         lookup,
         "capacidades runtime dos peers selecionados",
         "todos os peers selecionados anunciam lookup especulativo",
         "pelo menos um peer selecionado não anuncia lookup especulativo",
         "as capacidades runtime de pelo menos um peer não puderam ser lidas",
     );
-    let model_mtp = selected_model_capability(steps, machines, |evidence| evidence.mtp);
-    let final_mtp_capability = steps.last().and_then(|step| {
-        machines
-            .iter()
-            .find(|machine| machine.node_id == step.target_node_id)
-            .and_then(|machine| machine.inference_capabilities.as_ref())
-            .map(|caps| {
-                let required = if steps.len() <= 1 {
-                    "speculate/v1-mtp"
-                } else {
-                    "speculate/v1-mtp-sliced"
-                };
-                caps.iter().any(|candidate| candidate == required)
-            })
-    });
-    let mtp = capability_from_bool(
-        combine_known([model_mtp, final_mtp_capability].into_iter()),
-        "GGUF nextn metadata/tensores + capacidades runtime do peer final",
-        "o modelo traz previsão nextn e o peer final anuncia MTP",
-        "o modelo ou o peer final não oferece MTP neste plano",
-        "a metadata nextn ou a capacidade runtime do peer final não pôde ser confirmada",
+    let model_mtp = selected_final_model_capability(steps, machines, |evidence| evidence.mtp);
+    let runtime_mtp = combine_known(
+        [
+            lookup,
+            selected_runtime_capability(steps, machines, "speculate/v1-mtp-sliced"),
+            steps.last().and_then(|step| {
+                selected_runtime_capability_for_step(step, machines, "speculate/v1-mtp")
+            }),
+        ]
+        .into_iter(),
     );
+    let mtp = match model_mtp {
+        Some(false) => crate::capabilities::unsupported(
+            "arquivo GGUF selecionado",
+            "o GGUF selecionado não traz previsão nextn comprovada",
+        ),
+        Some(true) => {
+            let mut capability = crate::capabilities::supported(
+                "arquivo GGUF selecionado",
+                "o GGUF selecionado traz metadata e tensores nextn comprovados",
+            );
+            match runtime_mtp {
+                Some(true) => {}
+                Some(false) => {
+                    capability.warning = Some(
+                        "Limitação do runtime: um ou mais peers não anunciam o protocolo MTP necessário; a opção permanece acionável e pode não ser executada."
+                            .to_string(),
+                    );
+                }
+                None => {
+                    capability.warning = Some(
+                        "O runtime dos peers não confirmou o protocolo MTP; ligá-lo é por conta e risco do usuário."
+                            .to_string(),
+                    );
+                }
+            }
+            capability
+        }
+        None => {
+            let mut capability = crate::capabilities::unknown(
+                "arquivo GGUF selecionado",
+                "metadata ou tensores nextn do GGUF selecionado não puderam ser confirmados",
+            );
+            if runtime_mtp.is_some() {
+                capability.warning = Some(
+                    "O runtime foi consultado, mas não substitui a prova do modelo; ligá-lo é por conta e risco do usuário."
+                        .to_string(),
+                );
+            }
+            capability
+        }
+    };
     let mut no_embeddings = no_embeddings.capability.clone();
     let unsafe_peers = no_embeddings_topology(steps, total_layers, kind)
         .peers
@@ -1737,10 +1830,21 @@ fn capabilities_for_plan(
         .filter(|peer| peer.safe == Some(false))
         .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
         .collect::<Vec<_>>();
+    let unknown_peers = no_embeddings_topology(steps, total_layers, kind)
+        .peers
+        .into_iter()
+        .filter(|peer| peer.safe.is_none())
+        .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
+        .collect::<Vec<_>>();
     if !unsafe_peers.is_empty() {
         no_embeddings.reason = format!(
             "controle visível, mas estes peers precisam manter embeddings: {}",
             unsafe_peers.join("; ")
+        );
+    } else if !unknown_peers.is_empty() {
+        no_embeddings.reason = format!(
+            "controle visível, mas a topologia não pôde ser confirmada em: {}",
+            unknown_peers.join("; ")
         );
     }
     (
@@ -1770,27 +1874,6 @@ fn requested_capability_block(
     capabilities: &crate::capabilities::DeploymentCapabilities,
     no_embeddings: &crate::capabilities::NoEmbeddingsEvaluation,
 ) -> Option<String> {
-    let requested = [
-        (
-            params.no_thinking,
-            "Desativar thinking",
-            &capabilities.no_thinking,
-        ),
-        (
-            params.speculative_decoding_enabled,
-            "Decodificação especulativa",
-            &capabilities.speculative_decoding,
-        ),
-        (params.mtp_enabled, "MTP", &capabilities.mtp),
-    ];
-    for (enabled, label, capability) in requested {
-        if enabled && capability.state == crate::capabilities::CapabilityState::Unknown {
-            return Some(format!(
-                "{label} não pode ser habilitado: {}. Fonte: {}",
-                capability.reason, capability.source
-            ));
-        }
-    }
     crate::capabilities::validate_no_embeddings(no_embeddings, params.no_embeddings)
         .err()
         .or_else(|| {
@@ -5459,6 +5542,77 @@ mod tests {
             n_gpu_layers: None,
             offload_kqv: None,
         }
+    }
+
+    #[test]
+    fn model_mtp_comes_from_the_final_selected_file_and_runtime_is_only_a_warning() {
+        let mut machines = build(vec![
+            m("first", 900_000, &[(0, 15)]),
+            m("last", 900_000, &[(16, 31)]),
+        ]);
+        machines[0].held[0].model_capabilities.as_mut().unwrap().mtp = Some(false);
+        machines[1].held[0].model_capabilities.as_mut().unwrap().mtp = Some(true);
+
+        let p = plan(
+            "model",
+            &machines,
+            Some(&[pick(0, 15, "first"), pick(16, 31, "last")]),
+        );
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Supported
+        );
+        assert!(p
+            .capabilities
+            .mtp
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("runtime")));
+    }
+
+    #[test]
+    fn runtime_only_speculation_is_visible_with_a_runtime_limitation_warning() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].inference_capabilities = Some(Vec::new());
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_ne!(
+            p.capabilities.speculative_decoding.state,
+            crate::capabilities::CapabilityState::Unsupported
+        );
+        assert!(p
+            .capabilities
+            .speculative_decoding
+            .warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("runtime")));
+    }
+
+    #[test]
+    fn model_mtp_absence_is_the_only_case_that_hides_mtp() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].held[0].model_capabilities.as_mut().unwrap().mtp = Some(false);
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Unsupported
+        );
+        assert!(p.capabilities.mtp.warning.is_none());
+    }
+
+    #[test]
+    fn model_mtp_unknown_stays_visible_and_actionable() {
+        let mut machines = build(vec![m("only", 900_000, &[(0, 31)])]);
+        machines[0].held[0].model_capabilities = None;
+        let p = plan("model", &machines, Some(&[pick(0, 31, "only")]));
+
+        assert_eq!(
+            p.capabilities.mtp.state,
+            crate::capabilities::CapabilityState::Unknown
+        );
+        assert!(p.capabilities.mtp.warning.is_some());
     }
 
     /// The knobs are their own axis; every test below is about the placement,

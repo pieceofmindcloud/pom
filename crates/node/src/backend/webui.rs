@@ -5269,6 +5269,15 @@ mod peer_runtime_tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
+        for _ in 0..100 {
+            if tokio::net::TcpStream::connect(("127.0.0.1", port))
+                .await
+                .is_ok()
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
         port
     }
 

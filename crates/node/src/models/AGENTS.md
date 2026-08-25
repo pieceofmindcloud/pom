@@ -12,11 +12,13 @@ transferência.
   (`attention.head_count_kv`, `key_length` e `value_length`) e a evidência de
   MoE (`<arch>.expert_count`/`expert_used_count`) sem carregar os pesos. Também
   lê `tokenizer.chat_template`, tokens de controle reais e os campos/tensores
-  `nextn` para produzir a evidência de thinking e MTP usada pelo planner; a
-  ausência de leitura permanece indeterminada. `read_layout` valida os dtypes
-  contra a tabela GGML suportada, usa offsets físicos para o custo dos tensores
-  e calcula o tamanho serializado de cada fatia, incluindo cabeçalho, globais,
-  alinhamento e duplicações.
+  `nextn` para produzir a evidência de thinking e MTP usada pelo planner. A
+  chave canônica `<arquitetura>.nextn_predict_layers` e a forma sem prefixo são
+  aceitas; a presença dos tensores `nextn` é prova estrutural quando o produtor
+  omite a metadata. A ausência de leitura permanece indeterminada. `read_layout`
+  valida os dtypes contra a tabela GGML suportada, usa offsets físicos para o
+  custo dos tensores e calcula o tamanho serializado de cada fatia, incluindo
+  cabeçalho, globais, alinhamento e duplicações.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.

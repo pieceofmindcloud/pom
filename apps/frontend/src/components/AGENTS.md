@@ -277,7 +277,7 @@ Key logic carriers:
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
   mantém os ajustes por máquina fora do bloco global. `CapabilitySwitch` usa o
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
-  indeterminados visíveis com alerta e desabilitados, e preserva sempre o
+  indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".

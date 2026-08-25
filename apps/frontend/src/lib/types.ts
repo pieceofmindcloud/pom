@@ -970,6 +970,8 @@ export interface RuntimeCapability {
   state: CapabilityState;
   source: string;
   reason: string;
+  /** Limitação de execução que não prova ausência no modelo selecionado. */
+  warning?: string;
 }
 
 export interface DeploymentCapabilities {

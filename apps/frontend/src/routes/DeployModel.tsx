@@ -1420,8 +1420,7 @@ export function DeployModel() {
                 label="Decodificação especulativa"
               />
               {eff.speculative_decoding_enabled &&
-                p?.capabilities?.speculative_decoding?.state !== "unsupported" &&
-                p?.capabilities?.speculative_decoding?.state !== "unknown" && (
+                p?.capabilities?.speculative_decoding?.state !== "unsupported" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Largura do rascunho</span>
@@ -1446,8 +1445,7 @@ export function DeployModel() {
                 />
               </div>
               {eff.mtp_enabled &&
-                p?.capabilities?.mtp?.state !== "unsupported" &&
-                p?.capabilities?.mtp?.state !== "unknown" && (
+                p?.capabilities?.mtp?.state !== "unsupported" && (
                 <div className="mt-1.5 space-y-1.5">
                   <label className="grid grid-cols-[minmax(0,1fr)_5.5rem] items-center gap-1.5 text-[0.65rem]">
                     <span className="truncate text-muted">Tokens rascunhados pelo MTP</span>

@@ -478,7 +478,7 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k.ends_with(".expert_used_count") => {
                 info.expert_used_count = r.value_as_u32(vtype)?
             }
-            k if k.ends_with(".nextn_predict_layers") => {
+            k if is_nextn_predict_layers_key(k) => {
                 info.nextn_predict_layers = r.value_as_u32(vtype)?
             }
             k if k.ends_with(".attention.head_count_kv") => {
@@ -875,7 +875,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
             }
             _ => r.skip_value(vtype)?,
         }
-        if key.ends_with(".nextn_predict_layers") {
+        if is_nextn_predict_layers_key(&key) {
             layout.nextn_predict_layers = scalar_u32.unwrap_or(0);
         }
         if key.ends_with(".block_count") {
@@ -1019,15 +1019,22 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> {
     let info = read_info(path)?;
     let layout = read_layout(path)?;
-    let mtp = if info.nextn_predict_layers.unwrap_or(0) == 0 {
-        Some(false)
-    } else {
-        Some(layout.has_nextn_tensors)
+    let mtp = match (info.nextn_predict_layers, layout.has_nextn_tensors) {
+        // The tensor table is the strongest evidence: it is the actual
+        // predictor payload, and covers producers that omit or rename the
+        // architecture-prefixed hyperparameter.
+        (_, true) => Some(true),
+        (Some(_), false) => Some(false),
+        (None, false) => None,
     };
     Ok(ModelCapabilityEvidence {
         thinking: info.thinking_capability(),
         mtp,
     })
+}
+
+fn is_nextn_predict_layers_key(key: &str) -> bool {
+    key == "nextn_predict_layers" || key.ends_with(".nextn_predict_layers")
 }
 
 /// `blk.17.attn_q.weight` → `Some(17)`.
@@ -1123,6 +1130,77 @@ mod tests {
             b.extend_from_slice(v);
         }
         b
+    }
+
+    fn gguf_with_tensors(kvs: &[(&str, u32, Vec<u8>)], names: &[&str]) -> Vec<u8> {
+        let mut b = Vec::new();
+        b.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
+        b.extend_from_slice(&2u32.to_le_bytes());
+        b.extend_from_slice(&(names.len() as u64).to_le_bytes());
+        b.extend_from_slice(&(kvs.len() as u64).to_le_bytes());
+        for (k, vtype, v) in kvs {
+            b.extend_from_slice(&(k.len() as u64).to_le_bytes());
+            b.extend_from_slice(k.as_bytes());
+            b.extend_from_slice(&vtype.to_le_bytes());
+            if *vtype == T_STRING {
+                b.extend_from_slice(&(v.len() as u64).to_le_bytes());
+            }
+            b.extend_from_slice(v);
+        }
+        for name in names {
+            b.extend_from_slice(&(name.len() as u64).to_le_bytes());
+            b.extend_from_slice(name.as_bytes());
+            b.extend_from_slice(&1u32.to_le_bytes());
+            b.extend_from_slice(&1u64.to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&0u64.to_le_bytes());
+        }
+        b
+    }
+
+    #[test]
+    fn mtp_is_proven_by_real_nextn_tensors_even_without_metadata() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("pom-mtp-structural-evidence.gguf");
+        std::fs::write(
+            &path,
+            gguf_with_tensors(
+                &[],
+                &["blk.64.nextn.eh_proj.weight", "blk.64.nextn.hnorm.weight"],
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(read_capability_evidence(&path).unwrap().mtp, Some(true));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn canonical_qwen35_nextn_metadata_and_tensor_names_prove_mtp() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("pom-mtp-qwen35-canonical.gguf");
+        std::fs::write(
+            &path,
+            gguf_with_tensors(
+                &[(
+                    "qwen35.nextn_predict_layers",
+                    T_UINT32,
+                    1u32.to_le_bytes().to_vec(),
+                )],
+                &[
+                    "blk.64.nextn.eh_proj.weight",
+                    "blk.64.nextn.enorm.weight",
+                    "blk.64.nextn.hnorm.weight",
+                    "blk.64.nextn.shared_head_norm.weight",
+                ],
+            ),
+        )
+        .unwrap();
+
+        let info = read_info(&path).unwrap();
+        assert_eq!(info.nextn_predict_layers, Some(1));
+        assert_eq!(read_capability_evidence(&path).unwrap().mtp, Some(true));
+        let _ = std::fs::remove_file(path);
     }
 
     fn string_array(values: &[&str]) -> Vec<u8> {

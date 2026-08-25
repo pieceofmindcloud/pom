@@ -3,14 +3,15 @@
 > **For agentic workers:** use the execution workflow from
 > `superpowers:executing-plans` and verify each checkpoint before continuing.
 
-**Goal:** Expor na tela de implantação somente opções comprovadas pelo modelo
-e pelo runtime, mantendo desconhecidas visíveis com explicação, e validar
-`no_embeddings` por peer contra a topologia real sem aplicação parcial.
+**Goal:** Expor na tela de implantação somente opções cuja ausência no modelo
+foi comprovada, separando isso das limitações de runtime e mantendo
+desconhecidas visíveis, acionáveis e explicadas.
 
 **Architecture:** O leitor GGUF produz evidências de template, vocabulário,
 camadas de previsão e tensores. O catálogo transporta essa evidência para o
-survey de implantação. O planner agrega a evidência dos alvos finais e a
-topologia em capacidades tri-state. O web UI valida novamente antes do launch e
+survey de implantação. O planner mantém a fonte do modelo selecionado separada
+das capacidades runtime dos peers e da topologia. Limitação runtime vira
+`warning`, nunca ausência do modelo. O web UI valida novamente antes do launch e
 retorna o diagnóstico no plano. A UI não infere capacidades.
 
 **Tech Stack:** Rust, Axum, serde, GGUF header/tensor reader, React, TypeScript,
@@ -44,8 +45,8 @@ publicar.
 - [ ] Implementar a estrutura serializável tri-state com `source` e `reason`.
 - [ ] Calcular thinking, especulativa, MTP, fit memory e embeddings depois que
   o planner escolher os alvos, sem allowlist ou nome de arquivo.
-- [ ] Fazer o plano bloquear uma opção explicitamente solicitada quando ela é
-  não suportada ou indeterminada, com motivo visível.
+- [ ] Ocultar somente ausência comprovada na fonte correta; manter runtime
+  limitado e `unknown` acionáveis com aviso visível.
 
 ## 3. `no_embeddings` seguro por peer
 
@@ -62,13 +63,14 @@ publicar.
 
 ## 4. Frontend
 
-- [ ] Adicionar os tipos de capacidades ao contrato `DeployPlan`.
+- [ ] Adicionar os tipos de capacidades ao contrato `DeployPlan`, incluindo
+  aviso separado para limitações de runtime.
 - [ ] Escrever testes de componente para suportado, não suportado e
-  indeterminado, verificando ocultação, switch visível desabilitado e alerta.
+  indeterminado, verificando ocultação, switch visível acionável e alerta.
 - [ ] Integrar os gates em `DeployModel.tsx` e no formulário compartilhado de
   parâmetros, mantendo `no_embeddings` visível e exibindo bloqueios por peer.
-- [ ] Manter subopções escondidas quando o controle pai é incompatível e
-  impedir envio de um valor desconhecido.
+- [ ] Manter subopções escondidas quando o controle pai é comprovadamente
+  incompatível e permitir envio de `unknown` com o alerta de risco.
 
 ## 5. Documentação e verificação
 

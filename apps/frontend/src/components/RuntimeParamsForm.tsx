@@ -153,16 +153,22 @@ export function CapabilitySwitch({
   if (capability?.state === "unsupported" && !alwaysVisible) return null;
   const unknown = capability?.state === "unknown";
   const topologyWarning = capability?.reason.startsWith("controle visível");
+  const warning = capability?.warning;
+  const alertLead = unknown
+    ? "Capacidade não confirmada. Ligar é por conta e risco do usuário."
+    : topologyWarning
+      ? "A topologia limita esta opção; o controle continua acionável."
+      : "Capacidade limitada no runtime; o controle continua acionável.";
   return (
     <div className="space-y-1.5">
       <Switch
         {...props}
-        disabled={props.disabled || unknown}
+        disabled={props.disabled}
         hint={props.hint}
       />
-      {(unknown || topologyWarning) && capability && (
+      {(unknown || topologyWarning || warning) && capability && (
         <p role="alert" className="rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-xs leading-relaxed text-amber">
-          Capacidade não confirmada ou limitada. Fonte: {capability.source}. {capability.reason}
+          {alertLead} Fonte: {capability.source}. {capability.reason}{warning ? ` ${warning}` : ""}
         </p>
       )}
     </div>
@@ -282,16 +288,14 @@ export function RuntimeParamsForm({
       </div>
 
       {(value.speculative_decoding_enabled ?? false) &&
-        capabilities?.speculative_decoding?.state !== "unsupported" &&
-        capabilities?.speculative_decoding?.state !== "unknown" && (
+        capabilities?.speculative_decoding?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {SPECULATIVE_KNOBS.map((k) => numeric(k, true))}
         </div>
       )}
 
       {(value.mtp_enabled ?? false) &&
-        capabilities?.mtp?.state !== "unsupported" &&
-        capabilities?.mtp?.state !== "unknown" && (
+        capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k, true))}
         </div>

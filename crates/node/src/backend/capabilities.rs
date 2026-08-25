@@ -16,6 +16,10 @@ pub(crate) struct Capability {
     pub state: CapabilityState,
     pub source: String,
     pub reason: String,
+    /// Limitação de execução que não prova ausência da capacidade no modelo.
+    /// A UI mostra este aviso, mas mantém o controle acionável.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -55,6 +59,7 @@ pub(crate) fn supported(source: impl Into<String>, reason: impl Into<String>) ->
         state: CapabilityState::Supported,
         source: source.into(),
         reason: reason.into(),
+        warning: None,
     }
 }
 
@@ -63,6 +68,7 @@ pub(crate) fn unsupported(source: impl Into<String>, reason: impl Into<String>) 
         state: CapabilityState::Unsupported,
         source: source.into(),
         reason: reason.into(),
+        warning: None,
     }
 }
 
@@ -71,6 +77,7 @@ pub(crate) fn unknown(source: impl Into<String>, reason: impl Into<String>) -> C
         state: CapabilityState::Unknown,
         source: source.into(),
         reason: reason.into(),
+        warning: None,
     }
 }
 
@@ -174,18 +181,6 @@ pub(crate) fn validate_no_embeddings(
     if !requested {
         return Ok(Vec::new());
     }
-    let unknown = evaluation
-        .peers
-        .iter()
-        .filter(|peer| peer.safe.is_none())
-        .map(|peer| format!("{}: {}", peer.node_id, peer.reason))
-        .collect::<Vec<_>>();
-    if !unknown.is_empty() {
-        return Err(format!(
-            "não é possível desativar embeddings: topologia indeterminada em {}",
-            unknown.join("; ")
-        ));
-    }
     let unsafe_peers = evaluation
         .peers
         .iter()
@@ -242,7 +237,7 @@ mod tests {
     }
 
     #[test]
-    fn unknown_topology_is_visible_and_not_actionable() {
+    fn unknown_topology_is_visible_and_actionable_with_explicit_risk() {
         let evaluation = evaluate_no_embeddings(&[PeerTopology {
             node_id: "mystery".into(),
             start_layer: Some(0),
@@ -252,8 +247,11 @@ mod tests {
             peer_count: Some(2),
         }]);
         assert_eq!(evaluation.capability.state, CapabilityState::Unknown);
-        let error = validate_no_embeddings(&evaluation, true).unwrap_err();
-        assert!(error.contains("mystery"));
-        assert!(error.contains("indeterminada"));
+        let peers = validate_no_embeddings(&evaluation, true).unwrap();
+        assert_eq!(peers, vec!["mystery"]);
+        assert!(evaluation
+            .capability
+            .reason
+            .contains("não pôde ser confirmada"));
     }
 }

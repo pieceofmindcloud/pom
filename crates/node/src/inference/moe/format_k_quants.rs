@@ -29,7 +29,12 @@ pub enum KQuantFormat {
 pub enum KQuantError {
     Geometry(&'static str),
     Payload(&'static str),
-    PayloadLength { expected: usize, actual: usize },
+    PayloadLength {
+        expected: usize,
+        actual: usize,
+    },
+    #[cfg(feature = "cuda")]
+    BackendUnavailable(String),
 }
 
 impl fmt::Display for KQuantError {
@@ -41,6 +46,10 @@ impl fmt::Display for KQuantError {
                 formatter,
                 "payload K-quant tem {actual} bytes, mas a geometria exige múltiplo de {expected}"
             ),
+            #[cfg(feature = "cuda")]
+            Self::BackendUnavailable(reason) => {
+                write!(formatter, "backend CUDA K-quant indisponível: {reason}")
+            }
         }
     }
 }
@@ -52,7 +61,12 @@ pub enum KQuantExecuteError {
     Cache(CacheError),
     Format(KQuantError),
     Source(Q4LoadError),
-    HiddenWidth { expected: usize, actual: usize },
+    HiddenWidth {
+        expected: usize,
+        actual: usize,
+    },
+    #[cfg(feature = "cuda")]
+    Cuda(String),
 }
 
 impl fmt::Display for KQuantExecuteError {
@@ -67,6 +81,8 @@ impl fmt::Display for KQuantExecuteError {
                     "hidden K-quant tem {actual} elementos, esperado {expected}"
                 )
             }
+            #[cfg(feature = "cuda")]
+            Self::Cuda(error) => write!(formatter, "executor CUDA K-quant recusou: {error}"),
         }
     }
 }
@@ -135,6 +151,14 @@ impl KQuantFormat {
             Self::Q6K => "q6_k",
             Self::Q8K => "q8_k",
         }
+    }
+
+    /// A ponte CUDA é dirigida pelo dtype, não pelo modelo. Q4_K e Q6_K
+    /// são os primeiros formatos K com decodificação provada; os demais
+    /// continuam no CPUReference até a própria prova de cada formato.
+    #[cfg(feature = "cuda")]
+    pub fn cuda_supported(self) -> bool {
+        matches!(self, Self::Q4K | Self::Q6K)
     }
 }
 
@@ -702,6 +726,8 @@ pub struct KQuantExecutor {
     format: KQuantFormat,
     hidden: usize,
     intermediate: usize,
+    #[cfg(feature = "cuda")]
+    cuda: Option<super::cuda::KQuantCudaExecutor>,
 }
 
 impl KQuantExecutor {
@@ -717,7 +743,55 @@ impl KQuantExecutor {
             format,
             hidden,
             intermediate,
+            #[cfg(feature = "cuda")]
+            cuda: None,
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        format: KQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, KQuantError> {
+        KQuantExpert::packed_bytes(format, hidden, intermediate)?;
+        let cuda = super::cuda::KQuantCudaExecutor::new_with_cache(
+            format,
+            hidden,
+            intermediate,
+            device_cache,
+        )
+        .map_err(|error| KQuantError::BackendUnavailable(error.to_string()))?;
+        Ok(Self {
+            cache,
+            format,
+            hidden,
+            intermediate,
+            cuda: Some(cuda),
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.cuda.is_some()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::KQuantCudaExecutor::diagnostics,
+        )
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.cuda.as_ref().map_or_else(
+            Default::default,
+            super::cuda::KQuantCudaExecutor::resident_cache_stats,
+        )
     }
 
     pub fn run_from_source(
@@ -728,6 +802,20 @@ impl KQuantExecutor {
         hidden: &[f32],
     ) -> Result<Vec<f32>, KQuantExecuteError> {
         let expert = key.expert;
+        #[cfg(feature = "cuda")]
+        if self.cuda.is_some() {
+            return self.run_route_batch_from_source(
+                source,
+                &key.model,
+                layer,
+                &[expert],
+                &[0],
+                &[1.0],
+                &[0, 1],
+                hidden,
+                1,
+            );
+        }
         self.run_with_loader(
             key,
             || {
@@ -737,6 +825,44 @@ impl KQuantExecutor {
             },
             hidden,
         )
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn run_route_batch_from_source(
+        &self,
+        source: &KQuantSource,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, KQuantExecuteError> {
+        let Some(cuda) = self.cuda.as_ref() else {
+            return Err(KQuantExecuteError::Cuda(
+                "backend CUDA K-quant não foi selecionado".into(),
+            ));
+        };
+        let mut resident = Vec::with_capacity(experts.len());
+        for &expert in experts {
+            let key = ExpertKey::new(model, layer, expert, self.format.name());
+            if let Some(lease) = cuda.resident_lookup(&key) {
+                resident.push(lease);
+                continue;
+            }
+            let payload = source
+                .load_expert(layer, expert)
+                .map_err(KQuantExecuteError::Source)?;
+            KQuantExpert::from_payload(self.format, self.hidden, self.intermediate, &payload)?;
+            resident.push(
+                cuda.resident_admit(key, &payload)
+                    .map_err(|error| KQuantExecuteError::Cuda(error.to_string()))?,
+            );
+        }
+        cuda.run_route_batch_resident(&resident, token_ids, weights, token_offsets, hidden, tokens)
+            .map_err(|error| KQuantExecuteError::Cuda(error.to_string()))
     }
 
     fn run_with_loader<F, E>(

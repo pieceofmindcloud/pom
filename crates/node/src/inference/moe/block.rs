@@ -392,6 +392,47 @@ impl KQuantMoeBlock {
         })
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: KQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, KQuantError> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: KQuantExecutor::new_with_device_cache(
+                cache,
+                device_cache,
+                format,
+                hidden,
+                intermediate,
+            )?,
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.executor.uses_cuda()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.executor.cuda_diagnostics()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.executor.resident_cache_stats()
+    }
+
     pub fn forward_from_source(
         &self,
         source: &KQuantSource,
@@ -420,6 +461,23 @@ impl KQuantMoeBlock {
         ids: &[u32],
         weights: &[f32],
     ) -> Result<Vec<f32>, MoeBlockError> {
+        #[cfg(feature = "cuda")]
+        if self.uses_cuda() {
+            return self
+                .executor
+                .run_route_batch_from_source(
+                    source,
+                    &self.model,
+                    self.layer,
+                    ids,
+                    &vec![0; ids.len()],
+                    weights,
+                    &[0, ids.len()],
+                    hidden,
+                    1,
+                )
+                .map_err(MoeBlockError::from);
+        }
         let model = &self.model;
         let layer = self.layer;
         let format = self.format.name();
@@ -427,6 +485,37 @@ impl KQuantMoeBlock {
             let key = ExpertKey::new(model, layer, expert, format);
             self.executor.run_from_source(source, key, layer, hidden)
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route(
+        &self,
+        source: &KQuantSource,
+        hidden: &[f32],
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if !self.uses_cuda() {
+            return Err(MoeBlockError::Executor(
+                "lote CUDA K-quant solicitado sem ponte CUDA ativa".into(),
+            ));
+        }
+        self.executor
+            .run_route_batch_from_source(
+                source,
+                &self.model,
+                self.layer,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+            )
+            .map_err(MoeBlockError::from)
     }
 }
 

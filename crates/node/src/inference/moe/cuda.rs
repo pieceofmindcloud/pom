@@ -4,6 +4,7 @@
 
 use super::admission::MemoryAccount;
 use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
+use super::format_k_quants::KQuantFormat;
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use std::fmt;
 use std::io;
@@ -124,6 +125,158 @@ pub struct Nvfp4CudaExecutor {
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
+}
+
+/// Executor CUDA para payloads K-quant residentes no device.
+///
+/// O dtype continua sendo dado na chamada FFI. A ponte não conhece modelo,
+/// arquitetura nem convenção de nomes do GGUF. Nesta primeira entrega os
+/// decodificadores numericamente provados são Q4_K (12) e Q6_K (14); os demais
+/// K-quants permanecem no caminho CPUReference até terem uma ponte própria.
+pub struct KQuantCudaExecutor {
+    hidden: usize,
+    intermediate: usize,
+    format: KQuantFormat,
+    profile: bool,
+    resident_cache: Arc<DeviceExpertCache>,
+    diagnostics: Mutex<Nvfp4CudaDiagnostics>,
+}
+
+impl KQuantCudaExecutor {
+    pub fn new_with_cache(
+        format: KQuantFormat,
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Result<Self, CudaMoeError> {
+        if !format.cuda_supported() {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "dtype GGML {} ({}) ainda não tem ponte CUDA K-quant",
+                format.dtype(),
+                format.name()
+            )));
+        }
+        Ok(Self {
+            hidden,
+            intermediate,
+            format,
+            profile: std::env::var("POM_MOE_CUDA_PROFILE")
+                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            resident_cache,
+            diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
+        })
+    }
+
+    pub fn resident_lookup(
+        &self,
+        key: &super::cache::ExpertKey,
+    ) -> Option<super::cache::DeviceExpertLease> {
+        self.resident_cache.lookup(key)
+    }
+
+    pub fn resident_admit(
+        &self,
+        key: super::cache::ExpertKey,
+        payload: &[u8],
+    ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        self.resident_cache
+            .admit(key, payload)
+            .map_err(|error| CudaMoeError::Cache(error.to_string()))
+    }
+
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.resident_cache.stats()
+    }
+
+    pub fn run_route_batch_resident(
+        &self,
+        payloads: &[super::cache::DeviceExpertLease],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
+        if payloads.is_empty()
+            || payloads.len() != token_ids.len()
+            || payloads.len() != weights.len()
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&payloads.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA K-quant tem rotas inválidas".into(),
+            ));
+        }
+        if hidden.len() != tokens.saturating_mul(self.hidden) {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: tokens.saturating_mul(self.hidden),
+                actual: hidden.len(),
+            });
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA K-quant tem peso de rota não finito".into(),
+            ));
+        }
+
+        let handles = payloads
+            .iter()
+            .map(|payload| payload.handle() as *const u8)
+            .collect::<Vec<_>>();
+        let mut output = vec![0.0f32; hidden.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: payloads.len() as u64,
+            ..CudaMoeCallTiming::default()
+        };
+        let cuda_started = Instant::now();
+        let status = unsafe {
+            pom_moe_kquant_forward_route_batch_resident(
+                self.format.dtype(),
+                handles.as_ptr(),
+                payloads.len(),
+                token_ids.as_ptr(),
+                weights.as_ptr(),
+                token_offsets.as_ptr(),
+                token_offsets.len(),
+                tokens,
+                hidden.as_ptr(),
+                hidden.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                self.hidden,
+                self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
+        }
+        Ok(output)
+    }
+
+    pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .to_owned()
+    }
 }
 
 impl Nvfp4CudaExecutor {
@@ -448,6 +601,24 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
+    fn pom_moe_kquant_forward_route_batch_resident(
+        dtype: u32,
+        payloads: *const *const u8,
+        payload_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
     fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
     fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
     fn pom_moe_device_free(handle: *mut c_void);
@@ -455,6 +626,7 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use super::super::format_k_quants::{KQuantExpert, KQuantFormat};
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
     use super::super::format_q4_0::parse_tensor_table;
     use super::*;
@@ -485,6 +657,37 @@ mod tests {
         for _ in 0..6 {
             payload.extend_from_slice(&1.0f32.to_le_bytes());
         }
+        payload.extend_from_slice(&gate_up);
+        payload.extend_from_slice(&down);
+        payload
+    }
+
+    fn k_payload(format: KQuantFormat, hidden: usize, intermediate: usize) -> Vec<u8> {
+        let block_bytes = match format {
+            KQuantFormat::Q4K => 144,
+            KQuantFormat::Q6K => 210,
+            _ => panic!("fixture CUDA K-quant não suportada"),
+        };
+        let row_bytes = |columns: usize| columns / 256 * block_bytes;
+        let matrix = |rows: usize, columns: usize| {
+            let mut bytes = vec![0u8; rows * row_bytes(columns)];
+            for block in bytes.chunks_exact_mut(block_bytes) {
+                block[..2].copy_from_slice(&0x3c00u16.to_le_bytes());
+                if matches!(format, KQuantFormat::Q4K) {
+                    block[4..16].fill(1);
+                    block[16..].fill(0x22);
+                } else {
+                    block[194..210].fill(1);
+                    block[2..194].fill(0);
+                }
+            }
+            bytes
+        };
+        let gate_up = matrix(2 * intermediate, hidden);
+        let down = matrix(hidden, intermediate);
+        let mut payload = Vec::with_capacity(8 + gate_up.len() + down.len());
+        payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
         payload.extend_from_slice(&gate_up);
         payload.extend_from_slice(&down);
         payload
@@ -528,6 +731,42 @@ mod tests {
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {
             assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+        }
+    }
+
+    #[test]
+    fn executor_cuda_k_quants_preserva_q4k_e_q6k_do_decoder_cpu() {
+        let hidden = 256;
+        let intermediate = 256;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 127.0) * 0.0078125)
+            .collect::<Vec<_>>();
+        for format in [KQuantFormat::Q4K, KQuantFormat::Q6K] {
+            let payload = k_payload(format, hidden, intermediate);
+            let expected = KQuantExpert::from_payload(hidden, intermediate, &payload)
+                .unwrap()
+                .run(&hidden_values)
+                .unwrap();
+            let executor = KQuantCudaExecutor::new_with_cache(
+                format,
+                hidden,
+                intermediate,
+                measured_device_cache().unwrap(),
+            )
+            .unwrap();
+            let lease = executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-k-test", 0, 0, format.name()),
+                    &payload,
+                )
+                .unwrap();
+            let actual = executor
+                .run_route_batch_resident(&[lease], &[0], &[1.0], &[0, 1], &hidden_values, 1)
+                .unwrap();
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
         }
     }
 

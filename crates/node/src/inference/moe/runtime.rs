@@ -563,9 +563,30 @@ impl MoeRuntime {
                         "GGUF MoE sem camadas",
                     )));
                 }
+                #[cfg(feature = "cuda")]
+                let device_cache = if format.cuda_supported() {
+                    Some(
+                        super::cuda::create_device_cache()
+                            .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
+                    )
+                } else {
+                    None
+                };
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
-                    blocks.push(MoeBlock::K(
+                    #[cfg(feature = "cuda")]
+                    let block = if let Some(device_cache) = device_cache.as_ref() {
+                        super::block::KQuantMoeBlock::new_with_device_cache(
+                            Arc::clone(&cache),
+                            Arc::clone(device_cache),
+                            &model,
+                            layer,
+                            top_k,
+                            format,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                    } else {
                         super::block::KQuantMoeBlock::new(
                             Arc::clone(&cache),
                             &model,
@@ -575,7 +596,19 @@ impl MoeRuntime {
                             source.hidden(),
                             source.intermediate(),
                         )
-                        .map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
+                    };
+                    #[cfg(not(feature = "cuda"))]
+                    let block = super::block::KQuantMoeBlock::new(
+                        Arc::clone(&cache),
+                        &model,
+                        layer,
+                        top_k,
+                        format,
+                        source.hidden(),
+                        source.intermediate(),
+                    );
+                    blocks.push(MoeBlock::K(
+                        block.map_err(|error| MoeRuntimeError::Block(error.to_string()))?,
                     ));
                 }
                 Ok(Self {
@@ -677,6 +710,8 @@ impl MoeRuntime {
     pub fn executor_kind(&self) -> MoeExecutorKind {
         match self.blocks.first() {
             Some(MoeBlock::Nvfp4(block)) => block.executor_kind().into(),
+            #[cfg(feature = "cuda")]
+            Some(MoeBlock::K(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             Some(_) | None => MoeExecutorKind::CpuReference,
         }
     }
@@ -703,12 +738,17 @@ impl MoeRuntime {
         let mut diagnostics = diagnostics;
 
         #[cfg(feature = "cuda")]
-        if matches!(&self.source, MoeSource::Nvfp4(_)) {
+        {
             for block in &self.blocks {
-                let MoeBlock::Nvfp4(block) = block else {
-                    continue;
+                let (cuda, device_cache) = match block {
+                    MoeBlock::Nvfp4(block) => {
+                        (block.cuda_diagnostics(), block.resident_cache_stats())
+                    }
+                    MoeBlock::K(block) if block.uses_cuda() => {
+                        (block.cuda_diagnostics(), block.resident_cache_stats())
+                    }
+                    _ => continue,
                 };
-                let cuda = block.cuda_diagnostics();
                 diagnostics.profiled |= cuda.calls > 0;
                 diagnostics.calls = diagnostics.calls.saturating_add(cuda.calls);
                 diagnostics.payload_validation_ms += cuda.payload_validation_ms;
@@ -726,12 +766,6 @@ impl MoeRuntime {
                 diagnostics.cuda_call_wall_ms += cuda.cuda_call_wall_ms;
                 diagnostics.host_batch_prepare_ms += cuda.host_batch_prepare_ms;
                 diagnostics.host_result_copy_ms += cuda.host_result_copy_ms;
-                let host = block.host_diagnostics();
-                diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;
-                diagnostics.host_expert_load_ms += host.expert_load_ms;
-                diagnostics.host_cache_admit_ms += host.cache_admit_ms;
-                diagnostics.host_aggregation_ms += host.aggregation_ms;
-                let device = block.resident_cache_stats();
                 diagnostics.device_cache_hits =
                     diagnostics.device_cache_hits.saturating_add(device.hits);
                 diagnostics.device_cache_misses = diagnostics
@@ -756,6 +790,13 @@ impl MoeRuntime {
                 diagnostics.device_cache_resident_bytes = diagnostics
                     .device_cache_resident_bytes
                     .saturating_add(device.resident_bytes);
+                if let MoeBlock::Nvfp4(block) = block {
+                    let host = block.host_diagnostics();
+                    diagnostics.host_cache_lookup_ms += host.cache_lookup_ms;
+                    diagnostics.host_expert_load_ms += host.expert_load_ms;
+                    diagnostics.host_cache_admit_ms += host.cache_admit_ms;
+                    diagnostics.host_aggregation_ms += host.aggregation_ms;
+                }
             }
         }
 
@@ -890,6 +931,33 @@ impl MoeRuntime {
         #[cfg(feature = "cuda")]
         if let (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) = (&self.source, block) {
             if block.executor_kind() == super::format_nvfp4::Nvfp4BackendKind::Cuda {
+                let token_ids = (0..tokens)
+                    .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                    .collect::<Vec<_>>();
+                let token_offsets = (0..=tokens)
+                    .map(|token| token.saturating_mul(expert_count_used))
+                    .collect::<Vec<_>>();
+                let output = block.forward_batch_from_source_with_route(
+                    source,
+                    hidden,
+                    &resolved_ids,
+                    &token_ids,
+                    weights,
+                    &token_offsets,
+                    tokens,
+                )?;
+                let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+                self.runtime_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .runtime_forward_ms += elapsed_ms;
+                return Ok(output);
+            }
+        }
+
+        #[cfg(feature = "cuda")]
+        if let (MoeSource::K(source), MoeBlock::K(block)) = (&self.source, block) {
+            if block.uses_cuda() {
                 let token_ids = (0..tokens)
                     .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
                     .collect::<Vec<_>>();

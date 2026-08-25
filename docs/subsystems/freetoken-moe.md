@@ -1121,6 +1121,57 @@ carga deve cobrir metadata preservada, ausência de tensor de dados e caminho
 denso intacto. A suíte densa continua obrigatória; a prova de desempenho e de
 residência exige o modelo real na ksia e não pode ser substituída por fixture.
 
+#### F5-E5: pontes CUDA por dtype, antes dos CUDA Graphs
+
+Esta é a próxima lacuna ativa. A prioridade é estrutural e está ancorada nos
+números já medidos, não em uma expectativa de ganho pequeno: no decode, o
+executor MoE honesto está em `5,4 tok/s`, contra `20,7 tok/s` do llama.cpp e
+`53,3 tok/s` do FreeToken; no prefill, está em `3,2 tok/s`, contra `55 tok/s`
+e `325 tok/s`, respectivamente. Os dtypes IQ do Qwen UD ficaram em
+`CPUReference`, aproximadamente cinco segundos por token, portanto a ponte
+CUDA por dtype vem antes de graphs.
+
+A ordem concreta é Q4_K (`dtype=12`) e Q6_K (`dtype=14`), usados pelo Qwen3.6
+Q4_K_M, seguidos por IQ3_S (`21`), IQ2_S (`22`) e IQ4_XS (`23`), usados pelos
+dois GGUF UD reais do corpus. A implementação recebe dtype, geometria, papel e
+payload como dados; não há ramo por arquitetura, nome de modelo ou família
+global. Cada ponte precisa comparar a saída CUDA com o decoder Rust CPU para o
+mesmo payload, hidden e rota, começando pela primeira camada e pelo primeiro
+estágio. A prova com arquivo real move o formato de "implementado" para
+"provado"; fixture sintética ou `cargo test` sem execução CUDA não faz essa
+promoção.
+
+Um dtype sem ponte permanece explicitamente visível como `CPUReference`, com
+`dtype=<id> (<nome>)` e motivo, ou é recusado no limite de uma chamada CUDA
+quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
+outro formato. Nesta entrega a ponte é declarada somente para Q4_K e Q6_K; IQ
+3/2/4 ainda não está coberto até a sua prova numérica.
+
+Critério de pronto por bloco: build `--features vulkan,cuda` verde no ramo de
+checagem; teste diferencial executado para cada dtype; GGUF real correspondente
+sobe e responde com `moe_executor=cuda`, sem `engine_mismatch` nem fallback
+silencioso; e uma medição posterior em tok/s mostra o valor real contra a linha
+de base `5,4/3,2` e o alvo FreeToken `53,3/325`. Enquanto a ksia estiver em
+uso, a compilação é permitida somente com aviso prévio no status e nenhuma
+medição ou alteração do serviço.
+
+#### F5-E6: CUDA Graphs do caminho MoE
+
+Graphs vêm depois das pontes por dtype. O graph será dirigido por dados e
+indexado por uma chave de forma que inclua device, dtype, hidden, intermediate,
+quantidade de tokens, pares de rota, strides e modo de ativação. A captura só
+ocorre depois de os handles do cache residente, workspaces e descritores terem
+estabilidade; mudanças de forma criam outro graph ou recusam nominalmente a
+captura. Replay não pode trocar silenciosamente para CPUReference.
+
+O critério de pronto é uma prova numérica antes/depois do replay para cada
+chave, seguida de build CUDA e medição em tok/s na mesma carga. O ganho será
+reportado como diferença de tok/s e de custo de lançamento/alocação, sem
+atribuir aos graphs ganhos que vierem da ponte de dtype, do cache em VRAM ou da
+montagem do lote. O alvo do goal continua sendo aproximar `53,3 tok/s` no
+decode e `325 tok/s` no prefill do FreeToken; suite verde sem número não fecha
+nenhuma dessas fases.
+
 ### Fases do goal CUDA
 
 1. **F5.0, perfil de referência reproduzível.** Reexecutar na ksia o mesmo

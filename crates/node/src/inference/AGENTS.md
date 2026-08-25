@@ -102,8 +102,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
   implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
   `format_nvfp4.rs` implementa o decoder NVFP4 em CPU e `cuda.rs` mais
-  `cuda_kernels.cu` fornecem o primeiro executor NVFP4 CUDA quando a feature
-  `cuda` está ligada. K-quants e IQ-quants validam a convenção GGUF
+  `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
+  feature `cuda` está ligada: NVFP4 e, nesta etapa, Q4_K (12) e Q6_K (14).
+  K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
   linkadas, enquanto cache, router e mat-vec permanecem no executor próprio.
@@ -120,7 +121,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
   `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
-  acumulação inteira por subbloco NVFP4 e GeGLU com arredondamento FP16. O
+  acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
+  Q4_K/Q6_K com SiLU no caminho K. O
   caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`;
   depois do cache residente, o payload de peso é enviado uma vez por miss e o
   lote recebe ponteiros de device nos hits. O lote de rotas para múltiplos
@@ -132,7 +134,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também publica `runtime_forward_ms`, `host_batch_prepare_ms`,
   `host_result_copy_ms` e `host_aggregation_ms` para fechar a conta do forward
   MoE sem somar relógios sobrepostos.
-  A descompactação ainda ocorre no kernel a cada uso, mas os bytes quantizados
+  A descompactação NVFP4 e K-quant ainda ocorre no kernel a cada uso, mas os bytes quantizados
   do expert ficam residentes no device entre usos quando a ponte CUDA e o
   orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
   estatísticas separadas. Depois de qualquer mudança

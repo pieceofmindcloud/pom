@@ -14,6 +14,7 @@ constexpr int kBlockElements = 64;
 constexpr int kSubblockElements = 16;
 constexpr int kBlockBytes = 36;
 constexpr int kPayloadHeaderBytes = 32;
+constexpr int kKQuantPayloadHeaderBytes = 8;
 
 struct CudaMoeCallTiming {
     uint64_t expert_calls;
@@ -386,11 +387,391 @@ __global__ void aggregate_route_batch_kernel(
     output[token * hidden + row] = value;
 }
 
+// K-quants usam superblocos de 256 valores. Estas rotinas reimplementam a
+// convenção GGML a partir do layout do formato, sem depender de arquitetura
+// ou de um modelo específico. A ponte começa pelos dtypes 12 e 14.
+__device__ float k_f16(uint16_t bits) {
+    const float sign = (bits & 0x8000u) != 0 ? -1.0f : 1.0f;
+    const int exponent = (bits >> 10) & 0x1f;
+    const uint32_t fraction = bits & 0x03ffu;
+    if (exponent == 0) {
+        return sign * static_cast<float>(fraction) * exp2f(-24.0f);
+    }
+    if (exponent == 31) {
+        return fraction == 0 ? sign * CUDART_INF_F : CUDART_NAN_F;
+    }
+    return sign * (1.0f + static_cast<float>(fraction) / 1024.0f) *
+        exp2f(static_cast<float>(exponent - 15));
+}
+
+__device__ uint16_t k_u16(const uint8_t *bytes) {
+    return static_cast<uint16_t>(bytes[0]) |
+        (static_cast<uint16_t>(bytes[1]) << 8);
+}
+
+__device__ float k_q4_scale(uint32_t index, const uint8_t *scales, bool minimum) {
+    if (index < 4) {
+        return static_cast<float>(minimum ? (scales[index + 4] & 63u) : (scales[index] & 63u));
+    }
+    return static_cast<float>(minimum
+        ? ((scales[index + 4] >> 4) | ((scales[index] >> 6) << 4))
+        : ((scales[index + 4] & 0x0fu) | ((scales[index - 4] >> 6) << 4)));
+}
+
+__device__ float k_dot_q4_k(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    constexpr int block_bytes = 144;
+    const int row_bytes = (columns / 256) * block_bytes;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int block = 0; block < columns / 256; ++block) {
+        const uint8_t *packed = encoded + block * block_bytes;
+        const float d = k_f16(k_u16(packed));
+        const float minimum = k_f16(k_u16(packed + 2));
+        const uint8_t *scales = packed + 4;
+        const uint8_t *quants = packed + 16;
+        for (int chunk = 0; chunk < 4; ++chunk) {
+            const uint8_t *values = quants + chunk * 32;
+            const uint32_t scale_index = static_cast<uint32_t>(chunk * 2);
+            const float scale0 = d * k_q4_scale(scale_index, scales, false);
+            const float scale1 = d * k_q4_scale(scale_index + 1, scales, false);
+            const float min0 = minimum * k_q4_scale(scale_index, scales, true);
+            const float min1 = minimum * k_q4_scale(scale_index + 1, scales, true);
+            const int input_base = block * 256 + chunk * 64;
+            for (int lane = 0; lane < 32; ++lane) {
+                result += input[input_base + lane] *
+                    (scale0 * static_cast<float>(values[lane] & 0x0f) - min0);
+                result += input[input_base + lane + 32] *
+                    (scale1 * static_cast<float>(values[lane] >> 4) - min1);
+            }
+        }
+    }
+    return result;
+}
+
+__device__ float k_dot_q6_k(
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    constexpr int block_bytes = 210;
+    const int row_bytes = (columns / 256) * block_bytes;
+    const uint8_t *encoded = matrix + row * row_bytes;
+    float result = 0.0f;
+    for (int block = 0; block < columns / 256; ++block) {
+        const uint8_t *packed = encoded + block * block_bytes;
+        const float d = k_f16(k_u16(packed));
+        const uint8_t *ql = packed + 2;
+        const uint8_t *qh = packed + 130;
+        const uint8_t *scales = packed + 194;
+        for (int half = 0; half < 2; ++half) {
+            const uint8_t *low = ql + half * 64;
+            const uint8_t *high = qh + half * 32;
+            const uint8_t *scale_group = scales + half * 8;
+            const int input_base = block * 256 + half * 128;
+            for (int lane = 0; lane < 32; ++lane) {
+                const int group = lane / 16;
+                const int q1 = static_cast<int>((low[lane] & 0x0f) | ((high[lane] & 3u) << 4)) - 32;
+                const int q2 = static_cast<int>((low[lane + 32] & 0x0f) | (((high[lane] >> 2) & 3u) << 4)) - 32;
+                const int q3 = static_cast<int>((low[lane] >> 4) | (((high[lane] >> 4) & 3u) << 4)) - 32;
+                const int q4 = static_cast<int>((low[lane + 32] >> 4) | (((high[lane] >> 6) & 3u) << 4)) - 32;
+                result += input[input_base + lane] * d * static_cast<float>(static_cast<int8_t>(scale_group[group])) * q1;
+                result += input[input_base + lane + 32] * d * static_cast<float>(static_cast<int8_t>(scale_group[group + 2])) * q2;
+                result += input[input_base + lane + 64] * d * static_cast<float>(static_cast<int8_t>(scale_group[group + 4])) * q3;
+                result += input[input_base + lane + 96] * d * static_cast<float>(static_cast<int8_t>(scale_group[group + 6])) * q4;
+            }
+        }
+    }
+    return result;
+}
+
+__device__ float k_dot(
+    uint32_t dtype,
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    return dtype == 12
+        ? k_dot_q4_k(matrix, row, columns, input)
+        : k_dot_q6_k(matrix, row, columns, input);
+}
+
+__global__ void kquant_gate_up_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const float *hidden_values,
+    float *gate_up_values
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows_per_pair = 2 * intermediate;
+    const int pair = index / rows_per_pair;
+    const int row = index % rows_per_pair;
+    if (pair >= pair_count) {
+        return;
+    }
+    const uint8_t *payload = payloads[pair];
+    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
+        (static_cast<uint32_t>(payload[1]) << 8) |
+        (static_cast<uint32_t>(payload[2]) << 16) |
+        (static_cast<uint32_t>(payload[3]) << 24);
+    const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
+    gate_up_values[pair * rows_per_pair + row] = k_dot(
+        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input);
+    (void)gate_up_len;
+}
+
+__global__ void kquant_silu_kernel(
+    const float *gate_up_values,
+    int pair_count,
+    int intermediate,
+    float *activated
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair = index / intermediate;
+    const int row = index % intermediate;
+    if (pair >= pair_count) {
+        return;
+    }
+    const float gate = gate_up_values[pair * 2 * intermediate + row];
+    const float up = gate_up_values[pair * 2 * intermediate + intermediate + row];
+    activated[pair * intermediate + row] =
+        (gate / (1.0f + expf(-gate))) * up;
+}
+
+__global__ void kquant_down_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    const float *activated,
+    float *pair_output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair = index / hidden;
+    const int row = index % hidden;
+    if (pair >= pair_count) {
+        return;
+    }
+    const uint8_t *payload = payloads[pair];
+    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
+        (static_cast<uint32_t>(payload[1]) << 8) |
+        (static_cast<uint32_t>(payload[2]) << 16) |
+        (static_cast<uint32_t>(payload[3]) << 24);
+    pair_output[pair * hidden + row] = k_dot(
+        dtype,
+        payload + kKQuantPayloadHeaderBytes + gate_up_len,
+        row,
+        intermediate,
+        activated + pair * intermediate);
+}
+
 int cuda_status(cudaError_t error) {
     return error == cudaSuccess ? 0 : static_cast<int>(error);
 }
 
 } // namespace
+
+extern "C" int pom_moe_kquant_forward_route_batch_resident(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    std::size_t payload_count,
+    const uint32_t *token_ids,
+    const float *weights,
+    const std::size_t *token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float *hidden,
+    std::size_t hidden_len,
+    float *output,
+    std::size_t output_len,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    CudaMoeCallTiming *timing
+) {
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(payload_count);
+        timing->kernel_launches = 4;
+        timing->sync_count = 1;
+    }
+    if ((dtype != 12 && dtype != 14) || payloads == nullptr || token_ids == nullptr ||
+        weights == nullptr || token_offsets == nullptr || hidden == nullptr ||
+        output == nullptr || payload_count == 0 || token_count == 0 || hidden_width == 0 ||
+        intermediate_width == 0 || hidden_width % 256 != 0 || intermediate_width % 256 != 0 ||
+        token_offsets_len != token_count + 1 || hidden_len != token_count * hidden_width ||
+        output_len != hidden_len || token_offsets[0] != 0 ||
+        token_offsets[token_count] != payload_count) {
+        return 1;
+    }
+    for (std::size_t pair = 0; pair < payload_count; ++pair) {
+        if (payloads[pair] == nullptr || token_ids[pair] >= token_count ||
+            !std::isfinite(weights[pair])) {
+            return 1;
+        }
+    }
+    for (std::size_t token = 0; token < token_count; ++token) {
+        if (token_offsets[token] > token_offsets[token + 1]) {
+            return 1;
+        }
+    }
+
+    const int pair_count = static_cast<int>(payload_count);
+    const int hidden = static_cast<int>(hidden_width);
+    const int intermediate = static_cast<int>(intermediate_width);
+    const int block_size = 128;
+    const std::size_t hidden_bytes = hidden_width * token_count * sizeof(float);
+    const std::size_t gate_up_bytes = 2 * intermediate_width * payload_count * sizeof(float);
+    const std::size_t activated_bytes = intermediate_width * payload_count * sizeof(float);
+    const std::size_t pair_output_bytes = hidden_width * payload_count * sizeof(float);
+
+    float *d_hidden = nullptr;
+    const uint8_t **d_payloads = nullptr;
+    uint32_t *d_token_ids = nullptr;
+    float *d_weights = nullptr;
+    std::size_t *d_token_offsets = nullptr;
+    float *d_gate_up = nullptr;
+    float *d_activated = nullptr;
+    float *d_pair_output = nullptr;
+    float *d_output = nullptr;
+    cudaEvent_t start = nullptr;
+    cudaEvent_t end = nullptr;
+    int result = 0;
+
+    do {
+        const auto alloc_start = Clock::now();
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_payloads),
+            payload_count * sizeof(*d_payloads)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_ids),
+            payload_count * sizeof(*d_token_ids)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_weights),
+            payload_count * sizeof(*d_weights)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_offsets),
+            token_offsets_len * sizeof(*d_token_offsets)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated), activated_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_pair_output), pair_output_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), hidden_bytes));
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->alloc_ms = elapsed_ms(alloc_start, Clock::now());
+            result = cuda_status(cudaEventCreate(&start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&end));
+            if (result != 0) break;
+        }
+
+        const auto h2d_start = Clock::now();
+        result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_payloads, payloads,
+            payload_count * sizeof(*d_payloads), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_ids, token_ids,
+            payload_count * sizeof(*d_token_ids), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_weights, weights,
+            payload_count * sizeof(*d_weights), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_offsets, token_offsets,
+            token_offsets_len * sizeof(*d_token_offsets), cudaMemcpyHostToDevice));
+        if (timing != nullptr) {
+            timing->h2d_ms = elapsed_ms(h2d_start, Clock::now());
+            timing->h2d_bytes = static_cast<uint64_t>(
+                hidden_bytes + payload_count * sizeof(*d_payloads) +
+                payload_count * sizeof(*d_token_ids) + payload_count * sizeof(*d_weights) +
+                token_offsets_len * sizeof(*d_token_offsets));
+        }
+        if (result != 0) break;
+
+        const auto launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(start));
+            if (result != 0) break;
+        }
+        kquant_gate_up_route_kernel<<<
+            (2 * intermediate * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, d_token_ids, pair_count, intermediate,
+                hidden, d_hidden, d_gate_up);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        kquant_silu_kernel<<<
+            (intermediate * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_gate_up, pair_count, intermediate, d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        kquant_down_route_kernel<<<
+            (hidden * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, pair_count, hidden, intermediate,
+                d_activated, d_pair_output);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        aggregate_route_batch_kernel<<<
+            (static_cast<int>(token_count) * hidden + block_size - 1) / block_size,
+            block_size>>>(d_pair_output, d_weights, d_token_offsets,
+                static_cast<int>(token_count), hidden, d_output);
+        result = cuda_status(cudaGetLastError());
+        if (timing != nullptr) {
+            timing->launch_ms = elapsed_ms(launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(end));
+            if (result != 0) break;
+        }
+        const auto sync_start = Clock::now();
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, start, end));
+            if (result != 0) break;
+            timing->kernel_ms = kernel_ms;
+            timing->sync_ms = std::max(0.0, elapsed_ms(sync_start, Clock::now()) -
+                static_cast<double>(kernel_ms));
+        }
+
+        const auto d2h_start = Clock::now();
+        result = cuda_status(cudaMemcpy(output, d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+        if (timing != nullptr) {
+            timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
+            timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+        }
+    } while (false);
+
+    if (start != nullptr) cudaEventDestroy(start);
+    if (end != nullptr) cudaEventDestroy(end);
+    const auto free_start = Clock::now();
+    cudaFree(d_output);
+    cudaFree(d_pair_output);
+    cudaFree(d_activated);
+    cudaFree(d_gate_up);
+    cudaFree(d_token_offsets);
+    cudaFree(d_weights);
+    cudaFree(d_token_ids);
+    cudaFree(d_payloads);
+    cudaFree(d_hidden);
+    if (timing != nullptr) {
+        timing->free_ms = elapsed_ms(free_start, Clock::now());
+    }
+    return result;
+}
 
 extern "C" int pom_moe_nvfp4_forward_batch(
     const uint8_t * payload,

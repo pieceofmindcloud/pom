@@ -444,21 +444,22 @@ vez por uso selecionado, e não uma vez por miss do LRU. Uma determinada chave
 de expert cruza tantas vezes quanto for selecionada no roteamento; neste token,
 o agregado foi 480 transferências de peso.
 
-Há uma divergência concreta no caminho instrumentado: em `cuda_kernels.cu`, o
-buffer copiado para device (`d_gate_up`) não é o ponteiro passado a
-`gate_up_kernel`; o kernel recebe o ponteiro host `gate_up`. Assim, o buffer H2D
-de gate/up fica sem uso e o kernel pode estar lendo essa matriz pela memória
-host mapeada, ou pode estar sujeito a erro de acesso dependendo do backend. Isso
-é uma causa concreta para investigar antes de atribuir os `19882,414 ms` de
-kernel do prefill ou os `967,158 ms` do decode ao cálculo NVFP4 em si.
+O caminho que produziu esse perfil tinha uma divergência concreta em
+`cuda_kernels.cu`: o buffer copiado para device (`d_gate_up`) não era o ponteiro
+passado a `gate_up_kernel`; o kernel recebia o ponteiro host `gate_up`. O teste
+CUDA diferencial reproduziu a consequência antes da correção com tamanhos
+impossíveis (`262144 != 262128`), consistente com corrupção causada pela
+fronteira host/device. A correção passa `d_gate_up` ao kernel, sem mudar o
+formato do payload ou o cálculo. O perfil de custo precisa ser repetido depois
+desta correção antes de atribuir os `19882,414 ms` de kernel do prefill ou os
+`967,158 ms` do decode ao cálculo NVFP4 em si.
 
 Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
 cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
-selecionado e a medição real mostra o kernel como a maior categoria, seguido de
-H2D. A telemetria interna agora separa as parcelas, mas a divergência do
-ponteiro `gate_up` impede interpretar a categoria kernel como custo do cálculo
-correto. Os números acima são a linha de base honesta para as fases seguintes;
-nenhuma otimização foi feita nesta etapa.
+selecionado. A correção do ponteiro `gate_up` é uma etapa de correção numérica,
+não uma otimização; depois dela, a telemetria deve ser coletada novamente antes
+de comparar o custo do kernel. Os números acima continuam sendo a linha de
+base pré-correção; nenhuma otimização foi feita nesta etapa.
 
 ### Goal retomado: executor CUDA e co-execução CPU/GPU
 

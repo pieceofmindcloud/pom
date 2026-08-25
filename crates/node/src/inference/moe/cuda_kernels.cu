@@ -243,7 +243,7 @@ extern "C" int pom_moe_nvfp4_forward(
             if (result != 0) break;
         }
         gate_up_kernel<<<(2 * intermediate_width + block_size - 1) / block_size, block_size>>>(
-            gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width), d_hidden,
+            d_gate_up, static_cast<int>(intermediate_width), static_cast<int>(hidden_width), d_hidden,
             scales_host[0], scales_host[1], d_gate_up_values);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;

@@ -423,3 +423,13 @@ axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
   recebeu o clique, não de quem foi chamado - as chamadas aos peers usam
   `/api/ui/unload`, que continua valendo para qualquer nó. Registrado também em
   `crates/node/src/backend/AGENTS.md` (Defeitos anotados).
+- **DEFEITO ANOTADO: interferência na bateria paralela do plano HTTP** -
+  `deploy::whole_route_tests::the_route_plans_a_whole_model_from_the_machines_own_catalog`
+  falha na bateria completa paralela, mas passa isoladamente e com
+  `--test-threads=1`. A causa é o par dessa rota com
+  `webui::a_lista_de_maquinas_para_implantar_tambem_e_pinada` ou
+  `webui::cluster_models_fala_com_os_peers_pelo_cliente_pinado`: esses testes
+  alteram o global `peer_client::TLS_ATIVO`; a rota não segura
+  `peer_client::POLITICA_GLOBAL`, então pode formar `https://` para o servidor
+  HTTP falso e interpretar a falha como catálogo sem o modelo. A falha também
+  ocorre na base `0adfa5b`, portanto não é regressão dos fixes do fatiador.

@@ -490,6 +490,7 @@ mod tests {
             mtp: true,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let mut engine = crate::llm::LlmEngine::load_with_cache(
             &path,

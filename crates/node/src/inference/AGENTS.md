@@ -117,6 +117,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
+  Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
+  camada: somente camadas com ponte device têm seus experts omitidos do
+  llama.cpp; dtypes sem cache device e combinações heterogêneas ficam nativas
+  e registram o motivo na telemetria. O fork mantém a lista como metadata
+  copiada no modelo e o grafo escolhe external/native pela camada, nunca por
+  uma flag global que possa deixar experts sem executor.
   A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
   ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
   kernel, sincronização, liberação, busca/admissão e carregamento de experts no

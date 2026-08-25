@@ -156,7 +156,6 @@ impl KQuantFormat {
     /// A ponte CUDA é dirigida pelo dtype, não pelo modelo. Q4_K e Q6_K
     /// são os primeiros formatos K com decodificação provada; os demais
     /// continuam no CPUReference até a própria prova de cada formato.
-    #[cfg(feature = "cuda")]
     pub fn cuda_supported(self) -> bool {
         matches!(self, Self::Q4K | Self::Q6K)
     }

@@ -1292,6 +1292,40 @@ de um formato como se fossem outro. Ao concluir o goal, essa recusa será o
 caminho raro para um dtype realmente novo ou um tensor inválido, não a saída
 normal para modelos conhecidos.
 
+### Reorganização do marco de entrega - 2026-08-25
+
+O critério operacional deste goal foi reorganizado para entregar valor nos
+quatro MoE reais disponíveis na ksia antes de ampliar a cobertura abstrata de
+todos os dtypes. O marco é: Gemma4 NVFP4, Qwen3.6 Q4_K_M com Q4_K/Q6_K, Qwen
+UD-IQ3_S com IQ3_S/IQ2_S/IQ4_XS heterogêneos e Ornith UD-IQ3_XXS. Cada um
+precisa subir e responder no caminho MoE, com `moe_executor` visível por hop,
+sem `CPUReference` silencioso e sem regressão contra o llama.cpp na mesma
+build. O número de aceitação é tok/s medido na ksia; suite verde ou carga de
+metadata sozinha não fecha o marco.
+
+A ordem vigente passa a ser:
+
+1. **Salvaguarda por dtype e reserva de VRAM.** A reserva medida de
+   `53decb4` e o ownership por camada chegam juntos. Somente uma camada cujos
+   tensores de experts tenham executor device disponível pode ser retirada do
+   llama.cpp. Dtypes sem cache device, inclusive qualquer combinação
+   heterogênea ainda sem ponte, permanecem com o llama.cpp. A recusa ou a
+   preservação deve nomear os dtypes concretos, nunca deixar a placa sem dono.
+2. **Cobertura do marco.** NVFP4, Q4_K/Q6_K e, em seguida, IQ3_S/IQ2_S/IQ4_XS
+   por tensor, incluindo o cache device e a combinação heterogênea usada pelos
+   dois UD. O decoder é escolhido por tensor e dtype; arquitetura, nomes,
+   geometrias e convenções entram como metadata. Cada bloco exige prova
+   numérica contra o oráculo, GGUF real quando disponível e prova E2E nos quatro
+   modelos antes de ser chamado de pronto.
+3. **Depois do marco.** Prefill, CUDA graphs e redução da cauda, priorizados
+   por perfil medido. Os dtypes restantes seguem cobertos pela salvaguarda e
+   só entram no executor device depois do marco, sem alterar o caminho nativo.
+
+Esta reorganização substitui a fila anterior como ordem de entrega, mas não
+remove o inventário completo nem a recusa nominal: os demais dtypes continuam
+listados e explicitamente protegidos, e voltam à implementação depois que os
+quatro modelos do marco tiverem números honestos.
+
 ### Fases e critérios de pronto
 
 1. **Inventário e conformance.** Mapear todos os IDs ativos da enumeração,

@@ -17,7 +17,10 @@ use super::format_legacy_quants::{LegacyQuantFormat, LegacyQuantSource};
 use super::format_low_bits::{LowBitFormat, LowBitSource};
 use super::format_nvfp4::Nvfp4Source;
 use super::format_plain::{PlainFormat, PlainSource};
-use super::format_q4_0::{detect_expert_format, ExpertFormat};
+use super::format_q4_0::{
+    detect_expert_dtypes, detect_expert_format, detect_expert_layer_count, ggml_type_name,
+    ExpertFormat,
+};
 use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -300,7 +303,105 @@ pub struct MoeRouteBatch<'a> {
     pub weight_before_ffn: bool,
 }
 
+/// Ownership decision made before loading the llama.cpp model.
+///
+/// A `1` means that every expert tensor in that local layer has a device
+/// executor and may be metadata-only in llama.cpp. A `0` is an explicit
+/// native-ownership decision: llama.cpp keeps and executes that layer's
+/// experts. Keeping this list data-driven prevents F5-E2 from turning an
+/// unsupported dtype into a model with no executor at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoeExternalExecutorPlan {
+    pub layers: Vec<u8>,
+    pub dtypes: Vec<u32>,
+    pub reason: Option<String>,
+}
+
+impl MoeExternalExecutorPlan {
+    pub fn enabled(&self) -> bool {
+        self.layers.iter().any(|value| *value != 0)
+    }
+}
+
+fn make_external_executor_plan(
+    detected: ExpertFormat,
+    dtypes: Vec<u32>,
+    layers: usize,
+    cuda_compiled: bool,
+    nvfp4_cpu_requested: bool,
+) -> MoeExternalExecutorPlan {
+    let dtype_list = dtypes
+        .iter()
+        .map(|dtype| format!("{dtype} ({})", ggml_type_name(*dtype)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let single_dtype = dtypes.len() == 1;
+    let bridge_supported = match detected {
+        ExpertFormat::Nvfp4 => cuda_compiled && !nvfp4_cpu_requested,
+        ExpertFormat::Q4K | ExpertFormat::Q6K => {
+            cuda_compiled
+                && single_dtype
+                && KQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
+        }
+        ExpertFormat::Iq3S | ExpertFormat::Iq2S | ExpertFormat::Iq4XS => {
+            cuda_compiled
+                && single_dtype
+                && IqQuantFormat::from_dtype(dtypes[0]).is_ok_and(|format| format.cuda_supported())
+        }
+        ExpertFormat::Heterogeneous => false,
+        _ => false,
+    };
+    if bridge_supported {
+        return MoeExternalExecutorPlan {
+            layers: vec![1; layers],
+            dtypes,
+            reason: None,
+        };
+    }
+
+    let reason = if detected == ExpertFormat::Heterogeneous {
+        format!(
+            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: ponte por tensor ainda não disponível; experts permanecem no llama.cpp"
+        )
+    } else if !cuda_compiled {
+        format!(
+            "executor CUDA recusado para dtype [{dtype_list}]: binário sem feature cuda; experts permanecem no llama.cpp"
+        )
+    } else if detected == ExpertFormat::Nvfp4 && nvfp4_cpu_requested {
+        format!(
+            "executor CUDA recusado para dtype [{dtype_list}]: POM_MOE_NVFP4_BACKEND=cpu; experts permanecem no llama.cpp"
+        )
+    } else {
+        format!(
+            "executor CUDA recusado para dtype [{dtype_list}]: ponte device não suportada; experts permanecem no llama.cpp"
+        )
+    };
+    MoeExternalExecutorPlan {
+        layers: vec![0; layers],
+        dtypes,
+        reason: Some(reason),
+    }
+}
+
 impl MoeRuntime {
+    /// Decides ownership before `llama_model_load_from_file` so unsupported
+    /// formats never have their experts removed from the native model.
+    pub fn external_executor_plan(
+        path: impl AsRef<Path>,
+    ) -> Result<MoeExternalExecutorPlan, MoeRuntimeError> {
+        let detected = detect_expert_format(&path)?;
+        let dtypes = detect_expert_dtypes(&path)?;
+        let layers = detect_expert_layer_count(&path)?;
+        Ok(make_external_executor_plan(
+            detected,
+            dtypes,
+            layers,
+            cfg!(feature = "cuda"),
+            std::env::var("POM_MOE_NVFP4_BACKEND")
+                .is_ok_and(|value| value.eq_ignore_ascii_case("cpu")),
+        ))
+    }
+
     /// Carrega o primeiro formato próprio suportado e compartilha o cache
     /// entre todas as camadas locais desta fatia.
     pub fn open(
@@ -1181,6 +1282,39 @@ mod tests {
     fn executor_cuda_recusa_relatorio_sem_compute_medido() {
         let error = require_cuda_compute_bytes(None).unwrap_err();
         assert!(error.to_string().contains("compute buffer CUDA medido"));
+    }
+
+    #[test]
+    fn dtype_sem_cache_device_permanece_com_experts_nativos() {
+        let plan = make_external_executor_plan(ExpertFormat::Q4_0, vec![2], 4, true, false);
+        assert!(!plan.enabled());
+        assert_eq!(plan.layers, vec![0, 0, 0, 0]);
+        assert!(plan.reason.unwrap().contains("Q4_0"));
+    }
+
+    #[test]
+    fn dtypes_heterogeneos_nao_externalizam_parcialmente() {
+        let plan = make_external_executor_plan(
+            ExpertFormat::Heterogeneous,
+            vec![21, 22, 23],
+            3,
+            true,
+            false,
+        );
+        assert!(!plan.enabled());
+        assert_eq!(plan.layers, vec![0, 0, 0]);
+        let reason = plan.reason.unwrap();
+        assert!(reason.contains("21 (IQ3_S)"));
+        assert!(reason.contains("22 (IQ2_S)"));
+        assert!(reason.contains("23 (IQ4_XS)"));
+    }
+
+    #[test]
+    fn dtype_com_ponte_device_externaliza_todas_as_camadas_do_plano() {
+        let plan = make_external_executor_plan(ExpertFormat::Q4K, vec![12], 3, true, false);
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]

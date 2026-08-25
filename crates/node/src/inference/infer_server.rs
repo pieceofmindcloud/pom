@@ -105,6 +105,12 @@ impl MoeTimings {
         self.forward_us = self.forward_us.saturating_add(elapsed_us);
     }
 
+    fn record_reason(&mut self, reason: &str) {
+        if !self.reasons.iter().any(|existing| existing == reason) {
+            self.reasons.push(reason.to_string());
+        }
+    }
+
     fn merge(&mut self, other: &Self) {
         self.forward_us = self.forward_us.saturating_add(other.forward_us);
         for executor in &other.executors {
@@ -199,6 +205,10 @@ impl NodeTimings {
 
     fn record_moe_forward(&mut self, elapsed_us: u64) {
         self.moe.record_forward(elapsed_us);
+    }
+
+    fn record_moe_reason(&mut self, reason: &str) {
+        self.moe.record_reason(reason);
     }
 
     fn merge_moe(&mut self, other: &MoeTimings) {
@@ -1336,6 +1346,7 @@ mod session_text_tests {
 struct InferState {
     engine: LlmEngine,
     moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
+    moe_fallback_reason: Option<String>,
     sessions: HashMap<String, Session>,
     seq_pool: Vec<u32>,
     max_sessions: u32,
@@ -1434,6 +1445,7 @@ impl InferState {
         cfg: &NodeConfig,
         inference_path: crate::executor::InferencePath,
         moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
+        moe_fallback_reason: Option<String>,
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
@@ -1441,6 +1453,7 @@ impl InferState {
             tls_handshake_ms: None,
             engine,
             moe,
+            moe_fallback_reason,
             sessions: HashMap::new(),
             seq_pool,
             max_sessions,
@@ -1481,7 +1494,10 @@ impl InferState {
             return Ok(hidden);
         }
         let Some(moe) = self.moe.as_ref() else {
-            bail!("caminho MoE selecionado sem runtime MoE carregado");
+            if let Some(reason) = self.moe_fallback_reason.as_deref() {
+                timings.record_moe_reason(reason);
+            }
+            return Ok(hidden);
         };
         let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
         let forward_started = Instant::now();
@@ -1635,6 +1651,25 @@ pub async fn run(
     // para um modelo híbrido/recorrente aceitar desfazer um rascunho
     // recusado. Ver o doc de `EngineConfig::rs_seq_window`.
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
+    let moe_plan = if inference_path.is_moe() {
+        Some(
+            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
+                |error| anyhow::anyhow!("planejamento de ownership MoE falhou: {error}"),
+            )?,
+        )
+    } else {
+        None
+    };
+    let moe_external_executor = moe_plan.as_ref().is_some_and(|plan| plan.enabled());
+    if let Some(plan) = moe_plan.as_ref().filter(|plan| !plan.enabled()) {
+        warn!(
+            reason = plan
+                .reason
+                .as_deref()
+                .unwrap_or("executor device não disponível"),
+            "experts permanecem no llama.cpp por falta de executor device"
+        );
+    }
     let engine_cfg = EngineConfig {
         n_ctx: crate::runtime::total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
@@ -1648,7 +1683,11 @@ pub async fn run(
         need_embeddings,
         mtp: cfg.mtp_effective(),
         rs_seq_window,
-        moe_external_executor: inference_path.is_moe(),
+        moe_external_executor,
+        moe_external_executor_layers: moe_plan
+            .as_ref()
+            .map(|plan| plan.layers.clone())
+            .unwrap_or_default(),
     };
 
     let model_path = cfg.model_path.clone();
@@ -1662,7 +1701,7 @@ pub async fn run(
     // configuração. Ver `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
-    let moe = if inference_path.is_moe() {
+    let moe = if inference_path.is_moe() && moe_external_executor {
         let info = model_info.as_ref().ok_or_else(|| {
             anyhow::anyhow!("caminho MoE exige metadados GGUF para preparar o router")
         })?;
@@ -1692,7 +1731,11 @@ pub async fn run(
     if let Some(runtime) = moe.as_ref() {
         engine.set_moe_runtime(Arc::clone(runtime))?;
     }
-    let mut state_inner = InferState::new(engine, &cfg, inference_path, moe);
+    let moe_fallback_reason = moe_plan
+        .as_ref()
+        .filter(|plan| !plan.enabled())
+        .and_then(|plan| plan.reason.clone());
+    let mut state_inner = InferState::new(engine, &cfg, inference_path, moe, moe_fallback_reason);
     state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
     state_inner.original_block_count = model_info
         .as_ref()
@@ -3047,7 +3090,9 @@ fn prefill_blocking(
     let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe && !s.engine.moe_hook_enabled();
+        moe_forwarded = selected_moe
+            && s.engine.moe_external_executor_enabled()
+            && !s.engine.moe_hook_enabled();
         Some((hidden, shape))
     } else {
         None
@@ -3075,7 +3120,12 @@ fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
-    if is_last && selected_moe && !moe_forwarded && !s.engine.moe_hook_enabled() {
+    if is_last
+        && selected_moe
+        && s.engine.moe_external_executor_enabled()
+        && !moe_forwarded
+        && !s.engine.moe_hook_enabled()
+    {
         let residual = s.engine.take_residual(n_tokens)?;
         let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
@@ -4951,7 +5001,9 @@ fn step_blocking(
     let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe && !s.engine.moe_hook_enabled();
+        moe_forwarded = selected_moe
+            && s.engine.moe_external_executor_enabled()
+            && !s.engine.moe_hook_enabled();
         Some((hidden, shape))
     } else {
         None
@@ -5044,7 +5096,12 @@ fn step_blocking(
             mtp_k_echo = Some(k);
         }
     }
-    if is_last && selected_moe && !moe_forwarded && !s.engine.moe_hook_enabled() {
+    if is_last
+        && selected_moe
+        && s.engine.moe_external_executor_enabled()
+        && !moe_forwarded
+        && !s.engine.moe_hook_enabled()
+    {
         let residual = s.engine.take_residual(n_tokens)?;
         let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;

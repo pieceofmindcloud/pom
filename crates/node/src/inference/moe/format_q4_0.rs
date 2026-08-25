@@ -414,6 +414,79 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
     }
 }
 
+/// Returns the distinct GGML dtypes used by routed expert weight tensors.
+/// Heterogeneous GGUF files are reported as data instead of being collapsed
+/// to a model-specific branch.
+pub fn detect_expert_dtypes(path: impl AsRef<Path>) -> Result<Vec<u32>, Q4LoadError> {
+    let file = File::open(path.as_ref()).map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    // SAFETY: the file descriptor stays alive until the mmap is created and
+    // the mapping is used only during this inspection.
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    let (_, tensors) = parse_tensor_table(&mmap)?;
+    let mut dtypes = tensors
+        .iter()
+        .filter(|tensor| {
+            tensor.name.starts_with("blk.")
+                && tensor.name.ends_with(".weight")
+                && [
+                    "ffn_gate_up_exps.weight",
+                    "ffn_gate_exps.weight",
+                    "ffn_up_exps.weight",
+                    "ffn_down_exps.weight",
+                ]
+                .iter()
+                .any(|suffix| tensor.name.ends_with(suffix))
+        })
+        .map(|tensor| tensor.dtype)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    if dtypes.is_empty() {
+        return Err(Q4LoadError::MissingTensor(
+            "blk.<layer>.ffn_*_exps.weight".into(),
+        ));
+    }
+    dtypes.shrink_to_fit();
+    Ok(dtypes)
+}
+
+/// Returns the number of local layers represented by expert tensors.
+pub fn detect_expert_layer_count(path: impl AsRef<Path>) -> Result<usize, Q4LoadError> {
+    let file = File::open(path.as_ref()).map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    // SAFETY: the file descriptor stays alive until the mmap is created and
+    // the mapping is used only during this inspection.
+    let mmap = unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
+    let (_, tensors) = parse_tensor_table(&mmap)?;
+    let last = tensors
+        .iter()
+        .filter(|tensor| {
+            tensor.name.starts_with("blk.")
+                && tensor.name.ends_with(".weight")
+                && [
+                    "ffn_gate_up_exps.weight",
+                    "ffn_gate_exps.weight",
+                    "ffn_up_exps.weight",
+                    "ffn_down_exps.weight",
+                ]
+                .iter()
+                .any(|suffix| tensor.name.ends_with(suffix))
+        })
+        .filter_map(|tensor| {
+            tensor
+                .name
+                .strip_prefix("blk.")?
+                .split('.')
+                .next()?
+                .parse::<usize>()
+                .ok()
+        })
+        .max()
+        .ok_or_else(|| Q4LoadError::MissingTensor("blk.<layer>.ffn_*_exps.weight".into()))?;
+    last.checked_add(1).ok_or(Q4LoadError::InvalidTensor(
+        "overflow no número de camadas MoE",
+    ))
+}
+
 /// Fonte mmap de experts Q4_0 em GGUF.
 ///
 /// O arquivo permanece mapeado e cada miss copia apenas os dois bancos do

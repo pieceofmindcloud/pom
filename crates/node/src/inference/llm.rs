@@ -464,6 +464,9 @@ pub struct EngineConfig {
     pub rs_seq_window: u32,
     /// Load routed MoE expert metadata without allocating expert weights in llama.cpp.
     pub moe_external_executor: bool,
+    /// Per-layer ownership passed to the generic llama.cpp hook. Zero keeps
+    /// the native experts, one delegates the whole layer to the device cache.
+    pub moe_external_executor_layers: Vec<u8>,
 }
 
 pub(crate) fn apply_cache_types(
@@ -587,6 +590,10 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     mparams.n_gpu_layers = -1;
     mparams.load_mtp = load_mtp_weights(cfg);
     mparams.moe_external_executor = cfg.moe_external_executor;
+    if !cfg.moe_external_executor_layers.is_empty() {
+        mparams.moe_external_executor_layers = cfg.moe_external_executor_layers.as_ptr();
+        mparams.moe_external_executor_layer_count = cfg.moe_external_executor_layers.len();
+    }
 
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
@@ -707,6 +714,7 @@ struct CachedModel {
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
     moe_external_executor: bool,
+    moe_external_executor_layers: Vec<u8>,
 }
 
 impl ModelCache {
@@ -714,13 +722,19 @@ impl ModelCache {
         Self::default()
     }
 
-    fn get(&self, model_path: &str, moe_external_executor: bool) -> Option<CachedModel> {
+    fn get(
+        &self,
+        model_path: &str,
+        moe_external_executor: bool,
+        moe_external_executor_layers: &[u8],
+    ) -> Option<CachedModel> {
         let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         entry
             .as_ref()
             .filter(|cached| {
                 cached.model_path == model_path
                     && cached.moe_external_executor == moe_external_executor
+                    && cached.moe_external_executor_layers == moe_external_executor_layers
             })
             .cloned()
     }
@@ -732,6 +746,7 @@ impl ModelCache {
         fit_memory_applied: bool,
         effective_n_gpu_layers: i32,
         moe_external_executor: bool,
+        moe_external_executor_layers: Vec<u8>,
     ) {
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         *entry = Some(CachedModel {
@@ -740,6 +755,7 @@ impl ModelCache {
             fit_memory_applied,
             effective_n_gpu_layers,
             moe_external_executor,
+            moe_external_executor_layers,
         });
     }
 
@@ -851,6 +867,10 @@ impl LlmEngine {
         self.moe_callback.is_some()
     }
 
+    pub fn moe_external_executor_enabled(&self) -> bool {
+        self.moe_external_executor
+    }
+
     fn begin_moe_callback(&self) {
         if let Some(state) = self.moe_callback.as_ref() {
             state.begin();
@@ -909,6 +929,12 @@ impl LoadedModel {
         mparams.n_gpu_layers = plan.config.n_gpu_layers;
         mparams.load_mtp = load_mtp_weights(&plan.config);
         mparams.moe_external_executor = plan.config.moe_external_executor;
+        if !plan.config.moe_external_executor_layers.is_empty() {
+            mparams.moe_external_executor_layers =
+                plan.config.moe_external_executor_layers.as_ptr();
+            mparams.moe_external_executor_layer_count =
+                plan.config.moe_external_executor_layers.len();
+        }
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
@@ -944,7 +970,11 @@ impl LlmEngine {
         reuse_weights: bool,
     ) -> Result<Self> {
         if reuse_weights {
-            if let Some(cached) = cache.get(model_path, cfg.moe_external_executor) {
+            if let Some(cached) = cache.get(
+                model_path,
+                cfg.moe_external_executor,
+                &cfg.moe_external_executor_layers,
+            ) {
                 tracing::info!(
                     model = %model_path,
                     "reutilizando pesos carregados; reconstruindo apenas o contexto"
@@ -972,6 +1002,7 @@ impl LlmEngine {
             engine.fit_memory_applied,
             engine.effective_n_gpu_layers,
             engine.moe_external_executor,
+            cfg.moe_external_executor_layers.clone(),
         );
         Ok(engine)
     }
@@ -2339,6 +2370,7 @@ mod pool_tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         }
     }
 
@@ -2843,17 +2875,17 @@ mod tests {
             n_embd: 1,
             n_vocab: 1,
         });
-        cache.put("model.gguf", loaded.clone(), true, 7, false);
+        cache.put("model.gguf", loaded.clone(), true, 7, false, Vec::new());
 
-        let first = cache.get("model.gguf", false).unwrap().loaded;
-        let second = cache.get("model.gguf", false).unwrap().loaded;
+        let first = cache.get("model.gguf", false, &[]).unwrap().loaded;
+        let second = cache.get("model.gguf", false, &[]).unwrap().loaded;
         assert!(Arc::ptr_eq(&first, &second));
-        assert!(cache.get("model.gguf", true).is_none());
-        assert!(cache.get("other.gguf", false).is_none());
+        assert!(cache.get("model.gguf", true, &[]).is_none());
+        assert!(cache.get("other.gguf", false, &[]).is_none());
 
         drop((first, second));
         cache.clear();
-        assert!(cache.get("model.gguf", false).is_none());
+        assert!(cache.get("model.gguf", false, &[]).is_none());
         assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
@@ -3041,6 +3073,7 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3086,6 +3119,7 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3144,6 +3178,7 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3213,6 +3248,7 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3252,6 +3288,7 @@ mod tests {
             mtp: false,
             rs_seq_window: 0,
             moe_external_executor: false,
+            moe_external_executor_layers: Vec::new(),
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");

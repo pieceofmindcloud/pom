@@ -1764,3 +1764,13 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis
   neste ambiente local sem obter um modelo e iniciar um runtime próprio.
+- A bateria CUDA filtrada ainda tem duas falhas numéricas preexistentes, não
+  introduzidas pelo aquecimento. Em `ef36059` e em `c292403`, os testes isolados
+  reproduzem os mesmos valores: `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device`
+  diverge em `13.464294 != 164.57135`, e
+  `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` diverge em
+  `-480751.5 != -480751.13`. A comparação foi feita com cada teste
+  individualmente, portanto não é interferência entre testes nem evidência de
+  que aquecer o cache altere os pesos. O aquecimento usa a mesma admissão e o
+  mesmo payload do caminho sob demanda; a correção numérica desses dois testes
+  continua pendente e não deve ser mascarada por tolerância mais larga.

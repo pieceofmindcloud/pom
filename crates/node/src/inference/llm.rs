@@ -462,6 +462,8 @@ pub struct EngineConfig {
     /// modelo comum. Ver `infer_server::should_draft` e
     /// `gateway::rollback_sessions`, que são o resto do mecanismo.
     pub rs_seq_window: u32,
+    /// Load routed MoE expert metadata without allocating expert weights in llama.cpp.
+    pub moe_external_executor: bool,
 }
 
 pub(crate) fn apply_cache_types(
@@ -584,6 +586,7 @@ fn fit_plan(model_path: &str, cfg: &EngineConfig) -> Result<FitPlan> {
     let mut mparams = unsafe { sys::llama_model_default_params() };
     mparams.n_gpu_layers = -1;
     mparams.load_mtp = load_mtp_weights(cfg);
+    mparams.moe_external_executor = cfg.moe_external_executor;
 
     let mut cparams = unsafe { sys::llama_context_default_params() };
     cparams.n_ctx = cfg.n_ctx;
@@ -679,6 +682,10 @@ pub struct LlmEngine {
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
     effective_n_ubatch: u32,
+    /// Whether llama.cpp loaded this model in metadata-only external-MoE mode.
+    /// This is part of the engine identity because a dense/native context and
+    /// an external-executor context cannot share the same loaded model.
+    moe_external_executor: bool,
     /// A cabeça de rascunho `nextn`, quando o modelo traz uma e o operador
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
@@ -699,6 +706,7 @@ struct CachedModel {
     loaded: Arc<LoadedModel>,
     fit_memory_applied: bool,
     effective_n_gpu_layers: i32,
+    moe_external_executor: bool,
 }
 
 impl ModelCache {
@@ -706,11 +714,14 @@ impl ModelCache {
         Self::default()
     }
 
-    fn get(&self, model_path: &str) -> Option<CachedModel> {
+    fn get(&self, model_path: &str, moe_external_executor: bool) -> Option<CachedModel> {
         let entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         entry
             .as_ref()
-            .filter(|cached| cached.model_path == model_path)
+            .filter(|cached| {
+                cached.model_path == model_path
+                    && cached.moe_external_executor == moe_external_executor
+            })
             .cloned()
     }
 
@@ -720,6 +731,7 @@ impl ModelCache {
         loaded: Arc<LoadedModel>,
         fit_memory_applied: bool,
         effective_n_gpu_layers: i32,
+        moe_external_executor: bool,
     ) {
         let mut entry = self.entry.lock().unwrap_or_else(|e| e.into_inner());
         *entry = Some(CachedModel {
@@ -727,6 +739,7 @@ impl ModelCache {
             loaded,
             fit_memory_applied,
             effective_n_gpu_layers,
+            moe_external_executor,
         });
     }
 
@@ -843,6 +856,15 @@ impl LlmEngine {
         }
     }
 
+    fn ensure_moe_executor_ready(&self) -> Result<()> {
+        if self.moe_external_executor && self.moe_callback.is_none() {
+            bail!(
+                "executor externo de MoE opt-in sem callback; recusa para evitar fallback nativo silencioso"
+            );
+        }
+        Ok(())
+    }
+
     fn finish_moe_callback(&self, timings: &mut DecodeTimings) -> Result<()> {
         let Some(state) = self.moe_callback.as_ref() else {
             return Ok(());
@@ -884,6 +906,7 @@ impl LoadedModel {
         let mut mparams = unsafe { sys::llama_model_default_params() };
         mparams.n_gpu_layers = plan.config.n_gpu_layers;
         mparams.load_mtp = load_mtp_weights(&plan.config);
+        mparams.moe_external_executor = plan.config.moe_external_executor;
         if !plan.tensor_split.is_empty() {
             mparams.tensor_split = plan.tensor_split.as_ptr();
         }
@@ -919,7 +942,7 @@ impl LlmEngine {
         reuse_weights: bool,
     ) -> Result<Self> {
         if reuse_weights {
-            if let Some(cached) = cache.get(model_path) {
+            if let Some(cached) = cache.get(model_path, cfg.moe_external_executor) {
                 tracing::info!(
                     model = %model_path,
                     "reutilizando pesos carregados; reconstruindo apenas o contexto"
@@ -946,6 +969,7 @@ impl LlmEngine {
             loaded,
             engine.fit_memory_applied,
             engine.effective_n_gpu_layers,
+            engine.moe_external_executor,
         );
         Ok(engine)
     }
@@ -1136,6 +1160,7 @@ impl LlmEngine {
             fit_memory_applied: false,
             effective_n_gpu_layers: cfg.n_gpu_layers,
             effective_n_ubatch: effective_n_ubatch(cfg),
+            moe_external_executor: cfg.moe_external_executor,
             mtp,
             moe_callback: None,
         })
@@ -1503,6 +1528,7 @@ impl LlmEngine {
         entries: &[TokenBatchEntry],
         need_residual: bool,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        self.ensure_moe_executor_ready()?;
         if entries.is_empty() {
             bail!("batch de tokens vazio");
         }
@@ -1558,6 +1584,7 @@ impl LlmEngine {
         entries: &[HiddenBatchEntry],
         need_residual: bool,
     ) -> Result<(BatchDecodeOutput, DecodeTimings)> {
+        self.ensure_moe_executor_ready()?;
         if entries.is_empty() {
             bail!("batch de hidden states vazio");
         }
@@ -1679,6 +1706,7 @@ impl LlmEngine {
         seq_id: u32,
         logits_all: bool,
     ) -> Result<DecodeTimings> {
+        self.ensure_moe_executor_ready()?;
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
@@ -1808,6 +1836,7 @@ impl LlmEngine {
         logits_all: bool,
         tokens: Option<&[i32]>,
     ) -> Result<DecodeTimings> {
+        self.ensure_moe_executor_ready()?;
         // Zera o buffer, e não só o cronômetro: agora que a captura
         // acumula microlote a microlote, sobra do decode anterior seria
         // residual de outra requisição concatenado ao desta.
@@ -2298,6 +2327,7 @@ mod pool_tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         }
     }
 
@@ -2802,16 +2832,17 @@ mod tests {
             n_embd: 1,
             n_vocab: 1,
         });
-        cache.put("model.gguf", loaded.clone(), true, 7);
+        cache.put("model.gguf", loaded.clone(), true, 7, false);
 
-        let first = cache.get("model.gguf").unwrap().loaded;
-        let second = cache.get("model.gguf").unwrap().loaded;
+        let first = cache.get("model.gguf", false).unwrap().loaded;
+        let second = cache.get("model.gguf", false).unwrap().loaded;
         assert!(Arc::ptr_eq(&first, &second));
-        assert!(cache.get("other.gguf").is_none());
+        assert!(cache.get("model.gguf", true).is_none());
+        assert!(cache.get("other.gguf", false).is_none());
 
         drop((first, second));
         cache.clear();
-        assert!(cache.get("model.gguf").is_none());
+        assert!(cache.get("model.gguf", false).is_none());
         assert_eq!(Arc::strong_count(&loaded), 1);
     }
 
@@ -2998,6 +3029,7 @@ mod tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3042,6 +3074,7 @@ mod tests {
             need_embeddings: true,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3099,6 +3132,7 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let mut engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3167,6 +3201,7 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");
@@ -3205,6 +3240,7 @@ mod tests {
             need_embeddings: false,
             mtp: false,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let engine = LlmEngine::load_with_cache(&path, &cfg, &ModelCache::new(), false)
             .expect("model loads");

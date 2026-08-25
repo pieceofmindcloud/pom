@@ -382,6 +382,12 @@ grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
 ou dtype que o executor não consiga atender devem produzir recusa nominal no
 limite de decode, nunca executar o bloco nativo como fallback silencioso.
 
+O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los:
+se já são contíguos, o caminho não copia; se top-k ou gather produziu uma view
+não contígua, o grafo cria uma cópia `ggml_cont` inevitável antes do reshape.
+`llama.cpp/tests/test-moe-route-layout.cpp` cobre as duas disposições sem
+assumir arquitetura ou dtype.
+
 Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
 `executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
 decode contra F5.0. O grafo denso deve continuar sem callback e sem regressão.
@@ -395,6 +401,26 @@ hook: nomes, rank e geometrias, dtype, quantidade total de experts e quantidade
 ativa, além das escalas e da indicação de gate/up fundido ou separado. Os bytes
 dos pesos continuam acessíveis somente à fonte GGUF do executor Rust e ao seu
 cache LRU, não a buffers do `llama.cpp`.
+
+A implementação local já propaga `EngineConfig::moe_external_executor` até
+`llama_model_params`, separa essa opção na identidade do `ModelCache` e cria os
+experts roteados do descriptor em um contexto GGML `no_alloc`. Eles não entram
+em `ctxs_bufs`, não recebem buffer CUDA/CPU e não passam por
+`load_all_data`. O contexto de metadata fica vivo em `llama_model` para que o
+hook continue lendo nome, dtype e geometria. A classificação é pelos enums
+semânticos genéricos `LLM_TENSOR_*EXP`, nunca por arquitetura, nome de modelo
+ou dtype. Experts compartilhados (`LLM_TENSOR_*SHEXP`) permanecem no
+`llama.cpp` porque são um cálculo nativo separado e ainda não fazem parte do
+descriptor do callback; eles não são descartados silenciosamente nem contados
+como propriedade do cache Rust.
+
+O documento do fork em `llama.cpp/docs/rdma-p2p-moe-hook.md` registra o ponto de
+carga, o contexto de metadata e o comportamento padrão. A ausência de callback
+no modo opt-in recusa no limite de decode, portanto não reativa os experts
+nativos por fallback silencioso. A compilação local sem CUDA passou; a
+validação obrigatória com `--features vulkan,cuda` será feita no ramo
+`fm/ftk-cuda-check` da ksia depois que a implantação corrente liberar a placa,
+antes de promover esta fase a `feat/ftk`.
 
 O opt-in deve ser genérico por arquitetura e dtype. Sem ele, ou sem o motor
 MoE selecionado, o carregador mantém o comportamento atual byte a byte. Um

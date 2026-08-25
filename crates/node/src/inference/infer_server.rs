@@ -1576,6 +1576,7 @@ pub async fn run(
         need_embeddings,
         mtp: cfg.mtp_effective(),
         rs_seq_window,
+        moe_external_executor: inference_path.is_moe(),
     };
 
     let model_path = cfg.model_path.clone();

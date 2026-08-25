@@ -300,7 +300,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 
 `llm.rs`:
 - `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
-  n_gpu_layers, offload_kqv, fit_memory, max_sessions). O runtime transforma
+  n_gpu_layers, offload_kqv, fit_memory, max_sessions e
+  `moe_external_executor`). O runtime transforma
   o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
   `fit_memory=true` e o padrão de
   camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
@@ -319,7 +320,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `pool` é a marca disso. `LlmEngine::load_with_cache` usa o
   `ModelCache` do runtime para criar apenas um contexto novo quando a
   identidade da fatia e do carregamento de pesos não mudou; parâmetros de KV,
-  contexto, sessões, lote e sampling não forçam releitura do GGUF.
+  contexto, sessões, lote e sampling não forçam releitura do GGUF. O flag
+  `moe_external_executor` faz parte dessa identidade: quando ligado, o fork
+  mantém metadata dos experts roteados em contexto `no_alloc`, sem buffer de
+  pesos; uma carga densa/nativa nunca compartilha esse modelo metadata-only.
 - `LlmEngine::placement` / `LlmEngine::context_memory` - onde as camadas e o
   cache KV ficaram **de fato**, do llama.cpp, por
   `llama_rs_model_placement_json` e `llama_rs_context_memory_json`

@@ -489,6 +489,7 @@ mod tests {
             need_embeddings: false,
             mtp: true,
             rs_seq_window: 0,
+            moe_external_executor: false,
         };
         let mut engine = crate::llm::LlmEngine::load_with_cache(
             &path,

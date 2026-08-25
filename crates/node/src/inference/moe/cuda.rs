@@ -1210,23 +1210,6 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
-    fn pom_moe_nvfp4_forward_route_batch_resident(
-        payloads: *const *const u8,
-        payload_count: usize,
-        token_ids: *const u32,
-        weights: *const f32,
-        token_offsets: *const usize,
-        token_offsets_len: usize,
-        token_count: usize,
-        hidden: *const f32,
-        hidden_len: usize,
-        output: *mut f32,
-        output_len: usize,
-        hidden_width: usize,
-        intermediate_width: usize,
-        timing: *mut CudaMoeCallTiming,
-    ) -> i32;
-
     fn pom_moe_nvfp4_route_pipeline_create(
         hidden_width: usize,
         intermediate_width: usize,

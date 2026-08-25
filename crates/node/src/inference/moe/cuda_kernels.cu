@@ -1170,13 +1170,16 @@ int enqueue_route_chunk(
     std::size_t intermediate_width,
     CudaMoeCallTiming *timing
 ) {
+    int result = 0;
     if (timing != nullptr && slot->h2d_start == nullptr) {
-        int result = ensure_route_timing_events(slot);
+        result = ensure_route_timing_events(slot);
         if (result != 0) return result;
+    }
+    if (timing != nullptr) {
         result = cuda_status(cudaEventRecord(slot->h2d_start, slot->stream));
         if (result != 0) return result;
     }
-    int result = cuda_status(cudaMemcpyAsync(slot->d_hidden, slot->h_hidden,
+    result = cuda_status(cudaMemcpyAsync(slot->d_hidden, slot->h_hidden,
         chunk_tokens * hidden_width * sizeof(float), cudaMemcpyHostToDevice, slot->stream));
     if (result != 0) return result;
     result = cuda_status(cudaMemcpyAsync(slot->d_payloads, slot->h_payloads,

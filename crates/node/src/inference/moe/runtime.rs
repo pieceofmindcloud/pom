@@ -12,6 +12,8 @@ use super::block::{
 use super::cache::{CacheError, ExpertCache};
 #[cfg(feature = "cuda")]
 use super::cache::{DeviceWarmupOptions, DeviceWarmupReport, DeviceWarmupStop, ExpertKey};
+#[cfg(feature = "cuda")]
+use super::cuda::CudaTransferProfile;
 use super::format_heterogeneous::{HeterogeneousMoeSource, TensorRole};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
@@ -587,17 +589,31 @@ impl MoeRuntime {
     pub fn external_executor_plan(
         path: impl AsRef<Path>,
     ) -> Result<MoeExternalExecutorPlan, MoeRuntimeError> {
-        let detected = detect_expert_format(&path)?;
-        let dtypes = detect_expert_dtypes(&path)?;
-        let layers = detect_expert_layer_count(&path)?;
-        Ok(make_external_executor_plan(
+        let path = path.as_ref();
+        let detected = detect_expert_format(path)?;
+        let dtypes = detect_expert_dtypes(path)?;
+        let layers = detect_expert_layer_count(path)?;
+        #[cfg(feature = "cuda")]
+        let profile_requests_cpu = matches!(detected, ExpertFormat::Nvfp4)
+            && CudaTransferProfile::load_for_model(path)
+                .map_err(MoeRuntimeError::Block)?
+                .is_some_and(|profile| !profile.prefers_cuda());
+        #[cfg(not(feature = "cuda"))]
+        let profile_requests_cpu = false;
+        let mut plan = make_external_executor_plan(
             detected,
             dtypes,
             layers,
             cfg!(feature = "cuda"),
             std::env::var("POM_MOE_NVFP4_BACKEND")
                 .is_ok_and(|value| value.eq_ignore_ascii_case("cpu")),
-        ))
+        );
+        if profile_requests_cpu {
+            plan.layers.fill(0);
+            plan.reason =
+                Some("perfil CUDA medido escolheu CPUReference para esta geometria".into());
+        }
+        Ok(plan)
     }
 
     /// Carrega o primeiro formato próprio suportado e compartilha o cache
@@ -780,8 +796,13 @@ impl MoeRuntime {
                     )));
                 }
                 #[cfg(feature = "cuda")]
+                let profile_requests_cpu = CudaTransferProfile::load_for_model(&path)
+                    .map_err(MoeRuntimeError::Block)?
+                    .is_some_and(|profile| !profile.prefers_cuda());
+                #[cfg(feature = "cuda")]
                 let device_cache = if std::env::var("POM_MOE_NVFP4_BACKEND")
                     .is_ok_and(|value| value.eq_ignore_ascii_case("cpu"))
+                    || profile_requests_cpu
                 {
                     None
                 } else {
@@ -794,6 +815,15 @@ impl MoeRuntime {
                         Nvfp4MoeBlock::new_with_device_cache(
                             Arc::clone(&cache),
                             Arc::clone(device_cache),
+                            &model,
+                            layer,
+                            top_k,
+                            source.hidden(),
+                            source.intermediate(),
+                        )
+                    } else if profile_requests_cpu {
+                        Nvfp4MoeBlock::new_cpu(
+                            Arc::clone(&cache),
                             &model,
                             layer,
                             top_k,

@@ -7,11 +7,137 @@ use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
 use super::format_k_quants::KQuantFormat;
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
 use super::format_plain::{PlainExpert, PlainFormat};
+use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::fs;
 use std::io;
 use std::os::raw::c_void;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+const CUDA_TRANSFER_PROFILE_VERSION: u32 = 1;
+
+/// Perfil persistido por uma carga e uma GPU concretas.
+///
+/// `cpu_wall_ms` é opcional para que um perfil de transferência possa ser
+/// coletado antes da comparação CPU/GPU. Quando presente, a política só
+/// escolhe CUDA se o tempo medido da chamada CUDA não for maior que o tempo
+/// medido da referência CPU.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CudaTransferProfile {
+    pub version: u32,
+    pub hidden_width: usize,
+    pub intermediate_width: usize,
+    pub cuda_wall_ms: f64,
+    pub cuda_kernel_span_ms: f64,
+    pub cuda_transfer_span_ms: f64,
+    pub cpu_wall_ms: Option<f64>,
+    pub buffer_mask: u64,
+}
+
+impl CudaTransferProfile {
+    pub fn new(
+        hidden_width: usize,
+        intermediate_width: usize,
+        cuda_wall_ms: f64,
+        cuda_kernel_span_ms: f64,
+        cuda_transfer_span_ms: f64,
+        cpu_wall_ms: Option<f64>,
+        buffer_mask: u64,
+    ) -> Result<Self, String> {
+        let profile = Self {
+            version: CUDA_TRANSFER_PROFILE_VERSION,
+            hidden_width,
+            intermediate_width,
+            cuda_wall_ms,
+            cuda_kernel_span_ms,
+            cuda_transfer_span_ms,
+            cpu_wall_ms,
+            buffer_mask,
+        };
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    pub fn prefers_cuda(&self) -> bool {
+        match self.cpu_wall_ms {
+            Some(cpu_wall_ms) => self.cuda_wall_ms <= cpu_wall_ms,
+            None => true,
+        }
+    }
+
+    pub fn sidecar_path(model_path: impl AsRef<Path>) -> PathBuf {
+        model_path.as_ref().with_extension("cuda-profile.json")
+    }
+
+    pub fn load_for_model(model_path: impl AsRef<Path>) -> Result<Option<Self>, String> {
+        let path = Self::sidecar_path(model_path);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(format!(
+                    "não foi possível ler o perfil CUDA {}: {error}",
+                    path.display()
+                ))
+            }
+        };
+        let profile: Self = serde_json::from_slice(&bytes)
+            .map_err(|error| format!("perfil CUDA inválido em {}: {error}", path.display()))?;
+        profile
+            .validate()
+            .map_err(|error| format!("perfil CUDA inválido em {}: {error}", path.display()))?;
+        Ok(Some(profile))
+    }
+
+    pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
+        self.validate()?;
+        let path = path.as_ref();
+        let bytes = serde_json::to_vec_pretty(self)
+            .map_err(|error| format!("não foi possível serializar o perfil CUDA: {error}"))?;
+        fs::write(path, bytes).map_err(|error| {
+            format!(
+                "não foi possível gravar o perfil CUDA {}: {error}",
+                path.display()
+            )
+        })
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.version != CUDA_TRANSFER_PROFILE_VERSION {
+            return Err(format!(
+                "versão {}, esperada {}",
+                self.version, CUDA_TRANSFER_PROFILE_VERSION
+            ));
+        }
+        if self.hidden_width == 0
+            || self.intermediate_width == 0
+            || self.hidden_width % 64 != 0
+            || self.intermediate_width % 64 != 0
+        {
+            return Err("geometria deve ser positiva e múltipla de 64".into());
+        }
+        for (name, value) in [
+            ("cuda_wall_ms", self.cuda_wall_ms),
+            ("cuda_kernel_span_ms", self.cuda_kernel_span_ms),
+            ("cuda_transfer_span_ms", self.cuda_transfer_span_ms),
+        ] {
+            if !value.is_finite() || value < 0.0 {
+                return Err(format!("{name} não é um tempo finito"));
+            }
+        }
+        if let Some(value) = self.cpu_wall_ms {
+            if !value.is_finite() || value < 0.0 {
+                return Err("cpu_wall_ms não é um tempo finito".into());
+            }
+        }
+        if self.buffer_mask == 0 {
+            return Err("buffer_mask vazio".into());
+        }
+        Ok(())
+    }
+}
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -2373,6 +2499,23 @@ mod tests {
         assert_eq!(total.transfer_span_ms, 110.0);
         assert_eq!(total.buffer_mask, 3);
         assert_eq!(total.buffer_switches, 2);
+    }
+
+    #[test]
+    fn perfil_cuda_persiste_e_recusa_cuda_quando_cpu_medido_e_mais_rapido() {
+        let model =
+            std::env::temp_dir().join(format!("pom-cuda-profile-{}.gguf", std::process::id()));
+        let sidecar = CudaTransferProfile::sidecar_path(&model);
+        let profile = CudaTransferProfile::new(2_816, 704, 12.0, 8.0, 2.0, Some(8.0), 3).unwrap();
+        profile.save(&sidecar).unwrap();
+
+        let loaded = CudaTransferProfile::load_for_model(&model)
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded, profile);
+        assert!(!loaded.prefers_cuda());
+
+        std::fs::remove_file(sidecar).unwrap();
     }
 
     #[test]

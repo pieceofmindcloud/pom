@@ -1036,6 +1036,22 @@ enum Nvfp4Backend {
 }
 
 impl Nvfp4Executor {
+    #[cfg(feature = "cuda")]
+    pub fn new_cpu(
+        cache: Arc<ExpertCache>,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, Nvfp4Error> {
+        Nvfp4Expert::packed_bytes(hidden, intermediate)?;
+        Ok(Self {
+            cache,
+            hidden,
+            intermediate,
+            backend: Nvfp4Backend::Cpu,
+            host_diagnostics: Mutex::new(Nvfp4HostDiagnostics::default()),
+        })
+    }
+
     pub fn new(
         cache: Arc<ExpertCache>,
         hidden: usize,

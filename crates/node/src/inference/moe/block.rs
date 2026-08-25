@@ -795,6 +795,24 @@ impl Nvfp4MoeBlock {
     }
 
     #[cfg(feature = "cuda")]
+    pub fn new_cpu(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            executor: Nvfp4Executor::new_cpu(cache, hidden, intermediate)
+                .map_err(|error| error.to_string())?,
+        })
+    }
+
+    #[cfg(feature = "cuda")]
     pub fn new_with_device_cache(
         cache: Arc<ExpertCache>,
         device_cache: Arc<super::cache::DeviceExpertCache>,

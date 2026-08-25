@@ -10,6 +10,7 @@ pub enum CudaMoeError {
     Geometry(String),
     Payload(String),
     PayloadLength { expected: usize, actual: usize },
+    BackendUnavailable,
     HiddenWidth { expected: usize, actual: usize },
     Launch(i32),
 }
@@ -22,6 +23,9 @@ impl fmt::Display for CudaMoeError {
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
                 "payload CUDA NVFP4 tem {actual} bytes, mas a geometria exige {expected}"
+            ),
+            Self::BackendUnavailable => formatter.write_str(
+                "executor CUDA NVFP4 indisponível: o backend CUDA não está disponível para este binário"
             ),
             Self::HiddenWidth { expected, actual } => {
                 write!(
@@ -44,6 +48,7 @@ impl From<Nvfp4Error> for CudaMoeError {
             Nvfp4Error::PayloadLength { expected, actual } => {
                 Self::PayloadLength { expected, actual }
             }
+            Nvfp4Error::BackendUnavailable => Self::BackendUnavailable,
         }
     }
 }

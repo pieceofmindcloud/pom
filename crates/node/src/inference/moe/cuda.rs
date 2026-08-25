@@ -10,6 +10,9 @@ use std::time::Instant;
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct CudaMoeCallTiming {
+    pub expert_calls: u64,
+    pub kernel_launches: u64,
+    pub sync_count: u64,
     pub payload_validation_ms: f64,
     pub alloc_ms: f64,
     pub h2d_ms: f64,
@@ -25,6 +28,8 @@ pub struct CudaMoeCallTiming {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Nvfp4CudaDiagnostics {
     pub calls: u64,
+    pub kernel_launches: u64,
+    pub sync_count: u64,
     pub payload_validation_ms: f64,
     pub alloc_ms: f64,
     pub h2d_ms: f64,
@@ -39,7 +44,9 @@ pub struct Nvfp4CudaDiagnostics {
 
 impl Nvfp4CudaDiagnostics {
     pub fn add_call(&mut self, call: CudaMoeCallTiming) {
-        self.calls = self.calls.saturating_add(1);
+        self.calls = self.calls.saturating_add(call.expert_calls);
+        self.kernel_launches = self.kernel_launches.saturating_add(call.kernel_launches);
+        self.sync_count = self.sync_count.saturating_add(call.sync_count);
         self.payload_validation_ms += call.payload_validation_ms;
         self.alloc_ms += call.alloc_ms;
         self.h2d_ms += call.h2d_ms;
@@ -133,6 +140,7 @@ impl Nvfp4CudaExecutor {
 
         let mut output = vec![0.0f32; self.hidden];
         let mut timing = CudaMoeCallTiming {
+            expert_calls: 1,
             payload_validation_ms,
             ..CudaMoeCallTiming::default()
         };
@@ -165,6 +173,78 @@ impl Nvfp4CudaExecutor {
         Ok(output)
     }
 
+    pub fn run_batch(
+        &self,
+        payloads: &[&[u8]],
+        hidden: &[f32],
+    ) -> Result<Vec<Vec<f32>>, CudaMoeError> {
+        if payloads.is_empty() {
+            return Err(CudaMoeError::Payload("batch de experts vazio".into()));
+        }
+        if hidden.len() != self.hidden {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: self.hidden,
+                actual: hidden.len(),
+            });
+        }
+        let validation_started = Instant::now();
+        let mut payload_len = None;
+        for payload in payloads {
+            Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
+            if let Some(expected) = payload_len {
+                if payload.len() != expected {
+                    return Err(CudaMoeError::Payload(
+                        "payloads NVFP4 do batch têm tamanhos diferentes".into(),
+                    ));
+                }
+            } else {
+                payload_len = Some(payload.len());
+            }
+        }
+        let payload_len = payload_len.expect("batch não vazio foi validado");
+        let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
+        let mut flat_payloads = Vec::with_capacity(payload_len * payloads.len());
+        for payload in payloads {
+            flat_payloads.extend_from_slice(payload);
+        }
+        let mut flat_output = vec![0.0f32; self.hidden * payloads.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: payloads.len() as u64,
+            payload_validation_ms,
+            ..CudaMoeCallTiming::default()
+        };
+        let status = unsafe {
+            pom_moe_nvfp4_forward_batch(
+                flat_payloads.as_ptr(),
+                payload_len,
+                payloads.len(),
+                hidden.as_ptr(),
+                hidden.len(),
+                flat_output.as_mut_ptr(),
+                self.hidden,
+                self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            self.diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .add_call(timing);
+        }
+        Ok(flat_output
+            .chunks_exact(self.hidden)
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
     pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
         self.diagnostics
             .lock()
@@ -182,6 +262,18 @@ unsafe extern "C" {
         hidden_len: usize,
         output: *mut f32,
         output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_nvfp4_forward_batch(
+        payloads: *const u8,
+        payload_len: usize,
+        payload_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
         hidden_width: usize,
         intermediate_width: usize,
         timing: *mut CudaMoeCallTiming,
@@ -205,8 +297,12 @@ mod tests {
     }
 
     fn payload(hidden: usize, intermediate: usize) -> Vec<u8> {
-        let gate_up = packed_rows(2 * intermediate, hidden, 0x22);
-        let down = packed_rows(hidden, intermediate, 0x22);
+        payload_with_nibble(hidden, intermediate, 0x22)
+    }
+
+    fn payload_with_nibble(hidden: usize, intermediate: usize, nibble: u8) -> Vec<u8> {
+        let gate_up = packed_rows(2 * intermediate, hidden, nibble);
+        let down = packed_rows(hidden, intermediate, nibble);
         let mut payload = Vec::with_capacity(32 + gate_up.len() + down.len());
         payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
         payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
@@ -257,9 +353,42 @@ mod tests {
     }
 
     #[test]
+    fn executor_cuda_nvfp4_batch_preserva_cada_expert() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 31.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let cpu = [&first, &second]
+            .iter()
+            .map(|payload| {
+                Nvfp4Expert::from_payload(hidden, intermediate, payload)
+                    .unwrap()
+                    .run(&hidden_values)
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let gpu = Nvfp4CudaExecutor::new(hidden, intermediate)
+            .run_batch(&[first.as_slice(), second.as_slice()], &hidden_values)
+            .unwrap();
+        assert_eq!(gpu.len(), cpu.len());
+        for (actual, expected) in gpu.iter().zip(cpu) {
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
     fn diagnostico_cuda_acumula_fases_e_bytes_por_chamada() {
         let mut total = Nvfp4CudaDiagnostics::default();
         total.add_call(CudaMoeCallTiming {
+            expert_calls: 1,
+            kernel_launches: 2,
+            sync_count: 2,
             payload_validation_ms: 1.0,
             alloc_ms: 2.0,
             h2d_ms: 3.0,
@@ -272,6 +401,9 @@ mod tests {
             free_ms: 9.0,
         });
         total.add_call(CudaMoeCallTiming {
+            expert_calls: 1,
+            kernel_launches: 2,
+            sync_count: 2,
             payload_validation_ms: 10.0,
             alloc_ms: 20.0,
             h2d_ms: 30.0,
@@ -285,6 +417,8 @@ mod tests {
         });
 
         assert_eq!(total.calls, 2);
+        assert_eq!(total.kernel_launches, 4);
+        assert_eq!(total.sync_count, 4);
         assert_eq!(total.h2d_bytes, 110);
         assert_eq!(total.d2h_bytes, 88);
         assert_eq!(total.h2d_ms, 33.0);

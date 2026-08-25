@@ -19,7 +19,7 @@ use super::format_low_bits::{LowBitExecuteError, LowBitExecutor, LowBitFormat, L
 use super::format_nvfp4::{Nvfp4BackendKind, Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
 use super::format_plain::{PlainExecuteError, PlainExecutor, PlainFormat, PlainSource};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
-use super::router::{dispatch_route, dispatch_top_k, DispatchError, RouteError};
+use super::router::{dispatch_route, dispatch_top_k, select_top_k, DispatchError, RouteError};
 use std::fmt;
 use std::sync::Arc;
 
@@ -542,16 +542,8 @@ impl Nvfp4MoeBlock {
         hidden: &[f32],
         logits: &[f32],
     ) -> Result<Vec<f32>, MoeBlockError> {
-        let model = &self.model;
-        let layer = self.layer;
-        let output = dispatch_top_k(logits, self.top_k, |expert| {
-            let key = ExpertKey::new(model, layer, expert, "nvfp4");
-            self.executor.run_from_source(source, key, layer, hidden)
-        });
-        output.map_err(|error| match error {
-            DispatchError::Route(error) => MoeBlockError::Route(error),
-            DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
-        })
+        let route = select_top_k(logits, self.top_k).map_err(MoeBlockError::Route)?;
+        self.forward_from_source_with_route(source, hidden, &route.ids, &route.weights)
     }
 
     pub fn executor_kind(&self) -> Nvfp4BackendKind {
@@ -570,6 +562,45 @@ impl Nvfp4MoeBlock {
         ids: &[u32],
         weights: &[f32],
     ) -> Result<Vec<f32>, MoeBlockError> {
+        if ids.is_empty() {
+            return Err(MoeBlockError::Route(RouteError::InvalidWeightSum));
+        }
+        if ids.len() != weights.len() {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: ids.len(),
+                weights: weights.len(),
+            }));
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(MoeBlockError::Route(RouteError::InvalidWeightSum));
+        }
+        if matches!(self.executor.backend_kind(), Nvfp4BackendKind::Cuda) {
+            let outputs = self
+                .executor
+                .run_batch_from_source(source, &self.model, self.layer, ids, hidden)
+                .map_err(MoeBlockError::from)?;
+            if outputs.len() != ids.len() {
+                return Err(MoeBlockError::Executor(format!(
+                    "batch CUDA retornou {} experts, esperado {}",
+                    outputs.len(),
+                    ids.len()
+                )));
+            }
+            let mut output = None::<Vec<f32>>;
+            for (values, &weight) in outputs.into_iter().zip(weights) {
+                let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
+                if target.len() != values.len() {
+                    return Err(MoeBlockError::Route(RouteError::OutputWidth {
+                        expected: target.len(),
+                        actual: values.len(),
+                    }));
+                }
+                for (slot, value) in target.iter_mut().zip(values) {
+                    *slot += weight * value;
+                }
+            }
+            return output.ok_or(MoeBlockError::Route(RouteError::InvalidWeightSum));
+        }
         let model = &self.model;
         let layer = self.layer;
         dispatch_resolved(ids, weights, |expert| {

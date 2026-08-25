@@ -8,7 +8,7 @@
 //! da multiplicação. `.input_scale` continua obrigatório e preservado, mas não
 //! é aplicado ao hidden neste FFN.
 
-use super::cache::{CacheError, ExpertCache, ExpertKey};
+use super::cache::{CacheError, ExpertCache, ExpertKey, ExpertLease};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
 use memmap2::Mmap;
 use std::fmt;
@@ -1090,6 +1090,47 @@ impl Nvfp4Executor {
             },
             hidden,
         )
+    }
+
+    pub fn run_batch_from_source(
+        &self,
+        source: &Nvfp4Source,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        hidden: &[f32],
+    ) -> Result<Vec<Vec<f32>>, Nvfp4ExecuteError> {
+        if experts.is_empty() {
+            return Err(Nvfp4Error::Payload("batch de experts vazio").into());
+        }
+        let mut leases = Vec::<ExpertLease>::with_capacity(experts.len());
+        for &expert in experts {
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            let lease = match self.cache.lookup(&key) {
+                Some(lease) => lease,
+                None => self
+                    .cache
+                    .admit(key, source.load_expert(layer, expert)?)
+                    .map_err(Nvfp4ExecuteError::Cache)?,
+            };
+            leases.push(lease);
+        }
+        match &self.backend {
+            Nvfp4Backend::Cpu => leases
+                .iter()
+                .map(|lease| {
+                    Nvfp4Expert::from_payload(self.hidden, self.intermediate, lease.bytes())?
+                        .run(hidden)
+                })
+                .collect(),
+            #[cfg(feature = "cuda")]
+            Nvfp4Backend::Cuda(executor) => {
+                let payloads = leases.iter().map(ExpertLease::bytes).collect::<Vec<_>>();
+                executor
+                    .run_batch(&payloads, hidden)
+                    .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))
+            }
+        }
     }
 
     fn run_with_loader<F>(

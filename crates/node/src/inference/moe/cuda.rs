@@ -284,9 +284,9 @@ unsafe extern "C" {
 
 #[cfg(test)]
 mod tests {
+    use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
+    use super::super::format_q4_0::parse_tensor_table;
     use super::*;
-    use crate::inference::moe::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
-    use crate::inference::moe::format_q4_0::parse_tensor_table;
     use memmap2::Mmap;
 
     fn packed_rows(rows: usize, columns: usize, nibble: u8) -> Vec<u8> {

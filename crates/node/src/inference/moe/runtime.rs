@@ -337,6 +337,7 @@ fn make_external_executor_plan(
         .join(", ");
     let single_dtype = dtypes.len() == 1;
     let bridge_supported = match detected {
+        ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => cuda_compiled,
         ExpertFormat::Nvfp4 => cuda_compiled && !nvfp4_cpu_requested,
         ExpertFormat::Q4K | ExpertFormat::Q6K => {
             cuda_compiled
@@ -489,20 +490,32 @@ impl MoeRuntime {
                         "GGUF MoE sem camadas",
                     )));
                 }
+                #[cfg(feature = "cuda")]
+                let device_cache = Some(create_measured_device_cache(cuda_compute_bytes)?);
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
-                    blocks.push(MoeBlock::Plain(
-                        PlainMoeBlock::new(
-                            Arc::clone(&cache),
-                            &model,
-                            layer,
-                            top_k,
-                            format,
-                            source.hidden(),
-                            source.intermediate(),
-                        )
-                        .map_err(MoeRuntimeError::Block)?,
-                    ));
+                    #[cfg(feature = "cuda")]
+                    let block = PlainMoeBlock::new_with_device_cache(
+                        Arc::clone(&cache),
+                        Arc::clone(device_cache.as_ref().expect("cache CUDA escalar")),
+                        &model,
+                        layer,
+                        top_k,
+                        format,
+                        source.hidden(),
+                        source.intermediate(),
+                    );
+                    #[cfg(not(feature = "cuda"))]
+                    let block = PlainMoeBlock::new(
+                        Arc::clone(&cache),
+                        &model,
+                        layer,
+                        top_k,
+                        format,
+                        source.hidden(),
+                        source.intermediate(),
+                    );
+                    blocks.push(MoeBlock::Plain(block.map_err(MoeRuntimeError::Block)?));
                 }
                 Ok(Self {
                     source: MoeSource::Plain(source),
@@ -875,6 +888,8 @@ impl MoeRuntime {
             #[cfg(feature = "cuda")]
             Some(MoeBlock::Iq(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             #[cfg(feature = "cuda")]
+            Some(MoeBlock::Plain(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
+            #[cfg(feature = "cuda")]
             Some(MoeBlock::Heterogeneous(block)) if block.uses_cuda() => MoeExecutorKind::Cuda,
             Some(_) | None => MoeExecutorKind::CpuReference,
         }
@@ -912,6 +927,9 @@ impl MoeRuntime {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     MoeBlock::Iq(block) if block.uses_cuda() => {
+                        (block.cuda_diagnostics(), block.resident_cache_stats())
+                    }
+                    MoeBlock::Plain(block) if block.uses_cuda() => {
                         (block.cuda_diagnostics(), block.resident_cache_stats())
                     }
                     MoeBlock::Heterogeneous(block) if block.uses_cuda() => {
@@ -1181,6 +1199,33 @@ impl MoeRuntime {
         }
 
         #[cfg(feature = "cuda")]
+        if let (MoeSource::Plain(source), MoeBlock::Plain(block)) = (&self.source, block) {
+            if block.uses_cuda() {
+                let token_ids = (0..tokens)
+                    .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                    .collect::<Vec<_>>();
+                let token_offsets = (0..=tokens)
+                    .map(|token| token.saturating_mul(expert_count_used))
+                    .collect::<Vec<_>>();
+                let output = block.forward_batch_from_source_with_route(
+                    source,
+                    hidden,
+                    &resolved_ids,
+                    &token_ids,
+                    weights,
+                    &token_offsets,
+                    tokens,
+                )?;
+                let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+                self.runtime_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .runtime_forward_ms += elapsed_ms;
+                return Ok(output);
+            }
+        }
+
+        #[cfg(feature = "cuda")]
         if let (MoeSource::Heterogeneous(source), MoeBlock::Heterogeneous(block)) =
             (&self.source, block)
         {
@@ -1378,6 +1423,20 @@ mod tests {
         assert!(plan.enabled());
         assert_eq!(plan.layers, vec![1, 1, 1]);
         assert!(plan.reason.is_none());
+    }
+
+    #[test]
+    fn escalares_com_ponte_device_externalizam_todas_as_camadas() {
+        for (format, dtype) in [
+            (ExpertFormat::F32, 0),
+            (ExpertFormat::F16, 1),
+            (ExpertFormat::Bf16, 30),
+        ] {
+            let plan = make_external_executor_plan(format, vec![dtype], 2, true, false);
+            assert!(plan.enabled(), "dtype {dtype} não foi externalizado");
+            assert_eq!(plan.layers, vec![1, 1], "dtype {dtype}");
+            assert!(plan.reason.is_none(), "dtype {dtype}");
+        }
     }
 
     #[test]

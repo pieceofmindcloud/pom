@@ -106,9 +106,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
   `format_nvfp4.rs` implementa o decoder NVFP4 em CPU e `cuda.rs` mais
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
-  feature `cuda` está ligada: NVFP4, Q4_K (12), Q6_K (14) e IQ3_S (21),
-  IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa descritores por papel e
-  dtype para esses três IQ, sem converter a combinação para um dtype global.
+  feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
+  Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
+  descritores por papel e dtype para esses três IQ, sem converter a combinação
+  para um dtype global. A ponte escalar reutiliza o payload de
+  `format_plain.rs` e valida o cabeçalho antes do kernel.
   K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML

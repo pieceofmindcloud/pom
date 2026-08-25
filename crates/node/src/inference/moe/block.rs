@@ -176,6 +176,8 @@ pub struct PlainMoeBlock {
     top_k: usize,
     format: PlainFormat,
     executor: PlainExecutor,
+    #[cfg(feature = "cuda")]
+    cuda: Option<super::cuda::PlainCudaExecutor>,
 }
 
 /// Forward de um bloco MoE MXFP4, TQ1_0, TQ2_0, Q1_0 ou Q2_0.
@@ -246,6 +248,7 @@ impl LowBitMoeBlock {
 }
 
 impl PlainMoeBlock {
+    #[cfg(not(feature = "cuda"))]
     pub fn new(
         cache: Arc<ExpertCache>,
         model: impl Into<String>,
@@ -262,7 +265,60 @@ impl PlainMoeBlock {
             format,
             executor: PlainExecutor::new(cache, format, hidden, intermediate)
                 .map_err(|error| error.to_string())?,
+            #[cfg(feature = "cuda")]
+            cuda: None,
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn new_with_device_cache(
+        cache: Arc<ExpertCache>,
+        device_cache: Arc<super::cache::DeviceExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+        format: PlainFormat,
+        hidden: usize,
+        intermediate: usize,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            model: model.into(),
+            layer,
+            top_k,
+            format,
+            executor: PlainExecutor::new(cache, format, hidden, intermediate)
+                .map_err(|error| error.to_string())?,
+            cuda: Some(
+                super::cuda::PlainCudaExecutor::new_with_cache(
+                    format,
+                    hidden,
+                    intermediate,
+                    device_cache,
+                )
+                .map_err(|error| error.to_string())?,
+            ),
+        })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn uses_cuda(&self) -> bool {
+        self.cuda.is_some()
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
+        self.cuda
+            .as_ref()
+            .map_or_else(Default::default, |executor| executor.diagnostics())
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.cuda
+            .as_ref()
+            .map_or_else(super::cache::DeviceCacheStats::default, |executor| {
+                executor.resident_cache_stats()
+            })
     }
 
     pub fn forward_from_source(
@@ -300,6 +356,53 @@ impl PlainMoeBlock {
             let key = ExpertKey::new(model, layer, expert, format);
             self.executor.run_from_source(source, key, layer, hidden)
         })
+    }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route(
+        &self,
+        source: &PlainSource,
+        hidden: &[f32],
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let Some(cuda) = self.cuda.as_ref() else {
+            return Err(MoeBlockError::Executor(
+                "lote CUDA escalar solicitado sem ponte CUDA ativa".into(),
+            ));
+        };
+        if experts.is_empty()
+            || experts.len() != token_ids.len()
+            || experts.len() != weights.len()
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&experts.len())
+        {
+            return Err(MoeBlockError::Executor(
+                "lote CUDA escalar tem rotas inválidas".into(),
+            ));
+        }
+        let mut leases = Vec::with_capacity(experts.len());
+        for &expert in experts {
+            let key = ExpertKey::new(&self.model, self.layer, expert, self.format.name());
+            let lease = match cuda.resident_lookup(&key) {
+                Some(lease) => lease,
+                None => {
+                    let payload = source
+                        .load_expert(self.layer, expert)
+                        .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+                    cuda.resident_admit(key, &payload)
+                        .map_err(|error| MoeBlockError::Executor(error.to_string()))?
+                }
+            };
+            leases.push(lease);
+        }
+        cuda.run_route_batch_resident(&leases, token_ids, weights, token_offsets, hidden, tokens)
+            .map_err(MoeBlockError::from)
     }
 }
 
@@ -995,13 +1098,7 @@ impl HeterogeneousMoeBlock {
                 .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
             let mut descriptor = CudaHeterogeneousExpert::default();
             for payload in payloads {
-                let HeterogeneousTensorPayload {
-                    role,
-                    dtype,
-                    rows: _,
-                    columns: _,
-                    bytes,
-                } = payload;
+                let HeterogeneousTensorPayload { role, dtype, bytes } = payload;
                 let key = ExpertKey::new(
                     &self.model,
                     self.layer,

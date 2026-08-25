@@ -1471,6 +1471,31 @@ houve mudança no kernel; a única mudança de produção desta fase é reabilit
 os três dtypes depois dessa evidência. O construtor de teste foi removido na
 mesma entrega, para que a prova passe pelo dispatch normal.
 
+No commit final `89156d9`, o dispatch normal repetiu a prova individual e
+retornou `1 passed`; o diagnóstico por estágio e o teste heterogêneo também
+retornaram `1 passed`. A suíte completa com
+`cargo test -p node --features vulkan,cuda --bin pom` terminou com `891 passed`,
+`6 failed` e `10 ignored`, de `907` testes. As seis falhas são:
+
+- `gguf::tests::canonical_qwen35_nextn_metadata_and_tensor_names_prove_mtp`,
+  `gguf::tests::mtp_is_proven_by_real_nextn_tensors_even_without_metadata` e
+  `gguf::tests::read_layout_sees_nextn_predict_layers`: `GGUF truncado antes
+  da seção de dados`;
+- `direct_lab::the_cost_per_token_does_not_depend_on_where_the_entry_point_is`:
+  `N=2 entrada=0: 7,06 pernas por token, esperado 2`;
+- `transfer::offer_latency_tests::an_offer_leaves_without_reading_the_whole_file`:
+  `oferta demorou 27,110586968s; ela não pode depender do tamanho do arquivo`;
+- `webui::tests::merge_parts_joins_two_slices_into_a_whole`: metadata
+  `llama.attention.head_count_kv_by_layer` com comprimento 16, esperado 1 ou 32.
+
+Essas falhas não envolvem o dispatch IQ alterado. A build release foi executada
+no mesmo checkout e terminou com código 0:
+
+```text
+CARGO_TARGET_DIR=/data/ftk-cuda-target CUDACXX=/usr/local/cuda-12/bin/nvcc cargo build --release --features vulkan,cuda
+Finished `release` profile [optimized] target(s) in 25m 38s
+```
+
 Na mesma rodada, a suíte densa local foi executada com
 `CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom`:
 `879 passed`, `4 failed`, `9 ignored`, de `892` testes. As falhas observadas

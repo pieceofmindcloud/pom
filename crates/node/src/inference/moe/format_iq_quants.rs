@@ -1097,7 +1097,16 @@ pub(crate) mod tests {
         ] {
             let values = dequantize_row(format, &vec![0; bytes]).unwrap();
             assert_eq!(values.len(), BLOCK_ELEMENTS);
-            assert!(values.iter().all(|value| value.is_finite()));
+            if let Some((index, value)) = values
+                .iter()
+                .enumerate()
+                .find(|(_, value)| !value.is_finite())
+            {
+                panic!(
+                    "dtype {} produziu valor não finito no índice {index}: {value}",
+                    format.name()
+                );
+            }
         }
     }
 

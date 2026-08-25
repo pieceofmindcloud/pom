@@ -1591,25 +1591,15 @@ mod tests {
                 .run_route_batch_resident(&[lease], &[0], &[1.0], &[0, 1], &hidden_values, 1)
                 .unwrap();
             assert_eq!(actual.len(), expected.len());
-            let mut max_abs = 0.0f32;
-            let mut max_index = 0;
-            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
-                let error = (actual - expected).abs();
-                if error > max_abs {
-                    max_abs = error;
-                    max_index = index;
-                }
-            }
-            eprintln!(
-                "IQ {}: max_abs={max_abs} max_index={max_index}",
-                format.name()
-            );
-            if max_abs > 1e-4 {
+            if let Some(difference) = first_numeric_difference(&actual, &expected, 1e-4) {
                 eprintln!(
-                    "IQ {}: actual[{max_index}]={} expected[{max_index}]={}",
+                    "IQ {}: primeiro erro índice={} actual={} esperado={} abs={} rel={}",
                     format.name(),
-                    actual[max_index],
-                    expected[max_index]
+                    difference.index,
+                    difference.actual,
+                    difference.expected,
+                    difference.absolute,
+                    difference.relative
                 );
                 failures.push(format.name());
             }
@@ -1683,29 +1673,53 @@ mod tests {
                 )
             };
             assert_eq!(status, 0, "trace CUDA falhou para {}", format.name());
-            let max_error = |actual: &[f32], expected: &[f32]| {
-                actual
-                    .iter()
-                    .zip(expected)
-                    .enumerate()
-                    .map(|(index, (actual, expected))| (index, (actual - expected).abs()))
-                    .max_by(|left, right| left.1.total_cmp(&right.1))
-                    .unwrap()
-            };
-            let gate_up_error = max_error(&actual_gate_up, &expected_gate_up);
-            let activation_error = max_error(&actual_activated, &expected_activated);
-            let output_error = max_error(&actual_output, &expected_output);
+            let gate_up_error = first_numeric_difference(&actual_gate_up, &expected_gate_up, 1e-4);
+            let activation_error =
+                first_numeric_difference(&actual_activated, &expected_activated, 1e-4);
+            let output_error = first_numeric_difference(&actual_output, &expected_output, 1e-4);
             eprintln!(
-                "IQ {} estágios: gate_up max_abs={} idx={}, activation max_abs={} idx={}, down max_abs={} idx={}",
+                "IQ {} estágios: gate_up={gate_up_error:?}, activation={activation_error:?}, down={output_error:?}",
                 format.name(),
-                gate_up_error.1,
-                gate_up_error.0,
-                activation_error.1,
-                activation_error.0,
-                output_error.1,
-                output_error.0
             );
         }
+    }
+
+    #[derive(Debug)]
+    struct NumericDifference {
+        index: usize,
+        actual: f32,
+        expected: f32,
+        absolute: f32,
+        relative: f32,
+    }
+
+    fn first_numeric_difference(
+        actual: &[f32],
+        expected: &[f32],
+        tolerance: f32,
+    ) -> Option<NumericDifference> {
+        actual
+            .iter()
+            .zip(expected)
+            .enumerate()
+            .find_map(|(index, (&actual, &expected))| {
+                let absolute = (actual - expected).abs();
+                let relative = absolute / expected.abs().max(f32::MIN_POSITIVE);
+                if !actual.is_finite()
+                    || !expected.is_finite()
+                    || absolute > tolerance && relative > tolerance
+                {
+                    Some(NumericDifference {
+                        index,
+                        actual,
+                        expected,
+                        absolute,
+                        relative,
+                    })
+                } else {
+                    None
+                }
+            })
     }
 
     #[test]

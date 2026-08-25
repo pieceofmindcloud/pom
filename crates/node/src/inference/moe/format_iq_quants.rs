@@ -429,6 +429,10 @@ impl IqQuantSource {
         self.intermediate
     }
 
+    pub fn experts(&self) -> u32 {
+        self.experts
+    }
+
     pub fn has_router(&self) -> bool {
         !self.router.is_empty()
     }
@@ -748,7 +752,7 @@ impl IqQuantExecutor {
     }
 }
 
-fn row_bytes(format: IqQuantFormat, columns: usize) -> Result<usize, IqQuantError> {
+pub fn row_bytes(format: IqQuantFormat, columns: usize) -> Result<usize, IqQuantError> {
     if columns == 0 || !columns.is_multiple_of(BLOCK_ELEMENTS) {
         return Err(IqQuantError::Geometry(
             "dimensão precisa fechar blocos de 256",

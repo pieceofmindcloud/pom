@@ -24,6 +24,7 @@ pub enum Nvfp4Error {
     Geometry(&'static str),
     Payload(&'static str),
     PayloadLength { expected: usize, actual: usize },
+    BackendUnavailable,
 }
 
 impl fmt::Display for Nvfp4Error {
@@ -34,6 +35,9 @@ impl fmt::Display for Nvfp4Error {
             Self::PayloadLength { expected, actual } => write!(
                 formatter,
                 "payload NVFP4 tem {actual} bytes, mas a geometria exige {expected}"
+            ),
+            Self::BackendUnavailable => formatter.write_str(
+                "executor CUDA NVFP4 indisponível: o binário não foi compilado com a feature cuda; compile com --features cuda ou peça o fallback explícito com POM_MOE_NVFP4_BACKEND=cpu",
             ),
         }
     }
@@ -404,6 +408,10 @@ impl Nvfp4Source {
 
     pub fn intermediate(&self) -> usize {
         self.intermediate
+    }
+
+    pub fn experts(&self) -> u32 {
+        self.experts
     }
 
     pub fn has_router(&self) -> bool {
@@ -819,6 +827,12 @@ pub struct Nvfp4Executor {
     backend: Nvfp4Backend,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Nvfp4BackendKind {
+    CpuReference,
+    Cuda,
+}
+
 #[cfg(feature = "cuda")]
 enum Nvfp4Backend {
     Cpu,
@@ -840,16 +854,18 @@ impl Nvfp4Executor {
         let cpu_requested = std::env::var("POM_MOE_NVFP4_BACKEND")
             .map(|value| value.eq_ignore_ascii_case("cpu"))
             .unwrap_or(false);
+        let backend_kind = select_backend_kind(cfg!(feature = "cuda"), cpu_requested)?;
         #[cfg(feature = "cuda")]
-        let backend = if cpu_requested {
-            Nvfp4Backend::Cpu
-        } else {
-            Nvfp4Backend::Cuda(super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate))
+        let backend = match backend_kind {
+            Nvfp4BackendKind::CpuReference => Nvfp4Backend::Cpu,
+            Nvfp4BackendKind::Cuda => {
+                Nvfp4Backend::Cuda(super::cuda::Nvfp4CudaExecutor::new(hidden, intermediate))
+            }
         };
         #[cfg(not(feature = "cuda"))]
-        let backend = {
-            let _ = cpu_requested;
-            Nvfp4Backend::Cpu
+        let backend = match backend_kind {
+            Nvfp4BackendKind::CpuReference => Nvfp4Backend::Cpu,
+            Nvfp4BackendKind::Cuda => unreachable!("CUDA não compilado não pode ser selecionado"),
         };
 
         Ok(Self {
@@ -858,6 +874,14 @@ impl Nvfp4Executor {
             intermediate,
             backend,
         })
+    }
+
+    pub fn backend_kind(&self) -> Nvfp4BackendKind {
+        match &self.backend {
+            Nvfp4Backend::Cpu => Nvfp4BackendKind::CpuReference,
+            #[cfg(feature = "cuda")]
+            Nvfp4Backend::Cuda(_) => Nvfp4BackendKind::Cuda,
+        }
     }
 
     pub fn run_from_source(
@@ -909,6 +933,19 @@ impl Nvfp4Executor {
     }
 }
 
+fn select_backend_kind(
+    cuda_compiled: bool,
+    cpu_requested: bool,
+) -> Result<Nvfp4BackendKind, Nvfp4Error> {
+    if cpu_requested {
+        Ok(Nvfp4BackendKind::CpuReference)
+    } else if cuda_compiled {
+        Ok(Nvfp4BackendKind::Cuda)
+    } else {
+        Err(Nvfp4Error::BackendUnavailable)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -951,6 +988,21 @@ mod tests {
     fn nvfp4_rejeita_payload_truncado_antes_do_forward() {
         let result = Nvfp4Expert::from_payload(64, 64, &[0u8; 16]);
         assert!(matches!(result, Err(Nvfp4Error::PayloadLength { .. })));
+    }
+
+    #[test]
+    fn nvfp4_nao_cai_em_cpu_sem_cuda_sem_pedido_explicito() {
+        #[cfg(feature = "cuda")]
+        assert_eq!(
+            select_backend_kind(true, false).unwrap(),
+            Nvfp4BackendKind::Cuda
+        );
+
+        #[cfg(not(feature = "cuda"))]
+        assert!(matches!(
+            select_backend_kind(false, false),
+            Err(Nvfp4Error::BackendUnavailable)
+        ));
     }
 
     #[test]

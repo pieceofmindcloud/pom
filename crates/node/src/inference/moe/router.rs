@@ -18,6 +18,7 @@ pub enum RouteError {
     InvalidTopK { top_k: usize, experts: usize },
     NonFiniteLogit { expert: usize },
     InvalidWeightSum,
+    MismatchedRouteLengths { ids: usize, weights: usize },
     OutputWidth { expected: usize, actual: usize },
 }
 
@@ -32,6 +33,9 @@ impl fmt::Display for RouteError {
                 write!(formatter, "logit não finito no expert {expert}")
             }
             Self::InvalidWeightSum => write!(formatter, "soma de pesos do router inválida"),
+            Self::MismatchedRouteLengths { ids, weights } => {
+                write!(formatter, "router entregou {ids} ids e {weights} pesos")
+            }
             Self::OutputWidth { expected, actual } => {
                 write!(
                     formatter,
@@ -40,6 +44,50 @@ impl fmt::Display for RouteError {
             }
         }
     }
+}
+
+/// Executa exatamente a rota já resolvida por outro grafo.
+///
+/// O hook do llama.cpp entrega ids e pesos depois de aplicar a sua política de
+/// gating, top-k, grupos e normalização. Não se deve reconstruir logits aqui:
+/// isso perderia diferenças de arquitetura e poderia selecionar experts
+/// diferentes do grafo que foi substituído.
+pub fn dispatch_route<E, F>(
+    ids: &[u32],
+    weights: &[f32],
+    mut execute: F,
+) -> Result<Vec<f32>, DispatchError<E>>
+where
+    F: FnMut(u32) -> Result<Vec<f32>, E>,
+{
+    if ids.is_empty() {
+        return Err(DispatchError::Route(RouteError::InvalidWeightSum));
+    }
+    if ids.len() != weights.len() {
+        return Err(DispatchError::Route(RouteError::MismatchedRouteLengths {
+            ids: ids.len(),
+            weights: weights.len(),
+        }));
+    }
+    if weights.iter().any(|weight| !weight.is_finite()) {
+        return Err(DispatchError::Route(RouteError::InvalidWeightSum));
+    }
+
+    let mut output = None::<Vec<f32>>;
+    for (&expert, &weight) in ids.iter().zip(weights) {
+        let values = execute(expert).map_err(DispatchError::Expert)?;
+        let target = output.get_or_insert_with(|| vec![0.0; values.len()]);
+        if target.len() != values.len() {
+            return Err(DispatchError::Route(RouteError::OutputWidth {
+                expected: target.len(),
+                actual: values.len(),
+            }));
+        }
+        for (slot, value) in target.iter_mut().zip(values) {
+            *slot += weight * value;
+        }
+    }
+    output.ok_or(DispatchError::Route(RouteError::InvalidWeightSum))
 }
 
 impl std::error::Error for RouteError {}
@@ -176,5 +224,15 @@ mod tests {
             select_top_k(&[f32::NAN, 1.0], 1),
             Err(RouteError::NonFiniteLogit { expert: 0 })
         ));
+    }
+
+    #[test]
+    fn dispatch_route_preserva_ids_e_pesos_resolvidos() {
+        let output = dispatch_route(&[2, 0], &[0.25, 0.75], |expert| {
+            Ok::<_, ()>(vec![expert as f32, 1.0])
+        })
+        .unwrap();
+        assert!((output[0] - 0.5).abs() < 1e-6);
+        assert!((output[1] - 1.0).abs() < 1e-6);
     }
 }

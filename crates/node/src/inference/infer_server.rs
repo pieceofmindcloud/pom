@@ -69,6 +69,31 @@ fn configured_inference_mode(
 /// asynchronous. In particular, `residual_ms` contains the GPU -> host copy
 /// and the CUDA stream synchronization performed by `take_residual()`.
 #[derive(Default)]
+struct MoeTimings {
+    forward_us: u64,
+    executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+}
+
+impl MoeTimings {
+    fn record_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
+        if !self.executors.contains(&executor) {
+            self.executors.push(executor);
+        }
+    }
+
+    fn record_forward(&mut self, elapsed_us: u64) {
+        self.forward_us = self.forward_us.saturating_add(elapsed_us);
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.forward_us = self.forward_us.saturating_add(other.forward_us);
+        for executor in &other.executors {
+            self.record_executor(*executor);
+        }
+    }
+}
+
+#[derive(Default)]
 struct NodeTimings {
     frame_decode_us: u64,
     input_prepare_us: u64,
@@ -99,6 +124,7 @@ struct NodeTimings {
     encode_us: u64,
     selected_path: crate::executor::InferencePath,
     executed_engines: Vec<crate::executor::ExecutionEngine>,
+    moe: MoeTimings,
     tp: Option<crate::tp::TpDecodeTelemetry>,
 }
 
@@ -130,6 +156,36 @@ impl NodeTimings {
         self.executed_engine() != expected
     }
 
+    fn record_moe_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
+        self.moe.record_executor(executor);
+    }
+
+    fn record_moe_forward(&mut self, elapsed_us: u64) {
+        self.moe.record_forward(elapsed_us);
+    }
+
+    fn merge_moe(&mut self, other: &MoeTimings) {
+        self.moe.merge(other);
+    }
+
+    fn merge_engine_moe(&mut self, other: &crate::llm::DecodeTimings) {
+        if other.moe_forward_us != 0 {
+            self.record_moe_forward(other.moe_forward_us);
+            for executor in &other.moe_executors {
+                self.record_moe_executor(*executor);
+            }
+            self.record_engine(crate::executor::ExecutionEngine::Moe);
+        }
+    }
+
+    fn moe_executor(&self) -> &'static str {
+        match self.moe.executors.as_slice() {
+            [executor] => executor.as_str(),
+            [] => "not-run",
+            _ => "mixed",
+        }
+    }
+
     fn json(&self) -> Value {
         // Counters are kept in microseconds so a stage costing less than a
         // millisecond is not truncated to zero on every call and lost in the
@@ -157,6 +213,14 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "moe_forward_ms": ms(self.moe.forward_us),
+            "moe_executor": self.moe_executor(),
+            "moe_executors": self
+                .moe
+                .executors
+                .iter()
+                .map(|executor| executor.as_str())
+                .collect::<Vec<_>>(),
             "selected_path": self.selected_path.as_str(),
             "executed_engine": self.executed_engine().as_str(),
             "executed_engines": self
@@ -660,6 +724,22 @@ mod tests {
     }
 
     #[test]
+    fn telemetria_expoe_backend_real_dos_experts_apos_forward() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_moe_executor(crate::moe::runtime::MoeExecutorKind::Cuda);
+        timings.record_moe_forward(12_345);
+
+        let value = timings.json();
+
+        assert_eq!(value["moe_executor"], "cuda");
+        assert_eq!(value["moe_executors"], serde_json::json!(["cuda"]));
+        assert_eq!(value["moe_forward_ms"].as_f64(), Some(12.345));
+    }
+
+    #[test]
     fn modo_explicito_do_deploy_chega_ao_seletor_sem_ser_sobrescrito_pelo_ambiente() {
         assert_eq!(
             configured_inference_mode(crate::webui::InferenceMode::Dense).unwrap(),
@@ -672,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn hop_terminal_moe_so_publica_moe_depois_do_forward_real() {
+    fn hop_terminal_moe_publica_moe_apos_forward_real() {
         let mut timings = NodeTimings {
             selected_path: crate::executor::InferencePath::MoeQ4_0,
             ..Default::default()
@@ -1183,7 +1263,7 @@ mod session_text_tests {
 
 struct InferState {
     engine: LlmEngine,
-    moe: Option<crate::moe::runtime::MoeRuntime>,
+    moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
     sessions: HashMap<String, Session>,
     seq_pool: Vec<u32>,
     max_sessions: u32,
@@ -1281,7 +1361,7 @@ impl InferState {
         engine: LlmEngine,
         cfg: &NodeConfig,
         inference_path: crate::executor::InferencePath,
-        moe: Option<crate::moe::runtime::MoeRuntime>,
+        moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
     ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
@@ -1325,19 +1405,21 @@ impl InferState {
         if !self.inference_path.is_moe() {
             return Ok(hidden);
         }
+        if self.engine.moe_hook_enabled() {
+            return Ok(hidden);
+        }
         let Some(moe) = self.moe.as_ref() else {
             bail!("caminho MoE selecionado sem runtime MoE carregado");
         };
         let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
+        let forward_started = Instant::now();
         let output = moe
             .forward_batch(layer, &hidden, n_tokens)
             .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))?;
-        Self::mark_moe_forward(timings);
-        Ok(output)
-    }
-
-    fn mark_moe_forward(timings: &mut NodeTimings) {
+        timings.record_moe_executor(moe.executor_kind());
+        timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
         timings.record_engine(crate::executor::ExecutionEngine::Moe);
+        Ok(output)
     }
 
     fn alloc_seq(&mut self) -> Option<u32> {
@@ -1497,7 +1579,7 @@ pub async fn run(
     };
 
     let model_path = cfg.model_path.clone();
-    let engine = tokio::task::spawn_blocking(move || {
+    let mut engine = tokio::task::spawn_blocking(move || {
         LlmEngine::load_with_cache(&model_path, &engine_cfg, &model_cache, reuse_weights)
     })
     .await
@@ -1518,7 +1600,7 @@ pub async fn run(
         let weights_bytes = std::fs::metadata(&cfg.model_path)
             .map(|metadata| metadata.len())
             .unwrap_or(0);
-        Some(
+        Some(Arc::new(
             crate::moe::runtime::MoeRuntime::open(
                 &cfg.model_path,
                 cfg.model_label.clone(),
@@ -1527,11 +1609,14 @@ pub async fn run(
                 weights_bytes,
             )
             .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
-        )
+        ))
     } else {
         None
     };
 
+    if let Some(runtime) = moe.as_ref() {
+        engine.set_moe_runtime(Arc::clone(runtime))?;
+    }
     let mut state_inner = InferState::new(engine, &cfg, inference_path, moe);
     state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
     state_inner.original_block_count = model_info
@@ -2887,7 +2972,7 @@ fn prefill_blocking(
     let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe;
+        moe_forwarded = selected_moe && !s.engine.moe_hook_enabled();
         Some((hidden, shape))
     } else {
         None
@@ -2915,11 +3000,13 @@ fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
-    if is_last && selected_moe && !moe_forwarded {
+    if is_last && selected_moe && !moe_forwarded && !s.engine.moe_hook_enabled() {
         let residual = s.engine.take_residual(n_tokens)?;
         let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
+    timings.merge_engine_moe(&engine_timing);
+    moe_forwarded |= engine_timing.moe_forward_us != 0;
     if is_last {
         record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
     } else {
@@ -3289,7 +3376,7 @@ fn prefill_batch_blocking(
     }
 
     let mut transform_error = None;
-    let mut moe_input_items = HashMap::new();
+    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
         if let PreparedPrefillInput::Hidden(hidden) = &mut item.input {
             let mut transform_timings = NodeTimings::default();
@@ -3305,11 +3392,8 @@ fn prefill_batch_blocking(
                     break;
                 }
             }
-            if transform_timings
-                .executed_engines
-                .contains(&crate::executor::ExecutionEngine::Moe)
-            {
-                moe_input_items.insert(item.sid_key.clone(), true);
+            if !transform_timings.moe.executors.is_empty() {
+                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
             }
         }
     }
@@ -3395,7 +3479,9 @@ fn prefill_batch_blocking(
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
-            if moe_input_items.contains_key(&item.sid_key) {
+            timings.merge_engine_moe(&engine_timings);
+            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
+                timings.merge_moe(&moe);
                 timings.record_engine(crate::executor::ExecutionEngine::Moe);
             }
             timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
@@ -3651,7 +3737,7 @@ fn step_batch_blocking(
         }
     }
     let mut transform_error = None;
-    let mut moe_input_items = HashMap::new();
+    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
     for (_, item) in &mut prepared {
         if let PreparedStepInput::Hidden { hidden, n_tokens } = &mut item.input {
             let mut transform_timings = NodeTimings::default();
@@ -3667,11 +3753,8 @@ fn step_batch_blocking(
                     break;
                 }
             }
-            if transform_timings
-                .executed_engines
-                .contains(&crate::executor::ExecutionEngine::Moe)
-            {
-                moe_input_items.insert(item.sid_key.clone(), true);
+            if !transform_timings.moe.executors.is_empty() {
+                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
             }
         }
     }
@@ -3749,7 +3832,9 @@ fn step_batch_blocking(
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
-            if moe_input_items.contains_key(&item.sid_key) {
+            timings.merge_engine_moe(&engine_timings);
+            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
+                timings.merge_moe(&moe);
                 timings.record_engine(crate::executor::ExecutionEngine::Moe);
             }
             timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
@@ -4791,7 +4876,7 @@ fn step_blocking(
     let mut moe_forwarded = false;
     let tensor = if let Some((hidden, shape)) = tensor {
         let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
-        moe_forwarded = selected_moe;
+        moe_forwarded = selected_moe && !s.engine.moe_hook_enabled();
         Some((hidden, shape))
     } else {
         None
@@ -4884,11 +4969,13 @@ fn step_blocking(
             mtp_k_echo = Some(k);
         }
     }
-    if is_last && selected_moe && !moe_forwarded {
+    if is_last && selected_moe && !moe_forwarded && !s.engine.moe_hook_enabled() {
         let residual = s.engine.take_residual(n_tokens)?;
         let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
         moe_forwarded = true;
     }
+    timings.merge_engine_moe(&engine_timing);
+    moe_forwarded |= engine_timing.moe_forward_us != 0;
     if is_last {
         record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
     } else {

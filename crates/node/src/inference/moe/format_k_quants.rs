@@ -413,6 +413,10 @@ impl KQuantSource {
         self.intermediate
     }
 
+    pub fn experts(&self) -> u32 {
+        self.experts
+    }
+
     pub fn has_router(&self) -> bool {
         !self.router.is_empty()
     }
@@ -986,7 +990,7 @@ fn f16_to_f32(bits: u16) -> f32 {
     }
 }
 
-fn row_bytes(format: KQuantFormat, columns: usize) -> Result<usize, KQuantError> {
+pub fn row_bytes(format: KQuantFormat, columns: usize) -> Result<usize, KQuantError> {
     if columns == 0 || !columns.is_multiple_of(BLOCK_ELEMENTS) {
         return Err(KQuantError::Geometry(
             "dimensão precisa fechar superblocos de 256",

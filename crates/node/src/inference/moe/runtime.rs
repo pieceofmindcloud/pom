@@ -6,10 +6,11 @@
 //! fronteira própria é o router GGUF mais o FFN esparso da camada local.
 
 use super::block::{
-    IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError, Nvfp4MoeBlock,
-    PlainMoeBlock, Q4_0MoeBlock,
+    HeterogeneousMoeBlock, IqQuantMoeBlock, LegacyQuantMoeBlock, LowBitMoeBlock, MoeBlockError,
+    Nvfp4MoeBlock, PlainMoeBlock, Q4_0MoeBlock,
 };
 use super::cache::{CacheError, ExpertCache};
+use super::format_heterogeneous::{HeterogeneousMoeSource, TensorRole};
 use super::format_iq_quants::{IqQuantFormat, IqQuantSource};
 use super::format_k_quants::{KQuantFormat, KQuantSource};
 use super::format_legacy_quants::{LegacyQuantFormat, LegacyQuantSource};
@@ -21,6 +22,30 @@ use super::format_q4_0::{Q4Error, Q4LoadError, Q4_0Source};
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MoeExecutorKind {
+    CpuReference,
+    Cuda,
+}
+
+impl MoeExecutorKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CpuReference => "cpu-reference",
+            Self::Cuda => "cuda",
+        }
+    }
+}
+
+impl From<super::format_nvfp4::Nvfp4BackendKind> for MoeExecutorKind {
+    fn from(kind: super::format_nvfp4::Nvfp4BackendKind) -> Self {
+        match kind {
+            super::format_nvfp4::Nvfp4BackendKind::CpuReference => Self::CpuReference,
+            super::format_nvfp4::Nvfp4BackendKind::Cuda => Self::Cuda,
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum MoeRuntimeError {
@@ -99,6 +124,7 @@ enum MoeSource {
     Iq(IqQuantSource),
     Nvfp4(Nvfp4Source),
     LowBit(LowBitSource),
+    Heterogeneous(HeterogeneousMoeSource),
 }
 
 impl MoeSource {
@@ -111,6 +137,41 @@ impl MoeSource {
             Self::Iq(source) => source.hidden(),
             Self::Nvfp4(source) => source.hidden(),
             Self::LowBit(source) => source.hidden(),
+            Self::Heterogeneous(source) => source.hidden(),
+        }
+    }
+
+    fn experts(&self) -> u32 {
+        match self {
+            Self::Legacy(source) => source.experts(),
+            Self::Plain(source) => source.experts(),
+            Self::Q4(source) => source.experts(),
+            Self::K(source) => source.experts(),
+            Self::Iq(source) => source.experts(),
+            Self::Nvfp4(source) => source.experts(),
+            Self::LowBit(source) => source.experts(),
+            Self::Heterogeneous(source) => source.experts(),
+        }
+    }
+
+    fn dtype(&self) -> u32 {
+        match self {
+            Self::Legacy(source) => source.format().dtype(),
+            Self::Plain(source) => source.format().dtype(),
+            Self::Q4(_) => 2,
+            Self::K(source) => source.format().dtype(),
+            Self::Iq(source) => source.format().dtype(),
+            Self::Nvfp4(_) => 40,
+            Self::LowBit(source) => source.format().dtype(),
+            Self::Heterogeneous(_) => 0,
+        }
+    }
+
+    fn activation(&self) -> Option<i32> {
+        match self {
+            Self::Nvfp4(_) => Some(2), // LLM_FFN_GELU, as implemented by NVFP4Expert
+            Self::Heterogeneous(_) => None,
+            _ => Some(1), // LLM_FFN_SILU, as implemented by the other decoders
         }
     }
 }
@@ -123,11 +184,24 @@ enum MoeBlock {
     Iq(IqQuantMoeBlock),
     Nvfp4(Nvfp4MoeBlock),
     LowBit(LowBitMoeBlock),
+    Heterogeneous(HeterogeneousMoeBlock),
 }
 
 pub struct MoeRuntime {
     source: MoeSource,
     blocks: Vec<MoeBlock>,
+}
+
+pub struct MoeRouteBatch<'a> {
+    pub layer: u32,
+    pub hidden: &'a [f32],
+    pub selected_experts: &'a [i32],
+    pub weights: &'a [f32],
+    pub tokens: usize,
+    pub expert_count: usize,
+    pub expert_count_used: usize,
+    pub activation: i32,
+    pub weight_before_ffn: bool,
 }
 
 impl MoeRuntime {
@@ -444,11 +518,163 @@ impl MoeRuntime {
                     blocks,
                 })
             }
+            ExpertFormat::Heterogeneous => {
+                let source = HeterogeneousMoeSource::open_infer(&path, experts)?;
+                let layers = source.layer_count();
+                if layers == 0 {
+                    return Err(MoeRuntimeError::Source(Q4LoadError::InvalidTensor(
+                        "GGUF MoE sem camadas",
+                    )));
+                }
+                let mut blocks = Vec::with_capacity(layers as usize);
+                for layer in 0..layers {
+                    blocks.push(MoeBlock::Heterogeneous(HeterogeneousMoeBlock::new(
+                        Arc::clone(&cache),
+                        &model,
+                        layer,
+                        top_k,
+                    )));
+                }
+                Ok(Self {
+                    source: MoeSource::Heterogeneous(source),
+                    blocks,
+                })
+            }
         }
     }
 
     pub fn layers(&self) -> u32 {
         self.blocks.len() as u32
+    }
+
+    pub fn executor_kind(&self) -> MoeExecutorKind {
+        match self.blocks.first() {
+            Some(MoeBlock::Nvfp4(block)) => block.executor_kind().into(),
+            Some(_) | None => MoeExecutorKind::CpuReference,
+        }
+    }
+
+    pub fn validate_callback_metadata(
+        &self,
+        layer: u32,
+        metadata: &[(TensorRole, &str, u32)],
+    ) -> Result<(), MoeRuntimeError> {
+        if let MoeSource::Heterogeneous(source) = &self.source {
+            return source
+                .validate_metadata(layer, metadata)
+                .map_err(MoeRuntimeError::Source);
+        }
+        let expected = self.source.dtype();
+        for (role, name, dtype) in metadata {
+            if *dtype != expected {
+                return Err(MoeRuntimeError::Block(format!(
+                    "tensor {name} ({role}) usa dtype GGML {dtype}, mas o runtime homogêneo abriu dtype GGML {expected}"
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn forward_batch_with_route(
+        &self,
+        route: MoeRouteBatch<'_>,
+    ) -> Result<Vec<f32>, MoeRuntimeError> {
+        let MoeRouteBatch {
+            layer,
+            hidden,
+            selected_experts,
+            weights,
+            tokens,
+            expert_count,
+            expert_count_used,
+            activation,
+            weight_before_ffn,
+        } = route;
+        if weight_before_ffn {
+            return Err(MoeRuntimeError::Block(
+                "hook MoE não suporta pesos aplicados antes do FFN".into(),
+            ));
+        }
+        let expected_ids =
+            tokens
+                .checked_mul(expert_count_used)
+                .ok_or(MoeRuntimeError::InvalidShape {
+                    values: selected_experts.len(),
+                    tokens,
+                    hidden: expert_count_used,
+                })?;
+        if expert_count != self.source.experts() as usize
+            || expert_count_used == 0
+            || expert_count_used > expert_count
+            || hidden.len() != tokens.saturating_mul(self.source.hidden())
+            || selected_experts.len() != expected_ids
+            || weights.len() != expected_ids
+        {
+            return Err(MoeRuntimeError::FormatMismatch);
+        }
+        if let Some(expected_activation) = self.source.activation() {
+            if activation != expected_activation {
+                return Err(MoeRuntimeError::Block(format!(
+                    "ativação MoE não suportada para dtype {}: {} (esperado {})",
+                    self.source.dtype(),
+                    activation,
+                    expected_activation
+                )));
+            }
+        }
+
+        let block = self
+            .blocks
+            .get(layer as usize)
+            .ok_or(MoeRuntimeError::MissingLayer {
+                layer,
+                layers: self.layers(),
+            })?;
+        let hidden_width = self.source.hidden();
+        let mut output = Vec::with_capacity(hidden.len());
+        for token in 0..tokens {
+            let token_hidden = &hidden[token * hidden_width..(token + 1) * hidden_width];
+            let route_start = token * expert_count_used;
+            let ids = selected_experts[route_start..route_start + expert_count_used]
+                .iter()
+                .map(|&expert| {
+                    u32::try_from(expert).map_err(|_| {
+                        MoeRuntimeError::Block(format!(
+                            "id de expert negativo no runtime MoE (dtype {})",
+                            self.source.dtype()
+                        ))
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let route_weights = &weights[route_start..route_start + expert_count_used];
+            let values = match (&self.source, block) {
+                (MoeSource::Legacy(source), MoeBlock::Legacy(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::Plain(source), MoeBlock::Plain(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::Q4(source), MoeBlock::Q4(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::K(source), MoeBlock::K(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::Iq(source), MoeBlock::Iq(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::LowBit(source), MoeBlock::LowBit(block)) => block
+                    .forward_from_source_with_route(source, token_hidden, &ids, route_weights)?,
+                (MoeSource::Heterogeneous(source), MoeBlock::Heterogeneous(block)) => block
+                    .forward_from_source_with_route(
+                        source,
+                        token_hidden,
+                        &ids,
+                        route_weights,
+                        activation,
+                    )?,
+                _ => return Err(MoeRuntimeError::FormatMismatch),
+            };
+            output.extend(values);
+        }
+        Ok(output)
     }
 
     pub fn forward_batch(
@@ -502,6 +728,11 @@ impl MoeRuntime {
                 }
                 (MoeSource::LowBit(source), MoeBlock::LowBit(block)) => {
                     block.forward_from_source(source, token_hidden)?
+                }
+                (MoeSource::Heterogeneous(_), MoeBlock::Heterogeneous(_)) => {
+                    return Err(MoeRuntimeError::Block(
+                        "runtime heterogêneo exige a rota resolvida do llama.cpp".into(),
+                    ))
                 }
                 _ => return Err(MoeRuntimeError::FormatMismatch),
             };

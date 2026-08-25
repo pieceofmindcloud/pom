@@ -5,6 +5,7 @@
 //! peers; a atenção continua no runtime que entrega a ativação a esta fronteira.
 
 use super::cache::{ExpertCache, ExpertKey};
+use super::format_heterogeneous::HeterogeneousMoeSource;
 use super::format_iq_quants::{
     IqQuantError, IqQuantExecuteError, IqQuantExecutor, IqQuantFormat, IqQuantSource,
 };
@@ -15,10 +16,10 @@ use super::format_legacy_quants::{
     LegacyQuantExecuteError, LegacyQuantExecutor, LegacyQuantFormat, LegacyQuantSource,
 };
 use super::format_low_bits::{LowBitExecuteError, LowBitExecutor, LowBitFormat, LowBitSource};
-use super::format_nvfp4::{Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
+use super::format_nvfp4::{Nvfp4BackendKind, Nvfp4ExecuteError, Nvfp4Executor, Nvfp4Source};
 use super::format_plain::{PlainExecuteError, PlainExecutor, PlainFormat, PlainSource};
 use super::format_q4_0::{Q4Error, Q4ExecuteError, Q4_0Executor, Q4_0Source};
-use super::router::{dispatch_top_k, DispatchError, RouteError};
+use super::router::{dispatch_route, dispatch_top_k, DispatchError, RouteError};
 use std::fmt;
 use std::sync::Arc;
 
@@ -81,6 +82,21 @@ impl From<LowBitExecuteError> for MoeBlockError {
     }
 }
 
+fn dispatch_resolved<E, F>(
+    ids: &[u32],
+    weights: &[f32],
+    execute: F,
+) -> Result<Vec<f32>, MoeBlockError>
+where
+    E: fmt::Display,
+    F: FnMut(u32) -> Result<Vec<f32>, E>,
+{
+    dispatch_route(ids, weights, execute).map_err(|error| match error {
+        DispatchError::Route(error) => MoeBlockError::Route(error),
+        DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+    })
+}
+
 /// Forward de um bloco MoE Q4_1, Q5_0, Q5_1 ou Q8_0.
 pub struct LegacyQuantMoeBlock {
     model: String,
@@ -128,6 +144,22 @@ impl LegacyQuantMoeBlock {
         output.map_err(|error| match error {
             DispatchError::Route(error) => MoeBlockError::Route(error),
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
+    }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &LegacyQuantSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
         })
     }
 }
@@ -190,6 +222,22 @@ impl LowBitMoeBlock {
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
         })
     }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &LowBitSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
+        })
+    }
 }
 
 impl PlainMoeBlock {
@@ -230,6 +278,22 @@ impl PlainMoeBlock {
         output.map_err(|error| match error {
             DispatchError::Route(error) => MoeBlockError::Route(error),
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
+    }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &PlainSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
         })
     }
 }
@@ -281,6 +345,22 @@ impl IqQuantMoeBlock {
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
         })
     }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &IqQuantSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
+        })
+    }
 }
 
 /// Forward de um bloco MoE Q4_K ou Q6_K para uma camada GGUF.
@@ -329,6 +409,22 @@ impl KQuantMoeBlock {
         output.map_err(|error| match error {
             DispatchError::Route(error) => MoeBlockError::Route(error),
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
+        })
+    }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &KQuantSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        let format = self.format.name();
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, format);
+            self.executor.run_from_source(source, key, layer, hidden)
         })
     }
 }
@@ -386,6 +482,21 @@ impl Q4_0MoeBlock {
             .map_err(Q4ExecuteError::Source)?;
         self.forward(source, hidden, &logits)
     }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &Q4_0Source,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, "q4_0");
+            self.executor.run_from_source(source, key, layer, hidden)
+        })
+    }
 }
 
 /// Forward de um bloco MoE NVFP4 para uma camada GGUF.
@@ -422,9 +533,18 @@ impl Nvfp4MoeBlock {
         let logits = source
             .router_logits(self.layer, hidden)
             .map_err(|error| MoeBlockError::Executor(error.to_string()))?;
+        self.forward_from_source_with_logits(source, hidden, &logits)
+    }
+
+    pub fn forward_from_source_with_logits(
+        &self,
+        source: &Nvfp4Source,
+        hidden: &[f32],
+        logits: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
         let model = &self.model;
         let layer = self.layer;
-        let output = dispatch_top_k(&logits, self.top_k, |expert| {
+        let output = dispatch_top_k(logits, self.top_k, |expert| {
             let key = ExpertKey::new(model, layer, expert, "nvfp4");
             self.executor.run_from_source(source, key, layer, hidden)
         });
@@ -432,6 +552,83 @@ impl Nvfp4MoeBlock {
             DispatchError::Route(error) => MoeBlockError::Route(error),
             DispatchError::Expert(error) => MoeBlockError::Executor(error.to_string()),
         })
+    }
+
+    pub fn executor_kind(&self) -> Nvfp4BackendKind {
+        self.executor.backend_kind()
+    }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &Nvfp4Source,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        let model = &self.model;
+        let layer = self.layer;
+        dispatch_resolved(ids, weights, |expert| {
+            let key = ExpertKey::new(model, layer, expert, "nvfp4");
+            self.executor.run_from_source(source, key, layer, hidden)
+        })
+    }
+}
+
+/// Bloco MoE cujo decoder é escolhido por tensor, para GGUF com dtypes
+/// heterogêneos entre gate, up e down.
+pub struct HeterogeneousMoeBlock {
+    model: String,
+    layer: u32,
+    top_k: usize,
+    cache: Arc<ExpertCache>,
+}
+
+impl HeterogeneousMoeBlock {
+    pub fn new(
+        cache: Arc<ExpertCache>,
+        model: impl Into<String>,
+        layer: u32,
+        top_k: usize,
+    ) -> Self {
+        Self {
+            model: model.into(),
+            layer,
+            top_k,
+            cache,
+        }
+    }
+
+    pub fn forward_from_source_with_route(
+        &self,
+        source: &HeterogeneousMoeSource,
+        hidden: &[f32],
+        ids: &[u32],
+        weights: &[f32],
+        activation: i32,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if ids.len() != weights.len() {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: ids.len(),
+                weights: weights.len(),
+            }));
+        }
+        if ids.is_empty() || ids.len() > self.top_k {
+            return Err(MoeBlockError::Route(RouteError::InvalidTopK {
+                top_k: ids.len(),
+                experts: self.top_k,
+            }));
+        }
+        source
+            .run_from_source_with_route(
+                &self.cache,
+                &self.model,
+                self.layer,
+                hidden,
+                ids,
+                weights,
+                activation,
+            )
+            .map_err(MoeBlockError::Executor)
     }
 }
 

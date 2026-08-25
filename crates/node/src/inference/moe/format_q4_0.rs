@@ -7,6 +7,7 @@
 
 use super::cache::{CacheError, ExpertCache, ExpertKey};
 use memmap2::Mmap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::File;
 use std::path::Path;
@@ -18,6 +19,7 @@ const PAYLOAD_HEADER_BYTES: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExpertFormat {
+    Heterogeneous,
     F32,
     F16,
     Q4_1,
@@ -275,9 +277,22 @@ pub enum Q4LoadError {
     Io(String),
     InvalidGguf(&'static str),
     UnsupportedTensorType(u32),
+    UnsupportedTensor {
+        name: String,
+        dtype: u32,
+    },
+    TensorMetadataMismatch {
+        name: String,
+        dtype: u32,
+        expected_name: String,
+        expected_dtype: u32,
+    },
     MissingTensor(String),
     InvalidTensor(&'static str),
-    ExpertOutOfRange { expert: u32, count: u32 },
+    ExpertOutOfRange {
+        expert: u32,
+        count: u32,
+    },
 }
 
 impl fmt::Display for Q4LoadError {
@@ -292,6 +307,22 @@ impl fmt::Display for Q4LoadError {
                     ggml_type_name(*kind)
                 )
             }
+            Self::UnsupportedTensor { name, dtype } => write!(
+                formatter,
+                "tensor de expert não suportado: {name} usa dtype GGML {dtype} ({})",
+                ggml_type_name(*dtype)
+            ),
+            Self::TensorMetadataMismatch {
+                name,
+                dtype,
+                expected_name,
+                expected_dtype,
+            } => write!(
+                formatter,
+                "metadata do tensor de expert {name} (dtype GGML {dtype}, {}) não corresponde ao inventário {expected_name} (dtype GGML {expected_dtype}, {})",
+                ggml_type_name(*dtype),
+                ggml_type_name(*expected_dtype)
+            ),
             Self::MissingTensor(name) => write!(formatter, "tensor de expert ausente: {name}"),
             Self::InvalidTensor(reason) => write!(formatter, "tensor de expert inválido: {reason}"),
             Self::ExpertOutOfRange { expert, count } => {
@@ -325,7 +356,7 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
     // the mapping is used only during this inspection.
     let mmap = unsafe { Mmap::map(&file) }.map_err(|error| Q4LoadError::Io(error.to_string()))?;
     let (_, tensors) = parse_tensor_table(&mmap)?;
-    let mut expert_dtypes = tensors
+    let expert_dtypes: BTreeSet<u32> = tensors
         .iter()
         .filter(|tensor| {
             tensor.name.starts_with("blk.")
@@ -339,16 +370,15 @@ pub fn detect_expert_format(path: impl AsRef<Path>) -> Result<ExpertFormat, Q4Lo
                 .iter()
                 .any(|suffix| tensor.name.ends_with(suffix))
         })
-        .map(|tensor| tensor.dtype);
-    let Some(dtype) = expert_dtypes.next() else {
+        .map(|tensor| tensor.dtype)
+        .collect();
+    let Some(&dtype) = expert_dtypes.iter().next() else {
         return Err(Q4LoadError::MissingTensor(
             "blk.<layer>.ffn_*_exps.weight".into(),
         ));
     };
-    if expert_dtypes.any(|other| other != dtype) {
-        return Err(Q4LoadError::InvalidTensor(
-            "experts usam dtypes GGML misturados",
-        ));
+    if expert_dtypes.len() > 1 {
+        return Ok(ExpertFormat::Heterogeneous);
     }
     match dtype {
         2 => Ok(ExpertFormat::Q4_0),
@@ -550,6 +580,10 @@ impl Q4_0Source {
 
     pub fn intermediate(&self) -> usize {
         self.intermediate
+    }
+
+    pub fn experts(&self) -> u32 {
+        self.experts
     }
 
     pub fn has_router(&self) -> bool {
@@ -987,7 +1021,7 @@ impl Q4_0Executor {
     }
 }
 
-fn row_bytes(columns: usize) -> Result<usize, Q4Error> {
+pub fn row_bytes(columns: usize) -> Result<usize, Q4Error> {
     if !columns.is_multiple_of(BLOCK_ELEMENTS) {
         return Err(Q4Error::Geometry("linha não fecha bloco de 32"));
     }
@@ -995,6 +1029,30 @@ fn row_bytes(columns: usize) -> Result<usize, Q4Error> {
         .checked_div(BLOCK_ELEMENTS)
         .and_then(|blocks| blocks.checked_mul(BLOCK_BYTES))
         .ok_or(Q4Error::Geometry("overflow na linha"))
+}
+
+pub fn decode_row(row: &[u8], columns: usize) -> Result<Vec<f32>, Q4Error> {
+    let expected = row_bytes(columns)?;
+    if row.len() != expected {
+        return Err(Q4Error::PayloadLength {
+            expected,
+            actual: row.len(),
+        });
+    }
+    Ok(row
+        .chunks_exact(BLOCK_BYTES)
+        .flat_map(|packed| {
+            let scale = f16_to_f32(u16::from_le_bytes([packed[0], packed[1]]));
+            (0..BLOCK_ELEMENTS).map(move |offset| {
+                let q = if offset < 16 {
+                    packed[2 + offset] & 0x0f
+                } else {
+                    packed[2 + offset - 16] >> 4
+                };
+                scale * (q as f32 - 8.0)
+            })
+        })
+        .collect())
 }
 
 fn mat_vec(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {

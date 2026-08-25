@@ -39,9 +39,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   também chama o bloco MoE antes de amostrar a resposta. O forward é marcado
   depois de retornar. Atenção, logits e demais operações continuam no
   `LlmEngine`, que fornece a fronteira de cálculo restante. Os
-  handlers publicam `selected_path`, `executed_engine`, `executed_engines` e as
-  flags `engine_mismatch`/`mixed_execution` em `node_timings`; `/health`
-  publica apenas o caminho selecionado, pois não representa uma requisição.
+  handlers publicam `selected_path`, `executed_engine`, `executed_engines`,
+  `moe_executor`, `moe_executors` e `moe_forward_ms`, além das flags
+  `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
+  apenas o caminho selecionado, pois não representa uma requisição. `cuda`
+  só é publicado depois do forward NVFP4 real; `not-run` expõe a ausência de
+  execução e não há fallback implícito para CPU.
   Os handlers decodificam o frame e entregam
   comandos a uma fila local limitada; o worker seleciona uma entrada por
   sessão e pode chamar o decode multi-sequência. Cada `Session`
@@ -99,6 +102,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
   antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
   linkadas, enquanto cache, router e mat-vec permanecem no executor próprio.
+  `format_heterogeneous.rs` é a fronteira para GGUF UD e outros arquivos que
+  misturam dtypes: o inventário registra cada tensor por camada e papel, e o
+  decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
+  do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
+  uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o

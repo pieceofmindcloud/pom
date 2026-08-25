@@ -51,6 +51,242 @@ struct CaptureSlot {
     copy_us: u64,
 }
 
+#[derive(Default)]
+struct MoeCallbackTelemetry {
+    forward_us: u64,
+    executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+}
+
+struct MoeCallbackState {
+    runtime: Arc<crate::moe::runtime::MoeRuntime>,
+    telemetry: Mutex<MoeCallbackTelemetry>,
+    error: Mutex<Option<String>>,
+}
+
+impl MoeCallbackState {
+    fn begin(&self) {
+        *self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        *self
+            .telemetry
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = MoeCallbackTelemetry::default();
+    }
+
+    fn fail(&self, message: String) {
+        let mut error = self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if error.is_none() {
+            *error = Some(message);
+        }
+    }
+
+    fn take(&self) -> Result<MoeCallbackTelemetry> {
+        let error = self
+            .error
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take();
+        if let Some(error) = error {
+            bail!("hook MoE do llama.cpp falhou: {error}");
+        }
+        Ok(std::mem::take(
+            &mut *self
+                .telemetry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+        ))
+    }
+}
+
+unsafe extern "C" fn moe_ffn_callback(
+    user_data: *mut c_void,
+    descriptor: *const sys::llama_moe_ffn_descriptor,
+    hidden: *const f32,
+    selected_experts: *const i32,
+    weights: *const f32,
+    n_tokens: usize,
+    hidden_width: usize,
+    output: *mut f32,
+) -> bool {
+    if user_data.is_null()
+        || descriptor.is_null()
+        || hidden.is_null()
+        || selected_experts.is_null()
+        || weights.is_null()
+        || output.is_null()
+    {
+        return false;
+    }
+    let state = unsafe { &*(user_data as *const MoeCallbackState) };
+    let descriptor = unsafe { &*descriptor };
+    let used = match usize::try_from(descriptor.expert_count_used) {
+        Ok(used) if used > 0 => used,
+        _ => {
+            state.fail("descriptor MoE sem quantidade válida de experts ativos".to_string());
+            return false;
+        }
+    };
+    let expected = match n_tokens.checked_mul(hidden_width) {
+        Some(expected) => expected,
+        None => {
+            state.fail("overflow na geometria hidden do hook".to_string());
+            return false;
+        }
+    };
+    let route_len = match n_tokens.checked_mul(used) {
+        Some(length) => length,
+        None => {
+            state.fail("overflow na geometria da rota do hook".to_string());
+            return false;
+        }
+    };
+    let hidden = unsafe { std::slice::from_raw_parts(hidden, expected) };
+    let selected_experts = unsafe { std::slice::from_raw_parts(selected_experts, route_len) };
+    let weights = unsafe { std::slice::from_raw_parts(weights, route_len) };
+    let architecture = unsafe {
+        CStr::from_ptr(descriptor.architecture.as_ptr())
+            .to_string_lossy()
+            .into_owned()
+    };
+    if descriptor.gate_up_bias.present != 0
+        || descriptor.gate_bias.present != 0
+        || descriptor.up_bias.present != 0
+        || descriptor.down_bias.present != 0
+    {
+        state.fail(format!(
+            "arquitetura {architecture} usa bias de experts não suportado pelo hook"
+        ));
+        return false;
+    }
+    if descriptor.down.present == 0
+        || (descriptor.gate_up.present == 0
+            && (descriptor.gate.present == 0 || descriptor.up.present == 0))
+    {
+        state.fail(format!(
+            "arquitetura {architecture} não forneceu metadata completa de gate/up/down"
+        ));
+        return false;
+    }
+    let mut metadata_owned = Vec::new();
+    for (role, tensor) in [
+        (
+            crate::moe::format_heterogeneous::TensorRole::GateUp,
+            &descriptor.gate_up,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Gate,
+            &descriptor.gate,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Up,
+            &descriptor.up,
+        ),
+        (
+            crate::moe::format_heterogeneous::TensorRole::Down,
+            &descriptor.down,
+        ),
+    ] {
+        if tensor.present == 0 {
+            continue;
+        }
+        let end = tensor
+            .name
+            .iter()
+            .position(|&character| character == 0)
+            .unwrap_or(tensor.name.len());
+        let name = tensor.name[..end]
+            .iter()
+            .map(|&character| u8::try_from(character).map_err(|_| "nome de tensor inválido"))
+            .collect::<Result<Vec<_>, _>>();
+        let name = match name
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| "nome de tensor não UTF-8"))
+        {
+            Ok(name) => name,
+            Err(error) => {
+                state.fail(format!("arquitetura {architecture}: {error}"));
+                return false;
+            }
+        };
+        let dtype = match u32::try_from(tensor.dtype) {
+            Ok(dtype) => dtype,
+            Err(_) => {
+                state.fail(format!(
+                    "arquitetura {architecture}: tensor {name} tem dtype negativo {}",
+                    tensor.dtype
+                ));
+                return false;
+            }
+        };
+        metadata_owned.push((role, name, dtype));
+    }
+    let metadata = metadata_owned
+        .iter()
+        .map(|(role, name, dtype)| (*role, name.as_str(), *dtype))
+        .collect::<Vec<_>>();
+    if let Err(error) = state
+        .runtime
+        .validate_callback_metadata(descriptor.layer as u32, &metadata)
+    {
+        state.fail(format!("arquitetura {architecture}: {error}"));
+        return false;
+    }
+    let expert_count = match usize::try_from(descriptor.expert_count) {
+        Ok(count) => count,
+        Err(_) => {
+            state.fail(format!(
+                "arquitetura {architecture}: quantidade de experts excede usize"
+            ));
+            return false;
+        }
+    };
+    let started = Instant::now();
+    let result = state
+        .runtime
+        .forward_batch_with_route(crate::moe::runtime::MoeRouteBatch {
+            layer: descriptor.layer as u32,
+            hidden,
+            selected_experts,
+            weights,
+            tokens: n_tokens,
+            expert_count,
+            expert_count_used: used,
+            activation: descriptor.activation,
+            weight_before_ffn: descriptor.weight_before_ffn != 0,
+        });
+    let values = match result {
+        Ok(values) if values.len() == expected => values,
+        Ok(values) => {
+            state.fail(format!(
+                "hook MoE devolveu {} floats, esperado {expected}",
+                values.len()
+            ));
+            return false;
+        }
+        Err(error) => {
+            state.fail(format!("arquitetura {architecture}: {error}"));
+            return false;
+        }
+    };
+    unsafe { std::ptr::copy_nonoverlapping(values.as_ptr(), output, expected) };
+    let mut telemetry = state
+        .telemetry
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    telemetry.forward_us = telemetry
+        .forward_us
+        .saturating_add(started.elapsed().as_micros() as u64);
+    let executor = state.runtime.executor_kind();
+    if !telemetry.executors.contains(&executor) {
+        telemetry.executors.push(executor);
+    }
+    true
+}
+
 unsafe extern "C" fn capture_callback(
     t: *mut sys::ggml_tensor,
     ask: bool,
@@ -447,6 +683,7 @@ pub struct LlmEngine {
     /// ligou o MTP. `None` é o caso comum: modelo sem MTP, fatia não-final de
     /// um modelo com MTP, ou interruptor desligado.
     mtp: Option<crate::mtp::MtpDrafter>,
+    moe_callback: Option<Arc<MoeCallbackState>>,
 }
 
 /// Pesos mantidos entre gerações do servidor para que uma reconfiguração de
@@ -508,6 +745,8 @@ pub struct DecodeTimings {
     pub enqueue_us: u64,
     pub backend_completion_us: u64,
     pub residual_capture_d2h_sync_us: u64,
+    pub moe_forward_us: u64,
+    pub moe_executors: Vec<crate::moe::runtime::MoeExecutorKind>,
 }
 
 /// **Ligado por padrão** desde 2026-08-13; `POM_PROFILE_SYNC=0` desliga.
@@ -561,15 +800,60 @@ impl LlmEngine {
         self.mtp = None;
         unsafe {
             if !self.ctx.is_null() {
+                sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
                 self.ctx = std::ptr::null_mut();
             }
         }
+        self.moe_callback = None;
         // Os pesos só saem se este era o último contexto sobre eles; com um
         // irmão vivo, `get_mut` devolve `None` e o `Drop` do último resolve.
         if let Some(loaded) = Arc::get_mut(&mut self.loaded) {
             loaded.free_now();
         }
+    }
+
+    pub fn set_moe_runtime(&mut self, runtime: Arc<crate::moe::runtime::MoeRuntime>) -> Result<()> {
+        if self.moe_callback.is_some() {
+            bail!("hook MoE já está instalado neste contexto");
+        }
+        let state = Arc::new(MoeCallbackState {
+            runtime,
+            telemetry: Mutex::new(MoeCallbackTelemetry::default()),
+            error: Mutex::new(None),
+        });
+        unsafe {
+            sys::llama_set_moe_ffn_callback(
+                self.ctx,
+                Some(moe_ffn_callback),
+                Arc::as_ptr(&state) as *mut c_void,
+            );
+        }
+        self.moe_callback = Some(state);
+        Ok(())
+    }
+
+    pub fn moe_hook_enabled(&self) -> bool {
+        self.moe_callback.is_some()
+    }
+
+    fn begin_moe_callback(&self) {
+        if let Some(state) = self.moe_callback.as_ref() {
+            state.begin();
+        }
+    }
+
+    fn finish_moe_callback(&self, timings: &mut DecodeTimings) -> Result<()> {
+        let Some(state) = self.moe_callback.as_ref() else {
+            return Ok(());
+        };
+        let telemetry = state.take()?;
+        if telemetry.forward_us == 0 {
+            bail!("hook MoE instalado, mas nenhum bloco MoE foi executado no llama.cpp; recusa para evitar fallback nativo silencioso");
+        }
+        timings.moe_forward_us = telemetry.forward_us;
+        timings.moe_executors = telemetry.executors;
+        Ok(())
     }
 }
 
@@ -580,9 +864,11 @@ impl Drop for LlmEngine {
         // irmão ainda vivo, seria use-after-free.
         unsafe {
             if !self.ctx.is_null() {
+                sys::llama_set_moe_ffn_callback(self.ctx, None, ptr::null_mut());
                 sys::llama_free(self.ctx);
             }
         }
+        self.moe_callback = None;
     }
 }
 
@@ -851,6 +1137,7 @@ impl LlmEngine {
             effective_n_gpu_layers: cfg.n_gpu_layers,
             effective_n_ubatch: effective_n_ubatch(cfg),
             mtp,
+            moe_callback: None,
         })
     }
 
@@ -1256,6 +1543,7 @@ impl LlmEngine {
                 }
             }
         }
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1318,6 +1606,7 @@ impl LlmEngine {
                 }
             }
         }
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1370,6 +1659,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok((
             BatchDecodeOutput {
                 layout,
@@ -1412,7 +1702,9 @@ impl LlmEngine {
             }
         }
 
+        self.begin_moe_callback();
         let tp_antes = crate::tp::reduce_count();
+        self.begin_moe_callback();
         let rc = unsafe { sys::llama_decode(self.ctx, batch) };
         unsafe { sys::llama_batch_free(batch) };
         if rc != 0 {
@@ -1498,6 +1790,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok(timings)
     }
 
@@ -1607,6 +1900,7 @@ impl LlmEngine {
             unsafe { sys::llama_synchronize(self.ctx) };
             timings.backend_completion_us = completion_started.elapsed().as_micros() as u64;
         }
+        self.finish_moe_callback(&mut timings)?;
         Ok(timings)
     }
 

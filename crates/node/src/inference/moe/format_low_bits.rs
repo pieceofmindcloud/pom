@@ -64,6 +64,10 @@ impl LowBitFormat {
         }
     }
 
+    pub fn row_bytes(self, columns: usize) -> Result<usize, LowBitError> {
+        row_bytes(self, columns)
+    }
+
     fn block_bytes(self) -> usize {
         match self {
             Self::Mxfp4 => 17,
@@ -274,6 +278,10 @@ impl LowBitSource {
 
     pub fn intermediate(&self) -> usize {
         self.intermediate
+    }
+
+    pub fn experts(&self) -> u32 {
+        self.experts
     }
 
     pub fn layer_count(&self) -> u32 {
@@ -701,6 +709,21 @@ fn mat_vec(
                 .sum()
         })
         .collect()
+}
+
+pub fn decode_row(
+    format: LowBitFormat,
+    row: &[u8],
+    columns: usize,
+) -> Result<Vec<f32>, LowBitError> {
+    let expected = row_bytes(format, columns)?;
+    if row.len() != expected {
+        return Err(LowBitError::PayloadLength {
+            expected,
+            actual: row.len(),
+        });
+    }
+    Ok(dequantize_row(format, row, columns))
 }
 
 fn dequantize_row(format: LowBitFormat, row: &[u8], columns: usize) -> Vec<f32> {

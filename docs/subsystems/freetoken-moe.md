@@ -275,6 +275,37 @@ interface mostra o caminho selecionado e o motor observado; mistura e
 divergência ficam visíveis como diagnóstico, nunca são reduzidas a um rótulo
 único.
 
+### Diagnóstico do executor CUDA
+
+O primeiro instrumento da Fase 5 publica também `moe_executor`,
+`moe_executors` e `moe_forward_ms`. O backend só entra nesses campos depois de
+`MoeRuntime::forward_batch` retornar com sucesso. `cuda` significa o executor
+CUDA NVFP4; `cpu-reference` significa o decoder de referência; `not-run` é uma
+seleção MoE sem forward registrado e `mixed` denuncia mais de um backend no
+mesmo hop. Um binário sem a feature `cuda` não transforma NVFP4 em CPU por
+acidente: ele recusa a carga com a mensagem nominal do executor, salvo quando
+`POM_MOE_NVFP4_BACKEND=cpu` pede explicitamente o fallback de referência.
+
+A investigação da medição Gemma4 encontrou uma divergência anterior a qualquer
+otimização de kernel. O contexto captura `l_out-29`, mas em
+`vendor/llama-cpp-sys-2/llama.cpp/src/models/gemma4.cpp` esse tensor é criado
+depois de `build_moe_ffn`, `ffn_post_norm`, a soma residual e `build_cvec`. O
+callback de captura copia o tensor e retorna `true`; portanto a chamada de
+`llama_decode` continua pelo grafo. Em seguida, `infer_server::apply_moe_hidden`
+chama o `MoeRuntime` depois de `take_residual`. Isso acrescenta uma passada dos
+experts à passada completa do llama.cpp, em vez de substituir `build_moe_ffn`.
+
+O contrafactual mínimo foi identificado no próprio callback: retornar `false`
+ao encontrar `l_out-29` só abandonaria nós posteriores a esse tensor, mas não
+impediria o `build_moe_ffn` que já o produziu. Logo, esse contrafactual não
+elimina o trabalho duplicado; a correção estrutural precisa mover a fronteira
+para antes do FFN MoE e injetar a saída no restante do bloco. A medição também
+mostra uma segunda causa possível, ainda não quantificada isoladamente: o
+executor CUDA atual aloca buffers e copia hidden, gate/up e down de host para a
+GPU em cada chamada, sincroniza os kernels e copia o resultado de volta. Esse
+perfil só deve ser otimizado depois de a telemetria confirmar `moe_executor=cuda`
+e separar o custo da transferência do custo do kernel.
+
 O renderer Gemma4 lê `tokenizer.chat_template` do próprio GGUF, valida os
 marcadores `<bos>`, `<|turn>`, `<turn|>`, `<|think|>`, `<|channel>` e
 `<channel|>`, e reproduz o controle `enable_thinking` e
@@ -326,6 +357,64 @@ pelo orçamento medido, sem transformar a rede ou o cache em transporte de
 pesos. O router e a política de admissão continuam no Rust. Cada forward
 publicará `gpu_expert_calls`, `cpu_expert_calls`, bytes e banda H2D/D2H,
 `buffer_index`, tempo de sobreposição e o motivo de qualquer fallback.
+
+### Objetivo formal: substituir execução e carga dos experts
+
+Este objetivo é uma extensão formal da Fase 5. O motor MoE deve substituir o
+bloco de experts do `llama.cpp` sem manter uma segunda residência dos mesmos
+pesos. A ordem é deliberada: primeiro provar e medir a supressão da execução
+duplicada; somente depois suprimir a carga dos pesos. Assim, a variação de cada
+medição atribui-se a uma mudança isolada.
+
+#### F5-E1: substituição genérica da execução
+
+O ponto de extensão vive no `build_moe_ffn` comum do fork. Quando o callback
+opt-in está instalado, ele recebe os ids e pesos de roteamento já resolvidos,
+quantidade total e ativa de experts, arquitetura, ativação, convenção de
+gate/up fundida ou separada, nomes, geometrias, dtypes e escalas GGML. O
+executor Rust escolhe o decoder pelo dtype recebido como dado. Não há ramo de
+substituição por arquitetura ou `dtype == NVFP4`.
+
+O callback retorna diretamente a saída do bloco e impede que os matmuls nativos
+de experts entrem no grafo. Atenção, normalizações, cache KV, embeddings,
+tokenização e amostragem continuam no `llama.cpp`. Callback ausente preserva o
+grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
+ou dtype que o executor não consiga atender devem produzir recusa nominal no
+limite de decode, nunca executar o bloco nativo como fallback silencioso.
+
+Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
+`executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e
+decode contra F5.0. O grafo denso deve continuar sem callback e sem regressão.
+
+#### F5-E2: supressão opt-in da carga dos pesos
+
+Quando e somente quando F5-E1 estiver selecionada, o carregador do fork recebe
+uma opção explícita para não alocar os tensores de experts. Ele preserva no
+objeto do modelo apenas a metadata necessária para construir o descriptor do
+hook: nomes, rank e geometrias, dtype, quantidade total de experts e quantidade
+ativa, além das escalas e da indicação de gate/up fundido ou separado. Os bytes
+dos pesos continuam acessíveis somente à fonte GGUF do executor Rust e ao seu
+cache LRU, não a buffers do `llama.cpp`.
+
+O opt-in deve ser genérico por arquitetura e dtype. Sem ele, ou sem o motor
+MoE selecionado, o carregador mantém o comportamento atual byte a byte. Um
+modelo denso nunca pode ativar a opção. O fork terá documento próprio com o
+ponto de carga alterado, a metadata preservada e o comportamento padrão.
+
+Pronto somente com medição na ksia usando o mesmo modelo e configuração: VRAM
+e RAM antes e depois, com quebra por buffer (`CUDA0`, `CUDA_Host` e CPU), RSS e
+PSS do processo, mais prefill e decode por token. A prova deve mostrar que os
+buffers de experts do `llama.cpp` desaparecem e que não existe residência dupla
+com o cache do executor. Nenhum ganho será atribuído à supressão de carga sem
+comparar esses números isoladamente aos números obtidos após F5-E1.
+
+#### F5-E3: regressão e publicação
+
+Cada fase produz commit separado no `rdma-p2p` e no fork. O teste de execução
+deve cobrir callback opt-in, callback ausente e recusa nominal. O teste de
+carga deve cobrir metadata preservada, ausência de tensor de dados e caminho
+denso intacto. A suíte densa continua obrigatória; a prova de desempenho e de
+residência exige o modelo real na ksia e não pode ser substituída por fixture.
 
 ### Fases do goal CUDA
 
@@ -534,6 +623,36 @@ O quadro deixa seis dtypes ativos sem decoder próprio: Q8_1, I8, I16, I32, I64
 e F64. Eles permanecem trabalho futuro explícito; o fechamento não os declara
 implementados. Os 29 dtypes restantes têm decoder e testes locais, mas somente
 o ID 40 tem prova E2E com arquivo GGUF real.
+
+### Experts com dtypes heterogêneos
+
+O inventário antigo exigia um dtype único por modelo e recusava os GGUF UD que
+misturam IQ3_S, IQ2_S e IQ4_XS. Essa premissa foi removida para a fase F5-E1.
+`detect_expert_format` agora devolve `Heterogeneous` quando os tensores de
+expert têm mais de um dtype; `format_heterogeneous.rs` constrói um inventário
+por camada e papel (`gate_up`, `gate`, `up`, `down`) e o `MoeRuntime` escolhe o
+decoder de cada tensor individualmente. A rota, a ativação e a normalização
+continuam vindo do descriptor do hook comum do llama.cpp. Não há ramo por
+arquitetura, família de quantização ou nome de modelo.
+
+O caminho heterogêneo aceita, por tensor, os dtypes com decoders já existentes:
+F32, F16, Q4_0, Q4_1, Q5_0, Q5_1, Q8_0, Q2_K, Q3_K, Q4_K, Q5_K, Q6_K, Q8_K,
+IQ2_XXS, IQ2_XS, IQ3_XXS, IQ1_S, IQ4_NL, IQ3_S, IQ2_S, IQ4_XS, IQ1_M, BF16,
+TQ1_0, TQ2_0, MXFP4, Q1_0 e Q2_0. NVFP4 continua provado no caminho homogêneo;
+se aparecer misturado com outro dtype, a combinação é recusada nominalmente
+por tensor até que suas escalas sejam incluídas no inventário heterogêneo. Q8_1,
+I8, I16, I32, I64 e F64 continuam sem decoder. Qualquer dtype não coberto
+produz o nome do tensor, o ID e o nome GGML, sem interpretar os bytes por outro
+formato.
+
+O teste ignorado
+`qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige
+`POM_REAL_MOE_GGUF` e o arquivo real
+`Qwen3.6-35B-A3B-UD-IQ3_S.gguf`; ele valida 40 camadas, 128 experts e os
+dtypes `{21, 22, 23}`. A abertura local sem esse arquivo não é considerada
+prova. A prova E2E deve executar a mesma revisão do código no host que contém
+o GGUF e mostrar resposta, `executed_engine=moe`, sem divergência e com
+`input_tokens > 0`.
 
 ## Fase 0: baseline local
 

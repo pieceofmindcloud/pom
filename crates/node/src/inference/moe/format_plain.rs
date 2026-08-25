@@ -54,6 +54,26 @@ impl PlainFormat {
             Self::F16 | Self::Bf16 => 2,
         }
     }
+
+    pub fn row_bytes(self, columns: usize) -> Result<usize, PlainError> {
+        columns
+            .checked_mul(self.element_bytes())
+            .ok_or(PlainError::Geometry("overflow no tamanho da linha"))
+    }
+
+    pub fn decode_row(self, row: &[u8], columns: usize) -> Result<Vec<f32>, PlainError> {
+        let expected = self.row_bytes(columns)?;
+        if row.len() != expected {
+            return Err(PlainError::PayloadLength {
+                expected,
+                actual: row.len(),
+            });
+        }
+        Ok(row
+            .chunks_exact(self.element_bytes())
+            .map(|encoded| decode_scalar(encoded, self))
+            .collect())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +274,10 @@ impl PlainSource {
 
     pub fn intermediate(&self) -> usize {
         self.intermediate
+    }
+
+    pub fn experts(&self) -> u32 {
+        self.experts
     }
 
     pub fn layer_count(&self) -> u32 {

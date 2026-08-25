@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstring>
 #include <chrono>
+#include <limits>
 
 // Os layouts e codebooks IQ são parte da convenção GGML. Incluí-los aqui
 // evita uma segunda tabela que poderia divergir do decoder de referência;
@@ -688,6 +689,98 @@ __global__ void kquant_down_route_kernel(
         activated + pair * intermediate);
 }
 
+__device__ __forceinline__ float plain_value(
+    uint32_t dtype,
+    const uint8_t *matrix,
+    std::size_t index
+) {
+    if (dtype == 0) {
+        uint32_t bits = static_cast<uint32_t>(matrix[index * 4]);
+        bits |= static_cast<uint32_t>(matrix[index * 4 + 1]) << 8;
+        bits |= static_cast<uint32_t>(matrix[index * 4 + 2]) << 16;
+        bits |= static_cast<uint32_t>(matrix[index * 4 + 3]) << 24;
+        return __uint_as_float(bits);
+    }
+    const std::size_t offset = index * 2;
+    const uint16_t bits = static_cast<uint16_t>(matrix[offset]) |
+        (static_cast<uint16_t>(matrix[offset + 1]) << 8);
+    if (dtype == 1) {
+        return __half2float(__ushort_as_half(bits));
+    }
+    return __uint_as_float(static_cast<uint32_t>(bits) << 16);
+}
+
+__device__ float plain_dot(
+    uint32_t dtype,
+    const uint8_t *matrix,
+    int row,
+    int columns,
+    const float *input
+) {
+    const std::size_t row_offset = static_cast<std::size_t>(row) * columns;
+    float result = 0.0f;
+    for (int column = 0; column < columns; ++column) {
+        result += plain_value(dtype, matrix, row_offset + column) * input[column];
+    }
+    return result;
+}
+
+__global__ void plain_gate_up_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    const uint32_t *token_ids,
+    int pair_count,
+    int intermediate,
+    int hidden,
+    const float *hidden_values,
+    float *gate_up_values
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int rows_per_pair = 2 * intermediate;
+    const int pair = index / rows_per_pair;
+    const int row = index % rows_per_pair;
+    if (pair >= pair_count) {
+        return;
+    }
+    const uint8_t *payload = payloads[pair];
+    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
+        (static_cast<uint32_t>(payload[1]) << 8) |
+        (static_cast<uint32_t>(payload[2]) << 16) |
+        (static_cast<uint32_t>(payload[3]) << 24);
+    const float *input = hidden_values + static_cast<std::size_t>(token_ids[pair]) * hidden;
+    gate_up_values[pair * rows_per_pair + row] = plain_dot(
+        dtype, payload + kKQuantPayloadHeaderBytes, row, hidden, input);
+    (void)gate_up_len;
+}
+
+__global__ void plain_down_route_kernel(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    int pair_count,
+    int hidden,
+    int intermediate,
+    const float *activated,
+    float *pair_output
+) {
+    const int index = blockIdx.x * blockDim.x + threadIdx.x;
+    const int pair = index / hidden;
+    const int row = index % hidden;
+    if (pair >= pair_count) {
+        return;
+    }
+    const uint8_t *payload = payloads[pair];
+    const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
+        (static_cast<uint32_t>(payload[1]) << 8) |
+        (static_cast<uint32_t>(payload[2]) << 16) |
+        (static_cast<uint32_t>(payload[3]) << 24);
+    pair_output[pair * hidden + row] = plain_dot(
+        dtype,
+        payload + kKQuantPayloadHeaderBytes + gate_up_len,
+        row,
+        intermediate,
+        activated + pair * intermediate);
+}
+
 __global__ void iquant_gate_up_route_kernel(
     uint32_t dtype,
     const uint8_t * const *payloads,
@@ -979,6 +1072,239 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
             (static_cast<int>(token_count) * hidden_i + block_size - 1) / block_size,
             block_size>>>(d_pair_output, d_weights, d_token_offsets,
                 static_cast<int>(token_count), hidden_i, d_output);
+        result = cuda_status(cudaGetLastError());
+        if (timing != nullptr) {
+            timing->launch_ms = elapsed_ms(launch_start, Clock::now());
+            result = cuda_status(cudaEventRecord(end));
+            if (result != 0) break;
+        }
+        const auto sync_start = Clock::now();
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        if (timing != nullptr) {
+            float kernel_ms = 0.0f;
+            result = cuda_status(cudaEventElapsedTime(&kernel_ms, start, end));
+            if (result != 0) break;
+            timing->kernel_ms = kernel_ms;
+            timing->sync_ms = std::max(0.0, elapsed_ms(sync_start, Clock::now()) -
+                static_cast<double>(kernel_ms));
+        }
+
+        const auto d2h_start = Clock::now();
+        result = cuda_status(cudaMemcpy(output, d_output, hidden_bytes, cudaMemcpyDeviceToHost));
+        if (timing != nullptr) {
+            timing->d2h_ms = elapsed_ms(d2h_start, Clock::now());
+            timing->d2h_bytes = static_cast<uint64_t>(hidden_bytes);
+        }
+    } while (false);
+
+    if (start != nullptr) cudaEventDestroy(start);
+    if (end != nullptr) cudaEventDestroy(end);
+    const auto free_start = Clock::now();
+    cudaFree(d_output);
+    cudaFree(d_pair_output);
+    cudaFree(d_activated);
+    cudaFree(d_gate_up);
+    cudaFree(d_token_offsets);
+    cudaFree(d_weights);
+    cudaFree(d_token_ids);
+    cudaFree(d_payloads);
+    cudaFree(d_hidden);
+    if (timing != nullptr) {
+        timing->free_ms = elapsed_ms(free_start, Clock::now());
+    }
+    return result;
+}
+
+extern "C" int pom_moe_plain_forward_route_batch_resident(
+    uint32_t dtype,
+    const uint8_t * const *payloads,
+    std::size_t payload_count,
+    const uint32_t *token_ids,
+    const float *weights,
+    const std::size_t *token_offsets,
+    std::size_t token_offsets_len,
+    std::size_t token_count,
+    const float *hidden,
+    std::size_t hidden_len,
+    float *output,
+    std::size_t output_len,
+    std::size_t hidden_width,
+    std::size_t intermediate_width,
+    CudaMoeCallTiming *timing
+) {
+    if (timing != nullptr) {
+        *timing = {};
+        timing->expert_calls = static_cast<uint64_t>(payload_count);
+        timing->kernel_launches = 4;
+        timing->sync_count = 1;
+    }
+    if ((dtype != 0 && dtype != 1 && dtype != 30) || payloads == nullptr ||
+        token_ids == nullptr || weights == nullptr || token_offsets == nullptr ||
+        hidden == nullptr || output == nullptr || payload_count == 0 || token_count == 0 ||
+        hidden_width == 0 || intermediate_width == 0 ||
+        token_offsets_len != token_count + 1 || hidden_len != token_count * hidden_width ||
+        output_len != hidden_len || token_offsets[0] != 0 ||
+        token_offsets[token_count] != payload_count ||
+        payload_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        token_count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        hidden_width > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
+        intermediate_width > static_cast<std::size_t>(std::numeric_limits<int>::max() / 2)) {
+        return 1;
+    }
+
+    const std::size_t element_bytes = dtype == 0 ? 4 : 2;
+    if (hidden_width > std::numeric_limits<std::size_t>::max() / intermediate_width) {
+        return 1;
+    }
+    const std::size_t matrix_elements = hidden_width * intermediate_width;
+    if (matrix_elements > std::numeric_limits<std::size_t>::max() / 2 / element_bytes) {
+        return 1;
+    }
+    const std::size_t expected_gate_up = matrix_elements * 2 * element_bytes;
+    const std::size_t expected_down = matrix_elements * element_bytes;
+    if (expected_gate_up > std::numeric_limits<uint32_t>::max() ||
+        expected_down > std::numeric_limits<uint32_t>::max()) {
+        return 1;
+    }
+    for (std::size_t pair = 0; pair < payload_count; ++pair) {
+        if (payloads[pair] == nullptr || token_ids[pair] >= token_count ||
+            !std::isfinite(weights[pair])) {
+            return 1;
+        }
+        const uint8_t *payload = payloads[pair];
+        const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
+            (static_cast<uint32_t>(payload[1]) << 8) |
+            (static_cast<uint32_t>(payload[2]) << 16) |
+            (static_cast<uint32_t>(payload[3]) << 24);
+        const uint32_t down_len = static_cast<uint32_t>(payload[4]) |
+            (static_cast<uint32_t>(payload[5]) << 8) |
+            (static_cast<uint32_t>(payload[6]) << 16) |
+            (static_cast<uint32_t>(payload[7]) << 24);
+        if (gate_up_len != expected_gate_up || down_len != expected_down) {
+            return 1;
+        }
+    }
+    for (std::size_t token = 0; token < token_count; ++token) {
+        if (token_offsets[token] > token_offsets[token + 1]) {
+            return 1;
+        }
+    }
+
+    const int pair_count = static_cast<int>(payload_count);
+    const int token_count_i = static_cast<int>(token_count);
+    const int hidden_i = static_cast<int>(hidden_width);
+    const int intermediate_i = static_cast<int>(intermediate_width);
+    const int block_size = 128;
+    if (token_count > std::numeric_limits<std::size_t>::max() / hidden_width ||
+        hidden_width * token_count > std::numeric_limits<std::size_t>::max() / sizeof(float) ||
+        payload_count > std::numeric_limits<std::size_t>::max() /
+            (2 * intermediate_width * sizeof(float)) ||
+        payload_count > std::numeric_limits<std::size_t>::max() /
+            (intermediate_width * sizeof(float)) ||
+        payload_count > std::numeric_limits<std::size_t>::max() /
+            (hidden_width * sizeof(float))) {
+        return 1;
+    }
+    const std::size_t hidden_bytes = hidden_width * token_count * sizeof(float);
+    const std::size_t gate_up_bytes = 2 * intermediate_width * payload_count * sizeof(float);
+    const std::size_t activated_bytes = intermediate_width * payload_count * sizeof(float);
+    const std::size_t pair_output_bytes = hidden_width * payload_count * sizeof(float);
+
+    float *d_hidden = nullptr;
+    const uint8_t **d_payloads = nullptr;
+    uint32_t *d_token_ids = nullptr;
+    float *d_weights = nullptr;
+    std::size_t *d_token_offsets = nullptr;
+    float *d_gate_up = nullptr;
+    float *d_activated = nullptr;
+    float *d_pair_output = nullptr;
+    float *d_output = nullptr;
+    cudaEvent_t start = nullptr;
+    cudaEvent_t end = nullptr;
+    int result = 0;
+
+    do {
+        const auto alloc_start = Clock::now();
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_payloads),
+            payload_count * sizeof(*d_payloads)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_ids),
+            payload_count * sizeof(*d_token_ids)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_weights),
+            payload_count * sizeof(*d_weights)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_offsets),
+            token_offsets_len * sizeof(*d_token_offsets)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated), activated_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_pair_output), pair_output_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), hidden_bytes));
+        if (result != 0) break;
+        if (timing != nullptr) {
+            timing->alloc_ms = elapsed_ms(alloc_start, Clock::now());
+            result = cuda_status(cudaEventCreate(&start));
+            if (result != 0) break;
+            result = cuda_status(cudaEventCreate(&end));
+            if (result != 0) break;
+        }
+
+        const auto h2d_start = Clock::now();
+        result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_bytes, cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_payloads, payloads,
+            payload_count * sizeof(*d_payloads), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_ids, token_ids,
+            payload_count * sizeof(*d_token_ids), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_weights, weights,
+            payload_count * sizeof(*d_weights), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_offsets, token_offsets,
+            token_offsets_len * sizeof(*d_token_offsets), cudaMemcpyHostToDevice));
+        if (timing != nullptr) {
+            timing->h2d_ms = elapsed_ms(h2d_start, Clock::now());
+            timing->h2d_bytes = static_cast<uint64_t>(
+                hidden_bytes + payload_count * sizeof(*d_payloads) +
+                payload_count * sizeof(*d_token_ids) + payload_count * sizeof(*d_weights) +
+                token_offsets_len * sizeof(*d_token_offsets));
+        }
+        if (result != 0) break;
+
+        const auto launch_start = Clock::now();
+        if (timing != nullptr) {
+            result = cuda_status(cudaEventRecord(start));
+            if (result != 0) break;
+        }
+        plain_gate_up_route_kernel<<<
+            (2 * intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, d_token_ids, pair_count, intermediate_i,
+                hidden_i, d_hidden, d_gate_up);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        kquant_silu_kernel<<<
+            (intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_gate_up, pair_count, intermediate_i, d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        plain_down_route_kernel<<<
+            (hidden_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, pair_count, hidden_i, intermediate_i,
+                d_activated, d_pair_output);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        aggregate_route_batch_kernel<<<
+            (static_cast<int>(token_count) * hidden_i + block_size - 1) / block_size,
+            block_size>>>(d_pair_output, d_weights, d_token_offsets, token_count_i,
+                hidden_i, d_output);
         result = cuda_status(cudaGetLastError());
         if (timing != nullptr) {
             timing->launch_ms = elapsed_ms(launch_start, Clock::now());

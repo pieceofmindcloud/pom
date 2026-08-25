@@ -181,8 +181,6 @@ struct LayerInventory {
 pub(crate) struct HeterogeneousTensorPayload {
     pub role: TensorRole,
     pub dtype: u32,
-    pub rows: usize,
-    pub columns: usize,
     pub bytes: Vec<u8>,
 }
 
@@ -441,12 +439,9 @@ impl HeterogeneousMoeSource {
                 entry.map(|entry| (role, entry, rows, columns))
             })
             .map(|(role, entry, rows, columns)| {
-                let tensor = &self.tensors[entry.spec_index];
                 Ok(HeterogeneousTensorPayload {
                     role,
                     dtype: entry.decoder.dtype(),
-                    rows,
-                    columns,
                     bytes: self.tensor_slice(entry, expert, rows, columns)?,
                 })
             })

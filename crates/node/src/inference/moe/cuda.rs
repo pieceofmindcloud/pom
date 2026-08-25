@@ -6,6 +6,7 @@ use super::admission::MemoryAccount;
 use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
 use super::format_k_quants::KQuantFormat;
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
+use super::format_plain::PlainFormat;
 use std::fmt;
 use std::io;
 use std::os::raw::c_void;
@@ -167,6 +168,160 @@ pub struct KQuantCudaExecutor {
     profile: bool,
     resident_cache: Arc<DeviceExpertCache>,
     diagnostics: Mutex<Nvfp4CudaDiagnostics>,
+}
+
+/// Executor CUDA para os payloads escalares F32, F16 e BF16.
+///
+/// O payload continua no formato produzido por `PlainSource`, incluindo os
+/// dois comprimentos de seção. O dtype é validado na fronteira e enviado ao
+/// decoder CUDA como dado, para que F32, F16 e BF16 compartilhem o mesmo
+/// caminho de cache e de roteamento.
+pub struct PlainCudaExecutor {
+    hidden: usize,
+    intermediate: usize,
+    format: PlainFormat,
+    profile: bool,
+    resident_cache: Arc<DeviceExpertCache>,
+    diagnostics: Mutex<Nvfp4CudaDiagnostics>,
+}
+
+impl PlainCudaExecutor {
+    pub fn new_with_cache(
+        format: PlainFormat,
+        hidden: usize,
+        intermediate: usize,
+        resident_cache: Arc<DeviceExpertCache>,
+    ) -> Result<Self, CudaMoeError> {
+        if !matches!(
+            format,
+            PlainFormat::F32 | PlainFormat::F16 | PlainFormat::Bf16
+        ) {
+            return Err(CudaMoeError::BackendUnavailable(format!(
+                "dtype GGML {} não tem ponte CUDA escalar",
+                format.dtype()
+            )));
+        }
+        Ok(Self {
+            hidden,
+            intermediate,
+            format,
+            profile: std::env::var("POM_MOE_CUDA_PROFILE")
+                .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+            resident_cache,
+            diagnostics: Mutex::new(Nvfp4CudaDiagnostics::default()),
+        })
+    }
+
+    pub fn resident_lookup(
+        &self,
+        key: &super::cache::ExpertKey,
+    ) -> Option<super::cache::DeviceExpertLease> {
+        self.resident_cache.lookup(key)
+    }
+
+    pub fn resident_admit(
+        &self,
+        key: super::cache::ExpertKey,
+        payload: &[u8],
+    ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        self.resident_cache
+            .admit(key, payload)
+            .map_err(|error| CudaMoeError::Cache(error.to_string()))
+    }
+
+    pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
+        self.resident_cache.stats()
+    }
+
+    pub fn run_route_batch_resident(
+        &self,
+        payloads: &[super::cache::DeviceExpertLease],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
+        if payloads.is_empty()
+            || payloads.len() != token_ids.len()
+            || payloads.len() != weights.len()
+            || tokens == 0
+            || token_offsets.len() != tokens + 1
+            || token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&payloads.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA escalar tem rotas inválidas".into(),
+            ));
+        }
+        if hidden.len() != tokens.saturating_mul(self.hidden) {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: tokens.saturating_mul(self.hidden),
+                actual: hidden.len(),
+            });
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(CudaMoeError::Payload(
+                "batch CUDA escalar tem peso de rota não finito".into(),
+            ));
+        }
+
+        let handles = payloads
+            .iter()
+            .map(|payload| payload.handle() as *const u8)
+            .collect::<Vec<_>>();
+        let mut output = vec![0.0f32; hidden.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: payloads.len() as u64,
+            ..CudaMoeCallTiming::default()
+        };
+        let cuda_started = Instant::now();
+        let status = unsafe {
+            pom_moe_plain_forward_route_batch_resident(
+                self.format.dtype(),
+                handles.as_ptr(),
+                payloads.len(),
+                token_ids.as_ptr(),
+                weights.as_ptr(),
+                token_offsets.as_ptr(),
+                token_offsets.len(),
+                tokens,
+                hidden.as_ptr(),
+                hidden.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                self.hidden,
+                self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
+        }
+        Ok(output)
+    }
+
+    pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
+        self.diagnostics
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .to_owned()
+    }
 }
 
 impl KQuantCudaExecutor {
@@ -668,6 +823,7 @@ fn validate_heterogeneous_tensor(
 }
 
 impl Nvfp4CudaExecutor {
+    #[cfg(test)]
     pub fn new(
         hidden: usize,
         intermediate: usize,
@@ -1009,6 +1165,24 @@ unsafe extern "C" {
         timing: *mut CudaMoeCallTiming,
     ) -> i32;
 
+    fn pom_moe_plain_forward_route_batch_resident(
+        dtype: u32,
+        payloads: *const *const u8,
+        payload_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
     fn pom_moe_iquant_forward_route_batch_resident(
         dtype: u32,
         payloads: *const *const u8,
@@ -1055,6 +1229,7 @@ mod tests {
     use super::super::format_iq_quants::{dequantize_row, row_bytes, IqQuantExpert, IqQuantFormat};
     use super::super::format_k_quants::{KQuantExpert, KQuantFormat};
     use super::super::format_nvfp4::{Nvfp4Expert, Nvfp4Source};
+    use super::super::format_plain::{PlainExpert, PlainFormat};
     use super::super::format_q4_0::parse_tensor_table;
     use super::*;
     use memmap2::Mmap;
@@ -1109,6 +1284,40 @@ mod tests {
                 }
             }
             bytes
+        };
+        let gate_up = matrix(2 * intermediate, hidden);
+        let down = matrix(hidden, intermediate);
+        let mut payload = Vec::with_capacity(8 + gate_up.len() + down.len());
+        payload.extend_from_slice(&(gate_up.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&(down.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&gate_up);
+        payload.extend_from_slice(&down);
+        payload
+    }
+
+    fn plain_payload(format: PlainFormat, hidden: usize, intermediate: usize) -> Vec<u8> {
+        let element_bytes = match format {
+            PlainFormat::F32 => 4,
+            PlainFormat::F16 | PlainFormat::Bf16 => 2,
+        };
+        let encode = |value: f32, output: &mut Vec<u8>| match format {
+            PlainFormat::F32 => output.extend_from_slice(&value.to_le_bytes()),
+            PlainFormat::F16 => {
+                output.extend_from_slice(&half::f16::from_f32(value).to_bits().to_le_bytes())
+            }
+            PlainFormat::Bf16 => {
+                output.extend_from_slice(&((value.to_bits() >> 16) as u16).to_le_bytes())
+            }
+        };
+        let matrix = |rows: usize, columns: usize| {
+            let mut output = Vec::with_capacity(rows * columns * element_bytes);
+            for row in 0..rows {
+                for column in 0..columns {
+                    let value = ((row.wrapping_mul(3) + column) % 9) as f32 * 0.0625 - 0.25;
+                    encode(value, &mut output);
+                }
+            }
+            output
         };
         let gate_up = matrix(2 * intermediate, hidden);
         let down = matrix(hidden, intermediate);
@@ -1282,6 +1491,50 @@ mod tests {
             assert_eq!(actual.len(), expected.len());
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_plain_preserva_f32_f16_e_bf16_do_decoder_cpu() {
+        let hidden = 64;
+        let intermediate = 64;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 31.0) * 0.03125)
+            .collect::<Vec<_>>();
+        for format in [PlainFormat::F32, PlainFormat::F16, PlainFormat::Bf16] {
+            let payload = plain_payload(format, hidden, intermediate);
+            let expected = PlainExpert::from_payload(format, hidden, intermediate, &payload)
+                .unwrap()
+                .run(&hidden_values)
+                .unwrap();
+            let executor = PlainCudaExecutor::new_with_cache(
+                format,
+                hidden,
+                intermediate,
+                measured_device_cache(1_000_000).unwrap(),
+            )
+            .unwrap();
+            let lease = executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-plain-test", 0, 0, format.name()),
+                    &payload,
+                )
+                .unwrap();
+            let actual = executor
+                .run_route_batch_resident(&[lease], &[0], &[1.0], &[0, 1], &hidden_values, 1)
+                .unwrap();
+            let tolerance = if matches!(format, PlainFormat::F32) {
+                1e-5
+            } else {
+                2e-3
+            };
+            assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() <= tolerance,
+                    "{actual} != {expected}"
+                );
             }
         }
     }

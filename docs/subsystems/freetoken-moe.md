@@ -1346,6 +1346,23 @@ referência CPU. A cobertura CUDA e a prova E2E nos GGUF reais dos dois UD ainda
 precisam ser executadas no diretório de validação antes de promover esta fase;
 os números do marco continuam em aberto.
 
+### Estado da cobertura CUDA escalar - 2026-08-25
+
+F32 (0), F16 (1) e BF16 (30) agora compartilham uma ponte CUDA parametrizada
+por `PlainFormat`. O payload usado pelo `PlainSource` é admitido uma única vez
+no `DeviceExpertCache`, incluindo o cabeçalho de comprimentos de `gate_up` e
+`down`; o kernel valida esses comprimentos, decodifica o dtype informado e
+executa gate/up, SiLU, down e agregação no lote de rotas. Não há ramo por
+arquitetura ou nome de modelo, e um dtype fora de `{0, 1, 30}` é recusado antes
+do lançamento.
+
+O teste CUDA diferencial cobre os três formatos com os mesmos payloads e
+hidden do `PlainExpert` CPU, com tolerância `1e-5` para F32 e `2e-3` para F16 e
+BF16. A build e esse teste ainda precisam passar no worktree de validação, em
+`/data/ftk-cuda-target`; também não há prova E2E com um GGUF MoE real desses
+três dtypes. Sem CUDA, ou se a admissão por orçamento medido recusar o payload,
+a posse permanece no llama.cpp e a telemetria informa o motivo.
+
 ### Fases e critérios de pronto
 
 1. **Inventário e conformance.** Mapear todos os IDs ativos da enumeração,

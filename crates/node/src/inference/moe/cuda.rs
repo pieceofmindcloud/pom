@@ -221,6 +221,7 @@ impl Nvfp4CudaExecutor {
                 hidden.as_ptr(),
                 hidden.len(),
                 flat_output.as_mut_ptr(),
+                flat_output.len(),
                 self.hidden,
                 self.intermediate,
                 if self.profile {
@@ -274,6 +275,7 @@ unsafe extern "C" {
         hidden: *const f32,
         hidden_len: usize,
         output: *mut f32,
+        output_len: usize,
         hidden_width: usize,
         intermediate_width: usize,
         timing: *mut CudaMoeCallTiming,

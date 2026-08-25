@@ -371,8 +371,36 @@ No trace MoE, o tempo do backend e a chamada medida no nó coincidem:
 
 Isso confirma que não há uma segunda execução escondida, mas não diz ainda qual
 parcela interna do executor CUDA domina. A instrumentação diagnóstica separa
-alocação, H2D, kernel, lançamento, sincronização, D2H e liberação; nenhuma
-fração temporal é afirmada antes de essa medição ser executada na ksia.
+alocação, H2D, kernel, lançamento, sincronização, D2H e liberação.
+
+### Perfil interno CUDA observado na ksia
+
+O perfil foi executado em uma instância isolada, sem alterar o serviço nas
+portas 8080/8092, com `rdma-p2p=8187aad`, `llama.cpp=03902a5`,
+`POM_MOE_CUDA_PROFILE=1` e o GGUF real `Gemma4-26b-NVFP4.gguf`. A requisição
+OpenAI tinha `input_tokens=20` e produziu `hello`; o trace confirmou
+`executed_engine=moe`, `moe_executor=cuda`, `profiled=true` e
+`engine_mismatch=false`.
+
+Os contadores de CUDA abaixo são os tempos acumulados publicados pelo executor.
+Na linha decode, subtraí os contadores do fim do prefill dos contadores do fim
+do decode: o runtime mantém o diagnóstico por modelo, então a linha representa
+os 240 experts selecionados desse único token de decode, não os 5040 calls
+acumulados. Percentuais são somente da soma das categorias instrumentadas, não
+do tempo total do nó.
+
+| fase | calls | backend/enqueue | H2D | kernel | alloc | launch | sync | D2H | free |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| prefill, 20 tokens | 4800 | 33784,602 ms | 10189,819 ms | 19882,414 ms | 324,379 ms | 59,956 ms | 302,153 ms | 49,750 ms | 269,494 ms |
+| decode, delta de 1 token | 240 | 1738,734 ms | 621,394 ms | 967,158 ms | 16,860 ms | 3,174 ms | 14,713 ms | 2,589 ms | 13,685 ms |
+
+A soma das categorias instrumentadas foi `31077,965 ms` no prefill e
+`1639,573 ms` no decode. O restante até o backend/enqueue foi,
+respectivamente, `2706,637 ms` e `99,161 ms`, portanto também não é atribuído
+ao kernel por inferência. Dentro do que foi medido, o kernel responde por
+`63,98%` do prefill e `58,99%` do decode; H2D responde por `32,79%` e
+`37,90%`. Portanto a transferência é grande, mas não é a maior categoria
+medida nesta execução.
 
 ### Diagnóstico estrutural do caminho CUDA
 
@@ -382,40 +410,55 @@ todos os blocos e `Nvfp4Executor::run_with_loader` faz `lookup` antes de
 `admit`, inclusive no caminho CUDA. O que o LRU mantém é o payload NVFP4 bruto
 em RAM. Ele não mantém buffers CUDA nem um lease de device.
 
-Para o Gemma4 real, a geometria é hidden 704, intermediate 2816, 30 camadas,
-128 experts e top-k 8. O caminho atual faz, por token de decode:
+Para o Gemma4 real, a geometria observada no GGUF e no hook é `hidden=2816`,
+`intermediate=704`, 30 camadas, 128 experts e top-k 8. O caminho atual faz,
+por token de decode:
 
 | operação | contagem |
 |---|---:|
 | chamadas de expert | 30 x 8 = 240 |
 | cópias H2D de `gate_up` | 240 |
 | cópias H2D de `down` | 240 |
-| bytes H2D só de pesos | 802897920 (766,0 MiB) |
-| bytes H2D incluindo hidden | 803573760 (766,6 MiB) |
+| bytes H2D só de pesos | 802897920 (765,7 MiB) |
+| bytes H2D incluindo hidden | 805601280 (768,3 MiB) |
 | lançamentos de kernel | 480 |
 | `cudaDeviceSynchronize` | 480 |
 | `cudaMalloc` e `cudaFree` | 1200 de cada |
 | cópias D2H de saída | 240 |
 
 Cada expert selecionado atravessa PCIe uma vez por tensor de peso em cada
-chamada, mesmo quando o `ExpertCache` registra hit. No prefill de 21 tokens,
-essa mesma sequência chega a 5040 chamadas de expert e 10080 cópias H2D de
-peso. Além disso, `Nvfp4CudaExecutor::run` repete a validação do cabeçalho do
-payload em CPU em cada chamada.
+chamada, mesmo quando o `ExpertCache` registra hit. O perfil mediu
+`805601280` bytes H2D por token de decode, dos quais `802897920` são pesos:
+240 cópias de `gate_up` e 240 de `down`, ou `3.345.408 bytes` de pesos por uso de
+expert. No prefill de 20 tokens, foram `4800` chamadas de expert e
+`9600` cópias H2D de peso, totalizando `16112025600` bytes H2D. Além disso,
+`Nvfp4CudaExecutor::run` repete a validação do cabeçalho do payload em CPU em
+cada chamada.
 
-Há uma divergência concreta a verificar antes de qualquer otimização: em
-`cuda_kernels.cu`, o buffer copiado para device (`d_gate_up`) não é o ponteiro
-passado a `gate_up_kernel`; o kernel recebe o ponteiro host `gate_up`. Assim,
-o buffer H2D de gate/up fica sem uso e o kernel pode estar lendo essa matriz
-pela memória host mapeada, ou pode estar sujeito a erro de acesso dependendo
-do backend. O diagnóstico desta fase deve confirmar isso no binário da ksia;
-não se deve atribuir o custo somente ao LRU sem fechar essa evidência.
+O LRU estava efetivamente ativo: no fim do prefill havia `1279` misses,
+`3521` hits e `1279` admissões; no decode houve mais `22` misses e `218` hits,
+chegando a `1301` entradas e `4352417440` bytes residentes em RAM. Porém o
+delta do decode ainda transferiu os pesos dos 240 usos, inclusive os 218 hits.
+Assim, a resposta objetiva à pergunta de PCIe é: um tensor de peso cruza uma
+vez por uso selecionado, e não uma vez por miss do LRU. Uma determinada chave
+de expert cruza tantas vezes quanto for selecionada no roteamento; neste token,
+o agregado foi 480 transferências de peso.
 
-Conclusão atual, antes da medição interna: o LRU está ativo no caminho do hook,
-mas é somente cache de RAM. O caminho CUDA repete transferência de pesos,
-alocação e sincronização para cada expert selecionado. Os números acima são a
-linha de base honesta para as fases seguintes; ainda não são um perfil de
-tempo por parcela.
+Há uma divergência concreta no caminho instrumentado: em `cuda_kernels.cu`, o
+buffer copiado para device (`d_gate_up`) não é o ponteiro passado a
+`gate_up_kernel`; o kernel recebe o ponteiro host `gate_up`. Assim, o buffer H2D
+de gate/up fica sem uso e o kernel pode estar lendo essa matriz pela memória
+host mapeada, ou pode estar sujeito a erro de acesso dependendo do backend. Isso
+é uma causa concreta para investigar antes de atribuir os `19882,414 ms` de
+kernel do prefill ou os `967,158 ms` do decode ao cálculo NVFP4 em si.
+
+Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
+cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
+selecionado e a medição real mostra o kernel como a maior categoria, seguido de
+H2D. A telemetria interna agora separa as parcelas, mas a divergência do
+ponteiro `gate_up` impede interpretar a categoria kernel como custo do cálculo
+correto. Os números acima são a linha de base honesta para as fases seguintes;
+nenhuma otimização foi feita nesta etapa.
 
 ### Goal retomado: executor CUDA e co-execução CPU/GPU
 

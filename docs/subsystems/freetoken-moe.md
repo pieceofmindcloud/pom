@@ -436,6 +436,17 @@ tabela E2M1 pela metade junto com UE4M3 dividido por dois aplica uma redução
 dupla. CPU Rust e CUDA usam agora exatamente essa convenção, protegida por
 teste unitário e pela comparação contra o ggml.
 
+Há um limite conhecido na entrada sintética `POM_MOE_NUMERIC_INPUT=ones`: no
+host x86 da ksia, o backend nativo usa oito acumuladores AVX2, FMA e redução
+horizontal, enquanto uma implementação escalar acumula subbloco a subbloco.
+Essa não-associatividade produz erro centrado apenas no estágio down de alguns
+casos sintéticos, sem indicar diferença de escala, zero-point ou roteamento.
+O executor seleciona a ordem AVX2 quando as capacidades correspondentes estão
+disponíveis e conserva a redução escalar nas demais arquiteturas. A prova com
+hidden determinístico do GGUF real Gemma4 passou em todas as camadas e estágios;
+esse resultado real, e não o relaxamento da tolerância, é o critério de
+correção.
+
 Comando da prova real, fora da suíte padrão por exigir um arquivo grande:
 
 ```bash

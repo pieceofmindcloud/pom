@@ -831,6 +831,18 @@ fn quantize_q8_0(input: &[f32]) -> Vec<Q8Block> {
 // ggml_vec_dot_nvfp4_q8_0_generic so the Rust reference is numerically
 // comparable to the native backend.
 fn mat_vec_nvfp4(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
+    #[cfg(target_arch = "x86_64")]
+    if is_x86_feature_detected!("avx2") && is_x86_feature_detected!("fma") {
+        // llama.cpp selects the AVX2 NVFP4 kernel on this host. Its eight
+        // lane accumulators and fused multiply-add are observably different
+        // from the portable scalar reduction, so mirror that order when the
+        // same runtime capabilities are present.
+        return unsafe { mat_vec_nvfp4_avx2_order(matrix, rows, columns, input) };
+    }
+    mat_vec_nvfp4_scalar(matrix, rows, columns, input)
+}
+
+fn mat_vec_nvfp4_scalar(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> Vec<f32> {
     let row_size = columns / BLOCK_ELEMENTS * BLOCK_BYTES;
     let input_q8 = quantize_q8_0(input);
     (0..rows)
@@ -858,6 +870,60 @@ fn mat_vec_nvfp4(matrix: &[u8], rows: usize, columns: usize, input: &[f32]) -> V
                 }
             }
             result
+        })
+        .collect()
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "fma")]
+unsafe fn mat_vec_nvfp4_avx2_order(
+    matrix: &[u8],
+    rows: usize,
+    columns: usize,
+    input: &[f32],
+) -> Vec<f32> {
+    let row_size = columns / BLOCK_ELEMENTS * BLOCK_BYTES;
+    let input_q8 = quantize_q8_0(input);
+    (0..rows)
+        .map(|row| {
+            let row_bytes = &matrix[row * row_size..(row + 1) * row_size];
+            let mut accum = [0.0_f32; 8];
+            for (block, packed) in row_bytes.chunks_exact(BLOCK_BYTES).enumerate() {
+                let q8_blocks = [input_q8[block * 2], input_q8[block * 2 + 1]];
+                for half in 0..2 {
+                    let q8 = q8_blocks[half];
+                    for lane in 0..8 {
+                        let section = lane / 2;
+                        let subblock = section / 2;
+                        let nibble = section % 2;
+                        let values = &packed[4 + (half * 2 + subblock) * (SUBBLOCK_ELEMENTS / 2)
+                            ..4 + (half * 2 + subblock + 1) * (SUBBLOCK_ELEMENTS / 2)];
+                        let value_start = (lane % 2) * 4;
+                        let q8_start = section * 8 + value_start;
+                        let mut dot = 0_i32;
+                        for index in 0..4 {
+                            let quant = values[value_start + index];
+                            let fp4 = if nibble == 0 {
+                                fp4_value_i8(quant & 0x0f)
+                            } else {
+                                fp4_value_i8(quant >> 4)
+                            };
+                            dot += i32::from(q8.qs[q8_start + index]) * i32::from(fp4);
+                        }
+                        let scale = ue4m3_to_f32(packed[half * 2 + subblock]);
+                        let factor = scale * q8.d;
+                        accum[lane] = factor.mul_add(dot as f32, accum[lane]);
+                    }
+                }
+            }
+
+            // This is hsum_float_8 from ggml-cpu/arch/x86/quants.c:
+            // (x4+x0+x7+x3) + (x5+x1+x6+x2), preserving its pairwise order.
+            let pair0 = accum[4] + accum[0];
+            let pair1 = accum[5] + accum[1];
+            let pair2 = accum[6] + accum[2];
+            let pair3 = accum[7] + accum[3];
+            (pair0 + pair3) + (pair1 + pair2)
         })
         .collect()
 }

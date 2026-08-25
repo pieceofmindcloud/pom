@@ -523,11 +523,9 @@ Na revisão final `fb8da96`, validada na ksia, os resultados foram:
 
 O teste real do lote compara os mesmos bytes e hidden entre CUDA e o decoder
 CPU, enquanto a prova do oráculo compara o decoder CPU com o llama.cpp. Essa
-separação evita que o teste CUDA valide o próprio oráculo. Ainda não há número
-de tok/s atribuído ao agrupamento: a redução de lançamentos é uma propriedade
-do código, mas a medição E2E deve ser refeita em uma carga servida antes de
-declarar ganho. O cache continua em RAM, sem residência de experts em VRAM;
-F5-E2 permanece posterior ao agrupamento.
+separação evita que o teste CUDA valide o próprio oráculo. A medição E2E
+agrupada está registrada abaixo. O cache continua em RAM, sem residência de
+experts em VRAM; F5-E2 permanece posterior ao agrupamento.
 
 Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
 cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
@@ -535,6 +533,48 @@ selecionado. A correção do ponteiro `gate_up` é uma etapa de correção numé
 não uma otimização; depois dela, a telemetria deve ser coletada novamente antes
 de comparar o custo do kernel. Os números acima continuam sendo a linha de
 base pré-correção; nenhuma otimização foi feita nesta etapa.
+
+### Medição E2E do agrupamento CUDA
+
+Em 2026-08-25, a medição foi repetida na ksia com `rdma-p2p=340efc8`,
+`llama.cpp=03902a5`, RTX 5060 Ti e o GGUF real `Gemma4-26b-NVFP4.gguf`.
+Para obter a quebra interna sem reiniciar o nó servível, usei uma instância
+isolada do mesmo binário, no mesmo GPU e em portas separadas, com
+`POM_MOE_CUDA_PROFILE=1`. O serviço principal permaneceu ativo com o Gemma4 em
+modo MoE. A requisição foi `Escreva hello world 10 vezes.`, com
+`max_tokens=64`; ela produziu 30 tokens em 10 linhas coerentes e tinha
+`input_tokens=22`.
+
+No MoE agrupado, o trace mostrou `executed_engine=moe`,
+`moe_executor=cuda`, `engine_mismatch=false`, `mixed_execution=false`,
+`prefill_ms=6962`, `decode.processing_ms=5396` em 29 chamadas e duração total
+de `12525 ms`. Portanto, prefill foi `316,455 ms/token` e decode foi
+`186,069 ms/token`.
+
+| fase | backend total | chamada de decode no nó | H2D | kernel CUDA | chamadas de experts |
+|---|---:|---:|---:|---:|---:|
+| prefill, 22 tokens | `6957 ms` | `6956,219 ms` | `1758,498 ms` (`79,932 ms/token`) | `157,755 ms` (`7,171 ms/token`) | `5280` |
+| decode, 29 tokens | `5396 ms` | `5390,302 ms` | `1892,275 ms` (`65,251 ms/token`) | `234,272 ms` (`8,078 ms/token`) | `6960` |
+
+Na linha decode, H2D e kernel são o delta dos contadores acumulados ao fim do
+prefill. Os `6960` experts são `29 x 240`, e o H2D foi
+`23294062080` bytes no total do delta, ou `803243520 bytes/token`
+(`766,033 MiB/token`). O agrupamento reduziu os lançamentos para cinco por
+lote, mas ainda copia os payloads selecionados para a GPU.
+
+O par denso, na mesma instância e com a mesma requisição, produziu o mesmo
+texto com `executed_engine=llama.cpp`, `engine_mismatch=false`,
+`prefill_ms=398`, `decode.processing_ms=1402` em 29 chamadas e duração total
+de `1970 ms`: `18,091 ms/token` de prefill e `48,345 ms/token` de decode.
+H2D/kernel de experts não se aplica ao caminho denso, que não executa o
+executor MoE.
+
+Comparado à linha de base pré-agrupamento de `1689,3 ms/token` no prefill,
+`1738,7 ms/token` no decode, `621,4 ms/token` de H2D e `967,2 ms/token` de
+kernel no decode, o agrupamento medido foi uma melhoria isolada: cerca de
+`5,34x` no prefill, `9,34x` no decode, `9,52x` no H2D e `119,73x` no kernel.
+O nó principal terminou servível em `8080/8092`, com Gemma4 NVFP4 ativo em
+modo MoE; a instância isolada foi encerrada após a medição.
 
 ### Goal retomado: executor CUDA e co-execução CPU/GPU
 

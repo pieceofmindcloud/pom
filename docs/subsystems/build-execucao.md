@@ -422,11 +422,11 @@ Arquitetura de cada máquina do cluster:
 | Máquina | GPU | `CUDAARCHS` |
 |---|---|---|
 | ksia | RTX 5060 Ti | `120` |
-| salem | - | `86` |
+| salem | duas arquiteturas | `"120;86"` |
 
-Para um binário que precisa rodar nas duas, use as duas juntas:
-`CUDAARCHS="120;86"`. Para validação e desenvolvimento local - o caso comum -
-use só a da máquina.
+A ksia é `compute_120` e só isso. O salem tem **duas** arquiteturas e precisa
+das duas juntas - `86` sozinho não serve lá. Para validação e desenvolvimento
+local - o caso comum - use o valor da máquina em que está compilando.
 
 O `ccache` está instalado na ksia, com cache em `/data/ccache`, e o sistema de
 compilação do llama.cpp o detecta sozinho. Ele **não** acelera a parte Rust; só

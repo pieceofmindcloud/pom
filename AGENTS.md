@@ -80,8 +80,8 @@ cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
 a arquitetura de cada máquina em `docs/subsystems/build-execucao.md`
 ("Arquiteturas de GPU"). Em desenvolvimento, fixe só a arquitetura da máquina
-(`CUDAARCHS=120` na ksia, `86` no salem; `CUDAARCHS="120;86"` para um binário
-que roda nas duas). A lista larga só vale para release. Trocar o valor invalida
+(`CUDAARCHS=120` na ksia; no salem são duas, `CUDAARCHS="120;86"`). A lista
+larga só vale para release. Trocar o valor invalida
 o build nativo anterior e o cargo não percebe a troca.
 
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução

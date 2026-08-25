@@ -13,7 +13,7 @@
 // o executor e os kernels abaixo continuam sendo específicos deste motor.
 #define GGML_COMMON_DECL_CUDA
 #define GGML_COMMON_IMPL_CUDA
-#include "../../../../vendor/llama-cpp-sys-2/llama.cpp/ggml/src/ggml-common.h"
+#include "../../../../../vendor/llama-cpp-sys-2/llama.cpp/ggml/src/ggml-common.h"
 
 namespace {
 

@@ -670,13 +670,16 @@ As hipóteses foram confrontadas com o caminho real:
    externo, mas não é o gargalo observado. Cada chamada FFI CUDA registra
    `sync_count=1` e executa `cudaDeviceSynchronize` depois dos quatro kernels;
    como o callback está dentro do grafo, isso ocorre por camada e microbatch.
-   No perfil completo, `sync_ms=6,492 ms` no prefill, contra `cuda_call_wall_ms=
-   2836,915 ms`; no delta de decode foram `16,399 ms` contra `3086,384 ms`.
-   A diferença não sustenta a hipótese de que a espera de sincronização seja
-   o custo principal do prefill.
+   No perfil histórico, `sync_ms=6,492 ms` no prefill, contra
+   `cuda_call_wall_ms=2836,915 ms`; no delta de decode foram `16,399 ms`
+   contra `3086,384 ms`. Isso não sustenta a hipótese de que a espera de
+   sincronização fosse o custo principal daquela carga, mas não é evidência
+   do estado atual.
 
-A quebra não sobreposta disponível para o prefill, em uma carga anterior de
-22 tokens após o agrupamento, foi:
+A quebra abaixo pertence exclusivamente ao perfil histórico de 22 tokens,
+anterior ao estado que produziu `38,4 tok/s`. Ela fica registrada para
+reprodução, mas está deliberadamente excluída de qualquer conclusão sobre o
+prefill atual:
 
 | componente | tempo | fração do backend total |
 |---|---:|---:|
@@ -691,14 +694,13 @@ A quebra não sobreposta disponível para o prefill, em uma carga anterior de
 | restante da orquestração do runtime | `135,860 ms` | `1,690%` |
 | **backend total** | **`8039,369 ms`** | **`100%`** |
 
-Essa tabela é evidência de estrutura, não uma decomposição inventada do
-benchmark novo. Ela aponta a preparação do lote no host como o maior alvo
-medido e a parede CUDA como o segundo. O contrafactual mínimo para fechar a
-atribuição no benchmark atual é repetir exatamente as três rodadas com o
-mesmo prompt, habilitando `POM_MOE_CUDA_PROFILE=1`, e registrar o tamanho do
-prompt, `n_batch`, `n_ubatch`, número de callbacks e a quebra acima. Só depois
-de essa coleta, com a placa livre, será possível decidir entre aumentar o
-microbatch, reutilizar a preparação de host ou alterar a sincronização.
+Essa tabela não prova onde o tempo está hoje. O perfil novo ainda está
+pendente porque a GPU está sendo usada pelo benchmark de concorrência. A
+coleta correta deve repetir exatamente as três rodadas atuais com
+`POM_MOE_CUDA_PROFILE=1` e registrar o tamanho do prompt, `n_batch`,
+`n_ubatch`, número de callbacks e a quebra equivalente. Só depois dessa
+coleta, com a placa livre, será possível decidir entre aumentar o microbatch,
+reutilizar a preparação de host ou alterar a sincronização.
 
 ### Análise formal de lacunas: FreeToken versus o caminho MoE atual
 
@@ -713,8 +715,8 @@ por impacto observado, não por facilidade de implementação.
 |---|---|---|---|---|
 | 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
 | 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF, mas a ponte CUDA real cobre somente NVFP4. IQ e outros dtypes publicam `CPUReference` com recusa explicada para a ausência da ponte, em vez de fingir CUDA. | No Qwen UD-IQ3_S medido, CPUReference custou aproximadamente `5284 ms/token` de prefill e `4990 ms/token` de decode. Isso prova um custo enorme para dtypes sem ponte, mas não autoriza projetar o ganho de uma ponte nova: cada dtype exige prova numérica independente, e a lista do FreeToken não prova cobertura de IQ3/IQ2/IQ4. |
-| 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | É o maior componente do prefill atual: `3622,166 ms` (`45,055%` do backend, `164,644 ms/token`) e o segundo maior no decode: `2166,206 ms` (`36,230%`, `74,697 ms/token`). Reutilizar descritores e buffers pode remover até esse componente em hipótese ideal, mas o ganho real precisa ser medido porque parte da montagem pode ser necessária para rotas dinâmicas. |
-| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | A política de banda e o double buffer continuam andaime documentado, sem perfil persistido consumido pelo runtime. O caminho atual faz staging por chamada e não escolhe CPU/GPU pela banda medida. | No decode, a parede CUDA foi `106,427 ms/token`, enquanto H2D interno foi `90,309` e kernel `7,734 ms/token`; o limite ideal de sobreposição desses dois subcustos seria `90,309 ms/token`, uma diferença de `16,118 ms/token` dentro da parede CUDA. Isso é um limite de modelo, não ganho medido. No prefill, a preparação host domina antes que double buffer possa ser declarado solução. |
+| 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | No perfil histórico, foi o maior componente do prefill: `3622,166 ms`. Isso não foi confirmado no estado atual de `38,4 tok/s`; o ganho real de reutilizar descritores e buffers depende do novo perfil. |
+| 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | A política de banda e o double buffer continuam andaime documentado, sem perfil persistido consumido pelo runtime. O caminho atual faz staging por chamada e não escolhe CPU/GPU pela banda medida. | Os números de H2D e kernel registrados no documento são históricos. Nenhum ganho ou gargalo atual deve ser inferido deles até o novo perfil do estado `38,4 tok/s`. |
 | 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
 
 #### Item 1: cache em VRAM

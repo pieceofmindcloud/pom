@@ -2037,6 +2037,9 @@ mod tests {
                 2,
             )
             .unwrap();
+        let diagnostics = executor.diagnostics();
+        assert_eq!(diagnostics.buffer_mask, 3);
+        assert!(diagnostics.buffer_switches > 0);
         for (actual, expected) in actual.chunks_exact(hidden).zip(expected) {
             eprintln!(
                 "NVFP4 route: actual[0..4]={:?} expected[0..4]={:?}",
@@ -2425,8 +2428,10 @@ mod tests {
             let h2d_gb_s = diagnostics.h2d_bytes as f64 / (diagnostics.h2d_ms * 1_000_000.0);
             let d2h_gb_s = diagnostics.d2h_bytes as f64 / (diagnostics.d2h_ms * 1_000_000.0);
             eprintln!(
-                "CUDA_BANDWIDTH case={label} hidden={hidden} intermediate={intermediate} tokens={tokens} active_experts={active_experts} calls={} h2d_bytes={} h2d_ms={:.3} effective_h2d_GB_s={:.3} d2h_bytes={} d2h_ms={:.3} effective_d2h_GB_s={:.3} kernel_ms={:.3} wall_ms={:.3}",
+                "CUDA_BANDWIDTH case={label} hidden={hidden} intermediate={intermediate} tokens={tokens} active_experts={active_experts} calls={} buffer_mask={} buffer_switches={} h2d_bytes={} h2d_ms={:.3} effective_h2d_GB_s={:.3} d2h_bytes={} d2h_ms={:.3} effective_d2h_GB_s={:.3} kernel_ms={:.3} wall_ms={:.3}",
                 diagnostics.calls,
+                diagnostics.buffer_mask,
+                diagnostics.buffer_switches,
                 diagnostics.h2d_bytes,
                 diagnostics.h2d_ms,
                 h2d_gb_s,

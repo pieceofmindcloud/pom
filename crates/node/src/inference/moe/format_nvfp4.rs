@@ -1006,6 +1006,11 @@ mod tests {
         let mut max_abs = 0.0f32;
         let mut max_rel = 0.0f32;
         let mut worst = 0usize;
+        let mut signed_sum = 0.0f64;
+        let mut abs_sum = 0.0f64;
+        let mut positive = 0usize;
+        let mut negative = 0usize;
+        let mut exact = 0usize;
         for (index, (&actual, &expected)) in ours.iter().zip(reference).enumerate() {
             assert!(
                 actual.is_finite() && expected.is_finite(),
@@ -1013,11 +1018,32 @@ mod tests {
             );
             let abs = (actual - expected).abs();
             let rel = abs / actual.abs().max(expected.abs()).max(1.0e-12);
+            let signed = (actual - expected) as f64;
+            signed_sum += signed;
+            abs_sum += f64::from(abs);
+            if signed > 0.0 {
+                positive += 1;
+            } else if signed < 0.0 {
+                negative += 1;
+            } else {
+                exact += 1;
+            }
             if abs > max_abs {
                 max_abs = abs;
                 worst = index;
             }
             max_rel = max_rel.max(rel);
+        }
+        if max_abs > 1.0e-4 && max_rel > 2.0e-3 {
+            eprintln!(
+                "{stage} layer {layer} error distribution: n={} mean_signed={} mean_abs={} positive={} negative={} exact={}",
+                ours.len(),
+                signed_sum / ours.len() as f64,
+                abs_sum / ours.len() as f64,
+                positive,
+                negative,
+                exact,
+            );
         }
         assert!(
             max_abs <= 1.0e-4 || max_rel <= 2.0e-3,

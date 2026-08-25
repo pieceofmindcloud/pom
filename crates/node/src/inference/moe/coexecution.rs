@@ -60,6 +60,7 @@ pub enum MeasuredOverlapError<CE, GE> {
     Workers(OverlapError<CE, GE>),
 }
 
+#[cfg(test)]
 impl<CE: fmt::Display, GE: fmt::Display> fmt::Display for MeasuredOverlapError<CE, GE> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -69,6 +70,7 @@ impl<CE: fmt::Display, GE: fmt::Display> fmt::Display for MeasuredOverlapError<C
     }
 }
 
+#[cfg(test)]
 impl<CE: fmt::Debug + fmt::Display, GE: fmt::Debug + fmt::Display> std::error::Error
     for MeasuredOverlapError<CE, GE>
 {
@@ -105,6 +107,7 @@ pub enum BufferError {
     InsufficientBudget { needed: u64, available: u64 },
 }
 
+#[cfg(test)]
 impl fmt::Display for BufferError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -120,6 +123,7 @@ impl fmt::Display for BufferError {
     }
 }
 
+#[cfg(test)]
 impl std::error::Error for BufferError {}
 
 #[cfg(test)]

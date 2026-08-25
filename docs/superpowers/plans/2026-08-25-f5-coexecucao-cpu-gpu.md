@@ -33,27 +33,27 @@
 - Produces `BandwidthProfile::split_misses(&[u32]) -> Result<MissSplit, BandwidthError>`.
 - Produces `run_overlap` para duas closures concorrentes e `run_measured` para dividir misses antes de iniciar as duas lanes.
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
   Adicionar testes para: fração `transfer / (cpu + transfer)`, fallback para perfil antigo, recusa de medição ausente, divisão determinística, início concorrente com `Barrier`, propagação de erro da lane GPU e orçamento insuficiente para dois slots.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
   Run: `cargo test -p node --bin pom bandwidth coexecution`
 
   Expected: falha de compilação porque os módulos e tipos ainda não existem.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
   Validar valores finitos e positivos, limitar a fração a `[0, 1]`, manter a ordem dos ids e usar `std::thread::scope` para que as closures só recebam slices vivos durante o forward.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
   Run: `cargo test -p node --bin pom bandwidth coexecution`
 
   Expected: todos os testes dos módulos passam.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: adicionar politica de co-execucao medida"`
 
@@ -70,27 +70,27 @@
 - `Nvfp4Executor` expõe uma lane CPU que sempre usa o cache frio e uma lane CUDA que usa leases residentes.
 - O forward combinado devolve um vetor `[tokens * hidden]` e soma a contribuição de cada lane na posição do token correspondente.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
   Criar um teste puro de agregação com duas listas de rota, uma CPU e uma GPU, que exige a soma ponderada por token e rejeita comprimentos diferentes. Criar também um teste de divisão por experts únicos que verifica que duas ocorrências do mesmo expert ficam na mesma lane.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
   Run: `cargo test -p node --bin pom nvfp4 coexecution`
 
   Expected: falha porque o forward combinado e a classificação de lanes ainda não existem.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
   Resolver primeiro hits da LRU de device como GPU. Para misses, usar o `BandwidthProfile` somente se ele estiver presente; dividir por expert único, preservar todas as ocorrências e construir offsets independentes por token para cada lane. A lane CPU carrega/admite no cache de RAM e dequantiza; a lane GPU admite no cache residente e chama o batch CUDA. Um lane vazio retorna zeros da largura correta.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
   Run: `cargo test -p node --bin pom nvfp4 coexecution`
 
   Expected: testes de agregação, divisão e erro passam; os testes existentes de NVFP4 permanecem verdes.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   `git commit -m "feat: executar rotas NVFP4 em CPU e GPU"`
 
@@ -105,17 +105,17 @@
 **Interfaces:**
 - O perfil persistido registra as bandas necessárias e a telemetria publica contagem CPU/GPU, fração usada e motivo de não executar co-execução.
 
-- [ ] **Step 1: Test profile loading and invalidation**
+- [x] **Step 1: Test profile loading and invalidation**
 
   Cobrir JSON sem banda CPU, banda não finita e perfil válido que escolhe a divisão. Perfil ausente conserva o caminho CUDA inteiro e não inventa co-execução.
 
-- [ ] **Step 2: Run local dense and MoE tests**
+- [x] **Step 2: Run local dense and MoE tests**
 
   Run: `cargo test -p node --bin pom`.
 
   Expected: registrar as falhas externas existentes com saída exata; nenhum modelo denso deve importar `moe`.
 
-- [ ] **Step 3: Validate CUDA on ksia**
+- [x] **Step 3: Validate CUDA on ksia**
 
   Usar checkout temporário isolado, `CUDAARCHS=120`, `CUDACXX=/usr/local/cuda-12/bin/nvcc`, `CCACHE_DIR` existente e `RUSTC_WRAPPER=ccache`, com `CARGO_TARGET_DIR=/data/ftk-cuda-target`. Rodar build release, testes diferenciais NVFP4 e o teste de co-execução; não tocar no serviço.
 
@@ -126,4 +126,3 @@
 - [ ] **Step 5: Commit**
 
   `git commit -m "docs: registrar co-execucao CPU GPU medida"`
-

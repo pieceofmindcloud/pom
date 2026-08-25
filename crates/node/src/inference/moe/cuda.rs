@@ -2563,6 +2563,36 @@ mod tests {
     }
 
     #[test]
+    fn perfil_cuda_recusa_banda_invalida_e_ausencia_fica_sem_perfil() {
+        let model = std::env::temp_dir().join(format!(
+            "pom-cuda-invalid-bandwidth-profile-{}.gguf",
+            std::process::id()
+        ));
+        let sidecar = CudaTransferProfile::sidecar_path(&model);
+        assert_eq!(CudaTransferProfile::load_for_model(&model).unwrap(), None);
+        let invalid = serde_json::json!({
+            "version": 1,
+            "hidden_width": 2816,
+            "intermediate_width": 704,
+            "cuda_wall_ms": 12.0,
+            "cuda_kernel_span_ms": 8.0,
+            "cuda_transfer_span_ms": 2.0,
+            "cpu_wall_ms": null,
+            "buffer_mask": 3,
+            "bandwidth": {
+                "cpu_overlap_bytes_per_sec": -1.0,
+                "transfer_overlap_bytes_per_sec": 1.0,
+                "cpu_bytes_per_sec": 1.0,
+                "transfer_bytes_per_sec": 1.0
+            }
+        });
+        std::fs::write(&sidecar, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let error = CudaTransferProfile::load_for_model(&model).unwrap_err();
+        assert!(error.contains("perfil CUDA inválido"));
+        std::fs::remove_file(sidecar).unwrap();
+    }
+
+    #[test]
     #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
     fn mede_banda_h2d_d2h_do_lote_nvfp4() {
         let cases = [

@@ -1393,9 +1393,35 @@ Os diagnósticos agora expõem `cpu_expert_calls`, `gpu_expert_calls` e
 `coexecution_gpu_fraction`, além das medições CUDA já existentes. Os testes
 unitários cobrem a política de banda, duplicatas, erro de uma lane, reserva do
 double buffer, soma das lanes e persistência do sidecar. A compilação CUDA e
-os testes de integração desta revisão ainda precisam ser executados na ksia;
-nenhuma velocidade ou sobreposição efetiva é afirmada neste texto antes dessa
-prova.
+os testes focados desta revisão foram executados na ksia; nenhuma velocidade
+ou sobreposição efetiva é afirmada neste texto além das medições sintéticas
+registradas abaixo.
+
+Na ksia, a build desta revisão `ffe9669` foi executada com `CUDAARCHS=120`,
+`CUDACXX=/usr/local/cuda-12/bin/nvcc`, `CCACHE=ccache`,
+`RUSTC_WRAPPER=ccache` e `CARGO_TARGET_DIR=/data/ftk-cuda-target`. O build
+release terminou em `9m45s`, com `BUILD_EXIT=0`; o ccache registrou `524/532`
+chamadas cacheáveis (`98,50%`) e zero hits porque o target estava frio. Os
+testes CUDA focados passaram: `7` testes de co-execução, `1` de persistência
+do sidecar e o benchmark sintético de H2D/D2H.
+
+O ensaio de co-execução mediu CPU e uploads CUDA simultaneamente em oito
+experts sintéticos da geometria Gemma4. A saída foi:
+
+```text
+COEXEC_PROFILE cpu_ms=925.491 gpu_ms=117.632 upload_ms=3.765 payload_bytes=3345440 gpu_fraction=0.9959
+```
+
+O sidecar produzido pelo ensaio continha `cpu_wall_ms=925.491047`,
+`cuda_wall_ms=117.632127`, `cpu_overlap_bytes_per_sec=28918183.58` e
+`transfer_overlap_bytes_per_sec=7107826903.09`, resultando em fração GPU
+`0.9959`. Isso é uma medição sintética de uma geometria, não uma medição E2E
+do modelo real. A ksia tinha apenas o manifesto `.pom` de Gemma4 no caminho
+consultado, sem os GGUF das fatias, então as provas ignoradas
+`executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real` e
+`nvfp4_matches_llama_cpp_from_first_layer_and_stage` ficaram sem executar por
+ausência do arquivo exigido. Não se atribui ganho de desempenho ao caminho
+co-executado com base nesse ensaio.
 
 4. **F5.3, prefill no alvo.** Otimizar agrupamento de experts, fusão de
    operações e reutilização do LRU/staging guiado pelo perfil da F5.2. Pronto

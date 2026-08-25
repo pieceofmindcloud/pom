@@ -539,7 +539,9 @@ fn make_external_executor_plan(
         ExpertFormat::Heterogeneous => {
             cuda_compiled
                 && !dtypes.is_empty()
-                && dtypes.iter().all(|dtype| matches!(dtype, 21 | 22 | 23))
+                && dtypes.iter().all(|dtype| {
+                    IqQuantFormat::from_dtype(*dtype).is_ok_and(|format| format.cuda_supported())
+                })
         }
         _ => false,
     };
@@ -557,7 +559,7 @@ fn make_external_executor_plan(
         )
     } else if detected == ExpertFormat::Heterogeneous {
         format!(
-            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: a ponte por tensor cobre somente IQ3_S (21), IQ2_S (22) e IQ4_XS (23); experts permanecem no llama.cpp"
+            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: há tensor(es) sem ponte CUDA numericamente validada; experts permanecem no llama.cpp"
         )
     } else if detected == ExpertFormat::Nvfp4 && nvfp4_cpu_requested {
         format!(
@@ -1077,19 +1079,29 @@ impl MoeRuntime {
                     )));
                 }
                 #[cfg(feature = "cuda")]
-                let device_cache = Some(create_measured_device_cache(cuda_compute_bytes)?);
+                let device_cache = if source.dtypes().iter().all(|dtype| {
+                    IqQuantFormat::from_dtype(*dtype).is_ok_and(|format| format.cuda_supported())
+                }) {
+                    Some(create_measured_device_cache(cuda_compute_bytes)?)
+                } else {
+                    None
+                };
                 let mut blocks = Vec::with_capacity(layers as usize);
                 for layer in 0..layers {
                     #[cfg(feature = "cuda")]
-                    let block = HeterogeneousMoeBlock::new_with_device_cache(
-                        Arc::clone(&cache),
-                        Arc::clone(device_cache.as_ref().expect("cache CUDA heterogêneo")),
-                        &model,
-                        layer,
-                        top_k,
-                        source.layer_geometry(layer)?.0,
-                        source.layer_geometry(layer)?.1,
-                    );
+                    let block = if let Some(device_cache) = device_cache.as_ref() {
+                        HeterogeneousMoeBlock::new_with_device_cache(
+                            Arc::clone(&cache),
+                            Arc::clone(device_cache),
+                            &model,
+                            layer,
+                            top_k,
+                            source.layer_geometry(layer)?.0,
+                            source.layer_geometry(layer)?.1,
+                        )
+                    } else {
+                        HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k)
+                    };
                     #[cfg(not(feature = "cuda"))]
                     let block =
                         HeterogeneousMoeBlock::new(Arc::clone(&cache), &model, layer, top_k);
@@ -1778,7 +1790,7 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_iq_priorizados_externalizam_todas_as_camadas() {
+    fn dtypes_heterogeneos_com_iq_nao_validado_ficam_nativos() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
             vec![21, 22, 23],
@@ -1786,9 +1798,11 @@ mod tests {
             true,
             false,
         );
-        assert!(plan.enabled());
-        assert_eq!(plan.layers, vec![1, 1, 1]);
-        assert!(plan.reason.is_none());
+        assert!(!plan.enabled());
+        assert_eq!(plan.layers, vec![0, 0, 0]);
+        let reason = plan.reason.unwrap();
+        assert!(reason.contains("22 (IQ2_S)"));
+        assert!(reason.contains("23 (IQ4_XS)"));
     }
 
     #[test]

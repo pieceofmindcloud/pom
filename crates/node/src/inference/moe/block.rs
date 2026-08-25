@@ -966,7 +966,6 @@ pub struct HeterogeneousMoeBlock {
 }
 
 impl HeterogeneousMoeBlock {
-    #[cfg(not(feature = "cuda"))]
     pub fn new(
         cache: Arc<ExpertCache>,
         model: impl Into<String>,

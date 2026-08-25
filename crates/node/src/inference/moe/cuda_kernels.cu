@@ -398,7 +398,9 @@ __device__ float k_f16(uint16_t bits) {
         return sign * static_cast<float>(fraction) * exp2f(-24.0f);
     }
     if (exponent == 31) {
-        return fraction == 0 ? sign * CUDART_INF_F : CUDART_NAN_F;
+        const float infinity = __int_as_float(0x7f800000);
+        const float nan = __int_as_float(0x7fc00000);
+        return fraction == 0 ? sign * infinity : nan;
     }
     return sign * (1.0f + static_cast<float>(fraction) / 1024.0f) *
         exp2f(static_cast<float>(exponent - 15));
@@ -627,8 +629,8 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
     }
 
     const int pair_count = static_cast<int>(payload_count);
-    const int hidden = static_cast<int>(hidden_width);
-    const int intermediate = static_cast<int>(intermediate_width);
+    const int hidden_i = static_cast<int>(hidden_width);
+    const int intermediate_i = static_cast<int>(intermediate_width);
     const int block_size = 128;
     const std::size_t hidden_bytes = hidden_width * token_count * sizeof(float);
     const std::size_t gate_up_bytes = 2 * intermediate_width * payload_count * sizeof(float);
@@ -709,26 +711,26 @@ extern "C" int pom_moe_kquant_forward_route_batch_resident(
             if (result != 0) break;
         }
         kquant_gate_up_route_kernel<<<
-            (2 * intermediate * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, d_token_ids, pair_count, intermediate,
-                hidden, d_hidden, d_gate_up);
+            (2 * intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, d_token_ids, pair_count, intermediate_i,
+                hidden_i, d_hidden, d_gate_up);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         kquant_silu_kernel<<<
-            (intermediate * pair_count + block_size - 1) / block_size,
-            block_size>>>(d_gate_up, pair_count, intermediate, d_activated);
+            (intermediate_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(d_gate_up, pair_count, intermediate_i, d_activated);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         kquant_down_route_kernel<<<
-            (hidden * pair_count + block_size - 1) / block_size,
-            block_size>>>(dtype, d_payloads, pair_count, hidden, intermediate,
+            (hidden_i * pair_count + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, pair_count, hidden_i, intermediate_i,
                 d_activated, d_pair_output);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
         aggregate_route_batch_kernel<<<
-            (static_cast<int>(token_count) * hidden + block_size - 1) / block_size,
+            (static_cast<int>(token_count) * hidden_i + block_size - 1) / block_size,
             block_size>>>(d_pair_output, d_weights, d_token_offsets,
-                static_cast<int>(token_count), hidden, d_output);
+                static_cast<int>(token_count), hidden_i, d_output);
         result = cuda_status(cudaGetLastError());
         if (timing != nullptr) {
             timing->launch_ms = elapsed_ms(launch_start, Clock::now());

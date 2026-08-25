@@ -136,7 +136,6 @@ impl Nvfp4CudaExecutor {
                 actual: hidden.len(),
             });
         }
-        let host_prepare_started = Instant::now();
         let validation_started = Instant::now();
         Nvfp4Expert::from_payload(self.hidden, self.intermediate, payload)?;
         let payload_validation_ms = validation_started.elapsed().as_secs_f64() * 1_000.0;
@@ -190,6 +189,7 @@ impl Nvfp4CudaExecutor {
                 actual: hidden.len(),
             });
         }
+        let host_prepare_started = Instant::now();
         let validation_started = Instant::now();
         let mut payload_len = None;
         for payload in payloads {

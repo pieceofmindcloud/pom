@@ -2826,6 +2826,34 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "requer o GGUF real Gemma4 e vários GB livres em disco/RAM"]
+    fn real_gemma4_slice_truncates_layer_metadata_and_loads() {
+        let source = std::env::var_os("POM_REAL_GEMMA_GGUF")
+            .expect("POM_REAL_GEMMA_GGUF deve apontar para o GGUF real");
+        let source = Path::new(&source);
+        let dir = std::env::temp_dir().join(format!("pom-gemma4-slice-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("gemma4-0-11.gguf");
+
+        split(source, &out, 0, 11, true, false, |_| {}).unwrap();
+        let info = crate::gguf::read_info(&out).unwrap();
+        assert_eq!(info.block_count, Some(12));
+        assert_eq!(
+            info.attention_head_count_kv.as_ref().map(Vec::len),
+            Some(12)
+        );
+
+        unsafe { llama_cpp_sys_2::llama_backend_init() };
+        let path = std::ffi::CString::new(out.to_string_lossy().as_bytes()).unwrap();
+        let mut params = unsafe { llama_cpp_sys_2::llama_model_default_params() };
+        params.n_gpu_layers = 0;
+        let model = unsafe { llama_cpp_sys_2::llama_model_load_from_file(path.as_ptr(), params) };
+        assert!(!model.is_null(), "a fatia Gemma4 real deveria carregar");
+        unsafe { llama_cpp_sys_2::llama_model_free(model) };
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn preview_refuses_an_unknown_dtype_by_name() {
         let mut bytes = test_gguf_bytes(1);
         let mut reader = R {

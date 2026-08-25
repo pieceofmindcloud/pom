@@ -1153,35 +1153,9 @@ extern "C" int pom_moe_plain_forward_route_batch_resident(
         return 1;
     }
 
-    const std::size_t element_bytes = dtype == 0 ? 4 : 2;
-    if (hidden_width > std::numeric_limits<std::size_t>::max() / intermediate_width) {
-        return 1;
-    }
-    const std::size_t matrix_elements = hidden_width * intermediate_width;
-    if (matrix_elements > std::numeric_limits<std::size_t>::max() / 2 / element_bytes) {
-        return 1;
-    }
-    const std::size_t expected_gate_up = matrix_elements * 2 * element_bytes;
-    const std::size_t expected_down = matrix_elements * element_bytes;
-    if (expected_gate_up > std::numeric_limits<uint32_t>::max() ||
-        expected_down > std::numeric_limits<uint32_t>::max()) {
-        return 1;
-    }
     for (std::size_t pair = 0; pair < payload_count; ++pair) {
         if (payloads[pair] == nullptr || token_ids[pair] >= token_count ||
             !std::isfinite(weights[pair])) {
-            return 1;
-        }
-        const uint8_t *payload = payloads[pair];
-        const uint32_t gate_up_len = static_cast<uint32_t>(payload[0]) |
-            (static_cast<uint32_t>(payload[1]) << 8) |
-            (static_cast<uint32_t>(payload[2]) << 16) |
-            (static_cast<uint32_t>(payload[3]) << 24);
-        const uint32_t down_len = static_cast<uint32_t>(payload[4]) |
-            (static_cast<uint32_t>(payload[5]) << 8) |
-            (static_cast<uint32_t>(payload[6]) << 16) |
-            (static_cast<uint32_t>(payload[7]) << 24);
-        if (gate_up_len != expected_gate_up || down_len != expected_down) {
             return 1;
         }
     }

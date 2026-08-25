@@ -6,7 +6,7 @@ use super::admission::MemoryAccount;
 use super::cache::{DeviceAllocation, DeviceAllocator, DeviceExpertCache};
 use super::format_k_quants::KQuantFormat;
 use super::format_nvfp4::{Nvfp4Error, Nvfp4Expert};
-use super::format_plain::PlainFormat;
+use super::format_plain::{PlainExpert, PlainFormat};
 use std::fmt;
 use std::io;
 use std::os::raw::c_void;
@@ -224,6 +224,8 @@ impl PlainCudaExecutor {
         key: super::cache::ExpertKey,
         payload: &[u8],
     ) -> Result<super::cache::DeviceExpertLease, CudaMoeError> {
+        PlainExpert::from_payload(self.format, self.hidden, self.intermediate, payload)
+            .map_err(|error| CudaMoeError::Payload(error.to_string()))?;
         self.resident_cache
             .admit(key, payload)
             .map_err(|error| CudaMoeError::Cache(error.to_string()))

@@ -838,8 +838,8 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
     if version != 2 && version != 3 {
         bail!("unsupported GGUF version {version} (expected 2 or 3)");
     }
-    let n_tensors = r.u64()?;
-    let n_kv = r.u64()?;
+    let n_tensors = r.u64()? as usize;
+    let n_kv = r.u64()? as usize;
     if n_tensors > 1_000_000 || n_kv > 100_000 {
         bail!("implausible GGUF header (tensors={n_tensors}, kv={n_kv})");
     }

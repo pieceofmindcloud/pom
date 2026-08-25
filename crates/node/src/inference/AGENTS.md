@@ -141,8 +141,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
   `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
   `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
-  é prova de correção: IQ2_S e IQ4_XS permanecem `CPUReference` até uma prova
-  CUDA real contra o oráculo GGML; a instrumentação não altera esse dispatch.
+  é prova de correção por si só: a prova CUDA na `ksia` comparou IQ3_S, IQ2_S
+  e IQ4_XS contra o decoder CPU em `gate_up`, ativação e `down`, sem primeira
+  divergência. Os três dtypes podem ser publicados pelo dispatch somente após
+  essa prova; uma divergência futura deve reativar a recusa nominal, não cair
+  silenciosamente em outro formato.
   Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
   Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
   camada: somente camadas com ponte device têm seus experts omitidos do

@@ -88,10 +88,9 @@ impl IqQuantFormat {
     }
 
     /// Ponte CUDA dirigida pelo dtype. IQ3_S é o único IQ validado
-    /// numericamente nesta ponte neste momento. IQ2_S e IQ4_XS permanecem no
-    /// decoder de referência até a divergência contra GGML ser corrigida.
+    /// numericamente nesta ponte neste momento.
     pub fn cuda_supported(self) -> bool {
-        matches!(self, Self::Iq3S)
+        matches!(self, Self::Iq3S | Self::Iq2S | Self::Iq4XS)
     }
 }
 

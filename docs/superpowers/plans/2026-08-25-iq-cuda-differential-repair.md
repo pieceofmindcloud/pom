@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** corrigir a primeira divergência numérica comprovada das pontes CUDA IQ sem reativar IQ2_S ou IQ4_XS antes da prova contra o decoder GGML.
+**Goal:** validar as pontes CUDA IQ contra o decoder GGML e reativar somente os dtypes que passarem a prova diferencial.
 
-**Architecture:** o decoder CPU do projeto e as funções `dequantize_row_*` do GGML continuam sendo os oráculos. A prova CUDA compara gate/up, ativação e down com o mesmo payload, hidden e rota; somente o dtype cujo erro passar a tolerância é reabilitado em `cuda_supported`. A salvaguarda de `e8e6eb8` permanece para IQ2_S e IQ4_XS até que cada um tenha prova independente.
+**Architecture:** o decoder CPU do projeto e as funções `dequantize_row_*` do GGML continuam sendo os oráculos. A prova CUDA compara gate/up, ativação e down com o mesmo payload, hidden e rota; somente o dtype cujo erro passar a tolerância é reabilitado em `cuda_supported`. A salvaguarda de `e8e6eb8` foi mantida até a prova independente de IQ2_S e IQ4_XS, que passou na `ksia` nesta fase.
 
 **Tech Stack:** Rust, `llama-cpp-sys-2`, CUDA C++, testes unitários do binário `pom`, GGUF sintético e GGUF real quando disponível.
 
@@ -14,7 +14,7 @@
 
 - O caminho denso continua em `llama.cpp` e não recebe callback MoE.
 - Nenhum peso atravessa a rede por causa do fatiamento.
-- IQ2_S e IQ4_XS continuam em `CPUReference` até uma prova numérica própria passar.
+- IQ2_S e IQ4_XS só deixam `CPUReference` depois de uma prova numérica própria passar.
 - A prova aceita somente erro finito e `abs(a-b) <= 1e-4` para a fixture atual; tolerância maior exige evidência do oráculo e decisão explícita.
 - Toda fase roda `cargo test -p node --bin pom`; falhas fora da mudança são registradas pelos nomes e mensagens exatas.
 - A build CUDA obrigatória usa `CARGO_TARGET_DIR=/data/ftk-cuda-target`, `CUDACXX=/usr/local/cuda-12/bin/nvcc`, e não é substituída por uma build sem CUDA.
@@ -79,15 +79,15 @@
 
   Expected: saída CUDA literal com dtype e estágio divergente, ou erro literal do ambiente se o comando não puder executar.
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
   Corrigir apenas a indexação, escala, codebook, geometria ou cópia que a primeira divergência demonstrar. Adicionar um teste unitário que fixa o caso corrigido. Não copiar código do FreeToken e não misturar a correção com cache ou co-execução.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
   Repetir o teste diferencial do dtype corrigido e o trace por estágio. O dtype só pode ser reabilitado quando gate/up, ativação e down forem finitos e passarem a tolerância.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
   ```bash
   git add crates/node/src/inference/moe/cuda_kernels.cu crates/node/src/inference/moe/cuda.rs crates/node/src/inference/moe/format_iq_quants.rs
@@ -101,7 +101,7 @@
 - Modify: `crates/node/src/inference/AGENTS.md` when the runtime contract changes
 
 **Interfaces:**
-- A telemetria mantém `CPUReference` e o motivo para IQ ainda não provado.
+- A telemetria mantém `CPUReference` para dtypes sem prova; IQ3_S, IQ2_S e IQ4_XS têm prova diferencial nesta fase.
 - O caminho denso continua sem importação do runtime MoE.
 
 - [x] **Step 1: Run the dense suite**
@@ -118,14 +118,14 @@
 
   Atualizar a tabela de cobertura IQ, o dtype reabilitado, o primeiro estágio provado e as lacunas restantes. Se nenhum dtype passar por falta de CUDA, registrar o comando e a saída exata e manter a salvaguarda.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
   ```bash
   git add docs/subsystems/freetoken-moe.md crates/node/src/inference/AGENTS.md
   git commit -m "docs: registrar prova diferencial IQ CUDA"
   ```
 
-- [ ] **Step 5: Publish without force**
+- [x] **Step 5: Publish without force**
 
   Conferir `git status --short --branch`, `git log --oneline origin/fm/ftk-cuda-check..HEAD` e publicar somente se o push for fast-forward:
 

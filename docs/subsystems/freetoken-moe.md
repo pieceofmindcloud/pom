@@ -296,12 +296,12 @@ decoder CPU heterogêneo, não uma falha de lançamento CUDA escondida.
 
 ### Fase 5.1: ponte CUDA por dtype
 
-Esta é a próxima fase formal do goal. O executor CUDA atual cobre somente
-NVFP4 (40); IQ-quants, K-quants, legacy, low-bit e escalares continuam no
-`CPUReference`, com a escolha visível na telemetria. A fase deve adicionar a
-ponte por dtype sem assumir homogeneidade em arquivos UD: cada tensor conserva
-seu dtype, o decoder CUDA correspondente é escolhido por tensor e um dtype
-sem kernel recusa nominalmente com o dtype e o motivo.
+Esta foi a fase formal da ponte por dtype. O executor CUDA cobre NVFP4 (40),
+escalares, Q4_K/Q6_K e, após prova diferencial na `ksia`, IQ3_S (21), IQ2_S
+(22) e IQ4_XS (23). IQ-quants restantes, K-quants restantes, legacy e low-bit
+continuam no `CPUReference`, com a escolha visível na telemetria. Cada tensor
+conserva seu dtype, o decoder CUDA correspondente é escolhido por tensor e um
+dtype sem kernel recusa nominalmente com o dtype e o motivo.
 
 Critério de pronto por bloco: prova numérica contra o oráculo GGML para cada
 dtype, telemetria por hop/fase mostrando `cuda` sem `moe_executor_reason` de
@@ -714,7 +714,7 @@ por impacto observado, não por facilidade de implementação.
 | prioridade | lacuna | FreeToken tem | rdma-p2p tem | custo observado e ganho esperado |
 |---|---|---|---|---|
 | 1 | LRU de experts residente na VRAM | `moe/offload_cache.py` mantém um cache global de experts no device, com admissão pelo orçamento de memória livre. O payload quente não precisa cruzar PCIe a cada seleção. | `moe/cache.rs` mantém o payload canônico em RAM do host. O executor CUDA usa staging temporário e transfere o peso mesmo em hit do LRU. | Evidência direta: `803243520` bytes H2D por token de decode (`766,033 MiB`), com `240` usos de experts por token. No perfil fechado, H2D foi `2618,950 ms` em 29 tokens (`90,309 ms/token`) dentro de `cuda_call_wall_ms=3086,384 ms` (`106,427 ms/token`). Se a residência eliminar essas cópias, esse é o teto direto da redução da parede CUDA nessa carga, não uma promessa de reduzir o backend inteiro: a preparação no host continua. |
-| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF, mas a ponte CUDA real cobre somente NVFP4. IQ e outros dtypes publicam `CPUReference` com recusa explicada para a ausência da ponte, em vez de fingir CUDA. | No Qwen UD-IQ3_S medido, CPUReference custou aproximadamente `5284 ms/token` de prefill e `4990 ms/token` de decode. Isso prova um custo enorme para dtypes sem ponte, mas não autoriza projetar o ganho de uma ponte nova: cada dtype exige prova numérica independente, e a lista do FreeToken não prova cobertura de IQ3/IQ2/IQ4. |
+| 2 | Kernels CUDA para cada família de quantização | O relatório enumera bancos próprios em `_BANK_SCHEMAS`: `bf16`, `fp8_block`, `q4_0`, `nvfp4`, `mxfp4` e `ds_fp4`, com kernels CUDA/Triton fora do llama.cpp. | O executor CPU cobre várias famílias GGUF; a ponte CUDA cobre NVFP4, escalares, Q4_K/Q6_K e IQ3_S/IQ2_S/IQ4_XS após provas diferenciais, enquanto os demais dtypes publicam `CPUReference` com recusa nominal. | A linha de base histórica do Qwen UD-IQ3_S em `CPUReference` não é uma previsão do ganho atual: a ponte IQ foi aceita somente após comparar os três estágios na GPU real. |
 | 3 | Preparação do lote fora do caminho quente | O relatório mostra um escalonador GPU-cêntrico que entrega views dos bancos para os kernels e sobrepõe o prefetch da próxima camada. Ele não publica uma métrica separada chamada `host_batch_prepare`; portanto não há evidência para afirmar que o FreeToken tenha custo zero nessa etapa. | O callback Rust monta lotes e descritores no host a cada forward. A telemetria mede esse custo como `host_batch_prepare_ms`, antes da chamada CUDA. | No perfil histórico, foi o maior componente do prefill: `3622,166 ms`. Isso não foi confirmado no estado atual de `38,4 tok/s`; o ganho real de reutilizar descritores e buffers depende do novo perfil. |
 | 4 | Política compute-versus-transfer baseada em banda medida e double buffer real | `moe/benchbw.py` mede RAM/PCIe; `moe/bench_profile.py` grava perfil por GPU e calcula a fração híbrida `pcie/(pcie+cpu)`. `layers/moe.py` inicia o prefetch da camada seguinte e o orçamento reserva dois conjuntos de buffers. | A política de banda e o double buffer continuam andaime documentado, sem perfil persistido consumido pelo runtime. O caminho atual faz staging por chamada e não escolhe CPU/GPU pela banda medida. | Os números de H2D e kernel registrados no documento são históricos. Nenhum ganho ou gargalo atual deve ser inferido deles até o novo perfil do estado `38,4 tok/s`. |
 | 5 | CUDA Graphs para o MoE quantizado | O FreeToken captura e recaptura CUDA graphs para as formas de lote e o cache, evitando custo repetido de montagem e lançamento. | Não há captura/replay de CUDA graph para o callback MoE Rust. O llama.cpp pode usar seus próprios graphs para o restante do transformer, mas isso não cobre o executor externo. | Depois do agrupamento, os lançamentos CUDA custaram `27,006 ms` em 29 tokens (`0,931 ms/token`) e sincronização `16,399 ms` (`0,565 ms/token`). Portanto graphs podem reduzir overhead de lançamento e alocação, mas o máximo explicitamente medido nessa categoria é pequeno diante dos `74,697 ms/token` de preparação host e `90,309 ms/token` de H2D. |
@@ -752,12 +752,12 @@ frequentes e esconderia o custo que realmente domina.
 #### Item 4: kernels por formato
 
 O relatório confirma seis bancos próprios do FreeToken, não uma prova de todos
-os dtypes GGUF existentes. A comparação correta é: nós já temos uma camada de
-decodificação CPU mais ampla e recusa nominal por tensor, mas somente NVFP4
-atravessa a ponte CUDA. Isso explica por que Gemma4 pode publicar
-`moe_executor=cuda` e o Qwen UD-IQ3_S publica `CPUReference`. A ordem de ataque
-deve ser determinada por modelos reais e por prova numérica, não pela lista
-do relatório como se ela cobrisse automaticamente IQ-quants.
+os dtypes GGUF existentes. A comparação correta é: nós temos uma camada de
+decodificação CPU mais ampla e recusa nominal por tensor; a ponte CUDA cobre
+somente os formatos que passaram a prova, atualmente NVFP4, escalares, Q4_K,
+Q6_K, IQ3_S, IQ2_S e IQ4_XS. A ordem de ataque deve ser determinada por
+modelos reais e por prova numérica, não pela lista do relatório como se ela
+cobrisse automaticamente IQ-quants.
 
 #### Item 5: montagem do lote no host
 
@@ -819,7 +819,7 @@ prefill; ele não invalida essa comparação por fase.
 O próximo ganho mensurável deve começar pelo cache residente em VRAM, porque é
 o único item que já tem custo direto de `766 MiB` de peso por token medido. Em
 impacto de throughput entre modelos, a ponte CUDA por dtype vem logo depois:
-o Qwen UD mediu segundos por token em `CPUReference`. Dentro do Gemma NVFP4, a
+o Qwen UD mediu segundos por token em `CPUReference` antes da ponte IQ. Dentro do Gemma NVFP4, a
 preparação host é o próximo alvo, seguida da política de banda e do double
 buffer reais. Cada ponte de dtype exige prova numérica por formato. CUDA Graphs
 fica depois de estabilizar residência, layout e política, pois os lançamentos
@@ -1214,13 +1214,14 @@ residência exige o modelo real na ksia e não pode ser substituída por fixture
 
 #### F5-E5: pontes CUDA por dtype, antes dos CUDA Graphs
 
-Esta é a próxima lacuna ativa. A prioridade é estrutural e está ancorada nos
+Esta foi a lacuna ativa desta fase. A prioridade é estrutural e está ancorada nos
 números já medidos, não em uma expectativa de ganho pequeno: no decode, o
 executor MoE honesto está em `5,4 tok/s`, contra `20,7 tok/s` do llama.cpp e
 `53,3 tok/s` do FreeToken; no prefill, está em `3,2 tok/s`, contra `55 tok/s`
 e `325 tok/s`, respectivamente. Os dtypes IQ do Qwen UD ficaram em
-`CPUReference`, aproximadamente cinco segundos por token, portanto a ponte
-CUDA por dtype vem antes de graphs.
+`CPUReference`, aproximadamente cinco segundos por token, antes da ponte CUDA
+por dtype. A ponte agora está provada em fixture diferencial; a medição E2E do
+Qwen UD continua sendo a próxima validação de produto.
 
 Após a execução agrupada e a residência em device, a medição mais recente do
 chat na mesma máquina registrou `23,3 tok/s` no MoE contra `26,7 tok/s` no
@@ -1245,8 +1246,9 @@ promoção.
 Um dtype sem ponte permanece explicitamente visível como `CPUReference`, com
 `dtype=<id> (<nome>)` e motivo, ou é recusado no limite de uma chamada CUDA
 quando o contrato exigir CUDA. Nunca se interpreta um payload não coberto como
-outro formato. Nesta entrega a ponte é declarada somente para Q4_K e Q6_K; IQ
-3/2/4 ainda não está coberto até a sua prova numérica.
+outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_S, IQ2_S
+e IQ4_XS somente depois das respectivas provas; os demais IQ continuam
+protegidos pela recusa nominal.
 
 Critério de pronto por bloco: build `--features vulkan,cuda` verde no ramo de
 checagem; teste diferencial executado para cada dtype; GGUF real correspondente
@@ -1409,11 +1411,12 @@ payload homogêneo no host e evita transferência de pesos em hits do cache.
 O plano só externaliza uma combinação heterogênea quando todos os dtypes dos
 experts pertencem ao conjunto suportado. Uma combinação como `[12, 21, 23]`
 fica inteira com o llama.cpp e publica a recusa nominal; não há externalização
-parcial que pudesse remover um tensor sem executor. A comparação unitária
-CUDA usa gate IQ3_S, up IQ2_S e down IQ4_XS, com a mesma entrada e pesos da
-referência CPU. A cobertura CUDA e a prova E2E nos GGUF reais dos dois UD ainda
-precisam ser executadas no diretório de validação antes de promover esta fase;
-os números do marco continuam em aberto.
+parcial que pudesse remover um tensor sem executor. A prova na `ksia` executou
+o caminho individual para IQ3_S, IQ2_S e IQ4_XS contra o decoder CPU e também
+o caminho heterogêneo com gate IQ3_S, up IQ2_S e down IQ4_XS. Em todos os casos
+`gate_up`, ativação e `down` ficaram sem primeira divergência na tolerância
+`1e-4`. A prova E2E nos GGUF reais dos dois UD e a medição de produto ainda
+estão pendentes.
 
 ### Estado da cobertura CUDA escalar - 2026-08-25
 
@@ -1444,21 +1447,29 @@ CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom cada_
 1 passed, 891 filtered out
 ```
 
-A prova obrigatória não foi executada. O comando foi rodado exatamente como
-exigido, com `CARGO_TARGET_DIR=/data/ftk-cuda-target` e
-`CUDACXX=/usr/local/cuda-12/bin/nvcc`, e terminou antes do build/teste com:
+A primeira tentativa remota carregou `--ignored`, mas esses testes não são
+ignorados e a saída foi `0 passed, 907 filtered out`; esse resultado não foi
+tratado como sucesso. A validação foi repetida na `ksia`, com
+`CARGO_TARGET_DIR=/data/ftk-cuda-target` e
+`CUDACXX=/usr/local/cuda-12/bin/nvcc`, e a build nativa CUDA concluiu.
+
+No commit `e1a7ab5`, o teste correto chegou à salvaguarda e retornou
+`BackendUnavailable("dtype GGML 22 (iq2_s) ainda não tem ponte CUDA IQ-quant")`.
+Para investigar sem alterar o dispatch de produção, `86226c7` adicionou um
+construtor somente de teste. Com ele, no mesmo target CUDA, a prova individual
+retornou `1 passed` e o diagnóstico por estágio publicou:
 
 ```text
-error: failed to create directory `/data`
-
-Caused by:
-  Read-only file system (os error 30)
+IQ iq3_s estágios: gate_up=None, activation=None, down=None
+IQ iq2_s estágios: gate_up=None, activation=None, down=None
+IQ iq4_xs estágios: gate_up=None, activation=None, down=None
 ```
 
-Esta é a saída observada pelo comando, não uma conclusão sobre a configuração
-do host. Sem a execução CUDA não há dtype, estágio ou correção de kernel
-comprovados. IQ2_S e IQ4_XS continuam em `CPUReference`; nenhum dtype foi
-reativado pela instrumentação.
+A prova heterogênea `executor_cuda_iq_heterogeneo_preserva_gate_up_down_por_dtype`
+também retornou `1 passed`. Não foi reproduzida a divergência histórica e não
+houve mudança no kernel; a única mudança de produção desta fase é reabilitar
+os três dtypes depois dessa evidência. O construtor de teste foi removido na
+mesma entrega, para que a prova passe pelo dispatch normal.
 
 Na mesma rodada, a suíte densa local foi executada com
 `CARGO_TARGET_DIR="$PWD/target/ftk-cuda-check" cargo test -p node --bin pom`:
@@ -1567,9 +1578,9 @@ remoto foi feito nesta validação.
 | 18 | IQ3_XXS | implementado e NÃO PROVADO |
 | 19 | IQ1_S | implementado e NÃO PROVADO |
 | 20 | IQ4_NL | implementado e NÃO PROVADO |
-| 21 | IQ3_S | implementado e NÃO PROVADO |
-| 22 | IQ2_S | implementado e NÃO PROVADO |
-| 23 | IQ4_XS | implementado e NÃO PROVADO |
+| 21 | IQ3_S | implementado e PROVADO por comparação CUDA diferencial |
+| 22 | IQ2_S | implementado e PROVADO por comparação CUDA diferencial |
+| 23 | IQ4_XS | implementado e PROVADO por comparação CUDA diferencial |
 | 24 | I8 | não coberto |
 | 25 | I16 | não coberto |
 | 26 | I32 | não coberto |
@@ -1809,18 +1820,9 @@ commit, sistema, CPU/GPU, memória, feature de build, tipo de KV, `n_ctx`,
 
 - As medições de throughput e de divisão prefill/decode ainda não são possíveis
   neste ambiente local sem obter um modelo e iniciar um runtime próprio.
-- A bateria CUDA filtrada ainda tem duas falhas numéricas preexistentes, não
-  introduzidas pelo aquecimento. Em `ef36059` e em `c292403`, os testes isolados
-  reproduzem os mesmos valores: `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device`
-  diverge em `13.464294 != 164.57135`, e
-  `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` diverge em
-  `-480751.5 != -480751.13`. A comparação foi feita com cada teste
-  individualmente, portanto não é interferência entre testes nem evidência de
-  que aquecer o cache altere os pesos. O aquecimento usa a mesma admissão e o
-  mesmo payload do caminho sob demanda; a correção numérica desses dois testes
-  continua pendente e não deve ser mascarada por tolerância mais larga.
-- A prova CUDA IQ da rodada `d631442` não chegou a iniciar: o comando exigido
-  retornou literalmente `error: failed to create directory \`/data\`` e
-  `Read-only file system (os error 30)`. A causa do retorno não foi inferida;
-  até haver uma execução real, IQ2_S e IQ4_XS permanecem protegidos pela
-  salvaguarda.
+- A bateria CUDA filtrada ainda tem uma falha numérica NVFP4 histórica, não
+  introduzida pelo aquecimento. Em `ef36059` e em `c292403`, o teste isolado
+  `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` reproduziu
+  `13.464294 != 164.57135`. A prova IQ de `86226c7` não reproduziu as antigas
+  diferenças IQ; os três dtypes passaram a prova diferencial e não devem ser
+  protegidos por uma tolerância mais larga.

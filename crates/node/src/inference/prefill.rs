@@ -122,6 +122,10 @@ pub struct PrefillOutcome {
     pub done: bool,
     /// Prompt length as counted by the peer that tokenised it.
     pub prompt_tokens: u32,
+    /// Tokens actually left in `prompt_seq` after the volatile template tail
+    /// and generation were separated. This is the value `/v1/session/rewind`
+    /// confirms; it can be smaller than `prompt_tokens` by construction.
+    pub retained_tokens: u32,
     /// Quantos tokens do prompt a cabeça **não** reprocessou porque já estavam
     /// no KV desta sessão.
     ///
@@ -808,6 +812,15 @@ fn cached_tokens_of(meta: &serde_json::Value) -> u32 {
         .unwrap_or(0) as u32
 }
 
+/// A peer's measured prompt/generation frontier. When no frontier was measured
+/// for this request, the full prompt count is the only safe retained length.
+fn retained_tokens_of(meta: &serde_json::Value, prompt_tokens: u32) -> u32 {
+    meta.get("stable_len")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32)
+        .unwrap_or(prompt_tokens)
+}
+
 /// Se a cabeça de fato aproveitou o prefixo. Ver `cached_tokens_of`.
 fn head_reused_prefix(meta: &serde_json::Value, requested: bool) -> bool {
     meta.get("reuse_prefix")
@@ -936,6 +949,9 @@ pub async fn run(
             meta.get("next_pos")
                 .and_then(|value| value.as_u64())
                 .unwrap_or(chunk_start_pos as u64 + chunk_size as u64) as u32;
+        // A fronteira medida pela cabeça, para os hops partirem o prompt na
+        // mesma posição - ver `infer_server::Session::stable_len`.
+        let chunk_stable_len = meta.get("stable_len").and_then(|value| value.as_u64());
 
         // ── The rest of the pipeline, carrying this chunk's hidden state.
         for (i, step) in plan.steps.iter().enumerate().skip(1) {
@@ -957,6 +973,9 @@ pub async fn run(
                 "start_pos": chunk_start_pos,
                 "scale": 1.0,
             });
+            if let Some(stable) = chunk_stable_len {
+                body_meta["stable_len"] = json!(stable);
+            }
             if let Some(tokens) = meta.get("tokens") {
                 body_meta["tokens"] = tokens.clone();
             }
@@ -999,6 +1018,7 @@ pub async fn run(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&meta, prompt_tokens),
                 cached_tokens,
                 chunks,
                 trace: {
@@ -1139,6 +1159,7 @@ async fn run_ring(
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&sent.meta, prompt_tokens),
                 cached_tokens,
                 chunks,
                 trace: {
@@ -1283,6 +1304,7 @@ async fn run_direct(
                     .to_string(),
                 done: meta.get("done").and_then(|v| v.as_bool()).unwrap_or(false),
                 prompt_tokens,
+                retained_tokens: retained_tokens_of(&meta, prompt_tokens),
                 cached_tokens,
                 chunks,
                 trace: {

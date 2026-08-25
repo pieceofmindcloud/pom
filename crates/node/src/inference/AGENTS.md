@@ -92,7 +92,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   hops seguintes recebem é o que a **cabeça executou**, lido da resposta dela
   (`cached_tokens_of`, `head_reused_prefix`), não o que o gateway pediu.
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
-  não foram reprocessados.
+  não foram reprocessados; `retained_tokens` devolve a fronteira estável que
+  ficou na `prompt_seq` e que o gateway confirma no rewind.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
@@ -105,9 +106,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   turnos pelo caminho de `/v1/chat/completions`, com dois hops, nos três
   transportes (hub, anel, direto). Afirma que do turno 2 em diante
   `cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
-  e que nenhum hop recebeu pedido de remoção parcial de KV. Os hops falsos
-  imitam o motor mais restrito que o produto atende - o recorrente, que recusa
-  remoção parcial - e usam as funções de produção nos pontos de decisão
+  registra o tempo até a primeira palavra e afirma que ele cai depois do turno
+  frio, além de verificar que nenhum hop recebeu pedido de remoção parcial de
+  KV. Os hops falsos imitam o motor mais restrito que o
+  produto atende - o recorrente, que recusa remoção parcial - e mantêm a
+  fronteira estável do prompt separada da sequência de geração. A bancada usa
+  as funções de produção nos pontos de decisão
   (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
   `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
@@ -343,12 +347,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `infer_server.rs`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
-- `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde só o
-  prefill escreve, e `gen_seq`, aberta por `open_generation` na primeira
-  decodificação de token gerado, como cópia da primeira. `seq_id()` devolve a
-  que vale para o passo atual. É o que permite reter o prompt entre turnos sem
-  nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para o par de
-  sequências e o que ele custa.
+- `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde o
+  prefill escreve até a fronteira estável medida, e `gen_seq`, aberta por
+  `open_generation` na primeira decodificação de token gerado, como cópia da
+  primeira. A cauda volátil do prompt e a geração ficam na cópia. `seq_id()`
+  devolve a que vale para o passo atual. É o que permite reter o prompt entre
+  turnos sem nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para
+  o par de sequências e o que ele custa.
 - `retain_prompt` - fim de turno: apaga a sequência da geração inteira (remoção
   total, que todo motor aceita) e devolve a sessão a `prompt_len`. O EOS chama
   isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do

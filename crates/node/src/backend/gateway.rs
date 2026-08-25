@@ -1065,7 +1065,7 @@ async fn generate_stream_inner(
                     o.cached_tokens,
                     gen_start.elapsed().as_secs_f64(),
                 );
-                retained_prefix_tokens = Some(o.prompt_tokens);
+                retained_prefix_tokens = Some(o.retained_tokens);
                 honored_cached_tokens = o.cached_tokens;
                 o
             }
@@ -1518,10 +1518,10 @@ async fn generate_stream_inner(
     // que a sessão ficou parada no fim do prompt, descartado com a sessão
     // liberada em qualquer outro caso.
     let mut lease = Some(prefix_lease);
-    if let Some(prompt_tokens) = retained_prefix_tokens {
-        if rewind_sessions(&plan, &session_id, prompt_tokens, &state.peer_http).await {
+    if let Some(retained_tokens) = retained_prefix_tokens {
+        if rewind_sessions(&plan, &session_id, retained_tokens, &state.peer_http).await {
             if let Some(lease) = lease.take() {
-                lease.commit(cache_prompt, prompt_tokens);
+                lease.commit(cache_prompt, retained_tokens);
             }
         } else {
             warn!(
@@ -1551,7 +1551,7 @@ async fn generate_stream_inner(
 async fn rewind_sessions(
     plan: &PipelinePlan,
     session_id: &str,
-    prompt_tokens: u32,
+    retained_tokens: u32,
     clients: &crate::peer_client::PeerClients,
 ) -> bool {
     let mut all_ok = true;
@@ -1565,7 +1565,7 @@ async fn rewind_sessions(
             .post(&url)
             .json(&serde_json::json!({
                 "session_id": session_id,
-                "n_tokens": prompt_tokens,
+                "n_tokens": retained_tokens,
             }))
             .timeout(REWIND_TIMEOUT);
         match clients
@@ -1579,7 +1579,7 @@ async fn rewind_sessions(
                     Ok(body)
                         if body.get("rewound").and_then(|v| v.as_bool()) == Some(true)
                             && body.get("n_past").and_then(|v| v.as_u64())
-                                == Some(prompt_tokens as u64) => {}
+                                == Some(retained_tokens as u64) => {}
                     Ok(body) => {
                         warn!("rewind recusado por {}: {}", step.node_id, body);
                         all_ok = false;

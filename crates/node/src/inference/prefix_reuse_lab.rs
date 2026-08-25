@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 const HIDDEN_DIM: usize = 8;
+const FAKE_PREFILL_MS_PER_TOKEN: u64 = 2;
 
 // ── O motor falso, com contabilidade de KV ────────────────────────────────────
 
@@ -62,10 +63,14 @@ const HIDDEN_DIM: usize = 8;
 struct FakeSession {
     /// Tokens do prompt presentes no KV da sequência do prompt.
     prompt_kv: Vec<i32>,
-    /// Fronteira anotada quando o prompt acabou.
+    /// Fronteira anotada quando o prompt acabou. O token depois dela e os
+    /// tokens gerados vivem na sequência de geração e são removidos juntos.
     prompt_len: u32,
-    /// Quantas posições de geração existem além do prompt.
+    /// Quantas posições existem na sequência de geração além do prefixo
+    /// estável. Inclui a cauda do prompt que não pode ser retida e a saída.
     gen_len: u32,
+    /// Fronteira que a cabeça mediu para este prompt.
+    stable_len: u32,
     /// O prompt-alvo deste turno, na cabeça (que é quem tokeniza).
     alvo: Vec<i32>,
 }
@@ -223,6 +228,7 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
     let reuse_pedido = inc.meta["reuse_prefix"].as_bool().unwrap_or(false);
     let start_pos = inc.meta["start_pos"].as_u64().map(|v| v as u32);
     let is_final_chunk_recebido = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
+    let stable_from_head = inc.meta["stable_len"].as_u64().map(|v| v as u32);
 
     let mut engine = hop.engine.lock().unwrap();
 
@@ -257,9 +263,17 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
             }
             let sessao = engine.sessions.entry(sid.to_string()).or_default();
             sessao.gen_len = 0;
+            // O último token representa a cauda do template. Assim a bancada
+            // exercita a mesma separação que o servidor real faz com
+            // `stable_prefix_len`: o prompt retido nunca recebe a geração.
+            sessao.stable_len = tokens.len().saturating_sub(1) as u32;
             sessao.alvo = tokens;
         } else {
-            engine.sessions.entry(sid.to_string()).or_default().gen_len = 0;
+            let sessao = engine.sessions.entry(sid.to_string()).or_default();
+            sessao.gen_len = 0;
+            if let Some(stable) = stable_from_head {
+                sessao.stable_len = stable;
+            }
         }
     }
 
@@ -291,22 +305,19 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
             return Err(format!("chunk {chunk_index} não tem tokens"));
         }
         let novos = alvo[esperado as usize..esperado as usize + n].to_vec();
-        engine
-            .sessions
-            .get_mut(sid)
-            .unwrap()
-            .prompt_kv
-            .extend_from_slice(&novos);
+        let sessao = engine.sessions.get_mut(sid).unwrap();
+        let estavel = sessao.stable_len as usize;
+        let retidos = novos.len().min(estavel.saturating_sub(esperado as usize));
+        sessao.prompt_kv.extend_from_slice(&novos[..retidos]);
+        sessao.gen_len += novos.len().saturating_sub(retidos) as u32;
         (n, esperado as usize + n < alvo.len(), alvo.len() as u32)
     } else {
         // Hop do meio/cauda: ingere o que a cabeça mandou, sem tokenizar.
         let n = inc.tensor.as_ref().map(|(_, s)| s[0]).unwrap_or(1);
-        engine
-            .sessions
-            .get_mut(sid)
-            .unwrap()
-            .prompt_kv
-            .extend(std::iter::repeat_n(0i32, n));
+        let sessao = engine.sessions.get_mut(sid).unwrap();
+        let retidos = n.min(sessao.stable_len.saturating_sub(esperado) as usize);
+        sessao.prompt_kv.extend(std::iter::repeat_n(0i32, retidos));
+        sessao.gen_len += (n - retidos) as u32;
         (n, false, 0)
     };
     engine.prompt_chunks.push(n_tokens as u32);
@@ -318,7 +329,7 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
     };
     if is_final_chunk {
         let sessao = engine.sessions.get_mut(sid).unwrap();
-        sessao.prompt_len = sessao.prompt_kv.len() as u32;
+        sessao.prompt_len = sessao.stable_len;
     }
 
     let mut local = json!({
@@ -332,6 +343,7 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
         local["more_chunks"] = json!(mais);
         local["n_prompt_tokens"] = json!(total);
     }
+    local["stable_len"] = json!(engine.sessions[sid].stable_len);
     if chunk_index == 0 {
         local["reuse_prefix"] = json!(reused);
         local["cached_tokens"] = json!(cached_tokens);
@@ -370,6 +382,15 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         Err(msg) => return erro(msg),
     };
 
+    // Make the executed work visible in TTFT. The real engine's prefill cost
+    // is proportional to the tokens it actually ingests; this deterministic
+    // delay prevents scheduler jitter from turning the regression into a test
+    // of the chosen cache flag instead of the work that followed it.
+    tokio::time::sleep(std::time::Duration::from_millis(
+        n_tokens as u64 * FAKE_PREFILL_MS_PER_TOKEN,
+    ))
+    .await;
+
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
     let shape = [n_tokens, HIDDEN_DIM];
 
@@ -406,6 +427,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 "is_final_chunk": is_final_chunk,
                 "start_pos": local["start_pos"].clone(),
                 "next_pos": local["next_pos"].clone(),
+                "stable_len": local["stable_len"].clone(),
                 "prompt_progress":
                     crate::infer_server::prompt_progress_for_forward(&inc.meta, &local),
                 "hop_timings": hop_timings,
@@ -434,6 +456,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             "is_final_chunk": is_final_chunk,
             "start_pos": local["start_pos"].clone(),
             "next_pos": local["next_pos"].clone(),
+            "stable_len": local["stable_len"].clone(),
         });
         return match bubble(&inc.next_hops, "/v1/prefill", base, (&residual, shape)).await {
             Ok(mut bubbled) => {
@@ -623,6 +646,7 @@ struct Turno {
     /// O que o gateway reportou como aproveitado do cache.
     cached_tokens: u32,
     prompt_tokens: u32,
+    first_word_us: u128,
     falhou: Option<String>,
 }
 
@@ -695,10 +719,25 @@ async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool
     let mut historico: Vec<ChatMessage> = Vec::new();
     let mut medidos = Vec::new();
     for turno in 0..turnos {
-        historico.push(msg(
-            "user",
-            &format!("pergunta numero {turno} com um pouco de texto para dar corpo ao prompt"),
-        ));
+        // The real discovery loop refreshes `last_seen`; this fixture has no
+        // UDP traffic, so refresh the synthetic peers before every request.
+        // Otherwise a busy full test process can let the 30-second liveness
+        // window expire between turns and make the direct path fail before it
+        // reaches the cache code.
+        {
+            let now = chrono::Utc::now();
+            let mut peers = state.network.peers.write().await;
+            for peer in peers.values_mut() {
+                peer.last_seen = now;
+            }
+        }
+        let pergunta = if turno == 0 {
+            "pergunta inicial com bastante contexto para aquecer o prompt e medir o custo frio"
+                .to_string()
+        } else {
+            format!("followup curto {turno}")
+        };
+        historico.push(msg("user", &pergunta));
         let prompt = crate::openai::render_prompt(&historico, &[]);
         let cache_key = crate::openai::conversation_cache_key(&historico, &[]);
 
@@ -723,11 +762,18 @@ async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool
             pedacos: 0,
             cached_tokens: 0,
             prompt_tokens: 0,
+            first_word_us: 0,
             falhou: None,
         };
+        let started = std::time::Instant::now();
+        let mut saw_first_word = false;
         while let Some(evento) = rx.recv().await {
             let terminal = match evento {
                 crate::gateway::GenEvent::Token(t) => {
+                    if !saw_first_word && !t.is_empty() {
+                        medido.first_word_us = started.elapsed().as_micros();
+                        saw_first_word = true;
+                    }
                     resposta.push_str(&t);
                     false
                 }
@@ -781,6 +827,19 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
         let turnos = &medida.turnos;
         let contexto = format!("{transporte:?}");
 
+        eprintln!(
+            "[{contexto}] prefix-cache metrics: {}",
+            turnos
+                .iter()
+                .enumerate()
+                .map(|(i, t)| format!(
+                    "turn={i} cached={} ttft_us={} chunks={} prompt={} reprocessed={}",
+                    t.cached_tokens, t.first_word_us, t.pedacos, t.prompt_tokens, t.reprocessados
+                ))
+                .collect::<Vec<_>>()
+                .join("; ")
+        );
+
         for (i, t) in turnos.iter().enumerate() {
             assert!(
                 t.falhou.is_none(),
@@ -810,8 +869,12 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
             );
             assert_eq!(
                 t.cached_tokens,
-                turnos[i - 1].prompt_tokens,
-                "[{contexto}] turno {i} devia aproveitar o prompt inteiro do turno anterior"
+                turnos[i - 1].prompt_tokens.saturating_sub(1),
+                "[{contexto}] turno {i} devia aproveitar o prefixo estável do turno anterior"
+            );
+            assert!(
+                t.first_word_us > 0,
+                "[{contexto}] turno {i} não registrou o tempo até a primeira palavra"
             );
         }
 
@@ -836,6 +899,13 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
             trabalho[1..].windows(2).all(|w| w[1] <= w[0] + 2),
             "[{contexto}] o custo por turno cresce com a conversa: {trabalho:?}"
         );
+        assert!(
+            turnos[1..]
+                .iter()
+                .all(|t| t.first_word_us < turnos[0].first_word_us),
+            "[{contexto}] TTFT não caiu depois do primeiro turno: {:?}",
+            turnos.iter().map(|t| t.first_word_us).collect::<Vec<_>>()
+        );
         // Menos tokens para ingerir são menos pedaços atravessando o pipeline,
         // que é o número que o log de produção mostra.
         assert!(
@@ -856,6 +926,17 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
                 "[{contexto}] a sessão da {nome} foi destruída antes de o gateway \
                  preservar o prefixo"
             );
+            for sessao in engine.sessions.values() {
+                assert_eq!(
+                    sessao.prompt_kv.len() as u32,
+                    sessao.prompt_len,
+                    "[{contexto}] {nome} reteve tokens da geração na sequência do prompt"
+                );
+                assert_eq!(
+                    sessao.gen_len, 0,
+                    "[{contexto}] {nome} deixou a sequência de geração viva após o rewind"
+                );
+            }
         }
     }
 }

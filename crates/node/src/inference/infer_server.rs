@@ -303,6 +303,9 @@ struct PrefillJob {
     chunk_size: u32,
     reuse_prefix: bool,
     start_pos: Option<u32>,
+    /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
+    /// por quem tokenizou - ver `Session::stable_len`.
+    stable_len: Option<u32>,
     /// Bloco local onde parar, quando o remetente pediu menos que a fatia
     /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
     capture_block: Option<u32>,
@@ -656,6 +659,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.chunk_size,
                 job.reuse_prefix,
                 job.start_pos,
+                job.stable_len,
                 job.is_last,
                 job.is_final_chunk,
                 job.wire_dtype,
@@ -1334,37 +1338,100 @@ pub(crate) struct PrefixDecision {
 
 /// A regra do reuso, sem sessão nem motor por perto.
 ///
-/// `retidos` são os tokens do prompt do turno anterior, dos quais os primeiros
-/// `n_past` estão de fato no KV. O prefixo só é aproveitado quando ele é um
-/// prefixo **exato** dos novos tokens e acaba antes deles - assim o prefill
-/// apenas continua, e nenhuma posição precisa sair do cache.
+/// `retidos` são exatamente os tokens do prompt do turno anterior que estão no
+/// KV, e portanto seu tamanho tem que ser `n_past`. O prefixo serve quando
+/// esses tokens ainda abrem o prompt novo e sobra pelo menos um token para
+/// decodificar:
+/// aí o prefill continua da posição `n_past` e **nenhuma posição sai do KV**,
+/// que é a diferença entre funcionar em todo modelo e depender de o motor
+/// aceitar `llama_memory_seq_rm` parcial.
 ///
-/// Recusa deliberada em três casos, todos por não haver como cumpri-los sem
-/// remover posições do meio do KV (operação que motores recorrentes/híbridos
-/// recusam - ver `llm::LlmEngine::kv_remove`):
+/// Note que a comparação é contra `n_past`, não contra o prompt retido inteiro:
+/// o que o turno anterior guardou no KV termina antes do rabicho volátil do
+/// template de conversa (ver `stable_prefix_len`). Divergir depois de `n_past`
+/// é o caso **normal** - é onde a conversa cresceu.
 ///
-/// - divergência no meio: o retido teria de encolher;
-/// - prompt idêntico ao retido: não sobraria token para decodificar, e recuar
-///   um só continuaria sendo remoção parcial;
-/// - sessão sem prompt no KV.
+/// Recusa quando os `n_past` tokens não abrem mais o prompt novo (a conversa
+/// foi editada, trocou de template, mudou a lista de ferramentas), quando não
+/// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
+/// Recusar custa o reuso daquele turno e nunca a requisição.
 pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
-    // O último token do novo prompt tem de ser decodificado: é dele que saem os
-    // logits do primeiro token gerado.
-    let reutilizavel = novos.len().saturating_sub(1);
+    if retidos.len() as u32 != n_past {
+        return PrefixDecision::default();
+    }
     let comum = retidos
         .iter()
         .zip(novos)
         .take_while(|(old, new)| old == new)
-        .count()
-        .min(reutilizavel) as u32;
-    if comum > 0 && comum == n_past {
+        .count() as u32;
+    // O último token do novo prompt tem de ser decodificado: é dele que saem os
+    // logits do primeiro token gerado.
+    let cabe_decodificar = (n_past as usize) < novos.len();
+    if n_past > 0 && comum >= n_past && cabe_decodificar {
         PrefixDecision {
             reused: true,
-            cached_tokens: comum,
+            cached_tokens: n_past,
         }
     } else {
         PrefixDecision::default()
     }
+}
+
+/// Quantos tokens do começo deste prompt continuam valendo quando a conversa
+/// crescer - a fronteira entre o que vale a pena reter e o que é deste turno.
+///
+/// **Medido, não presumido.** O template de conversa fecha o prompt com o
+/// rabicho que abre o turno do assistente (`<|im_end|>\n<|im_start|>assistant\n`
+/// no chatml, outra coisa noutro modelo). Esse rabicho fica no *fim* do prompt,
+/// então o prompt de um turno nunca é prefixo do prompt do turno seguinte: o
+/// texto novo entra antes dele. Medido no Ornith-1.0-35B: prompt de 50 tokens,
+/// 45 estáveis, 5 voláteis - e era exatamente por 5 tokens que todo reuso era
+/// recusado, com a retenção e o cache funcionando perfeitamente.
+///
+/// A sonda renderiza o mesmo prompt com a continuação que `render_prompt`
+/// acrescentaria e compara os tokens: o prefixo comum é, por construção, a
+/// parte que sobrevive. Vale para qualquer template e qualquer tokenizador,
+/// porque é medição e não suposição sobre o formato. Sonda conservadora custa
+/// alguns tokens de reuso; nunca corrompe, porque `plan_prefix_reuse` só
+/// aproveita o que está de fato no KV.
+fn stable_prefix_len(
+    engine: &crate::llm::LlmEngine,
+    texto: &str,
+    use_tmpl: bool,
+    no_think: bool,
+    tokens: &[i32],
+) -> usize {
+    // A forma exata do que o turno seguinte acrescenta - ver `render_prompt`.
+    const CONTINUACAO: &str = "\n\nAssistant: x";
+    let sondado = if use_tmpl {
+        match engine.apply_chat_template(
+            &[("user", &format!("{texto}{CONTINUACAO}"))],
+            true,
+            no_think,
+        ) {
+            Ok(rendered) => rendered,
+            // Sem sonda não há fronteira medida: não retenha nada que possa
+            // depender de um template que não conseguimos comparar.
+            Err(_) => return 0,
+        }
+    } else {
+        format!("{texto}{CONTINUACAO}")
+    };
+    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
+    let comum = tokens
+        .iter()
+        .zip(&sondados)
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Reserve the final prompt token for `gen_seq`. Without this cap, a raw
+    // prompt whose continuation tokenizes independently could leave the whole
+    // prompt in `prompt_seq`, putting the first generated token back into the
+    // retained sequence.
+    retainable_prefix_len(comum, tokens.len())
+}
+
+fn retainable_prefix_len(common: usize, prompt_len: usize) -> usize {
+    common.min(prompt_len.saturating_sub(1))
 }
 
 /// A posição do KV em que este pedaço de prompt deve começar.
@@ -1440,6 +1507,14 @@ mod prefix_rule_tests {
         assert!(!d.reused);
     }
 
+    #[test]
+    fn stable_frontier_always_leaves_a_prompt_token_for_generation() {
+        assert_eq!(retainable_prefix_len(9, 10), 9);
+        assert_eq!(retainable_prefix_len(10, 10), 9);
+        assert_eq!(retainable_prefix_len(1, 1), 0);
+        assert_eq!(retainable_prefix_len(0, 0), 0);
+    }
+
     /// O KV pode ter menos posições que os tokens guardados (turno anterior
     /// interrompido no meio do prefill). Reusar até `n_past` seria mentira
     /// sobre o que está no cache.
@@ -1495,6 +1570,12 @@ struct Session {
     /// onde a sessão volta no fim do turno, e o que o gateway confirma no
     /// `/v1/session/rewind`.
     prompt_len: u32,
+    /// Onde acaba a parte do prompt que sobrevive ao turno seguinte, e portanto
+    /// onde a sequência de geração começa - ver `stable_prefix_len`. Tudo daqui
+    /// para a frente (o rabicho do template e os tokens gerados) vive na cópia
+    /// e some no fim do turno. `u32::MAX` é "ainda não sei", que mantém tudo na
+    /// sequência do prompt: é o estado dos hops antes de a cabeça informar.
+    stable_len: u32,
     n_past: u32,
     recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
@@ -1516,6 +1597,7 @@ impl Session {
             prompt_seq: seq_id,
             gen_seq: None,
             prompt_len: 0,
+            stable_len: u32::MAX,
             n_past: 0,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
@@ -1641,6 +1723,14 @@ fn apply_prefix_decision(meta: &mut Value, chunk_index: u32, prefix: PrefixDecis
     }
     meta["reuse_prefix"] = json!(prefix.reused);
     meta["cached_tokens"] = json!(prefix.cached_tokens);
+}
+
+/// Anota no meta a fronteira medida por quem tokenizou, para os hops seguintes
+/// partirem o prompt na mesma posição. Ver `Session::stable_len`.
+fn apply_stable_len(meta: &mut Value, stable_len: u32) {
+    if stable_len != u32::MAX {
+        meta["stable_len"] = json!(stable_len);
+    }
 }
 
 fn terminal_prefill_meta(
@@ -1857,6 +1947,7 @@ impl InferState {
         &mut self,
         sid: &str,
         tokens: Vec<i32>,
+        stable_len: u32,
         requested_reuse: bool,
     ) -> Result<PrefixDecision> {
         let mut decision = PrefixDecision::default();
@@ -1864,12 +1955,29 @@ impl InferState {
             let session = self.sessions.get(sid).ok_or_else(|| {
                 anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
             })?;
-            decision = plan_prefix_reuse(&session.prompt_tokens, session.n_past, &tokens);
+            let retained = session
+                .prompt_tokens
+                .get(..session.n_past as usize)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "sessão '{sid}' retém {} tokens, mas só conhece {}",
+                        session.n_past,
+                        session.prompt_tokens.len()
+                    )
+                })?;
+            decision = plan_prefix_reuse(retained, session.n_past, &tokens);
             if !decision.reused {
+                let comum = retained
+                    .iter()
+                    .zip(&tokens)
+                    .take_while(|(old, new)| old == new)
+                    .count();
                 debug!(
-                    "prefixo da sessão {}… não serve (retido={}); recomeçando",
+                    "prefixo da sessão {}… não serve: comum={comum} retido={} retidos={} novos={}",
                     &sid[..8.min(sid.len())],
-                    session.n_past
+                    session.n_past,
+                    session.prompt_tokens.len(),
+                    tokens.len()
                 );
                 self.get_or_create(sid, true)?;
             }
@@ -1879,6 +1987,7 @@ impl InferState {
             .get_mut(sid)
             .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desapareceu no prefill"))?;
         session.prompt_tokens = tokens;
+        session.stable_len = stable_len;
         session.retained = false;
         Ok(decision)
     }
@@ -3056,6 +3165,10 @@ async fn handle_prefill(
         .get("reuse_prefix")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let stable_len = meta
+        .get("stable_len")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32);
     let start_pos = meta
         .get("start_pos")
         .and_then(|v| v.as_u64())
@@ -3135,6 +3248,7 @@ async fn handle_prefill(
         chunk_size,
         reuse_prefix,
         start_pos,
+        stable_len,
         is_last,
         is_final_chunk,
         wire_dtype,
@@ -3238,7 +3352,7 @@ async fn handle_prefill(
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
-        for field in ["start_pos", "next_pos"] {
+        for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
                 forward[field] = value.clone();
             }
@@ -3301,7 +3415,7 @@ async fn handle_prefill(
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
             }
-            for field in ["start_pos", "next_pos"] {
+            for field in ["start_pos", "next_pos", "stable_len"] {
                 if let Some(value) = local_meta.get(field) {
                     relay_meta[field] = value.clone();
                 }
@@ -3392,6 +3506,7 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
             // sobre um prompt que ela nunca tokenizou.
             "reuse_prefix",
             "cached_tokens",
+            "stable_len",
         ] {
             if let Some(value) = local_meta.get(field) {
                 bubbled[field] = value.clone();
@@ -3414,6 +3529,7 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
             "reuse_prefix": local_meta["reuse_prefix"].clone(),
             "cached_tokens": local_meta["cached_tokens"].clone(),
+            "stable_len": local_meta["stable_len"].clone(),
         });
     }
     inbound_meta
@@ -3436,6 +3552,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
         "next_pos",
         "reuse_prefix",
         "cached_tokens",
+        "stable_len",
     ] {
         if let Some(value) = progress.get(field) {
             if !value.is_null() {
@@ -3465,6 +3582,7 @@ fn prefill_blocking(
     chunk_size: u32,
     reuse_prefix: bool,
     start_pos: Option<u32>,
+    stable_len: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
     wire_dtype: WireDtype,
@@ -3498,9 +3616,18 @@ fn prefill_blocking(
     // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
     // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
     // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
-    let want_reuse = reuse_prefix && chunk_index == 0 && s.sessions.contains_key(&sid_key);
+    let want_reuse = reuse_prefix
+        && chunk_index == 0
+        && s.sessions
+            .get(&sid_key)
+            .is_some_and(|session| session.retained);
     s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
     let mut prefix = PrefixDecision::default();
+    // Quem não tokeniza recebe a fronteira de quem tokenizou, para partir o
+    // prompt na mesma posição - ver `Session::stable_len`.
+    if let Some(stable) = stable_len {
+        s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
+    }
 
     // First peer: tokenize the prompt on chunk 0.
     // We must not hold a &mut Session borrow while calling engine methods, so
@@ -3517,7 +3644,8 @@ fn prefill_blocking(
             };
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
-            prefix = s.adopt_prompt_prefix(&sid_key, tokens, want_reuse)?;
+            let stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+            prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
         }
     }
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
@@ -3555,11 +3683,22 @@ fn prefill_blocking(
     // ── Decode ───────────────────────────────────────────────────────────────
     // Extract the session values we need as plain integers, drop the borrow,
     // then call the engine (which needs &mut s.engine).
+    // A partir da fronteira, o prompt deixa de ser reutilizável e passa a viver
+    // na cópia de geração junto com os tokens gerados - ver `Session::stable_len`.
+    // Um pedaço nunca atravessa a fronteira: ele para nela, e o seguinte começa
+    // já na outra sequência.
+    let stable = s.sessions[&sid_key].stable_len;
+    if expected_pos >= stable {
+        s.open_generation(&sid_key)?;
+    }
     let (n_past, seq_id, tokens_for_chunk) = {
         let session = &s.sessions[&sid_key];
         let toks = if tensor.is_none() {
             let start = expected_pos as usize;
-            let end = (expected_pos + chunk_size) as usize;
+            let mut end = (expected_pos + chunk_size) as usize;
+            if expected_pos < stable {
+                end = end.min(stable as usize);
+            }
             session
                 .prompt_tokens
                 .get(start..end.min(session.prompt_tokens.len()))
@@ -3659,7 +3798,8 @@ fn prefill_blocking(
     // que o `/v1/session/rewind` confere. Hops do meio não tokenizam nada, e
     // por isso recebem `is_final_chunk` da cabeça em vez de deduzi-lo.
     if is_final_chunk {
-        s.sessions.get_mut(&sid_key).unwrap().prompt_len = n_past_now;
+        let session = s.sessions.get_mut(&sid_key).unwrap();
+        session.prompt_len = n_past_now.min(session.stable_len);
     }
 
     // ── Sampling / residual ──────────────────────────────────────────────────
@@ -3670,6 +3810,7 @@ fn prefill_blocking(
             let encode_started = Instant::now();
             let mut partial = json!({"done": false, "more_chunks": more});
             apply_prefix_decision(&mut partial, chunk_index, prefix);
+            apply_stable_len(&mut partial, stable);
             let bytes = wire::encode(&partial, None, wire_dtype)?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
             return Ok(TimedReply { bytes, timings });
@@ -3740,6 +3881,7 @@ fn prefill_blocking(
             done,
         );
         apply_prefix_decision(&mut reply, chunk_index, prefix);
+        apply_stable_len(&mut reply, stable);
         reply["token_id"] = json!(next_id);
         reply["text"] = json!(text);
         let bytes = wire::encode(&reply, None, wire_dtype)?;
@@ -3771,6 +3913,7 @@ fn prefill_blocking(
         "owns_tokens": owns_tokens,
     });
     apply_prefix_decision(&mut reply_meta, chunk_index, prefix);
+    apply_stable_len(&mut reply_meta, stable);
     // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
     // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
     // meio ecoam o que receberam.
@@ -3798,6 +3941,8 @@ struct PreparedPrefill {
     chunk_index: u32,
     /// O que este peer executou com o prefixo retido - ver `apply_prefix_decision`.
     prefix: PrefixDecision,
+    /// A fronteira medida - ver `Session::stable_len`.
+    stable_len: u32,
     is_last: bool,
     is_final_chunk: bool,
     owns_tokens: bool,
@@ -3841,6 +3986,7 @@ fn prefill_batch_blocking(
             chunk_size,
             reuse_prefix,
             start_pos,
+            stable_len,
             is_last,
             is_final_chunk,
             wire_dtype,
@@ -3855,20 +4001,31 @@ fn prefill_batch_blocking(
         let result = (|| -> Result<PreparedPrefill> {
             // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
             // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
-            let want_reuse = reuse_prefix && chunk_index == 0 && s.sessions.contains_key(&sid_key);
+            let want_reuse = reuse_prefix
+                && chunk_index == 0
+                && s.sessions
+                    .get(&sid_key)
+                    .is_some_and(|session| session.retained);
             s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
             let mut prefix = PrefixDecision::default();
+            // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
+            if let Some(stable) = stable_len {
+                s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
+            }
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
                     let use_tmpl = use_chat_template(chat_template, s.chat_template);
+                    let no_think = s.no_thinking;
                     let formatted = if use_tmpl {
                         s.engine
-                            .apply_chat_template(&[("user", text)], true, s.no_thinking)?
+                            .apply_chat_template(&[("user", text)], true, no_think)?
                     } else {
                         text.to_string()
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
-                    prefix = s.adopt_prompt_prefix(&sid_key, tokens, want_reuse)?;
+                    let stable =
+                        stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+                    prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
                 }
             }
 
@@ -3897,6 +4054,12 @@ fn prefill_batch_blocking(
                 }
             }
 
+            // Ver `prefill_blocking`: o pedaço para na fronteira, e daí em
+            // diante decodifica na cópia de geração.
+            let stable = s.sessions[&sid_key].stable_len;
+            if expected_pos >= stable {
+                s.open_generation(&sid_key)?;
+            }
             let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
                 let session = &s.sessions[&sid_key];
                 if let Some((hidden, shape)) = tensor {
@@ -3926,7 +4089,10 @@ fn prefill_batch_blocking(
                     )
                 } else {
                     let start = expected_pos as usize;
-                    let end = start.saturating_add(chunk_size as usize);
+                    let mut end = start.saturating_add(chunk_size as usize);
+                    if expected_pos < stable {
+                        end = end.min(stable as usize);
+                    }
                     let tokens = session
                         .prompt_tokens
                         .get(start..end.min(session.prompt_tokens.len()))
@@ -3956,6 +4122,7 @@ fn prefill_batch_blocking(
                 start_pos: expected_pos,
                 chunk_index,
                 prefix,
+                stable_len: stable,
                 is_last,
                 is_final_chunk,
                 owns_tokens,
@@ -4102,7 +4269,8 @@ fn prefill_batch_blocking(
             }
             // Ver `prefill_blocking`: a fronteira prompt/geração desta sessão.
             if is_final_chunk {
-                s.sessions.get_mut(&item.sid_key).unwrap().prompt_len = n_past_now;
+                let session = s.sessions.get_mut(&item.sid_key).unwrap();
+                session.prompt_len = n_past_now.min(session.stable_len);
             }
 
             let mut timings = NodeTimings {
@@ -4131,6 +4299,7 @@ fn prefill_batch_blocking(
                         "next_pos": item.start_pos + item.n_tokens as u32,
                     });
                     apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                    apply_stable_len(&mut meta, item.stable_len);
                     let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                     timings.encode_us = started.elapsed().as_micros() as u64;
                     return Ok(TimedReply { bytes, timings });
@@ -4190,6 +4359,7 @@ fn prefill_batch_blocking(
                     "next_pos": item.start_pos + item.n_tokens as u32,
                 });
                 apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                apply_stable_len(&mut meta, item.stable_len);
                 let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                 timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
                 timings.encode_us = 0;
@@ -4213,6 +4383,7 @@ fn prefill_batch_blocking(
                 "owns_tokens": item.owns_tokens,
             });
             apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+            apply_stable_len(&mut meta, item.stable_len);
             if item.owns_tokens {
                 meta["tokens"] = json!(item.tokens_for_chunk);
             } else if let Some(tokens) = &item.chunk_tokens {

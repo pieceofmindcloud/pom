@@ -284,23 +284,30 @@ mantém o caminho compatível com `max_sessions=1` sem compartilhar entrada
 ocupada.
 
 **A geração não acontece na sequência do prompt.** Cada sessão de um peer tem
-duas sequências de KV: `prompt_seq`, onde só o prefill escreve, e `gen_seq`,
-aberta na primeira decodificação de token gerado como cópia da primeira
+duas sequências de KV: `prompt_seq`, onde o prefill escreve apenas até a
+fronteira estável medida para o próximo turno, e `gen_seq`, aberta na primeira
+decodificação depois dessa fronteira como cópia da primeira
 (`llama_memory_seq_cp`, metadado apenas - as duas dividem as mesmas células com
-`kv_unified`). No fim do turno some a sequência da geração **inteira**, que é
-remoção total e todo motor aceita, e `prompt_seq` continua exatamente com o
-prompt. É por isso que o reuso não depende de o modelo aceitar remover posições
-do meio do cache - uma operação que `llama_memory_recurrent::seq_rm` recusa
-sempre que o recuo passa da janela de snapshots (`n_rs_seq`), ou seja em
-qualquer geração de tamanho real num modelo híbrido/recorrente como o
-Qwen3-Next/Ornith. O custo declarado é uma segunda sequência por sessão
-(`llm::kv_seq_budget`), que o `fit_memory` já contabiliza.
+`kv_unified`). A cauda do template, os tokens que completam o prompt atual e a
+geração ficam na cópia. No fim do turno some a sequência da geração **inteira**,
+que é remoção total e todo motor aceita, enquanto `prompt_seq` mantém o prefixo
+que o próximo prompt pode reutilizar. É por isso que o reuso não depende de o
+modelo aceitar remover posições do meio do cache - uma operação que
+`llama_memory_recurrent::seq_rm` recusa sempre que o recuo passa da janela de
+snapshots (`n_rs_seq`), ou seja em qualquer geração de tamanho real num modelo
+híbrido/recorrente como o Qwen3-Next/Ornith. O custo declarado é uma segunda
+sequência por sessão (`llm::kv_seq_budget`), que o `fit_memory` já contabiliza.
 
 Reter é ato local do peer: no EOS a sessão **não** é destruída, ela volta para
 `prompt_len`. `/v1/session/rewind` confere esse estado e cobre as paradas que
 não passam por EOS (limite de tokens, sequência de parada, cliente que
 desligou); é idempotente e não recua nada. Liberar de vez continua sendo ato
 explícito do gateway, por `/v1/session/release`.
+
+O comprimento confirmado no rewind é a fronteira estável medida durante o
+prefill (`retained_tokens`), não necessariamente o total tokenizado do prompt:
+o rabicho do template e a entrada que fornece os logits do primeiro token ficam
+na sequência de geração daquele turno.
 
 No turno seguinte o primeiro frame leva `reuse_prefix`. A regra da cabeça é **só
 acrescentar** (`plan_prefix_reuse`): o prefixo serve quando os tokens retidos
@@ -343,9 +350,11 @@ bateria - ele valida a **escolha**. `prefix_reuse_lab.rs` valida a **execução*
 uma conversa de quatro turnos pelo caminho de `/v1/chat/completions`, nos três
 transportes (hub, anel, resposta direta) e com dois hops, afirmando que do turno
 2 em diante `cached_tokens > 0`, que o trabalho por turno para de crescer com a
-conversa e que nenhum hop recebeu pedido de remoção parcial de KV. Os hops
-falsos dessa bancada imitam o motor mais restrito que o produto tem que
-atender - o recorrente que recusa remoção parcial.
+conversa, que o TTFT cai em relação ao turno frio e que nenhum hop recebeu
+pedido de remoção parcial de KV. Os hops falsos dessa bancada imitam o motor
+mais restrito que o produto tem que atender - o recorrente que recusa remoção
+parcial; o atraso determinístico da bancada torna o custo executado observável,
+sem confundir a escolha do cache com a economia real.
 
 ### 3.2 Seleção do executor
 

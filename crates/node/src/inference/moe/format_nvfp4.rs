@@ -1008,7 +1008,9 @@ mod tests {
         }
         assert!(
             max_abs <= 1.0e-4 || max_rel <= 2.0e-3,
-            "{stage} layer {layer} diverged at {worst}: max_abs={max_abs} max_rel={max_rel}"
+            "{stage} layer {layer} diverged at {worst}: max_abs={max_abs} max_rel={max_rel} ours={} reference={}",
+            ours[worst],
+            reference[worst]
         );
     }
 

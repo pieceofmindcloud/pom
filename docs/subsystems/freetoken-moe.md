@@ -576,6 +576,63 @@ kernel no decode, o agrupamento medido foi uma melhoria isolada: cerca de
 O nó principal terminou servível em `8080/8092`, com Gemma4 NVFP4 ativo em
 modo MoE; a instância isolada foi encerrada após a medição.
 
+### Decomposição fechada do tempo após o agrupamento
+
+Para separar submedições CUDA que podem se sobrepor, repeti a mesma requisição
+em uma instância isolada do ramo de validação `0d6d70f`, compilado na ksia com
+`--features vulkan,cuda`. O serviço principal não foi reiniciado. A medição
+usou `POM_MOE_CUDA_PROFILE=1` e acrescentou duas paredes não sobrepostas:
+`runtime_forward_ms` para o forward MoE inteiro e `cuda_call_wall_ms` para a
+chamada FFI CUDA inteira. O texto foi novamente dez linhas de `hello world`,
+com 30 tokens de saída e 22 tokens de entrada.
+
+| fase | backend total | forward MoE | restante llama.cpp | total por token |
+|---|---:|---:|---:|---:|
+| prefill, 22 tokens | `8039,369 ms` | `7802,851 ms` (`97,058%`) | `236,518 ms` (`2,942%`) | `365,426 ms/token` |
+| decode, 29 chamadas | `5979,008 ms` | `5481,247 ms` (`91,675%`) | `497,761 ms` (`8,325%`) | `206,173 ms/token` |
+
+O restante é a diferença medida entre a parede do backend e o forward MoE,
+não uma estimativa de custo. Dentro do forward MoE, a partição também fecha
+exatamente:
+
+| componente não sobreposto | prefill | decode, delta de 29 chamadas |
+|---|---:|---:|
+| lookup do cache | `1,263 ms` | `3,784 ms` |
+| leitura do expert no GGUF | `501,936 ms` | `92,603 ms` |
+| admissão no cache RAM | `696,284 ms` | `57,419 ms` |
+| preparação do lote no host | `3622,166 ms` | `2166,206 ms` |
+| parede da chamada CUDA | `2836,915 ms` | `3086,384 ms` |
+| cópia do resultado no host | `6,197 ms` | `7,706 ms` |
+| agregação ponderada | `2,229 ms` | `2,258 ms` |
+| restante de orquestração do runtime | `135,860 ms` | `64,887 ms` |
+| **total do forward MoE** | **`7802,851 ms`** | **`5481,247 ms`** |
+
+Assim, o maior componente isolado do prefill é a preparação do lote no host
+(`45,055%` do backend), seguida da parede CUDA (`35,288%`). No decode, a
+parede CUDA é o maior componente (`51,620%`), seguida da preparação do lote
+(`36,230%`). A leitura do expert e a admissão deixam de dominar no decode,
+porque o LRU está ativo: o prefill teve `1448` misses e `3832` hits; o delta
+do decode teve `177` misses e `6783` hits. Mesmo assim, cada token de decode
+mediu `803243520` bytes (`766,033 MiB`) de H2D, pois o cache é de RAM e não
+residente em VRAM.
+
+As submedições internas da parede CUDA, que não devem ser somadas à tabela
+acima, foram no prefill: H2D `2246,346 ms` para `17671357440` bytes, kernel
+`378,780 ms`, alocação `95,688 ms`, lançamentos `253,452 ms`, sincronização
+`6,492 ms`, D2H `15,196 ms` e liberação `66,257 ms`. No delta de decode: H2D
+`2618,950 ms`, kernel `224,304 ms`, alocação `100,680 ms`, lançamentos
+`27,006 ms`, sincronização `16,399 ms`, D2H `21,769 ms` e liberação
+`76,018 ms`. A parede CUDA é a medida para a soma de 100%; essas fases
+internas explicam o conteúdo dela e podem ter sobreposição de relógios.
+
+O campo legado `node_moe_forward_ms` continuou zerado no trace de decode,
+apesar de `runtime_forward_ms` ter crescido `5481,247 ms`; a decomposição usa
+o contador de parede do runtime e registra essa divergência de telemetria em
+vez de ocultá-la. O executor observado foi `cuda`, dtype `[40]`,
+`executed_engine=moe`, `engine_mismatch=false` e `mixed_execution=false`.
+O maior próximo alvo medido é reduzir a transferência e a preparação do lote,
+mas esta medição não inicia F5-E2 nem afirma ganho dela.
+
 ### Goal retomado: executor CUDA e co-execução CPU/GPU
 
 Este é o novo goal formal da Fase 5, decidido pelo captain depois da medição

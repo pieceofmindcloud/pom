@@ -1036,6 +1036,22 @@ mod tests {
             .expect("real GGUF must expose expert count in the gate tensor");
         drop(mmap);
         let source = Nvfp4Source::open_infer(&path, experts).unwrap();
+        for tensor in source.tensors.iter().filter(|tensor| {
+            tensor.name.starts_with("blk.0.ffn_gate_exps")
+                || tensor.name.starts_with("blk.0.ffn_up_exps")
+                || tensor.name.starts_with("blk.0.ffn_down_exps")
+        }) {
+            let values = if tensor.name.ends_with(".scale") || tensor.name.ends_with(".input_scale")
+            {
+                source.read_scale_vector(tensor).ok()
+            } else {
+                None
+            };
+            eprintln!(
+                "GGUF tensor diagnostic name={} dtype={} dims={:?} scalar_values={values:?}",
+                tensor.name, tensor.dtype, tensor.dims
+            );
+        }
         let hidden = (0..source.hidden())
             .map(|index| (index as f32 % 17.0 - 8.0) * 0.03125)
             .collect::<Vec<_>>();

@@ -16,6 +16,7 @@
 #include "llama.cpp/src/llama-ext.h"
 #include "llama.cpp/src/llama-model.h"
 #include "llama.cpp/ggml/include/ggml-backend.h"
+#include "llama.cpp/ggml/include/ggml-cpu.h"
 #include "llama.cpp/common/fit.h"
 #include "llama.cpp/common/json-schema-to-grammar.h"
 #include "llama.cpp/common/speculative.h"
@@ -394,7 +395,7 @@ extern "C" int llama_rs_moe_reference_expert(
         ggml_init_params init = {
             .mem_size   = 64ull * 1024ull * 1024ull,
             .mem_buffer = nullptr,
-            .no_alloc   = false,
+            .no_alloc   = true,
         };
         ggml_context * ctx = ggml_init(init);
         if (!ctx) {
@@ -402,7 +403,6 @@ extern "C" int llama_rs_moe_reference_expert(
         }
 
         ggml_tensor * input = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden_count, 1);
-        std::memcpy(input->data, hidden, hidden_count * sizeof(float));
 
         ggml_tensor * gate_node = nullptr;
         ggml_tensor * up_node = nullptr;
@@ -458,19 +458,31 @@ extern "C" int llama_rs_moe_reference_expert(
 
         ggml_cgraph * graph = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph, down_node);
-        if (ggml_graph_compute_with_ctx(ctx, graph, 1) != GGML_STATUS_SUCCESS) {
+        ggml_backend_t backend = ggml_backend_cpu_init();
+        if (!backend) {
+            ggml_free(ctx);
+            return 3;
+        }
+        ggml_backend_buffer_t buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+        if (!buffer) {
+            ggml_backend_free(backend);
+            ggml_free(ctx);
+            return 3;
+        }
+        ggml_backend_tensor_set(input, hidden, 0, hidden_count * sizeof(float));
+        if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+            ggml_backend_buffer_free(buffer);
+            ggml_backend_free(backend);
             ggml_free(ctx);
             return 3;
         }
 
-        // `ggml_graph_compute_with_ctx` executes this private oracle on the
-        // CPU context directly. Those tensors have host `data`, but no
-        // backend buffer, so `ggml_backend_tensor_get` would assert instead
-        // of copying the computed values.
-        std::memcpy(gate, gate_node->data, intermediate * sizeof(float));
-        std::memcpy(up, up_node->data, intermediate * sizeof(float));
-        std::memcpy(activated, activated_node->data, intermediate * sizeof(float));
-        std::memcpy(output, down_node->data, output_width * sizeof(float));
+        ggml_backend_tensor_get(gate_node, gate, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(up_node, up, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(activated_node, activated, 0, intermediate * sizeof(float));
+        ggml_backend_tensor_get(down_node, output, 0, output_width * sizeof(float));
+        ggml_backend_buffer_free(buffer);
+        ggml_backend_free(backend);
         ggml_free(ctx);
         return 0;
     } catch (...) {

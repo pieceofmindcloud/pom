@@ -646,6 +646,44 @@ impl Nvfp4MoeBlock {
             self.executor.run_from_source(source, key, layer, hidden)
         })
     }
+
+    #[cfg(feature = "cuda")]
+    pub fn forward_batch_from_source_with_route(
+        &self,
+        source: &Nvfp4Source,
+        hidden: &[f32],
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        tokens: usize,
+    ) -> Result<Vec<f32>, MoeBlockError> {
+        if experts.is_empty() {
+            return Err(MoeBlockError::Route(RouteError::InvalidWeightSum));
+        }
+        if experts.len() != token_ids.len() || experts.len() != weights.len() {
+            return Err(MoeBlockError::Route(RouteError::MismatchedRouteLengths {
+                ids: experts.len(),
+                weights: weights.len(),
+            }));
+        }
+        if weights.iter().any(|weight| !weight.is_finite()) {
+            return Err(MoeBlockError::Route(RouteError::InvalidWeightSum));
+        }
+        self.executor
+            .run_route_batch_from_source(
+                source,
+                &self.model,
+                self.layer,
+                experts,
+                token_ids,
+                weights,
+                token_offsets,
+                hidden,
+                tokens,
+            )
+            .map_err(MoeBlockError::from)
+    }
 }
 
 /// Bloco MoE cujo decoder é escolhido por tensor, para GGUF com dtypes

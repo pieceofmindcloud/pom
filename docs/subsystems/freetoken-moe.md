@@ -1094,7 +1094,26 @@ metadata-only já estão em `03902a5ba`. Se a build CUDA revelar incompatibilida
 da ABI do kernel, ela será um commit separado no fork e será publicada antes da
 promoção do ramo Rust.
 
-#### F5-E3: regressão e publicação
+#### F5-E3: lote de rotas no device
+
+Depois da residência, o caminho NVFP4 ainda chamava o FFI uma vez por token e
+devolvia um vetor por expert para a agregação Rust. Isso mantinha a montagem do
+lote no host e repetia alocações, cópias de hidden e D2H intermediário. A revisão
+seguinte mantém a rota resolvida como dados: os ids de expert, ids de token,
+pesos e offsets por token entram em um único FFI por camada. O CUDA calcula
+gate/up, GeGLU e down para todos os pares `(token, expert)` residentes e faz a
+soma ponderada no device; somente o resultado final `[tokens, hidden]` volta ao
+host. O caminho CPU continua token a token e não é alterado por esta fase.
+
+Esta mudança não afirma ganho de tok/s sem medição. Ela precisa ser validada
+com a prova numérica do mesmo hidden, pesos e rota antes de qualquer benchmark.
+O teste CUDA `executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device` compara
+dois tokens, quatro pares de rota e a agregação do device contra o decoder CPU.
+O teste de build CUDA na ksia permanece obrigatório antes da promoção; nenhum
+deploy, troca de modelo ou medição de throughput faz parte desta etapa enquanto
+a placa estiver sendo usada pelo captain.
+
+#### F5-E4: regressão e publicação
 
 Cada fase produz commit separado no `rdma-p2p` e no fork. O teste de execução
 deve cobrir callback opt-in, callback ausente e recusa nominal. O teste de

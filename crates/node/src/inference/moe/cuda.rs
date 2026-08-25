@@ -240,6 +240,93 @@ impl Nvfp4CudaExecutor {
             .collect())
     }
 
+    pub fn run_route_batch_resident(
+        &self,
+        payloads: &[super::cache::DeviceExpertLease],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, CudaMoeError> {
+        if payloads.is_empty() {
+            return Err(CudaMoeError::Payload(
+                "batch residente de rotas vazio".into(),
+            ));
+        }
+        if payloads.len() != token_ids.len() || payloads.len() != weights.len() {
+            return Err(CudaMoeError::Payload(
+                "batch residente de rotas tem descritores com tamanhos diferentes".into(),
+            ));
+        }
+        if tokens == 0 || token_offsets.len() != tokens + 1 {
+            return Err(CudaMoeError::Payload(
+                "offsets de rota não correspondem ao número de tokens".into(),
+            ));
+        }
+        if token_offsets.first() != Some(&0)
+            || token_offsets.last() != Some(&payloads.len())
+            || token_offsets.windows(2).any(|pair| pair[0] > pair[1])
+            || token_ids.iter().any(|&token| token as usize >= tokens)
+        {
+            return Err(CudaMoeError::Payload(
+                "offsets ou ids de token da rota são inválidos".into(),
+            ));
+        }
+        if hidden.len() != tokens.saturating_mul(self.hidden) {
+            return Err(CudaMoeError::HiddenWidth {
+                expected: tokens.saturating_mul(self.hidden),
+                actual: hidden.len(),
+            });
+        }
+
+        let handles = payloads
+            .iter()
+            .map(|payload| payload.handle() as *const u8)
+            .collect::<Vec<_>>();
+        let mut output = vec![0.0f32; hidden.len()];
+        let mut timing = CudaMoeCallTiming {
+            expert_calls: payloads.len() as u64,
+            ..CudaMoeCallTiming::default()
+        };
+        let cuda_started = Instant::now();
+        let status = unsafe {
+            pom_moe_nvfp4_forward_route_batch_resident(
+                handles.as_ptr(),
+                payloads.len(),
+                token_ids.as_ptr(),
+                weights.as_ptr(),
+                token_offsets.as_ptr(),
+                token_offsets.len(),
+                tokens,
+                hidden.as_ptr(),
+                hidden.len(),
+                output.as_mut_ptr(),
+                output.len(),
+                self.hidden,
+                self.intermediate,
+                if self.profile {
+                    &mut timing
+                } else {
+                    std::ptr::null_mut()
+                },
+            )
+        };
+        let cuda_call_wall_ms = cuda_started.elapsed().as_secs_f64() * 1_000.0;
+        if status != 0 {
+            return Err(CudaMoeError::Launch(status));
+        }
+        if self.profile {
+            let mut diagnostics = self
+                .diagnostics
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            diagnostics.add_call(timing);
+            diagnostics.cuda_call_wall_ms += cuda_call_wall_ms;
+        }
+        Ok(output)
+    }
+
     pub fn diagnostics(&self) -> Nvfp4CudaDiagnostics {
         self.diagnostics
             .lock()
@@ -335,6 +422,23 @@ unsafe extern "C" {
     fn pom_moe_nvfp4_forward_batch_resident(
         payloads: *const *const u8,
         payload_count: usize,
+        hidden: *const f32,
+        hidden_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+        timing: *mut CudaMoeCallTiming,
+    ) -> i32;
+
+    fn pom_moe_nvfp4_forward_route_batch_resident(
+        payloads: *const *const u8,
+        payload_count: usize,
+        token_ids: *const u32,
+        weights: *const f32,
+        token_offsets: *const usize,
+        token_offsets_len: usize,
+        token_count: usize,
         hidden: *const f32,
         hidden_len: usize,
         output: *mut f32,
@@ -475,6 +579,102 @@ mod tests {
         assert_eq!(gpu.len(), cpu.len());
         for (actual, expected) in gpu.iter().zip(cpu) {
             assert_eq!(actual.len(), expected.len());
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_nvfp4_lote_de_rotas_agrega_tokens_no_device() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let hidden_values = [
+            (0..hidden)
+                .map(|index| (index as f32 - 31.0) * 0.03125)
+                .collect::<Vec<_>>(),
+            (0..hidden)
+                .map(|index| (15.0 - index as f32) * 0.0625)
+                .collect::<Vec<_>>(),
+        ];
+        let cpu = [
+            (&first, &hidden_values[0], [0.25f32, 0.75f32]),
+            (&second, &hidden_values[0], [0.60f32, 0.40f32]),
+        ];
+        let expected = [
+            [
+                Nvfp4Expert::from_payload(hidden, intermediate, cpu[0].0)
+                    .unwrap()
+                    .run(cpu[0].1)
+                    .unwrap(),
+                Nvfp4Expert::from_payload(hidden, intermediate, cpu[1].0)
+                    .unwrap()
+                    .run(cpu[1].1)
+                    .unwrap(),
+            ],
+            [
+                Nvfp4Expert::from_payload(hidden, intermediate, &second)
+                    .unwrap()
+                    .run(&hidden_values[1])
+                    .unwrap(),
+                Nvfp4Expert::from_payload(hidden, intermediate, &first)
+                    .unwrap()
+                    .run(&hidden_values[1])
+                    .unwrap(),
+            ],
+        ];
+        let expected = [
+            expected[0][0]
+                .iter()
+                .zip(&expected[0][1])
+                .map(|(first, second)| 0.25 * first + 0.75 * second)
+                .collect::<Vec<_>>(),
+            expected[1][0]
+                .iter()
+                .zip(&expected[1][1])
+                .map(|(first, second)| 0.60 * first + 0.40 * second)
+                .collect::<Vec<_>>(),
+        ];
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate).unwrap();
+        let leases = vec![
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-test", 0, 0, "nvfp4"),
+                    &first,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-test", 0, 1, "nvfp4"),
+                    &second,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-test", 0, 1, "nvfp4"),
+                    &second,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-test", 0, 0, "nvfp4"),
+                    &first,
+                )
+                .unwrap(),
+        ];
+        let actual = executor
+            .run_route_batch_resident(
+                &leases,
+                &[0, 1, 1, 0],
+                &[0.25, 0.75, 0.60, 0.40],
+                &[0, 2, 4],
+                &hidden_values.concat(),
+                2,
+            )
+            .unwrap();
+        for (actual, expected) in actual.chunks_exact(hidden).zip(expected) {
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
             }

@@ -867,6 +867,18 @@ impl MoeRuntime {
             }
         }
 
+        let resolved_ids = selected_experts
+            .iter()
+            .map(|&expert| {
+                u32::try_from(expert).map_err(|_| {
+                    MoeRuntimeError::Block(format!(
+                        "id de expert negativo no runtime MoE (dtype {})",
+                        self.source.dtype()
+                    ))
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
         let block = self
             .blocks
             .get(layer as usize)
@@ -874,22 +886,40 @@ impl MoeRuntime {
                 layer,
                 layers: self.layers(),
             })?;
+
+        #[cfg(feature = "cuda")]
+        if let (MoeSource::Nvfp4(source), MoeBlock::Nvfp4(block)) = (&self.source, block) {
+            if block.executor_kind() == super::format_nvfp4::Nvfp4BackendKind::Cuda {
+                let token_ids = (0..tokens)
+                    .flat_map(|token| std::iter::repeat(token as u32).take(expert_count_used))
+                    .collect::<Vec<_>>();
+                let token_offsets = (0..=tokens)
+                    .map(|token| token.saturating_mul(expert_count_used))
+                    .collect::<Vec<_>>();
+                let output = block.forward_batch_from_source_with_route(
+                    source,
+                    hidden,
+                    &resolved_ids,
+                    &token_ids,
+                    weights,
+                    &token_offsets,
+                    tokens,
+                )?;
+                let elapsed_ms = runtime_started.elapsed().as_secs_f64() * 1_000.0;
+                self.runtime_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .runtime_forward_ms += elapsed_ms;
+                return Ok(output);
+            }
+        }
+
         let hidden_width = self.source.hidden();
         let mut output = Vec::with_capacity(hidden.len());
         for token in 0..tokens {
             let token_hidden = &hidden[token * hidden_width..(token + 1) * hidden_width];
             let route_start = token * expert_count_used;
-            let ids = selected_experts[route_start..route_start + expert_count_used]
-                .iter()
-                .map(|&expert| {
-                    u32::try_from(expert).map_err(|_| {
-                        MoeRuntimeError::Block(format!(
-                            "id de expert negativo no runtime MoE (dtype {})",
-                            self.source.dtype()
-                        ))
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
+            let ids = &resolved_ids[route_start..route_start + expert_count_used];
             let route_weights = &weights[route_start..route_start + expert_count_used];
             let values = match (&self.source, block) {
                 (MoeSource::Legacy(source), MoeBlock::Legacy(block)) => block

@@ -1239,6 +1239,69 @@ impl Nvfp4Executor {
         }
     }
 
+    #[cfg(feature = "cuda")]
+    pub fn run_route_batch_from_source(
+        &self,
+        source: &Nvfp4Source,
+        model: &str,
+        layer: u32,
+        experts: &[u32],
+        token_ids: &[u32],
+        weights: &[f32],
+        token_offsets: &[usize],
+        hidden: &[f32],
+        tokens: usize,
+    ) -> Result<Vec<f32>, Nvfp4ExecuteError> {
+        if experts.is_empty() {
+            return Err(Nvfp4Error::Payload("batch de rotas vazio").into());
+        }
+        if experts.len() != token_ids.len() || experts.len() != weights.len() {
+            return Err(Nvfp4Error::Payload(
+                "batch de rotas tem descritores com tamanhos diferentes",
+            )
+            .into());
+        }
+        if let Nvfp4Backend::Cuda(executor) = &self.backend {
+            let mut resident = Vec::with_capacity(experts.len());
+            for &expert in experts {
+                let key = ExpertKey::new(model, layer, expert, "nvfp4");
+                if let Some(lease) = executor.resident_lookup(&key) {
+                    resident.push(lease);
+                    continue;
+                }
+
+                let load_started = Instant::now();
+                let payload = source.load_expert(layer, expert)?;
+                let expert_load_ms = load_started.elapsed().as_secs_f64() * 1_000.0;
+                self.host_diagnostics
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .expert_load_ms += expert_load_ms;
+                Nvfp4Expert::from_payload(self.hidden, self.intermediate, &payload)?;
+                resident.push(
+                    executor
+                        .resident_admit(key, &payload)
+                        .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()))?,
+                );
+            }
+            return executor
+                .run_route_batch_resident(
+                    &resident,
+                    token_ids,
+                    weights,
+                    token_offsets,
+                    hidden,
+                    tokens,
+                )
+                .map_err(|error| Nvfp4ExecuteError::Cuda(error.to_string()));
+        }
+
+        Err(
+            Nvfp4Error::BackendUnavailable("lote de rotas requer executor CUDA residente".into())
+                .into(),
+        )
+    }
+
     fn run_with_loader<F>(
         &self,
         key: ExpertKey,

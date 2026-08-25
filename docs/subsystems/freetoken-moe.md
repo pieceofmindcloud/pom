@@ -454,6 +454,47 @@ formato do payload ou o cálculo. O perfil de custo precisa ser repetido depois
 desta correção antes de atribuir os `19882,414 ms` de kernel do prefill ou os
 `967,158 ms` do decode ao cálculo NVFP4 em si.
 
+O commit de validação `22f6c23` também alinhou o cálculo CUDA à convenção
+numérica do ggml. Cada entrada de matmul é quantizada em blocos Q8_0 de 32
+valores, com escala arredondada para FP16; o dot NVFP4 acumula os produtos
+inteiros por subbloco e aplica as duas escalas depois da soma. A ativação GeGLU
+usa o mesmo corte e o mesmo arredondamento FP16 do caminho ggml antes de ser
+quantizada para o `down`. Isso é uma convenção do pipeline ggml, não uma regra
+de Gemma4 ou de NVFP4: dimensões e payload continuam vindo da metadata do
+tensor, e um formato CUDA que não possua esse contrato deve recusar o dtype.
+
+A validação real no GGUF Gemma4 (`hidden=2816`, `intermediate=704`) passou
+contra o oráculo ggml em todas as camadas e estágios. A ponte GPU passou ainda
+nos testes diferenciais CUDA com entrada uniforme e com entrada na região
+GELU, ambos comparando o mesmo payload e hidden entre Rust CPU e CUDA. A build
+`cargo build --release --features vulkan,cuda` passou na ksia em 9m01s; o teste
+CUDA filtrado passou em `2 passed, 0 failed` e a prova real passou em `1 passed,
+0 failed`. Os dois avisos restantes são `Nvfp4Trace` não consumido fora do
+diagnóstico e o helper `fp4_value`, já conhecidos. A prova real GPU com o GGUF
+deve ser repetida antes de qualquer otimização agrupada, porque o teste CUDA
+unitário não substitui a geometria real do modelo.
+
+### Diagnóstico do kernel CUDA antes do agrupamento
+
+O kernel atual usa paralelismo por saída: `gate_up_kernel` lança uma thread por
+linha de gate/up e `down_kernel` uma thread por linha de saída, com blocos de
+128 threads. Cada thread percorre todos os blocos e subblocos da sua linha. Há
+paralelismo entre linhas, mas não existe cooperação entre threads para uma
+matriz, tile em memória compartilhada, ou lote de experts. A leitura não foi
+projetada como uma carga tiled coalescida: threads adjacentes percorrem linhas
+distintas e repetem os mesmos bytes quantizados para cada saída. O grau real de
+coalescência ainda precisa de Nsight Compute; o código atual não permite
+afirmar coalescência eficiente.
+
+A descompactação E2M1 e UE4M3 ocorre dentro de `dot_nvfp4` a cada uso do
+expert. A quantização Q8_0 da ativação também é refeita por chamada, e o
+GeGLU é recalculado antes do `down`. Portanto um hit do LRU não deixa os pesos
+nem as ativações descompactados na GPU. O perfil anterior, feito antes do
+alinhamento numérico, mediu `480` lançamentos por token de decode; esses
+números não devem ser usados como ganho de uma implementação correta até o
+perfil ser repetido. A próxima etapa aprovada é agrupar o trabalho preservando
+primeiro a prova numérica; F5-E2 e a residência em VRAM vêm depois.
+
 Conclusão desta medição: o LRU está ativo no caminho do hook, mas é somente
 cache de RAM. O caminho CUDA repete transferência de pesos para cada expert
 selecionado. A correção do ponteiro `gate_up` é uma etapa de correção numérica,

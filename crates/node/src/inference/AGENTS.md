@@ -116,6 +116,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   kernel, sincronização e liberação. O perfil é opt-in por
   `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
   política do cache.
+  `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
+  acumulação inteira por subbloco NVFP4 e GeGLU com arredondamento FP16. O
+  kernel atual lança uma thread por linha de saída e descompacta o expert em
+  cada uso; ainda não há lote de experts, cache residente em VRAM ou tile
+  cooperativo. Depois de qualquer mudança CUDA, execute a build com
+  `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
+  quanto a prova real `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
   Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
   `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
   `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o

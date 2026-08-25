@@ -2644,4 +2644,114 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    #[ignore = "medição CUDA explícita; execute com POM_MOE_CUDA_PROFILE=1"]
+    fn mede_perfil_de_coexecucao_nvfp4() {
+        let hidden = 2_816;
+        let intermediate = 704;
+        let active_experts = 8;
+        let payloads = (0..active_experts)
+            .map(|expert| {
+                payload_with_nibble(
+                    hidden,
+                    intermediate,
+                    if expert % 2 == 0 { 0x22 } else { 0x33 },
+                )
+            })
+            .collect::<Vec<_>>();
+        let payload_bytes = payloads[0].len() as u64;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 % 31.0 - 15.0) * 0.03125)
+            .collect::<Vec<_>>();
+        let shared_payloads = std::sync::Arc::new(payloads);
+        let cpu_payloads = std::sync::Arc::clone(&shared_payloads);
+        let gpu_payloads = std::sync::Arc::clone(&shared_payloads);
+        let cpu_hidden = hidden_values.clone();
+        let gpu_hidden = hidden_values;
+        let (cpu_ms, (gpu_ms, upload_ms, upload_bytes, cuda)) =
+            super::super::coexecution::run_overlap(
+                move || {
+                    let started = Instant::now();
+                    let mut checksum = 0.0f32;
+                    for payload in cpu_payloads.iter() {
+                        let output = Nvfp4Expert::from_payload(hidden, intermediate, payload)
+                            .unwrap()
+                            .run(&cpu_hidden)
+                            .unwrap();
+                        checksum += output[0];
+                    }
+                    std::hint::black_box(checksum);
+                    Ok::<_, String>(started.elapsed().as_secs_f64() * 1_000.0)
+                },
+                move || {
+                    let started = Instant::now();
+                    let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000)
+                        .map_err(|error| error.to_string())?;
+                    let model = "cuda-coexecution-bandwidth";
+                    let mut leases = Vec::with_capacity(active_experts);
+                    for (expert, payload) in gpu_payloads.iter().enumerate() {
+                        leases.push(
+                            executor
+                                .resident_admit(
+                                    super::super::cache::ExpertKey::new(
+                                        model,
+                                        0,
+                                        expert as u32,
+                                        "nvfp4",
+                                    ),
+                                    payload,
+                                )
+                                .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    let route_ids = vec![0u32; active_experts];
+                    let route_weights = vec![1.0 / active_experts as f32; active_experts];
+                    executor
+                        .run_route_batch_resident(
+                            &leases,
+                            &route_ids,
+                            &route_weights,
+                            &[0, active_experts],
+                            &gpu_hidden,
+                            1,
+                        )
+                        .map_err(|error| error.to_string())?;
+                    let stats = executor.resident_cache_stats();
+                    Ok::<_, String>((
+                        started.elapsed().as_secs_f64() * 1_000.0,
+                        stats.upload_ms,
+                        stats.upload_bytes,
+                        executor.diagnostics(),
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(upload_bytes, payload_bytes * active_experts as u64);
+        assert!(cpu_ms > 0.0 && gpu_ms > 0.0 && upload_ms > 0.0);
+        let bandwidth = BandwidthProfile {
+            cpu_overlap_bytes_per_sec: payload_bytes as f64 * active_experts as f64
+                / (cpu_ms / 1_000.0),
+            transfer_overlap_bytes_per_sec: upload_bytes as f64 / (upload_ms / 1_000.0),
+            cpu_bytes_per_sec: payload_bytes as f64 * active_experts as f64 / (cpu_ms / 1_000.0),
+            transfer_bytes_per_sec: upload_bytes as f64 / (upload_ms / 1_000.0),
+        };
+        let profile = CudaTransferProfile::new(
+            hidden,
+            intermediate,
+            gpu_ms,
+            cuda.kernel_span_ms,
+            cuda.transfer_span_ms,
+            Some(cpu_ms),
+            cuda.buffer_mask,
+        )
+        .unwrap()
+        .with_bandwidth(bandwidth)
+        .unwrap();
+        eprintln!(
+            "COEXEC_PROFILE cpu_ms={cpu_ms:.3} gpu_ms={gpu_ms:.3} upload_ms={upload_ms:.3} payload_bytes={payload_bytes} gpu_fraction={:.4} json={}",
+            bandwidth.gpu_fraction().unwrap(),
+            serde_json::to_string(&profile).unwrap()
+        );
+    }
 }

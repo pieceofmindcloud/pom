@@ -51,6 +51,28 @@ cargo test               # testes do nó
 - O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
   instala `hf`, Python ou outro runtime externo.
 
+### Validação CUDA isolada na ksia
+
+A validação CUDA não deve escrever no checkout servido nem no diretório que o
+script de implantação usa. O checkout de validação é `/data/ftk-cuda-src`, com
+`llama.cpp` apontando para `/data/ftk-cuda-llama`, e o target separado é
+`/data/ftk-cuda-target`. Na ksia, `nvcc` existe em
+`/usr/local/cuda-12/bin`, mas não entra no `PATH` de uma sessão SSH não
+interativa. A invocação reproduzível é:
+
+```bash
+ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
+  export PATH=/usr/local/cuda-12/bin:\$PATH && \
+  export CUDACXX=/usr/local/cuda-12/bin/nvcc && \
+  CARGO_TARGET_DIR=/data/ftk-cuda-target \
+  cargo build --release --features vulkan,cuda"'
+```
+
+O `PATH` é necessário porque o `build.rs` executa o programa `nvcc`
+diretamente; `CUDACXX` também deve ser definido para os sub-builds que
+consumirem a convenção CMake. `/data/ksia-target` fica reservado ao binário
+servido e nunca é usado para validar uma revisão.
+
 ## Identidade do produto (`brand.json`)
 
 `brand.json`, na raiz, é a fonte única do nome, do slogan e dos arquivos de

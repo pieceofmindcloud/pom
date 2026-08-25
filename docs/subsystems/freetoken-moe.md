@@ -1642,6 +1642,51 @@ Os warnings restantes foram preservados no registro de execução; não houve er
 do provider Hugging Face nesta validação e nenhum arquivo desse provider foi
 alterado. O symlink foi removido ao fim e não é artefato versionado.
 
+### Perfil novo do prefill após a correção de `max_tokens`
+
+Em 2026-08-25, depois de a GPU ser liberada, executei uma instância isolada
+com o binário compilado em `/data/ftk-cuda-target`, código da correção
+`72cc5cc` (promovido ao histórico publicado `e3d1751`), fork
+`llama.cpp=4bb64b070`, `--features vulkan,cuda`, `n_gpu_layers=99`,
+`n_ctx=8192`, `n_batch=512`, `POM_MOE_CUDA_PROFILE=1` e `--no-thinking`. O
+serviço nas portas 8080/8092 não foi reiniciado nem alterado. A instância usou
+portas 18082/18094, `no-discovery` e o GGUF real Gemma4 NVFP4. A requisição
+`Escreva hello world 10 vezes.` pediu `max_tokens=30` e retornou exatamente 30
+tokens, com dez linhas coerentes e sem marcadores de template.
+
+O trace real foi: `input_tokens=22`, `output_tokens=30`,
+`executed_engine=moe`, `moe_executor=cuda`, `engine_mismatch=false`,
+`mixed_execution=false`, prefill `processing_ms=1351`, decode
+`processing_ms=923` em 29 chamadas. Isso dá `61,409 ms/token` (`16,284
+tok/s`) no prefill e `31,828 ms/token` (`31,419 tok/s`) no decode. O p50 de
+decode foi `28,886 ms` e o p95 `44,083 ms`. A composição instrumentada do
+prefill foi:
+
+| métrica | valor bruto |
+|---|---:|
+| backend / `node_decode_ms` | `1351 ms` / `1350,694 ms` |
+| `node_moe_forward_ms` / `runtime_forward_ms` | `1132,604 ms` / `1131,824 ms` |
+| `cuda_call_wall_ms` | `158,385 ms` |
+| `host_expert_load_ms` | `405,762 ms` |
+| `host_batch_prepare_ms` | `0 ms` |
+| `cuda_h2d_ms` / bytes | `1,390 ms` / `7.524.240` |
+| `cuda_kernel_ms` | `145,731 ms` |
+| `cuda_d2h_ms` / bytes | `1,511 ms` / `7.434.240` |
+| chamadas de experts | `5280` |
+
+O prefill de 22 tokens fez uma chamada batelada de
+`MoeRuntime::forward_batch_with_route`, não 22 passadas de gateway. As 5280
+chamadas de experts são `22 tokens × 30 camadas × 8 experts ativos` dentro
+dessa passada; portanto a métrica `calls` conta registros de experts, não
+passadas do prefill. O perfil atual não mostra `host_batch_prepare_ms` como
+gargalo, ao contrário do perfil histórico de antes do agrupamento; a quebra
+nova é a que vale para a próxima investigação.
+
+O mesmo ensaio confirmou o limite da rota: o pedido de 30 terminou em 30, e
+não em 31. O fork não mudou nesta correção: `max_tokens` é contrato do
+gateway Rust, então não há campo de API novo para sincronizar no
+`llama.cpp`.
+
 ### Reexecução
 
 Com um GGUF local e uma instância iniciada a partir deste worktree, repetir o

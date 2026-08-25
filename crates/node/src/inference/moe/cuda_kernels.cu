@@ -2393,6 +2393,109 @@ extern "C" int pom_moe_nvfp4_forward_route_batch_resident(
     return result;
 }
 
+// Diagnóstico por estágio para comparar o decoder CUDA com o oráculo GGML.
+// Mantém a mesma sequência do caminho de produção, mas devolve gate/up,
+// ativação e down separadamente para localizar a primeira divergência.
+extern "C" int pom_moe_iquant_trace_single_resident(
+    uint32_t dtype,
+    const uint8_t * payload,
+    const float * hidden,
+    std::size_t hidden_len,
+    float * gate_up,
+    std::size_t gate_up_len,
+    float * activated,
+    std::size_t activated_len,
+    float * output,
+    std::size_t output_len,
+    std::size_t hidden_width,
+    std::size_t intermediate_width
+) {
+    if ((dtype != 21 && dtype != 22 && dtype != 23) || payload == nullptr ||
+        hidden == nullptr || gate_up == nullptr || activated == nullptr ||
+        output == nullptr || hidden_width == 0 || intermediate_width == 0 ||
+        hidden_len != hidden_width || gate_up_len != 2 * intermediate_width * sizeof(float) ||
+        activated_len != intermediate_width * sizeof(float) ||
+        output_len != hidden_width * sizeof(float)) {
+        return 1;
+    }
+
+    const int hidden_i = static_cast<int>(hidden_width);
+    const int intermediate_i = static_cast<int>(intermediate_width);
+    const int block_size = 128;
+    const std::size_t gate_up_bytes = gate_up_len;
+    const std::size_t activated_bytes = activated_len;
+    const std::size_t output_bytes = output_len;
+    const uint32_t token_id = 0;
+    const uint8_t ** d_payloads = nullptr;
+    uint32_t * d_token_ids = nullptr;
+    float * d_hidden = nullptr;
+    float * d_gate_up = nullptr;
+    float * d_activated = nullptr;
+    float * d_output = nullptr;
+    int result = 0;
+
+    do {
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_payloads), sizeof(*d_payloads)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_token_ids), sizeof(*d_token_ids)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_hidden), hidden_len * sizeof(float)));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_gate_up), gate_up_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_activated), activated_bytes));
+        if (result != 0) break;
+        result = cuda_status(cudaMalloc(reinterpret_cast<void **>(&d_output), output_bytes));
+        if (result != 0) break;
+
+        result = cuda_status(cudaMemcpy(d_payloads, &payload, sizeof(payload), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_token_ids, &token_id, sizeof(token_id), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(d_hidden, hidden, hidden_len * sizeof(float), cudaMemcpyHostToDevice));
+        if (result != 0) break;
+
+        iquant_gate_up_route_kernel<<<
+            (2 * intermediate_i + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, d_token_ids, 1, intermediate_i,
+                hidden_i, d_hidden, d_gate_up);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(gate_up, d_gate_up, gate_up_bytes, cudaMemcpyDeviceToHost));
+        if (result != 0) break;
+
+        kquant_silu_kernel<<<
+            (intermediate_i + block_size - 1) / block_size,
+            block_size>>>(d_gate_up, 1, intermediate_i, d_activated);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(activated, d_activated, activated_bytes, cudaMemcpyDeviceToHost));
+        if (result != 0) break;
+
+        iquant_down_route_kernel<<<
+            (hidden_i + block_size - 1) / block_size,
+            block_size>>>(dtype, d_payloads, 1, hidden_i, intermediate_i,
+                d_activated, d_output);
+        result = cuda_status(cudaGetLastError());
+        if (result != 0) break;
+        result = cuda_status(cudaDeviceSynchronize());
+        if (result != 0) break;
+        result = cuda_status(cudaMemcpy(output, d_output, output_bytes, cudaMemcpyDeviceToHost));
+    } while (false);
+
+    cudaFree(d_output);
+    cudaFree(d_activated);
+    cudaFree(d_gate_up);
+    cudaFree(d_hidden);
+    cudaFree(d_token_ids);
+    cudaFree(d_payloads);
+    return result;
+}
+
 extern "C" int pom_moe_device_free_bytes(std::uint64_t * free_bytes) {
     if (free_bytes == nullptr) {
         return 1;

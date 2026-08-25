@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 use tokio::net::TcpListener;
@@ -692,6 +692,24 @@ fn inference_frame_body_limit() -> usize {
     INFERENCE_FRAME_BODY_LIMIT
 }
 
+fn lock_inference_state<T>(state: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
+    state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("mutex do estado de inferência envenenado"))
+}
+
+fn finish_terminal_stream(
+    sessions: &mut HashMap<String, Session>,
+    sid_key: &str,
+    text: &mut String,
+) -> Result<()> {
+    let session = sessions
+        .get_mut(sid_key)
+        .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desconhecida"))?;
+    text.push_str(&session.finish_token_stream());
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,6 +874,43 @@ mod tests {
         assert_eq!(value["n_prompt_tokens"], 33);
         assert_eq!(value["start_pos"], 7);
         assert_eq!(value["next_pos"], 8);
+    }
+
+    #[test]
+    fn terminal_stream_cleanup_keeps_session_for_rewind() {
+        let mut sessions = HashMap::new();
+        let mut session = Session::new(0);
+        assert_eq!(session.feed_token_piece(b"ok"), "ok");
+        sessions.insert("conversation".to_string(), session);
+        let mut text = String::new();
+
+        finish_terminal_stream(&mut sessions, "conversation", &mut text).unwrap();
+
+        assert_eq!(text, "");
+        assert!(sessions.contains_key("conversation"));
+    }
+
+    #[test]
+    fn terminal_stream_cleanup_reports_unknown_session_without_panicking() {
+        let mut sessions = HashMap::new();
+        let mut text = String::new();
+
+        let error = finish_terminal_stream(&mut sessions, "gone", &mut text).unwrap_err();
+
+        assert!(error.to_string().contains("sessão 'gone' desconhecida"));
+    }
+
+    #[test]
+    fn poisoned_inference_lock_returns_an_error_instead_of_panicking() {
+        let state = Mutex::new(());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.lock().unwrap();
+            panic!("simulate a local inference panic");
+        }));
+
+        let error = lock_inference_state(&state).unwrap_err();
+
+        assert!(error.to_string().contains("mutex do estado de inferência"));
     }
 
     #[tokio::test]
@@ -2302,9 +2357,11 @@ fn http_client() -> &'static crate::peer_client::PeerClients {
 /// `SentFrame::tls_handshake_ms` sobre por que isso é a verdade e não uma
 /// falha de medição.
 fn last_handshake_ms(state: &SharedState) -> u64 {
+    let Ok(state) = lock_inference_state(state) else {
+        warn!("não foi possível ler o último handshake: mutex do estado envenenado");
+        return 0;
+    };
     state
-        .lock()
-        .unwrap()
         .tls_handshake_ms
         .as_ref()
         .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
@@ -2469,10 +2526,13 @@ fn err500(msg: impl std::fmt::Display) -> Response {
 
 // ── /health ───────────────────────────────────────────────────────────────────
 
-async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoResponse {
+async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let scheduler = app.scheduler;
     let state = app.state;
-    let s = state.lock().unwrap();
+    let s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
@@ -2545,6 +2605,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         // operador, então nem a configuração nem o nome do arquivo respondem.
         "mtp_ready": s.engine.mtp_ready(),
     }))
+    .into_response()
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────
@@ -2642,7 +2703,10 @@ fn replicate_session_call(
         return; // já é a réplica
     }
     let tp = {
-        let s = state.lock().unwrap();
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível replicar sessão: mutex do estado envenenado");
+            return;
+        };
         s.tp.clone()
     };
     let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
@@ -2668,7 +2732,10 @@ fn replicate_session_rewind(
         return;
     }
     let tp = {
-        let s = state.lock().unwrap();
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível replicar rewind: mutex do estado envenenado");
+            return;
+        };
         s.tp.clone()
     };
     let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
@@ -2697,14 +2764,17 @@ async fn handle_release(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // A réplica não encerra sessão por conta própria (ver `tp::is_replica`),
     // então quem a libera é este release - que o gateway manda **só ao rank 0**,
     // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
     // fica segurando o slot para sempre e a requisição seguinte morre com
     // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
     replicate_session_call(&app.state, &headers, "/v1/session/release", &req.session_id);
-    let mut s = app.state.lock().unwrap();
+    let mut s = match lock_inference_state(&app.state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     let existed = s.sessions.contains_key(&req.session_id);
     s.finish(&req.session_id);
     let free = s.seq_pool.len();
@@ -2715,6 +2785,7 @@ async fn handle_release(
         "free_slots": free,
         "max_sessions": max,
     }))
+    .into_response()
 }
 
 // ── /v1/session/rewind ───────────────────────────────────────────────────────
@@ -2742,14 +2813,17 @@ async fn handle_rewind(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<RewindRequest>,
-) -> impl IntoResponse {
-    let mut state = app.state.lock().unwrap();
+) -> Response {
+    let mut state = match lock_inference_state(&app.state) {
+        Ok(state) => state,
+        Err(error) => return err500(error),
+    };
     let Some(prompt_len) = state
         .sessions
         .get(&req.session_id)
         .map(|session| session.prompt_len)
     else {
-        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" }));
+        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" })).into_response();
     };
     if req.n_tokens != prompt_len {
         return Json(json!({
@@ -2758,17 +2832,19 @@ async fn handle_rewind(
                 "prompt do gateway não bate com o desta sessão: {} != {prompt_len}",
                 req.n_tokens
             ),
-        }));
+        }))
+        .into_response();
     }
     let Some(retained) = state.retain_prompt(&req.session_id) else {
         return Json(json!({
             "rewound": false,
             "reason": "sessão sem prompt para reter",
-        }));
+        }))
+        .into_response();
     };
     drop(state);
     replicate_session_rewind(&app.state, &headers, &req.session_id, req.n_tokens);
-    Json(json!({ "rewound": true, "n_past": retained }))
+    Json(json!({ "rewound": true, "n_past": retained })).into_response()
 }
 
 // ── /v1/session/rollback ─────────────────────────────────────────────────────
@@ -2793,8 +2869,11 @@ struct RollbackRequest {
 async fn handle_rollback(
     State(app): State<InferenceAppState>,
     Json(req): Json<RollbackRequest>,
-) -> impl IntoResponse {
-    let mut s = app.state.lock().unwrap();
+) -> Response {
+    let mut s = match lock_inference_state(&app.state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
         .get(&req.session_id)
@@ -2802,7 +2881,7 @@ async fn handle_rollback(
         // prompt fica intocado por construção.
         .map(|session| (session.seq_id(), session.n_past))
     else {
-        return Json(json!({"rolled_back": false}));
+        return Json(json!({"rolled_back": false})).into_response();
     };
     let new_n_past = rollback_from(n_past_after_batch, req.batch_width, req.accept_count);
     if new_n_past < n_past_after_batch && !s.engine.kv_remove(seq_id, new_n_past as i32, -1) {
@@ -2814,12 +2893,13 @@ async fn handle_rollback(
             "rolled_back": false,
             "n_past": n_past_after_batch,
             "reason": "este modelo não aceita descartar posições do meio do cache",
-        }));
+        }))
+        .into_response();
     }
     if let Some(session) = s.sessions.get_mut(&req.session_id) {
         session.n_past = new_n_past;
     }
-    Json(json!({"rolled_back": true, "n_past": new_n_past}))
+    Json(json!({"rolled_back": true, "n_past": new_n_past})).into_response()
 }
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
@@ -2841,7 +2921,10 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
         return;
     }
     let tp = {
-        let s = state.lock().unwrap();
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível abrir decode TP: mutex do estado envenenado");
+            return;
+        };
         s.tp.clone()
     };
     let Some(tp) = tp.filter(|t| t.size > 1) else {
@@ -3033,11 +3116,11 @@ async fn handle_prefill(
     // não consegue rodar exatamente aquilo - nunca ajuste silencioso.
     let capture_block = {
         let (slice_start, slice_end) = {
-            let guard = state.lock().map_err(|_| ()).ok();
-            match guard {
-                Some(st) => (st.start_layer, st.end_layer),
-                None => return err500("estado de inferência indisponível"),
-            }
+            let st = match lock_inference_state(&state) {
+                Ok(st) => st,
+                Err(error) => return err500(error),
+            };
+            (st.start_layer, st.end_layer)
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
@@ -3405,7 +3488,7 @@ fn prefill_blocking(
     // O prefill espera no mesmo mutex do decode: um prompt grande de outra
     // sessão segura este aqui, e é a mesma espera invisível.
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
     timings.selected_path = s.inference_path;
 
@@ -3609,7 +3692,7 @@ fn prefill_blocking(
         };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         if done {
-            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+            finish_terminal_stream(&mut s.sessions, &sid_key, &mut text)?;
         }
         s.sessions
             .get_mut(&sid_key)
@@ -3644,7 +3727,12 @@ fn prefill_blocking(
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
-        let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
+        let n_prompt_tokens = s
+            .sessions
+            .get(&sid_key)
+            .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desapareceu antes da resposta"))?
+            .prompt_tokens
+            .len();
         let mut reply = terminal_prefill_meta(
             n_prompt_tokens,
             expected_pos,
@@ -3732,7 +3820,16 @@ fn prefill_batch_blocking(
 ) -> Vec<(oneshot::Sender<Result<TimedReply>>, Result<TimedReply>)> {
     let mut replies = Vec::with_capacity(jobs.len());
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => {
+            let message = error.to_string();
+            return jobs
+                .into_iter()
+                .map(|(_, reply)| (reply, Err(anyhow::anyhow!(message.clone()))))
+                .collect();
+        }
+    };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
     let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
@@ -4058,12 +4155,7 @@ fn prefill_batch_blocking(
                     .feed_token_piece(&piece);
                 let done = next_id == s.engine.eos_token();
                 if done {
-                    text.push_str(
-                        &s.sessions
-                            .get_mut(&item.sid_key)
-                            .unwrap()
-                            .finish_token_stream(),
-                    );
+                    finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
                 s.sessions
                     .get_mut(&item.sid_key)
@@ -4171,7 +4263,16 @@ fn step_batch_blocking(
 
     let mut replies = Vec::with_capacity(jobs.len());
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => {
+            let message = error.to_string();
+            return jobs
+                .into_iter()
+                .map(|(_, reply)| (reply, Err(anyhow::anyhow!(message.clone()))))
+                .collect();
+        }
+    };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
     let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
@@ -4402,12 +4503,7 @@ fn step_batch_blocking(
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
                 let done = next_id == s.engine.eos_token();
                 if done {
-                    text.push_str(
-                        &s.sessions
-                            .get_mut(&item.sid_key)
-                            .unwrap()
-                            .finish_token_stream(),
-                    );
+                    finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
                 s.sessions
                     .get_mut(&item.sid_key)
@@ -4589,9 +4685,9 @@ async fn handle_step(
     // A sub-faixa só é válida se este peer consegue executá-la exatamente.
     // Sem os campos, o contrato antigo continua rodando a fatia inteira.
     let capture_block = {
-        let (slice_start, slice_end) = match state.lock() {
+        let (slice_start, slice_end) = match lock_inference_state(&state) {
             Ok(st) => (st.start_layer, st.end_layer),
-            Err(_) => return err500("estado de inferência indisponível"),
+            Err(error) => return err500(error),
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
@@ -5381,7 +5477,7 @@ fn step_blocking(
         ..Default::default()
     };
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
     timings.selected_path = s.inference_path;
 
@@ -5615,7 +5711,8 @@ fn step_blocking(
                 })
                 .collect();
             if done {
-                let tail = s.sessions.get_mut(&sid_key).unwrap().finish_token_stream();
+                let mut tail = String::new();
+                finish_terminal_stream(&mut s.sessions, &sid_key, &mut tail)?;
                 if let Some(last) = accepted_texts.last_mut() {
                     last.push_str(&tail);
                 }
@@ -5701,7 +5798,7 @@ fn step_blocking(
         };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
         if done {
-            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+            finish_terminal_stream(&mut s.sessions, &sid_key, &mut text)?;
         }
         s.sessions
             .get_mut(&sid_key)

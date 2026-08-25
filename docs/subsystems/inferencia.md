@@ -323,6 +323,12 @@ rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
 prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
 rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
 
+EOS ou fim de turno apenas fecha o acumulador UTF-8 da resposta. O servidor
+mantém a sessão física até receber `/v1/session/rewind` ou `/v1/session/release`,
+porque o gateway pode precisar preservar o KV para o próximo turno. A remoção
+direta no caminho terminal faria o rewind responder `sessão desconhecida` e
+deixaria o código de resposta indexar uma sessão ausente.
+
 O cache é uma otimização interna. O envelope binário `frame/v1-batch` e as APIs
 públicas não mudaram, mas a economia agora é **publicada**:
 `usage.prompt_tokens_details.cached_tokens` (OpenAI),

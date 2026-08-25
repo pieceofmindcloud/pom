@@ -19,7 +19,7 @@ transferência.
   valida os dtypes contra a tabela GGML suportada, usa offsets físicos para o
   custo dos tensores e calcula o tamanho serializado de cada fatia, incluindo
   cabeçalho, globais, alinhamento e duplicações.
-- As opções de corte para um modelo inteiro vêm de
+ - As opções de corte para um modelo inteiro vêm de
   `GgufLayout::valid_prefix_end_layers`: em layout denso, qualquer fim de
   camada inteira é válido; em layout híbrido, só os fins derivados de
   `arch_boundaries` são válidos. `prefix_cut_granularity` só informa um passo

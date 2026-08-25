@@ -1224,6 +1224,21 @@ unsafe extern "C" {
     fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
     fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
     fn pom_moe_device_free(handle: *mut c_void);
+
+    fn pom_moe_iquant_trace_single_resident(
+        dtype: u32,
+        payload: *const u8,
+        hidden: *const f32,
+        hidden_len: usize,
+        gate_up: *mut f32,
+        gate_up_len: usize,
+        activated: *mut f32,
+        activated_len: usize,
+        output: *mut f32,
+        output_len: usize,
+        hidden_width: usize,
+        intermediate_width: usize,
+    ) -> i32;
 }
 
 #[cfg(test)]
@@ -1548,6 +1563,7 @@ mod tests {
         let hidden_values = (0..hidden)
             .map(|index| (index as f32 - 127.0) * 0.0078125)
             .collect::<Vec<_>>();
+        let mut failures = Vec::new();
         for format in [
             IqQuantFormat::Iq3S,
             IqQuantFormat::Iq2S,
@@ -1575,9 +1591,120 @@ mod tests {
                 .run_route_batch_resident(&[lease], &[0], &[1.0], &[0, 1], &hidden_values, 1)
                 .unwrap();
             assert_eq!(actual.len(), expected.len());
-            for (actual, expected) in actual.iter().zip(expected) {
-                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            let mut max_abs = 0.0f32;
+            let mut max_index = 0;
+            for (index, (actual, expected)) in actual.iter().zip(&expected).enumerate() {
+                let error = (actual - expected).abs();
+                if error > max_abs {
+                    max_abs = error;
+                    max_index = index;
+                }
             }
+            eprintln!(
+                "IQ {}: max_abs={max_abs} max_index={max_index}",
+                format.name()
+            );
+            if max_abs > 1e-4 {
+                eprintln!(
+                    "IQ {}: actual[{max_index}]={} expected[{max_index}]={}",
+                    format.name(),
+                    actual[max_index],
+                    expected[max_index]
+                );
+                failures.push(format.name());
+            }
+        }
+        assert!(failures.is_empty(), "IQ formats diverged: {failures:?}");
+    }
+
+    #[test]
+    fn diagnostico_cuda_iq_divergencia_por_estagio() {
+        let hidden = 256;
+        let intermediate = 256;
+        let hidden_values = (0..hidden)
+            .map(|index| (index as f32 - 127.0) * 0.0078125)
+            .collect::<Vec<_>>();
+        for format in [
+            IqQuantFormat::Iq3S,
+            IqQuantFormat::Iq2S,
+            IqQuantFormat::Iq4XS,
+        ] {
+            let payload = iq_payload(format, hidden, intermediate);
+            let (gate, up, down) = split_iq_payload(format, hidden, intermediate);
+            let gate_values = iq_mat_vec(format, &gate, intermediate, hidden, &hidden_values);
+            let up_values = iq_mat_vec(format, &up, intermediate, hidden, &hidden_values);
+            let expected_gate_up = gate_values
+                .iter()
+                .chain(&up_values)
+                .copied()
+                .collect::<Vec<_>>();
+            let expected_activated = gate_values
+                .iter()
+                .zip(&up_values)
+                .map(|(gate, up)| gate / (1.0 + (-gate).exp()) * up)
+                .collect::<Vec<_>>();
+            let expected_output =
+                iq_mat_vec(format, &down, hidden, intermediate, &expected_activated);
+            let executor = IqQuantCudaExecutor::new_with_cache(
+                format,
+                hidden,
+                intermediate,
+                measured_device_cache(1_000_000).unwrap(),
+            )
+            .unwrap();
+            let lease = executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new(
+                        "cuda-iq-stage-diagnostic",
+                        0,
+                        0,
+                        format.name(),
+                    ),
+                    &payload,
+                )
+                .unwrap();
+            let mut actual_gate_up = vec![0.0f32; 2 * intermediate];
+            let mut actual_activated = vec![0.0f32; intermediate];
+            let mut actual_output = vec![0.0f32; hidden];
+            let status = unsafe {
+                pom_moe_iquant_trace_single_resident(
+                    format.dtype(),
+                    lease.handle() as *const u8,
+                    hidden_values.as_ptr(),
+                    hidden_values.len(),
+                    actual_gate_up.as_mut_ptr(),
+                    actual_gate_up.len() * std::mem::size_of::<f32>(),
+                    actual_activated.as_mut_ptr(),
+                    actual_activated.len() * std::mem::size_of::<f32>(),
+                    actual_output.as_mut_ptr(),
+                    actual_output.len() * std::mem::size_of::<f32>(),
+                    hidden,
+                    intermediate,
+                )
+            };
+            assert_eq!(status, 0, "trace CUDA falhou para {}", format.name());
+            let max_error = |actual: &[f32], expected: &[f32]| {
+                actual
+                    .iter()
+                    .zip(expected)
+                    .enumerate()
+                    .map(|(index, (actual, expected))| (index, (actual - expected).abs()))
+                    .max_by(|left, right| left.1.total_cmp(&right.1))
+                    .unwrap()
+            };
+            let gate_up_error = max_error(&actual_gate_up, &expected_gate_up);
+            let activation_error = max_error(&actual_activated, &expected_activated);
+            let output_error = max_error(&actual_output, &expected_output);
+            eprintln!(
+                "IQ {} estágios: gate_up max_abs={} idx={}, activation max_abs={} idx={}, down max_abs={} idx={}",
+                format.name(),
+                gate_up_error.1,
+                gate_up_error.0,
+                activation_error.1,
+                activation_error.0,
+                output_error.1,
+                output_error.0
+            );
         }
     }
 
@@ -1804,7 +1931,158 @@ mod tests {
         let actual = executor
             .run_route_batch_resident(
                 &leases,
-                &[0, 1, 1, 0],
+                &[0, 0, 1, 1],
+                &[0.25, 0.75, 0.60, 0.40],
+                &[0, 2, 4],
+                &hidden_values.concat(),
+                2,
+            )
+            .unwrap();
+        for (actual, expected) in actual.chunks_exact(hidden).zip(expected) {
+            eprintln!(
+                "NVFP4 route: actual[0..4]={:?} expected[0..4]={:?}",
+                &actual[..4],
+                &expected[..4]
+            );
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_nvfp4_rota_de_um_expert_por_token_isola_multitoken() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let hidden_values = [
+            (0..hidden)
+                .map(|index| (index as f32 - 31.0) * 0.03125)
+                .collect::<Vec<_>>(),
+            (0..hidden)
+                .map(|index| (15.0 - index as f32) * 0.0625)
+                .collect::<Vec<_>>(),
+        ];
+        let expected = [
+            Nvfp4Expert::from_payload(hidden, intermediate, &first)
+                .unwrap()
+                .run(&hidden_values[0])
+                .unwrap(),
+            Nvfp4Expert::from_payload(hidden, intermediate, &second)
+                .unwrap()
+                .run(&hidden_values[1])
+                .unwrap(),
+        ];
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
+        let leases = vec![
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-one", 0, 0, "nvfp4"),
+                    &first,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-one", 0, 1, "nvfp4"),
+                    &second,
+                )
+                .unwrap(),
+        ];
+        let actual = executor
+            .run_route_batch_resident(
+                &leases,
+                &[0, 1],
+                &[1.0, 1.0],
+                &[0, 1, 2],
+                &hidden_values.concat(),
+                2,
+            )
+            .unwrap();
+        for (token_index, (actual, expected)) in
+            actual.chunks_exact(hidden).zip(expected).enumerate()
+        {
+            eprintln!(
+                "NVFP4 one route token {token_index}: actual[0..4]={:?} expected[0..4]={:?}",
+                &actual[..4],
+                &expected[..4]
+            );
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_nvfp4_rota_multitoken_sem_chaves_repetidas() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let hidden_values = [
+            (0..hidden)
+                .map(|index| (index as f32 - 31.0) * 0.03125)
+                .collect::<Vec<_>>(),
+            (0..hidden)
+                .map(|index| (15.0 - index as f32) * 0.0625)
+                .collect::<Vec<_>>(),
+        ];
+        let expected = [
+            (
+                [
+                    Nvfp4Expert::from_payload(hidden, intermediate, &first)
+                        .unwrap()
+                        .run(&hidden_values[0])
+                        .unwrap(),
+                    Nvfp4Expert::from_payload(hidden, intermediate, &second)
+                        .unwrap()
+                        .run(&hidden_values[0])
+                        .unwrap(),
+                ],
+                [0.25, 0.75],
+            ),
+            (
+                [
+                    Nvfp4Expert::from_payload(hidden, intermediate, &second)
+                        .unwrap()
+                        .run(&hidden_values[1])
+                        .unwrap(),
+                    Nvfp4Expert::from_payload(hidden, intermediate, &first)
+                        .unwrap()
+                        .run(&hidden_values[1])
+                        .unwrap(),
+                ],
+                [0.60, 0.40],
+            ),
+        ]
+        .map(|(pair, weights)| {
+            pair[0]
+                .iter()
+                .zip(&pair[1])
+                .map(|(first, second)| weights[0] * first + weights[1] * second)
+                .collect::<Vec<_>>()
+        });
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
+        let leases = [(&first, 0), (&second, 1), (&second, 2), (&first, 3)]
+            .into_iter()
+            .map(|(payload, expert)| {
+                executor
+                    .resident_admit(
+                        super::super::cache::ExpertKey::new(
+                            "cuda-route-unique",
+                            0,
+                            expert,
+                            "nvfp4",
+                        ),
+                        payload,
+                    )
+                    .unwrap()
+            })
+            .collect::<Vec<_>>();
+        let actual = executor
+            .run_route_batch_resident(
+                &leases,
+                &[0, 0, 1, 1],
                 &[0.25, 0.75, 0.60, 0.40],
                 &[0, 2, 4],
                 &hidden_values.concat(),
@@ -1814,6 +2092,64 @@ mod tests {
         for (actual, expected) in actual.chunks_exact(hidden).zip(expected) {
             for (actual, expected) in actual.iter().zip(expected) {
                 assert!((actual - expected).abs() <= 1e-4, "{actual} != {expected}");
+            }
+        }
+    }
+
+    #[test]
+    fn executor_cuda_nvfp4_rota_de_dois_experts_por_token_isola_o_lote() {
+        let hidden = 64;
+        let intermediate = 64;
+        let first = payload_with_nibble(hidden, intermediate, 0x22);
+        let second = payload_with_nibble(hidden, intermediate, 0x33);
+        let hidden_values = [
+            (0..hidden)
+                .map(|index| (index as f32 - 31.0) * 0.03125)
+                .collect::<Vec<_>>(),
+            (0..hidden)
+                .map(|index| (15.0 - index as f32) * 0.0625)
+                .collect::<Vec<_>>(),
+        ];
+        let executor = Nvfp4CudaExecutor::new(hidden, intermediate, 1_000_000).unwrap();
+        let leases = vec![
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-isolation", 0, 0, "nvfp4"),
+                    &first,
+                )
+                .unwrap(),
+            executor
+                .resident_admit(
+                    super::super::cache::ExpertKey::new("cuda-route-isolation", 0, 1, "nvfp4"),
+                    &second,
+                )
+                .unwrap(),
+        ];
+        for (token_index, token) in hidden_values.iter().enumerate() {
+            let expected = [
+                Nvfp4Expert::from_payload(hidden, intermediate, &first)
+                    .unwrap()
+                    .run(token)
+                    .unwrap(),
+                Nvfp4Expert::from_payload(hidden, intermediate, &second)
+                    .unwrap()
+                    .run(token)
+                    .unwrap(),
+            ];
+            let expected = expected[0]
+                .iter()
+                .zip(&expected[1])
+                .map(|(first, second)| 0.25 * first + 0.75 * second)
+                .collect::<Vec<_>>();
+            let actual = executor
+                .run_route_batch_resident(&leases, &[0, 0], &[0.25, 0.75], &[0, 2], token, 1)
+                .unwrap();
+            assert_eq!(actual.len(), expected.len(), "token {token_index}");
+            for (actual, expected) in actual.iter().zip(expected) {
+                assert!(
+                    (actual - expected).abs() <= 1e-4,
+                    "token {token_index}: {actual} != {expected}"
+                );
             }
         }
     }

@@ -44,6 +44,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `moe_executor_reason` e `moe_forward_ms`, além das flags
   `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
   apenas o caminho selecionado, pois não representa uma requisição. O
+  estado é acessado por `lock_inference_state`: um mutex envenenado vira erro
+  HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
+  fecha apenas o acumulador da resposta; a sessão permanece disponível para
+  rewind até o release explícito ou a coleta por ociosidade.
   `PhaseTrace` transporta também `node_moe_forward_ms`, que é o custo do
   forward externo fora de `llama_decode` e fecha a conta do backend. `cuda`
   só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os
@@ -238,11 +242,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `graph splits = 66` (2 por camada) e o log do primeiro reduce.
 
   Uma **réplica não tem opinião** (`tp::is_replica`): ela contribui com a metade
-  dela em cada reduce e nada mais. Quem amostra o token, decide o fim da geração
-  e encerra a sessão é o rank 0. A amostragem é estocástica e o RNG de cada
-  processo é independente, então o worker amostrava EOS enquanto o rank 0
-  amostrava um token normal, apagava a sessão, e o step replicado seguinte
-  batia em "sessão desconhecida" - HTTP 400 (18/08).
+  dela em cada reduce e nada mais. Quem amostra o token e decide o fim da
+  geração é o rank 0. EOS apenas fecha o `Utf8Assembler` para a resposta; a
+  sessão física continua viva até o gateway decidir entre `/v1/session/rewind`
+  e `/v1/session/release`. Isso evita que uma réplica veja uma sessão removida
+  pelo rank 0 antes do rewind ou de um step já aceito.
 
   `register_tp_reduce`/`unregister_tp_reduce` **ligam e desligam** o nó do grupo,
   e desligar limpa tudo: estado, decode aberto, marca de réplica e falha
@@ -290,7 +294,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `/v1/session/rewind` segue a mesma regra de réplica, mas preserva a sessão:
   remove somente o sufixo gerado e atualiza `n_past` em todos os ranks. O
   gateway só publica o prefixo no cache depois de confirmar a resposta de cada
-  hop.
+  hop. O fim normal da geração não chama `InferState::finish`; essa remoção é
+  reservada ao release explícito e à coleta de sessões ociosas.
 
   Os handlers `handle_prefill` e `handle_step` também seguram
   `tp_batch_gate` no caminho de um frame com um único item. O gateway envia

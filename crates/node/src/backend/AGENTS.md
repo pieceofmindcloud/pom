@@ -149,6 +149,9 @@ behind an auth extractor.
   touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
+- `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
+  valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
+  prefill no orçamento total, sem o overshoot histórico de 513 tokens;
 - `openai.rs` - `DEFAULT_MAX_TOKENS=512`, `HARD_MAX_TOKENS=4096`;
   `render_prompt` flattens the conversation into one user message (single
   lone user message with no tools passes through byte-identical to

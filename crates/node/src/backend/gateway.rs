@@ -447,8 +447,35 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
 pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
+    /// Total completion-token budget. The first token is emitted by prefill
+    /// but counts here, just as it does in the other HTTP APIs.
+    #[serde(default)]
+    pub max_tokens: Option<u32>,
     #[serde(default)]
     pub stop: Option<StopInput>,
+}
+
+fn resolve_request_max_tokens(
+    requested: Option<u32>,
+    configured_limit: u32,
+) -> Result<u32, String> {
+    let max_tokens = requested.unwrap_or(DEFAULT_MAX_TOKENS);
+    if max_tokens == 0 {
+        return Err("max_tokens deve ser maior que zero".to_string());
+    }
+    if configured_limit == 0 {
+        return Err("max_new_tokens configurado deve ser maior que zero".to_string());
+    }
+    if max_tokens > configured_limit {
+        return Err(format!(
+            "max_tokens solicitado ({max_tokens}) excede max_new_tokens configurado ({configured_limit})"
+        ));
+    }
+    Ok(max_tokens)
+}
+
+fn remaining_generation_steps(max_tokens: u32, tokens_generated: u32) -> u32 {
+    max_tokens.saturating_sub(tokens_generated)
 }
 
 #[derive(Debug, Serialize)]
@@ -701,6 +728,30 @@ async fn send_stopped_summary(
             partial: false,
             finish_reason: Some("stop".to_string()),
             stop_sequence: Some(stop_sequence),
+            trace: Some(trace),
+        }))
+        .await;
+}
+
+async fn send_length_summary(
+    tx: &mpsc::Sender<GenEvent>,
+    plan: &PipelinePlan,
+    gen_start: Instant,
+    tokens_generated: u32,
+    mut trace: crate::prefill::RequestTrace,
+) {
+    let elapsed = gen_start.elapsed();
+    trace.output_tokens = tokens_generated;
+    trace.complete = true;
+    let _ = tx
+        .send(GenEvent::Done(GenSummary {
+            source: format!("pipeline:{}", plan.hop_chain()),
+            tokens_generated,
+            tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
+            duration_ms: elapsed.as_millis() as u64,
+            partial: false,
+            finish_reason: Some("length".to_string()),
+            stop_sequence: None,
             trace: Some(trace),
         }))
         .await;
@@ -1005,6 +1056,14 @@ async fn generate_stream_inner(
             return;
         }
 
+        if remaining_generation_steps(max_tokens, tokens_generated) == 0 {
+            if !flush_stop_matcher(&tx, &mut stop_matcher).await {
+                return;
+            }
+            send_length_summary(&tx, &plan, gen_start, tokens_generated, trace).await;
+            return;
+        }
+
         if plan.supports_speculation() && speculative_enabled {
             // Vira `false` na primeira rodada em que a cabeça recusar o
             // rascunho. Pedir de novo só repetiria a recusa, e o pedido custa
@@ -1024,7 +1083,7 @@ async fn generate_stream_inner(
             // recusa da cabeça é esperada) das seguintes (o rascunho foi
             // mandado — ignorado aí é motivo para parar).
             let mut stored_draft: Option<Vec<i32>> = None;
-            while tokens_generated < max_tokens {
+            while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
                 if cancellation.is_cancelled() {
                     return;
                 }
@@ -1153,7 +1212,7 @@ async fn generate_stream_inner(
                 // stream only what fits, and note it so `step.done` (which
                 // may refer to a position we never even looked at) isn't
                 // trusted past the cut.
-                let remaining = (max_tokens - tokens_generated) as usize;
+                let remaining = remaining_generation_steps(max_tokens, tokens_generated) as usize;
                 let take = step.accepted.len().min(remaining);
                 let truncated_by_budget = take < step.accepted.len();
 
@@ -1276,7 +1335,7 @@ async fn generate_stream_inner(
             return;
         }
 
-        for i in 0..max_tokens {
+        while remaining_generation_steps(max_tokens, tokens_generated) > 0 {
             let res = crate::prefill::step(
                 &plan,
                 model,
@@ -1320,7 +1379,7 @@ async fn generate_stream_inner(
                     }
                     let done = step.done;
 
-                    if done || i == max_tokens - 1 {
+                    if done || remaining_generation_steps(max_tokens, tokens_generated) == 0 {
                         if !flush_stop_matcher(&tx, &mut stop_matcher).await {
                             return;
                         }
@@ -1340,7 +1399,7 @@ async fn generate_stream_inner(
                                 tokens_per_sec: rate(tokens_generated, elapsed.as_secs_f64()),
                                 duration_ms: elapsed.as_millis() as u64,
                                 partial: false,
-                                finish_reason: None,
+                                finish_reason: (!done).then(|| "length".to_string()),
                                 stop_sequence: None,
                                 trace: Some(trace),
                             }))
@@ -1349,7 +1408,7 @@ async fn generate_stream_inner(
                     }
                 }
                 Err(e) => {
-                    warn!("Erro no passo {i} do pipeline: {e}");
+                    warn!("Erro no passo {tokens_generated} do pipeline: {e}");
                     let elapsed = gen_start.elapsed();
                     if tokens_generated > 0 {
                         // Some output is better than none — the original behaviour.
@@ -1372,7 +1431,7 @@ async fn generate_stream_inner(
                     } else {
                         let _ = tx
                             .send(GenEvent::Failed(format!(
-                                "Pipeline falhou no passo {i}: {e}"
+                                "Pipeline falhou no passo {tokens_generated}: {e}"
                             )))
                             .await;
                     }
@@ -1828,6 +1887,30 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
         Some(m) => m.to_string(),
         None => state.active_model().await,
     };
+    let configured_limit = state
+        .runtime
+        .config()
+        .await
+        .map(|cfg| cfg.max_new_tokens)
+        .unwrap_or(DEFAULT_MAX_TOKENS);
+    let max_tokens = match resolve_request_max_tokens(req.max_tokens, configured_limit) {
+        Ok(value) => value,
+        Err(error) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(GenerateResponse {
+                    response: error,
+                    source: "error".to_string(),
+                    tokens_generated: 0,
+                    tokens_per_sec: 0.0,
+                    duration_ms: 0,
+                    stop_sequence: None,
+                    trace: None,
+                }),
+            )
+                .into_response();
+        }
+    };
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
 
     info!(
@@ -1846,7 +1929,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             model,
             prompt: req.prompt,
             chat_template: true,
-            max_tokens: DEFAULT_MAX_TOKENS,
+            max_tokens,
             stops,
         },
     )
@@ -1993,6 +2076,40 @@ mod tests {
         assert_eq!(many.into_vec(), vec!["END", "DONE"]);
     }
 
+    #[test]
+    fn api_generate_max_tokens_defaults_accepts_and_rejects_by_configured_limit() {
+        let absent: GenerateRequest = serde_json::from_str(r#"{"prompt":"oi"}"#).unwrap();
+        let requested: GenerateRequest =
+            serde_json::from_str(r#"{"prompt":"oi","max_tokens":64}"#).unwrap();
+        let excessive: GenerateRequest =
+            serde_json::from_str(r#"{"prompt":"oi","max_tokens":513}"#).unwrap();
+
+        assert_eq!(resolve_request_max_tokens(absent.max_tokens, 512), Ok(512));
+        assert_eq!(
+            resolve_request_max_tokens(requested.max_tokens, 512),
+            Ok(64)
+        );
+        assert_eq!(
+            resolve_request_max_tokens(excessive.max_tokens, 512),
+            Err("max_tokens solicitado (513) excede max_new_tokens configurado (512)".into())
+        );
+    }
+
+    #[test]
+    fn api_generate_max_tokens_rejects_zero_instead_of_silently_clamping() {
+        assert_eq!(
+            resolve_request_max_tokens(Some(0), 512),
+            Err("max_tokens deve ser maior que zero".into())
+        );
+    }
+
+    #[test]
+    fn output_budget_counts_the_first_token_returned_by_prefill() {
+        assert_eq!(remaining_generation_steps(64, 1), 63);
+        assert_eq!(remaining_generation_steps(1, 1), 0);
+        assert_eq!(remaining_generation_steps(64, 64), 0);
+    }
+
     /// O endereco anunciado tem que ganhar do IP da LAN. Esta entrada viaja
     /// dentro de `next_hops`, e um hop noutro site que receba `192.168.x.y`
     /// disca um endereco que nao existe para ele - a requisicao morre sem
@@ -2058,7 +2175,8 @@ mod tests {
             .post(format!("{base}/api/generate"))
             .json(&json!({
                 "model": model,
-                "prompt": "Escreva hello world 10 vezes."
+                "prompt": "Escreva hello world 10 vezes.",
+                "max_tokens": 64
             }))
             .send()
             .await
@@ -2070,7 +2188,7 @@ mod tests {
         );
         let body: Value = response.json().await.expect("JSON generation response");
 
-        assert!(body["tokens_generated"].as_u64().unwrap_or(513) < 512);
+        assert!(body["tokens_generated"].as_u64().unwrap_or(513) <= 64);
         assert!(body["trace"]["input_tokens"].as_u64().unwrap_or(0) > 0);
         assert!(body["trace"]["complete"].as_bool().unwrap_or(false));
         for phase in ["prefill", "decode"] {

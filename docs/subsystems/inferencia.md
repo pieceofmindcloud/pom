@@ -710,6 +710,12 @@ um evento de erro dentro de um HTTP 200; clientes como OpenCode aguardavam uma
 resposta válida e mostravam apenas uma execução sem resposta. Requisições que
 cabem no orçamento mantêm o SSE e o caminho distribuído inalterados.
 
+O `POST /api/generate` aceita `max_tokens` opcional. Na ausência, usa 512;
+quando presente, exige valor maior que zero e no máximo o `max_new_tokens`
+configurado no nó, recusando 400 com os dois valores quando excede. O limite é
+o total de tokens de saída: o primeiro token devolvido pelo prefill já conta,
+portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
+
 - `n_batch` **não** entra na conta: o prompt vai em pedaços, então `n_batch`
   limita um pedaço (`min(prefill_chunk_tokens, n_batch)`), não o prompt. Antes
   de o prefill ser fatiado, `n_batch` na fórmula capava todo prompt em 512

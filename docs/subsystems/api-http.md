@@ -48,11 +48,15 @@ haver chave.
 
 ### Base
 
-- **`POST /api/generate`** - `{ model?, prompt }`; resposta `GenerateResponse`
+- **`POST /api/generate`** - `{ model?, prompt, max_tokens?, stop? }`; resposta `GenerateResponse`
   com `response`, `source` (`"pipeline:<cadeia>"`, `"local"`,
   `"peer:<node_id>"` ou `"none"`/`"error"`), `tokens_generated`,
   `tokens_per_sec`, `duration_ms`, `trace`. Corpo aceito como bytes crus (não
-  exige `Content-Type: application/json`). `DEFAULT_MAX_TOKENS` = 512.
+  exige `Content-Type: application/json`). `max_tokens` é o orçamento total da
+  saída, incluindo o primeiro token que o prefill devolve; sem o campo, o
+  padrão é 512. O pedido precisa ser maior que zero e não pode exceder o
+  `max_new_tokens` da configuração do nó. Exceder esse limite responde 400
+  com o valor pedido e o valor configurado, nunca trunca em silêncio.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).

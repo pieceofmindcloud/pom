@@ -43,7 +43,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `moe_executor`, `moe_executors`, `moe_executor_dtypes`,
   `moe_executor_reason` e `moe_forward_ms`, além das flags
   `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
-  apenas o caminho selecionado, pois não representa uma requisição. `cuda`
+  apenas o caminho selecionado, pois não representa uma requisição. O
+  `PhaseTrace` transporta também `node_moe_forward_ms`, que é o custo do
+  forward externo fora de `llama_decode` e fecha a conta do backend. `cuda`
   só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os
   dtypes GGML e o motivo da ausência de ponte CUDA. O `PhaseTrace` do gateway
   preserva esses campos por hop e por fase; `not-run` expõe a ausência de

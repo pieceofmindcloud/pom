@@ -185,6 +185,12 @@ pub struct PhaseTrace {
     /// recorded; the effective `POM_PROFILE_SYNC` state is published separately
     /// by `/health` and must never be inferred from this timing.
     pub node_backend_completion_ms: f64,
+    /// Tempo do forward MoE externo, medido fora de `llama_decode`.
+    ///
+    /// O hook do llama.cpp e opt-in e registra o forward depois que ele
+    /// retorna; sem este campo o trace confundia esse custo com o restante do
+    /// backend e deixava a soma impossível de fechar.
+    pub node_moe_forward_ms: f64,
     /// Device-to-host copy of the residual, measured inside the capture hook.
     pub node_residual_capture_d2h_sync_ms: f64,
     pub node_residual_ms: f64,
@@ -318,6 +324,7 @@ impl PhaseTrace {
         self.node_decode_ms += node_decode_ms;
         self.node_backend_enqueue_ms += node_ms("backend_enqueue_ms");
         self.node_backend_completion_ms += node_ms("backend_completion_ms");
+        self.node_moe_forward_ms += node_ms("moe_forward_ms");
         self.node_residual_capture_d2h_sync_ms += node_ms("residual_capture_d2h_sync_ms");
         self.node_residual_ms += node_ms("residual_ms");
         self.node_logits_access_ms += node_ms("logits_access_ms");

@@ -320,6 +320,12 @@ static ggml_tensor * llama_rs_moe_expert_scale(
         const std::string & base,
         uint32_t expert) {
     const ggml_tensor * tensor = model->get_tensor((base + ".scale").c_str());
+    const std::string weight_suffix = ".weight";
+    if (!tensor && base.size() >= weight_suffix.size() &&
+        base.compare(base.size() - weight_suffix.size(), weight_suffix.size(), weight_suffix) == 0) {
+        const std::string stem = base.substr(0, base.size() - weight_suffix.size());
+        tensor = model->get_tensor((stem + ".scale").c_str());
+    }
     if (!tensor || ggml_n_dims(tensor) != 1 || expert >= static_cast<uint32_t>(tensor->ne[0])) {
         return nullptr;
     }

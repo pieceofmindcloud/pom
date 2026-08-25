@@ -550,11 +550,13 @@ impl Nvfp4Source {
             .and_then(|count| count.checked_mul(element_bytes))
             .ok_or(Q4LoadError::InvalidTensor("tamanho do router excede usize"))?;
         let raw = self.tensor_bytes(tensor, total_bytes)?;
-        let input_scale = self
-            .tensor_sidecar(tensor, "scale")
-            .map(|scale| self.read_scale_vector(scale))
-            .transpose()?
-            .unwrap_or_else(|| vec![1.0; self.hidden]);
+        let input_scale = match self.tensor_sidecar(tensor, "scale") {
+            Ok(scale) => self.read_scale_vector(scale)?,
+            Err(Q4LoadError::MissingTensor(_)) if matches!(tensor.dtype, 0 | 1 | 30) => {
+                vec![1.0; self.hidden]
+            }
+            Err(error) => return Err(error),
+        };
         if input_scale.len() != self.hidden {
             return Err(Q4LoadError::InvalidTensor(
                 "escala do router tem geometria errada",
@@ -588,9 +590,12 @@ impl Nvfp4Source {
             .ok_or_else(|| Q4LoadError::MissingTensor(format!("blk.{layer}.{suffix}")))
     }
 
-    fn tensor_sidecar<'a>(&'a self, tensor: &TensorSpec, suffix: &str) -> Option<&'a TensorSpec> {
-        let name = format!("{}.{}", tensor.name, suffix);
-        self.tensors.iter().find(|candidate| candidate.name == name)
+    fn tensor_sidecar<'a>(
+        &'a self,
+        tensor: &TensorSpec,
+        suffix: &str,
+    ) -> Result<&'a TensorSpec, Q4LoadError> {
+        find_sidecar(&self.tensors, tensor, suffix)
     }
 
     fn sidecar_scale(
@@ -599,9 +604,7 @@ impl Nvfp4Source {
         suffix: &str,
         expert: u32,
     ) -> Result<f32, Q4LoadError> {
-        let Some(sidecar) = self.tensor_sidecar(tensor, suffix) else {
-            return Ok(1.0);
-        };
+        let sidecar = self.tensor_sidecar(tensor, suffix)?;
         let values = self.read_scale_vector(sidecar)?;
         values
             .get(expert as usize)
@@ -679,6 +682,23 @@ impl Nvfp4Source {
         }
         Ok(&self.mmap[offset..end])
     }
+}
+
+fn sidecar_name(tensor: &TensorSpec, suffix: &str) -> String {
+    let stem = tensor.name.strip_suffix(".weight").unwrap_or(&tensor.name);
+    format!("{stem}.{suffix}")
+}
+
+fn find_sidecar<'a>(
+    tensors: &'a [TensorSpec],
+    tensor: &TensorSpec,
+    suffix: &str,
+) -> Result<&'a TensorSpec, Q4LoadError> {
+    let name = sidecar_name(tensor, suffix);
+    tensors
+        .iter()
+        .find(|candidate| candidate.name == name)
+        .ok_or_else(|| Q4LoadError::MissingTensor(name))
 }
 
 fn ensure_nvfp4(tensor: &TensorSpec) -> Result<(), Q4LoadError> {
@@ -1181,5 +1201,21 @@ mod tests {
         };
 
         assert_eq!(split_geometry(&gate).unwrap(), (2816, 704));
+    }
+
+    #[test]
+    fn nvfp4_recusa_sidecar_de_escala_ausente() {
+        let gate = TensorSpec {
+            name: "blk.0.ffn_gate_exps.weight".into(),
+            dims: vec![2816, 704, 128],
+            dtype: 40,
+            offset: 0,
+        };
+        let result = find_sidecar(&[], &gate, "scale");
+        assert!(matches!(
+            result,
+            Err(Q4LoadError::MissingTensor(name))
+                if name == "blk.0.ffn_gate_exps.scale"
+        ));
     }
 }

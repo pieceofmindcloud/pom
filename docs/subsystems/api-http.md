@@ -121,11 +121,11 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 `peer/:node_id/runtime`, `paths`,
 `plan`, `apply`, `launch`, `stop-inference`, `slice` + `slice/plan`, `jobs` +
 `jobs/:id`, `unload`, `release` + `release/candidate`, `leave`, `rejoin`,
-`requests` (o log de requisições, `reqlog::list_requests`), `network/rtt` (GET
+`requests` (a auditoria persistente, `reqlog::list_requests`), `network/rtt` (GET
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
 peers solicitados), `dev/update` +
-`dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
+`dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
@@ -139,6 +139,24 @@ fonte de progresso, cancelamento e retry da UI. **`GET /api/ui/model-provider/st
 username } }`: CLI ausente é um estado estruturado, enquanto login necessário
 e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta
 a licença no provider antes de a tela oferecer o download.
+
+`GET /api/ui/requests` exige `ConnectionAuth`, pois devolve prompts e corpos de
+requisição. Os filtros são `node_id`, `api_key` (id, rótulo ou nó associado),
+`prompt` (busca FTS5), `from`, `to`, `limit` e `offset`; a ordenação é por
+`received_at` mais recente. O banco fica em `<project_root>/audit.sqlite3`, é
+criado de forma idempotente no arranque e mantém índice do prompt e dos filtros
+de identidade, nó, estado e horário. O registro nasce como `in_progress` antes
+da inferência e a mesma linha recebe resultado, telemetria, tempos, tokens,
+peers e erro ao terminar. Reinício ou mais de 15 minutos sem conclusão marca a
+linha como `incomplete` com o motivo visível. A escrita usa uma fila limitada e
+um escritor separado; falha de disco é registrada no log do servidor e não é
+propagada à requisição de inferência.
+
+O registro guarda somente a identidade não secreta da API key: `id`, `label` e
+`node_id`. O segredo não entra no SQLite nem na resposta. O corpo salvo é a
+representação JSON dos campos aceitos, sem cabeçalhos. A política de retenção de prompts completos ainda
+precisa de decisão de produto: `needs-decision: definir retenção e eventual
+expurgo por idade ou volume`.
 
 As rotas `POST /api/ui/deploy/plan` e `POST /api/ui/deploy` carregam
 `params.inference_mode` (`auto`, `dense` ou `moe`) para os três modos de
@@ -170,14 +188,6 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 `libp2p_peer_id` e `inference_frame_capabilities` para que um plano de
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
-
-**`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
-política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
-limite e a margem são finitos, positivos e formam uma histerese válida, grava a
-política no `pom.json` e devolve o valor efetivo. O runtime aplica a alteração
-sem reinício. `GET /api/ui/node` inclui a mesma política em `thermal`, junto
-com `system.gpus[].temperature_c`, que é `null` quando o driver não fornece a
-leitura.
 
 ### Leituras condicionais do painel
 
@@ -215,9 +225,9 @@ Duas credenciais, dois extractors:
   (o cliente escolhe conforme a env var que tem: `OPENAI_API_KEY` manda
   `Bearer`, `ANTHROPIC_API_KEY` manda `x-api-key`). A chave de conexão conta
   como operador (`Caller::operator()`); senão vale uma API key mintada em
-  `/admin/api-keys`, com `label` e `node_id` opcionais. O `Caller` construído
-  aqui é o único lugar que vê a credencial e alimenta o log de requisições
-  (`token_label`, `token_hint`, `token_node_id`).
+  `/admin/api-keys`, com `id`, `label` e `node_id`. O `Caller` construído aqui é
+  o único lugar que vê a credencial e alimenta a auditoria com essa identidade;
+  o segredo nunca é salvo nem devolvido pela rota de auditoria.
 
 `POST /admin/regenerate-key` troca a `connection_key` (SHA256 de um UUID);
 mintar chaves **acumula** em vez de substituir - um token por nó/harness, e o
@@ -226,7 +236,8 @@ log atribui cada geração a quem pagou por ela.
 **Rotas sem auth**: `/api/generate`, `/peers`, `/health` (o `/api/generate`
 loga como anônimo), `/handshake` (a chave vai no corpo), os GETs de leitura do
 `/api/ui` (`node`, `models`, `cluster`, `cluster/models`,
-`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). Os `/v1` OpenAI/Anthropic **exigem**
+`peer/:node_id/runtime`, `paths` GET, `jobs`, `jobs/:id`), e `/v1/relay-result` (abaixo). `GET /api/ui/requests` é exceção porque contém conteúdo
+sensível e exige `ConnectionAuth`. Os `/v1` OpenAI/Anthropic **exigem**
 `ApiKeyAuth`.
 
 `POST /api/ui/chat/telemetry` fica fora da exceção de leitura: ele exige

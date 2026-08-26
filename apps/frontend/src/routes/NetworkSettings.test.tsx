@@ -11,23 +11,12 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
-import { ThermalPanel, TlsPanel } from "./NetworkSettings";
+import { TlsPanel } from "./NetworkSettings";
 
 function mount(props: Parameters<typeof TlsPanel>[0]) {
   return render(
     <LocaleProvider initialLocale="pt-BR">
       <TlsPanel {...props} />
-    </LocaleProvider>,
-  );
-}
-
-function mountThermal(onSave: (policy: { limit_c: number; hysteresis_c: number; cooldown_secs: number }) => void) {
-  return render(
-    <LocaleProvider initialLocale="pt-BR">
-      <ThermalPanel
-        policy={{ limit_c: 85, hysteresis_c: 8, cooldown_secs: 30 }}
-        onSave={onSave}
-      />
     </LocaleProvider>,
   );
 }
@@ -61,20 +50,5 @@ describe("TlsPanel", () => {
   it("desligado, o estado é dito com todas as letras", () => {
     mount({ tlsRequired: false, authority: false });
     expect(screen.getByText("em texto claro")).toBeTruthy();
-  });
-});
-
-describe("ThermalPanel", () => {
-  afterEach(cleanup);
-
-  it("expõe histerese e cooldown e envia a política editada", () => {
-    const onSave = vi.fn();
-    mountThermal(onSave);
-    fireEvent.change(screen.getByLabelText(/desimplantar acima/i), { target: { value: "82" } });
-    fireEvent.change(screen.getByLabelText(/margem de segurança/i), { target: { value: "7" } });
-    fireEvent.change(screen.getByLabelText(/tempo de resfriamento/i), { target: { value: "45" } });
-    fireEvent.click(screen.getByRole("button", { name: /salvar política térmica/i }));
-    expect(onSave).toHaveBeenCalledWith({ limit_c: 82, hysteresis_c: 7, cooldown_secs: 45 });
-    expect(screen.getByText(/limite de retomada automática: 75 °C/i)).toBeTruthy();
   });
 });

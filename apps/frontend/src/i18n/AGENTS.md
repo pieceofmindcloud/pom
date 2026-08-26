@@ -16,9 +16,7 @@ Two files carry all of it: a static message table and a small provider. Tests:
   and formatting functions. The slice screen has messages for pipeline and
   tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
   refusals are rendered from the backend's selection-specific `blocked` reason;
-  there is no second global catalog warning in this table. Dashboard GPU
-  temperature badges and the Network thermal policy panel have keys in both
-  locale blocks.
+  there is no second global catalog warning in this table.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou
@@ -26,6 +24,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - O grupo `huggingFace.*` cobre o campo de token da tela de Rede. O valor
   persistido nunca entra numa mensagem; a UI mostra somente a máscara e a
   fonte efetiva.
+- O grupo `tokenLogs.*` cobre a auditoria de requisições: filtros por identidade
+  da API key, prompt e período, detalhes do registro, telemetria e estados
+  incompletos. Nenhuma mensagem dessa tela recebe o segredo da chave.
 - `provider.tsx` - `LocaleProvider`, the `useI18n()` hook and the `LanguageSelect` component.
 
 ## How locales are structured

@@ -75,7 +75,7 @@ pub(crate) fn cors_headers() -> HeaderMap {
 
 /// `content` is a bare string in the classic API and an array of typed parts in
 /// the vision-era one. Harnesses send both, so accept both.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum Content {
     Text(String),
@@ -84,7 +84,7 @@ pub enum Content {
     Null,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentPart {
     #[serde(default)]
     pub text: Option<String>,
@@ -104,7 +104,7 @@ impl Content {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
     #[serde(default = "default_content")]
@@ -122,13 +122,13 @@ fn default_content() -> Content {
     Content::Null
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCallRef {
     #[serde(default)]
     pub function: Option<FunctionCallRef>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FunctionCallRef {
     pub name: String,
     /// OpenAI encodes this as a JSON **string**, not a nested object like
@@ -173,7 +173,7 @@ impl ChatMessage {
 
 // ── Requests ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatRequest {
     #[serde(default)]
     pub model: Option<String>,
@@ -196,12 +196,12 @@ pub struct ChatRequest {
 /// with `crate::messages`) matches the latter, so this unwraps into it via
 /// `ChatToolDef::into_tool_def` rather than pretending the two wire shapes
 /// are the same.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ChatToolDef {
     function: ChatFunctionDef,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct ChatFunctionDef {
     name: String,
     #[serde(default)]
@@ -220,7 +220,7 @@ impl ChatToolDef {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CompletionRequest {
     #[serde(default)]
     pub model: Option<String>,
@@ -432,6 +432,7 @@ async fn chat_completions(
     if req.messages.is_empty() {
         return error_response(StatusCode::BAD_REQUEST, "'messages' não pode ser vazio");
     }
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
     let model = match req.model.clone() {
         // Harnesses often pin a model name that means nothing here; the cluster
@@ -452,9 +453,19 @@ async fn chat_completions(
     // ver `conversation_cache_key`.
     let cache_key = conversation_cache_key(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
+    let caller = auth.into_caller();
 
     if let Some(cfg) = state.runtime.config().await {
         if let Some(error) = crate::gateway::prompt_budget_error(&cfg, &prompt) {
+            crate::gateway::record_rejected(
+                &state,
+                "/v1/chat/completions",
+                caller,
+                model.clone(),
+                prompt,
+                request_details,
+                error.clone(),
+            );
             return error_response(StatusCode::PAYLOAD_TOO_LARGE, error);
         }
     }
@@ -473,7 +484,7 @@ async fn chat_completions(
     if req.stream {
         stream_response(
             state,
-            auth.into_caller(),
+            caller.clone(),
             "/v1/chat/completions",
             model,
             prompt,
@@ -483,11 +494,12 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            request_details.clone(),
         )
     } else {
         blocking_response(
             state,
-            auth.into_caller(),
+            caller,
             "/v1/chat/completions",
             model,
             prompt,
@@ -498,6 +510,7 @@ async fn chat_completions(
             Mode::Chat,
             stops,
             Some(cache_key),
+            request_details,
         )
         .await
     }
@@ -516,6 +529,7 @@ async fn completions(
         .max_tokens
         .unwrap_or(DEFAULT_MAX_TOKENS)
         .clamp(1, HARD_MAX_TOKENS);
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
     let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
@@ -535,6 +549,7 @@ async fn completions(
             stops,
             // Completion crua não tem conversa: o prefixo é o próprio texto.
             None,
+            request_details.clone(),
         )
     } else {
         blocking_response(
@@ -550,6 +565,7 @@ async fn completions(
             Mode::Completion,
             stops,
             None,
+            request_details,
         )
         .await
     }
@@ -609,6 +625,7 @@ async fn blocking_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         route,
@@ -621,6 +638,7 @@ async fn blocking_response(
             max_tokens,
             stops,
             cache_key,
+            request_details,
         },
     )
     .await
@@ -751,6 +769,7 @@ fn stream_response(
     mode: Mode,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -764,6 +783,7 @@ fn stream_response(
             max_tokens,
             stops,
             cache_key,
+            request_details,
         },
         tx,
     );

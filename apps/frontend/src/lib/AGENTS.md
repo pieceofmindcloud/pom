@@ -24,8 +24,6 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
 - `wholeModels.ts` - `wholeModelsOf` names each un-sliced model of the cluster catalog once, collecting its holders. `tensorParallelModelsOf` groups `ShardSet.tp_parts` by source group and TP width, preserving rank holders for the Deploy screen. The menu the Deploy screen needs before it has a plan; a model whose GGUF header gave no layer count stays in the list on purpose, so the node can say what is wrong with the file.
 - `format.ts` - number/time formatting in the active locale plus node-state labels.
-- `thermal.ts` - pure temperature-band and highest-known-reading helpers used by
-  the GPU badge; missing or non-finite readings stay explicitly unknown.
 - `networkGraph.ts` - flattens `ClusterView` into per-model layer-range lists for the canvas.
 - `networkLayout.ts` - canvas node positions persisted per deployment fingerprint.
 - `networkPeers.ts` - how the panel reads the peer list: who serves the active model (pipeline order) vs who is on the network without a slice.
@@ -102,7 +100,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 
 ### types.ts
 - Authoritative shapes with pointers to their Rust origin (comments cite `src/webui.rs`, `src/sysmon.rs`, `src/runtime.rs`, `src/transfer.rs`, `src/admin.rs`, `src/reqlog.rs`, `src/plan.rs`, `src/deploy.rs`).
-- `ServerState` - `"disabled" | "starting" | "ready" | "failed" | "thermal"`; the thermal state is distinct from an unreachable or failed peer.
+- `ServerState` - `"disabled" | "starting" | "ready" | "failed"` only, no `| string` escape hatch; the doc comment records that the loose first version made every machine look idle.
 - `ClusterView` / `PeerView` / `ModelCapability` - the network/dashboard model.
 - `ShardSet` identifies a slicing round with the technical `group`, readable
   `model_label` and `pom_id`; `DeploySelection`, `DeployStep`, `DeployTpTarget`, `DeployPlan`,
@@ -141,8 +139,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `enabled` só é ligado com o card de uma máquina servindo montado: perguntar
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
-- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, api_key, prompt, from, to})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no

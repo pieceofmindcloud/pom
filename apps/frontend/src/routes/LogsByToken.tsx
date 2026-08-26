@@ -1,17 +1,19 @@
 /**
- * Who asked, and which machines answered.
+ * Persistent request audit.
  *
- * The node keeps the last few hundred generations in memory (`src/reqlog.rs`),
- * with the credential that paid for each one and the hops it actually took. It
- * is a rear-view mirror, not an audit trail: a node that restarts starts empty,
- * and the screen says so rather than implying completeness.
+ * The backend writes the first row before inference starts, then completes the
+ * same SQLite row. This screen is deliberately an inspector: identity,
+ * prompt, request body and telemetry are available without exposing a key
+ * secret.
  */
-import { KeyRound, Radio, Server } from "lucide-react";
-import { useState } from "react";
+import { KeyRound, Radio, Search, Server } from "lucide-react";
+import { Fragment, useState } from "react";
 import {
   Badge,
   Empty,
   ErrorState,
+  Field,
+  Input,
   Mono,
   PageHeader,
   Panel,
@@ -19,6 +21,7 @@ import {
   ScrollX,
   Select,
   Skeleton,
+  type Tone,
 } from "../components/ui";
 import { clock, ms, num, since } from "../lib/format";
 import { useCluster, useRequestLog } from "../lib/queries";
@@ -32,23 +35,121 @@ function useNodeNames() {
   for (const p of cluster.data?.peers ?? []) {
     map.set(p.node_id, p.node?.hostname || p.short_id);
   }
-  return (id: string) => map.get(id) ?? `${id.slice(0, 8)}…`;
+  return (id: string) => map.get(id) ?? id.slice(0, 8) + "…";
 }
 
 export function HopChain({ entry, name }: { entry: RequestLogEntry; name: (id: string) => string }) {
   const { t } = useI18n();
   if (entry.hops.length === 0) {
-    return <span className="text-[0.78rem] text-faint">{t("tokenLogs.noPipeline")}</span>;
+    return (
+      <span className="flex flex-wrap items-center gap-1">
+        <span className="font-mono text-[0.72rem] text-fg">{name(entry.entry_node_id)}</span>
+        <span className="text-[0.78rem] text-faint">· {t("tokenLogs.noPipeline")}</span>
+      </span>
+    );
   }
   return (
     <span className="flex flex-wrap items-center gap-1">
       {entry.hops.map((h, i) => (
-        <span key={`${h}-${i}`} className="flex items-center gap-1">
+        <span key={h + "-" + i} className="flex items-center gap-1">
           {i > 0 && <span className="text-faint">→</span>}
           <span className="font-mono text-[0.72rem] text-fg">{name(h)}</span>
         </span>
       ))}
     </span>
+  );
+}
+
+export function statusTone(status: string): Tone {
+  if (status === "ok") return "aqua";
+  if (status === "partial" || status === "incomplete") return "amber";
+  if (status === "in_progress") return "iris";
+  return "rose";
+}
+
+export function statusLabel(status: string, t: (key: string) => string) {
+  const labels: Record<string, string> = {
+    ok: t("tokenLogs.statusCompleted"),
+    partial: t("tokenLogs.statusPartial"),
+    error: t("tokenLogs.statusError"),
+    abandoned: t("tokenLogs.statusAbandoned"),
+    in_progress: t("tokenLogs.statusInProgress"),
+    incomplete: t("tokenLogs.statusIncomplete"),
+  };
+  return labels[status] ?? status;
+}
+
+function JsonBlock({ value }: { value: unknown }) {
+  return (
+    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-ink p-3 font-mono text-[0.72rem] leading-relaxed text-muted">
+      {JSON.stringify(value, null, 2)}
+    </pre>
+  );
+}
+
+function AuditDetails({ entry, name }: { entry: RequestLogEntry; name: (id: string) => string }) {
+  const { t } = useI18n();
+  return (
+    <details className="group">
+      <summary className="cursor-pointer list-none text-[0.75rem] text-iris group-open:mb-3">
+        {t("tokenLogs.inspect")}
+      </summary>
+      <div className="mb-4 flex flex-wrap gap-x-5 gap-y-1.5 text-[0.72rem] text-muted">
+        <span>
+          {t("tokenLogs.route")}: <Mono>{entry.route}</Mono>
+        </span>
+        <span>
+          {t("tokenLogs.entryNode")}: <Mono>{name(entry.entry_node_id)}</Mono>
+        </span>
+        <span>
+          {t("tokenLogs.source")}: <Mono>{entry.source}</Mono>
+        </span>
+        {entry.completed_at && (
+          <span>
+            {t("tokenLogs.completedAt")}: <Mono>{clock(entry.completed_at)}</Mono>
+          </span>
+        )}
+      </div>
+      <div className="grid min-w-0 gap-4 lg:grid-cols-2">
+        <div className="min-w-0 space-y-3">
+          <div>
+            <p className="mb-1.5 text-[0.72rem] font-medium uppercase tracking-[0.12em] text-faint">
+              {t("tokenLogs.prompt")}
+            </p>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-ink p-3 font-mono text-[0.78rem] leading-relaxed text-fg">
+              {entry.prompt}
+            </pre>
+          </div>
+          <div>
+            <p className="mb-1.5 text-[0.72rem] font-medium uppercase tracking-[0.12em] text-faint">
+              {t("tokenLogs.requestDetails")}
+            </p>
+            <JsonBlock value={entry.request_details} />
+          </div>
+        </div>
+        <div className="min-w-0 space-y-3">
+          <div>
+            <p className="mb-1.5 text-[0.72rem] font-medium uppercase tracking-[0.12em] text-faint">
+              {t("tokenLogs.result")}
+            </p>
+            <pre className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-line bg-ink p-3 font-mono text-[0.78rem] leading-relaxed text-fg">
+              {entry.result ?? t("tokenLogs.noResult")}
+            </pre>
+          </div>
+          <div>
+            <p className="mb-1.5 text-[0.72rem] font-medium uppercase tracking-[0.12em] text-faint">
+              {t("tokenLogs.telemetry")}
+            </p>
+            <JsonBlock value={entry.telemetry ?? t("tokenLogs.noTelemetry")} />
+          </div>
+        </div>
+      </div>
+      {entry.error && (
+        <p className="mt-4 break-words rounded-lg border border-rose/25 bg-rose/8 p-3 text-[0.78rem] text-rose">
+          {entry.error}
+        </p>
+      )}
+    </details>
   );
 }
 
@@ -80,7 +181,7 @@ function Tally({
               <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
                 <div
                   className="h-full rounded-full bg-iris transition-[width] duration-500 ease-swift"
-                  style={{ width: `${(count / max) * 100}%` }}
+                  style={{ width: String((count / max) * 100) + "%" }}
                 />
               </div>
             </li>
@@ -94,19 +195,20 @@ function Tally({
 export function LogsByToken() {
   const { t } = useI18n();
   const [nodeFilter, setNodeFilter] = useState("");
+  const [apiKeyFilter, setApiKeyFilter] = useState("");
+  const [promptFilter, setPromptFilter] = useState("");
+  const [fromFilter, setFromFilter] = useState("");
+  const [toFilter, setToFilter] = useState("");
   const cluster = useCluster();
-  const log = useRequestLog(nodeFilter ? { node_id: nodeFilter } : {});
+  const log = useRequestLog({
+    node_id: nodeFilter || undefined,
+    api_key: apiKeyFilter.trim() || undefined,
+    prompt: promptFilter.trim() || undefined,
+    from: fromFilter ? new Date(fromFilter).toISOString() : undefined,
+    to: toFilter ? new Date(toFilter).toISOString() : undefined,
+  });
   const name = useNodeNames();
-
-  const data = log.data as
-    | {
-        entries: RequestLogEntry[];
-        total: number;
-        errors?: number;
-        by_token?: Record<string, number>;
-        by_node?: Record<string, number>;
-      }
-    | undefined;
+  const data = log.data;
 
   const byToken = Object.entries(data?.by_token ?? {}).sort((a, b) => b[1] - a[1]);
   const byNode = Object.entries(data?.by_node ?? {})
@@ -115,25 +217,53 @@ export function LogsByToken() {
 
   return (
     <>
-      <PageHeader
-        title={t("tokenLogs.title")}
-        subtitle={t("tokenLogs.subtitle")}
-        actions={
-          <Select
-            className="w-56"
-            value={nodeFilter}
-            onChange={(e) => setNodeFilter(e.target.value)}
-            aria-label={t("tokenLogs.filter")}
-          >
-            <option value="">{t("tokenLogs.allNodes")}</option>
-            {(cluster.data?.peers ?? []).map((p) => (
-              <option key={p.node_id} value={p.node_id}>
-                {p.node?.hostname || p.short_id}
-              </option>
-            ))}
-          </Select>
-        }
-      />
+      <PageHeader title={t("tokenLogs.title")} subtitle={t("tokenLogs.subtitle")} />
+
+      <Panel>
+        <PanelHeader
+          title={t("tokenLogs.filters")}
+          eyebrow={<Search className="h-3.5 w-3.5" />}
+          subtitle={t("tokenLogs.filtersHint")}
+        />
+        <div className="grid gap-4 px-5 py-4 md:grid-cols-2 xl:grid-cols-5">
+          <Field label={t("tokenLogs.apiKey")}>
+            <Input
+              value={apiKeyFilter}
+              onChange={(e) => setApiKeyFilter(e.target.value)}
+              placeholder={t("tokenLogs.apiKeyPlaceholder")}
+              aria-label={t("tokenLogs.apiKey")}
+            />
+          </Field>
+          <Field label={t("tokenLogs.promptSearch")}>
+            <Input
+              value={promptFilter}
+              onChange={(e) => setPromptFilter(e.target.value)}
+              placeholder={t("tokenLogs.promptPlaceholder")}
+              aria-label={t("tokenLogs.promptSearch")}
+            />
+          </Field>
+          <Field label={t("tokenLogs.filter")}>
+            <Select
+              value={nodeFilter}
+              onChange={(e) => setNodeFilter(e.target.value)}
+              aria-label={t("tokenLogs.filter")}
+            >
+              <option value="">{t("tokenLogs.allNodes")}</option>
+              {(cluster.data?.peers ?? []).map((p) => (
+                <option key={p.node_id} value={p.node_id}>
+                  {p.node?.hostname || p.short_id}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <Field label={t("tokenLogs.from")}>
+            <Input type="datetime-local" value={fromFilter} onChange={(e) => setFromFilter(e.target.value)} />
+          </Field>
+          <Field label={t("tokenLogs.to")}>
+            <Input type="datetime-local" value={toFilter} onChange={(e) => setToFilter(e.target.value)} />
+          </Field>
+        </div>
+      </Panel>
 
       {log.isError && <ErrorState error={log.error} onRetry={() => void log.refetch()} />}
       {log.isLoading && <Skeleton className="h-64 w-full" />}
@@ -158,7 +288,7 @@ export function LogsByToken() {
           <Panel>
             <PanelHeader
               title={t("tokenLogs.count", { count: num(data.total) })}
-              subtitle={t("tokenLogs.memoryDetail")}
+              subtitle={t("tokenLogs.sqliteDetail")}
               actions={
                 data.errors ? (
                   <Badge tone="rose">
@@ -173,69 +303,67 @@ export function LogsByToken() {
               </Empty>
             ) : (
               <ScrollX>
-                <table className="w-full min-w-[52rem] border-collapse text-[0.82rem]">
+                <table className="w-full min-w-[64rem] border-collapse text-[0.82rem]">
                   <thead>
                     <tr className="border-b border-line text-left">
-                      {[t("tokenLogs.time"), t("tokenLogs.token"), t("tokenLogs.route"), t("tokenLogs.path"), t("tokenLogs.tokens"), t("tokenLogs.duration"), ""].map(
-                        (h) => (
-                          <th key={h} className="px-4 py-2.5 font-medium text-muted">
-                            {h}
-                          </th>
-                        ),
-                      )}
+                      {[
+                        t("tokenLogs.time"),
+                        t("tokenLogs.token"),
+                        t("tokenLogs.model"),
+                        t("tokenLogs.path"),
+                        t("tokenLogs.tokens"),
+                        t("tokenLogs.duration"),
+                        t("tokenLogs.status"),
+                        "",
+                      ].map((h) => (
+                        <th key={h} className="px-4 py-2.5 font-medium text-muted">
+                          {h}
+                        </th>
+                      ))}
                     </tr>
                   </thead>
                   <tbody>
                     {data.entries.map((e) => (
-                      <tr
-                        key={e.id}
-                        className="border-b border-line last:border-0 hover:bg-raised"
-                      >
-                        <td className="whitespace-nowrap px-4 py-2.5">
-                          <Mono className="text-fg">{clock(e.at)}</Mono>
-                          <span className="ml-2 text-[0.7rem] text-faint">
-                            {since(e.at)}
-                          </span>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <span className="text-fg">{e.token_label}</span>
-                          {e.token_hint && (
-                            <Mono className="ml-1.5 text-faint">{e.token_hint}</Mono>
-                          )}
-                          {e.token_node_id && (
-                            <span className="ml-1.5 text-[0.7rem] text-faint">
-                              · {name(e.token_node_id)}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <Mono className="text-muted">{e.route}</Mono>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <HopChain entry={e} name={name} />
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5">
-                          <Mono className="text-muted">
-                            {e.prompt_tokens ?? "—"} → {e.completion_tokens ?? "—"}
-                          </Mono>
-                        </td>
-                        <td className="whitespace-nowrap px-4 py-2.5">
-                          <Mono className="text-muted">{ms(e.duration_ms)}</Mono>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <Badge
-                            tone={
-                              e.status === "ok"
-                                ? "aqua"
-                                : e.status === "partial"
-                                  ? "amber"
-                                  : "rose"
-                            }
-                          >
-                            {e.status}
-                          </Badge>
-                        </td>
-                      </tr>
+                      <Fragment key={e.id}>
+                        <tr className="border-b border-line hover:bg-raised">
+                          <td className="whitespace-nowrap px-4 py-2.5">
+                            <Mono className="text-fg">{clock(e.received_at)}</Mono>
+                            <span className="ml-2 text-[0.7rem] text-faint">{since(e.received_at)}</span>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className="text-fg">{e.api_key_label}</span>
+                            <Mono className="ml-1.5 text-faint">{e.api_key_id}</Mono>
+                            {e.api_key_node_id && (
+                              <span className="ml-1.5 text-[0.7rem] text-faint">· {name(e.api_key_node_id)}</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <Mono className="text-muted">{e.model}</Mono>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <HopChain entry={e} name={name} />
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5">
+                            <Mono className="text-muted">
+                              {e.prompt_tokens ?? "-"} → {e.completion_tokens ?? "-"}
+                            </Mono>
+                          </td>
+                          <td className="whitespace-nowrap px-4 py-2.5">
+                            <Mono className="text-muted">{ms(e.duration_ms)}</Mono>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <Badge tone={statusTone(e.status)}>{statusLabel(e.status, t)}</Badge>
+                          </td>
+                          <td className="px-4 py-2.5">
+                            <span className="text-[0.72rem] text-faint">+</span>
+                          </td>
+                        </tr>
+                        <tr className="border-b border-line last:border-0">
+                          <td colSpan={8} className="px-4 py-2.5">
+                            <AuditDetails entry={e} name={name} />
+                          </td>
+                        </tr>
+                      </Fragment>
                     ))}
                   </tbody>
                 </table>

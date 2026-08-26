@@ -41,13 +41,13 @@
 //! prompt-engineered and text-parsed rather than protocol-level: this
 //! backend has no grammar-constrained decoding anywhere.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 /// One entry from a request's `tools` array — name + description + JSON
 /// Schema parameters. Both Anthropic (`input_schema`) and OpenAI
 /// (`function.parameters`) map onto this the same way.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ToolDef {
     pub name: String,
     #[serde(default)]

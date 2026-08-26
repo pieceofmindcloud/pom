@@ -33,7 +33,7 @@ import type {
   PathsResponse,
   PeerCatalog,
   PeerRuntime,
-  RequestLogEntry,
+  RequestLogResponse,
   TransferJob,
   TransferOffer,
 } from "./types";
@@ -316,19 +316,42 @@ export function useApiKeys() {
   });
 }
 
-export function useRequestLog(params: { node_id?: string; token?: string } = {}) {
+export function useRequestLog(
+  params: {
+    node_id?: string;
+    api_key?: string;
+    prompt?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+    offset?: number;
+  } = {},
+) {
   const search = new URLSearchParams();
   if (params.node_id) search.set("node_id", params.node_id);
-  if (params.token) search.set("token", params.token);
+  if (params.api_key) search.set("api_key", params.api_key);
+  if (params.prompt) search.set("prompt", params.prompt);
+  if (params.from) search.set("from", params.from);
+  if (params.to) search.set("to", params.to);
+  if (params.limit !== undefined) search.set("limit", String(params.limit));
+  if (params.offset !== undefined) search.set("offset", String(params.offset));
   const qs = search.toString();
   return useQuery({
     queryKey: [...keys.requests, qs],
     queryFn: () =>
       optional(
-        api.get<{ entries: RequestLogEntry[]; total: number }>(
+        api.get<RequestLogResponse>(
           `/api/ui/requests${qs ? `?${qs}` : ""}`,
         ),
-        { entries: [], total: 0 },
+        {
+          entries: [],
+          total: 0,
+          errors: 0,
+          incomplete: 0,
+          by_token: {},
+          by_node: {},
+          storage: "unavailable",
+        },
       ),
     refetchInterval: 3000,
   });

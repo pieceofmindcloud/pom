@@ -16,7 +16,8 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
   `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
-  `socket2`, `tower-http` (compression-full), `routing-contract` (path).
+  `socket2`, `tower-http` (compression-full), `rusqlite` bundled para a
+  auditoria persistente, `routing-contract` (path).
 - O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
   runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
@@ -90,11 +91,8 @@ como `primary` na config de inferência montada pela linha de comando),
     arquivo (`parse_layers_from_filename`, ex. `qwen_0_15.gguf`) →
     `calculate_assignment` (gap-filling). `lastslice::take()` é consumido
     apenas no caminho sem `--model`; aqui ele só limpa o arquivo órfão.
-11. Antes de restaurar ou aplicar um modelo, inicia o monitor térmico do
-    `NodeRuntime`; com `--inference-port`, monta `runtime::NodeConfig` e chama
-    `NodeRuntime::apply` (sobe o servidor de inferência Rust **em-processo** e
-    o supervisa). Uma GPU acima do limite remove a atribuição e o estado
-    `thermal` aguarda o cooldown configurado.
+11. Com `--inference-port`: monta `runtime::NodeConfig` e `NodeRuntime::apply`
+    (sobe o servidor de inferência Rust **em-processo** e o supervisa).
 12. `GatewayState` + `start_gateway` spawnado (todo nó serve HTTP/UI).
 13. `Discovery::new` (libp2p, TCP = UDP+10000) + task de publish no gossipsub
     a cada 5 s (`Network::gossip_announce_bytes`, o mesmo `self_announce` do

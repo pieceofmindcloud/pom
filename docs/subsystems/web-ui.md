@@ -28,20 +28,6 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
   (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
   são artefatos locais ignorados pelo git.
 
-### Temperatura da GPU
-
-O Painel Fluxo mostra a maior leitura conhecida da máquina no card de cada
-faixa, enquanto Detalhes mostra uma linha por GPU. As faixas normal, atenção e
-crítica usam os tons existentes `aqua`, `amber` e `rose`; quando o driver não
-responde, o selo diz explicitamente "temperatura desconhecida". A API
-`GET /api/ui/node` leva a política térmica junto com a máquina, e
-`GET/POST /api/ui/thermal` lê ou grava seus três valores.
-
-O painel de proteção térmica fica em Configurações > Rede. O backend valida a
-política antes de persistir, e o runtime do próprio nó aplica a histerese e o
-cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
-como "aguardando resfriar", distinto de peer indisponível ou falha.
-
 ### Roteamento no axum (`webapp.rs`)
 
 O bundle é montado por último no roteador e o fallback é estreito de propósito:
@@ -93,7 +79,8 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
 - `/implantacoes` -> Deployments (registro das implantações, ativação da padrão,
   reconfiguração de parâmetros e desimplantação por `deploy_id`)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
+- `/logs` -> LogsByToken, inspetor da auditoria SQLite; `/logs/ao-vivo` ->
+  LogsLive
 - `/documentacao` -> Documentation (tela cheia; ver a seção própria abaixo)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys;
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
@@ -133,6 +120,15 @@ rede" descrevem um trabalho que não é dele. O perfil é o que separa os dois.
 ausente é livre. Hoje `/implantar`, `/implantacoes` e `/logs` (com a filha
 `/logs/ao-vivo`) são só do administrador. A chave casa **segmento inteiro**, então
 `/logs` cobre `/logs/ao-vivo` sem repetir a filha e não cobre `/logs-antigos`.
+
+`LogsByToken` consulta `GET /api/ui/requests` com a chave de conexão do
+operador. A tela filtra por identidade não secreta da API key, texto do prompt,
+nó e período, lista primeiro as entradas mais recentes e abre cada linha para
+mostrar o prompt exato, detalhes da requisição, resultado, telemetria e erro.
+Prompts longos ficam em blocos monoespaçados com quebra e rolagem internas.
+`in_progress`, `incomplete`, `partial`, erro e abandono recebem estados visuais
+distintos. A identidade exibida é o id e o rótulo configurados para a chave;
+nenhum segredo é pedido ao endpoint ou renderizado no navegador.
 
 **Uma tabela só, lida em dois lugares.** O `App.tsx` a consulta para barrar a rota
 (`Forbidden` no lugar da tela) e o `navForProfile` (`components/nav.ts`) para podar

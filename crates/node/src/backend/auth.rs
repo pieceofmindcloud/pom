@@ -6,6 +6,7 @@ use axum::{
     response::{IntoResponse, Json},
 };
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -41,6 +42,18 @@ pub fn is_valid_inference_token(config: &Config, token: &str) -> bool {
             .api_keys
             .iter()
             .any(|key| key.active && token == key.key)
+}
+
+/// Return the non-secret identity stored with an API key. Configurations
+/// written before the identity field existed get a stable fallback derived only
+/// from non-secret metadata; the secret itself never leaves this function.
+pub fn api_key_identity(key: &crate::config::ApiKey) -> String {
+    if !key.id.is_empty() {
+        return key.id.clone();
+    }
+    let metadata = format!("{}|{}|{}", key.label, key.node_id, key.created_at);
+    let digest = Sha256::digest(metadata.as_bytes());
+    format!("legacy-{}", &hex::encode(digest)[..12])
 }
 
 pub struct ConnectionAuth;
@@ -140,9 +153,9 @@ where
         }
         match cfg.api_keys.iter().find(|k| k.active && k.key == token) {
             Some(key) => Ok(ApiKeyAuth(crate::reqlog::Caller {
-                token_label: key.label.clone(),
-                token_hint: crate::reqlog::Caller::hint_of(&key.key),
-                token_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
+                key_id: api_key_identity(key),
+                key_label: key.label.clone(),
+                key_node_id: (!key.node_id.is_empty()).then(|| key.node_id.clone()),
             })),
             None => Err(AuthRejection::InvalidKey),
         }
@@ -163,10 +176,34 @@ mod tests {
     }
 
     #[test]
+    fn api_key_identity_is_stable_and_never_the_secret() {
+        let key = crate::config::ApiKey {
+            id: "finance-id".into(),
+            key: "sk-secret".into(),
+            label: "financeiro".into(),
+            node_id: "node-a".into(),
+            active: true,
+            created_at: String::new(),
+        };
+        assert_eq!(api_key_identity(&key), "finance-id");
+        assert_ne!(api_key_identity(&key), key.key);
+
+        let legacy = crate::config::ApiKey {
+            id: String::new(),
+            ..key
+        };
+        let legacy_id = api_key_identity(&legacy);
+        assert!(legacy_id.starts_with("legacy-"));
+        assert!(!legacy_id.contains("sk-secret"));
+        let mut other_legacy = legacy.clone();
+        other_legacy.key = "sk-other".into();
+        assert_eq!(legacy_id, api_key_identity(&other_legacy));
+    }
+
+    #[test]
     fn inference_accepts_connection_key_or_active_api_key_only() {
         let cfg = crate::config::Config {
             gpus: None,
-            thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             role: crate::config::Role::Principal,
@@ -178,6 +215,7 @@ mod tests {
             advertise_addr: None,
             api_keys: vec![
                 crate::config::ApiKey {
+                    id: "active-id".into(),
                     key: "sk-active".into(),
                     label: "test".into(),
                     node_id: String::new(),
@@ -185,6 +223,7 @@ mod tests {
                     created_at: String::new(),
                 },
                 crate::config::ApiKey {
+                    id: "revoked-id".into(),
                     key: "sk-revoked".into(),
                     label: "revoked".into(),
                     node_id: String::new(),
@@ -211,7 +250,6 @@ mod tests {
     fn internal_inference_token_prefers_connection_key_and_falls_back_to_active_api_key() {
         let mut cfg = crate::config::Config {
             gpus: None,
-            thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             role: crate::config::Role::Principal,
@@ -222,6 +260,7 @@ mod tests {
             bootstrap_nodes: vec![],
             advertise_addr: None,
             api_keys: vec![crate::config::ApiKey {
+                id: "active-id".into(),
                 key: "sk-active".into(),
                 label: "test".into(),
                 node_id: String::new(),

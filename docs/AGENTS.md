@@ -69,12 +69,9 @@ frame multi-item e sincronizacao de lotes no Tensor Parallelism).
 `2026-08-24-chat-telemetria-design.md` registra o inventário do fio e a decisão
 de manter os dados no `x_pom`, no `/health` e numa rota autenticada de RTT, sem
 mudar frame entre peers ou planner.
-
-## Proteção térmica da implantação
-
-`superpowers/specs/2026-08-26-protecao-termica-gpu-design.md` registra a
-política de temperatura e a máquina de histerese; o plano de implementação
-correspondente está em `superpowers/plans/2026-08-26-protecao-termica-gpu.md`.
+`2026-08-26-auditoria-de-requisicoes-design.md` e o plano homônimo registram a
+auditoria persistente de prompts em SQLite, a identidade não secreta da chave,
+o FTS5 e o ciclo em duas etapas do registro.
 
 ## superpowers/plans/
 

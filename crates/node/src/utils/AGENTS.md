@@ -6,14 +6,13 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
 
 ## Arquivos
 
-- `config.rs` - o `Config` persistido em `pom.json` e a resolução do
-  project root / diretório da UI.
+- `config.rs` - o `Config` persistido em `pom.json`, incluindo identidades
+  opacas das API keys, e a resolução do project root / diretório da UI. O
+  `audit.sqlite3` do gateway usa o mesmo `project_root`.
 - `display.rs` - a TUI (banner, assignment, mapa de camadas, tabela de peers,
   health).
 - `respawn.rs` - reiniciar este processo preservando o argv do arranque.
 - `sysmon.rs` - amostragem de RAM/VRAM/disco por plataforma, com cache.
-- `thermal.rs` - política de temperatura, histerese e cooldown como máquina de
-  estados pura, sem dependência de fornecedor ou hardware.
 
 ## Funções-chave
 
@@ -88,11 +87,6 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
   `GetDiskFreeSpaceExW`. É o que a tela usa para saber se outra fatia cabe.
-
-`sysmon.rs` também publica `GpuStat.temperature_c`: NVIDIA vem da mesma linha
-`nvidia-smi` que enumera VRAM e utilização, Radeon vem de `amdgpu`/hwmon, e
-GPU unificada fica explicitamente sem leitura. `None` significa temperatura
-desconhecida e nunca é convertido em alarme pela proteção térmica.
 
 ## Ligações
 

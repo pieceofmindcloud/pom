@@ -28,12 +28,6 @@ export interface GpuStat {
   temperature_c: number | null;
 }
 
-export interface ThermalPolicy {
-  limit_c: number;
-  hysteresis_c: number;
-  cooldown_secs: number;
-}
-
 export interface GpuProcess {
   pid: number;
   name: string;
@@ -72,7 +66,7 @@ export interface SystemLoad {
  * was assignable every screen compared against a value the node never sends.
  * A machine serving layers looked idle on every panel.
  */
-export type ServerState = "disabled" | "starting" | "ready" | "failed" | "thermal";
+export type ServerState = "disabled" | "starting" | "ready" | "failed";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
@@ -161,7 +155,6 @@ export interface NodeInfo {
   tls_required: boolean;
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
-  thermal: ThermalPolicy;
 }
 
 export interface PeerView {
@@ -694,6 +687,8 @@ export interface AdminNode {
 }
 
 export interface ApiKey {
+  /** Stable identity used by audit queries, never a secret. */
+  id: string;
   key: string;
   label: string;
   node_id: string;
@@ -704,25 +699,44 @@ export interface ApiKey {
 /** One inference request, as the node recorded it. `src/reqlog.rs`. */
 export interface RequestLogEntry {
   id: string;
-  at: string;
+  received_at: string;
+  completed_at: string | null;
   route: string;
   model: string;
-  /** Label of the API token that paid for it, or "chave de conexão". */
-  token_label: string;
-  /** Last 6 characters of the token, all that is ever shown. */
-  token_hint: string;
-  /** Node the token is assigned to, when it is assigned to one. */
-  token_node_id: string | null;
+  /** Stable API-key identity. The secret is never part of this contract. */
+  api_key_id: string;
+  /** Label of the API key, or "chave de conexão". */
+  api_key_label: string;
+  /** Node the API key is assigned to, when it is assigned to one. */
+  api_key_node_id: string | null;
   /** Node that received the request. */
   entry_node_id: string;
+  /** Exact prompt sent to the inference pipeline. */
+  prompt: string;
+  /** Parsed request body, excluding headers and credentials. */
+  request_details: Record<string, unknown>;
+  /** Result text, when any was produced. */
+  result: string | null;
+  /** Per-request telemetry, or null before the generation completes. */
+  telemetry: Record<string, unknown> | null;
   /** Ordered node ids the generation actually went through. */
   hops: string[];
   source: string;
   prompt_tokens: number | null;
   completion_tokens: number | null;
   duration_ms: number | null;
-  status: "ok" | "error" | string;
+  status: "in_progress" | "ok" | "partial" | "error" | "abandoned" | "incomplete" | string;
   error: string | null;
+}
+
+export interface RequestLogResponse {
+  entries: RequestLogEntry[];
+  total: number;
+  errors: number;
+  incomplete: number;
+  by_token: Record<string, number>;
+  by_node: Record<string, number>;
+  storage: "sqlite" | string;
 }
 
 /** One slice of a size-driven plan. `src/plan.rs` — `SizedRange`. */

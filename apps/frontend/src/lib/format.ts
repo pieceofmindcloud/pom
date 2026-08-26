@@ -116,8 +116,6 @@ export function serverStateLabel(state: ServerState | undefined): string {
       return portuguese ? "carregando" : "loading";
     case "failed":
       return portuguese ? "falhou" : "failed";
-    case "thermal":
-      return portuguese ? "aguardando resfriar" : "cooling down";
     case "disabled":
       return portuguese ? "sem modelo" : "no model";
     default:
@@ -133,8 +131,6 @@ export function serverStateTone(state: ServerState | undefined): Tone {
       return "amber";
     case "failed":
       return "rose";
-    case "thermal":
-      return "amber";
     default:
       return "neutral";
   }

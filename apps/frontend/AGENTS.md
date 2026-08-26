@@ -55,7 +55,9 @@ Depois disso vem o **guarda de perfil**: `canAccessRoute(pathname, profile)` (`l
   full-bleed Deploy Studio with central cluster map, property inspector and
   draggable peer strip)
 - `/transferencias` -> Transfers; `/transferencias/enviar` -> SendFile
-- `/logs` -> LogsByToken; `/logs/ao-vivo` -> LogsLive
+- `/logs` -> LogsByToken, o inspetor autenticado da auditoria SQLite com
+  filtros por identidade da API key, prompt e período; `/logs/ao-vivo` ->
+  LogsLive
 - `/documentacao` -> Documentation (full-bleed, two tabs: human guides from `src/guides/` and the repository's living markdown embedded by `scripts/build-docs.mjs`; see `src/routes/AGENTS.md` and `src/guides/AGENTS.md`)
 - `/config/rede` -> NetworkSettings; `/config/keys/api` -> TokenKeys; `/config/keys/conexao` -> ConnectionKeys; `/config/pastas` -> ModelPaths
 - `*` -> NotFound
@@ -70,17 +72,17 @@ Non-chat pages render inside `AnimatePresence mode="wait"` with a `Page` cross-f
 
 ## src/ subfolders
 
-- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, telemetry diagnosis, formatting, thermal bands, toasts, all shared types. See `src/lib/AGENTS.md`.
+- `src/lib/` - API client, react-query hooks, localStorage persistence, chat stream/state, telemetry diagnosis, formatting, toasts, all shared types. See `src/lib/AGENTS.md`.
 - `src/i18n/` - en + pt-BR message table and provider, including telemetry and initial-model copy. See `src/i18n/AGENTS.md`.
 - `src/routes/` - one screen per route, including the chat telemetry tables, the post-execution directional RTT snapshot, per-machine capacity/configuration cards, diagnosis card, AI analysis action, initial-model mark and `RemoteModels`. See `src/routes/AGENTS.md`.
-- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, GpuTemperature, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
+- `src/components/` - chrome (Sidebar, Topbar, nav, Notifications) and shared widgets (ui primitives, Markdown, Confirm, PipelineRail, ModelNetworkCanvas, PeerDetailCard, ErrorBoundary, Logo, MachineIcon, ReleaseSlice, RemoveNode, LeaveNode, UndeployPipeline, AddNodeDialog).
 - `src/brand/` + `public/brand/` - **generated** by `scripts/build-brand.mjs` from the root `brand.json`; read through `src/lib/brand.ts` (`brand`, `storageKey`). Never edit or commit.
 - `src/guides/` - the human half of the documentation: guide content per locale, its renderer and the SVG diagrams. See `src/guides/AGENTS.md`.
 - `src/test/` - `fixtures.ts`: fake peers/nodes/clusters with the *full* shape the node serves, for tests only. A partial `node` (e.g. one without `status`) passes one component's `?.` and crashes the next, so tests build from these fixtures and override only the field under test.
 
 ## Links
 
-- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, thermal, jobs, requests, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `openai.rs`, `devupdate.rs`).
+- Backend endpoints hit by the UI: `/api/ui/*` (node, cluster, models, cluster/models, paths, jobs, requests, chat/telemetry, models/delete, deploy/node, deploy/node/remove, undeploy, leave, unload, release, dev/update), `/api/transfer/*` (jobs, offers), `/admin/*` (nodes, api-keys), `/v1/*` (chat/completions, completions, models). All defined in the Rust crate under `crates/node/src/backend/` (`webui.rs`, `transfer.rs`, `admin.rs`, `reqlog.rs`, `openai.rs`, `devupdate.rs`). A request audit response contains prompt content and is protected by the connection key.
 - Auth: `api.ts` signs requests with the cluster connection key (picked up unauthenticated from `/api/ui/node`), matching `ApiKeyAuth` in the Rust `auth.rs`.
 - The node serves `dist/` from disk per request; `POM_UI_DIST` overrides the directory (used by the Docker image).
 

@@ -198,13 +198,14 @@ Per-file list:
 - `Keys.tsx` — Two screens in one file. `TokenKeys`: per-node API tokens for
   harnesses — `GET/POST /admin/api-keys`, `DELETE /admin/api-keys/:key`.
   `ConnectionKeys`: the cluster operator key — `POST /admin/regenerate-key`.
-- `LogsByToken.tsx` — Request log tallies and table ("who asked, which machines
-  answered"), read from `GET /api/ui/requests` (`src/reqlog.rs`, in-memory,
-  lost on restart — the screen says so). Exports `HopChain`, reused by
-  `LogsLive`. Node-name map from `useCluster`.
-- `LogsLive.tsx` — Same `GET /api/ui/requests` source (polled at 3 s), rendered
-  newest-first with an animated highlight and a pause/resume that freezes a
-  snapshot. Reuses `HopChain` from `LogsByToken`.
+- `LogsByToken.tsx` - Audit inspector for the persistent request trail. It reads
+  `GET /api/ui/requests` with API-key identity, prompt FTS, node and time-range
+  filters, shows exact prompt/request body/result/telemetry in collapsible
+  details, and labels `in_progress` and `incomplete` separately from success.
+  Reuses `HopChain`, `statusLabel` and `statusTone` in `LogsLive`.
+- `LogsLive.tsx` - Same authenticated SQLite audit source (polled at 3 s),
+  rendered as an animated newest-first stream with pause/resume and a frozen
+  snapshot. It displays the non-secret API-key label and identity.
 - `ModelPaths.tsx` - edits `model_dirs`, `shard_dir` and `shard_max_gb` via
   `POST /api/ui/paths`. The Armazenamento screen rejects a slice folder equal to
   or inside a whole-model folder, shows current usage and the slice limit, and
@@ -213,8 +214,7 @@ Per-file list:
   (`POST /api/ui/leave` / `/api/ui/rejoin`) and the known-node list from
   `GET /admin/nodes` with block/unblock (`POST /admin/nodes/:id/block|unblock`).
   Também monta o `HuggingFaceSettingsPanel`, que salva o token local sem
-  receber o segredo de volta. O `ThermalPanel` grava a política local em
-  `POST /api/ui/thermal`, incluindo limite, margem de histerese e cooldown.
+  receber o segredo de volta.
 - `NotFound.tsx` — 404 fallback with a link back to `/`.
 - `Forbidden.tsx` — a tela que o perfil ativo não abre. Não é `NotFound`: o
   endereço existe, o que falta é o perfil, então o texto nomeia o perfil ativo e

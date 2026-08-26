@@ -53,22 +53,6 @@ Três regras saem da arquitetura, não do gosto:
   são ignoradas na cobertura lógica e ficam disponíveis para o roteador. Uma
   atribuição válida precisa cobrir cada camada exigida exatamente uma vez.
 
-## 1.3 Proteção térmica da implantação
-
-Cada nó grava `thermal` no `pom.json`, com `limit_c` padrão de 85 °C,
-`hysteresis_c` de 8 °C e `cooldown_secs` de 30 segundos. O monitor usa a mesma
-lista `SystemLoad.gpus` que a tela exibe. Uma leitura conhecida acima do limite
-descarrega o modelo, remove o anúncio das camadas e publica o estado
-`thermal`; a configuração da implantação fica preservada para a retomada.
-
-A retomada só acontece quando todas as GPUs têm leitura conhecida no máximo em
-`limit_c - hysteresis_c` (77 °C no padrão) e permanecem nessa condição durante
-o cooldown. Leitura ausente, falha do driver ou GPU sem sensor não dispara
-desimplantação e também não prova que é seguro religar.
-`POST /api/ui/stop-inference` limpa a recuperação pendente, para que uma
-desimplantação manual não seja anulada pelo monitor. Cada transição registra
-temperatura observada, limites e tempo no log do servidor.
-
 ## 1.1 Modelo inteiro: o caso degenerado, não um segundo caminho
 
 `kind: "whole"` (`DeployKind`, `deploy.rs`) implanta **um GGUF não fatiado em

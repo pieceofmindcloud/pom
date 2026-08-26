@@ -9,7 +9,7 @@ or peer Ollama, a missing plan fails the request), the gateway state all
 handlers share, the two protocol adapters (OpenAI and
 Anthropic), the operator control plane (`/admin/*`, `/api/ui/*`, `/api/ui/deploy/*`,
 `/api/ui/undeploy`),
-slice transfer over HTTP `Range`, and the in-memory request log. No P2P, no
+slice transfer over HTTP `Range`, and the persistent request audit. No P2P, no
 inference, no model loading lives here - those are `network/`, `inference/`,
 `models/`. All state is `crate::gateway::GatewayState` (or `crate::auth::AuthState`
 where a handler only needs the config); handlers are axum functions, most
@@ -46,8 +46,7 @@ behind an auth extractor.
   arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths, thermal policy (`GET/POST /api/ui/thermal`) and slice retention.
-  `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
+  storage paths and slice retention. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:
@@ -97,7 +96,10 @@ behind an auth extractor.
 - `tool_call.rs` (725) - tool-call text rendering + `TagScanner` output scan.
 - `devupdate.rs` (647) - env-gated remote `git pull` + rebuild + self-restart.
 - `admin.rs` (185) - operator control plane: nodes, block/unblock, keys.
-- `reqlog.rs` (205) - bounded in-memory request log (500 entries), `Caller`/`Entry`.
+- `reqlog.rs` - persistent SQLite audit trail. `AuditLog` enqueues best-effort
+  writes on a dedicated bounded thread; `AuditDb` creates the schema and FTS5
+  prompt index, opens requests in `in_progress`, completes the same row, marks
+  stale rows as `incomplete`, and serves authenticated queries.
 - **Toda chamada a peer sai por `GatewayState.peer_http`** (`PeerClients`), que
   fixa o certificado do destino pelo node_id. Não existe mais cliente
   compartilhado sem pinning no estado: com TLS ligado ele não verifica ninguém,
@@ -404,15 +406,17 @@ behind an auth extractor.
 - `auth.rs` - `ConnectionAuth` reads only `authorization` (Bearer prefix
   optional), compares to `connection_key`; `ApiKeyAuth` accepts `authorization`
   or `x-api-key`, and the connection key counts as operator
-  (`Caller::operator()`). `inference_token` chooses the shared connection key,
+  (`Caller::operator()`). `api_key_identity` supplies the stable non-secret API
+  key id used by the audit trail. `inference_token` chooses the shared connection key,
   falling back to the first active API key for internal inference calls.
   `AuthRejection`: MissingHeader=401, InvalidKey=403.
-- `reqlog.rs` - `CAPACITY=500` in a `OnceLock<RwLock<VecDeque<Entry>>>`;
-  `Caller { token_label, token_hint, token_node_id }` (built by the auth
-  extractor, the only place that sees the credential); `Entry` carries
-  route/model/token/entry_node_id/hops/source/tokens/duration/status/error;
-  `record` drops the oldest; `list_requests` filters by node_id/token and
-  returns by-token/by-node tallies plus an error count.
+- `reqlog.rs` - `AuditLog::begin` records the exact prompt, request body,
+  resolved model, entry node, API-key identity and arrival time before
+  generation. `spawn_logged_generation_with_stops` later calls `complete` on
+  that id with result, telemetry, timings, token counts, hop chain and error.
+  The request body contains no headers or secrets. `list_requests` requires
+  `ConnectionAuth`, supports node, API-key identity, prompt FTS and time-range
+  filters, and returns newest first with incomplete/error tallies.
 - `tool_call.rs` - `render_tools_block` (empty when no tools),
   `render_tool_call` (`<tool_call><function=NAME><parameter=P>...</parameter>`,
   string args raw, others re-serialized). `TagScanner` incrementally splits a

@@ -121,6 +121,8 @@ pub struct GatewayState {
     pub peer_http: Arc<crate::peer_client::PeerClients>,
     /// Mutable node configuration driven by the web UI.
     pub runtime: Arc<NodeRuntime>,
+    /// Durable audit trail for requests entering this gateway.
+    pub audit: Arc<crate::reqlog::AuditLog>,
     /// HTTP port this node serves the API and UI on.
     pub gateway_port: u16,
     /// Setup-level configuration (role, connection key, bootstrap nodes).
@@ -448,7 +450,7 @@ pub fn speculative_k_of(speculative_k: u32, n_batch: u32) -> u32 {
 
 // ── Public types ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct GenerateRequest {
     pub model: Option<String>,
     pub prompt: String,
@@ -554,6 +556,9 @@ pub(crate) struct GenerationInput {
     /// mensagens, que só cresce: imune a template, a rótulo e a bloco de
     /// ferramentas. Ver `crate::openai::conversation_cache_key`.
     pub(crate) cache_key: Option<String>,
+    /// The parsed HTTP request body, retained for audit without headers or
+    /// credentials.
+    pub(crate) request_details: serde_json::Value,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -576,7 +581,7 @@ pub struct GenSummary {
 /// OpenAI's `stop` accepts either one string or a list. Keeping this parser in
 /// the gateway lets all HTTP adapters share the same matcher and keeps the
 /// internal inference protocol unchanged.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum StopInput {
     One(String),
@@ -804,6 +809,7 @@ async fn generate_stream_inner(
         max_tokens,
         stops,
         cache_key,
+        request_details: _,
     } = input;
     if cancellation.is_cancelled() {
         return;
@@ -1782,21 +1788,38 @@ pub fn spawn_logged_generation_with_stops(
     let entry_node_id = input.state.network.node_id.clone();
     let prompt_tokens = estimate_tokens(&input.prompt);
     let logged_model = input.model.clone();
+    let logged_prompt = input.prompt.clone();
+    let request_details = input.request_details.clone();
+    let audit = input.state.audit.clone();
+    let request_id = Uuid::new_v4().simple().to_string();
+    let received_at = chrono::Utc::now().to_rfc3339();
+    let started = Instant::now();
+    audit.begin(crate::reqlog::AuditRequest {
+        id: request_id.clone(),
+        received_at,
+        route: route.to_string(),
+        model: logged_model.clone(),
+        caller,
+        entry_node_id: entry_node_id.clone(),
+        prompt: logged_prompt,
+        request_details,
+    });
 
     let (inner_tx, mut inner_rx) = mpsc::channel::<GenEvent>(64);
     tokio::spawn(generate_stream_with_stops(input, inner_tx));
 
     tokio::spawn(async move {
-        let started = Instant::now();
         let mut generated: u32 = 0;
+        let mut result = String::new();
         // `None` means the client hung up before the generation ended, which is
         // its own outcome and worth seeing in the log.
         let mut outcome: Option<Result<GenSummary, String>> = None;
 
         while let Some(event) = inner_rx.recv().await {
             let terminal = match &event {
-                GenEvent::Token(_) => {
+                GenEvent::Token(text) => {
                     generated += 1;
+                    result.push_str(text);
                     None
                 }
                 GenEvent::Done(summary) => Some(Ok(summary.clone())),
@@ -1811,6 +1834,18 @@ pub fn spawn_logged_generation_with_stops(
             }
         }
 
+        let telemetry = outcome.as_ref().and_then(|outcome| {
+            outcome
+                .as_ref()
+                .ok()
+                .and_then(|summary| summary.trace.clone())
+                .and_then(|trace| serde_json::to_value(trace).ok())
+        });
+        let prompt_tokens = outcome
+            .as_ref()
+            .and_then(|outcome| outcome.as_ref().ok())
+            .and_then(|summary| summary.trace.as_ref().map(|trace| trace.input_tokens))
+            .or(Some(prompt_tokens));
         let (source, hops, completion_tokens, duration_ms, status, error) = match outcome {
             Some(Ok(s)) => (
                 s.source.clone(),
@@ -1844,25 +1879,68 @@ pub fn spawn_logged_generation_with_stops(
             ),
         };
 
-        crate::reqlog::record(crate::reqlog::Entry {
-            id: Uuid::new_v4().simple().to_string(),
-            at: chrono::Utc::now().to_rfc3339(),
-            route: route.to_string(),
-            model: logged_model,
-            token_label: caller.token_label,
-            token_hint: caller.token_hint,
-            token_node_id: caller.token_node_id,
-            entry_node_id,
-            hops,
-            source,
-            prompt_tokens: Some(prompt_tokens),
-            completion_tokens,
-            duration_ms,
-            status,
-            error,
-        })
-        .await;
+        let audit_status = match status {
+            "ok" => crate::reqlog::AuditStatus::Ok,
+            "partial" => crate::reqlog::AuditStatus::Partial,
+            "error" => crate::reqlog::AuditStatus::Error,
+            "abandoned" => crate::reqlog::AuditStatus::Abandoned,
+            _ => crate::reqlog::AuditStatus::Incomplete,
+        };
+        audit.complete(
+            request_id,
+            crate::reqlog::AuditCompletion {
+                completed_at: chrono::Utc::now().to_rfc3339(),
+                result: (!result.is_empty()).then_some(result),
+                telemetry,
+                source,
+                hops,
+                prompt_tokens: Some(prompt_tokens),
+                completion_tokens,
+                duration_ms,
+                status: audit_status,
+                error,
+            },
+        );
     });
+}
+
+/// Record a request that is rejected before the generation task can be
+/// started, such as a prompt that exceeds the configured context budget.
+pub(crate) fn record_rejected(
+    state: &GatewayState,
+    route: &'static str,
+    caller: crate::reqlog::Caller,
+    model: String,
+    prompt: String,
+    request_details: serde_json::Value,
+    error: String,
+) {
+    let id = Uuid::new_v4().simple().to_string();
+    state.audit.begin(crate::reqlog::AuditRequest {
+        id: id.clone(),
+        received_at: chrono::Utc::now().to_rfc3339(),
+        route: route.to_string(),
+        model,
+        caller,
+        entry_node_id: state.network.node_id.clone(),
+        prompt,
+        request_details,
+    });
+    state.audit.complete(
+        id,
+        crate::reqlog::AuditCompletion {
+            completed_at: chrono::Utc::now().to_rfc3339(),
+            result: None,
+            telemetry: None,
+            source: "none".into(),
+            hops: Vec::new(),
+            prompt_tokens: None,
+            completion_tokens: None,
+            duration_ms: Some(0),
+            status: crate::reqlog::AuditStatus::Error,
+            error: Some(error),
+        },
+    );
 }
 
 /// Run a generation to completion and return the whole text.
@@ -1989,6 +2067,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
                 .into_response();
         }
     };
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| serde_json::json!({}));
 
     let model = match req.model.as_deref() {
         Some(m) => m.to_string(),
@@ -2003,6 +2082,17 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
     let max_tokens = match resolve_request_max_tokens(req.max_tokens, configured_limit) {
         Ok(value) => value,
         Err(error) => {
+            let error_for_audit = error.clone();
+            let prompt_for_audit = req.prompt.clone();
+            record_rejected(
+                &state,
+                "/api/generate",
+                crate::reqlog::Caller::anonymous(),
+                model.clone(),
+                prompt_for_audit,
+                request_details.clone(),
+                error_for_audit,
+            );
             return (
                 StatusCode::BAD_REQUEST,
                 Json(GenerateResponse {
@@ -2038,6 +2128,7 @@ async fn handle_generate(State(state): State<GatewayState>, body: Bytes) -> impl
             chat_template: true,
             max_tokens,
             stops,
+            request_details,
             // `/api/generate` recebe um prompt, não uma conversa: o prefixo é
             // o próprio texto.
             cache_key: None,
@@ -2591,10 +2682,10 @@ pub(crate) mod testkit {
                 std::time::Duration::from_secs(600),
             )),
             runtime: NodeRuntime::new(net, assignment),
+            audit: crate::reqlog::AuditLog::new(std::path::PathBuf::from(":memory:")),
             gateway_port: 8080,
             auth: Arc::new(RwLock::new(Config {
                 gpus: None,
-                thermal: Default::default(),
                 cache_type_k: crate::config::KvCacheType::F16,
                 cache_type_v: crate::config::KvCacheType::F16,
                 role: Role::Node,

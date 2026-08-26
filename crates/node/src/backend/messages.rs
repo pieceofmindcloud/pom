@@ -46,7 +46,7 @@ use axum::{
     Json, Router,
 };
 use futures::stream::Stream;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::convert::Infallible;
@@ -76,14 +76,14 @@ pub fn routes() -> Router<GatewayState> {
 /// `content` is a bare string on the simple path and an array of typed blocks
 /// once tools, images, or prompt caching are involved. Claude Code always
 /// sends the array form.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum AnthropicContent {
     Text(String),
     Blocks(Vec<ContentBlock>),
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ContentBlock {
     #[serde(rename = "type")]
     pub kind: String,
@@ -102,7 +102,7 @@ pub struct ContentBlock {
     pub is_error: Option<bool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ToolResultContent {
     Text(String),
@@ -161,7 +161,7 @@ impl AnthropicContent {
 
 /// The top-level `system` field: a bare string, or blocks (Claude Code sends
 /// blocks, each carrying `cache_control` this backend has no use for).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SystemPrompt {
     Text(String),
@@ -182,7 +182,7 @@ impl SystemPrompt {
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnthropicMessage {
     pub role: String,
     pub content: AnthropicContent,
@@ -190,7 +190,7 @@ pub struct AnthropicMessage {
 
 // ── Requests ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MessagesRequest {
     #[serde(default)]
     pub model: Option<String>,
@@ -217,7 +217,7 @@ impl MessagesRequest {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct CountTokensRequest {
     pub messages: Vec<AnthropicMessage>,
     #[serde(default)]
@@ -353,6 +353,7 @@ async fn messages(
             "`messages` cannot be empty",
         );
     }
+    let request_details = serde_json::to_value(&req).unwrap_or_else(|_| json!({}));
 
     let model = match req.model.clone() {
         Some(m) if !m.is_empty() => resolve_model(&state, m).await,
@@ -386,6 +387,7 @@ async fn messages(
             input_tokens,
             stops,
             Some(cache_key),
+            request_details.clone(),
         )
     } else {
         blocking_response(
@@ -398,6 +400,7 @@ async fn messages(
             input_tokens,
             stops,
             Some(cache_key),
+            request_details,
         )
         .await
     }
@@ -434,6 +437,7 @@ async fn blocking_response(
     input_tokens: u32,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
 ) -> Response {
     match crate::gateway::generate_blocking_with_stops(
         "/v1/messages",
@@ -446,6 +450,7 @@ async fn blocking_response(
             max_tokens,
             stops,
             cache_key,
+            request_details,
         },
     )
     .await
@@ -505,6 +510,7 @@ fn stream_response(
     input_tokens: u32,
     stops: Vec<String>,
     cache_key: Option<String>,
+    request_details: serde_json::Value,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
     crate::gateway::spawn_logged_generation_with_stops(
@@ -518,6 +524,7 @@ fn stream_response(
             max_tokens,
             stops,
             cache_key,
+            request_details,
         },
         tx,
     );

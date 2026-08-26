@@ -17,7 +17,6 @@ import { motion } from "framer-motion";
 import { RefreshCw } from "lucide-react";
 import { useState } from "react";
 import { Confirm, Modal } from "./Confirm";
-import { GpuTemperature } from "./GpuTemperature";
 import { MachineIcon, gpuLabel, machineKind } from "./MachineIcon";
 import { trackOf } from "./PipelineRail";
 import { ReleaseSlice } from "./ReleaseSlice";
@@ -219,9 +218,8 @@ export function PeerDetailCard({
       </div>
 
       {peer.unreachable ? (
-        <div className="space-y-3 px-5 py-5 text-sm text-muted">
+        <div className="px-5 py-5 text-sm text-muted">
           {t("dashboard.unreachable", { error: peer.unreachable })}
-          <GpuTemperature temperature={null} policy={n?.thermal} />
         </div>
       ) : (
         <>
@@ -290,23 +288,6 @@ export function PeerDetailCard({
             ) : (
               <Meter label={t("dashboard.noGpu")} value={0} tone="sky" detail="—" />
             )}
-            <div className="min-w-0 sm:col-span-2">
-              <div className="eyebrow mb-2">{t("dashboard.gpuTemperature")}</div>
-              {system && system.gpus.length > 0 ? (
-                <div className="grid gap-2 sm:grid-cols-2">
-                  {system.gpus.map((g) => (
-                    <GpuTemperature
-                      key={g.index}
-                      temperature={g.temperature_c}
-                      policy={n?.thermal}
-                      label={gpuLabel(g)}
-                    />
-                  ))}
-                </div>
-              ) : (
-                <GpuTemperature temperature={null} policy={n?.thermal} />
-              )}
-            </div>
             <Meter
               label={t("dashboard.disk", { path: system?.disk.mount_point || "—" })}
               value={

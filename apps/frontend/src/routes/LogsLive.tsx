@@ -1,14 +1,14 @@
 /**
  * Requests as they land.
  *
- * Same source as the tallies next door, read on a short interval and rendered
- * newest-first with the new lines animating in — the point of this screen is to
- * watch a harness hit the cluster and see which machines answered.
+ * Same source as the audit inspector, read on a short interval and rendered
+ * newest-first with the new lines animating in. It shows arrival and outcome
+ * without duplicating the long-form inspector.
  */
 import { AnimatePresence, motion } from "framer-motion";
 import { Activity, Pause, Play, Radio } from "lucide-react";
 import { useState } from "react";
-import { HopChain } from "./LogsByToken";
+import { HopChain, statusLabel, statusTone } from "./LogsByToken";
 import {
   Badge,
   Button,
@@ -94,16 +94,11 @@ export function LogsLive() {
                     transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
                     className="flex flex-wrap items-center gap-x-4 gap-y-1.5 px-5 py-2.5"
                   >
-                    <Mono className="shrink-0 text-faint">{clock(e.at)}</Mono>
-                    <Badge
-                      tone={
-                        e.status === "ok" ? "aqua" : e.status === "partial" ? "amber" : "rose"
-                      }
-                      className="shrink-0"
-                    >
-                      {e.status}
+                    <Mono className="shrink-0 text-faint">{clock(e.received_at)}</Mono>
+                    <Badge tone={statusTone(e.status)} className="shrink-0">
+                      {statusLabel(e.status, t)}
                     </Badge>
-                    <span className="shrink-0 text-[0.8rem] text-fg">{e.token_label}</span>
+                    <span className="shrink-0 text-[0.8rem] text-fg">{e.api_key_label}</span>
                     <div className="min-w-[12rem] flex-1">
                       <HopChain entry={e} name={name} />
                     </div>

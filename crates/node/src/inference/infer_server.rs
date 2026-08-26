@@ -1485,6 +1485,17 @@ mod prefix_rule_tests {
     }
 
     #[test]
+    fn partial_head_prefill_publishes_absolute_progress() {
+        let meta = partial_prefill_meta(true, 600, 42, 512);
+
+        assert_eq!(meta["done"], false);
+        assert_eq!(meta["more_chunks"], true);
+        assert_eq!(meta["n_prompt_tokens"], 600);
+        assert_eq!(meta["start_pos"], 42);
+        assert_eq!(meta["next_pos"], 512);
+    }
+
+    #[test]
     fn a_conversation_that_only_grows_reuses_the_whole_previous_prompt() {
         let turno1 = vec![10, 11, 12, 13];
         let turno2 = vec![10, 11, 12, 13, 20, 21];
@@ -1792,6 +1803,21 @@ fn apply_stable_len(meta: &mut Value, stable_len: u32) {
     if stable_len != u32::MAX {
         meta["stable_len"] = json!(stable_len);
     }
+}
+
+fn partial_prefill_meta(
+    more_chunks: bool,
+    n_prompt_tokens: usize,
+    start_pos: u32,
+    next_pos: u32,
+) -> Value {
+    json!({
+        "done": false,
+        "more_chunks": more_chunks,
+        "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": start_pos,
+        "next_pos": next_pos,
+    })
 }
 
 fn terminal_prefill_meta(
@@ -3871,7 +3897,8 @@ fn prefill_blocking(
     if is_last {
         if !is_final_chunk {
             let encode_started = Instant::now();
-            let mut partial = json!({"done": false, "more_chunks": more});
+            let mut partial =
+                partial_prefill_meta(more, total_tokens as usize, expected_pos, n_past_now);
             apply_prefix_decision(
                 &mut partial,
                 chunk_index,
@@ -4378,12 +4405,12 @@ fn prefill_batch_blocking(
             if item.is_last {
                 if !is_final_chunk {
                     let started = Instant::now();
-                    let mut meta = json!({
-                        "done": false,
-                        "more_chunks": more,
-                        "start_pos": item.start_pos,
-                        "next_pos": item.start_pos + item.n_tokens as u32,
-                    });
+                    let mut meta = partial_prefill_meta(
+                        more,
+                        total_tokens as usize,
+                        item.start_pos,
+                        item.start_pos + item.n_tokens as u32,
+                    );
                     apply_prefix_decision(
                         &mut meta,
                         item.chunk_index,

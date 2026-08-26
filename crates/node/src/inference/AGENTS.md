@@ -94,7 +94,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `reuse_prefix` que os hops seguintes recebem é o que a **cabeça executou**,
   lido da resposta dela (`cached_tokens_of`, `head_reused_prefix`), não o que o
   gateway pediu. Intermediários em uma cadeia N-hop ecoam essa decisão em vez
-  de recalculá-la.
+  de recalculá-la. A resposta parcial da cabeça, tanto no caminho individual
+  quanto no lote, também carrega `n_prompt_tokens`, `start_pos` e `next_pos`
+  absolutos, inclusive no primeiro chunk de um modelo inteiro.
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
   não foram reprocessados; `retained_tokens` devolve a fronteira estável que
   ficou na `prompt_seq` e que o gateway confirma no rewind.

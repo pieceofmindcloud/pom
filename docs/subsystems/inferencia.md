@@ -269,6 +269,11 @@ decodificado na própria posição e o estado oculto viaja sozinho.
 - Só a cabeça tokeniza (tem o prompt), e é a única autoridade em
   `more_chunks`/`n_prompt_tokens`. O gateway sempre manda `is_final_chunk:
   false` e quem tokenizou corrige (ver `prompt_progress` na seção 4).
+- Quando a cabeça ainda precisa de outro pedaço, a resposta parcial também
+  publica `n_prompt_tokens`, `start_pos` e `next_pos` absolutos. Isso vale tanto
+  para o caminho individual quanto para o lote, inclusive no primeiro chunk de
+  um modelo inteiro, para o gateway e os hops seguintes não fabricarem a
+  posição pelo índice do chunk.
 - O fechamento do stream cria um cancelamento cooperativo por geração.
   `prefill::Cancellation` interrompe a espera HTTP em voo e impede o próximo
   retry, hop ou chunk. Um frame que o peer já aceitou pode terminar, porque o

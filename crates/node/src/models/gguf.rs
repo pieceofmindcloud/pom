@@ -511,6 +511,57 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
     Ok(info)
 }
 
+/// Read only tensor names, enough to prove structural MTP evidence.
+///
+/// This deliberately skips dimensions, dtypes, offsets, and tensor data. The
+/// deployment catalog must not run the full layout accounting pass for every
+/// model just to answer whether a `nextn` tensor exists.
+pub(crate) fn has_nextn_tensors(path: &Path) -> Result<bool> {
+    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
+    let mut r = Reader {
+        inner: BufReader::with_capacity(1 << 16, file),
+    };
+
+    let magic = r.u32()?;
+    if magic != GGUF_MAGIC {
+        bail!("not a GGUF file (magic {magic:#x})");
+    }
+    let _version = r.u32()?;
+    let n_tensors = r.u64()?;
+    let n_kv = r.u64()?;
+    if n_tensors > 10_000_000 {
+        bail!("implausible GGUF tensor count {n_tensors}");
+    }
+    if n_kv > 100_000 {
+        bail!("implausible GGUF kv count {n_kv}");
+    }
+
+    for _ in 0..n_kv {
+        let _key = r.string()?;
+        let value_type = r.u32()?;
+        r.skip_value(value_type)?;
+    }
+
+    for _ in 0..n_tensors {
+        let name = r.string()?;
+        let dimensions = r.u32()?;
+        if dimensions > 8 {
+            bail!("implausible tensor rank {dimensions} for {name}");
+        }
+        let dimension_bytes = u64::from(dimensions)
+            .checked_mul(8)
+            .ok_or_else(|| anyhow::anyhow!("tensor dimension byte count overflow"))?;
+        r.skip(dimension_bytes)?;
+        let _dtype = r.u32()?;
+        let _offset = r.u64()?;
+        if name.split('.').any(|part| part == "nextn") {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
 // ── Tensor layout ────────────────────────────────────────────────────────────
 
 /// Bytes-per-block and elements-per-block for every GGML tensor type.
@@ -1074,8 +1125,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 /// Read the model-level evidence used by the deployment planner.
 pub fn read_capability_evidence(path: &Path) -> Result<ModelCapabilityEvidence> {
     let info = read_info(path)?;
-    let layout = read_layout(path)?;
-    let mtp = match (info.nextn_predict_layers, layout.has_nextn_tensors) {
+    let mtp = match (info.nextn_predict_layers, has_nextn_tensors(path)?) {
         // The tensor table is the strongest evidence: it is the actual
         // predictor payload, and covers producers that omit or rename the
         // architecture-prefixed hyperparameter.

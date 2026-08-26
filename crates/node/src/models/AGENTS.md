@@ -7,10 +7,11 @@ transferência.
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
   `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
   sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
-  `Catalog.metadata_complete`. As capacidades são derivadas do header nessa
-  passagem; quando a prova exige a tabela de tensores, o catálogo mantém o
-  estado indeterminado, enquanto `gguf::read_capability_evidence` continua
-  disponível para callers que exigem essa prova.
+  `Catalog.metadata_complete`. Falha de leitura mantém o item pendente para
+  nova tentativa, em vez de publicar sucesso. As capacidades vêm do header e
+  de uma varredura leve dos nomes de tensores `nextn`; o cálculo completo de
+  layout continua em `gguf::read_capability_evidence` para callers que exigem
+  essa prova.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade, e o

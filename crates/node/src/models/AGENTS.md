@@ -15,7 +15,10 @@ transferência.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade, e o
-  SHA-256 integral continua sendo trabalho de manifesto/transferência.
+  Para uma fonte GGUF multipart, enrich abre multipart::GgufSource, soma os
+  bytes das partes e expõe as partes físicas no catálogo; uma declaração
+  incompleta fica visível com erro concreto e tamanho desconhecido. A
+  identidade do modelo inteiro usa o hash da sequência completa de partes.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
   chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
   `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.
@@ -30,7 +33,13 @@ transferência.
   valida os dtypes contra a tabela GGML suportada, descarta essa informação após
   a validação, usa offsets físicos para o custo dos tensores e calcula o tamanho
   serializado de cada fatia, incluindo cabeçalho, globais, alinhamento e
-  duplicações.
+  duplicações. read_layout usa a tabela unificada de multipart.rs, então o
+  primeiro arquivo de um GGUF multipart, mesmo sem tensores, representa o
+  conjunto inteiro.
+- multipart.rs - mapeia um GGUF simples ou todas as partes declaradas por
+  split.count, split.no e split.tensors.count. Valida a convenção N-of-M.gguf,
+  resolve cada tensor para parte e offset relativo e soma/hash somente a
+  sequência física, sem remontar pesos.
  - As opções de corte para um modelo inteiro vêm de
   `GgufLayout::valid_prefix_end_layers`: em layout denso, qualquer fim de
   camada inteira é válido; em layout híbrido, só os fins derivados de
@@ -95,11 +104,13 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 os repõe a partir do `pom.json` antes de carregar o modelo.
 
 O fatiador trata arrays GGUF sob o namespace da arquitetura como metadata por
-camada quando o comprimento é a contagem original de blocos e os reescreve para
-a faixa local. Comprimento 1 é broadcast e permanece igual; arrays estruturais
-de rope e namespaces globais não são arrays por camada. Qualquer outro
-comprimento sob a arquitetura é recusa nominal com chave e tamanho, para que um
-metadado novo não seja copiado cru para uma fatia que não carrega.
+camada quando o comprimento é pelo menos a contagem original de blocos e os
+reescreve para a faixa local. O llama.cpp lê os primeiros block_count elementos
+desses vetores; por isso valores extras não são preservados na fatia.
+Comprimento 1 é broadcast e permanece igual; arrays estruturais de rope e
+namespaces globais não são arrays por camada. Um comprimento positivo menor que
+block_count é recusa nominal com chave e tamanho, para que metadata nova não
+seja copiada cru para uma fatia que não carrega.
 
 ## Manutenção deste arquivo
 

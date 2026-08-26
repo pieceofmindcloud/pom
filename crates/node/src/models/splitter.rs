@@ -144,6 +144,7 @@ struct TensorRecord {
     name: String,
     dims: Vec<u64>,
     dtype: u32,
+    part_index: usize,
     src_offset: u64,
     byte_size: u64, // from offset-delta; 0 for fake tensors
 }
@@ -310,6 +311,46 @@ fn encode_array_slice(mm: &[u8], entry: &KvSource, start: u32, count: u32) -> Re
     Ok(encoded)
 }
 
+fn layer_slice_bounds(
+    array_count: u64,
+    original_block_count: u32,
+    start_layer: u32,
+    layer_count: u32,
+) -> Result<(usize, usize)> {
+    let end_layer = start_layer
+        .checked_add(layer_count)
+        .ok_or_else(|| anyhow::anyhow!("overflow no intervalo de camadas"))?;
+    if start_layer >= original_block_count || end_layer > original_block_count {
+        bail!(
+            "intervalo de camadas {}..{} fora da contagem original {}",
+            start_layer,
+            end_layer.saturating_sub(1),
+            original_block_count
+        );
+    }
+    if array_count < original_block_count as u64 {
+        bail!(
+            "array por camada tem comprimento {array_count}; esperado pelo menos {original_block_count}"
+        );
+    }
+    Ok((start_layer as usize, end_layer as usize))
+}
+
+fn slice_layer_values<T: Clone>(
+    values: &[T],
+    original_block_count: u32,
+    start_layer: u32,
+    layer_count: u32,
+) -> Result<Vec<T>> {
+    let (start, end) = layer_slice_bounds(
+        values.len() as u64,
+        original_block_count,
+        start_layer,
+        layer_count,
+    )?;
+    Ok(values[start..end].to_vec())
+}
+
 fn is_global_array(key: &str, arch: &str) -> bool {
     !key.starts_with(&format!("{arch}.")) || key.contains(".rope.")
 }
@@ -436,10 +477,12 @@ pub fn split(
         src.display()
     );
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
 
@@ -511,7 +554,10 @@ pub fn split(
     let pom_prefix = format!("{}.", crate::brand::slug());
     for entry in &entries {
         let key = &entry.key;
-        if *key == crate::brand::gguf_key("original_block_count") || key.starts_with(&pom_prefix) {
+        if key.starts_with("split.")
+            || *key == crate::brand::gguf_key("original_block_count")
+            || key.starts_with(&pom_prefix)
+        {
             continue;
         }
         if key.ends_with(".nextn_predict_layers") {
@@ -539,14 +585,21 @@ pub fn split(
                     array.count
                 )
             })?;
-            if array.count == original as u64 {
-                let sliced = encode_array_slice(mm, entry, start_layer, n_split)?;
+            if array.count >= original as u64 {
+                let (slice_start, slice_end) =
+                    layer_slice_bounds(array.count, original, start_layer, n_split)?;
+                let sliced = encode_array_slice(
+                    mm,
+                    entry,
+                    slice_start as u32,
+                    (slice_end - slice_start) as u32,
+                )?;
                 kv_out.push(KvOut::Encoded(sliced));
                 continue;
             }
             if array.count != 1 && !is_global_array(key, &arch) {
                 bail!(
-                    "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
+                    "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
                     key,
                     array.count,
                     original
@@ -579,47 +632,18 @@ pub fn split(
 
     // ── Parse tensor table ────────────────────────────────────────────────────
 
-    let mut all_tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        all_tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    // The data section starts on an ALIGN boundary after the header
-    let src_data_start = align_up(r.pos as u64) as usize;
-
-    // Compute actual tensor sizes from offset deltas — more reliable than the
-    // type table, handles unknown quants and weight-tied (shared-offset) tensors.
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = all_tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut all_tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let all_tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
 
     // A hybrid model's recurrent layers, keyed by their *absolute* index in
     // the source file (see `ssm_conv1d_layer_index`). Empty for every plain
@@ -666,6 +690,7 @@ pub fn split(
                 name: t.name.clone(),
                 dims: t.dims.clone(),
                 dtype: t.dtype,
+                part_index: t.part_index,
                 src_offset: t.src_offset,
                 byte_size: t.byte_size,
             })
@@ -776,8 +801,17 @@ pub fn split(
                 }
             }
             TensorOut::Real(rec) => {
-                let start = src_data_start + rec.src_offset as usize;
-                let tensor_bytes = &mm[start..start + size as usize];
+                let part = source.parts().get(rec.part_index).ok_or_else(|| {
+                    anyhow::anyhow!("parte {} ausente para '{}'", rec.part_index, rec.name)
+                })?;
+                let start = part
+                    .data_start()
+                    .checked_add(rec.src_offset as usize)
+                    .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+                let tensor_bytes = part
+                    .map()
+                    .get(start..start + size as usize)
+                    .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", rec.name))?;
                 let mut pos = 0usize;
                 while pos < tensor_bytes.len() {
                     let n = CHUNK.min(tensor_bytes.len() - pos);
@@ -902,10 +936,12 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         bail!("tp_size precisa ser >= 2");
     }
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
@@ -946,43 +982,18 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
         }
     }
 
-    let mut tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    let src_data_start = align_up(r.pos as u64) as usize;
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
 
     // Weight-tied output (output.weight compartilha offset com token_embd)
     // quebraria o shard: um fica inteiro e o outro partido. Recusa.
@@ -1073,10 +1084,12 @@ pub fn shard_tensor_parallel(
     // como rede de segurança do layout.
     validate_tensor_parallel(src, tp_size)?;
 
-    let src_file = File::open(src).with_context(|| format!("abrir {}", src.display()))?;
-    let src_mm =
-        unsafe { Mmap::map(&src_file) }.with_context(|| format!("mmap {}", src.display()))?;
-    let mm: &[u8] = &src_mm;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let mm = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
 
     let mut r = R { data: mm, pos: 0 };
     let magic = r.u32()?;
@@ -1140,7 +1153,7 @@ pub fn shard_tensor_parallel(
             continue;
         }
         r.skip_value(vtype)?;
-        if !key.starts_with(&pom_prefix) {
+        if !key.starts_with(&pom_prefix) && !key.starts_with("split.") {
             kv_out.push(KvOut::Raw(kv_start, r.pos));
         }
     }
@@ -1167,43 +1180,18 @@ pub fn shard_tensor_parallel(
     )));
 
     // Tensor table
-    let mut all_tensors: Vec<TensorRecord> = Vec::with_capacity(n_tensors);
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()? as usize;
-        if n_dims > 8 {
-            bail!("rank {n_dims} implausível para tensor '{name}'");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        let src_offset = r.u64()?;
-        all_tensors.push(TensorRecord {
-            name,
-            dims,
-            dtype,
-            src_offset,
-            byte_size: 0,
-        });
-    }
-
-    let src_data_start = align_up(r.pos as u64) as usize;
-    {
-        let total_data = (mm.len() - src_data_start) as u64;
-        let mut unique: Vec<u64> = all_tensors.iter().map(|t| t.src_offset).collect();
-        unique.sort_unstable();
-        unique.dedup();
-        let size_map: HashMap<u64, u64> = unique
-            .iter()
-            .enumerate()
-            .map(|(i, &off)| {
-                let next = unique.get(i + 1).copied().unwrap_or(total_data);
-                (off, next - off)
-            })
-            .collect();
-        for t in &mut all_tensors {
-            t.byte_size = size_map.get(&t.src_offset).copied().unwrap_or(0);
-        }
-    }
+    let all_tensors: Vec<TensorRecord> = source
+        .tensors()
+        .iter()
+        .map(|tensor| TensorRecord {
+            name: tensor.name.clone(),
+            dims: tensor.dims.clone(),
+            dtype: tensor.dtype,
+            part_index: tensor.part_index,
+            src_offset: tensor.offset,
+            byte_size: tensor.byte_size,
+        })
+        .collect();
 
     // Weight-tied output (output.weight compartilha offset com token_embd)
     // quebraria o shard: um fica inteiro e o outro partido. Recusa.
@@ -1220,7 +1208,8 @@ pub fn shard_tensor_parallel(
     // Segmento de bytes a copiar do fonte para o destino.
     #[derive(Debug, Clone, Copy)]
     struct Seg {
-        src: usize, // absoluto no mmap
+        part_index: usize,
+        src: usize, // offset relativo à seção de dados da parte
         len: usize,
     }
     #[derive(Debug)]
@@ -1241,7 +1230,6 @@ pub fn shard_tensor_parallel(
             );
         }
         let role = tp_role(&t.name);
-        let full_abs = src_data_start + t.src_offset as usize;
         match role {
             TpRole::Unsupported => {
                 bail!("tensor '{}' não é shardável no caminho C (v1)", t.name);
@@ -1251,7 +1239,8 @@ pub fn shard_tensor_parallel(
                 dims: t.dims.clone(),
                 dtype: t.dtype,
                 segs: vec![Seg {
-                    src: full_abs,
+                    part_index: t.part_index,
+                    src: t.src_offset as usize,
                     len: t.byte_size as usize,
                 }],
             }),
@@ -1275,7 +1264,8 @@ pub fn shard_tensor_parallel(
                         dims[1] = new_ne1;
                         let start = tp_rank as u64 * new_ne1 * row_stride;
                         vec![Seg {
-                            src: full_abs + start as usize,
+                            part_index: t.part_index,
+                            src: t.src_offset as usize + start as usize,
                             len: (new_ne1 * row_stride) as usize,
                         }]
                     }
@@ -1292,7 +1282,8 @@ pub fn shard_tensor_parallel(
                         let rank_off = tp_rank as u64 * chunk;
                         (0..ne1)
                             .map(|j| Seg {
-                                src: full_abs + (j * row_stride + rank_off) as usize,
+                                part_index: t.part_index,
+                                src: t.src_offset as usize + (j * row_stride + rank_off) as usize,
                                 len: chunk as usize,
                             })
                             .collect()
@@ -1373,7 +1364,17 @@ pub fn shard_tensor_parallel(
     for t in &out_tensors {
         let size = t.segs.iter().map(|s| s.len as u64).sum::<u64>();
         for seg in &t.segs {
-            let bytes = &mm[seg.src..seg.src + seg.len];
+            let part = source.parts().get(seg.part_index).ok_or_else(|| {
+                anyhow::anyhow!("parte {} ausente ao escrever '{}'", seg.part_index, t.name)
+            })?;
+            let start = part
+                .data_start()
+                .checked_add(seg.src)
+                .ok_or_else(|| anyhow::anyhow!("offset de tensor fora do arquivo"))?;
+            let bytes = part
+                .map()
+                .get(start..start + seg.len)
+                .ok_or_else(|| anyhow::anyhow!("tensor '{}' truncado", t.name))?;
             let mut pos = 0usize;
             while pos < bytes.len() {
                 let n = CHUNK.min(bytes.len() - pos);
@@ -1487,6 +1488,7 @@ fn parse_merged_src(mm: &[u8]) -> Result<MergedSrc> {
             name,
             dims,
             dtype,
+            part_index: 0,
             src_offset,
             byte_size: 0,
         });
@@ -1858,12 +1860,15 @@ pub(crate) fn test_gguf_bytes(n_blocks: u32) -> Vec<u8> {
         u32_kv("llama.feed_forward_length", 4),
         u32_array_kv(
             "llama.attention.head_count_kv_by_layer",
-            &(0..n_blocks).collect::<Vec<_>>(),
+            &(0..n_blocks)
+                .chain(n_blocks..n_blocks + 3)
+                .collect::<Vec<_>>(),
         ),
         bool_array_kv(
             "llama.attention.sliding_window_pattern",
             &(0..n_blocks)
                 .map(|layer| layer % 2 == 0)
+                .chain([true, false, true])
                 .collect::<Vec<_>>(),
         ),
         u32_kv(&crate::brand::gguf_key("original_block_count"), n_blocks),
@@ -2257,6 +2262,17 @@ mod tests {
             .unwrap_or_else(|| panic!("tensor {name} não encontrado"));
         &mm[p.data_start + t.src_offset as usize
             ..p.data_start + t.src_offset as usize + t.byte_size as usize]
+    }
+
+    #[test]
+    fn per_layer_array_slice_uses_absolute_layer_indices() {
+        let values = vec![0u32, 0, 4, 128, 4, 128, 4, 128, 4, 0, 0];
+
+        assert_eq!(
+            slice_layer_values(&values, 8, 2, 4).unwrap(),
+            vec![4, 128, 4, 128]
+        );
+        assert_eq!(slice_layer_values(&values, 8, 7, 1).unwrap(), vec![4]);
     }
 
     #[test]

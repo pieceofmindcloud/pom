@@ -51,6 +51,9 @@ fit-memory and KV offload are separate from the per-peer `POM_PROFILE_SYNC`
 state labels. The footnote explains the measurements but does not claim a fixed
 environment value.
 
+The slice locale group also covers multipart part lists, summed-size loading
+state and explicit incomplete-set errors in both languages.
+
 ### provider.tsx
 - `LocaleProvider({ children, initialLocale })` - initial state from `initialLocale` or from `localStorage` `codai.locale` + `navigator.languages`; writes `<html lang>` on change; persists the choice.
 - `useI18n()` - `{ locale, setLocale, t }`.

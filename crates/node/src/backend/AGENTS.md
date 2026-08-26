@@ -57,6 +57,10 @@ behind an auth extractor.
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
+  GGUF multipart sources are read through models::multipart::GgufSource:
+  slice plans and extraction use all tensor parts, and model identity hashes
+  the complete ordered set. An incomplete set is a concrete bad request, so
+  the UI cannot start a one-file slice by accident.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,

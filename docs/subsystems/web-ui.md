@@ -422,7 +422,13 @@ impressão digital é só modelo + conjunto de faixas.
   pipeline leva `slices`. `POST /api/ui/slice` roda o job. O painel de atividade
   só aparece enquanto existe um fatiamento em execução. A tela Fatias separa
   `parts` e `tp_parts`, agrupa TP por tamanho e ordena os ranks dentro de cada
-  grupo. A transferência considera ambas as listas.
+  grupo. A transferência considera ambas as listas. Quando o catálogo confirma
+  um GGUF multipart, esta tela mostra a soma real dos bytes, a etiqueta
+  MULTIPART e a lista de partes físicas. Enquanto o cabeçalho ainda está sendo
+  enriquecido, não mostra o tamanho da primeira parte. Se a fonte estiver
+  incompleta, o motivo vindo de `split.count`, `split.no` ou da parte
+  ausente aparece no painel e o botão de fatiar fica desabilitado; o operador
+  precisa colocar o conjunto completo junto e deixar o POM gerar as fatias.
 - **Implantar** (`DeployModel`): abre o Deploy Studio em tela ampla, com abas de
   Fatias/Modelo inteiro/Tensor, modelo técnico e nome operacional separados,
   estratégias Simples/Completa, mapa central e inspetor compacto de propriedades.

@@ -10,7 +10,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::File;
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Cursor, Read, Seek, SeekFrom};
 use std::path::Path;
 
 const GGUF_MAGIC: u32 = 0x4655_4747; // "GGUF" little-endian
@@ -861,7 +861,7 @@ impl SerializedLayout {
                 continue;
             }
             if let Some(array) = entry.array {
-                if array.count == self.original_block_count as u64 {
+                if array.count >= self.original_block_count as u64 {
                     if let Some(element_size) = scalar_size(array.element_type) {
                         bytes += 8
                             + entry.key.len() as u64
@@ -930,10 +930,15 @@ impl SerializedLayout {
 ///
 /// Reads the header only — the tensor *data* is never touched.
 pub fn read_layout(path: &Path) -> Result<GgufLayout> {
-    let file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let source_file_bytes = file.metadata()?.len();
+    let source = crate::multipart::GgufSource::open(path)?;
+    let source_file_bytes = source.source_bytes();
+    let first_map = source
+        .parts()
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .map();
     let mut r = Reader {
-        inner: BufReader::with_capacity(1 << 16, file),
+        inner: Cursor::new(first_map),
     };
 
     let magic = r.u32()?;
@@ -998,50 +1003,24 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         });
     }
 
-    let mut tensors = Vec::with_capacity(n_tensors);
-
-    for _ in 0..n_tensors {
-        let name = r.string()?;
-        let n_dims = r.u32()?;
-        if n_dims > 8 {
-            bail!("implausible tensor rank {n_dims} for {name}");
-        }
-        let dims: Vec<u64> = (0..n_dims).map(|_| r.u64()).collect::<Result<_>>()?;
-        let dtype = r.u32()?;
-        if ggml_type_info(dtype).is_none() {
-            bail!(
-                "dtype GGML {dtype} desconhecido no tensor '{name}'; estimativa de tamanho recusada"
-            );
-        }
-        let src_offset = r.u64()?;
-        tensors.push((name, dims, dtype, src_offset));
-    }
-
-    let data_start = align_up_layout(r.position()?);
-    if data_start > source_file_bytes {
-        bail!("GGUF truncado antes da seção de dados");
-    }
-    let total_data = source_file_bytes - data_start;
-    let mut unique_offsets: Vec<u64> = tensors.iter().map(|t| t.3).collect();
-    unique_offsets.sort_unstable();
-    unique_offsets.dedup();
-    let size_map: HashMap<u64, u64> = unique_offsets
+    let layout_tensors: Vec<LayoutTensor> = source
+        .tensors()
         .iter()
-        .enumerate()
-        .map(|(index, &offset)| {
-            let next = unique_offsets.get(index + 1).copied().unwrap_or(total_data);
-            (offset, next.saturating_sub(offset))
+        .map(|tensor| {
+            if ggml_type_info(tensor.dtype).is_none() {
+                return Err(anyhow::anyhow!(
+                    "dtype GGML {} desconhecido no tensor '{}'; estimativa de tamanho recusada",
+                    tensor.dtype,
+                    tensor.name
+                ));
+            }
+            Ok(LayoutTensor {
+                name: tensor.name.clone(),
+                dims: tensor.dims.clone(),
+                bytes: tensor.byte_size,
+            })
         })
-        .collect();
-
-    let layout_tensors: Vec<LayoutTensor> = tensors
-        .into_iter()
-        .map(|(name, dims, _dtype, offset)| LayoutTensor {
-            name,
-            dims,
-            bytes: size_map.get(&offset).copied().unwrap_or(0),
-        })
-        .collect();
+        .collect::<Result<_>>()?;
 
     let mut layers: HashMap<u32, u64> = HashMap::new();
     let mut kinds: HashMap<u32, Vec<String>> = HashMap::new();
@@ -1096,15 +1075,15 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
         if !entry.key.starts_with(&arch_prefix) || entry.key.contains(".rope.") {
             continue;
         }
-        if array.count != 1 && array.count != original_block_count as u64 {
+        if array.count != 1 && array.count < original_block_count as u64 {
             bail!(
-                "array metadata '{}' tem comprimento {}; esperado 1 ou {} (contagem original de blocos)",
+                "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
                 entry.key,
                 array.count,
                 original_block_count
             );
         }
-        if array.count == original_block_count as u64 && scalar_size(array.element_type).is_none() {
+        if array.count >= original_block_count as u64 && scalar_size(array.element_type).is_none() {
             bail!(
                 "array metadata '{}' tem elementos aninhados e não pode ser fatiado por camada",
                 entry.key

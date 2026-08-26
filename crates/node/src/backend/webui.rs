@@ -2251,9 +2251,11 @@ fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity
 
 async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(move || crate::pom::hash_file(&path).map(|(sha256, _)| sha256))
-        .await
-        .context("calcular o hash do modelo original")?
+    tokio::task::spawn_blocking(
+        move || Ok(crate::multipart::GgufSource::open(&path)?.hash_sha256()),
+    )
+    .await
+    .context("calcular o hash do modelo original")?
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -69,7 +69,10 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   the whole-model deploy slider; `WholeSliceSelection` identifies the source,
   destination and accepted prefix end sent back to the node.
   `tpPartsOf` normalizes a missing optional wire field to an empty list before
-  catalog consumers iterate it.
+  catalog consumers iterate it. DiscoveredModel.multipart_parts carries the
+  ordered physical files and multipart_error carries the concrete reason a
+  declared set cannot be sliced; the UI uses metadata_complete to avoid
+  displaying a first-part byte count while enrichment is pending.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
 
 ## Key functions

@@ -27,6 +27,7 @@
 //!   name is recovered by reading the manifest tree.
 
 use crate::gguf::{self, GgufInfo, ModelCapabilityEvidence};
+use crate::multipart::GgufSource;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,6 +71,17 @@ pub struct DiscoveredModel {
     /// Absolute path of the `.gguf` file.
     pub path: String,
     pub size_bytes: u64,
+    /// True when the source GGUF declares a tensor-split set with more than
+    /// one part. The catalog exposes only the first part as the selectable
+    /// model, because the set is one logical source.
+    #[serde(default)]
+    pub multipart: bool,
+    /// Physical parts that make up a multipart source, in split order.
+    #[serde(default)]
+    pub multipart_parts: Vec<MultipartPart>,
+    /// Concrete reason a declared multipart source cannot currently be used.
+    #[serde(default)]
+    pub multipart_error: Option<String>,
     pub architecture: Option<String>,
     /// True only when the GGUF header reports more than one expert.
     #[serde(default)]
@@ -105,6 +117,14 @@ pub struct DiscoveredModel {
     /// GGUF. Ausente quando a leitura não pôde ser confirmada.
     #[serde(default)]
     pub capabilities: Option<ModelCapabilityEvidence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MultipartPart {
+    pub index: u32,
+    pub path: String,
+    pub bytes: u64,
+    pub tensor_count: u64,
 }
 
 impl DiscoveredModel {
@@ -480,6 +500,9 @@ fn describe(
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
         size_bytes,
+        multipart: false,
+        multipart_parts: Vec::new(),
+        multipart_error: None,
         architecture: None,
         is_moe: false,
         total_layers,
@@ -537,6 +560,40 @@ fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     };
     if info.architecture.as_deref() == Some("clip") || filename.starts_with("mmproj") {
         return EnrichResult::Drop;
+    }
+
+    let source = match GgufSource::open(path) {
+        Ok(source) => source,
+        Err(error) => {
+            if let Ok(Some(split_count)) = crate::multipart::declared_split_count(path) {
+                model.multipart = true;
+                model.multipart_parts.clear();
+                model.multipart_error = Some(format!(
+                    "GGUF multipart declara split.count={split_count}, mas o conjunto não pôde ser lido: {error}. Coloque todas as partes no mesmo diretório e selecione a primeira parte."
+                ));
+                // The first physical file is not the model size. Zero makes
+                // the UI refuse to present a false byte count until the set is
+                // complete.
+                model.size_bytes = 0;
+                return EnrichResult::Ready;
+            }
+            return EnrichResult::Retry;
+        }
+    };
+    model.multipart_error = None;
+    model.multipart = source.is_multipart();
+    model.multipart_parts = source
+        .parts()
+        .iter()
+        .map(|part| MultipartPart {
+            index: part.index,
+            path: part.path.to_string_lossy().into_owned(),
+            bytes: part.bytes,
+            tensor_count: part.tensor_count,
+        })
+        .collect();
+    if model.multipart {
+        model.size_bytes = source.source_bytes();
     }
 
     model.architecture = info.architecture.clone();
@@ -1124,6 +1181,9 @@ mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1156,6 +1216,9 @@ mod tests {
                 tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
                 tp_size: tensor_parallel.then_some(2),
                 capabilities: None,
+                multipart: false,
+                multipart_parts: Vec::new(),
+                multipart_error: None,
             };
             if tensor_parallel {
                 model.name = format!("{id}-tp.gguf");
@@ -1278,6 +1341,9 @@ mod tests {
             tp_rank: None,
             tp_size: None,
             capabilities: None,
+            multipart: false,
+            multipart_parts: Vec::new(),
+            multipart_error: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

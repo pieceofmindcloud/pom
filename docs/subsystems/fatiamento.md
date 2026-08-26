@@ -60,7 +60,8 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
-  desconhecido sub-reporta em `other_bytes` em vez de inventar.
+  desconhecido recusa o layout em vez de inventar. Para multipart, a tabela
+  vem de `multipart::GgufSource` e inclui todos os tensores do conjunto.
 - `arch_boundaries`/`snap_end_layer` - modelos híbridos (Mamba + Attention) não
   são pilha de blocos iguais; o corte só acontece em fronteira de tipo, senão o
   bloco renumera para o tipo errado (`missing tensor` ou resposta errada
@@ -68,7 +69,7 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 - `nextn_predict_layers` - MTP/Qwen3.5+: o bloco nextn vive só na última camada;
   fatia que não termina no fim do modelo precisa zerar o hiperparâmetro ou o
   llama.cpp aborta o load procurando `blk.<last>.nextn.*`.
-- `attention.recurrent_layers` - modelo híbrido attention/SSM (Qwen3-Next-style,
+- `attention.recurrent_layers` - modelo híbrido attention/SSM,
   como o Qwen3.8-27B): na ausência de um array explícito com essa chave, o
   llama.cpp decide sozinho quais camadas são recorrentes (levam
   `ssm_conv1d.weight`) por uma fórmula sobre o índice **absoluto** da camada
@@ -87,6 +88,31 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
   `ggml_type_size`/`ggml_blck_size` para os tamanhos -, nunca de memória).
   Errar um tamanho de tipo **não dá erro**: a fatia sai e só a resposta fica
   errada. Por isso um tipo desconhecido é recusa, não estimativa.
+
+## 2.1 GGUF multipart
+
+`multipart.rs` trata um GGUF simples como um conjunto de uma parte e um GGUF
+com `split.count > 1` como uma fonte lógica. Ao abrir a primeira parte, valida
+`split.no`, `split.count` e `split.tensors.count`, reconstrói os caminhos
+`N-of-M.gguf` e mapeia os cabeçalhos de todas as partes com `mmap`. A tabela
+unificada guarda, para cada tensor, o índice da parte, o offset relativo à
+seção de dados e o tamanho calculado pela diferença entre offsets.
+
+Nenhum peso é remontado em arquivo temporário: o fatiador escolhe os tensores
+pela faixa e copia cada um diretamente do mmap da parte que o contém. A mesma
+fonte é consumida por `gguf::read_layout`, `splitter::validate_tensor_parallel`
+e `splitter::shard_tensor_parallel`. Um GGUF sem `split.*` continua no caminho
+de uma parte, com o mesmo comportamento.
+
+O catálogo enumera somente a primeira parte, mas depois da leitura do cabeçalho
+publica o tamanho físico somado e a lista ordenada de partes. Se uma parte
+estiver ausente ou os campos declarados não fecharem, o modelo fica visível com
+o motivo concreto, sem byte count falso e sem plano de fatiamento. O hash usado
+para identidade de um modelo fonte é o SHA-256 da sequência ordenada de partes.
+Transferências continuam sendo operações de arquivos POM individuais. O
+endpoint de envio recusa uma fonte inteira que declara multipart, com a
+orientação de manter o conjunto completo ou gerar fatias POM; a transferência
+de um modelo inteiro multipart não foi generalizada nesta etapa.
 
 ## 3. Planejamento
 
@@ -166,7 +192,8 @@ passe que grava os bytes (`pom::HashingWriter`), sem custar uma segunda leitura.
 No fim, `pom::finalize_run` guarda as partes em
 `<shard_dir>/<modelo>-<hash curto do original>/` e sela
 `<modelo>-<hash curto do original>.pom` lá. No único formato v1, `pom_id` é o
-sha256 completo do GGUF original, não o hash da lista de partes. Assim, fatiar
+sha256 completo da fonte lógica: em GGUF simples é o arquivo; em multipart é a
+sequência ordenada de partes, não um arquivo remontado. Assim, fatiar
 novamente o mesmo modelo não cria outra pasta nem outro manifesto: as partes
 novas são mescladas por `sha256`, inclusive quando cobrem faixas alternativas
 como `L0-7` e `L0-3`. O mesmo manifesto contém `parts` para pipeline e
@@ -178,8 +205,9 @@ Não há compatibilidade com outro formato de manifesto.
 `splitter::split` (`splitter.rs`) é o fatiador em Rust, substituto de
 `split_model.py` (o Python é legado, ver `scripts/AGENTS.md`):
 
-1. Abre o GGUF por mmap, valida mágica `GGUF` e versões 2/3.
-2. Lê a tensor table; o tamanho de cada tensor vem da **diferença entre offsets**
+1. Abre um GGUF simples ou todas as partes declaradas por `split.*` com
+   mmap, valida mágica `GGUF` e versões 2/3, sem remontar os pesos.
+2. Lê a tabela unificada; o tamanho de cada tensor vem da **diferença entre offsets**
    (mais confiável que a tabela de tipos: aguenta quant desconhecido e tensores
    weight-tied). Tensor de byte_size 0 é **recusa**, não estimativa - fatiar
    produziria um arquivo corrompido. Rank implausível também é recusa.
@@ -193,9 +221,14 @@ Não há compatibilidade com outro formato de manifesto.
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -
    nunca reimplementando a fórmula do llama.cpp. Modelo comum não ganha a
    chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
-6. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
+6. Todo array escalar sob o namespace da arquitetura cujo comprimento é pelo
+   menos `block_count` é recortado pelos índices absolutos da faixa e gravado
+   com a contagem local. Comprimento 1 continua broadcast; comprimento menor
+   que `block_count` é recusa nominal. Isso inclui vetores com cabeçalho ou
+   cauda especial: a seleção é por posição, sem repetir um passo periódico.
+7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
-7. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
+8. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
    chamando `on_progress(0..100)`; o progresso é do arquivo, não do trabalho
    (100% de uma fatia é 1/N do serviço).
 

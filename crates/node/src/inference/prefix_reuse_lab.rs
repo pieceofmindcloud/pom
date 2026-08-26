@@ -16,8 +16,9 @@
 //! O prefill tem três caminhos - hub, anel e resposta direta - e cada um monta
 //! o pedido do hop seguinte num lugar diferente. Um teste que exercite só um
 //! deles passa enquanto os outros dois estão quebrados, que é a forma mais
-//! fácil de esta bancada mentir. Cada cenário roda nos três, com dois hops,
-//! para que cabeça e cauda sejam máquinas distintas como em produção.
+//! fácil de esta bancada mentir. Cada cenário roda nos três, com dois ou mais
+//! hops, para que cabeça e cauda sejam máquinas distintas como em produção e
+//! a propagação não fique presa a uma topologia de três nós.
 //!
 //! ## O motor que os hops falsos imitam
 //!
@@ -91,6 +92,21 @@ struct Engine {
     remocoes_parciais: Vec<String>,
     /// Sessões que sumiram antes de o gateway conseguir preservá-las.
     rewind_em_sessao_desconhecida: u32,
+    /// Cada frame de prefill efetivamente ingerido pelo peer. O teste não pode
+    /// inferir a economia a partir do pedido do gateway: precisa comparar a
+    /// posição declarada com o contador remoto antes e depois do decode.
+    frames: Vec<ObservedFrame>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ObservedFrame {
+    session_id: String,
+    chunk_index: u32,
+    start_pos: u32,
+    next_pos: u32,
+    n_past_before: u32,
+    n_past_after: u32,
+    reuse_prefix: bool,
 }
 
 #[derive(Clone)]
@@ -271,6 +287,9 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
         } else {
             let sessao = engine.sessions.entry(sid.to_string()).or_default();
             sessao.gen_len = 0;
+            // O hop intermediário não tokeniza, portanto a decisão autoritativa
+            // vem no frame e precisa ser ecoada para o próximo hop.
+            reused = reuse_pedido;
             if let Some(stable) = stable_from_head {
                 sessao.stable_len = stable;
             }
@@ -331,6 +350,17 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
         let sessao = engine.sessions.get_mut(sid).unwrap();
         sessao.prompt_len = sessao.stable_len;
     }
+
+    let n_past_after = engine.sessions[sid].n_past();
+    engine.frames.push(ObservedFrame {
+        session_id: sid.to_string(),
+        chunk_index,
+        start_pos: esperado,
+        next_pos: esperado + n_tokens as u32,
+        n_past_before: n_past,
+        n_past_after,
+        reuse_prefix: reused,
+    });
 
     let mut local = json!({
         "processing_ms": 0,
@@ -654,6 +684,7 @@ struct Medida {
     turnos: Vec<Turno>,
     cabeca: Arc<Mutex<Engine>>,
     cauda: Arc<Mutex<Engine>>,
+    hops: Vec<Arc<Mutex<Engine>>>,
 }
 
 /// Roda `turnos` turnos de uma conversa que só cresce, pelo mesmo caminho que
@@ -671,7 +702,17 @@ async fn conversa(transporte: Transporte, turnos: usize) -> Medida {
 /// chat de verdade faz e o que expôs a corrida do fim do turno: o `[DONE]` saía
 /// antes de o rewind rodar, e o turno seguinte chegava no meio da arrumação.
 async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool) -> Medida {
-    let motores: Vec<Arc<Mutex<Engine>>> = (0..2)
+    conversa_com_hops(transporte, turnos, esperar_o_fim, 2).await
+}
+
+async fn conversa_com_hops(
+    transporte: Transporte,
+    turnos: usize,
+    esperar_o_fim: bool,
+    hop_count: usize,
+) -> Medida {
+    assert!(hop_count >= 1);
+    let motores: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
         .map(|_| Arc::new(Mutex::new(Engine::default())))
         .collect();
     let mut urls = Vec::new();
@@ -701,7 +742,7 @@ async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool
             p.model = "lab".into();
             p.start_layer = i as u32;
             p.end_layer = i as u32;
-            p.total_layers = 2;
+            p.total_layers = hop_count as u32;
             p.inference_frame_capabilities = caps.clone();
             p
         })
@@ -811,7 +852,8 @@ async fn conversa_com(transporte: Transporte, turnos: usize, esperar_o_fim: bool
     Medida {
         turnos: medidos,
         cabeca: motores[0].clone(),
-        cauda: motores[1].clone(),
+        cauda: motores.last().unwrap().clone(),
+        hops: motores,
     }
 }
 
@@ -977,4 +1019,78 @@ async fn the_first_to_second_turn_transition_hits() {
             medida.turnos
         );
     }
+}
+
+/// A conversa real usa três máquinas no pipeline da ocorrência. O estado que
+/// vale para o contrato não é o índice lógico do pedaço, mas o contador remoto
+/// do peer que acabou de executar o frame.
+#[tokio::test]
+async fn three_hop_follow_ups_keep_each_remote_position_in_sync() {
+    for transporte in [Transporte::Anel, Transporte::Direto] {
+        for hop_count in [3, 5] {
+            let medida = conversa_com_hops(transporte, 4, true, hop_count).await;
+
+            for (hop_index, engine) in medida.hops.iter().enumerate() {
+                let engine = engine.lock().unwrap();
+                assert!(
+                    !engine.frames.is_empty(),
+                    "{transporte:?}/{hop_count} hops não executou prefill no hop {hop_index}"
+                );
+                for frame in &engine.frames {
+                    assert_eq!(
+                        frame.start_pos, frame.n_past_before,
+                        "{transporte:?}/{hop_count} hops, sessão {}: chunk {} chegou na posição {} mas o peer estava em {}",
+                        frame.session_id,
+                        frame.chunk_index,
+                        frame.start_pos,
+                        frame.n_past_before
+                    );
+                    assert_eq!(frame.next_pos, frame.n_past_after);
+                }
+                assert_eq!(
+                    engine
+                        .frames
+                        .iter()
+                        .map(|frame| frame.session_id.as_str())
+                        .collect::<std::collections::HashSet<_>>()
+                        .len(),
+                    1,
+                    "{transporte:?}/{hop_count} hops usou mais de uma sessão na mesma conversa no hop {hop_index}"
+                );
+            }
+
+            assert!(
+                medida.turnos[1..]
+                    .iter()
+                    .all(|turno| turno.cached_tokens > 0),
+                "{transporte:?}/{hop_count} hops perdeu o cache nos follow-ups: {:?}",
+                medida.turnos
+            );
+        }
+    }
+}
+
+/// Um nó inteiro também precisa avançar por posição absoluta. O caso reproduz
+/// a sessão retida em 42 tokens e um prompt seguinte que exige um segundo
+/// pedaço: `chunk_index * 512` não pode substituir o `next_pos` confirmado.
+#[tokio::test]
+async fn single_node_long_follow_up_does_not_send_chunk_by_index() {
+    let medida = conversa_com_hops(Transporte::Direto, 2, true, 1).await;
+    let engine = medida.cabeca.lock().unwrap();
+    let first_session = engine
+        .frames
+        .first()
+        .map(|frame| frame.session_id.clone())
+        .expect("o nó não recebeu o primeiro frame");
+    let follow_up_frames: Vec<_> = engine
+        .frames
+        .iter()
+        .filter(|frame| frame.session_id == first_session && frame.chunk_index > 0)
+        .collect();
+    assert!(
+        follow_up_frames
+            .iter()
+            .all(|frame| frame.start_pos == frame.n_past_before),
+        "um chunk foi enviado pela posição lógica, não pela posição remota: {follow_up_frames:?}"
+    );
 }

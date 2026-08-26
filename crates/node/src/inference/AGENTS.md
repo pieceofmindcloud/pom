@@ -87,10 +87,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   consumidor desaparece, antes do próximo chunk ou hop e também durante a
   espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
   O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
-  `start_pos`/`next_pos` nos chunks seguintes, para que os peers que recebem
-  hidden state mantenham a mesma posição KV da cabeça. O `reuse_prefix` que os
-  hops seguintes recebem é o que a **cabeça executou**, lido da resposta dela
-  (`cached_tokens_of`, `head_reused_prefix`), não o que o gateway pediu.
+  `start_pos`/`next_pos` absolutos nos chunks seguintes, para que os peers que
+  recebem hidden state mantenham a mesma posição KV da cabeça. O chunk 0 pode
+  omitir `start_pos` porque a sessão fornece `n_past`; qualquer chunk posterior
+  sem posição é erro, nunca uma posição inventada pelo índice do chunk. O
+  `reuse_prefix` que os hops seguintes recebem é o que a **cabeça executou**,
+  lido da resposta dela (`cached_tokens_of`, `head_reused_prefix`), não o que o
+  gateway pediu. Intermediários em uma cadeia N-hop ecoam essa decisão em vez
+  de recalculá-la.
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
   não foram reprocessados; `retained_tokens` devolve a fronteira estável que
   ficou na `prompt_seq` e que o gateway confirma no rewind.
@@ -103,12 +107,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
   divergência. Nenhum defeito de execução é alcançável por ele.
 - `prefix_reuse_lab.rs` - a bancada da **execução**: uma conversa de quatro
-  turnos pelo caminho de `/v1/chat/completions`, com dois hops, nos três
-  transportes (hub, anel, direto). Afirma que do turno 2 em diante
+  turnos pelo caminho de `/v1/chat/completions`, nos três transportes (hub,
+  anel, direto). Afirma que do turno 2 em diante
   `cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
   registra o tempo até a primeira palavra e afirma que ele cai depois do turno
   frio, além de verificar que nenhum hop recebeu pedido de remoção parcial de
-  KV. Os hops falsos imitam o motor mais restrito que o
+  KV. O contrato de posição repete anel e resposta direta com N=3 e N=5 hops;
+  o teste SSE de `openai.rs` reproduz a sessão em 42 sem `next_pos` e impede o
+  envio de chunk 1 em 512. Os hops falsos imitam o motor mais restrito que o
   produto atende - o recorrente, que recusa remoção parcial - e mantêm a
   fronteira estável do prompt separada da sequência de geração. A bancada usa
   as funções de produção nos pontos de decisão

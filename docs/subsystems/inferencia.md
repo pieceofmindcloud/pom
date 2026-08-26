@@ -255,10 +255,14 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   igual o prompt inteiro abortava.
 - **Retentativa idempotente**: um pedaço perdido custa um pedaço, não a
   requisição. `relay::CHUNK_ATTEMPTS = 3` com backoff de 400 ms × tentativa. O
-  peer receptor rebobina o KV cache para a posição do pedaço antes de refazer
-  (`kv_remove` + `n_past = chunk_index * chunk_size`), então um reenvio nunca é
-  contado duas vezes. Se a sessão já passou da posição, rebobina; se ainda não
-  chegou lá, recusa com "chunk fora de ordem".
+  peer receptor confere a posição absoluta do pedaço antes de refazer, então
+  um reenvio nunca pode ser contado duas vezes. `start_pos` vem da fronteira
+  que o peer anterior confirmou; para o pedaço 0 sem posição explícita, a
+  própria sessão fornece `n_past`. Para qualquer pedaço posterior, a ausência
+  de `start_pos` é erro de protocolo, nunca `chunk_index * chunk_size`.
+  Se a sessão já passou da posição, o peer tenta a remoção necessária para a
+  retentativa; se o motor recusa ou ainda não chegou lá, nomeia a divergência e
+  o gateway pode repetir o prefill inteiro a frio.
 - **Step não retenta**: decode não tem proteção de rollback de KV, então o
   `step` sempre vai com `attempts = 1`. Prefill e decode não compartilham a
   constante para ela não derivar.
@@ -316,9 +320,14 @@ divergência no meio, prompt idêntico ao retido, sessão sem prompt - recomeça
 sessão do zero, o que custa o reuso daquele turno e nunca a requisição. A
 resposta declara o que foi **executado** (`reuse_prefix`, `cached_tokens`) e é
 essa decisão, não o pedido do gateway, que os hops seguintes obedecem: quem
-tokeniza é quem sabe. `start_pos`/`next_pos` viajam junto, e no pedaço 0 a
-posição é onde a sessão está - julgá-lo por `chunk_index * chunk_size` = 0
-apagava o KV reaproveitado uma linha depois de aproveitá-lo.
+tokeniza é quem sabe. Em uma cadeia com N hops, o intermediário apenas ecoa a
+decisão autoritativa da cabeça; recalculá-la como `false` faria o hop seguinte
+resetar a sessão e receber um hidden state numa posição positiva. `start_pos` e
+`next_pos` são posições absolutas da sessão, confirmadas pelo peer que acabou
+de executar. No pedaço 0 a posição sem campo é onde a sessão está - julgá-la
+por `chunk_index * chunk_size` = 0 apagava o KV reaproveitado uma linha depois
+de aproveitá-lo. Nos pedaços seguintes, campo ausente é erro e provoca o
+fallback frio, em vez de fabricar 512 para uma sessão que está em 42.
 
 Se ainda assim o prefill falhar com o prefixo ligado - um peer que despejou a
 sessão, reiniciou ou divergiu -, o gateway repete a rodada inteira do zero antes
@@ -348,13 +357,18 @@ não da escolha. `/health` publica `sessions_retained`,
 referência e contém um proxy propositalmente quebrado que precisa disparar a
 bateria - ele valida a **escolha**. `prefix_reuse_lab.rs` valida a **execução**:
 uma conversa de quatro turnos pelo caminho de `/v1/chat/completions`, nos três
-transportes (hub, anel, resposta direta) e com dois hops, afirmando que do turno
-2 em diante `cached_tokens > 0`, que o trabalho por turno para de crescer com a
-conversa, que o TTFT cai em relação ao turno frio e que nenhum hop recebeu
-pedido de remoção parcial de KV. Os hops falsos dessa bancada imitam o motor
-mais restrito que o produto tem que atender - o recorrente que recusa remoção
-parcial; o atraso determinístico da bancada torna o custo executado observável,
-sem confundir a escolha do cache com a economia real.
+transportes (hub, anel, resposta direta), afirmando que do turno 2 em diante
+`cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
+que o TTFT cai em relação ao turno frio e que nenhum hop recebeu pedido de
+remoção parcial de KV. O contrato de sincronização repete anel e resposta
+direta com N=3 e N=5 hops, verificando em cada peer `start_pos == n_past` antes
+do decode e `next_pos == n_past` depois. O teste SSE de `openai.rs` reproduz o
+peer que confirma a sessão em 42 sem `next_pos` e afirma que o fallback não
+envia chunk 1 na posição 512 nem entrega `server_error`. Os hops falsos dessa
+bancada imitam o motor mais restrito que o produto tem que atender - o
+recorrente que recusa remoção parcial; o atraso determinístico da bancada torna
+o custo executado observável, sem confundir a escolha do cache com a economia
+real.
 
 ### 3.2 Seleção do executor
 

@@ -1216,6 +1216,9 @@ mod tests {
                         "n_prompt_tokens": 40,
                         "reuse_prefix": true,
                         "cached_tokens": 33,
+                        "start_pos": 0,
+                        "next_pos": 40,
+                        "stable_len": 40,
                         "token_id": 1,
                         "text": "ok"
                     });
@@ -1278,6 +1281,193 @@ mod tests {
         assert_eq!(body["usage"]["prompt_tokens_details"]["cached_tokens"], 33);
         assert_eq!(body["x_pom"]["trace"]["cached_tokens"], 33);
         assert_eq!(body["x_pom"]["trace"]["input_tokens"], 40);
+    }
+
+    /// A resposta do primeiro chunk pode terminar no token 42 mesmo quando o
+    /// wire usa chunks de 512. O gateway não pode transformar a ausência de
+    /// `next_pos` em `chunk_index * 512`: antes da correção isso despachava o
+    /// chunk 1 na posição 512, o peer respondia 400 e o SSE expunha
+    /// `server_error` antes de concluir o fallback frio.
+    #[tokio::test]
+    async fn streaming_chat_falls_back_without_sending_a_chunk_index_position() {
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"status": "ok", "model_loaded": true}))
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                axum::routing::post({
+                    let frames = frames.clone();
+                    move |body: axum::body::Bytes| {
+                        let frames = frames.clone();
+                        async move {
+                            let (meta, _) = crate::wire::decode_inference_request(&body).unwrap();
+                            frames.lock().unwrap().push(meta.clone());
+                            let chunk_index = meta["chunk_index"].as_u64().unwrap_or(0);
+                            let reuse = meta["reuse_prefix"].as_bool().unwrap_or(false);
+
+                            // Reproduce the captain's peer: the cached first
+                            // chunk confirms session position 42 but omits
+                            // next_pos. The old gateway invented 512 and
+                            // reached this explicit rejection on chunk 1.
+                            if reuse && chunk_index == 0 {
+                                let response = json!({
+                                    "done": false,
+                                    "more_chunks": true,
+                                    "n_prompt_tokens": 600,
+                                    "reuse_prefix": true,
+                                    "cached_tokens": 42,
+                                    "start_pos": 42,
+                                });
+                                let bytes = crate::wire::encode_batch_single(
+                                    &response,
+                                    None,
+                                    crate::wire::WireDtype::F16,
+                                )
+                                .unwrap();
+                                return (
+                                    StatusCode::OK,
+                                    [("content-type", "application/octet-stream")],
+                                    bytes,
+                                )
+                                    .into_response();
+                            }
+                            if chunk_index == 1 && meta["start_pos"] == 512 {
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    "chunk fora de ordem: recebi 1 (pos 512) mas a sessão está em 42",
+                                )
+                                    .into_response();
+                            }
+
+                            let response = json!({
+                                "done": true,
+                                "more_chunks": false,
+                                "n_prompt_tokens": 42,
+                                "reuse_prefix": false,
+                                "cached_tokens": 0,
+                                "start_pos": 0,
+                                "next_pos": 42,
+                                "stable_len": 42,
+                                "token_id": 1,
+                                "text": "ok"
+                            });
+                            let bytes = crate::wire::encode_batch_single(
+                                &response,
+                                None,
+                                crate::wire::WireDtype::F16,
+                            )
+                            .unwrap();
+                            (
+                                StatusCode::OK,
+                                [("content-type", "application/octet-stream")],
+                                bytes,
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/session/rewind",
+                axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    axum::Json(json!({
+                        "rewound": true,
+                        "n_past": body["n_tokens"].clone(),
+                    }))
+                }),
+            )
+            .route(
+                "/v1/session/release",
+                axum::routing::post(|| async { StatusCode::OK }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut peer = crate::gateway::testkit::peer("whole", "whole", 8080);
+        peer.model = "whole-model".into();
+        peer.start_layer = 0;
+        peer.end_layer = 0;
+        peer.total_layers = 1;
+        peer.inference_port = Some(port);
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let stream_body = |response: Response| async move {
+            String::from_utf8(
+                axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+        let first = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state.clone()),
+            Json(ChatRequest {
+                model: Some("whole-model".into()),
+                messages: vec![msg("user", "primeiro")],
+                stream: true,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+                stop: None,
+            }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = stream_body(first).await;
+        assert!(first_body.contains("[DONE]"));
+        assert!(!first_body.contains("server_error"));
+
+        let second = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("whole-model".into()),
+                messages: vec![
+                    msg("user", "primeiro"),
+                    msg("assistant", "ok"),
+                    msg("user", "segundo"),
+                ],
+                stream: true,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+                stop: None,
+            }),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = stream_body(second).await;
+        assert!(second_body.contains("\"content\":\"\""));
+        assert!(second_body.contains("[DONE]"));
+        assert!(!second_body.contains("server_error"), "{second_body}");
+
+        let frames = frames.lock().unwrap();
+        assert!(frames
+            .iter()
+            .any(|meta| meta["chunk_index"] == 0 && meta["reuse_prefix"] == true));
+        assert!(frames
+            .iter()
+            .any(|meta| { meta["chunk_index"] == 0 && meta["reuse_prefix"] == false }));
+        assert!(
+            !frames
+                .iter()
+                .any(|meta| { meta["chunk_index"] == 1 && meta["start_pos"] == 512 }),
+            "posição derivada do índice enviada ao peer: {frames:?}"
+        );
     }
 
     #[tokio::test]

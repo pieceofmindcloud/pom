@@ -302,6 +302,9 @@ struct PrefillJob {
     chunk_index: u32,
     chunk_size: u32,
     reuse_prefix: bool,
+    /// A decisão da cabeça que os hops intermediários só repassam. Um hop que
+    /// não tokeniza não pode substituir `true` por seu `PrefixDecision::default`.
+    cached_tokens: u32,
     start_pos: Option<u32>,
     /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
     /// por quem tokenizou - ver `Session::stable_len`.
@@ -658,6 +661,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.chunk_index,
                 job.chunk_size,
                 job.reuse_prefix,
+                job.cached_tokens,
                 job.start_pos,
                 job.stable_len,
                 job.is_last,
@@ -1434,26 +1438,27 @@ fn retainable_prefix_len(common: usize, prompt_len: usize) -> usize {
     common.min(prompt_len.saturating_sub(1))
 }
 
-/// A posição do KV em que este pedaço de prompt deve começar.
+/// A posição absoluta do KV em que este pedaço de prompt deve começar.
 ///
-/// `start_pos` vem do peer que tokenizou e manda quando existe. Ele só falta no
-/// pedaço 0, e é aí que estava o defeito: julgar o pedaço 0 por
-/// `chunk_index * chunk_size` = 0 fixo fazia a cabeça apagar, uma linha depois,
-/// exatamente o KV que ela acabara de reaproveitar - o `refazendo chunk 0` que
-/// aparecia no log toda vez que o cache **acertava**. A posição do pedaço 0 é
-/// onde a sessão está: zero numa sessão recomeçada, o fim do prefixo retido
-/// quando houve reuso.
+/// `start_pos` vem do peer que tokenizou. Ele só pode faltar no pedaço 0, onde
+/// a posição da própria sessão é a referência: zero numa sessão recomeçada,
+/// ou o fim do prefixo retido quando houve reuso. Para qualquer pedaço
+/// posterior, inferir a posição com `chunk_index * chunk_size` é incorreto:
+/// um pedaço anterior pode ter terminado no token 42, não no múltiplo 512.
+/// Recusar o frame sem posição nomeia a divergência e deixa o gateway fazer o
+/// fallback frio, em vez de misturar KV de sessões diferentes.
 fn expected_prefill_pos(
     start_pos: Option<u32>,
     chunk_index: u32,
-    chunk_size: u32,
     session_n_past: u32,
-) -> u32 {
-    start_pos.unwrap_or(if chunk_index == 0 {
-        session_n_past
-    } else {
-        chunk_index.saturating_mul(chunk_size)
-    })
+) -> Result<u32> {
+    match start_pos {
+        Some(position) => Ok(position),
+        None if chunk_index == 0 => Ok(session_n_past),
+        None => bail!(
+            "chunk {chunk_index} sem start_pos absoluto; não é seguro derivar a posição do índice"
+        ),
+    }
 }
 
 #[cfg(test)]
@@ -1464,20 +1469,19 @@ mod prefix_rule_tests {
     /// reuso é desfeito antes de decodificar.
     #[test]
     fn chunk_zero_of_a_hit_starts_where_the_retained_prefix_ends() {
-        assert_eq!(expected_prefill_pos(None, 0, 512, 1523), 1523);
+        assert_eq!(expected_prefill_pos(None, 0, 1523).unwrap(), 1523);
     }
 
     #[test]
     fn chunk_zero_of_a_cold_session_starts_at_zero() {
-        assert_eq!(expected_prefill_pos(None, 0, 512, 0), 0);
+        assert_eq!(expected_prefill_pos(None, 0, 0).unwrap(), 0);
     }
 
-    /// Do pedaço 1 em diante quem manda é a posição que o peer devolveu; sem
-    /// ela, a grade dos pedaços.
+    /// Do pedaço 1 em diante quem manda é a posição que o peer devolveu.
     #[test]
     fn later_chunks_follow_the_position_the_head_reported() {
-        assert_eq!(expected_prefill_pos(Some(1600), 1, 512, 1600), 1600);
-        assert_eq!(expected_prefill_pos(None, 2, 512, 1024), 1024);
+        assert_eq!(expected_prefill_pos(Some(1600), 1, 1600).unwrap(), 1600);
+        assert!(expected_prefill_pos(None, 2, 1024).is_err());
     }
 
     #[test]
@@ -1717,12 +1721,69 @@ fn record_terminal_engine(
 /// seguintes obedecem a este campo em vez do pedido original do gateway: quem
 /// tokeniza é quem sabe se o prefixo servia, e um hop reusando enquanto a
 /// cabeça recomeçou (ou o contrário) desalinha as posições de todo o pipeline.
-fn apply_prefix_decision(meta: &mut Value, chunk_index: u32, prefix: PrefixDecision) {
+fn apply_prefix_decision(
+    meta: &mut Value,
+    chunk_index: u32,
+    prefix: PrefixDecision,
+    requested_reuse: bool,
+    requested_cached_tokens: u32,
+    owns_tokens: bool,
+) {
     if chunk_index != 0 {
         return;
     }
-    meta["reuse_prefix"] = json!(prefix.reused);
-    meta["cached_tokens"] = json!(prefix.cached_tokens);
+    if owns_tokens {
+        meta["reuse_prefix"] = json!(prefix.reused);
+        meta["cached_tokens"] = json!(prefix.cached_tokens);
+    } else {
+        // Só a cabeça pode decidir se os tokens batem. Todos os hops
+        // intermediários devem transportar a decisão autoritativa recebida;
+        // recalculá-la como `false` faria o hop seguinte resetar a sessão e
+        // depois receber um hidden state com posição positiva.
+        meta["reuse_prefix"] = json!(requested_reuse);
+        meta["cached_tokens"] = json!(requested_cached_tokens);
+    }
+}
+
+#[cfg(test)]
+mod prefix_decision_tests {
+    use super::*;
+
+    #[test]
+    fn an_intermediate_hop_echoes_the_head_decision() {
+        let mut meta = json!({
+            "reuse_prefix": false,
+            "cached_tokens": 0,
+        });
+
+        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, false);
+
+        assert_eq!(meta["reuse_prefix"], true);
+        assert_eq!(meta["cached_tokens"], 42);
+    }
+
+    #[test]
+    fn the_token_owner_reports_what_it_executed() {
+        let mut meta = json!({
+            "reuse_prefix": true,
+            "cached_tokens": 99,
+        });
+
+        apply_prefix_decision(
+            &mut meta,
+            0,
+            PrefixDecision {
+                reused: false,
+                cached_tokens: 0,
+            },
+            true,
+            42,
+            true,
+        );
+
+        assert_eq!(meta["reuse_prefix"], false);
+        assert_eq!(meta["cached_tokens"], 0);
+    }
 }
 
 /// Anota no meta a fronteira medida por quem tokenizou, para os hops seguintes
@@ -3165,6 +3226,10 @@ async fn handle_prefill(
         .get("reuse_prefix")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let cached_tokens = meta
+        .get("cached_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
     let stable_len = meta
         .get("stable_len")
         .and_then(|value| value.as_u64())
@@ -3247,6 +3312,7 @@ async fn handle_prefill(
         chunk_index,
         chunk_size,
         reuse_prefix,
+        cached_tokens,
         start_pos,
         stable_len,
         is_last,
@@ -3581,6 +3647,7 @@ fn prefill_blocking(
     chunk_index: u32,
     chunk_size: u32,
     reuse_prefix: bool,
+    cached_tokens: u32,
     start_pos: Option<u32>,
     stable_len: Option<u32>,
     is_last: bool,
@@ -3599,6 +3666,7 @@ fn prefill_blocking(
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
+    let owns_prompt_tokens = prompt.is_some();
     let mut timings = NodeTimings {
         queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
@@ -3651,12 +3719,7 @@ fn prefill_blocking(
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
-    let expected_pos = expected_prefill_pos(
-        start_pos,
-        chunk_index,
-        chunk_size,
-        s.sessions[&sid_key].n_past,
-    );
+    let expected_pos = expected_prefill_pos(start_pos, chunk_index, s.sessions[&sid_key].n_past)?;
     {
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
@@ -3809,7 +3872,14 @@ fn prefill_blocking(
         if !is_final_chunk {
             let encode_started = Instant::now();
             let mut partial = json!({"done": false, "more_chunks": more});
-            apply_prefix_decision(&mut partial, chunk_index, prefix);
+            apply_prefix_decision(
+                &mut partial,
+                chunk_index,
+                prefix,
+                reuse_prefix,
+                cached_tokens,
+                owns_prompt_tokens,
+            );
             apply_stable_len(&mut partial, stable);
             let bytes = wire::encode(&partial, None, wire_dtype)?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
@@ -3880,7 +3950,14 @@ fn prefill_blocking(
             expected_pos + n_tokens as u32,
             done,
         );
-        apply_prefix_decision(&mut reply, chunk_index, prefix);
+        apply_prefix_decision(
+            &mut reply,
+            chunk_index,
+            prefix,
+            reuse_prefix,
+            cached_tokens,
+            owns_prompt_tokens,
+        );
         apply_stable_len(&mut reply, stable);
         reply["token_id"] = json!(next_id);
         reply["text"] = json!(text);
@@ -3912,7 +3989,14 @@ fn prefill_blocking(
         // `handle_prefill`.
         "owns_tokens": owns_tokens,
     });
-    apply_prefix_decision(&mut reply_meta, chunk_index, prefix);
+    apply_prefix_decision(
+        &mut reply_meta,
+        chunk_index,
+        prefix,
+        reuse_prefix,
+        cached_tokens,
+        owns_prompt_tokens,
+    );
     apply_stable_len(&mut reply_meta, stable);
     // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
     // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
@@ -3941,6 +4025,9 @@ struct PreparedPrefill {
     chunk_index: u32,
     /// O que este peer executou com o prefixo retido - ver `apply_prefix_decision`.
     prefix: PrefixDecision,
+    /// Decisão recebida da cabeça para ecoar quando este peer não tokeniza.
+    requested_reuse: bool,
+    requested_cached_tokens: u32,
     /// A fronteira medida - ver `Session::stable_len`.
     stable_len: u32,
     is_last: bool,
@@ -3985,6 +4072,7 @@ fn prefill_batch_blocking(
             chunk_index,
             chunk_size,
             reuse_prefix,
+            cached_tokens,
             start_pos,
             stable_len,
             is_last,
@@ -4029,12 +4117,8 @@ fn prefill_batch_blocking(
                 }
             }
 
-            let expected_pos = expected_prefill_pos(
-                start_pos,
-                chunk_index,
-                chunk_size,
-                s.sessions[&sid_key].n_past,
-            );
+            let expected_pos =
+                expected_prefill_pos(start_pos, chunk_index, s.sessions[&sid_key].n_past)?;
             {
                 let session = s.sessions.get(&sid_key).unwrap();
                 if session.n_past > expected_pos {
@@ -4122,6 +4206,8 @@ fn prefill_batch_blocking(
                 start_pos: expected_pos,
                 chunk_index,
                 prefix,
+                requested_reuse: reuse_prefix,
+                requested_cached_tokens: cached_tokens,
                 stable_len: stable,
                 is_last,
                 is_final_chunk,
@@ -4298,7 +4384,14 @@ fn prefill_batch_blocking(
                         "start_pos": item.start_pos,
                         "next_pos": item.start_pos + item.n_tokens as u32,
                     });
-                    apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                    apply_prefix_decision(
+                        &mut meta,
+                        item.chunk_index,
+                        item.prefix,
+                        item.requested_reuse,
+                        item.requested_cached_tokens,
+                        item.owns_tokens,
+                    );
                     apply_stable_len(&mut meta, item.stable_len);
                     let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                     timings.encode_us = started.elapsed().as_micros() as u64;
@@ -4358,7 +4451,14 @@ fn prefill_batch_blocking(
                     "start_pos": item.start_pos,
                     "next_pos": item.start_pos + item.n_tokens as u32,
                 });
-                apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+                apply_prefix_decision(
+                    &mut meta,
+                    item.chunk_index,
+                    item.prefix,
+                    item.requested_reuse,
+                    item.requested_cached_tokens,
+                    item.owns_tokens,
+                );
                 apply_stable_len(&mut meta, item.stable_len);
                 let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                 timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
@@ -4382,7 +4482,14 @@ fn prefill_batch_blocking(
                 "next_pos": n_past_now,
                 "owns_tokens": item.owns_tokens,
             });
-            apply_prefix_decision(&mut meta, item.chunk_index, item.prefix);
+            apply_prefix_decision(
+                &mut meta,
+                item.chunk_index,
+                item.prefix,
+                item.requested_reuse,
+                item.requested_cached_tokens,
+                item.owns_tokens,
+            );
             apply_stable_len(&mut meta, item.stable_len);
             if item.owns_tokens {
                 meta["tokens"] = json!(item.tokens_for_chunk);

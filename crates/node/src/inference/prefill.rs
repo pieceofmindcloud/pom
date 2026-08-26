@@ -801,6 +801,37 @@ fn head_prefill_meta(
     })
 }
 
+/// Posições de prefill são absolutas na sessão, não são deriváveis do índice
+/// lógico do pedaço. Um prompt curto pode terminar no token 42 e o pedaço 1
+/// seguinte começa em 42, não em `1 * chunk_size`.
+fn required_prefill_position(
+    meta: &serde_json::Value,
+    field: &str,
+    chunk_index: u32,
+) -> Result<u32> {
+    meta.get(field)
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32)
+        .ok_or_else(|| {
+            anyhow!("peer omitiu {field} no chunk {chunk_index}; posição absoluta obrigatória")
+        })
+}
+
+/// No primeiro pedaço frio, zero é uma posição absoluta conhecida. Em todos
+/// os outros casos, inventar a posição pelo índice pode misturar KV de
+/// sessões diferentes e precisa abortar o caminho de reuso.
+fn observed_prefill_start(
+    meta: &serde_json::Value,
+    chunk_index: u32,
+    reused_prefix: bool,
+) -> Result<u32> {
+    match meta.get("start_pos").and_then(|value| value.as_u64()) {
+        Some(value) => Ok(value as u32),
+        None if chunk_index == 0 && !reused_prefix => Ok(0),
+        None => required_prefill_position(meta, "start_pos", chunk_index),
+    }
+}
+
 /// Quantos tokens de prompt a cabeça informou ter aproveitado neste pedaço.
 ///
 /// Só o pedaço 0 traz o campo, e só a cabeça o preenche. Peer que não o mande
@@ -941,14 +972,12 @@ pub async fn run(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
-        let chunk_start_pos = meta
-            .get("start_pos")
-            .and_then(|value| value.as_u64())
-            .unwrap_or((chunk_index * chunk_size) as u64) as u32;
-        let chunk_next_pos =
-            meta.get("next_pos")
-                .and_then(|value| value.as_u64())
-                .unwrap_or(chunk_start_pos as u64 + chunk_size as u64) as u32;
+        let chunk_start_pos = observed_prefill_start(&meta, chunk_index, head_reused)?;
+        let chunk_next_pos = if more {
+            required_prefill_position(&meta, "next_pos", chunk_index)?
+        } else {
+            chunk_start_pos
+        };
         // A fronteira medida pela cabeça, para os hops partirem o prompt na
         // mesma posição - ver `infer_server::Session::stable_len`.
         let chunk_stable_len = meta.get("stable_len").and_then(|value| value.as_u64());
@@ -1127,12 +1156,11 @@ async fn run_ring(
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
         let is_final_chunk = !more;
-        let chunk_next_pos = sent
-            .meta
-            .get("next_pos")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
-            as u32;
+        let chunk_next_pos = if more {
+            required_prefill_position(&sent.meta, "next_pos", chunk_index)?
+        } else {
+            0
+        };
 
         if is_final_chunk {
             let token_id = sent
@@ -1258,12 +1286,6 @@ async fn run_direct(
         if let Some(error) = direct_failure(plan, routes, &meta) {
             return Err(error);
         }
-        let chunk_next_pos = meta
-            .get("next_pos")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(chunk_index as u64 * chunk_size as u64 + chunk_size as u64)
-            as u32;
-
         record_direct_hops(
             &mut trace,
             Phase::Prefill,
@@ -1283,6 +1305,11 @@ async fn run_direct(
             .get("more_chunks")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
+        let chunk_next_pos = if more {
+            required_prefill_position(&meta, "next_pos", chunk_index)?
+        } else {
+            0
+        };
 
         if !more {
             let token_id = meta
@@ -2106,6 +2133,15 @@ mod tests {
         );
         assert_eq!(meta["prompt"], "Oi, teste");
         assert_eq!(meta["chat_template"], true);
+    }
+
+    #[test]
+    fn missing_absolute_prefill_position_is_an_error_not_a_chunk_index() {
+        let error = required_prefill_position(&json!({"start_pos": 42}), "next_pos", 1)
+            .expect_err("a continuation without next_pos must not invent position 512");
+
+        assert!(error.to_string().contains("next_pos"));
+        assert!(error.to_string().contains("chunk 1"));
     }
 
     fn route_item(

@@ -178,6 +178,11 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
 
     // Só a cabeça tokenizou: os demais herdam a contagem do tensor que chegou.
     let done_before = chunk_index * chunk_size;
+    let start_pos = inc
+        .meta
+        .get("start_pos")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(done_before as u64) as u32;
     let n_tokens = if hop.is_head {
         PROMPT_TOKENS.saturating_sub(done_before).min(chunk_size)
     } else {
@@ -188,6 +193,8 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let more = hop.is_head && (done_before + n_tokens as u32) < PROMPT_TOKENS;
 
     let mut local = json!({"processing_ms": 0, "node_timings": {}});
+    local["start_pos"] = json!(start_pos);
+    local["next_pos"] = json!(start_pos + n_tokens as u32);
     if hop.is_head {
         local["owns_tokens"] = json!(true);
         local["more_chunks"] = json!(more);
@@ -233,6 +240,8 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 "chunk_size": chunk_size,
                 "reuse_prefix": inc.meta["reuse_prefix"].clone(),
                 "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
+                "start_pos": local["start_pos"].clone(),
+                "next_pos": local["next_pos"].clone(),
                 "prompt_progress": crate::infer_server::prompt_progress_for_forward(&inc.meta, &local),
                 "hop_timings": hop_timings,
             });
@@ -264,6 +273,8 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             "chunk_size": chunk_size,
             "reuse_prefix": inc.meta["reuse_prefix"].clone(),
             "is_final_chunk": if hop.is_head { !more } else { is_final_chunk },
+            "start_pos": local["start_pos"].clone(),
+            "next_pos": local["next_pos"].clone(),
         });
         match bubble(&inc.next_hops, "/v1/prefill", base, (&residual, shape), 0).await {
             Ok(mut bubbled) => {

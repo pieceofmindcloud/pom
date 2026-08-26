@@ -45,7 +45,9 @@ efetiva de colocação e configuração por peer. `implantacao.md` também docum
 seleção de `tp_parts`, os ranks `1ofN`, a transferência do `.pom` antes do
 arquivo de peso e a regra de várias faixas por máquina com cobertura global
 completa. `web-ui.md` descreve como essa validação aparece na tela Implantar e
-como o mapa apresenta hops e RTTs direcionais.
+como o mapa apresenta hops e RTTs direcionais. `inferencia.md` registra também
+as causas conhecidas de perda do estado de sessão e a tarefa de observabilidade
+recomendada para distingui-las em campo.
 
 ## superpowers/specs/
 

@@ -355,6 +355,43 @@ rotula todo turno inclusive o primeiro: as duas coisas juntas garantem que o
 prompt de um turno seja prefixo exato do prompt do seguinte. Texto cru sem
 rótulo continua disponível em `/v1/completions` e `POST /api/generate`.
 
+### Por que a sessão desaparece
+
+A investigação do caminho real não encontrou um único evento que possa ser
+atribuído retrospectivamente ao peer da ocorrência: o erro 400 não leva o
+motivo da remoção. O estado de uma sessão é um `HashMap` em memória dentro de
+`InferState`; não há persistência nem restauração depois de um reinício. As
+remoções possíveis hoje são:
+
+- reinício do processo, que recria `sessions` vazio;
+- coleta de ociosidade em `reap_idle`, depois de 900 segundos sem uso, chamada
+  quando `alloc_seq` precisa de um slot;
+- pressão de capacidade: `max_sessions` é 1 por padrão, e `alloc_seq` despeja
+  primeiro a sessão retida menos usada em `evict_retained`;
+- remoção ativa por `finish`, usada pelo `/v1/session/release`, pelo cleanup de
+  cancelamento/erro e pelo próprio despejo de capacidade.
+
+O limite de sessões não remove uma sessão ativa: o despejo seleciona apenas
+sessões retidas, e falta de slot sem vítima devolve `seq pool esgotado`, não
+`sessão desconhecida`. A coleta de ociosidade também não é um timer contínuo.
+Durante um prefill normal, cada chunk aceito atualiza `last_used`, e uma sessão
+em andamento ainda não está marcada como retida. Portanto, para o sintoma
+observado em um chunk posterior, a evidência do código aponta para reinício do
+processo ou remoção explícita/concurrente durante o prefill; TTL e capacidade
+explicam principalmente o cache de prefixo ficar apontando para uma sessão
+perdida entre turnos. O pedido novo funcionar logo depois no mesmo peer prova
+que ele voltou a atender, mas não distingue reinício de remoção.
+
+Conclusão: a perda da sessão é possível e, em parte, intencional no ciclo de
+vida atual, mas não há telemetria suficiente para dizer qual dos eventos ocorreu
+na máquina do relato. Recomenda-se uma tarefa separada para registrar o motivo
+de cada `finish`, `reap_idle` e `evict_retained`, correlacionar o início do
+processo com o `node_id` e alinhar a capacidade do `prefix_cache` do gateway
+com `max_sessions` dos peers. A recuperação automática continua sendo a
+resposta correta para a perda legítima; sem essa tarefa, ela permanece uma
+proteção contra divergência de estado, não uma prova de que a causa deixou de
+existir.
+
 EOS ou fim de turno apenas fecha o acumulador UTF-8 da resposta. O servidor
 mantém a sessão física até receber `/v1/session/rewind` ou `/v1/session/release`,
 porque o gateway pode precisar preservar o KV para o próximo turno. A remoção

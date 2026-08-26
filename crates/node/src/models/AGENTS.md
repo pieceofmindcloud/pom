@@ -16,9 +16,10 @@ transferência.
   chave canônica `<arquitetura>.nextn_predict_layers` e a forma sem prefixo são
   aceitas; a presença dos tensores `nextn` é prova estrutural quando o produtor
   omite a metadata. A ausência de leitura permanece indeterminada. `read_layout`
-  valida os dtypes contra a tabela GGML suportada, usa offsets físicos para o
-  custo dos tensores e calcula o tamanho serializado de cada fatia, incluindo
-  cabeçalho, globais, alinhamento e duplicações.
+  valida os dtypes contra a tabela GGML suportada, descarta essa informação após
+  a validação, usa offsets físicos para o custo dos tensores e calcula o tamanho
+  serializado de cada fatia, incluindo cabeçalho, globais, alinhamento e
+  duplicações.
  - As opções de corte para um modelo inteiro vêm de
   `GgufLayout::valid_prefix_end_layers`: em layout denso, qualquer fim de
   camada inteira é válido; em layout híbrido, só os fins derivados de

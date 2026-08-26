@@ -40,6 +40,7 @@ pub struct CudaTransferProfile {
 }
 
 impl CudaTransferProfile {
+    #[cfg(test)]
     pub fn new(
         hidden_width: usize,
         intermediate_width: usize,
@@ -71,6 +72,7 @@ impl CudaTransferProfile {
         }
     }
 
+    #[cfg(test)]
     pub fn with_bandwidth(mut self, bandwidth: BandwidthProfile) -> Result<Self, String> {
         bandwidth
             .gpu_fraction()
@@ -104,6 +106,7 @@ impl CudaTransferProfile {
         Ok(Some(profile))
     }
 
+    #[cfg(test)]
     pub fn save(&self, path: impl AsRef<Path>) -> Result<(), String> {
         self.validate()?;
         let path = path.as_ref();
@@ -1459,7 +1462,10 @@ unsafe extern "C" {
     fn pom_moe_device_free_bytes(free_bytes: *mut u64) -> i32;
     fn pom_moe_device_upload(payload: *const u8, payload_len: usize, out: *mut *mut c_void) -> i32;
     fn pom_moe_device_free(handle: *mut c_void);
+}
 
+#[cfg(test)]
+unsafe extern "C" {
     fn pom_moe_iquant_trace_single_resident(
         dtype: u32,
         payload: *const u8,

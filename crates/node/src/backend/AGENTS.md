@@ -217,10 +217,11 @@ behind an auth extractor.
   rápido de arquivos e `metadata_complete: false`; os cabeçalhos GGUF são lidos
   em uma tarefa `spawn_blocking` e publicados somente se as pastas e o inventário
   continuarem atuais. O enriquecimento registra início e conclusão; uma falha
-  libera o estado para nova tentativa, sem publicar o inventário parcial como
-  completo. O survey de implantação só recusa uma seleção que ainda não tem
-  suas faixas resolvidas; enriquecimento de outro modelo, peer silencioso ou
-  campo ausente em peer antigo não bloqueia. `merge_parts`
+  mantém o item pendente e libera o estado para nova tentativa, sem publicar o
+  inventário parcial como completo. O survey de implantação só recusa uma
+  seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
+  rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
+  ausente em peer antigo não bloqueia. `merge_parts`
   (arquivo temporário com sufixo único, rename
   at the end; reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),

@@ -655,7 +655,7 @@ impl Machine {
 /// `webui::catalogo_sob_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
-    survey(state, group, DeployKind::Shards, None)
+    survey(state, group, DeployKind::Shards, None, None)
         .await
         .machines
         .len()
@@ -731,11 +731,67 @@ fn selected_metadata_pending_reason(
     }
 }
 
+fn selected_metadata_pending_reason_for(
+    kind: DeployKind,
+    group: &str,
+    selected_ranges: &[(u32, u32)],
+    tp: Option<&TpLaunch>,
+    machines: &[Machine],
+) -> Option<String> {
+    if kind == DeployKind::TensorParallel && has_tp_parts(machines) {
+        if let Some(tp) = tp {
+            let total_layers = model_size(&candidates(machines))
+                .value()
+                .or_else(|| selected_ranges.iter().map(|(_, end)| end + 1).max());
+            if let Some(total_layers) = total_layers {
+                let end_layer = total_layers.saturating_sub(1);
+                let missing_ranks = (0..tp.size)
+                    .filter(|rank| {
+                        !machines.iter().any(|machine| {
+                            machine.held.iter().any(|shard| {
+                                shard.start_layer == 0
+                                    && shard.end_layer == end_layer
+                                    && shard.tp_rank == Some(*rank)
+                                    && shard.tp_size == Some(tp.size)
+                                    && !shard.virtual_slice
+                            })
+                        })
+                    })
+                    .map(|rank| rank + 1)
+                    .collect::<Vec<_>>();
+                if !missing_ranks.is_empty() {
+                    return Some(format!(
+                        "a seleção tensor-parallel de {group} ainda aguarda os metadados do GGUF dos ranks {}; aguarde a leitura desta seleção",
+                        missing_ranks
+                            .iter()
+                            .map(u32::to_string)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+            }
+        }
+        return None;
+    }
+
+    let missing = selected_ranges
+        .iter()
+        .copied()
+        .filter(|(start, end)| {
+            !machines
+                .iter()
+                .any(|machine| machine.holds_ready(*start, *end).is_some())
+        })
+        .collect::<Vec<_>>();
+    (!missing.is_empty()).then(|| selected_metadata_pending_reason(kind, group, &missing))
+}
+
 async fn survey(
     state: &GatewayState,
     group: &str,
     kind: DeployKind,
     selection: Option<&[SelectedSlice]>,
+    tp: Option<&TpLaunch>,
 ) -> Survey {
     let selected_ranges = selection.map(|selected| {
         selected
@@ -1042,16 +1098,7 @@ async fn survey(
         if !metadata_pending_candidate {
             return None;
         }
-        let missing = selected
-            .iter()
-            .copied()
-            .filter(|(start, end)| {
-                !machines
-                    .iter()
-                    .any(|machine| machine.holds_ready(*start, *end).is_some())
-            })
-            .collect::<Vec<_>>();
-        (!missing.is_empty()).then(|| selected_metadata_pending_reason(kind, group, &missing))
+        selected_metadata_pending_reason_for(kind, group, selected, tp, &machines)
     });
 
     Survey {
@@ -3084,7 +3131,14 @@ async fn plan_endpoint(
             Ok(name) => name,
             Err(error) => return bad(json!({ "error": error })),
         };
-    let survey = survey(&state, &req.group, req.kind, req.selection.as_deref()).await;
+    let survey = survey(
+        &state,
+        &req.group,
+        req.kind,
+        req.selection.as_deref(),
+        req.tp.as_ref(),
+    )
+    .await;
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
     let layer_options = if req.kind == DeployKind::Whole {
@@ -3138,7 +3192,14 @@ async fn deploy_endpoint(
     // meantime would otherwise be handed a slice. What is *not* recomputed is
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
-    let survey = survey(&state, &req.group, req.kind, req.selection.as_deref()).await;
+    let survey = survey(
+        &state,
+        &req.group,
+        req.kind,
+        req.selection.as_deref(),
+        req.tp.as_ref(),
+    )
+    .await;
     if let Some(reason) = survey.metadata_pending {
         return bad(json!({ "error": reason }));
     }
@@ -4683,7 +4744,9 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group, plan.kind, None).await.machines;
+    let machines = survey(&state, &plan.group, plan.kind, None, None)
+        .await
+        .machines;
     let mut targets = launch_targets(
         &plan.steps,
         &machines,
@@ -5415,7 +5478,9 @@ async fn add_node_endpoint(
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
-    let machines = survey(&state, &req.group, req.kind, None).await.machines;
+    let machines = survey(&state, &req.group, req.kind, None, None)
+        .await
+        .machines;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
         return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
     };
@@ -8708,6 +8773,43 @@ mod tests {
         );
         assert_eq!(targets[0].source_model_path, "/a/rank-0.gguf");
         assert_eq!(targets[1].source_model_path, "/b/rank-1.gguf");
+    }
+
+    #[test]
+    fn selected_tp_metadata_gate_names_missing_ranks() {
+        let machines = vec![tp_machine("a", 0)];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        let reason = selected_metadata_pending_reason_for(
+            DeployKind::TensorParallel,
+            "qwen",
+            &[(0, 31)],
+            Some(&tp),
+            &machines,
+        )
+        .expect("rank ausente deve manter a seleção bloqueada");
+        assert!(reason.contains("ranks 2"), "{reason}");
+    }
+
+    #[test]
+    fn selected_tp_metadata_gate_opens_when_all_ranks_are_ready() {
+        let machines = vec![tp_machine("a", 0), tp_machine("b", 1)];
+        let tp = TpLaunch {
+            size: 2,
+            primary_node_id: "a".into(),
+            worker_node_ids: vec!["b".into()],
+        };
+        assert!(selected_metadata_pending_reason_for(
+            DeployKind::TensorParallel,
+            "qwen",
+            &[(0, 31)],
+            Some(&tp),
+            &machines,
+        )
+        .is_none());
     }
 
     /// As validações estáticas do grupo TP recusam o plano antes de qualquer

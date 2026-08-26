@@ -509,49 +509,62 @@ fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
+enum EnrichResult {
+    /// The header and optional capability evidence were read successfully.
+    Ready,
+    /// The file could not be read yet. Keep it visible and retry the phase.
+    Retry,
+    /// The fast scan found an item that is not a runnable model.
+    Drop,
+}
+
 /// Read the header for one item after the fast inventory is already visible.
-/// Returns false when the file disappeared or is a projector sidecar.
-fn enrich_model(model: &mut DiscoveredModel) -> bool {
+fn enrich_model(model: &mut DiscoveredModel) -> EnrichResult {
     let path = Path::new(&model.path);
     let Some(meta) = std::fs::metadata(path).ok() else {
-        return false;
+        return EnrichResult::Retry;
     };
     model.size_bytes = meta.len();
     if model.size_bytes < 1024 {
-        return false;
+        return EnrichResult::Drop;
     }
     let filename = path
         .file_name()
         .map(|name| name.to_string_lossy())
         .unwrap_or_default();
-    let info = cached_info(path, model.size_bytes, file_mtime_fingerprint(&meta));
-    if info.as_ref().and_then(|i| i.architecture.as_deref()) == Some("clip")
-        || filename.starts_with("mmproj")
-    {
-        return false;
+    let Some(info) = cached_info(path, model.size_bytes, file_mtime_fingerprint(&meta)) else {
+        return EnrichResult::Retry;
+    };
+    if info.architecture.as_deref() == Some("clip") || filename.starts_with("mmproj") {
+        return EnrichResult::Drop;
     }
 
-    model.architecture = info.as_ref().and_then(|i| i.architecture.clone());
-    model.is_moe = info.as_ref().is_some_and(GgufInfo::is_moe);
-    // The catalog's second phase must finish after one header pass. Reading
-    // the whole tensor table here made a slow external volume hold
+    model.architecture = info.architecture.clone();
+    model.is_moe = info.is_moe();
+    // The catalog's second phase must finish after one lightweight header and
+    // tensor-name pass. Reading the whole tensor layout here made a slow volume hold
     // `metadata_complete` false for the entire catalog, even though the
-    // selected shard ranges already came from their manifests. Tensor-table
-    // MTP evidence remains available through `gguf::read_capability_evidence`;
-    // the catalog reports unknown when the header does not prove it.
-    model.capabilities = info.as_ref().map(|header| ModelCapabilityEvidence {
-        thinking: header.thinking_capability(),
-        mtp: header.nextn_predict_layers.map(|layers| layers > 0),
+    // selected shard ranges already came from their manifests. MTP evidence
+    // uses only the lightweight tensor-name scan; the full layout pass remains
+    // available through `gguf::read_capability_evidence` callers that need it.
+    let tensor_mtp = gguf::has_nextn_tensors(path).ok();
+    model.capabilities = Some(ModelCapabilityEvidence {
+        thinking: info.thinking_capability(),
+        mtp: match (info.nextn_predict_layers, tensor_mtp) {
+            (_, Some(true)) => Some(true),
+            (Some(layers), _) => Some(layers > 0),
+            (None, Some(false)) => Some(false),
+            (None, None) => None,
+        },
     });
     if model.shard_range.is_none() {
-        model.shard_range = info.as_ref().and_then(|i| i.shard_range);
-        model.total_layers = match (model.shard_range, info.as_ref()) {
-            (Some(_), Some(header)) => header.original_block_count,
-            (None, Some(header)) => header.total_layers(),
-            _ => None,
+        model.shard_range = info.shard_range;
+        model.total_layers = match model.shard_range {
+            Some(_) => info.original_block_count,
+            None => info.total_layers(),
         };
     }
-    true
+    EnrichResult::Ready
 }
 
 /// LM Studio stores models as `<publisher>/<repo>/<file>.gguf`; show that.
@@ -1046,9 +1059,19 @@ pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
 /// it separate from `discover_fast` is what lets the HTTP catalog answer with
 /// names and paths while a slow volume is still being read.
 pub fn enrich(mut catalog: Catalog) -> Catalog {
-    catalog.models.retain_mut(enrich_model);
+    let mut complete = true;
+    catalog
+        .models
+        .retain_mut(|model| match enrich_model(model) {
+            EnrichResult::Ready => true,
+            EnrichResult::Retry => {
+                complete = false;
+                true
+            }
+            EnrichResult::Drop => false,
+        });
     catalog.shard_sets = build_shard_sets(&catalog.models);
-    catalog.metadata_complete = true;
+    catalog.metadata_complete = complete;
     catalog
 }
 
@@ -1285,6 +1308,24 @@ mod tests {
         let complete = enrich(fast);
         assert!(complete.metadata_complete);
         assert_eq!(complete.models[0].total_layers, Some(8));
+
+        std::fs::remove_dir_all(root).ok();
+    }
+
+    #[test]
+    fn enrichment_keeps_unreadable_model_pending() {
+        let root =
+            std::env::temp_dir().join(format!("pom-cat-invalid-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        std::fs::write(models.join("broken.gguf"), vec![0u8; 1024]).unwrap();
+
+        let enriched = enrich(discover_fast(&[models], &shards));
+        assert!(!enriched.metadata_complete);
+        assert_eq!(enriched.models.len(), 1);
+        assert_eq!(enriched.models[0].architecture, None);
 
         std::fs::remove_dir_all(root).ok();
     }

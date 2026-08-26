@@ -283,6 +283,18 @@ impl<R: Read + Seek> Reader<R> {
         Ok(self.inner.stream_position()?)
     }
 
+    fn u8(&mut self) -> Result<u8> {
+        let mut b = [0u8; 1];
+        self.inner.read_exact(&mut b)?;
+        Ok(b[0])
+    }
+
+    fn u16(&mut self) -> Result<u16> {
+        let mut b = [0u8; 2];
+        self.inner.read_exact(&mut b)?;
+        Ok(u16::from_le_bytes(b))
+    }
+
     fn u32(&mut self) -> Result<u32> {
         let mut b = [0u8; 4];
         self.inner.read_exact(&mut b)?;
@@ -293,6 +305,30 @@ impl<R: Read + Seek> Reader<R> {
         let mut b = [0u8; 8];
         self.inner.read_exact(&mut b)?;
         Ok(u64::from_le_bytes(b))
+    }
+
+    fn i8(&mut self) -> Result<i8> {
+        let mut b = [0u8; 1];
+        self.inner.read_exact(&mut b)?;
+        Ok(i8::from_le_bytes(b))
+    }
+
+    fn i16(&mut self) -> Result<i16> {
+        let mut b = [0u8; 2];
+        self.inner.read_exact(&mut b)?;
+        Ok(i16::from_le_bytes(b))
+    }
+
+    fn i32(&mut self) -> Result<i32> {
+        let mut b = [0u8; 4];
+        self.inner.read_exact(&mut b)?;
+        Ok(i32::from_le_bytes(b))
+    }
+
+    fn i64(&mut self) -> Result<i64> {
+        let mut b = [0u8; 8];
+        self.inner.read_exact(&mut b)?;
+        Ok(i64::from_le_bytes(b))
     }
 
     fn string(&mut self) -> Result<String> {
@@ -349,27 +385,33 @@ impl<R: Read + Seek> Reader<R> {
         Ok(self.position()? - start)
     }
 
-    /// Read a scalar as u32 when it is an integer type; otherwise skip it.
-    fn value_as_u32(&mut self, vtype: u32) -> Result<Option<u32>> {
+    fn value_as_u64(&mut self, vtype: u32) -> Result<Option<u64>> {
         let v = match vtype {
-            T_UINT8 | T_INT8 => {
-                let mut b = [0u8; 1];
-                self.inner.read_exact(&mut b)?;
-                Some(b[0] as u32)
-            }
-            T_UINT16 | T_INT16 => {
-                let mut b = [0u8; 2];
-                self.inner.read_exact(&mut b)?;
-                Some(u16::from_le_bytes(b) as u32)
-            }
-            T_UINT32 | T_INT32 => Some(self.u32()?),
-            T_UINT64 | T_INT64 => Some(self.u64()? as u32),
+            T_UINT8 => Some(self.u8()? as u64),
+            T_UINT16 => Some(self.u16()? as u64),
+            T_UINT32 => Some(self.u32()? as u64),
+            T_UINT64 => Some(self.u64()?),
+            T_INT8 => Some(nonnegative_integer(i128::from(self.i8()?))?),
+            T_INT16 => Some(nonnegative_integer(i128::from(self.i16()?))?),
+            T_INT32 => Some(nonnegative_integer(i128::from(self.i32()?))?),
+            T_INT64 => Some(nonnegative_integer(i128::from(self.i64()?))?),
             _ => {
                 self.skip_value(vtype)?;
                 None
             }
         };
         Ok(v)
+    }
+
+    /// Read a scalar as u32 when it is a nonnegative integer; otherwise skip
+    /// it. GGUF producers use signed integer types for some numeric metadata.
+    fn value_as_u32(&mut self, vtype: u32) -> Result<Option<u32>> {
+        self.value_as_u64(vtype)?
+            .map(|value| {
+                u32::try_from(value)
+                    .map_err(|_| anyhow::anyhow!("inteiro GGUF grande demais para u32: {value}"))
+            })
+            .transpose()
     }
 
     fn values_as_u32(&mut self, vtype: u32) -> Result<Option<Vec<u32>>> {
@@ -417,6 +459,10 @@ impl<R: Read + Seek> Reader<R> {
         }
         Ok(Some(matches))
     }
+}
+
+fn nonnegative_integer(value: i128) -> Result<u64> {
+    u64::try_from(value).map_err(|_| anyhow::anyhow!("inteiro GGUF não pode ser negativo: {value}"))
 }
 
 /// Parse the KV header of a GGUF file.
@@ -989,8 +1035,6 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
                     architecture = value;
                 }
             }
-            T_UINT32 => scalar_u32 = Some(r.u32()?),
-            T_UINT64 => scalar_u32 = Some(r.u64()? as u32),
             T_ARRAY => {
                 let element_type = r.u32()?;
                 let count = r.u64()?;
@@ -1000,7 +1044,7 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
                     count,
                 });
             }
-            _ => r.skip_value(vtype)?,
+            _ => scalar_u32 = r.value_as_u32(vtype)?,
         }
         if is_nextn_predict_layers_key(&key) {
             layout.nextn_predict_layers = scalar_u32.unwrap_or(0);
@@ -1258,6 +1302,40 @@ mod tests {
             b.extend_from_slice(v);
         }
         b
+    }
+
+    #[test]
+    fn accepts_nonnegative_signed_integer_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-signed-gguf-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[
+            ("split.tensors.count", T_INT32, 4i32.to_le_bytes().to_vec()),
+            ("llama.block_count", T_INT32, 32i32.to_le_bytes().to_vec()),
+        ]);
+        std::fs::write(&path, bytes).unwrap();
+
+        let info = read_info(&path).unwrap();
+
+        assert_eq!(info.split_tensors_count, Some(4));
+        assert_eq!(info.block_count, Some(32));
+        let layout = read_layout(&path).unwrap();
+        assert_eq!(layout.serialized.as_ref().unwrap().original_block_count, 32);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_negative_signed_integer_metadata() {
+        let nonce = uuid::Uuid::new_v4().simple();
+        let path = std::env::temp_dir().join(format!("pom-negative-gguf-{nonce}.gguf"));
+        let bytes = header_only_gguf(&[(
+            "split.tensors.count",
+            T_INT32,
+            (-1i32).to_le_bytes().to_vec(),
+        )]);
+        std::fs::write(&path, bytes).unwrap();
+
+        assert!(read_info(&path).is_err());
+        let _ = std::fs::remove_file(path);
     }
 
     fn gguf_with_tensors(kvs: &[(&str, u32, Vec<u8>)], names: &[&str]) -> Vec<u8> {

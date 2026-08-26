@@ -16,6 +16,10 @@ transferência.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
   manifestos ou do nome de uma fatia são apenas dados de identidade.
+  Valores numéricos do cabeçalho GGUF são aceitos pela semântica de inteiro não
+  negativo, independentemente de o produtor tê-los escrito como signed ou
+  unsigned; valores negativos e overflow são recusados. Isso inclui
+  `split.tensors.count`, que o `gguf-split` de referência escreve como INT32.
   Cada resultado enriquecido guarda apenas em memória a identidade
   `path + size + mtime` do arquivo. O backend usa essa marca para reaproveitar
   metadata quando um refresh cria outro inventário e para enriquecer somente

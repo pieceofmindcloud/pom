@@ -68,6 +68,13 @@ restrito à fronteira de fatiamento ou transferência.
   `catalog::InstalledModel::is_shard`; a cópia que existia em `GgufInfo` não
   tinha chamador e saiu. O catálogo também lê os campos de multipart nesse
   header, sem mapear nem validar o payload dos tensores.
+
+  Campos numéricos do cabeçalho são interpretados pelo valor inteiro não
+  negativo, não pela rigidez do tipo signed/unsigned. Isso inclui
+  `split.tensors.count`, que o `gguf-split` de referência grava como INT32,
+  enquanto `split.no` e `split.count` são UINT16. Valores signed negativos e
+  valores que excedem o destino são recusados; a regra vale para as demais
+  chaves numéricas e não é específica a um modelo.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml

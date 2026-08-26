@@ -130,13 +130,29 @@ fn scalar_size(value_type: u32) -> Option<usize> {
     }
 }
 
-fn unsigned_value(reader: &mut Reader<'_>, value_type: u32, key: &str) -> Result<u64> {
+fn nonnegative_integer(reader: &mut Reader<'_>, value_type: u32, key: &str) -> Result<u64> {
     match value_type {
         T_U8 => Ok(reader.u8()? as u64),
         T_U16 => Ok(reader.u16()? as u64),
         T_U32 => Ok(reader.u32()? as u64),
         T_U64 => reader.u64(),
-        _ => bail!("'{key}' não é um inteiro sem sinal no GGUF"),
+        T_I8 => {
+            let value = i8::from_le_bytes(reader.take(1)?.try_into().unwrap());
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("'{key}' tem valor negativo: {value}"))
+        }
+        T_I16 => {
+            let value = i16::from_le_bytes(reader.take(2)?.try_into().unwrap());
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("'{key}' tem valor negativo: {value}"))
+        }
+        T_I32 => {
+            let value = i32::from_le_bytes(reader.take(4)?.try_into().unwrap());
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("'{key}' tem valor negativo: {value}"))
+        }
+        T_I64 => {
+            let value = i64::from_le_bytes(reader.take(8)?.try_into().unwrap());
+            u64::try_from(value).map_err(|_| anyhow::anyhow!("'{key}' tem valor negativo: {value}"))
+        }
+        _ => bail!("'{key}' não é um inteiro GGUF não negativo"),
     }
 }
 
@@ -183,10 +199,12 @@ fn parse_header(data: &[u8]) -> Result<ParsedHeader> {
         let key = reader.string()?;
         let value_type = reader.u32()?;
         match key.as_str() {
-            "split.count" => fields.count = Some(unsigned_value(&mut reader, value_type, &key)?),
-            "split.no" => fields.no = Some(unsigned_value(&mut reader, value_type, &key)?),
+            "split.count" => {
+                fields.count = Some(nonnegative_integer(&mut reader, value_type, &key)?)
+            }
+            "split.no" => fields.no = Some(nonnegative_integer(&mut reader, value_type, &key)?),
             "split.tensors.count" => {
-                fields.tensors_count = Some(unsigned_value(&mut reader, value_type, &key)?)
+                fields.tensors_count = Some(nonnegative_integer(&mut reader, value_type, &key)?)
             }
             _ => reader.skip_value(value_type)?,
         }
@@ -622,15 +640,29 @@ mod tests {
     }
 
     fn header(no: u16, total_tensor_count: u64, tensors: &[(&str, u64)]) -> Vec<u8> {
+        typed_header(no, 2, T_U64, total_tensor_count, tensors)
+    }
+
+    fn typed_header(
+        no: u16,
+        split_count: u16,
+        tensor_count_type: u32,
+        total_tensor_count: u64,
+        tensors: &[(&str, u64)],
+    ) -> Vec<u8> {
         let mut kv = Vec::new();
-        for (key, value) in [("split.count", 2u16), ("split.no", no)] {
+        for (key, value) in [("split.count", split_count), ("split.no", no)] {
             kv.extend_from_slice(&string(key));
             kv.extend_from_slice(&T_U16.to_le_bytes());
             kv.extend_from_slice(&value.to_le_bytes());
         }
         kv.extend_from_slice(&string("split.tensors.count"));
-        kv.extend_from_slice(&T_U64.to_le_bytes());
-        kv.extend_from_slice(&total_tensor_count.to_le_bytes());
+        kv.extend_from_slice(&tensor_count_type.to_le_bytes());
+        match tensor_count_type {
+            T_I32 => kv.extend_from_slice(&(total_tensor_count as i32).to_le_bytes()),
+            T_U64 => kv.extend_from_slice(&total_tensor_count.to_le_bytes()),
+            other => panic!("tipo de teste não suportado: {other}"),
+        }
 
         let mut out = Vec::new();
         out.extend_from_slice(&GGUF_MAGIC.to_le_bytes());
@@ -649,6 +681,51 @@ mod tests {
             out.push(0);
         }
         out
+    }
+
+    #[test]
+    fn accepts_reference_signed_split_tensor_count() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pom-multipart-signed-count-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        for no in 0..4u16 {
+            let path = dir.join(format!("model-{no:05}-of-00004.gguf"));
+            std::fs::write(&path, typed_header(no, 4, T_I32, 0, &[])).unwrap();
+        }
+        let first = dir.join("model-00000-of-00004.gguf");
+        let info = crate::gguf::read_info(&first).unwrap();
+        let metadata = catalog_metadata(&first, &info).unwrap();
+        let source = GgufSource::open(&first).unwrap();
+
+        assert_eq!(metadata.parts.len(), 4);
+        assert_eq!(source.parts().len(), 4);
+        assert_eq!(
+            metadata.source_bytes,
+            (0..4)
+                .map(|no| {
+                    std::fs::metadata(dir.join(format!("model-{no:05}-of-00004.gguf")))
+                        .unwrap()
+                        .len()
+                })
+                .sum::<u64>()
+        );
+
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn rejects_negative_signed_split_count() {
+        let bytes = (-1i32).to_le_bytes();
+        let mut reader = Reader {
+            data: &bytes,
+            pos: 0,
+        };
+
+        assert!(nonnegative_integer(&mut reader, T_I32, "split.tensors.count").is_err());
     }
 
     #[test]

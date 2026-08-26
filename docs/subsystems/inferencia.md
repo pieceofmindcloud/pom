@@ -338,9 +338,16 @@ por `chunk_index * chunk_size` = 0 apagava o KV reaproveitado uma linha depois
 de aproveitá-lo. Nos pedaços seguintes, campo ausente é erro e provoca o
 fallback frio, em vez de fabricar 512 para uma sessão que está em 42.
 
-Se ainda assim o prefill falhar com o prefixo ligado - um peer que despejou a
-sessão, reiniciou ou divergiu -, o gateway repete a rodada inteira do zero antes
-de devolver erro. Reusar é otimização, nunca motivo para a requisição falhar.
+Se um peer perder a sessão durante o prefill - por coleta de ociosidade,
+reinício do processo ou remoção explícita -, ele devolve "sessão desconhecida".
+O gateway reconhece essa recusa e repete a rodada inteira do zero uma única vez,
+mesmo quando o pedido não usava prefixo: o estado anterior daquele peer não
+existe mais, então repetir apenas o chunk recusado poderia produzir uma resposta
+silenciosamente errada. O custo é refazer também os chunks já aceitos e o KV em
+todos os hops. Se a segunda rodada falhar, o erro final informa que o sistema
+tentou reconstruir o contexto e que o pedido não foi executado; ele não expõe ao
+cliente a instrução interna de enviar `reset=true`. Reusar é otimização, nunca
+motivo para a requisição falhar.
 
 O prompt que o cache reconhece vem do **array de mensagens**
 (`openai::conversation_cache_key`), não do texto renderizado, e `render_prompt`

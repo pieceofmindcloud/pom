@@ -146,7 +146,10 @@ behind an auth extractor.
   the next turn the instant the stream closes and used to arrive in the middle
   of it; token events still go out live. A prefill that fails with the prefix
   enabled is retried once from scratch - reusing is an optimisation, never a
-  reason for the request to fail. When the stream receiver closes,
+  reason for the request to fail. A peer that reports an unknown session also
+  triggers that same single cold retry, even when the original request did not
+  use prefix reuse, because a later chunk cannot be reconstructed from hidden
+  state alone. When the stream receiver closes,
   `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
   next retry, hop or chunk; already accepted peer frames are cleaned up by the
   normal session release. `start_gateway` registers

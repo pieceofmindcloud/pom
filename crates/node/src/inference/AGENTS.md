@@ -122,6 +122,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   as funções de produção nos pontos de decisão
   (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
   `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
+  Também simula um hop que perde a sessão no meio do prefill: o gateway repete
+  o prefill completo a frio uma única vez, para reconstruir o KV desde o prompt,
+  e a bateria verifica que uma segunda perda termina com erro limitado e útil.
 - `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
   chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
   ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
@@ -418,6 +421,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
+  reinício do processo também remove o estado em memória. Se um desses eventos
+  ocorrer no meio de um prefill, o peer devolve sessão desconhecida e o gateway
+  recomeça o prefill completo uma vez, nunca apenas o chunk que perdeu o KV;
   `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)

@@ -465,6 +465,15 @@ pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
         || text.contains("corpo do frame excede limite")
 }
 
+/// Identifica a recusa que o gateway consegue reparar reconstruindo o prefill
+/// desde o prompt completo. A mensagem pode vir diretamente de `HttpRefusal`
+/// ou dentro de um `RelayFailure` serializado pelo anel/resposta direta, mas
+/// `anyhow::Error::to_string` preserva o texto nos dois casos.
+pub fn is_unknown_session_error(error: &anyhow::Error) -> bool {
+    let text = error.to_string().to_lowercase();
+    text.contains("sessão") && text.contains("desconhecida")
+}
+
 /// The request payload does not reveal the size of a hidden-state response
 /// produced by a head hop. Coalescing such calls could create a response batch
 /// larger than the wire limit even when every request was tiny. Ring frames
@@ -1452,6 +1461,23 @@ mod tests {
         });
 
         assert!(is_frame_size_error(&error));
+    }
+
+    #[test]
+    fn unknown_session_refusal_is_classified() {
+        let unknown = anyhow::Error::new(HttpRefusal {
+            status: 400,
+            body: "sessão 's' desconhecida - envie reset=true antes".into(),
+            peer_label: "peer-x".into(),
+        });
+        let other = anyhow::Error::new(HttpRefusal {
+            status: 400,
+            body: "chunk fora de ordem".into(),
+            peer_label: "peer-x".into(),
+        });
+
+        assert!(is_unknown_session_error(&unknown));
+        assert!(!is_unknown_session_error(&other));
     }
 
     #[tokio::test]

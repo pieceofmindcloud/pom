@@ -1048,17 +1048,23 @@ async fn generate_stream_inner(
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix).await;
-        if reuse_prefix {
-            if let Err(e) = &prefill_result {
-                if crate::relay::is_frame_size_error(e) {
-                    warn!(
-                        "prefill com prefixo falhou por limite de frame ({e}); \
-                         não é recuperável repetindo o mesmo chunk"
-                    );
-                } else if !crate::prefill::is_cancelled(e) {
-                    warn!("prefill com prefixo reaproveitado falhou ({e}); repetindo do zero");
-                    prefill_result = prefill_attempt(false).await;
-                }
+        let mut unknown_session_recovery_attempted = false;
+        if let Err(e) = &prefill_result {
+            let unknown_session = crate::relay::is_unknown_session_error(e);
+            if crate::relay::is_frame_size_error(e) {
+                warn!(
+                    "prefill falhou por limite de frame ({e}); \
+                     não é recuperável repetindo o mesmo chunk"
+                );
+            } else if !crate::prefill::is_cancelled(e)
+                && (reuse_prefix || unknown_session)
+            {
+                unknown_session_recovery_attempted = unknown_session;
+                warn!(
+                    "prefill falhou com estado de sessão incompatível ({e}); \
+                     reconstruindo o prefill inteiro a frio uma vez"
+                );
+                prefill_result = prefill_attempt(false).await;
             }
         }
         let first = match prefill_result {
@@ -1079,8 +1085,15 @@ async fn generate_stream_inner(
                 return;
             }
             Err(e) => {
+                let message = if unknown_session_recovery_attempted
+                    || crate::relay::is_unknown_session_error(&e)
+                {
+                    "Prefill falhou: um peer perdeu o estado da sessão; o sistema tentou reconstruir o contexto, mas não conseguiu concluir e o pedido não foi executado. Tente enviar a mensagem novamente quando o cluster estiver estável.".to_string()
+                } else {
+                    format!("Prefill falhou: {e}")
+                };
                 let _ = tx
-                    .send(GenEvent::Failed(format!("Prefill falhou: {e}")))
+                    .send(GenEvent::Failed(message))
                     .await;
                 return;
             }

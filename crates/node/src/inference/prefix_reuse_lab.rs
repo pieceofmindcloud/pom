@@ -96,6 +96,12 @@ struct Engine {
     /// inferir a economia a partir do pedido do gateway: precisa comparar a
     /// posição declarada com o contador remoto antes e depois do decode.
     frames: Vec<ObservedFrame>,
+    /// Falha controlada da bancada: remove a sessão antes de um chunk e faz o
+    /// peer responder como o servidor real quando o chamador ainda não pediu
+    /// um reset. O contador permite testar tanto a recuperação única quanto o
+    /// limite de uma tentativa.
+    unknown_session_at_chunk: Option<u32>,
+    unknown_session_failures_remaining: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -247,6 +253,16 @@ fn ingerir(hop: &Hop, inc: &Incoming, sid: &str) -> Result<Ingerido, String> {
     let stable_from_head = inc.meta["stable_len"].as_u64().map(|v| v as u32);
 
     let mut engine = hop.engine.lock().unwrap();
+
+    if engine.unknown_session_at_chunk == Some(chunk_index)
+        && engine.unknown_session_failures_remaining > 0
+    {
+        engine.unknown_session_failures_remaining -= 1;
+        engine.sessions.remove(sid);
+        return Err(format!(
+            "sessão '{sid}' desconhecida - envie reset=true antes"
+        ));
+    }
 
     let mut reused = false;
     let mut cached_tokens = 0u32;
@@ -409,6 +425,9 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
         local,
     } = match ingerir(&hop, &inc, &sid) {
         Ok(ok) => ok,
+        Err(msg) if msg.contains("sessão") && msg.contains("desconhecida") => {
+            return (StatusCode::BAD_REQUEST, msg).into_response()
+        }
         Err(msg) => return erro(msg),
     };
 
@@ -711,6 +730,16 @@ async fn conversa_com_hops(
     esperar_o_fim: bool,
     hop_count: usize,
 ) -> Medida {
+    conversa_com_hops_fault(transporte, turnos, esperar_o_fim, hop_count, None).await
+}
+
+async fn conversa_com_hops_fault(
+    transporte: Transporte,
+    turnos: usize,
+    esperar_o_fim: bool,
+    hop_count: usize,
+    fault: Option<(usize, u32, usize)>,
+) -> Medida {
     assert!(hop_count >= 1);
     let motores: Vec<Arc<Mutex<Engine>>> = (0..hop_count)
         .map(|_| Arc::new(Mutex::new(Engine::default())))
@@ -724,6 +753,13 @@ async fn conversa_com_hops(
             })
             .await,
         );
+    }
+
+    if let Some((hop_index, chunk_index, failures)) = fault {
+        assert!(hop_index < hop_count);
+        let mut engine = motores[hop_index].lock().unwrap();
+        engine.unknown_session_at_chunk = Some(chunk_index);
+        engine.unknown_session_failures_remaining = failures;
     }
 
     let caps = transporte.caps();
@@ -979,6 +1015,94 @@ async fn from_the_second_turn_on_the_prompt_is_not_reprocessed() {
                     "[{contexto}] {nome} deixou a sequência de geração viva após o rewind"
                 );
             }
+        }
+    }
+}
+
+/// Um peer pode perder o estado entre dois chunks de um prefill frio. O
+/// chamador tem o prompt inteiro e precisa reconstruir todos os hops desde o
+/// chunk 0; repetir apenas o hidden state atual deixaria o peer sem contexto.
+#[tokio::test]
+async fn unknown_session_during_prefill_is_recovered() {
+    for transporte in Transporte::todos() {
+        let medida = conversa_com_hops_fault(transporte, 1, true, 2, Some((1, 1, 1))).await;
+        let turno = &medida.turnos[0];
+        assert!(
+            turno.falhou.is_none(),
+            "{transporte:?} falhou depois de perder a sessão: {:?}",
+            turno.falhou
+        );
+
+        for (i, hop) in medida.hops.iter().enumerate() {
+            let engine = hop.lock().unwrap();
+            assert_eq!(
+                engine
+                    .frames
+                    .iter()
+                    .filter(|frame| frame.chunk_index == 0)
+                    .count(),
+                2,
+                "{transporte:?} não reiniciou o prefill desde o chunk 0 no hop {i}: {:?}",
+                engine.frames
+            );
+        }
+        assert!(
+            turno.reprocessados > turno.prompt_tokens,
+            "{transporte:?} não registrou o custo da reconstrução fria: {turno:?}"
+        );
+
+        let hop = medida.hops[1].lock().unwrap();
+        assert_eq!(
+            hop.rewind_em_sessao_desconhecida, 0,
+            "{transporte:?} terminou sem uma sessão preservável no peer recuperado"
+        );
+    }
+}
+
+/// Uma perda persistente não pode fazer o gateway repetir o prefill para
+/// sempre. Depois de uma reconstrução, a falha chega ao cliente sem a
+/// instrução interna que só um peer poderia executar.
+#[tokio::test]
+async fn unknown_session_recovery_is_bounded() {
+    for transporte in Transporte::todos() {
+        let medida = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            conversa_com_hops_fault(transporte, 1, true, 2, Some((1, 1, usize::MAX))),
+        )
+        .await
+        .expect("a recuperação de sessão desconhecida não pode ficar em loop");
+        let turno = &medida.turnos[0];
+        let mensagem = turno
+            .falhou
+            .as_deref()
+            .expect("a recusa persistente devia chegar ao cliente");
+        assert!(
+            !mensagem.contains("reset=true"),
+            "mensagem interna vazou: {mensagem}"
+        );
+        assert!(
+            mensagem.contains("o pedido não foi executado"),
+            "mensagem final não explica o impacto para o usuário: {mensagem}"
+        );
+
+        for (i, hop) in medida.hops.iter().enumerate() {
+            let engine = hop.lock().unwrap();
+            assert_eq!(
+                engine
+                    .frames
+                    .iter()
+                    .filter(|frame| frame.chunk_index == 0)
+                    .count(),
+                2,
+                "{transporte:?} fez mais de uma reconstrução fria no hop {i}: {:?}",
+                engine.frames
+            );
+            assert_eq!(
+                engine.frames.len(),
+                4,
+                "{transporte:?} repetiu mais que uma vez o passo que falhou no hop {i}: {:?}",
+                engine.frames
+            );
         }
     }
 }

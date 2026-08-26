@@ -110,6 +110,7 @@ mod tests {
     fn make_state(key: &str, blocked: Vec<String>) -> AuthState {
         Arc::new(RwLock::new(Config {
             gpus: None,
+            thermal: Default::default(),
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             role: Role::Principal,

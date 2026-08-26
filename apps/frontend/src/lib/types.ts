@@ -28,6 +28,12 @@ export interface GpuStat {
   temperature_c: number | null;
 }
 
+export interface ThermalPolicy {
+  limit_c: number;
+  hysteresis_c: number;
+  cooldown_secs: number;
+}
+
 export interface GpuProcess {
   pid: number;
   name: string;
@@ -66,7 +72,7 @@ export interface SystemLoad {
  * was assignable every screen compared against a value the node never sends.
  * A machine serving layers looked idle on every panel.
  */
-export type ServerState = "disabled" | "starting" | "ready" | "failed";
+export type ServerState = "disabled" | "starting" | "ready" | "failed" | "thermal";
 
 /** Motor que o backend afirma ter executado, sem inferência da interface. */
 export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
@@ -155,6 +161,7 @@ export interface NodeInfo {
   tls_required: boolean;
   /** Se **este** nó pode mudar isso: só o principal pode. */
   tls_authority: boolean;
+  thermal: ThermalPolicy;
 }
 
 export interface PeerView {

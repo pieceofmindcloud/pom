@@ -10,6 +10,11 @@ direto em pernas de rede (`direct_lab.rs`), a bancada da especulação
 rede (`wire.rs`) e a
 supervisão do servidor Rust embutido (`runtime.rs`), que também mantém a
 anotação da fatia servida (estado Pending/Serving em `models/lastslice.rs`).
+O runtime consulta a política de `utils/thermal.rs` a cada 5 segundos, pausa
+o modelo acima do limite com estado `thermal`, preserva a configuração para
+retomada e só reimplanta depois de todas as GPUs conhecidas permanecerem
+abaixo do limite de religar durante o cooldown. `stop` limpa essa recuperação
+para respeitar uma desimplantação manual.
 O modelo é carregado **em-processo** por `llm.rs`; não há processo Python
 (`inference_server.py` de `old/python-inference/` é legado). Os caminhos
 normais recebem `next_hops` pronto do `routing/pipeline.rs`; o TP é a exceção

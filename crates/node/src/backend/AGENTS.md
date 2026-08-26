@@ -46,7 +46,8 @@ behind an auth extractor.
   arquivos locais emprestam o nome a cada iteração.
 - `webui.rs` (3100) - the `/api/ui/*` control API behind the dashboard:
   catalog, cluster view, slicing, apply/launch, merge, jobs, release, leave,
-  storage paths and slice retention. `slice/plan` and `slice` accept the
+  storage paths, thermal policy (`GET/POST /api/ui/thermal`) and slice retention.
+  `NodeInfo` carries the same thermal policy used by the runtime. `slice/plan` and `slice` accept the
   explicit `tensor_parallel` mode with `tp_size`; the job extracts every rank
   and seals `tp_parts` in the same source-hash manifest used by pipeline
   `parts`. Jobs and the cluster view use conditional JSON responses:

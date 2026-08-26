@@ -117,6 +117,8 @@ mod splitter;
 mod storage;
 #[path = "utils/sysmon.rs"]
 mod sysmon;
+#[path = "utils/thermal.rs"]
+mod thermal;
 #[path = "network/tls.rs"]
 pub mod tls;
 #[path = "network/tls_policy.rs"]
@@ -730,6 +732,9 @@ async fn main() -> Result<()> {
         tls_server.clone(),
         Some(auth_config.clone()),
     );
+    node_runtime
+        .start_thermal_monitor(auth_config.clone())
+        .await;
 
     // `--model` na linha de comando é intenção explícita e vence qualquer
     // fatia anotada por um reinício anterior. Este caminho nunca consome o
@@ -1002,6 +1007,10 @@ fn runtime_mem_source(status: &runtime::RuntimeStatus) -> String {
         ServerState::Starting => format!("inference_server (subindo: {})", status.detail),
         ServerState::Failed => format!("❌ inference_server parado: {}", status.detail),
         ServerState::Disabled => format!("inference_server desligado: {}", status.detail),
+        ServerState::Thermal => format!(
+            "⚠️ inference_server suspenso por temperatura: {}",
+            status.detail
+        ),
     }
 }
 
@@ -1036,6 +1045,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         // Modo setup nao carrega modelo: a escolha de GPU so passa a valer
         // depois que a `pom.json` existir.
         gpus: None,
+        thermal: Default::default(),
         cache_type_k: config::KvCacheType::F16,
         cache_type_v: config::KvCacheType::F16,
         connection_key: String::new(),
@@ -1385,6 +1395,7 @@ async fn start_gateway_only(
         tls_server.clone(),
         Some(auth_state.clone()),
     );
+    node_runtime.start_thermal_monitor(auth_state.clone()).await;
 
     // Uma fatia anotada é um reinício pedido pela interface, não uma intenção
     // nova: o nó volta servindo o que servia. Só aqui, porque este é o

@@ -18,6 +18,10 @@ crashes the next.
 
 Per-file list:
 
+- `GpuTemperature.tsx` - shared GPU temperature badge used by Flow and machine
+  details. It keeps `null` as "temperature unknown" and maps normal, attention
+  and critical readings to the existing design-system tones.
+
 - `ui.tsx` — The design system in one file on purpose. `Panel`/`PanelHeader`/
   `PageHeader` (surfaces), `Button` (4 variants, sizes, loading spinner),
   `Input`/`Select`/`Field`, `Badge`/`Dot`/`Progress`/`Meter` (the shared `Tone`
@@ -106,7 +110,7 @@ Per-file list:
   exported, reused by `PeerDetailCard`, `Dashboard` and `DeployModel`.
   Currently rendered hidden on Dashboard.
 - `ModelNetworkCanvas.tsx` — The primary operational view: a pan/zoom SVG graph
-  of nodes (range cards with VRAM/RAM/load meters) and curved edges, driven by
+  of nodes (range cards with VRAM/RAM/load/temperature meters) and curved edges, driven by
   `graphFromCluster` (`../lib/networkGraph`). Edges have three states via
   `edgeStyle` (principal / paralela / inativa) from `cluster.routing_edges` and
   `cluster.candidate_edges` (replicas = ready alternate routes). Positions are
@@ -135,6 +139,8 @@ Per-file list:
   render from here now. `PeerPlacement` (interno) é a única parte do card que
   faz uma chamada extra: monta só com a máquina servindo, e o `enabled` do
   `usePeerRuntime` é o que impede um `/health` por card a cada ciclo do Painel.
+  A seção térmica mostra uma linha por GPU e declara temperatura desconhecida
+  quando o driver não fornece leitura.
 - `ModelPlacement.tsx` - a seção "Como o modelo foi carregado": a tira de
   camadas (uma célula por bloco, verde na GPU, âmbar dividida, cinza na CPU),
   os totais de peso por lado, onde o cache KV ficou e a cabeça de saída.

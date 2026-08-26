@@ -28,6 +28,20 @@ partir dele; o título da aba e os ícones entram no `index.html` pelo plugin
   (`npm run build` ou apontar `POM_UI_DIST`). `dist/` e `dist-release/`
   são artefatos locais ignorados pelo git.
 
+### Temperatura da GPU
+
+O Painel Fluxo mostra a maior leitura conhecida da máquina no card de cada
+faixa, enquanto Detalhes mostra uma linha por GPU. As faixas normal, atenção e
+crítica usam os tons existentes `aqua`, `amber` e `rose`; quando o driver não
+responde, o selo diz explicitamente "temperatura desconhecida". A API
+`GET /api/ui/node` leva a política térmica junto com a máquina, e
+`GET/POST /api/ui/thermal` lê ou grava seus três valores.
+
+O painel de proteção térmica fica em Configurações > Rede. O backend valida a
+política antes de persistir, e o runtime do próprio nó aplica a histerese e o
+cooldown. Quando o modelo é pausado por calor, o estado do servidor aparece
+como "aguardando resfriar", distinto de peer indisponível ou falha.
+
 ### Roteamento no axum (`webapp.rs`)
 
 O bundle é montado por último no roteador e o fallback é estreito de propósito:

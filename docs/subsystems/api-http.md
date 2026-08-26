@@ -125,7 +125,7 @@ O plano de controle do dashboard, todos os mutáveis atrás de `ConnectionAuth`:
 autenticado, snapshot direcional deste nó), `chat/telemetry` (POST autenticado,
 recebe `{ node_ids }` e devolve somente os RTTs direcionais observados entre os
 peers solicitados), `dev/update` +
-`dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
+`dev/restart`, `network/advertise-addr`, `network/tls`, `thermal`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
 
@@ -188,6 +188,14 @@ ciclo de gossip. `GET /api/ui/node` devolve o par `tls_required` (estado) e
 `libp2p_peer_id` e `inference_frame_capabilities` para que um plano de
 implantação possa reconstruir o túnel no rank que vai executar a chamada. Ver
 `rede-p2p.md`, seção 5.
+
+**`GET/POST /api/ui/thermal`** - exige `ConnectionAuth`. O GET devolve a
+política local `{ limit_c, hysteresis_c, cooldown_secs }`; o POST valida que o
+limite e a margem são finitos, positivos e formam uma histerese válida, grava a
+política no `pom.json` e devolve o valor efetivo. O runtime aplica a alteração
+sem reinício. `GET /api/ui/node` inclui a mesma política em `thermal`, junto
+com `system.gpus[].temperature_c`, que é `null` quando o driver não fornece a
+leitura.
 
 ### Leituras condicionais do painel
 

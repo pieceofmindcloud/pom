@@ -3,6 +3,7 @@ import { LayoutGrid, Minus, Plus, RotateCcw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { machineKind, MachineIcon } from "./MachineIcon";
 import { PeerDetailDialog } from "./PeerDetailCard";
+import { GpuTemperature } from "./GpuTemperature";
 import { Button, Dot } from "./ui";
 import { graphFromCluster, type GraphRange } from "../lib/networkGraph";
 import { pipelinePeers } from "../lib/networkPeers";
@@ -17,6 +18,7 @@ import {
   type CanvasPosition,
 } from "../lib/networkLayout";
 import { isServing, serverStateLabel, serverStateTone } from "../lib/format";
+import { highestKnownTemperature } from "../lib/thermal";
 import { layerPlacement, type LayerPlacement } from "../lib/layerPlacement";
 import type { ClusterView, RoutingEdge } from "../lib/types";
 
@@ -112,6 +114,7 @@ export function isControlTarget(target: EventTarget | null): boolean {
 function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, onPointerUp, onOpen }: { range: GraphRange; position: CanvasPosition; dragging: boolean; onPointerDown: (event: React.PointerEvent<HTMLElement>) => void; onPointerMove: (event: React.PointerEvent<HTMLElement>) => void; onPointerUp: (event: React.PointerEvent<HTMLElement>) => void; onOpen: () => void }) {
   const system = range.node?.system;
   const gpu = system?.gpus[0];
+  const temperature = highestKnownTemperature(system?.gpus.map((g) => g.temperature_c) ?? []);
   const vramUsed = gpu?.vram_used_mb != null ? gpu.vram_used_mb / 1024 : null;
   const vramTotal = gpu?.vram_total_mb != null ? gpu.vram_total_mb / 1024 : null;
   const ramUsed = system ? system.ram.used_mb / 1024 : null;
@@ -148,6 +151,7 @@ function NetworkNode({ range, position, dragging, onPointerDown, onPointerMove, 
     <div className="mt-3 flex items-center justify-between rounded-lg border border-line bg-raised/90 px-2.5 py-1.5"><span className="font-mono text-xs font-semibold text-iris">L{range.start_layer} - L{range.end_layer}</span>{range.load > 0 && <span className="font-mono text-[10px] text-amber">{t("canvas.inFlight", { count: range.load })}</span>}</div>
     {placement && <LayerPlacementMeter placement={placement} />}
     <Meter label="VRAM" used={vramUsed} total={vramTotal} unknown={!gpu || vramTotal == null} />
+    <GpuTemperature temperature={temperature} policy={range.node?.thermal} compact />
     <Meter label={t("canvas.memory")} used={ramUsed} total={ramTotal} unknown={!system} />
     <Meter label={t("canvas.load")} used={range.load} total={8} />
   </article>;

@@ -590,8 +590,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   conserva a ida e volta observada de cada chamada para a soma do RTT da execução,
   enquanto `node_lock_wait_ms` separa "nó lento" de "nó ocupado". Os campos
   derivados de `NodeTimings` preservam frações de milissegundo. Isso é telemetria
-  do gateway/SSE e não muda o frame entre peers. Cada `PhaseTrace` lista
-  `transport_calls` com transporte, fallback, RTT e bytes; `transport_trace_complete`
+  do gateway/SSE e não muda o frame entre peers. Cada `PhaseTrace` agrega as
+  travessias em `transport_summary`, por transporte, com chamadas, bytes, RTT
+  mínimo/mediana/p95/máximo, fallback por destino e trocas de transporte. As
+  amostras internas de RTT e decode têm teto fixo; `transport_trace_complete`
   denuncia recibos ausentes.
 
 `relay.rs`:

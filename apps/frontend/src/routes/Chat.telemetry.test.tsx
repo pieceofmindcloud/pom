@@ -293,6 +293,40 @@ function traceCom(prefill: Partial<PhaseTrace>): RequestTrace {
 describe("ExecutionTelemetry: o canal de cada salto", () => {
   afterEach(cleanup);
 
+  const summaryTrace: RequestTrace = {
+    ...traceCom({
+      calls: 5_001,
+      transport_summary: {
+        fallback_calls: 1,
+        transports: [
+          {
+            transport: "local",
+            calls: 5_001,
+            bytes_sent: 9_090_000,
+            bytes_received: 960_000,
+            rtt_min_ms: 10,
+            rtt_median_ms: 10,
+            rtt_p95_ms: 10,
+            rtt_max_ms: 50,
+            fallback_calls: 0,
+          },
+          {
+            transport: "https",
+            calls: 2,
+            bytes_sent: 200,
+            bytes_received: 400,
+            rtt_min_ms: 30,
+            rtt_median_ms: 40,
+            rtt_p95_ms: 40,
+            rtt_max_ms: 40,
+            fallback_calls: 1,
+          },
+        ],
+        transport_switches: [{ from: "local", to: "https", calls: 1 }],
+      },
+    }),
+  };
+
   it("diz que o salto foi cifrado e que o handshake é por conexão", () => {
     mount(<ExecutionTelemetry trace={traceCom({ calls: 1, tls_calls: 1, tls_handshake_ms: 4 })} />);
     expect(screen.getByText(/canal: TLS/)).toBeTruthy();
@@ -311,6 +345,14 @@ describe("ExecutionTelemetry: o canal de cada salto", () => {
     mount(<ExecutionTelemetry trace={traceCom({ calls: 4, tls_calls: 3, tls_handshake_ms: 6 })} />);
     expect(screen.getByText(/TLS em 3\/4 chamadas/)).toBeTruthy();
     expect(screen.getByText(/as demais foram em claro/)).toBeTruthy();
+  });
+
+  it("mostra a distribuição de transporte e a troca sem listar cada chamada", () => {
+    mount(<ExecutionTelemetry trace={summaryTrace} />);
+    expect(screen.getByText(/local: 5001 chamadas/)).toBeTruthy();
+    expect(screen.getByText(/RTT mínimo\/mediana\/p95\/máximo 10\/10\/10\/50 ms/)).toBeTruthy();
+    expect(screen.getByText(/fallback total 1/)).toBeTruthy();
+    expect(screen.getByText(/troca de transporte local -> https \(1\)/)).toBeTruthy();
   });
 });
 

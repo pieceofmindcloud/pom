@@ -228,7 +228,7 @@ pub struct TlsHop {
 
 /// Uma travessia observada de um frame entre dois processos. Os valores são
 /// por chamada, não créditos residuais atribuídos ao primeiro hop.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TransportTrace {
     pub transport: crate::relay::InferenceTransport,
     pub fallback: bool,
@@ -237,17 +237,238 @@ pub struct TransportTrace {
     pub bytes_received: u64,
 }
 
-impl TransportTrace {
-    fn unknown(round_trip_ms: u64, bytes_sent: u64, bytes_received: u64) -> Self {
-        Self {
-            transport: crate::relay::InferenceTransport::Unknown,
-            fallback: false,
-            round_trip_ms,
-            bytes_sent,
-            bytes_received,
+const TELEMETRY_SAMPLE_LIMIT: usize = 1_024;
+const MAX_TRANSPORTS: usize = 4;
+const MAX_TRANSPORT_SWITCHES: usize = MAX_TRANSPORTS * MAX_TRANSPORTS;
+
+#[derive(Debug, Clone, Default, PartialEq)]
+struct RttDistribution {
+    min_ms: u64,
+    max_ms: u64,
+    samples: Vec<u64>,
+    seen: u64,
+}
+
+impl RttDistribution {
+    fn record(&mut self, value: u64) {
+        self.min_ms = if self.seen == 0 {
+            value
+        } else {
+            self.min_ms.min(value)
+        };
+        self.max_ms = self.max_ms.max(value);
+        self.seen = self.seen.saturating_add(1);
+        if self.samples.len() < TELEMETRY_SAMPLE_LIMIT {
+            self.samples.push(value);
+            return;
+        }
+        let slot = reservoir_slot(self.seen);
+        if slot < TELEMETRY_SAMPLE_LIMIT {
+            self.samples[slot] = value;
         }
     }
 
+    fn merge(&mut self, other: &Self) {
+        if other.seen == 0 {
+            return;
+        }
+        self.min_ms = if self.seen == 0 {
+            other.min_ms
+        } else {
+            self.min_ms.min(other.min_ms)
+        };
+        self.max_ms = self.max_ms.max(other.max_ms);
+        let seen = self.seen.saturating_add(other.seen);
+        for (offset, &sample) in other.samples.iter().enumerate() {
+            let candidate_seen = self.seen.saturating_add(offset as u64 + 1);
+            if self.samples.len() < TELEMETRY_SAMPLE_LIMIT {
+                self.samples.push(sample);
+            } else {
+                let slot = reservoir_slot(candidate_seen);
+                if slot < TELEMETRY_SAMPLE_LIMIT {
+                    self.samples[slot] = sample;
+                }
+            }
+        }
+        self.seen = seen;
+    }
+
+    fn percentile(&self, percentile: u64) -> u64 {
+        if self.samples.is_empty() {
+            return 0;
+        }
+        let mut sorted = self.samples.clone();
+        sorted.sort_unstable();
+        let index = ((sorted.len() - 1) * percentile as usize + 50) / 100;
+        sorted[index]
+    }
+}
+
+fn reservoir_slot(seen: u64) -> usize {
+    seen.wrapping_mul(6_364_136_223_846_793_005)
+        .wrapping_add(1_442_695_040_888_963_407)
+        .wrapping_rem(seen.max(1)) as usize
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TransportSummaryEntry {
+    pub transport: crate::relay::InferenceTransport,
+    pub calls: u32,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+    pub rtt_min_ms: u64,
+    pub rtt_median_ms: u64,
+    pub rtt_p95_ms: u64,
+    pub rtt_max_ms: u64,
+    pub fallback_calls: u32,
+    #[serde(skip)]
+    rtt: RttDistribution,
+}
+
+impl TransportSummaryEntry {
+    fn new(transport: crate::relay::InferenceTransport) -> Self {
+        Self {
+            transport,
+            calls: 0,
+            bytes_sent: 0,
+            bytes_received: 0,
+            rtt_min_ms: 0,
+            rtt_median_ms: 0,
+            rtt_p95_ms: 0,
+            rtt_max_ms: 0,
+            fallback_calls: 0,
+            rtt: RttDistribution::default(),
+        }
+    }
+
+    fn record(&mut self, trace: TransportTrace) {
+        self.calls = self.calls.saturating_add(1);
+        self.bytes_sent = self.bytes_sent.saturating_add(trace.bytes_sent);
+        self.bytes_received = self.bytes_received.saturating_add(trace.bytes_received);
+        if trace.fallback {
+            self.fallback_calls = self.fallback_calls.saturating_add(1);
+        }
+        self.rtt.record(trace.round_trip_ms);
+        self.refresh_percentiles();
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.calls = self.calls.saturating_add(other.calls);
+        self.bytes_sent = self.bytes_sent.saturating_add(other.bytes_sent);
+        self.bytes_received = self.bytes_received.saturating_add(other.bytes_received);
+        self.fallback_calls = self.fallback_calls.saturating_add(other.fallback_calls);
+        self.rtt.merge(&other.rtt);
+        self.refresh_percentiles();
+    }
+
+    fn refresh_percentiles(&mut self) {
+        self.rtt_min_ms = self.rtt.min_ms;
+        self.rtt_median_ms = self.rtt.percentile(50);
+        self.rtt_p95_ms = self.rtt.percentile(95);
+        self.rtt_max_ms = self.rtt.max_ms;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TransportSwitch {
+    pub from: crate::relay::InferenceTransport,
+    pub to: crate::relay::InferenceTransport,
+    pub calls: u32,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct TransportSummary {
+    pub transports: Vec<TransportSummaryEntry>,
+    pub fallback_calls: u32,
+    pub transport_switches: Vec<TransportSwitch>,
+    #[serde(skip)]
+    first_transport: Option<crate::relay::InferenceTransport>,
+    #[serde(skip)]
+    last_transport: Option<crate::relay::InferenceTransport>,
+}
+
+impl TransportSummary {
+    fn record(&mut self, trace: TransportTrace) {
+        if self.first_transport.is_none() {
+            self.first_transport = Some(trace.transport);
+        }
+        if let Some(previous) = self.last_transport {
+            self.record_switch(previous, trace.transport);
+        }
+        self.last_transport = Some(trace.transport);
+        if trace.fallback {
+            self.fallback_calls = self.fallback_calls.saturating_add(1);
+        }
+        if let Some(entry) = self
+            .transports
+            .iter_mut()
+            .find(|entry| entry.transport == trace.transport)
+        {
+            entry.record(trace);
+            return;
+        }
+        if self.transports.len() >= MAX_TRANSPORTS {
+            return;
+        }
+        let mut entry = TransportSummaryEntry::new(trace.transport);
+        entry.record(trace);
+        self.transports.push(entry);
+    }
+
+    fn record_switch(
+        &mut self,
+        from: crate::relay::InferenceTransport,
+        to: crate::relay::InferenceTransport,
+    ) {
+        if from == to {
+            return;
+        }
+        if let Some(switch) = self
+            .transport_switches
+            .iter_mut()
+            .find(|switch| switch.from == from && switch.to == to)
+        {
+            switch.calls = switch.calls.saturating_add(1);
+        } else if self.transport_switches.len() < MAX_TRANSPORT_SWITCHES {
+            self.transport_switches
+                .push(TransportSwitch { from, to, calls: 1 });
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        if self.first_transport.is_none() {
+            self.first_transport = other.first_transport;
+        } else if let (Some(from), Some(to)) = (self.last_transport, other.first_transport) {
+            self.record_switch(from, to);
+        }
+        for other_entry in &other.transports {
+            if let Some(entry) = self
+                .transports
+                .iter_mut()
+                .find(|entry| entry.transport == other_entry.transport)
+            {
+                entry.merge(other_entry);
+            } else if self.transports.len() < MAX_TRANSPORTS {
+                self.transports.push(other_entry.clone());
+            }
+        }
+        self.fallback_calls = self.fallback_calls.saturating_add(other.fallback_calls);
+        for switch in &other.transport_switches {
+            if let Some(existing) = self
+                .transport_switches
+                .iter_mut()
+                .find(|existing| existing.from == switch.from && existing.to == switch.to)
+            {
+                existing.calls = existing.calls.saturating_add(switch.calls);
+            } else if self.transport_switches.len() < MAX_TRANSPORT_SWITCHES {
+                self.transport_switches.push(switch.clone());
+            }
+        }
+        self.last_transport = other.last_transport.or(self.last_transport);
+    }
+}
+
+impl TransportTrace {
     fn from_sent(sent: &crate::relay::SentFrame) -> Self {
         Self {
             transport: sent.transport,
@@ -319,8 +540,12 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
-    /// Cada chamada que cruzou este hop, em ordem de observação.
-    pub transport_calls: Vec<TransportTrace>,
+    /// Distribuição limitada das chamadas que cruzaram este hop.
+    ///
+    /// Min/max são exatos. Depois de 1.024 amostras, os quantis usam um
+    /// reservoir limitado para que nem a memória do trace nem a resposta
+    /// cresçam por token.
+    pub transport_summary: TransportSummary,
     pub node_frame_decode_ms: f64,
     pub node_input_prepare_ms: f64,
     pub node_queue_ms: f64,
@@ -375,6 +600,8 @@ pub struct PhaseTrace {
     #[serde(skip)]
     node_samples_ms: Vec<f64>,
     #[serde(skip)]
+    node_samples_seen: u64,
+    #[serde(skip)]
     selected_path_seen: bool,
     #[serde(skip)]
     hidden_state_dtype_mixed: bool,
@@ -382,7 +609,7 @@ pub struct PhaseTrace {
 
 impl PhaseTrace {
     fn record_transport(&mut self, transport: TransportTrace) {
-        self.transport_calls.push(transport);
+        self.transport_summary.record(transport);
     }
 
     fn record(
@@ -495,7 +722,7 @@ impl PhaseTrace {
         self.node_sampling_ms += node_ms("sampling_ms");
         self.node_encode_ms += node_ms("encode_ms");
 
-        self.node_samples_ms.push(node_decode_ms);
+        self.record_node_sample(node_decode_ms);
         self.observe_path(selected_path);
         for engine in engines {
             self.observe_engine(engine);
@@ -614,8 +841,7 @@ impl PhaseTrace {
         self.client_decode_ms += next.client_decode_ms;
         self.tls_calls += next.tls_calls;
         self.tls_handshake_ms += next.tls_handshake_ms;
-        self.transport_calls
-            .extend_from_slice(&next.transport_calls);
+        self.transport_summary.merge(&next.transport_summary);
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
@@ -636,8 +862,13 @@ impl PhaseTrace {
         self.node_token_text_ms += next.node_token_text_ms;
         self.node_sampling_ms += next.node_sampling_ms;
         self.node_encode_ms += next.node_encode_ms;
-        self.node_samples_ms
-            .extend_from_slice(&next.node_samples_ms);
+        for &sample in &next.node_samples_ms {
+            self.record_node_sample(sample);
+        }
+        self.node_samples_seen = self.node_samples_seen.saturating_add(
+            next.node_samples_seen
+                .saturating_sub(next.node_samples_ms.len() as u64),
+        );
         if next.selected_path_seen {
             self.observe_path(next.selected_path.clone());
         }
@@ -665,6 +896,19 @@ impl PhaseTrace {
     fn refresh_percentiles(&mut self) {
         self.node_p50_ms = percentile(&self.node_samples_ms, 50);
         self.node_p95_ms = percentile(&self.node_samples_ms, 95);
+    }
+
+    fn record_node_sample(&mut self, sample: f64) {
+        self.node_samples_seen = self.node_samples_seen.saturating_add(1);
+        if self.node_samples_ms.len() < TELEMETRY_SAMPLE_LIMIT {
+            self.node_samples_ms.push(sample);
+            return;
+        }
+        let slot = reservoir_slot(self.node_samples_seen);
+        if slot < TELEMETRY_SAMPLE_LIMIT {
+            self.node_samples_ms[slot] = sample;
+            self.refresh_percentiles();
+        }
     }
 }
 
@@ -3131,6 +3375,130 @@ mod tests {
         );
 
         assert_eq!(trace.hops[0].prefill.round_trip_ms, 18);
+    }
+
+    #[test]
+    fn transport_telemetry_is_aggregated_instead_of_serializing_every_call() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for (transport, fallback, round_trip_ms) in [
+            (crate::relay::InferenceTransport::Local, false, 10),
+            (crate::relay::InferenceTransport::Local, false, 20),
+            (crate::relay::InferenceTransport::Https, true, 30),
+            (crate::relay::InferenceTransport::Https, false, 40),
+            (crate::relay::InferenceTransport::Libp2pTunnel, false, 50),
+        ] {
+            trace.record_transport(
+                0,
+                Phase::Decode,
+                TransportTrace {
+                    transport,
+                    fallback,
+                    round_trip_ms,
+                    bytes_sent: 100,
+                    bytes_received: 200,
+                },
+            );
+        }
+
+        for _ in 0..4_999 {
+            trace.record_transport(
+                0,
+                Phase::Decode,
+                TransportTrace {
+                    transport: crate::relay::InferenceTransport::Local,
+                    fallback: false,
+                    round_trip_ms: 10,
+                    bytes_sent: 1818,
+                    bytes_received: 192,
+                },
+            );
+        }
+
+        let value = serde_json::to_value(&trace).unwrap();
+        let phase = &value["hops"][0]["decode"];
+        assert!(phase.get("transport_calls").is_none());
+        assert_eq!(phase["transport_summary"]["fallback_calls"], 1);
+        assert_eq!(
+            phase["transport_summary"]["transports"]
+                .as_array()
+                .unwrap()
+                .len(),
+            3
+        );
+        assert_eq!(phase["transport_summary"]["transports"][0]["calls"], 5_001);
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["bytes_sent"],
+            9_088_382
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["bytes_received"],
+            960_208
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_min_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_median_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_p95_ms"],
+            10
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][0]["rtt_max_ms"],
+            20
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["fallback_calls"],
+            1
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["rtt_median_ms"],
+            40
+        );
+        assert_eq!(
+            phase["transport_summary"]["transports"][1]["rtt_p95_ms"],
+            40
+        );
+        assert_eq!(
+            phase["transport_summary"]["transport_switches"],
+            serde_json::json!([
+                {"from": "local", "to": "https", "calls": 1},
+                {"from": "https", "to": "libp2p-tunnel", "calls": 1},
+                {"from": "libp2p-tunnel", "to": "local", "calls": 1},
+            ])
+        );
+        assert!(serde_json::to_string(&trace).unwrap().len() < 4_000);
+    }
+
+    #[test]
+    fn percentil_de_decode_mantem_amostras_com_teto() {
+        let mut trace = RequestTrace::new("qwen", &[("no1", 0, 15)]);
+        for value in 0..(TELEMETRY_SAMPLE_LIMIT * 4) {
+            trace.record_hop(
+                0,
+                Phase::Decode,
+                1,
+                1,
+                1,
+                1,
+                0,
+                0,
+                0,
+                0,
+                TlsHop::default(),
+                &json!({"decode_ms": value as f64}),
+            );
+        }
+
+        assert_eq!(
+            trace.hops[0].decode.node_samples_ms.len(),
+            TELEMETRY_SAMPLE_LIMIT
+        );
+        assert!(trace.hops[0].decode.node_p50_ms > 0.0);
+        assert!(trace.hops[0].decode.node_p95_ms > trace.hops[0].decode.node_p50_ms);
     }
 
     // ── As duas formas legítimas de resposta a uma rodada especulativa ──────

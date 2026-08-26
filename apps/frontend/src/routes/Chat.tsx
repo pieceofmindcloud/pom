@@ -45,7 +45,7 @@ import {
 } from "../lib/chatStore";
 import { bytes, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
-import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace, TransportTrace } from "../lib/chatStream";
+import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useCluster,
@@ -519,16 +519,29 @@ function transportLine(
   t: ReturnType<typeof useI18n>["t"],
   phase: PhaseTrace,
 ) {
-  const calls = phase.transport_calls ?? [];
-  if (calls.length === 0) return t("chat.telemetry.transportMissing");
-  return calls.map((call: TransportTrace, index) => t("chat.telemetry.transportCall", {
-    index: index + 1,
-    transport: call.transport,
-    fallback: call.fallback ? "fallback" : "",
-    rtt: call.round_trip_ms,
-    sent: bytes(call.bytes_sent),
-    received: bytes(call.bytes_received),
-  })).join(" · ");
+  const summary = phase.transport_summary;
+  if (!summary || summary.transports.length === 0) return t("chat.telemetry.transportMissing");
+  const transports = summary.transports.map((entry) => t("chat.telemetry.transportSummary", {
+    transport: entry.transport,
+    calls: entry.calls,
+    sent: bytes(entry.bytes_sent),
+    received: bytes(entry.bytes_received),
+    min: entry.rtt_min_ms,
+    median: entry.rtt_median_ms,
+    p95: entry.rtt_p95_ms,
+    max: entry.rtt_max_ms,
+    fallback: entry.fallback_calls,
+  }));
+  const switches = summary.transport_switches.map((switchEntry) => t("chat.telemetry.transportSwitch", {
+    from: switchEntry.from,
+    to: switchEntry.to,
+    calls: switchEntry.calls,
+  }));
+  return [
+    t("chat.telemetry.transportFallbackTotal", { calls: summary.fallback_calls }),
+    ...transports,
+    ...switches,
+  ].join(" · ");
 }
 
 function PhaseRow({

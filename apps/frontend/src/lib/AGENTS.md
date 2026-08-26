@@ -18,7 +18,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags, hidden-state bytes/dtype, bounded `transport_summary` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
@@ -174,7 +174,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   report prefix reuse means "unknown", and the chat shows nothing rather than
   claiming savings it cannot prove. The trace also carries prefix candidate and
   transmitted-token counts, reuse status, bounded prefill-overlap counters, and
-  per-traversal transport measurements with an explicit completeness flag.
+  per-transport traversal distributions with fallback and switch counts. The
+  transport contract is aggregate by default, never one serialized entry per
+  decode call.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.

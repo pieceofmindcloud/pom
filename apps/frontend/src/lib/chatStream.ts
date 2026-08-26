@@ -33,12 +33,28 @@ export interface RequestTrace {
   prefill_overlapped_chunks?: number;
 }
 
-export interface TransportTrace {
+export interface TransportSummaryEntry {
   transport: "local" | "libp2p-tunnel" | "https" | "unknown";
-  fallback: boolean;
-  round_trip_ms: number;
+  calls: number;
   bytes_sent: number;
   bytes_received: number;
+  rtt_min_ms: number;
+  rtt_median_ms: number;
+  rtt_p95_ms: number;
+  rtt_max_ms: number;
+  fallback_calls: number;
+}
+
+export interface TransportSwitch {
+  from: TransportSummaryEntry["transport"];
+  to: TransportSummaryEntry["transport"];
+  calls: number;
+}
+
+export interface TransportSummary {
+  transports: TransportSummaryEntry[];
+  fallback_calls: number;
+  transport_switches: TransportSwitch[];
 }
 
 export interface TpTelemetry {
@@ -85,8 +101,8 @@ export interface PhaseTrace {
    * ficam no pool. É custo de estabelecimento, não custo por token.
    */
   tls_handshake_ms: number;
-  /** Cada travessia observada deste hop, sem crédito residual. */
-  transport_calls?: TransportTrace[];
+  /** Distribuição limitada das travessias observadas deste hop. */
+  transport_summary?: TransportSummary;
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;

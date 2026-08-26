@@ -933,11 +933,17 @@ portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
 cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
 Chat.
 
-- **`transport_calls`** - uma entrada por travessia, sem agregar os hops
-  seguintes: transporte escolhido, indicação de fallback HTTPS, RTT e bytes
-  enviados e recebidos. O caminho direto recebe essas entradas por mensagens
-  autenticadas pelo ticket e espera no máximo 2 segundos depois do resultado;
-  `transport_trace_complete=false` deixa a perda explícita.
+- **`transport_summary`** - resumo limitado das travessias deste hop, agrupado
+  por transporte (`local`, `libp2p-tunnel`, `https` ou `unknown`). Cada entrada
+  informa chamadas, bytes enviados e recebidos, RTT mínimo, mediana, p95 e
+  máximo, além de quantas chamadas chegaram por fallback naquele transporte.
+  O resumo também informa `fallback_calls` total e `transport_switches` agrupadas
+  por par origem/destino, para uma troca durante a execução não desaparecer no
+  agregado. O caminho direto recebe os recibos por mensagens autenticadas pelo
+  ticket e espera no máximo 2 segundos depois do resultado;
+  `transport_trace_complete=false` deixa a perda explícita. As amostras usadas
+  para quantis são limitadas internamente, portanto a resposta de produção não
+  cresce com o número de tokens.
 
 - **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
   **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte

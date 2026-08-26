@@ -23,7 +23,8 @@ Per-file list:
   separate from effective layer placement and shows `POM_PROFILE_SYNC` only
   from the explicit per-peer health field; health shows the selected path,
   while the request trace shows the executed engine and mixed/mismatch flags.
-  Missing snapshots stay visible as missing data. Its picker uses `../lib/chatModels` to hide deployment-qualified
+  Missing snapshots stay visible as missing data. Phase rows also render
+  hidden-state bytes sent/received and the effective f16/f8 dtype. Its picker uses `../lib/chatModels` to hide deployment-qualified
   ids from chat presentation only; deployment screens and backend model
   resolution retain those ids.
 - `Documentation.tsx` - Two audiences, one screen, switched by a tab pair at
@@ -134,7 +135,7 @@ Per-file list:
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,
-  repetition, fit-memory, execution toggles and the installation-wide KV cache
+  repetition, fit-memory, hidden-state dtype, execution toggles and the installation-wide KV cache
   types. The MTP toggle seeds `mtp_min_probability` at `0.75`; the operator can
   then edit that probability before deploying. The machine section includes
   GPU/KV overrides, machine capacity and the available layer ranges that can

@@ -237,8 +237,14 @@ n_gpu_layers, offload_kqv }` é validado por posição:
   viaja por máquina. O cache KV é dimensionado pela janela de contexto, e uma
   caixa com 16 GB de VRAM e uma sem GPU no mesmo pipeline não podem estar as duas
   certas sobre onde ele cabe. Tudo o mais (`RuntimeParams`) é do pipeline inteiro
-  - contexto, batch e pedaço decidem o orçamento de prompt que o gateway cobra, e
-  a amostragem só roda no último peer.
+  - contexto, batch, pedaço e precisão do estado oculto decidem o orçamento de
+  prompt que o gateway cobra, e a amostragem só roda no último peer. A precisão
+  é `f16` por padrão e pode ser escolhida como `f8` para medição.
+- **Capacidade de precisão**: `f8` só pode ser implantado quando todos os peers
+  selecionados anunciam `inference/frame-v1-dtype-f8` em
+  `inference_frame_capabilities`. O planner bloqueia o deploy com a razão do
+  peer incompatível; a validação no caminho de inferência mantém a mesma
+  proteção contra configurações divergentes depois do deploy.
 - **Ajuste automático de memória**: `RuntimeParams.fit_memory` fica ligado por
   padrão em `shards` e `whole`. O nó chama o `common_fit_params` do llama.cpp
   antes da carga usando a capacidade total `n_ctx * max_sessions`, e pode

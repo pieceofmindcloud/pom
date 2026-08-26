@@ -166,6 +166,13 @@ pub struct PhaseTrace {
     pub network_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// Bytes of hidden-state tensor sent by this phase, without frame headers.
+    pub hidden_state_bytes_sent: u64,
+    /// Bytes of hidden-state tensor received by this phase, without headers.
+    pub hidden_state_bytes_received: u64,
+    /// Effective precision observed in this phase. None means no sample or a
+    /// phase that mixed formats, which is intentionally visible as unknown.
+    pub hidden_state_dtype: Option<WireDtype>,
     pub calls: u32,
     pub client_encode_ms: u64,
     pub response_headers_ms: u64,
@@ -237,6 +244,8 @@ pub struct PhaseTrace {
     node_samples_ms: Vec<f64>,
     #[serde(skip)]
     selected_path_seen: bool,
+    #[serde(skip)]
+    hidden_state_dtype_mixed: bool,
 }
 
 impl PhaseTrace {
@@ -434,12 +443,34 @@ impl PhaseTrace {
             && !self.executed_engines.contains(&expected);
     }
 
+    fn observe_hidden_dtype(&mut self, dtype: WireDtype) {
+        if self.hidden_state_dtype_mixed {
+            return;
+        }
+        match self.hidden_state_dtype {
+            None => self.hidden_state_dtype = Some(dtype),
+            Some(existing) if existing == dtype => {}
+            Some(_) => {
+                self.hidden_state_dtype = None;
+                self.hidden_state_dtype_mixed = true;
+            }
+        }
+    }
+
     fn merge(&mut self, next: &PhaseTrace) {
         self.processing_ms += next.processing_ms;
         self.round_trip_ms += next.round_trip_ms;
         self.network_ms += next.network_ms;
         self.bytes_sent += next.bytes_sent;
         self.bytes_received += next.bytes_received;
+        self.hidden_state_bytes_sent += next.hidden_state_bytes_sent;
+        self.hidden_state_bytes_received += next.hidden_state_bytes_received;
+        if next.hidden_state_dtype_mixed {
+            self.hidden_state_dtype = None;
+            self.hidden_state_dtype_mixed = true;
+        } else if let Some(dtype) = next.hidden_state_dtype {
+            self.observe_hidden_dtype(dtype);
+        }
         self.calls += next.calls;
         self.client_encode_ms += next.client_encode_ms;
         self.response_headers_ms += next.response_headers_ms;
@@ -730,6 +761,43 @@ impl RequestTrace {
         self.total_bytes_received += bytes_received;
     }
 
+    pub fn record_hop_from_sent(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        sent: &crate::relay::SentFrame,
+    ) {
+        let processing_ms = sent
+            .meta
+            .get("processing_ms")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        self.record_hop(
+            hop,
+            phase,
+            sent.round_trip_ms,
+            processing_ms,
+            sent.bytes_sent,
+            sent.bytes_received,
+            sent.client_encode_ms,
+            sent.response_headers_ms,
+            sent.response_body_ms,
+            sent.client_decode_ms,
+            TlsHop {
+                on: sent.tls,
+                handshake_ms: sent.tls_handshake_ms,
+            },
+            &sent.meta["node_timings"],
+        );
+        self.record_hidden_state(
+            hop,
+            phase,
+            sent.hidden_state_bytes_sent,
+            sent.hidden_state_bytes_received,
+            Some(sent.hidden_state_dtype),
+        );
+    }
+
     /// Same accumulation as `record_hop`, reading the numbers from one
     /// `hop_timings` array entry instead of taking them as call arguments —
     /// this is what lets ring mode reconstruct the identical trace hub mode
@@ -755,6 +823,39 @@ impl RequestTrace {
             },
             &entry["node_timings"],
         );
+        let dtype = entry
+            .get("hidden_state_dtype")
+            .and_then(|value| value.as_str())
+            .and_then(|value| WireDtype::parse(value).ok());
+        self.record_hidden_state(
+            hop,
+            phase,
+            get("hidden_state_bytes_sent"),
+            get("hidden_state_bytes_received"),
+            dtype,
+        );
+    }
+
+    fn record_hidden_state(
+        &mut self,
+        hop: usize,
+        phase: Phase,
+        bytes_sent: u64,
+        bytes_received: u64,
+        dtype: Option<WireDtype>,
+    ) {
+        let Some(entry) = self.hops.get_mut(hop) else {
+            return;
+        };
+        let slot = match phase {
+            Phase::Prefill => &mut entry.prefill,
+            Phase::Decode => &mut entry.decode,
+        };
+        slot.hidden_state_bytes_sent += bytes_sent;
+        slot.hidden_state_bytes_received += bytes_received;
+        if let Some(dtype) = dtype {
+            slot.observe_hidden_dtype(dtype);
+        }
     }
 
     pub fn merge(&mut self, other: &RequestTrace) {
@@ -876,6 +977,7 @@ pub async fn run(
     reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
+    plan.validate_wire_dtype(dtype)?;
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
     if n_peers == 0 {
@@ -946,7 +1048,7 @@ pub async fn run(
             &head_meta,
             None,
             dtype,
-            FrameEncoding::F16,
+            dtype.frame_encoding(),
             chunk_index,
             &mut trace,
             0,
@@ -1016,7 +1118,7 @@ pub async fn run(
                 &body_meta,
                 Some((&values, shape)),
                 dtype,
-                step.frame_encoding(),
+                dtype.frame_encoding(),
                 chunk_index,
                 &mut trace,
                 i,
@@ -1121,7 +1223,7 @@ async fn run_ring(
                 &head_meta,
                 None,
                 dtype,
-                head.frame_encoding(),
+                dtype.frame_encoding(),
                 crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
                 &head.node_id,
                 |_issue| {},
@@ -1266,7 +1368,7 @@ async fn run_direct(
                 &head_meta,
                 None,
                 dtype,
-                head.frame_encoding(),
+                dtype.frame_encoding(),
                 crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
                 &head.node_id,
                 |_issue| {},
@@ -1469,28 +1571,7 @@ async fn send_chunk(
         }
         e
     })?;
-    let processing_ms = sent
-        .meta
-        .get("processing_ms")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(0);
-    trace.record_hop(
-        hop,
-        phase,
-        sent.round_trip_ms,
-        processing_ms,
-        sent.bytes_sent,
-        sent.bytes_received,
-        sent.client_encode_ms,
-        sent.response_headers_ms,
-        sent.response_body_ms,
-        sent.client_decode_ms,
-        TlsHop {
-            on: sent.tls,
-            handshake_ms: sent.tls_handshake_ms,
-        },
-        &sent.meta["node_timings"],
-    );
+    trace.record_hop_from_sent(hop, phase, &sent);
     Ok((sent.meta, sent.tensor))
 }
 
@@ -1514,6 +1595,7 @@ pub async fn step(
     tunnel: Option<&TunnelOutboundSender>,
     speculate: Option<Speculate>,
 ) -> Result<SpeculativeStep> {
+    plan.validate_wire_dtype(dtype)?;
     if let Some(direct) = direct.filter(|_| plan.supports_direct_reply()) {
         return step_direct(
             plan, model, session_id, token_id, dtype, http, routes, direct, tunnel, speculate,
@@ -1583,7 +1665,7 @@ pub async fn step(
                 .as_ref()
                 .map(|(values, shape)| (values.as_slice(), *shape)),
             dtype,
-            peer.frame_encoding(),
+            dtype.frame_encoding(),
             1,
             &peer.node_id,
             |_issue| {},
@@ -1593,28 +1675,7 @@ pub async fn step(
             routes.mark_failure(&peer.node_id, &peer.inference_url);
             anyhow!("peer {} não respondeu: {error}", peer.node_id)
         })?;
-        let processing_ms = sent
-            .meta
-            .get("processing_ms")
-            .and_then(|value| value.as_u64())
-            .unwrap_or(0);
-        trace.record_hop(
-            i,
-            Phase::Decode,
-            sent.round_trip_ms,
-            processing_ms,
-            sent.bytes_sent,
-            sent.bytes_received,
-            sent.client_encode_ms,
-            sent.response_headers_ms,
-            sent.response_body_ms,
-            sent.client_decode_ms,
-            TlsHop {
-                on: sent.tls,
-                handshake_ms: sent.tls_handshake_ms,
-            },
-            &sent.meta["node_timings"],
-        );
+        trace.record_hop_from_sent(i, Phase::Decode, &sent);
         meta = sent.meta;
         tensor = sent.tensor;
     }
@@ -1662,7 +1723,7 @@ async fn step_ring(
         &body_meta,
         None,
         dtype,
-        head.frame_encoding(),
+        dtype.frame_encoding(),
         1, // decode has never retried — see relay::send_frame's doc comment
         &head.node_id,
         |_issue| {},
@@ -1731,7 +1792,7 @@ async fn step_direct(
         &body_meta,
         None,
         dtype,
-        head.frame_encoding(),
+        dtype.frame_encoding(),
         1, // decode has never retried — see relay::send_frame's doc comment
         &head.node_id,
         |_issue| {},
@@ -1826,6 +1887,7 @@ pub async fn step_speculative(
     routes: &crate::route::RouteTable,
     tunnel: Option<&TunnelOutboundSender>,
 ) -> Result<SpeculativeStep> {
+    plan.validate_wire_dtype(dtype)?;
     if plan.supports_relay_chain() {
         return step_speculative_ring(
             plan, model, session_id, token_id, k, m, source, dtype, http, routes, tunnel,
@@ -1918,7 +1980,7 @@ async fn step_speculative_hub(
             &body_meta,
             as_ref,
             dtype,
-            peer.frame_encoding(),
+            dtype.frame_encoding(),
             1, // decode has never retried — see relay::send_frame's doc comment
             &peer_label,
             |_issue| {},
@@ -1929,28 +1991,7 @@ async fn step_speculative_hub(
             e
         })?;
 
-        let processing_ms = sent
-            .meta
-            .get("processing_ms")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        trace.record_hop(
-            i,
-            Phase::Decode,
-            sent.round_trip_ms,
-            processing_ms,
-            sent.bytes_sent,
-            sent.bytes_received,
-            sent.client_encode_ms,
-            sent.response_headers_ms,
-            sent.response_body_ms,
-            sent.client_decode_ms,
-            TlsHop {
-                on: sent.tls,
-                handshake_ms: sent.tls_handshake_ms,
-            },
-            &sent.meta["node_timings"],
-        );
+        trace.record_hop_from_sent(i, Phase::Decode, &sent);
         meta = sent.meta;
         tensor = sent.tensor;
     }
@@ -1993,7 +2034,7 @@ async fn step_speculative_ring(
         &head_meta,
         None,
         dtype,
-        head.frame_encoding(),
+        dtype.frame_encoding(),
         1,
         &head.node_id,
         |_issue| {},

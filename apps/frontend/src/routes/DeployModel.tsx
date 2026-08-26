@@ -79,6 +79,7 @@ import type {
   InferenceMode,
   RuntimeParams,
   TpLaunch,
+  WireDtype,
   WholeSliceSelection,
 } from "../lib/types";
 import { useI18n } from "../i18n/provider";
@@ -765,6 +766,11 @@ export function DeployModel() {
   const isMoePlan = p?.is_moe === true;
   /** Merged units in force: the operator's toggle, or the node's default. */
   const effMerge = merge ?? p?.merge ?? false;
+  const hiddenStateCapability = p?.capabilities?.hidden_state_f8;
+  const hiddenStateDtype = eff.hidden_state_dtype ?? "f16";
+  const f8Unavailable = hiddenStateCapability
+    ? hiddenStateCapability.state !== "supported"
+    : false;
 
   /** Edit one knob. The draft keeps the field usable while it is half-typed. */
   function setKnob(key: keyof RuntimeParams, text: string) {
@@ -1328,6 +1334,24 @@ export function DeployModel() {
                     <Input name={key} type="number" step={step} value={drafts[key] ?? String(eff[key] ?? "")} onChange={(event) => setKnob(key, event.target.value)} compact className="text-right font-mono" />
                   </label>
                 ))}
+                <label className="grid grid-cols-[minmax(0,1fr)_7rem] items-center gap-1.5 text-[0.65rem]">
+                  <span className="truncate text-muted">{t("deploy.knob.hidden_state_dtype")}</span>
+                  <Select
+                    aria-label={t("deploy.knob.hidden_state_dtype")}
+                    name="hidden_state_dtype"
+                    value={hiddenStateDtype}
+                    onChange={(event) => setParams({ ...eff, hidden_state_dtype: event.target.value as WireDtype })}
+                    compact
+                  >
+                    <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+                    <option value="f8" disabled={f8Unavailable}>{t("deploy.knob.hidden_state_dtypeF8")}</option>
+                  </Select>
+                </label>
+                {hiddenStateCapability && f8Unavailable && (
+                  <p role="alert" className="text-[0.6rem] leading-relaxed text-amber">
+                    {t("deploy.knob.hidden_state_dtypeUnavailable")}{hiddenStateCapability.reason}
+                  </p>
+                )}
                 <CapabilitySwitch capability={p?.capabilities?.fit_memory} checked={eff.fit_memory ?? true} onChange={(value) => setParams({ ...eff, fit_memory: value })} label="Ajustar à memória" />
                 <CapabilitySwitch capability={p?.capabilities?.no_thinking} checked={eff.no_thinking ?? false} onChange={(value) => setParams({ ...eff, no_thinking: value })} label="Desativar thinking" />
                 <CapabilitySwitch capability={p?.capabilities?.no_embeddings} alwaysVisible checked={eff.no_embeddings ?? false} onChange={(value) => setParams({ ...eff, no_embeddings: value })} label="Desativar embeddings" />

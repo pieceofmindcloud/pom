@@ -4,7 +4,7 @@
 /// selects the optimal ordered sequence of peers that covers layers 0..total_layers,
 /// tracks per-peer request load, and exposes the plan to the gateway.
 use crate::network::PeerInfo;
-use crate::wire::FrameEncoding;
+use crate::wire::{FrameEncoding, WireDtype};
 use routing_contract::{ClusterSnapshot, PeerCapacity, RoutingRequest, ROUTING_API_VERSION};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -167,6 +167,11 @@ pub const CAP_LIBP2P_TUNNEL: &str = "transport/libp2p-tunnel-v1";
 /// contract; peers are never downgraded to an older wire format.
 pub const CAP_FRAME_BATCH: &str = "inference/frame-v1-batch";
 
+/// Advertised when a node can decode and encode the optional FP8 E4M3FN
+/// representation of hidden state. This is all-or-nothing across a plan:
+/// sending f8 through one peer that only knows f16 would corrupt the answer.
+pub const CAP_FRAME_DTYPE_F8: &str = "inference/frame-v1-dtype-f8";
+
 /// A handoff chosen by the planner between two consecutive pipeline steps.
 ///
 /// The layer boundaries let observers attach the edge to the exact advertised
@@ -261,6 +266,28 @@ pub(crate) fn routing_request_from_peers(total_layers: u32, peers: &[PeerInfo]) 
 }
 
 impl PipelinePlan {
+    /// Validate the wire precision before the first request is sent.
+    ///
+    /// f16 is the original contract and remains valid for peers that do not
+    /// advertise the optional f8 extension. A selected f8 plan must have the
+    /// explicit capability on every hop, otherwise it fails visibly instead
+    /// of allowing a mixed-version peer to interpret bytes incorrectly.
+    pub fn validate_wire_dtype(&self, dtype: WireDtype) -> anyhow::Result<()> {
+        if dtype != WireDtype::F8 {
+            return Ok(());
+        }
+        for step in &self.steps {
+            if !step.supports(CAP_FRAME_DTYPE_F8) {
+                return Err(anyhow::anyhow!(
+                    "o formato f8 do estado oculto não foi negociado: o peer {} não anuncia {}",
+                    step.node_id,
+                    CAP_FRAME_DTYPE_F8
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// Human-readable hop chain: "abc123→def456→…"
     pub fn hop_chain(&self) -> String {
         self.steps
@@ -802,6 +829,29 @@ mod ipv6_tests {
             libp2p_addr_candidates: Vec::new(),
         };
         assert_eq!(step.frame_encoding(), crate::wire::FrameEncoding::F16);
+    }
+
+    #[test]
+    fn f8_is_refused_when_any_pipeline_step_lacks_the_capability() {
+        let mut missing = step(&[CAP_FRAME_DTYPE_F8]);
+        missing.node_id = "old-peer".into();
+        let error = plan_of(vec![step(&[CAP_FRAME_DTYPE_F8]), missing])
+            .validate_wire_dtype(crate::wire::WireDtype::F8)
+            .unwrap_err();
+        assert!(error.contains("old-peer"), "erro inesperado: {error}");
+        assert!(error.contains("f8"), "erro inesperado: {error}");
+    }
+
+    #[test]
+    fn f8_is_accepted_when_every_pipeline_step_advertises_it() {
+        let plan = plan_of(vec![
+            step(&[CAP_FRAME_DTYPE_F8]),
+            step(&[CAP_FRAME_DTYPE_F8]),
+        ]);
+        assert!(plan.validate_wire_dtype(crate::wire::WireDtype::F8).is_ok());
+        assert!(plan
+            .validate_wire_dtype(crate::wire::WireDtype::F16)
+            .is_ok());
     }
 
     #[test]

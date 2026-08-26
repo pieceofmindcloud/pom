@@ -83,6 +83,9 @@ pub struct NodeConfig {
     /// host RAM capacity on large-context hardware.
     #[serde(default = "default_offload_kqv")]
     pub offload_kqv: bool,
+    /// Precision used for hidden state crossing between inference peers.
+    #[serde(default)]
+    pub hidden_state_dtype: crate::wire::WireDtype,
     /// Tipo numérico do cache K, definido pela instalação inteira.
     #[serde(default)]
     pub cache_type_k: crate::config::KvCacheType,
@@ -193,6 +196,7 @@ impl NodeConfig {
             n_gpu_layers: p.n_gpu_layers,
             n_ctx: p.n_ctx,
             offload_kqv: p.offload_kqv,
+            hidden_state_dtype: p.hidden_state_dtype,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: p.fit_memory && allow_fit_memory,
@@ -1564,6 +1568,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,

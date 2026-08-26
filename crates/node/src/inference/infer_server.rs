@@ -1025,6 +1025,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -1157,6 +1158,7 @@ mod relay_tests {
             "/v1/step",
             json!({"session_id": "sess-1"}),
             (&residual, [1, 8]),
+            WireDtype::F16,
             1,
             json!(7),
             json!({"decode_ms": 2}),
@@ -1202,6 +1204,7 @@ mod relay_tests {
             "/v1/step",
             json!({"session_id": "sess-1"}),
             (&residual, [1, 8]),
+            WireDtype::F16,
             1,
             json!(7),
             json!({}),
@@ -2731,6 +2734,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
         crate::pipeline::CAP_FRAME_BATCH,
+        crate::pipeline::CAP_FRAME_DTYPE_F8,
         "relay/v1-chain",
         "relay/v2-direct",
         "speculate/v1-lookup",
@@ -3231,6 +3235,13 @@ async fn handle_prefill(
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
+    let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
+        Some(value) => match WireDtype::parse(value) {
+            Ok(dtype) => dtype,
+            Err(error) => return err400(error),
+        },
+        None => return err400("quadro sem dtype de estado oculto"),
+    };
 
     let sid_key = meta
         .get("session_id")
@@ -3283,7 +3294,6 @@ async fn handle_prefill(
         .get("is_final_chunk")
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
-    let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let prompt = meta
         .get("prompt")
@@ -3307,6 +3317,15 @@ async fn handle_prefill(
             Some((values, shape))
         }
         None => None,
+    };
+    let inbound_hidden_state_bytes = match wire::tensor_payload_len(
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), *shape)),
+        wire_dtype,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
     // Neither of `prefill_blocking`'s non-final replies echoes `session_id`
@@ -3401,12 +3420,24 @@ async fn handle_prefill(
     // **adiante**, e quem entrega copia — só a cabeça tokenizou o prompt, e sem
     // isso todo prompt de mais de um pedaço seria truncado no primeiro.
     if let Some(reply_to) = direct_reply_to(&meta) {
+        let outbound_hidden_state_bytes = match wire::tensor_payload_len(
+            local_tensor
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), *shape)),
+            wire_dtype,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return err500(error),
+        };
         let hop_timings = crate::direct::accumulate(
             &meta,
-            crate::direct::hop_entry(
+            crate::direct::hop_entry_with_state(
                 &local_meta["processing_ms"],
                 &local_meta["node_timings"],
                 inbound_bytes,
+                inbound_hidden_state_bytes,
+                outbound_hidden_state_bytes,
+                wire_dtype,
             ),
         );
         let hops = next_hops.unwrap_or_default();
@@ -3457,6 +3488,7 @@ async fn handle_prefill(
             forward,
             residual,
             shape,
+            wire_dtype,
             crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
             reply_to,
         ));
@@ -3468,7 +3500,7 @@ async fn handle_prefill(
         return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
-            WireDtype::F16,
+            wire_dtype,
         ) {
             Ok(bytes) => (
                 StatusCode::OK,
@@ -3514,6 +3546,7 @@ async fn handle_prefill(
             relay_meta
         },
         (&residual, shape),
+        wire_dtype,
         crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
@@ -3526,7 +3559,7 @@ async fn handle_prefill(
 
     overlay_head_authoritative_fields(&local_meta, &mut bubbled);
 
-    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, wire_dtype) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -4927,6 +4960,13 @@ async fn handle_step(
         Err(e) => return err400(format!("quadro inválido: {e}")),
     };
     let frame_decode_us = frame_decode_started.elapsed().as_micros() as u64;
+    let wire_dtype = match meta.get("dtype").and_then(|value| value.as_str()) {
+        Some(value) => match WireDtype::parse(value) {
+            Ok(dtype) => dtype,
+            Err(error) => return err400(error),
+        },
+        None => return err400("quadro sem dtype de estado oculto"),
+    };
 
     let sid_key = meta
         .get("session_id")
@@ -4949,7 +4989,6 @@ async fn handle_step(
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false)
         });
-    let wire_dtype = WireDtype::F16;
     let scale = meta.get("scale").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32;
     let token_id = meta
         .get("token_id")
@@ -4983,6 +5022,15 @@ async fn handle_step(
             Some((values, shape))
         }
         None => None,
+    };
+    let inbound_hidden_state_bytes = match wire::tensor_payload_len(
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), *shape)),
+        wire_dtype,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => return err400(error),
     };
     let input_prepare_us = input_prepare_started.elapsed().as_micros() as u64;
     // A sub-faixa só é válida se este peer consegue executá-la exatamente.
@@ -5064,12 +5112,24 @@ async fn handle_step(
     // Resposta direta: quem terminar entrega ao gateway, e o que sai daqui é
     // só um aceite. Cada hop descreve a si mesmo numa lista que viaja na ida.
     if let Some(reply_to) = direct_reply_to(&meta) {
+        let outbound_hidden_state_bytes = match wire::tensor_payload_len(
+            local_tensor
+                .as_ref()
+                .map(|(values, shape)| (values.as_slice(), *shape)),
+            wire_dtype,
+        ) {
+            Ok(bytes) => bytes,
+            Err(error) => return err500(error),
+        };
         let hop_timings = crate::direct::accumulate(
             &meta,
-            crate::direct::hop_entry(
+            crate::direct::hop_entry_with_state(
                 &local_meta["processing_ms"],
                 &local_meta["node_timings"],
                 inbound_bytes,
+                inbound_hidden_state_bytes,
+                outbound_hidden_state_bytes,
+                wire_dtype,
             ),
         );
         let hops = next_hops.unwrap_or_default();
@@ -5101,7 +5161,7 @@ async fn handle_step(
         let mut forward = step_forward_meta(&sid_for_forward, &meta, &local_meta, &hops[0]);
         forward["hop_timings"] = json!(hop_timings);
         tokio::spawn(forward_direct(
-            hops, "/v1/step", forward, residual, shape,
+            hops, "/v1/step", forward, residual, shape, wire_dtype,
             1, // a decode step has never retried — see relay_and_bubble's doc comment
             reply_to,
         ));
@@ -5113,7 +5173,7 @@ async fn handle_step(
         return match wire::encode_batch_single(
             &local_meta,
             local_tensor.as_ref().map(|(v, s)| (v.as_slice(), *s)),
-            WireDtype::F16,
+            wire_dtype,
         ) {
             Ok(bytes) => (
                 StatusCode::OK,
@@ -5137,6 +5197,7 @@ async fn handle_step(
         "/v1/step",
         forward_meta,
         (&residual, shape),
+        wire_dtype,
         1, // a decode step has never retried — see relay_and_bubble's doc comment
         local_meta["processing_ms"].clone(),
         local_meta["node_timings"].clone(),
@@ -5146,7 +5207,7 @@ async fn handle_step(
         Ok(bubbled) => bubbled,
         Err(resp) => return resp,
     };
-    match wire::encode_batch_single(&bubbled, None, WireDtype::F16) {
+    match wire::encode_batch_single(&bubbled, None, wire_dtype) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -5209,6 +5270,7 @@ async fn relay_and_bubble(
     path: &str,
     mut base_meta: Value,
     tensor: (&[f32], [usize; 2]),
+    dtype: WireDtype,
     attempts: u32,
     local_processing_ms: Value,
     local_node_timings: Value,
@@ -5229,8 +5291,8 @@ async fn relay_and_bubble(
         path,
         &base_meta,
         Some(tensor),
-        WireDtype::F16,
-        next.frame_encoding(),
+        dtype,
+        dtype.frame_encoding(),
         attempts,
         &next.node_id,
         |issue| last_issue_kind = Some(issue.kind),
@@ -5309,6 +5371,7 @@ pub(crate) async fn forward_direct(
     mut base_meta: Value,
     residual: Vec<f32>,
     shape: [usize; 2],
+    dtype: WireDtype,
     attempts: u32,
     reply_to: Value,
 ) {
@@ -5329,8 +5392,8 @@ pub(crate) async fn forward_direct(
         path,
         &base_meta,
         Some((&residual, shape)),
-        WireDtype::F16,
-        next.frame_encoding(),
+        dtype,
+        dtype.frame_encoding(),
         attempts,
         &next.node_id,
         |issue| last_issue_kind = Some(issue.kind),

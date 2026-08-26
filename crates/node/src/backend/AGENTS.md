@@ -63,6 +63,12 @@ behind an auth extractor.
   the complete ordered set. An incomplete set is a concrete bad request, so
   the UI cannot start a one-file slice by accident.
   (local or forwarded to a peer).
+- `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
+  caminho de apply/launch dos demais ajustes globais; `NodeInfo` e
+  `DeployPlan.capabilities.hidden_state_f8` expõem a capability de peer usada
+  para bloquear uma implantação f8 incompatível. O redeploy consulta
+  `/api/ui/node` de todos os participantes antes de reconfigurar qualquer nó,
+  evitando uma implantação parcialmente misturada.
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no

@@ -289,6 +289,9 @@ Key logic carriers:
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.
+  O seletor `hidden_state_dtype` mantém f16 como padrão e oferece f8 somente
+  como escolha explícita; uma capability de peer comprovadamente incompatível
+  desabilita a opção e exibe a razão devolvida pelo servidor.
 - `PeerDetailCard.cardRange` (PeerDetailCard.tsx:102) — the range a card may
   show, or `null` when the machine serves nothing; never invents a "0-0".
 - `ModelPlacement.placementOf` (ModelPlacement.tsx:39) — "gpu" / "cpu" /

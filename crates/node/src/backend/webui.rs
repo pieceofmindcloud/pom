@@ -260,6 +260,7 @@ async fn node_info(State(state): State<GatewayState>) -> Json<NodeInfo> {
         inference_frame_capabilities: {
             let mut capabilities = vec![
                 crate::pipeline::CAP_FRAME_BATCH.to_string(),
+                crate::pipeline::CAP_FRAME_DTYPE_F8.to_string(),
                 "relay/v1-chain".to_string(),
                 "relay/v2-direct".to_string(),
                 "speculate/v1-lookup".to_string(),
@@ -1824,6 +1825,10 @@ pub struct RuntimeParams {
     pub n_ctx: u32,
     #[serde(default = "d_true")]
     pub offload_kqv: bool,
+    /// Precisão do estado oculto nas fronteiras entre peers. f16 mantém o
+    /// comportamento original; f8 é uma escolha explícita da implantação.
+    #[serde(default)]
+    pub hidden_state_dtype: crate::wire::WireDtype,
     /// Deixa o `common_fit_params` do llama.cpp ajustar a alocação à memória
     /// livre. No TP o runtime desliga esta opção, porque o fit nativo não
     /// suporta `split-mode tensor`.
@@ -1956,6 +1961,7 @@ impl Default for RuntimeParams {
             n_gpu_layers: d_gpu_layers(),
             n_ctx: d_n_ctx(),
             offload_kqv: d_true(),
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             fit_memory: d_true(),
             n_batch: d_n_batch(),
             max_new_tokens: d_max_new(),
@@ -1995,6 +2001,7 @@ impl From<&NodeConfig> for RuntimeParams {
             n_gpu_layers: c.n_gpu_layers,
             n_ctx: c.n_ctx,
             offload_kqv: c.offload_kqv,
+            hidden_state_dtype: c.hidden_state_dtype,
             fit_memory: c.fit_memory,
             n_batch: c.n_batch,
             max_new_tokens: c.max_new_tokens,
@@ -5465,6 +5472,22 @@ mod tests {
         assert!(p.no_thinking);
         assert!(p.offload_kqv);
         assert!(p.fit_memory);
+    }
+
+    #[test]
+    fn hidden_state_dtype_defaults_to_f16_and_round_trips_f8() {
+        let default: RuntimeParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(default.hidden_state_dtype, crate::wire::WireDtype::F16);
+
+        let explicit: RuntimeParams = serde_json::from_value(serde_json::json!({
+            "hidden_state_dtype": "f8"
+        }))
+        .unwrap();
+        assert_eq!(explicit.hidden_state_dtype, crate::wire::WireDtype::F8);
+        assert_eq!(
+            serde_json::to_value(explicit).unwrap()["hidden_state_dtype"],
+            "f8"
+        );
     }
 
     #[test]

@@ -976,6 +976,8 @@ export interface DeployLoadDistribution {
 export interface RuntimeParams {
   /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
   inference_mode: InferenceMode;
+  /** Formato negociado para o estado oculto entre peers; ausente em config antiga = f16. */
+  hidden_state_dtype?: WireDtype;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
@@ -1009,6 +1011,9 @@ export interface RuntimeParams {
   mtp_min_probability: number;
 }
 
+/** Precisões que o protocolo de inferência consegue converter ponta a ponta. */
+export type WireDtype = "f16" | "f8";
+
 export type CapabilityState = "supported" | "unsupported" | "unknown";
 
 export interface RuntimeCapability {
@@ -1025,6 +1030,8 @@ export interface DeploymentCapabilities {
   no_embeddings: RuntimeCapability;
   speculative_decoding: RuntimeCapability;
   mtp: RuntimeCapability;
+  /** Capacidade de todos os peers selecionados de receber estado oculto f8. */
+  hidden_state_f8?: RuntimeCapability;
 }
 
 export type InferenceMode = "auto" | "dense" | "moe";

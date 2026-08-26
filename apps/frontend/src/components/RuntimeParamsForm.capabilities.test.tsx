@@ -3,7 +3,12 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LocaleProvider } from "../i18n/provider";
 import { AlertTooltip } from "./ui";
-import { CapabilitySwitch } from "./RuntimeParamsForm";
+import { CapabilitySwitch, RuntimeParamsForm } from "./RuntimeParamsForm";
+import type {
+  DeploymentCapabilities,
+  RuntimeCapability,
+  RuntimeParams,
+} from "../lib/types";
 
 afterEach(() => {
   cleanup();
@@ -16,6 +21,42 @@ const TOPOLOGY_ALERT =
   "A topologia limita esta opção; o controle continua acionável. Fonte: topologia do plano. controle visível, mas estes peers precisam manter embeddings: 5b03580398da127c0ddf24b9fdc02afe745ed22019db479f3976d9f930db694b: peer intermediário L0-26 precisa exportar o residual para o próximo peer; 6dece790cce94281a5f56ab8c2ee0ce6f7417ba914774c842f5c0d46f8d9b62c: peer intermediário L27-43 precisa exportar o residual para o próximo peer";
 const MTP_ALERT =
   "Capacidade não confirmada. Ligar é por conta e risco do usuário. Fonte: arquivo GGUF selecionado. metadata ou tensores nextn do GGUF selecionado não puderam ser confirmados O runtime foi consultado, mas não substitui a prova do modelo; ligá-lo é por conta e risco do usuário.";
+
+const FORM_PARAMS: RuntimeParams = {
+  inference_mode: "auto",
+  n_gpu_layers: 99,
+  n_ctx: 8192,
+  offload_kqv: true,
+  fit_memory: true,
+  n_batch: 512,
+  max_new_tokens: 512,
+  max_sessions: 1,
+  prefill_chunk_tokens: 512,
+  temperature: 0.7,
+  top_p: 0.95,
+  top_k: 40,
+  repeat_penalty: 1.1,
+  repeat_last_n: 64,
+  no_thinking: true,
+  no_embeddings: false,
+  speculative_decoding_enabled: false,
+  speculative_k: 4,
+  speculative_lookup_window: 3,
+  mtp_enabled: false,
+  mtp_draft_tokens: 3,
+  mtp_min_probability: 0.1,
+};
+
+function hiddenStateCapabilities(hiddenStateF8: RuntimeCapability): DeploymentCapabilities {
+  return {
+    fit_memory: hiddenStateF8,
+    no_thinking: hiddenStateF8,
+    no_embeddings: hiddenStateF8,
+    speculative_decoding: hiddenStateF8,
+    mtp: hiddenStateF8,
+    hidden_state_f8: hiddenStateF8,
+  };
+}
 
 function mount(
   state: "supported" | "unsupported" | "unknown",
@@ -194,5 +235,49 @@ describe("CapabilitySwitch", () => {
     fireEvent.click(screen.getByRole("button", { name: "Ver aviso para Alerta fora da dobra" }));
 
     expect(screen.getByRole("tooltip").style.top).toBe("600px");
+  });
+});
+
+describe("RuntimeParamsForm", () => {
+  it("mantém f16 como padrão e grava f8 quando o cluster confirma a capacidade", () => {
+    const onChange = vi.fn();
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm
+          value={FORM_PARAMS}
+          onChange={onChange}
+          capabilities={hiddenStateCapabilities({
+              state: "supported",
+              source: "capacidades runtime dos peers selecionados",
+              reason: "todos os peers selecionados anunciam estado oculto f8",
+            })}
+        />
+      </LocaleProvider>,
+    );
+
+    const select = screen.getByRole("combobox");
+    expect((select as HTMLSelectElement).value).toBe("f16");
+    fireEvent.change(select, { target: { value: "f8" } });
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({ hidden_state_dtype: "f8" }),
+    );
+  });
+
+  it("não oferece f8 quando a capacidade do cluster foi recusada", () => {
+    render(
+      <LocaleProvider initialLocale="pt-BR">
+        <RuntimeParamsForm
+          value={FORM_PARAMS}
+          onChange={vi.fn()}
+          capabilities={hiddenStateCapabilities({
+              state: "unsupported",
+              source: "capacidades runtime dos peers selecionados",
+              reason: "pelo menos um peer selecionado não anuncia estado oculto f8",
+            })}
+        />
+      </LocaleProvider>,
+    );
+
+    expect((screen.getByRole("option", { name: /^f8/ }) as HTMLOptionElement).disabled).toBe(true);
   });
 });

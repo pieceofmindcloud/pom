@@ -78,6 +78,12 @@ pub struct SentFrame {
     pub round_trip_ms: u64,
     pub bytes_sent: u64,
     pub bytes_received: u64,
+    /// Tensor bytes sent on this crossing, excluding the frame header.
+    pub hidden_state_bytes_sent: u64,
+    /// Tensor bytes returned by this crossing, excluding the frame header.
+    pub hidden_state_bytes_received: u64,
+    /// Wire precision selected for this crossing.
+    pub hidden_state_dtype: WireDtype,
     pub client_encode_ms: u64,
     pub response_headers_ms: u64,
     pub response_body_ms: u64,
@@ -314,6 +320,20 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
             let item = by_id
                 .remove(&call.item_id)
                 .ok_or_else(|| anyhow!("resposta batch não contém o item {}", call.item_id))?;
+            let hidden_state_bytes_sent = hidden_state_bytes(
+                call.tensor
+                    .as_ref()
+                    .map(|(values, shape)| (values.as_slice(), *shape)),
+                call.dtype,
+            )?;
+            let hidden_state_bytes_received = received_hidden_state_bytes(
+                &item.meta,
+                item.tensor
+                    .as_ref()
+                    .map(|(values, shape)| (values.as_slice(), *shape)),
+                call.dtype,
+                &call.peer_label,
+            )?;
             let tls_handshake_ms = item
                 .meta
                 .get("tls_handshake_ms")
@@ -325,6 +345,9 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                 round_trip_ms: response.round_trip_ms,
                 bytes_sent: response.bytes_sent / calls.len() as u64,
                 bytes_received: response.body.len() as u64 / calls.len() as u64,
+                hidden_state_bytes_sent,
+                hidden_state_bytes_received,
+                hidden_state_dtype: call.dtype,
                 client_encode_ms: response.client_encode_ms,
                 response_headers_ms: response.response_headers_ms,
                 response_body_ms: response.response_body_ms,
@@ -364,6 +387,9 @@ impl SentFrame {
             "processing_ms": self.meta.get("processing_ms").cloned().unwrap_or(json!(0)),
             "bytes_sent": self.bytes_sent,
             "bytes_received": self.bytes_received,
+            "hidden_state_bytes_sent": self.hidden_state_bytes_sent,
+            "hidden_state_bytes_received": self.hidden_state_bytes_received,
+            "hidden_state_dtype": self.hidden_state_dtype.as_str(),
             "client_encode_ms": self.client_encode_ms,
             "response_headers_ms": self.response_headers_ms,
             "response_body_ms": self.response_body_ms,
@@ -531,19 +557,42 @@ fn encode_frame_body(
     meta: &Value,
     tensor: Option<(&[f32], [usize; 2])>,
     dtype: WireDtype,
-    encoding: FrameEncoding,
+    _encoding: FrameEncoding,
     use_batch_frame: bool,
 ) -> Result<Vec<u8>> {
     if use_batch_frame {
         wire::encode_batch_single(meta, tensor, dtype)
     } else {
-        match (tensor, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(meta, Some(tensor), encoding)
-            }
-            (tensor, dtype) => wire::encode(meta, tensor, dtype),
-        }
+        wire::encode(meta, tensor, dtype)
     }
+}
+
+fn hidden_state_bytes(tensor: Option<(&[f32], [usize; 2])>, dtype: WireDtype) -> Result<u64> {
+    Ok(wire::tensor_payload_len(tensor, dtype)? as u64)
+}
+
+fn received_hidden_state_bytes(
+    meta: &Value,
+    tensor: Option<(&[f32], [usize; 2])>,
+    expected_dtype: WireDtype,
+    peer_label: &str,
+) -> Result<u64> {
+    let Some(tensor) = tensor else {
+        return Ok(0);
+    };
+    let actual_dtype = WireDtype::parse(
+        meta.get("dtype")
+            .and_then(Value::as_str)
+            .ok_or_else(|| anyhow!("{peer_label}: resposta com estado oculto sem dtype"))?,
+    )?;
+    if actual_dtype != expected_dtype {
+        return Err(anyhow!(
+            "{peer_label}: resposta de estado oculto usa {}, mas o formato negociado é {}",
+            actual_dtype.as_str(),
+            expected_dtype.as_str()
+        ));
+    }
+    hidden_state_bytes(Some(tensor), actual_dtype)
 }
 
 async fn send_frame_in_process(
@@ -557,6 +606,7 @@ async fn send_frame_in_process(
     peer_label: &str,
 ) -> Result<SentFrame> {
     debug!(peer = peer_label, path, "inferência em processo");
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -574,6 +624,14 @@ async fn send_frame_in_process(
     }
     let client_decode_started = Instant::now();
     let (meta, tensor) = wire::decode(&bytes)?;
+    let hidden_state_bytes_received = received_hidden_state_bytes(
+        &meta,
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), *shape)),
+        dtype,
+        peer_label,
+    )?;
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
     let tls_handshake_ms = meta
         .get("tls_handshake_ms")
@@ -585,6 +643,9 @@ async fn send_frame_in_process(
         round_trip_ms: started.elapsed().as_millis() as u64,
         bytes_sent,
         bytes_received: bytes.len() as u64,
+        hidden_state_bytes_sent,
+        hidden_state_bytes_received,
+        hidden_state_dtype: dtype,
         client_encode_ms,
         response_headers_ms: 0,
         response_body_ms: 0,
@@ -635,6 +696,7 @@ async fn send_frame_with_protocol(
     // certificado esperado deste destino, e o pinning é o que distingue o peer
     // de quem se põe no meio dele.
     let http = &clients.for_peer(peer_id)?;
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
     let encode_started = Instant::now();
     let body = encode_frame_body(meta, tensor, dtype, encoding, use_batch_frame)?;
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
@@ -674,6 +736,14 @@ async fn send_frame_with_protocol(
                     }
                 };
                 let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
+                let hidden_state_bytes_received = received_hidden_state_bytes(
+                    &meta,
+                    tensor
+                        .as_ref()
+                        .map(|(values, shape)| (values.as_slice(), *shape)),
+                    dtype,
+                    peer_label,
+                )?;
                 // O handshake é medido no servidor e volta no meta da resposta:
                 // é lá que o tempo é exato, porque é lá que o `accept` acontece.
                 let tls_handshake_ms = meta
@@ -688,6 +758,9 @@ async fn send_frame_with_protocol(
                     round_trip_ms: started.elapsed().as_millis() as u64,
                     bytes_sent: body.len() as u64,
                     bytes_received: bytes.len() as u64,
+                    hidden_state_bytes_sent,
+                    hidden_state_bytes_received,
+                    hidden_state_dtype: dtype,
                     client_encode_ms,
                     response_headers_ms,
                     response_body_ms,
@@ -1341,21 +1414,17 @@ async fn send_frame_via_tunnel_with_auth(
     meta: &Value,
     tensor: Option<(&[f32], [usize; 2])>,
     dtype: WireDtype,
-    encoding: FrameEncoding,
+    _encoding: FrameEncoding,
     use_batch_frame: bool,
     peer_label: &str,
     auth_token: Option<String>,
 ) -> Result<SentFrame> {
+    let hidden_state_bytes_sent = hidden_state_bytes(tensor, dtype)?;
     let encode_started = Instant::now();
     let body = if use_batch_frame {
         wire::encode_batch_single(meta, tensor, dtype)?
     } else {
-        match (tensor, dtype) {
-            (Some(tensor), WireDtype::F16) => {
-                wire::encode_with_encoding(meta, Some(tensor), encoding)?
-            }
-            (tensor, dtype) => wire::encode(meta, tensor, dtype)?,
-        }
+        wire::encode(meta, tensor, dtype)?
     };
     let client_encode_ms = encode_started.elapsed().as_millis() as u64;
 
@@ -1397,6 +1466,14 @@ async fn send_frame_via_tunnel_with_auth(
     let response_body_ms = 0;
     let client_decode_started = Instant::now();
     let (meta, tensor) = wire::decode(&response.body)?;
+    let hidden_state_bytes_received = received_hidden_state_bytes(
+        &meta,
+        tensor
+            .as_ref()
+            .map(|(values, shape)| (values.as_slice(), *shape)),
+        dtype,
+        peer_label,
+    )?;
     let client_decode_ms = client_decode_started.elapsed().as_millis() as u64;
 
     Ok(SentFrame {
@@ -1410,6 +1487,9 @@ async fn send_frame_via_tunnel_with_auth(
         round_trip_ms,
         bytes_sent: body.len() as u64,
         bytes_received: response.body.len() as u64,
+        hidden_state_bytes_sent,
+        hidden_state_bytes_received,
+        hidden_state_dtype: dtype,
         client_encode_ms,
         response_headers_ms: round_trip_ms,
         response_body_ms,
@@ -1458,6 +1538,23 @@ mod tests {
         });
 
         assert!(is_frame_size_error(&error));
+    }
+
+    #[test]
+    fn a_response_with_another_hidden_state_dtype_is_refused() {
+        let values = vec![1.0_f32; 2];
+        let error = received_hidden_state_bytes(
+            &json!({"dtype": "f16"}),
+            Some((&values, [1, 2])),
+            WireDtype::F8,
+            "old-peer",
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains("old-peer"), "erro inesperado: {error}");
+        assert!(error.contains("f16"), "erro inesperado: {error}");
+        assert!(error.contains("f8"), "erro inesperado: {error}");
     }
 
     #[test]
@@ -1617,6 +1714,9 @@ mod tests {
             round_trip_ms: 12,
             bytes_sent: 100,
             bytes_received: 200,
+            hidden_state_bytes_sent: 0,
+            hidden_state_bytes_received: 0,
+            hidden_state_dtype: WireDtype::F16,
             client_encode_ms: 1,
             response_headers_ms: 5,
             response_body_ms: 3,

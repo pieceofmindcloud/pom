@@ -2071,6 +2071,13 @@ fn capabilities_for_plan(
         "pelo menos um peer selecionado não anuncia lookup especulativo",
         "as capacidades runtime de pelo menos um peer não puderam ser lidas",
     );
+    let hidden_state_f8 = capability_from_bool(
+        selected_runtime_capability(steps, machines, crate::pipeline::CAP_FRAME_DTYPE_F8),
+        "capacidades runtime dos peers selecionados",
+        "todos os peers selecionados anunciam estado oculto f8",
+        "pelo menos um peer selecionado não anuncia estado oculto f8",
+        "as capacidades runtime de pelo menos um peer não puderam ser lidas",
+    );
     let model_mtp = selected_final_model_capability(steps, machines, |evidence| evidence.mtp);
     let runtime_mtp = combine_known(
         [
@@ -2164,6 +2171,7 @@ fn capabilities_for_plan(
             no_embeddings,
             speculative_decoding,
             mtp,
+            hidden_state_f8,
         },
         no_embeddings_topology(steps, total_layers, kind),
     )
@@ -2176,6 +2184,23 @@ fn requested_capability_block(
 ) -> Option<String> {
     crate::capabilities::validate_no_embeddings(no_embeddings, params.no_embeddings)
         .err()
+        .or_else(|| {
+            if params.hidden_state_dtype == crate::wire::WireDtype::F8 {
+                match capabilities.hidden_state_f8.state {
+                    crate::capabilities::CapabilityState::Supported => None,
+                    crate::capabilities::CapabilityState::Unsupported => Some(format!(
+                        "A precisão f8 do estado oculto foi solicitada, mas {}",
+                        capabilities.hidden_state_f8.reason
+                    )),
+                    crate::capabilities::CapabilityState::Unknown => Some(format!(
+                        "A precisão f8 do estado oculto foi solicitada, mas a capacidade dos peers não pôde ser confirmada: {}",
+                        capabilities.hidden_state_f8.reason
+                    )),
+                }
+            } else {
+                None
+            }
+        })
         .or_else(|| {
             if params.fit_memory
                 && capabilities.fit_memory.state == crate::capabilities::CapabilityState::Unknown
@@ -5116,6 +5141,19 @@ async fn run_redeploy(
     let peers = state.all_peers().await;
     let total = registro.nodes.len().max(1);
 
+    // Re-deploy does not build a new plan, but changing the wire precision is
+    // still a cluster-wide protocol change. Probe every participant before
+    // touching the first process, otherwise a later incompatible peer could
+    // leave one part of the same deployment on f8 and another on f16.
+    validate_redeploy_wire_dtype(
+        &state,
+        &peers,
+        &registro.nodes,
+        &self_id,
+        req.params.hidden_state_dtype,
+    )
+    .await?;
+
     let mut resultados: Vec<RedeployOutcome> = Vec::new();
     let mut aceitos: HashMap<String, RuntimeParams> = HashMap::new();
 
@@ -5189,6 +5227,94 @@ async fn run_redeploy(
         }
     }
     Ok(falhas)
+}
+
+async fn validate_redeploy_wire_dtype(
+    state: &GatewayState,
+    peers: &[PeerInfo],
+    nodes: &[crate::deployment::DeploymentNode],
+    self_id: &str,
+    dtype: crate::wire::WireDtype,
+) -> Result<(), String> {
+    if dtype != crate::wire::WireDtype::F8 {
+        return Ok(());
+    }
+
+    let mut blocked = Vec::new();
+    for node in nodes {
+        if node.node_id == self_id {
+            continue;
+        }
+        let Some(peer) = peers.iter().find(|peer| peer.node_id == node.node_id) else {
+            blocked.push(format!("{}: peer não encontrado", node.hostname));
+            continue;
+        };
+        let Some(base) = peer.gateway_url() else {
+            blocked.push(format!("{}: peer sem gateway anunciado", node.hostname));
+            continue;
+        };
+        let Ok(client) = state.peer_http.for_peer(&node.node_id) else {
+            blocked.push(format!("{}: cliente do peer indisponível", node.hostname));
+            continue;
+        };
+        let response = match client
+            .get(format!("{base}/api/ui/node"))
+            .timeout(PEER_TIMEOUT)
+            .send()
+            .await
+        {
+            Ok(response) if response.status().is_success() => response,
+            Ok(response) => {
+                blocked.push(format!(
+                    "{}: /api/ui/node respondeu HTTP {}",
+                    node.hostname,
+                    response.status()
+                ));
+                continue;
+            }
+            Err(error) => {
+                blocked.push(format!(
+                    "{}: não foi possível consultar /api/ui/node: {error}",
+                    node.hostname
+                ));
+                continue;
+            }
+        };
+        let body = match response.json::<serde_json::Value>().await {
+            Ok(body) => body,
+            Err(error) => {
+                blocked.push(format!(
+                    "{}: resposta de /api/ui/node inválida: {error}",
+                    node.hostname
+                ));
+                continue;
+            }
+        };
+        let supports_f8 = body
+            .get("inference_frame_capabilities")
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|capabilities| {
+                capabilities.iter().any(|capability| {
+                    capability.as_str() == Some(crate::pipeline::CAP_FRAME_DTYPE_F8)
+                })
+            });
+        if !supports_f8 {
+            blocked.push(format!(
+                "{}: não anuncia {}",
+                node.hostname,
+                crate::pipeline::CAP_FRAME_DTYPE_F8
+            ));
+        }
+    }
+
+    if blocked.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "A precisão f8 do estado oculto foi solicitada, mas a negociação falhou: {}",
+            blocked.join("; ")
+        ))
+    }
 }
 
 /// Manda **uma** máquina recarregar com outros parâmetros.
@@ -7015,6 +7141,30 @@ mod tests {
             super::uncovered_after_removal(&[(0, 9), (20, 39)], (0, 19)),
             (10..=19).collect::<Vec<u32>>()
         );
+    }
+
+    #[test]
+    fn f8_request_is_blocked_when_peer_capability_is_unsupported() {
+        let capability = crate::capabilities::supported("teste", "capacidade presente");
+        let capabilities = crate::capabilities::DeploymentCapabilities {
+            fit_memory: capability.clone(),
+            no_thinking: capability.clone(),
+            no_embeddings: capability.clone(),
+            speculative_decoding: capability.clone(),
+            mtp: capability,
+            hidden_state_f8: crate::capabilities::unsupported(
+                "capacidades runtime dos peers selecionados",
+                "pelo menos um peer selecionado não anuncia estado oculto f8",
+            ),
+        };
+        let no_embeddings = crate::capabilities::evaluate_no_embeddings(&[]);
+        let mut params = RuntimeParams::default();
+        params.hidden_state_dtype = crate::wire::WireDtype::F8;
+
+        let error = super::requested_capability_block(&params, &capabilities, &no_embeddings)
+            .expect("precisão f8 sem capacidade não pode seguir silenciosamente");
+        assert!(error.contains("f8"));
+        assert!(error.contains("não anuncia"));
     }
 
     use super::*;

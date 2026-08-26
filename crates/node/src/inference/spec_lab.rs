@@ -248,6 +248,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
                 forward,
                 residual,
                 shape,
+                crate::wire::WireDtype::F16,
                 1,
                 reply_to,
             ));
@@ -394,6 +395,7 @@ async fn fake_step(State(hop): State<Hop>, body: Bytes) -> Response {
                 forward,
                 residual,
                 shape,
+                crate::wire::WireDtype::F16,
                 1,
                 reply_to,
             ));

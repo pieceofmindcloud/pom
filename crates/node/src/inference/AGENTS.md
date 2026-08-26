@@ -364,6 +364,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   texto sem sentido (18/08).
 - `wire.rs` - o único lugar que conhece o dtype/codificação do tensor em
   trânsito e o contrato inicial `frame/v1-batch` com offsets validados.
+  `WireDtype` mantém f16 como default e implementa f8 FP8 E4M3FN na borda,
+  sempre devolvendo f32 ao motor; `prefill.rs`/`relay.rs` propagam o dtype
+  escolhido e registram bytes enviados, recebidos e formato efetivo por hop.
 
 ## Funções-chave
 

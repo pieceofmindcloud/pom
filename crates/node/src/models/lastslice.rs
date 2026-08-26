@@ -305,6 +305,7 @@ mod tests {
             n_gpu_layers: 99,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,

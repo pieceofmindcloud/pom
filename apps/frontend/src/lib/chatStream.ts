@@ -1,4 +1,4 @@
-import type { ExecutionEngine } from "./types";
+import type { ExecutionEngine, WireDtype } from "./types";
 
 export type { ExecutionEngine } from "./types";
 
@@ -86,6 +86,11 @@ export interface PhaseTrace {
   node_top_p_ms: number;
   node_selection_ms: number;
   node_token_text_ms: number;
+  /** Estado oculto que cruzou este hop nesta fase, separado dos bytes de frame. */
+  hidden_state_bytes_sent?: number;
+  hidden_state_bytes_received?: number;
+  /** Formato efetivamente observado; ausente em traces anteriores à medição. */
+  hidden_state_dtype?: WireDtype;
   node_sampling_ms: number;
   node_encode_ms: number;
   node_p50_ms: number;

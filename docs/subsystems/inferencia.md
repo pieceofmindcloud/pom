@@ -211,9 +211,9 @@ codificação em trânsito. Formato:
 [4 bytes big-endian: tamanho do header][JSON header][tensor cru]
 ```
 
-- `dtype`/`shape` vão no JSON; o corpo é **binário** f16 (nunca base64, nunca
-  f32 na rede). Precisão e codificação são parâmetro de `encode`/`decode`, não
-  suposição.
+- `dtype`/`shape` vão no JSON; o corpo é **binário** f16 por padrão ou f8
+  quando a implantação escolhe a alternativa (nunca base64). Precisão e
+  codificação são parâmetro de `encode`/`decode`, não suposição.
 - `frame_version=1` (`inference/frame-v1-batch`) é o primeiro e único contrato
   oficial. Um header JSON carrega `batch_id` e itens `{item_id, session_id,
   shape, dtype, offset, len, meta}`, seguido pelo payload concatenado. O
@@ -236,8 +236,23 @@ codificação em trânsito. Formato:
   request. Uma recusa determinística de tamanho não repete o mesmo prefill a
   frio.
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
-  fio, nunca da matemática (f16 é a precisão da GPU mesmo, então não custa
-  qualidade - diferente do int8, considerado e recusado).
+  fio, nunca da matemática. `f16` é o padrão preservado; `f8` usa FP8 E4M3FN,
+  um byte por valor, e é uma escolha explícita de `RuntimeParams` para medir o
+  trade-off. O conversor recusa NaN, infinito e valores fora do alcance finito
+  em vez de saturá-los silenciosamente. O f32 continua representável em
+  caminhos internos, mas não é uma opção de implantação.
+- `RuntimeParams.hidden_state_dtype` é global para a implantação e segue o
+  mesmo caminho persistido de contexto, batch, chunk prefill e cache KV. O
+  padrão é `f16`; `f8` só é enviado quando o operador o escolhe
+  explicitamente. Cada peer anuncia `inference/frame-v1-dtype-f8` em
+  `/api/ui/node`. O planejador bloqueia uma implantação f8 se qualquer peer
+  selecionado não anunciar a capability, e o servidor ainda recusa um frame
+  incompatível com uma mensagem explícita. Não há interpretação silenciosa.
+- O trace de cada hop registra `hidden_state_bytes_sent`,
+  `hidden_state_bytes_received` e `hidden_state_dtype`. A UI mostra esses
+  campos por travessia e o formato efetivo, inclusive quando uma configuração
+  pedida não pode ser usada. O número observado, e não uma estimativa de
+  transporte, é a medida para comparar f16 e f8.
 
 Medido com `tcpdump` no peer 2 (requisição de 35 tokens de prompt + 34
 gerados): 565.336 bytes de estado oculto da cabeça para a cauda, 6.715 bytes de
@@ -245,7 +260,9 @@ tokens amostrados na volta. 565.336 / 69 tokens = **8.192 bytes por token por
 hop**, exatamente `hidden_dim 4096 × 2` (f16). O formato antigo (f32 em
 base64) custava 4096 × 4 × 4/3 = 21.846 bytes por token por hop - **62,5%
 menos bytes** na rede hoje. Um pedaço de prefill de 512 tokens é ~8 MiB f16 por
-hop por pedaço.
+hop por pedaço. Com f8, o payload do mesmo tensor cai para um byte por valor,
+mas a redução efetiva deve ser lida em `hidden_state_bytes_*`, por travessia,
+porque header, transporte e padrão de tráfego também entram na medição.
 
 ## 3. Prefill e step
 

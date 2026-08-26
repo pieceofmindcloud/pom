@@ -533,6 +533,8 @@ function PhaseRow({
     phase.node_sampling_ms + phase.node_encode_ms;
   const unattributed = Math.max(0, phase.processing_ms - named);
   const idle = phase.calls === 0;
+  const hiddenStateSent = phase.hidden_state_bytes_sent ?? 0;
+  const hiddenStateReceived = phase.hidden_state_bytes_received ?? 0;
 
   return <>
     <tr className={clsx("border-t border-line/40", first && "border-t-line/70", idle && "text-faint")}>
@@ -547,7 +549,18 @@ function PhaseRow({
       <td className="py-1 pr-3 text-right">{phase.node_residual_ms} ms</td>
       <td className="py-1 pr-3 text-right">{phase.node_sampling_ms} ms</td>
       <td className="py-1 pr-3 text-right">{phase.network_ms} ms</td>
-      <td className="py-1 text-right">{bytes(phase.bytes_sent + phase.bytes_received)}</td>
+      <td className="py-1 text-right">
+        {bytes(phase.bytes_sent + phase.bytes_received)}
+        {phase.hidden_state_dtype && (
+          <span className="block text-[0.6rem] text-aqua">
+            {t("chat.telemetry.hiddenState", {
+              sent: bytes(hiddenStateSent),
+              received: bytes(hiddenStateReceived),
+              dtype: phase.hidden_state_dtype,
+            })}
+          </span>
+        )}
+      </td>
     </tr>
     <tr className="text-faint">
       <td className="pb-1.5 pr-3 align-top" colSpan={9}>
@@ -555,6 +568,9 @@ function PhaseRow({
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
         <span className="block">{t("chat.telemetry.gatewayRow", { encode: phase.client_encode_ms, headers: phase.response_headers_ms, body: phase.response_body_ms, decode: phase.client_decode_ms })}</span>
+        {phase.hidden_state_dtype && (
+          <span className="block">{t("chat.telemetry.hiddenState", { sent: bytes(hiddenStateSent), received: bytes(hiddenStateReceived), dtype: phase.hidden_state_dtype })}</span>
+        )}
         <span className="block">{tlsLine(t, phase)}</span>
       </td>
     </tr>

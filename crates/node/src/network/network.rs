@@ -1032,6 +1032,7 @@ impl Network {
             inference_frame_capabilities: {
                 let mut caps = vec![
                     crate::pipeline::CAP_FRAME_BATCH.into(),
+                    crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
                     "relay/v1-chain".into(),
                     "relay/v2-direct".into(),
                     "speculate/v1-lookup".into(),

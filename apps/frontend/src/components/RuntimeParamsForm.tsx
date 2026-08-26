@@ -15,8 +15,8 @@
  */
 import { useState } from "react";
 import { Check } from "lucide-react";
-import { AlertTooltip, Field, Input } from "./ui";
-import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams } from "../lib/types";
+import { AlertTooltip, Field, Input, Select } from "./ui";
+import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams, WireDtype } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type Knob = {
@@ -207,6 +207,14 @@ export function RuntimeParamsForm({
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const hiddenStateCapability = capabilities?.hidden_state_f8;
+  const hiddenStateDtype = value.hidden_state_dtype ?? "f16";
+  const f8Unavailable = hiddenStateCapability
+    ? hiddenStateCapability.state !== "supported"
+    : false;
+  const hiddenStateHint = hiddenStateCapability && f8Unavailable
+    ? `${t("deploy.knob.hidden_state_dtypeHint")} ${hiddenStateCapability.reason}`
+    : t("deploy.knob.hidden_state_dtypeHint");
 
   function setKnob(key: keyof RuntimeParams, text: string) {
     setDrafts((d) => ({ ...d, [key]: text }));
@@ -245,6 +253,30 @@ export function RuntimeParamsForm({
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1">
         {KNOBS.map((k) => numeric(k, false))}
+      </div>
+
+      <div className="border-t border-line pt-4">
+        <Field
+          label={t("deploy.knob.hidden_state_dtype")}
+          hint={hiddenStateHint}
+        >
+          <Select
+            name="hidden_state_dtype"
+            disabled={disabled}
+            value={hiddenStateDtype}
+            onChange={(event) =>
+              onChange({
+                ...value,
+                hidden_state_dtype: event.target.value as WireDtype,
+              })
+            }
+          >
+            <option value="f16">{t("deploy.knob.hidden_state_dtypeF16")}</option>
+            <option value="f8" disabled={f8Unavailable}>
+              {t("deploy.knob.hidden_state_dtypeF8")}
+            </option>
+          </Select>
+        </Field>
       </div>
 
       {/* `offload_kqv` não está aqui: ele é propriedade da memória de uma

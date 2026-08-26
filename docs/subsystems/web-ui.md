@@ -329,6 +329,8 @@ guarda além das falas:
 
 `chatStream` separa `<think>` do conteúdo visível sem vazar o delimitador
 entre pedaços; `finishChatStream` grava tokens/s, duração e o trace por hop.
+Cada fase também mostra os bytes de estado oculto enviados e recebidos na
+travessia e o `dtype` efetivamente usado, para comparar execuções f16/f8.
 Ao terminar o stream, o Chat pede um snapshot de `/api/ui/chat/telemetry` para
 os pares adjacentes do trace e `/api/ui/peer/:node_id/runtime` para cada máquina
 do trace. O painel mostra o RTT total observado das chamadas, o RTT de cada
@@ -470,7 +472,8 @@ impressão digital é só modelo + conjunto de faixas.
   não inventa pontes pela ordem dos cards, o que preserva uma entrada rápida
   quando outra faixa carregada se sobrepõe. O Tensor usa o modelo inteiro em todos os
   ranks e não apresenta a seleção antiga de fatias. As propriedades globais
-  (contexto, batch, amostragem e sessões) ficam separadas das propriedades por
+  (contexto, batch, amostragem, sessões e precisão do estado oculto) ficam
+  separadas das propriedades por
   máquina (`n_gpu_layers`, KV e capacidade local); ao selecionar uma máquina, o
   inspetor também mostra as camadas que ela executará. Nas globais, a seção
   de execução separa a especulação por lookup do MTP; ao marcar MTP, a

@@ -423,6 +423,26 @@ pub fn hop_entry(processing_ms: &Value, node_timings: &Value, inbound_bytes: usi
     })
 }
 
+/// Variant used by inference hops after the selected wire dtype is known.
+/// `inbound_bytes` remains the complete frame size for transport telemetry;
+/// the hidden-state counters isolate the tensor payload on either side of the
+/// crossing. Direct mode records both sides because no caller waits for a
+/// response frame from each hop.
+pub fn hop_entry_with_state(
+    processing_ms: &Value,
+    node_timings: &Value,
+    inbound_bytes: usize,
+    hidden_state_bytes_received: usize,
+    hidden_state_bytes_sent: usize,
+    dtype: crate::wire::WireDtype,
+) -> Value {
+    let mut entry = hop_entry(processing_ms, node_timings, inbound_bytes);
+    entry["hidden_state_bytes_sent"] = json!(hidden_state_bytes_sent);
+    entry["hidden_state_bytes_received"] = json!(hidden_state_bytes_received);
+    entry["hidden_state_dtype"] = json!(dtype.as_str());
+    entry
+}
+
 /// Acrescenta a entrada deste hop à lista que veio na ida.
 pub fn accumulate(inbound_meta: &Value, entry: Value) -> Vec<Value> {
     let mut hops: Vec<Value> = inbound_meta

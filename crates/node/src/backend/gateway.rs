@@ -344,6 +344,7 @@ impl GatewayState {
                 inference_frame_capabilities: {
                     let mut caps = vec![
                         crate::pipeline::CAP_FRAME_BATCH.into(),
+                        crate::pipeline::CAP_FRAME_DTYPE_F8.into(),
                         "relay/v1-chain".into(),
                         "relay/v2-direct".into(),
                         "speculate/v1-lookup".into(),
@@ -1050,7 +1051,9 @@ async fn generate_stream_inner(
             cfg.as_ref()
                 .map(|c| c.prefill_chunk_tokens)
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
-            crate::wire::WireDtype::F16,
+            cfg.as_ref()
+                .map(|c| c.hidden_state_dtype)
+                .unwrap_or_default(),
             cfg.as_ref().is_some_and(|c| c.speculative_decoding_enabled),
             speculative_k_of(cfg.as_ref().map(|c| c.speculative_k).unwrap_or(4), n_batch),
             cfg.as_ref()
@@ -2577,6 +2580,7 @@ mod budget_tests {
             n_gpu_layers: 99,
             n_ctx,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,
@@ -2862,6 +2866,7 @@ pub(crate) mod testkit {
             n_gpu_layers: 0,
             n_ctx: 8192,
             offload_kqv: true,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
             cache_type_k: crate::config::KvCacheType::F16,
             cache_type_v: crate::config::KvCacheType::F16,
             fit_memory: true,

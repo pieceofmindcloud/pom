@@ -303,6 +303,13 @@ export interface ClusterView {
 
 export type ModelSource = "ollama" | "lmstudio" | "folder" | string;
 
+export interface MultipartPart {
+  index: number;
+  path: string;
+  bytes: number;
+  tensor_count: number;
+}
+
 export interface DiscoveredModel {
   id: string;
   name: string;
@@ -310,6 +317,12 @@ export interface DiscoveredModel {
   source_label: string;
   path: string;
   size_bytes: number;
+  /** O GGUF declara split.count > 1 e este item representa o conjunto. */
+  multipart?: boolean;
+  /** Partes físicas do conjunto, na ordem split.no. */
+  multipart_parts?: MultipartPart[];
+  /** Motivo concreto que impede ler um conjunto multipart incompleto. */
+  multipart_error?: string | null;
   architecture: string | null;
   /** True only when the GGUF metadata reports more than one expert. */
   is_moe?: boolean;

@@ -243,7 +243,10 @@ Per-file list:
   `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices`.
   `SlicingJobsPanel` is shown only while at least one slicing job is running.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
-  can be sliced.
+  can be sliced. Multipart models show the summed physical size, every
+  declared part and an explicit instruction to keep the set together before
+  POM slicing; incomplete sets surface the backend reason and leave the start
+  action disabled.
 - `Transfers.tsx` — Shows remote model downloads from `useModelDownloads` in
   the same in-progress screen as pending offers (accept/reject via
   `POST /api/transfer/offers/:id/accept|reject`), active transfers (bytes +

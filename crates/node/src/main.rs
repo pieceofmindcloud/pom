@@ -65,6 +65,8 @@ mod model_provider_backend;
 pub(crate) mod moe;
 #[path = "inference/mtp.rs"]
 mod mtp;
+#[path = "models/multipart.rs"]
+pub(crate) mod multipart;
 #[path = "network/network.rs"]
 mod network;
 #[path = "models/ollama.rs"]

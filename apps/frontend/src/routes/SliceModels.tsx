@@ -94,6 +94,7 @@ export function SliceModels() {
   }, [models, path]);
 
   const model = models.find((m) => m.path === path);
+  const metadataComplete = catalog.data?.metadata_complete ?? true;
   const tensorMode = mode === "tensor_parallel";
   const tpSizeNumber = Math.max(2, Math.min(64, Number.parseInt(tpSize, 10) || 2));
 
@@ -111,6 +112,16 @@ export function SliceModels() {
   // per file, so typing a size stays cheap.
   useEffect(() => {
     if (!path) return;
+    if (!metadataComplete) {
+      setPlan(null);
+      setPlanError(null);
+      return;
+    }
+    if (model?.multipart_error) {
+      setPlan(null);
+      setPlanError(model.multipart_error);
+      return;
+    }
     const body = tensorMode
       ? { model_path: path, mode, tp_size: tpSizeNumber }
       : { model_path: path, mode, slices: slicePayload };
@@ -127,7 +138,15 @@ export function SliceModels() {
       }
     }, 260);
     return () => window.clearTimeout(timer);
-  }, [mode, path, slicePayload, tensorMode, tpSizeNumber]);
+  }, [
+    metadataComplete,
+    mode,
+    model?.multipart_error,
+    path,
+    slicePayload,
+    tensorMode,
+    tpSizeNumber,
+  ]);
 
   async function fillEqual(parts: number) {
     if (!path) return;
@@ -154,7 +173,7 @@ export function SliceModels() {
   }
 
   async function start() {
-    if (!path || !plan || plan.blocked) return;
+    if (!path || !plan || plan.blocked || model?.multipart_error) return;
     setStarting(true);
     try {
       const body = tensorMode
@@ -227,7 +246,13 @@ export function SliceModels() {
                   <dl className="grid grid-cols-2 gap-3 text-[0.82rem]">
                     <div>
                       <dt className="eyebrow">{t("slice.size")}</dt>
-                      <dd className="font-mono text-fg">{bytes(model.size_bytes)}</dd>
+                      <dd className="font-mono text-fg">
+                        {!metadataComplete
+                          ? t("slice.sizePending")
+                          : model.multipart_error
+                            ? t("slice.multipartSizeUnavailable")
+                            : bytes(model.size_bytes)}
+                      </dd>
                     </div>
                     <div>
                       <dt className="eyebrow">{t("slice.layers")}</dt>
@@ -236,6 +261,38 @@ export function SliceModels() {
                       </dd>
                     </div>
                   </dl>
+                )}
+                {model?.multipart && (
+                  <div className="space-y-3 rounded-xl border border-amber/30 bg-amber/5 px-3.5 py-3">
+                    <div className="flex items-center gap-2">
+                      <Badge tone="amber">{t("slice.multipartBadge")}</Badge>
+                      <span className="text-[0.75rem] text-muted">
+                        {t("slice.multipartParts", {
+                          count: model.multipart_parts?.length ?? 0,
+                        })}
+                      </span>
+                    </div>
+                    <p className="text-[0.75rem] leading-relaxed text-muted">
+                      {t("slice.multipartNeedsSlicing")}
+                    </p>
+                    {model.multipart_parts && model.multipart_parts.length > 0 && (
+                      <ul className="space-y-1.5 border-t border-amber/20 pt-2 text-[0.7rem] text-faint">
+                        {model.multipart_parts.map((part) => (
+                          <li key={part.index} className="flex justify-between gap-3">
+                            <span className="min-w-0 truncate">
+                              {part.index + 1}. {part.path}
+                            </span>
+                            <span className="shrink-0 font-mono">{bytes(part.bytes)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {model.multipart_error && (
+                      <p className="border-t border-amber/20 pt-2 text-[0.75rem] leading-relaxed text-rose">
+                        {model.multipart_error}
+                      </p>
+                    )}
+                  </div>
                 )}
                 <label className="flex cursor-pointer items-start gap-3 rounded-xl border border-line bg-raised/60 px-3.5 py-3 transition-colors hover:border-iris/50">
                   <input

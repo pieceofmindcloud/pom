@@ -1251,6 +1251,17 @@ outro formato. Nesta entrega a ponte é declarada para Q4_K, Q6_K, IQ3_S, IQ2_S
 e IQ4_XS somente depois das respectivas provas; os demais IQ continuam
 protegidos pela recusa nominal.
 
+Quando uma rota heterogênea combina somente esses cinco dtypes, a decisão CUDA é
+feita por tensor, e não pela igualdade de um `KQuantFormat` global. Assim, uma
+combinação Q4_K/Q6_K como a do Ornith pode usar o mesmo executor heterogêneo,
+com `k_dot` escolhendo o decoder já validado de cada tensor. Um dtype fora desse
+conjunto mantém todos os experts da camada no llama.cpp; o diagnóstico lista
+somente os dtypes que bloquearam a ponte. A comparação diferencial específica
+da rota mista está no teste
+`executor_cuda_k_quants_heterogeneos_preserva_gate_up_down_do_decoder_cpu`, com
+tolerância absoluta de `1e-4` e relatório também da diferença relativa; ela deve
+ser executada com CUDA real antes de declarar a combinação provada.
+
 Critério de pronto por bloco: build `--features vulkan,cuda` verde no ramo de
 checagem; teste diferencial executado para cada dtype; GGUF real correspondente
 sobe e responde com `moe_executor=cuda`, sem `engine_mismatch` nem fallback
@@ -1770,6 +1781,13 @@ por tensor até que suas escalas sejam incluídas no inventário heterogêneo. Q
 I8, I16, I32, I64 e F64 continuam sem decoder. Qualquer dtype não coberto
 produz o nome do tensor, o ID e o nome GGML, sem interpretar os bytes por outro
 formato.
+
+Na ponte CUDA, o subconjunto heterogêneo validado é Q4_K (12), Q6_K (14),
+IQ3_S (21), IQ2_S (22) e IQ4_XS (23). Os kernels recebem um descriptor por
+expert e papel, validam o tamanho da matriz segundo o dtype e despacham para o
+decoder K ou IQ existente. Isso preserva o caminho IQ anterior e permite que
+gate, up e down usem dtypes diferentes; a ausência de uma ponte em qualquer
+tensor mantém a camada nativa e informa o dtype bloqueador.
 
 O teste ignorado
 `qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor` exige

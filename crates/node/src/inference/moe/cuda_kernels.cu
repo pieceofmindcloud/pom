@@ -620,6 +620,18 @@ __device__ float iq_dot(
     return result;
 }
 
+__device__ float heterogeneous_quant_dot(
+    const CudaHeterogeneousTensor &tensor,
+    int row,
+    int columns,
+    const float *input
+) {
+    if (tensor.dtype == 12 || tensor.dtype == 14) {
+        return k_dot(tensor.dtype, tensor.data, row, columns, input);
+    }
+    return iq_dot(tensor.dtype, tensor.data, row, columns, input);
+}
+
 __global__ void kquant_gate_up_route_kernel(
     uint32_t dtype,
     const uint8_t * const *payloads,
@@ -842,7 +854,7 @@ __global__ void iquant_down_route_kernel(
         activated + pair * intermediate);
 }
 
-__global__ void heterogeneous_iq_gate_up_route_kernel(
+__global__ void heterogeneous_quant_gate_up_route_kernel(
     const CudaHeterogeneousExpert * experts,
     const uint32_t * token_ids,
     int pair_count,
@@ -864,12 +876,12 @@ __global__ void heterogeneous_iq_gate_up_route_kernel(
     float gate;
     float up;
     if (expert.gate_up.data != nullptr) {
-        gate = iq_dot(expert.gate_up.dtype, expert.gate_up.data, component_row, hidden, input);
-        up = iq_dot(expert.gate_up.dtype, expert.gate_up.data,
+        gate = heterogeneous_quant_dot(expert.gate_up, component_row, hidden, input);
+        up = heterogeneous_quant_dot(expert.gate_up,
             intermediate + component_row, hidden, input);
     } else {
-        gate = iq_dot(expert.gate.dtype, expert.gate.data, component_row, hidden, input);
-        up = iq_dot(expert.up.dtype, expert.up.data, component_row, hidden, input);
+        gate = heterogeneous_quant_dot(expert.gate, component_row, hidden, input);
+        up = heterogeneous_quant_dot(expert.up, component_row, hidden, input);
     }
     gate_up_values[pair * rows_per_pair + row] = row < intermediate ? gate : up;
 }
@@ -901,7 +913,7 @@ __global__ void heterogeneous_activation_kernel(
         heterogeneous_activation(gate_up[row], activation) * gate_up[intermediate + row];
 }
 
-__global__ void heterogeneous_iq_down_route_kernel(
+__global__ void heterogeneous_quant_down_route_kernel(
     const CudaHeterogeneousExpert * experts,
     int pair_count,
     int hidden,
@@ -916,12 +928,8 @@ __global__ void heterogeneous_iq_down_route_kernel(
         return;
     }
     const CudaHeterogeneousExpert expert = experts[pair];
-    pair_output[pair * hidden + row] = iq_dot(
-        expert.down.dtype,
-        expert.down.data,
-        row,
-        intermediate,
-        activated + pair * intermediate);
+    pair_output[pair * hidden + row] = heterogeneous_quant_dot(
+        expert.down, row, intermediate, activated + pair * intermediate);
 }
 
 int cuda_status(cudaError_t error) {
@@ -1905,7 +1913,7 @@ extern "C" int pom_moe_iquant_forward_route_batch_resident(
     return result;
 }
 
-extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
+extern "C" int pom_moe_heterogeneous_quant_forward_route_batch_resident(
     const CudaHeterogeneousExpert * experts,
     std::size_t expert_count,
     const uint32_t * token_ids,
@@ -1940,10 +1948,11 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
     }
 
     const auto valid_dtype = [](uint32_t dtype) {
-        return dtype == 21 || dtype == 22 || dtype == 23;
+        return dtype == 12 || dtype == 14 || dtype == 21 || dtype == 22 || dtype == 23;
     };
     const auto row_bytes = [&](uint32_t dtype, std::size_t columns) -> std::size_t {
-        const std::size_t block_bytes = dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
+        const std::size_t block_bytes = dtype == 12 ? 144 : dtype == 14 ? 210 :
+            dtype == 21 ? 110 : dtype == 22 ? 82 : 136;
         return (columns / 256) * block_bytes;
     };
     const auto valid_tensor = [&](const CudaHeterogeneousTensor & tensor,
@@ -2062,7 +2071,7 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
             result = cuda_status(cudaEventRecord(start));
             if (result != 0) break;
         }
-        heterogeneous_iq_gate_up_route_kernel<<<
+        heterogeneous_quant_gate_up_route_kernel<<<
             (2 * intermediate_i * pair_count + block_size - 1) / block_size,
             block_size>>>(d_experts, d_token_ids, pair_count, intermediate_i,
                 hidden_i, d_hidden, d_gate_up);
@@ -2073,7 +2082,7 @@ extern "C" int pom_moe_heterogeneous_iq_forward_route_batch_resident(
             block_size>>>(d_gate_up, pair_count, intermediate_i, activation, d_activated);
         result = cuda_status(cudaGetLastError());
         if (result != 0) break;
-        heterogeneous_iq_down_route_kernel<<<
+        heterogeneous_quant_down_route_kernel<<<
             (hidden_i * pair_count + block_size - 1) / block_size,
             block_size>>>(d_experts, pair_count, hidden_i, intermediate_i,
                 d_activated, d_pair_output);

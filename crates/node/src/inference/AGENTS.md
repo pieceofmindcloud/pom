@@ -171,6 +171,20 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
   do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
   uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  O helper `llama_moe_reshape_route_2d` do fork materializa sempre a rota com
+  `ggml_cont` antes do reshape: `ggml_is_contiguous` sozinho não prova que a
+  área do produtor já está pronta para a cópia entre backends. Isso protege o
+  primeiro token/slot contra leitura não inicializada. `qwen35moe` mantém
+  `ffn_*_shexp` fora do inventário: o callback recebe apenas `ffn_*_exps`, e o
+  expert compartilhado continua no `build_ffn` nativo.
+  A prova E2E isolada é:
+  `POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf POM_MOE_NUMERIC_GPU_LAYERS=99`
+  `cargo test -p node --features cuda --bin pom`
+  `inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer`
+  `-- --ignored --nocapture`. Ela compara quatro tokens na camada 1 entre o
+  bloco nativo e o callback externo, exige executor `cuda`, ausência de NaN e
+  `abs <= 5e-2 + 2e-2 * max(abs(native), 1)` por elemento; `MOE_NUMERIC_PROOF`
+  publica `max_abs` e `max_relative`.
   `bandwidth.rs` transforma medições concorrentes CPU/transferência em uma
   fração determinística dos misses; `coexecution.rs` divide por expert,
   executa as duas lanes em paralelo e soma saídas com largura validada.

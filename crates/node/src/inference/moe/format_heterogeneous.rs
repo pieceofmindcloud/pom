@@ -730,6 +730,21 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
+    fn expert_shared_nao_entra_no_inventario_de_rota() {
+        assert_eq!(
+            role_for_name("blk.1.ffn_gate_exps.weight"),
+            Some(TensorRole::Gate)
+        );
+        assert_eq!(
+            role_for_name("blk.1.ffn_down_exps.weight"),
+            Some(TensorRole::Down)
+        );
+        assert_eq!(role_for_name("blk.1.ffn_gate_shexp.weight"), None);
+        assert_eq!(role_for_name("blk.1.ffn_up_shexp.weight"), None);
+        assert_eq!(role_for_name("blk.1.ffn_down_shexp.weight"), None);
+    }
+
+    #[test]
     #[ignore = "requer o GGUF real Qwen3.6-35B-A3B-UD-IQ3_S"]
     fn qwen_ud_iq3_s_real_inventaria_dtypes_por_tensor() {
         let path = std::env::var_os("POM_REAL_MOE_GGUF")

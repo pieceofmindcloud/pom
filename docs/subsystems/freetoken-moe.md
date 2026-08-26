@@ -993,11 +993,14 @@ grafo nativo, inclusive para modelos densos. Arquitetura, geometria, ativação
 ou dtype que o executor não consiga atender devem produzir recusa nominal no
 limite de decode, nunca executar o bloco nativo como fallback silencioso.
 
-O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los:
-se já são contíguos, o caminho não copia; se top-k ou gather produziu uma view
-não contígua, o grafo cria uma cópia `ggml_cont` inevitável antes do reshape.
-`llama.cpp/tests/test-moe-route-layout.cpp` cobre as duas disposições sem
-assumir arquitetura ou dtype.
+O ponto comum normaliza os tensores de ids e pesos da rota antes de remodelá-los.
+Como esses buffers cruzam do backend que calcula top-k/gather para o custom op
+CPU, o stride aparentemente contíguo não prova que a alocação do produtor já
+foi materializada para a cópia do scheduler. O grafo cria sempre um produtor
+`ggml_cont` antes do reshape, inclusive para o primeiro token e slot. Isso
+fecha a leitura de memória não inicializada que aparecia como `NaN` em
+`ffn_moe_weights`; `llama.cpp/tests/test-moe-route-layout.cpp` cobre as vistas
+contígua e estriada.
 
 #### Prova numérica antes de desempenho
 
@@ -1069,12 +1072,31 @@ cargo test -p node nvfp4_matches_llama_cpp_from_first_layer_and_stage -- --ignor
 `POM_MOE_NUMERIC_ACTIVATION` é dado do GGUF, não uma seleção por arquitetura no
 executor. A captura de rota não é usada como oráculo: o teste primeiro usa o
 mesmo hidden, expert e pesos de um caso isolado; a prova E2E posterior reutiliza
-o hidden real de cada camada. O `ggml_cont` da correção de layout só é chamado
-quando `ggml_is_contiguous` é falso. Como o defeito original era exatamente um
-reshape de view não contígua, aquela requisição necessariamente pagou uma cópia
-de grafo para a rota afetada; o caso contíguo não paga cópia. O custo por
-camada/token ainda precisa ser medido separadamente, pois a telemetria atual
-não conta bytes ou tempo dessa cópia.
+o hidden real de cada camada. O `ggml_cont` da correção de layout é
+deliberadamente chamado mesmo quando `ggml_is_contiguous` retorna verdadeiro:
+somente a execução do produtor prova que a área está pronta para a cópia entre
+backends. O custo por camada/token ainda precisa ser medido separadamente, pois
+a telemetria atual não conta bytes ou tempo dessa cópia.
+
+Para provar a regressão completa antes de reimplantar, execute isoladamente o
+teste ignorado abaixo com um GGUF `qwen35moe` e CUDA real:
+
+```bash
+POM_MOE_NUMERIC_MODEL=/caminho/qwen35moe.gguf \
+POM_MOE_NUMERIC_GPU_LAYERS=99 \
+cargo test -p node --features cuda --bin pom \
+  inference::llm::pool_tests::qwen35moe_external_route_matches_native_at_layer \
+  -- --ignored --nocapture
+```
+
+Ele captura a saída da camada 1 para quatro tokens no caminho nativo e no
+callback externo, exige `moe_forward_us > 0` e somente executores `cuda`, e
+falha se qualquer residual não for finito. A medição publicada
+`MOE_NUMERIC_PROOF` deve mostrar `max_abs` e `max_relative`; cada elemento deve
+satisfazer `abs <= 5e-2 + 2e-2 * max(abs(native), 1)`. Essa combinação prova
+que a rota foi materializada e lida sem NaN, que o callback realmente usou
+CUDA e que o resultado externo acompanha o bloco nativo. O comando exige a
+feature CUDA e não deve ser substituído por `cargo test` sem `--ignored`.
 
 Pronto quando a telemetria de uma requisição MoE mostrar o callback executado,
 `executed_engine=MoE`, sem divergência, e a medição isolada comparar prefill e

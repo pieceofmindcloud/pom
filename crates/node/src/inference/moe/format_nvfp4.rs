@@ -10,7 +10,9 @@
 
 #[cfg(feature = "cuda")]
 use super::bandwidth::BandwidthProfile;
-use super::cache::{CacheError, ExpertCache, ExpertKey, ExpertLease};
+#[cfg(feature = "cuda")]
+use super::cache::ExpertLease;
+use super::cache::{CacheError, ExpertCache, ExpertKey};
 #[cfg(feature = "cuda")]
 use super::coexecution::{combine_lane_outputs, run_overlap, split_route_experts};
 use super::format_q4_0::{parse_tensor_table, Q4LoadError, TensorSpec};
@@ -21,6 +23,7 @@ use std::fmt;
 use std::fs::File;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "cuda")]
 use std::time::Instant;
 
 const BLOCK_ELEMENTS: usize = 64;
@@ -122,6 +125,7 @@ pub struct Nvfp4Expert<'a> {
 /// o caminho nativo do llama.cpp. A ordem é deliberada: a primeira divergência
 /// identifica se o defeito está na decodificação, ativação ou projeção down.
 #[derive(Debug)]
+#[cfg(test)]
 pub struct Nvfp4Trace {
     pub gate: Vec<f32>,
     pub up: Vec<f32>,
@@ -209,10 +213,25 @@ impl<'a> Nvfp4Expert<'a> {
     }
 
     pub fn run(&self, hidden: &[f32]) -> Result<Vec<f32>, Nvfp4ExecuteError> {
-        Ok(self.run_trace(hidden)?.output)
+        let (_, _, _, output) = self.run_stages(hidden)?;
+        Ok(output)
     }
 
+    #[cfg(test)]
     pub fn run_trace(&self, hidden: &[f32]) -> Result<Nvfp4Trace, Nvfp4ExecuteError> {
+        let (gate, up, activated, output) = self.run_stages(hidden)?;
+        Ok(Nvfp4Trace {
+            gate,
+            up,
+            activated,
+            output,
+        })
+    }
+
+    fn run_stages(
+        &self,
+        hidden: &[f32],
+    ) -> Result<(Vec<f32>, Vec<f32>, Vec<f32>, Vec<f32>), Nvfp4ExecuteError> {
         if hidden.len() != self.hidden {
             return Err(Nvfp4ExecuteError::HiddenWidth {
                 expected: self.hidden,
@@ -251,12 +270,7 @@ impl<'a> Nvfp4Expert<'a> {
             .into_iter()
             .map(|value| value * self.down_scale)
             .collect();
-        Ok(Nvfp4Trace {
-            gate,
-            up,
-            activated: gated,
-            output,
-        })
+        Ok((gate, up, gated, output))
     }
 }
 
@@ -941,6 +955,7 @@ fn fp4_value_i8(value: u8) -> i8 {
     [0, 1, 2, 3, 4, 6, 8, 12, 0, -1, -2, -3, -4, -6, -8, -12][value as usize]
 }
 
+#[cfg(test)]
 fn fp4_value(value: u8) -> f32 {
     f32::from(fp4_value_i8(value))
 }

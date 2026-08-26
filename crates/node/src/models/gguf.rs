@@ -267,7 +267,6 @@ struct ArrayShape {
 struct LayoutTensor {
     name: String,
     dims: Vec<u64>,
-    dtype: u32,
     bytes: u64,
 }
 
@@ -986,10 +985,9 @@ pub fn read_layout(path: &Path) -> Result<GgufLayout> {
 
     let layout_tensors: Vec<LayoutTensor> = tensors
         .into_iter()
-        .map(|(name, dims, dtype, offset)| LayoutTensor {
+        .map(|(name, dims, _dtype, offset)| LayoutTensor {
             name,
             dims,
-            dtype,
             bytes: size_map.get(&offset).copied().unwrap_or(0),
         })
         .collect();

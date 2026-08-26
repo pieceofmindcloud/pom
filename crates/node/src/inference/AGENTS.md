@@ -132,7 +132,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `format_low_bits.rs` implementa MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
   `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
   implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
-  `format_nvfp4.rs` implementa o decoder NVFP4 em CPU e `cuda.rs` mais
+  `format_nvfp4.rs` implementa o decoder NVFP4 em CPU; o rastro completo
+  `Nvfp4Trace`/`run_trace` fica restrito à prova diferencial de testes, enquanto
+  o runtime consome somente a saída do expert; `cuda.rs` mais
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
   feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
   Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
@@ -206,8 +208,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   agora usa dois slots CUDA persistentes, streams separados e buffers host
   pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,
   `kernel_span_ms` e `transfer_span_ms` distinguem sobreposição de trabalho
-  apenas somado. `CudaTransferProfile` persiste opcionalmente as quatro bandas
-  medidas, e `runtime.rs` passa esse perfil ao NVFP4. Em uma rota NVFP4 CUDA,
+  apenas somado. `CudaTransferProfile` lê no runtime o sidecar opcional com as
+  quatro bandas medidas; a criação e persistência do sidecar pertencem às
+  bancadas de teste, e `runtime.rs` passa esse perfil ao NVFP4. Em uma rota
+  NVFP4 CUDA,
   experts residentes ficam na GPU, misses são divididos pela fração medida e
   as lanes CPU e GPU executam em paralelo; a telemetria publica chamadas de
   cada lane e a fração escolhida. A validação CUDA e os números observados

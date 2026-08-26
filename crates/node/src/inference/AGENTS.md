@@ -413,21 +413,30 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`
-  ao `reply_to` e devolve `direct_ack()`; meio: spawna `forward_direct` para o
-  próximo hop; meio sem residual local: `deliver_failure` com "hop intermediário
-  não produziu estado oculto".
+  ao `reply_to` e devolve `direct_ack()`; a cabeça inclui a progressão de
+  prefill em `prompt_progress` no ACK, para o gateway despachar o próximo
+  chunk com `next_pos` absoluto durante a sobreposição; meio: spawna
+  `forward_direct` para o próximo hop; meio sem residual local:
+  `deliver_failure` com "hop intermediário não produziu estado oculto".
 - `forward_direct` - repasse assíncrono em task própria (quem chamou já foi
   aceito e não espera mais nada); repassa `reply_to` intacto; remonta `scale=1.0`,
   `is_last` e `next_hops` remanescente. Falhou o repasse, entrega
   `direct::deliver_failure` nomeando o nó que realmente morreu.
-- `direct_ack` - `{"accepted": true}` wire-codificado; é tudo que volta pelo
-  caminho de quem chamou.
+- `direct_ack`/`direct_ack_with_progress` - ACK wire-codificado com
+  `{"accepted": true}`; no prefill, a cabeça anexa `prompt_progress` com
+  `more_chunks`/`start_pos`/`next_pos` autoritativos. O gateway lê esse campo
+  aninhado antes de lançar o próximo chunk; não deriva posição pela ordem de
+  chegada.
 - `direct_reply_to` - o campo `reply_to` do meta; ausente no hub e no anel, é
   só ele que liga o caminho novo.
 - `prompt_progress_for_forward`/`apply_prompt_progress` - a contraparte direta
   de `overlay_head_authoritative_fields` (agora `pub(crate)`): sem volta, a
   cabeça manda `more_chunks`/`n_prompt_tokens` **adiante** e quem entrega copia
   para o resultado - senão todo prompt de mais de um pedaço trunca no primeiro.
+- `direct_lab::direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso` -
+  cenário ponta a ponta com dois chunks, ACK de progresso aninhado e cabeça
+  remota; os hops falsos recusam continuação sem posição e conferem os valores
+  absolutos tanto numa sessão fria quanto com prefixo reaproveitado.
 - branch de relay (`should_relay`) - no anel, quando `next_hops` não é vazio e
   há hidden state local, reencaminha para a cauda em vez de devolver ao
   chamador; patcha `processing_ms`/`node_timings` próprios antes de codificar a

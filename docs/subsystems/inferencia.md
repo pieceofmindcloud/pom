@@ -312,6 +312,10 @@ O valor efetivo é limitado a 1 ou 2: 1 desliga a sobreposição e 2 é a janela
 atual máxima. Uma falha cancela o par inteiro e uma desconexão do cliente
 interrompe as duas operações; no modo direto, uma sequência UUID e uma fila
 por peer também impedem que um repasse posterior chegue antes do anterior.
+No modo direto, o ACK da cabeça carrega a decisão de chunking dentro de
+`prompt_progress`; o gateway lê dali o `next_pos` absoluto para despachar o
+próximo chunk em voo. A posição nunca é inferida pela ordem de conclusão ou
+chegada dos pedidos.
 O modo anel permanece serializado pelo contrato de resposta aninhada, para não
 abrir uma segunda requisição na mesma sessão sem a confirmação da anterior.
 
@@ -667,7 +671,11 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
 `overlay_head_authoritative_fields`). Ela manda os dois **adiante**
 (`prompt_progress_for_forward`) e a cauda copia para o resultado
 (`apply_prompt_progress`). Errar isso trunca todo prompt de mais de um pedaço
-no primeiro, em silêncio.
+no primeiro, em silêncio. O ACK imediato da cabeça também carrega essa
+estrutura aninhada; `prefill::run_direct` a lê para enviar o chunk seguinte com
+`start_pos = next_pos`, inclusive quando há sobreposição e quando o primeiro
+chunk reaproveita um prefixo. `direct_lab.rs` recusa chunks posteriores sem
+`start_pos` e cobre as duas situações.
 
 **Telemetria** (`direct::hop_entry`/`accumulate`/`record_transport`): cada hop
 descreve a si mesmo na ida e o chamador envia uma evidência separada da

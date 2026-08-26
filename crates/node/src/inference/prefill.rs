@@ -1177,6 +1177,17 @@ fn head_reused_prefix(meta: &serde_json::Value, requested: bool) -> bool {
         .unwrap_or(requested)
 }
 
+/// No modo de resposta direta, o ACK da cabeça carrega a progressão do
+/// prompt dentro de `prompt_progress`: a resposta completa chega depois,
+/// entregue pela cauda. O próximo chunk precisa ser despachado usando essa
+/// posição publicada, mesmo quando os dois chunks ficam em voo ao mesmo
+/// tempo.
+fn direct_prefill_progress(meta: &serde_json::Value) -> &serde_json::Value {
+    meta.get("prompt_progress")
+        .filter(|progress| progress.is_object())
+        .unwrap_or(meta)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     plan: &PipelinePlan,
@@ -1698,6 +1709,7 @@ async fn run_direct(
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
     let mut cached_tokens: u32 = 0;
+    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
     trace.prefill_overlap_enabled =
@@ -1722,7 +1734,7 @@ async fn run_direct(
                 dtype,
                 chunk_index,
                 reuse_prefix && chunk_index == 0,
-                None,
+                next_start_pos,
                 http,
                 routes,
                 direct,
@@ -1736,14 +1748,14 @@ async fn run_direct(
             (ticket, head_sent)
         };
 
-        let more_from_head = head_sent
-            .meta
+        let head_progress = direct_prefill_progress(&head_sent.meta);
+        let more_from_head = head_progress
             .get("more_chunks")
             .and_then(|value| value.as_bool())
             .unwrap_or(false);
         let next_pos_from_head = if more_from_head {
             Some(required_prefill_position(
-                &head_sent.meta,
+                head_progress,
                 "next_pos",
                 chunk_index,
             )?)
@@ -1848,6 +1860,13 @@ async fn run_direct(
 
         if next_pending.is_some() {
             pending = next_pending;
+            next_start_pos = None;
+        } else if more {
+            next_start_pos = Some(required_prefill_position(
+                direct_prefill_progress(&meta),
+                "next_pos",
+                chunk_index,
+            )?);
         }
         chunk_index += 1;
     }

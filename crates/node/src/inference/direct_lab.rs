@@ -35,7 +35,7 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// Igual ao Qwen3.8-27B do cluster do captain.
@@ -61,6 +61,10 @@ struct Hop {
     caller_site: usize,
     /// Este hop tokenizou o prompt (é a cabeça).
     is_head: bool,
+    /// Posições recebidas pela cabeça. A bancada recusa a ausência de posição
+    /// absoluta nos chunks seguintes, como `expected_prefill_pos` faz em
+    /// produção, e o teste compara os valores com a progressão publicada.
+    received_starts: Arc<Mutex<Vec<(u32, Option<u32>, u32)>>>,
 }
 
 impl Hop {
@@ -176,29 +180,54 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
     let chunk_size = inc.meta["chunk_size"].as_u64().unwrap_or(CHUNK.into()) as u32;
     let is_final_chunk = inc.meta["is_final_chunk"].as_bool().unwrap_or(false);
 
-    // Só a cabeça tokenizou: os demais herdam a contagem do tensor que chegou.
-    let done_before = chunk_index * chunk_size;
-    let start_pos = inc
+    // Só o chunk 0 pode omitir `start_pos`: a sessão é a referência nesse
+    // caso. Todo chunk posterior precisa carregar a posição absoluta que a
+    // cabeça acabou de publicar - derivar pelo índice esconderia exatamente o
+    // defeito que esta bancada deve capturar.
+    let supplied_start = inc
         .meta
         .get("start_pos")
-        .and_then(|value| value.as_u64())
-        .unwrap_or(done_before as u64) as u32;
-    let n_tokens = if hop.is_head {
-        PROMPT_TOKENS.saturating_sub(done_before).min(chunk_size)
-    } else {
-        chunk_size
-            .min(PROMPT_TOKENS.saturating_sub(done_before))
-            .max(1)
-    } as usize;
-    let more = hop.is_head && (done_before + n_tokens as u32) < PROMPT_TOKENS;
+        .and_then(Value::as_u64)
+        .map(|value| value as u32);
+    let cached_start =
+        if hop.is_head && chunk_index == 0 && inc.meta["reuse_prefix"].as_bool().unwrap_or(false) {
+            1
+        } else {
+            0
+        };
+    let start_pos = match (supplied_start, chunk_index) {
+        (Some(actual), _) => actual,
+        (None, 0) => cached_start,
+        (None, _) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("chunk {chunk_index} sem start_pos absoluto"),
+            )
+                .into_response();
+        }
+    };
+    let n_tokens = PROMPT_TOKENS
+        .saturating_sub(start_pos)
+        .min(chunk_size)
+        .max(1) as usize;
+    let next_pos = start_pos + n_tokens as u32;
+    if hop.is_head {
+        hop.received_starts
+            .lock()
+            .unwrap()
+            .push((chunk_index, supplied_start, start_pos));
+    }
+    let more = hop.is_head && next_pos < PROMPT_TOKENS;
 
     let mut local = json!({"processing_ms": 0, "node_timings": {}});
     local["start_pos"] = json!(start_pos);
-    local["next_pos"] = json!(start_pos + n_tokens as u32);
+    local["next_pos"] = json!(next_pos);
     if hop.is_head {
         local["owns_tokens"] = json!(true);
         local["more_chunks"] = json!(more);
         local["n_prompt_tokens"] = json!(PROMPT_TOKENS);
+        local["reuse_prefix"] = inc.meta["reuse_prefix"].clone();
+        local["cached_tokens"] = json!(cached_start);
     }
 
     if inc.is_last {
@@ -211,6 +240,9 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
 
     let residual = vec![0.0f32; n_tokens * HIDDEN_DIM];
     let shape = [n_tokens, HIDDEN_DIM];
+    let progress = hop
+        .is_head
+        .then(|| crate::infer_server::prompt_progress_for_forward(&inc.meta, &local));
 
     if let Some(reply_to) = inc.reply_to {
         let hop_timings = crate::direct::accumulate(
@@ -257,7 +289,7 @@ async fn fake_prefill(State(hop): State<Hop>, body: Bytes) -> Response {
             ));
         }
         hop.depart().await;
-        return crate::infer_server::direct_ack();
+        return crate::infer_server::direct_ack_with_progress(progress);
     }
 
     // ── Caminho antigo (anel borbulhado ou hub), para comparação ────────────
@@ -434,11 +466,12 @@ fn step_for(node_id: &str, url: &str, start: u32, end: u32, direct: bool) -> Pip
 struct Outcome {
     ms_per_token: f64,
     deliveries: u64,
+    head_starts: Vec<(u32, Option<u32>, u32)>,
 }
 
 /// Roda `n_hops` hops, cada um no seu sítio, com o gateway no sítio do hop
 /// `entry`. `direct` escolhe entre a correção e o anel borbulhado.
-async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
+async fn run_scenario(n_hops: usize, entry: usize, direct: bool, reuse_prefix: bool) -> Outcome {
     let gateway_site = entry;
     let deliveries = Arc::new(AtomicU64::new(0));
 
@@ -452,13 +485,19 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
     .await;
 
     let mut steps = Vec::new();
+    let mut head_starts = Arc::new(Mutex::new(Vec::new()));
     for i in 0..n_hops {
         // Quem chama o hop `i` é o hop `i-1`; o hop 0 é chamado pelo gateway.
         let caller_site = if i == 0 { gateway_site } else { i - 1 };
+        let received_starts = Arc::new(Mutex::new(Vec::new()));
+        if i == 0 {
+            head_starts = received_starts.clone();
+        }
         let url = spawn_hop(Hop {
             site: i,
             caller_site,
             is_head: i == 0,
+            received_starts,
         })
         .await;
         steps.push(step_for(
@@ -492,7 +531,7 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
         reply.as_ref(),
         None,
         &crate::prefill::Cancellation::new(),
-        false,
+        reuse_prefix,
     )
     .await
     .expect("prefill");
@@ -527,9 +566,11 @@ async fn run_scenario(n_hops: usize, entry: usize, direct: bool) -> Outcome {
         next = step.accepted[0].0;
     }
 
+    let head_starts = head_starts.lock().unwrap().clone();
     Outcome {
         ms_per_token: started.elapsed().as_millis() as f64 / (DECODE_TOKENS - 1) as f64,
         deliveries: deliveries.load(Ordering::Relaxed),
+        head_starts,
     }
 }
 
@@ -573,7 +614,7 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
     for n_hops in 2..=4usize {
         let mut measured = Vec::new();
         for entry in 0..n_hops {
-            let outcome = run_scenario(n_hops, entry, true).await;
+            let outcome = run_scenario(n_hops, entry, true, false).await;
             let expected = minimum_legs(n_hops, entry);
             let got = legs(&outcome);
             println!(
@@ -612,8 +653,8 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
     }
 
     // A linha de base: o anel borbulhado, com o gateway na cauda, paga o dobro.
-    let ring_tail = run_scenario(2, 1, false).await;
-    let direct_tail = run_scenario(2, 1, true).await;
+    let ring_tail = run_scenario(2, 1, false, false).await;
+    let direct_tail = run_scenario(2, 1, true, false).await;
     println!(
         "anel    N=2 entrada=1  {:6.1} ms/token  = {:.2} pernas",
         ring_tail.ms_per_token,
@@ -629,4 +670,21 @@ async fn the_cost_per_token_does_not_depend_on_where_the_entry_point_is() {
         "a resposta direta tem que ser mais barata que o anel no caso que doía"
     );
     assert_eq!(ring_tail.deliveries, 0, "o anel não usa a entrega direta");
+}
+
+/// O prompt longo precisa carregar a posição absoluta que a cabeça publicou
+/// dentro do ACK direto, tanto numa sessão fria quanto após reaproveitar um
+/// prefixo. Este cenário exercita a mesma cadeia de produção e faz os hops
+/// falsos recusarem qualquer continuação sem `start_pos`.
+#[tokio::test(flavor = "multi_thread")]
+async fn direct_prefill_preserva_posicao_absoluta_com_e_sem_reuso() {
+    for reuse_prefix in [false, true] {
+        let outcome = run_scenario(2, 1, true, reuse_prefix).await;
+        assert_eq!(outcome.deliveries, PROMPT_TOKENS.div_ceil(CHUNK) as u64);
+        let mut starts = outcome.head_starts;
+        starts.sort_by_key(|(chunk, _, _)| *chunk);
+        let expected_next = if reuse_prefix { 3 } else { 2 };
+        assert_eq!(starts[0], (0, None, if reuse_prefix { 1 } else { 0 }));
+        assert_eq!(starts[1], (1, Some(expected_next), expected_next));
+    }
 }

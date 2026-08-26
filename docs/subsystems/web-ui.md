@@ -441,12 +441,18 @@ impressão digital é só modelo + conjunto de faixas.
 ## Fatiar, implantar e transferir na tela
 
 - **Fatiar** (`SliceModels`): plano por tamanho (alvo em GB por fatia, vazio =
-  "o resto") ou Tensor Parallelism. No modo TP, o operador escolhe 2..64 ranks
-  e a prévia mostra uma faixa completa por rank com a identificação `1of2`,
-  `2of2`, `1of4` etc. Cada alteração posta `POST /api/ui/slice/plan`
-  (debounce 260 ms); TP leva `mode: "tensor_parallel"` e `tp_size`, enquanto
-  pipeline leva `slices`. `POST /api/ui/slice` roda o job. O painel de atividade
-  só aparece enquanto existe um fatiamento em execução. A tela Fatias separa
+  "o resto"), uma faixa específica por início/fim de camada, ou Tensor
+  Parallelism. A faixa específica usa as opções arquiteturais do GGUF, envia
+  `range: { start_layer, end_layer }` e acrescenta a parte ao manifesto por
+  hash, sem substituir nem apagar fatias anteriores. No modo TP, o operador
+  escolhe 2..64 ranks e a prévia mostra uma faixa completa por rank com a
+  identificação `1of2`, `2of2`, `1of4` etc. Cada alteração posta
+  `POST /api/ui/slice/plan` (debounce 260 ms); TP leva `mode: "tensor_parallel"`
+  e `tp_size`, enquanto pipeline leva `slices` ou `range`. `POST /api/ui/slice`
+  roda o job. O painel de atividade fica visível também para jobs terminados e
+  mostra fase nomeada, bytes, taxa, ETA quando confiável, arquivo atual e
+  saídas parciais em caso de falha. A prévia confere o espaço livre no destino
+  real configurado, com número concreto e alerta antes de iniciar. A tela Fatias separa
   `parts` e `tp_parts`, agrupa TP por tamanho e ordena os ranks dentro de cada
   grupo. A transferência considera ambas as listas. Quando o catálogo confirma
   um GGUF multipart, esta tela mostra a soma real dos bytes, a etiqueta

@@ -64,6 +64,14 @@ behind an auth extractor.
   slice plans and extraction use all tensor parts, and model identity hashes
   the complete ordered set. An incomplete set is a concrete bad request, so
   the UI cannot start a one-file slice by accident.
+  `POST /api/ui/slice/plan` and `/api/ui/slice` also accept one `range` with
+  explicit start/end layers. The handler validates architectural boundaries,
+  estimates the real output against the configured destination volume, and
+  appends the resulting part to the source-hash manifest. Existing ranges are
+  preserved and a matching file is reused only after SHA-256 verification.
+  Slicing does not invoke automatic retention, so it cannot silently remove an
+  older range. Jobs report named phases, source bytes read, current file, rate,
+  ETA when measurable, terminal errors and partial outputs.
   (local or forwarded to a peer).
 - `RuntimeParams.hidden_state_dtype` is persistido e encaminhado pelo mesmo
   caminho de apply/launch dos demais ajustes globais; `NodeInfo` e

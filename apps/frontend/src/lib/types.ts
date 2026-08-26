@@ -491,6 +491,11 @@ export interface Job {
   step: string;
   message: string;
   progress: number | null;
+  /** Bytes observed in the current phase, such as hashing the source. */
+  bytes_processed?: number | null;
+  /** Reused by slicing phase telemetry and remote download telemetry. */
+  current_file?: string | null;
+  phase_started_at?: string;
   outputs: string[];
   started_at: string;
   finished_at: string | null;
@@ -762,6 +767,15 @@ export interface SizedRange {
   empty: boolean;
 }
 
+/** Cortes de camada aceitos pelo GGUF para uma fatia independente. */
+export interface SliceLayerOptions {
+  total_layers: number;
+  valid_starts: number[];
+  cuts: LayerCut[];
+  granularity: number | null;
+  rule: string;
+}
+
 /** `src/plan.rs` — `SizePlan`, what `POST /api/ui/slice/plan` answers. */
 export interface SizePlan {
   mode?: "pipeline";
@@ -776,6 +790,10 @@ export interface SizePlan {
   missing_bytes: number;
   blocked: boolean;
   warnings: string[];
+  destination_path?: string;
+  destination_free_bytes?: number | null;
+  space_margin_bytes?: number | null;
+  space_status?: "ok" | "tight" | "insufficient" | "unknown";
 }
 
 /** Um rank de um plano de fatiamento tensorial. */
@@ -795,6 +813,10 @@ export interface TpSlicePlan {
   complete: boolean;
   blocked: boolean;
   warnings: string[];
+  destination_path?: string;
+  destination_free_bytes?: number | null;
+  space_margin_bytes?: number | null;
+  space_status?: "ok" | "tight" | "insufficient" | "unknown";
 }
 
 export type SliceMode = "pipeline" | "tensor_parallel";

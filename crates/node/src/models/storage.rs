@@ -91,6 +91,7 @@ fn directory_bytes_inner(root: &Path) -> std::io::Result<u64> {
     Ok(total)
 }
 
+#[allow(dead_code)]
 pub fn enforce_limit(root: &Path, max_bytes: u64, protected: &[PathBuf]) -> Result<Vec<PathBuf>> {
     let mut used = directory_bytes(root)
         .with_context(|| {

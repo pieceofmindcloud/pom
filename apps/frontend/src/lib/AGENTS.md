@@ -70,6 +70,9 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `WholeLayerOptions` and `LayerCut` carry the GGUF-derived cut points used by
   the whole-model deploy slider; `WholeSliceSelection` identifies the source,
   destination and accepted prefix end sent back to the node.
+  `SliceLayerOptions` carries the starts and architectural options for the
+  single-range slicing controls, while `SizePlan` and `TpSlicePlan` carry the
+  destination disk-space estimate shown before writing.
   `tpPartsOf` normalizes a missing optional wire field to an empty list before
   catalog consumers iterate it. DiscoveredModel.multipart_parts carries the
   ordered physical files and multipart_error carries the concrete reason a

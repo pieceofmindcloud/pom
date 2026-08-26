@@ -518,6 +518,15 @@ pub struct SizePlan {
     /// True when a slice is unusable: too small for a layer, or left with none.
     pub blocked: bool,
     pub warnings: Vec<String>,
+    /// Filled by the web handler with the actual configured slice destination.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_free_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_margin_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_status: Option<&'static str>,
 }
 
 /// Turn a list of target sizes into contiguous layer ranges.
@@ -691,6 +700,10 @@ pub fn plan_by_size(layout: &GgufLayout, slices: &[SizedSlice]) -> Result<SizePl
         missing_bytes,
         blocked,
         warnings,
+        destination_path: None,
+        destination_free_bytes: None,
+        space_margin_bytes: None,
+        space_status: None,
     })
 }
 

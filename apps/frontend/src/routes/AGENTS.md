@@ -238,13 +238,15 @@ Per-file list:
   rank shown alongside. Sends via `POST /api/transfer/send`; deletes via
   `../lib/deleteModel`. `uniqueName` disambiguates same-hostname peers with
   the node_id prefix.
-- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing or
-  Tensor Parallelism. Pipeline builds a by-size plan (target GB per slice,
-  empty = "the rest"); TP chooses 2..64 ranks and previews one full layer
-  range per rank, labeled `1ofN`. Both modes use the debounced
+- `SliceModels.tsx` - "Fatiar": the operator chooses pipeline slicing, one
+  explicit layer range, or Tensor Parallelism. Pipeline builds a by-size plan
+  (target GB per slice, empty = "the rest"); a single range uses the GGUF
+  architectural starts and ends; TP chooses 2..64 ranks and previews one full
+  layer range per rank, labeled `1ofN`. The modes use the debounced
   `POST /api/ui/slice/plan` and start through `POST /api/ui/slice`; TP sends
-  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices`.
-  `SlicingJobsPanel` is shown only while at least one slicing job is running.
+  `mode: "tensor_parallel"` and `tp_size`, while pipeline sends `slices` or
+  `range`. `SlicingJobsPanel` keeps running, completed and failed jobs visible,
+  including named phase, bytes and partial output paths.
   `asPlan` validates both response shapes. Only whole models (`isWholeModel`)
   can be sliced. Multipart models show the summed physical size, every
   declared part and an explicit instruction to keep the set together before

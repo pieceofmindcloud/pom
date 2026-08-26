@@ -397,6 +397,15 @@ fn want_tensor(name: &str, start: u32, end: u32, is_last: bool) -> bool {
     }
 }
 
+/// GGUF tensor-table order is not a storage-order contract. Keep payload page
+/// faults monotonic within each multipart source, which matters when mmap is
+/// larger than RAM and the kernel has to evict old pages.
+fn source_read_order(tensors: &[TensorRecord]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..tensors.len()).collect();
+    order.sort_unstable_by_key(|&index| (tensors[index].part_index, tensors[index].src_offset));
+    order
+}
+
 fn remap_name(name: &str, start: u32) -> String {
     if let Some(rest) = name.strip_prefix("blk.") {
         if let Some(dot) = rest.find('.') {
@@ -669,8 +678,9 @@ pub fn split(
 
     // ── Select tensors ────────────────────────────────────────────────────────
 
-    let selected: Vec<&TensorRecord> = all_tensors
-        .iter()
+    let selected: Vec<&TensorRecord> = source_read_order(&all_tensors)
+        .into_iter()
+        .map(|index| &all_tensors[index])
         .filter(|t| want_tensor(&t.name, start_layer, end_layer, is_last))
         .collect();
 
@@ -1060,6 +1070,42 @@ pub fn validate_tensor_parallel(src: &Path, tp_size: u32) -> Result<()> {
     Ok(())
 }
 
+/// Estimates the combined disk footprint of every TP rank without writing it.
+///
+/// The payload follows the same role classification as the writer: shared
+/// tensors are replicated and column/row tensors are divided. The first GGUF
+/// data offset is used as a per-rank header budget, with one extra MiB for the
+/// TP metadata added by the writer. It is intentionally conservative because
+/// this value guards disk space before a long operation starts.
+pub fn estimate_tensor_parallel_output_bytes(src: &Path, tp_size: u32) -> Result<u64> {
+    validate_tensor_parallel(src, tp_size)?;
+    let source = crate::multipart::GgufSource::open(src)?;
+    let header_budget = source
+        .parts()
+        .first()
+        .map(|part| part.data_start() as u64)
+        .ok_or_else(|| anyhow::anyhow!("GGUF sem partes"))?
+        .saturating_add(1 << 20);
+    let payload_per_rank = source.tensors().iter().try_fold(0u64, |sum, tensor| {
+        let bytes = match tp_role(&tensor.name) {
+            TpRole::Shared => tensor.byte_size,
+            TpRole::Column | TpRole::Row => tensor.byte_size / u64::from(tp_size),
+            TpRole::Unsupported => {
+                return Err(anyhow::anyhow!(
+                    "tensor '{}' não é shardável no caminho C (v1)",
+                    tensor.name
+                ));
+            }
+        };
+        sum.checked_add(align_up(bytes))
+            .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+    })?;
+    payload_per_rank
+        .checked_add(header_budget)
+        .and_then(|per_rank| per_rank.checked_mul(u64::from(tp_size)))
+        .ok_or_else(|| anyhow::anyhow!("overflow ao estimar saída TP"))
+}
+
 /// Shard de um modelo GGUF por tensor parallelism.
 ///
 /// Produz em `dst` um GGUF estruturalmente válido com os tensores do rank
@@ -1197,6 +1243,10 @@ pub fn shard_tensor_parallel(
             byte_size: tensor.byte_size,
         })
         .collect();
+    let ordered_tensors = source_read_order(&all_tensors)
+        .into_iter()
+        .map(|index| &all_tensors[index])
+        .collect::<Vec<_>>();
 
     // Weight-tied output (output.weight compartilha offset com token_embd)
     // quebraria o shard: um fica inteiro e o outro partido. Recusa.
@@ -1226,7 +1276,7 @@ pub fn shard_tensor_parallel(
     }
 
     let mut out_tensors: Vec<OutT> = Vec::with_capacity(n_tensors);
-    for t in &all_tensors {
+    for t in ordered_tensors {
         if t.byte_size == 0 {
             bail!(
                 "tamanho desconhecido para o tensor '{}' (tipo ggml {})",
@@ -2143,6 +2193,38 @@ fn qwen35_hybrid_test_gguf_bytes(n_blocks: u32, full_attn_interval: u32) -> Vec<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn payload_reads_are_ordered_by_source_part_and_offset() {
+        let tensors = vec![
+            TensorRecord {
+                name: "late".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 1,
+                src_offset: 8,
+                byte_size: 1,
+            },
+            TensorRecord {
+                name: "early".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 0,
+                src_offset: 32,
+                byte_size: 1,
+            },
+            TensorRecord {
+                name: "middle".into(),
+                dims: vec![1],
+                dtype: 0,
+                part_index: 0,
+                src_offset: 4,
+                byte_size: 1,
+            },
+        ];
+
+        assert_eq!(source_read_order(&tensors), vec![2, 1, 0]);
+    }
 
     fn kv_u32(mm: &[u8], want: &str) -> Option<u32> {
         let mut r = R { data: mm, pos: 0 };

@@ -20,6 +20,8 @@ Two files carry all of it: a static message table and a small provider. Tests:
   temperature badges and the Network thermal policy panel have keys in both
   locale blocks. Deployment-wide hidden-state dtype controls and the Chat
   telemetry label for bytes/dtype are also present in both locale blocks.
+  Slicing phase, byte-progress, disk-space and single-range controls also have
+  keys in both locale blocks.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

@@ -2163,6 +2163,15 @@ pub struct Job {
     /// arrives, which the screen shows as an indeterminate bar rather than a
     /// zero that looks stuck.
     pub progress: Option<f64>,
+    /// Bytes processed in the current phase, when that phase has a known
+    /// total. This is deliberately separate from `progress`: reading the
+    /// source happens before output bytes exist.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bytes_processed: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_file: Option<String>,
+    /// Timestamp used by the UI to show how long the current phase has lived.
+    pub phase_started_at: String,
     /// Files the job has produced so far, in order.
     pub outputs: Vec<String>,
     pub started_at: String,
@@ -2207,6 +2216,9 @@ pub(crate) fn new_job(id: &str, kind: &'static str, title: impl Into<String>, st
         step: step.to_string(),
         message: String::new(),
         progress: None,
+        bytes_processed: None,
+        current_file: None,
+        phase_started_at: chrono::Utc::now().to_rfc3339(),
         outputs: Vec::new(),
         started_at: chrono::Utc::now().to_rfc3339(),
         finished_at: None,
@@ -2304,6 +2316,9 @@ pub(crate) async fn set_job(id: &str, state: &'static str, step: &str, message: 
     let mut map = jobs().write().await;
     if let Some(job) = map.get_mut(id) {
         job.state = state;
+        if job.step != step {
+            job.phase_started_at = chrono::Utc::now().to_rfc3339();
+        }
         job.step = step.to_string();
         job.message = message.to_string();
         if state != "running" {
@@ -2313,6 +2328,70 @@ pub(crate) async fn set_job(id: &str, state: &'static str, step: &str, message: 
             if state == "done" {
                 job.progress = Some(100.0);
             }
+            if state == "failed" {
+                job.error = Some(message.to_string());
+            }
+        }
+    }
+}
+
+pub(crate) async fn set_job_phase(
+    id: &str,
+    step: &str,
+    message: &str,
+    current_file: Option<String>,
+) {
+    let mut map = jobs().write().await;
+    if let Some(job) = map.get_mut(id) {
+        job.state = "running";
+        job.step = step.to_string();
+        job.message = message.to_string();
+        job.phase_started_at = chrono::Utc::now().to_rfc3339();
+        job.bytes_processed = None;
+        job.total_bytes = None;
+        job.speed_bytes_per_sec = None;
+        job.eta_seconds = None;
+        job.current_file = current_file;
+    }
+}
+
+/// Update byte activity only while the job is still in the phase that emitted
+/// it. Hashing happens in a blocking task, so this guard prevents a late read
+/// report from replacing a newer "writing" or "verifying" state.
+pub(crate) async fn set_job_byte_progress(
+    id: &str,
+    step: &str,
+    bytes_processed: u64,
+    total_bytes: u64,
+    current_file: Option<String>,
+) {
+    let now = chrono::Utc::now();
+    let mut map = jobs().write().await;
+    if let Some(job) = map.get_mut(id) {
+        if job.state != "running" || job.step != step {
+            return;
+        }
+        if job
+            .bytes_processed
+            .is_some_and(|current| bytes_processed < current)
+        {
+            return;
+        }
+        let phase_started = chrono::DateTime::parse_from_rfc3339(&job.phase_started_at)
+            .map(|value| value.with_timezone(&chrono::Utc))
+            .unwrap_or(now);
+        let elapsed = (now - phase_started).num_milliseconds().max(1) as f64 / 1000.0;
+        let speed = bytes_processed as f64 / elapsed;
+        job.bytes_processed = Some(bytes_processed);
+        job.total_bytes = Some(total_bytes);
+        job.speed_bytes_per_sec = speed.is_finite().then_some(speed.round() as u64);
+        job.eta_seconds = if bytes_processed < total_bytes && speed > 0.0 {
+            Some(((total_bytes - bytes_processed) as f64 / speed).ceil() as u64)
+        } else {
+            None
+        };
+        if current_file.is_some() {
+            job.current_file = current_file;
         }
     }
 }
@@ -2439,11 +2518,68 @@ fn tp_shard_to_extract(req: &ApplyRequest) -> Option<&crate::network::TpIdentity
     req.tp.as_ref().filter(|_| !req.skip_split)
 }
 
+const SOURCE_HASH_PROGRESS_BYTES: u64 = 64 * 1024 * 1024;
+
+fn hash_source_with_progress<F>(
+    path: &std::path::Path,
+    mut on_progress: F,
+) -> anyhow::Result<String>
+where
+    F: FnMut(u64, u64),
+{
+    let source = crate::multipart::GgufSource::open(path)?;
+    let total = source.source_bytes();
+    let mut hasher = Sha256::new();
+    let mut done = 0u64;
+    let mut reported = 0u64;
+    on_progress(0, total);
+
+    for part in source.parts() {
+        for chunk in part.map().chunks(8 * 1024 * 1024) {
+            hasher.update(chunk);
+            done += chunk.len() as u64;
+            if done.saturating_sub(reported) >= SOURCE_HASH_PROGRESS_BYTES || done == total {
+                reported = done;
+                on_progress(done, total);
+            }
+        }
+    }
+    if done != total {
+        anyhow::bail!("o tamanho do GGUF mudou enquanto o hash era calculado");
+    }
+    Ok(hex::encode(hasher.finalize()))
+}
+
 async fn source_model_sha256(path: &std::path::Path) -> anyhow::Result<String> {
     let path = path.to_path_buf();
-    tokio::task::spawn_blocking(
-        move || Ok(crate::multipart::GgufSource::open(&path)?.hash_sha256()),
+    tokio::task::spawn_blocking(move || hash_source_with_progress(&path, |_, _| {}))
+        .await
+        .context("calcular o hash do modelo original")?
+}
+
+async fn source_model_sha256_for_job(
+    path: &std::path::Path,
+    job_id: &str,
+) -> anyhow::Result<String> {
+    let path = path.to_path_buf();
+    let display_path = path.to_string_lossy().into_owned();
+    set_job_phase(
+        job_id,
+        "lendo modelo",
+        "lendo o modelo de origem para identificar a operação",
+        Some(display_path.clone()),
     )
+    .await;
+    let progress_job = job_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        hash_source_with_progress(&path, |done, total| {
+            let id = progress_job.clone();
+            let current_file = display_path.clone();
+            tokio::spawn(async move {
+                set_job_byte_progress(&id, "lendo modelo", done, total, Some(current_file)).await;
+            });
+        })
+    })
     .await
     .context("calcular o hash do modelo original")?
 }
@@ -2473,6 +2609,8 @@ pub(crate) struct LayerCut {
 pub(crate) struct ModelLayerOptions {
     pub total_layers: u32,
     pub cuts: Vec<LayerCut>,
+    /// Valid starts for a standalone slice, derived from the GGUF architecture.
+    pub valid_starts: Vec<u32>,
     pub granularity: Option<u32>,
     pub rule: String,
 }
@@ -2612,6 +2750,9 @@ pub(crate) async fn model_layer_options_local(
             },
         })
         .collect::<Vec<_>>();
+    let valid_starts = std::iter::once(0)
+        .chain(layout.arch_boundaries())
+        .collect::<Vec<_>>();
     let rule = if layout.arch_boundaries().is_empty() {
         "modelo denso: qualquer corte em camada inteira".to_string()
     } else {
@@ -2620,6 +2761,7 @@ pub(crate) async fn model_layer_options_local(
     Ok(ModelLayerOptions {
         total_layers,
         cuts,
+        valid_starts,
         granularity: layout.prefix_cut_granularity(),
         rule,
     })
@@ -2690,7 +2832,8 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
         .await;
         let shard_dir = state.shard_dir().await;
         let source_sha256 =
-            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
+            source_model_sha256_for_job(std::path::Path::new(&req.source_model_path), job_id)
+                .await?;
         // Já tenho esta parte? A busca é por conteúdo, em todas as rodadas -
         // a pasta de destino depende do manifesto, que só existe depois.
         if let Some(pronta) = req
@@ -2751,7 +2894,8 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
 
         let shard_dir = state.shard_dir().await;
         let source_sha256 =
-            source_model_sha256(std::path::Path::new(&req.source_model_path)).await?;
+            source_model_sha256_for_job(std::path::Path::new(&req.source_model_path), job_id)
+                .await?;
         if let Some(pronta) = req
             .part_sha256
             .as_deref()
@@ -2796,18 +2940,6 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
             caminho
         }
     };
-
-    let shard_dir = state.shard_dir().await;
-    let shard_root = shard_dir
-        .canonicalize()
-        .unwrap_or_else(|_| shard_dir.clone());
-    if std::path::Path::new(&model_path)
-        .canonicalize()
-        .ok()
-        .is_some_and(|path| path.starts_with(&shard_root))
-    {
-        enforce_shard_storage(&state, &model_path).await?;
-    }
 
     set_job(
         job_id,
@@ -2874,33 +3006,6 @@ async fn run_apply(state: GatewayState, req: ApplyRequest, job_id: &str) -> anyh
     state.runtime.apply(cfg).await?;
     state.network.set_tp(req.tp.clone());
     Ok(model_path)
-}
-
-async fn enforce_shard_storage(
-    state: &GatewayState,
-    current_model_path: &str,
-) -> anyhow::Result<()> {
-    let (shard_dir, max_bytes, active_path) = {
-        let cfg = state.auth.read().await;
-        let active = state.runtime.config().await.map(|c| c.model_path);
-        (cfg.shard_dir_path(), cfg.shard_max_bytes(), active)
-    };
-    let mut protected = vec![std::path::PathBuf::from(current_model_path)];
-    if let Some(active) = active_path {
-        protected.push(std::path::PathBuf::from(active));
-    }
-    let removed = tokio::task::spawn_blocking(move || {
-        crate::storage::enforce_limit(&shard_dir, max_bytes, &protected)
-    })
-    .await??;
-    if !removed.is_empty() {
-        info!(
-            "retenção de fatias removeu {} diretório(s) antigo(s)",
-            removed.len()
-        );
-        invalidate_catalog().await;
-    }
-    Ok(())
 }
 
 /// Join local slices into one GGUF covering their union, then serve that.
@@ -3093,6 +3198,14 @@ pub struct TpSlicePlan {
     pub complete: bool,
     pub blocked: bool,
     pub warnings: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub destination_free_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_margin_bytes: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_status: Option<&'static str>,
 }
 
 /// Validate a TP cut once and give the UI a useful preview without writing
@@ -3104,13 +3217,14 @@ fn tensor_slice_plan(path: &std::path::Path, tp_size: u32) -> anyhow::Result<TpS
     }
     crate::splitter::validate_tensor_parallel(path, tp_size)?;
     let layout = crate::gguf::read_layout(path)?;
+    let output_bytes = crate::splitter::estimate_tensor_parallel_output_bytes(path, tp_size)?;
     let total_layers = layout.layer_count();
     if total_layers == 0 {
         anyhow::bail!("este arquivo não declara camadas");
     }
     Ok(TpSlicePlan {
         mode: SliceMode::TensorParallel,
-        model_bytes: layout.total_bytes,
+        model_bytes: output_bytes,
         total_layers,
         tp_size,
         ranks: (0..tp_size)
@@ -3123,6 +3237,10 @@ fn tensor_slice_plan(path: &std::path::Path, tp_size: u32) -> anyhow::Result<TpS
         complete: true,
         blocked: false,
         warnings: Vec::new(),
+        destination_path: None,
+        destination_free_bytes: None,
+        space_margin_bytes: None,
+        space_status: None,
     })
 }
 
@@ -3159,6 +3277,9 @@ pub struct SliceRequest {
     /// left of the model. Tensor Parallelism does not use this list.
     #[serde(default)]
     pub slices: Vec<plan::SizedSlice>,
+    /// One manually selected range. When present, `slices` is ignored.
+    #[serde(default)]
+    pub range: Option<SliceRange>,
     /// Catalog name of the model, used to name the slices. Without it the name
     /// comes from the file, which for an Ollama blob is a digest.
     #[serde(default)]
@@ -3176,6 +3297,9 @@ pub struct SlicePlanRequest {
     pub model_path: String,
     #[serde(default)]
     pub slices: Vec<plan::SizedSlice>,
+    /// One manually selected range. When present, `slices` is ignored.
+    #[serde(default)]
+    pub range: Option<SliceRange>,
     /// Shortcut: fill the list with `n` slices of equal layer count, each
     /// carrying its real size as the target.
     #[serde(default)]
@@ -3249,13 +3373,167 @@ async fn tp_check(_auth: ConnectionAuth, Json(req): Json<TpCheckRequest>) -> Res
 }
 
 /// What a list of target sizes turns into: layer ranges, real sizes, coverage.
-async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) -> Response {
+const DISK_HEADROOM_PCT: u64 = 10;
+const DISK_HEADROOM_FLOOR: u64 = 1 << 30;
+
+fn signed_space_margin(free_bytes: u64, required_bytes: u64) -> i64 {
+    (i128::from(free_bytes) - i128::from(required_bytes))
+        .clamp(i128::from(i64::MIN), i128::from(i64::MAX)) as i64
+}
+
+fn valid_range_error(layout: &crate::gguf::GgufLayout, range: &SliceRange) -> Option<String> {
+    let total = layout.layer_count();
+    if range.start_layer > range.end_layer {
+        return Some(format!(
+            "faixa L{}-{} está invertida; escolha início entre L0 e L{} e um fim igual ou maior",
+            range.start_layer,
+            range.end_layer,
+            total.saturating_sub(1)
+        ));
+    }
+    if range.end_layer >= total {
+        return Some(format!(
+            "faixa L{}-{} está fora do modelo de {} camadas; escolha entre L0 e L{}",
+            range.start_layer,
+            range.end_layer,
+            total,
+            total.saturating_sub(1)
+        ));
+    }
+    if !layout.is_valid_slice_start(range.start_layer) {
+        let starts = std::iter::once(0)
+            .chain(layout.arch_boundaries().into_iter())
+            .map(|layer| format!("L{layer}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Some(format!(
+            "a faixa L{}-{} começa no meio de um grupo arquitetural; inícios válidos: {}",
+            range.start_layer, range.end_layer, starts
+        ));
+    }
+    let snapped = layout.snap_end_layer(range.start_layer, range.end_layer, total);
+    if snapped != range.end_layer {
+        return Some(format!(
+            "a faixa L{}-{} termina no meio de um grupo arquitetural; para esse início, termine em L{} ou antes",
+            range.start_layer, range.end_layer, snapped
+        ));
+    }
+    None
+}
+
+fn single_range_plan(
+    layout: &crate::gguf::GgufLayout,
+    range: &SliceRange,
+) -> anyhow::Result<plan::SizePlan> {
+    if let Some(error) = valid_range_error(layout, range) {
+        anyhow::bail!(error);
+    }
+    let is_last = range.end_layer + 1 >= layout.layer_count();
+    let bytes = layout.slice_bytes(range.start_layer, range.end_layer, is_last);
+    Ok(plan::SizePlan {
+        total_layers: layout.layer_count(),
+        model_bytes: bytes,
+        source_model_bytes: layout.source_file_bytes.max(layout.total_bytes),
+        ranges: vec![plan::SizedRange {
+            index: 0,
+            start_layer: range.start_layer,
+            end_layer: range.end_layer,
+            layers: range.end_layer - range.start_layer + 1,
+            bytes,
+            target_mb: None,
+            is_rest: false,
+            is_last,
+            too_small: false,
+            empty: false,
+        }],
+        covered_layers: range.end_layer - range.start_layer + 1,
+        complete: range.start_layer == 0 && is_last,
+        missing_range: None,
+        missing_bytes: 0,
+        blocked: false,
+        warnings: Vec::new(),
+        destination_path: None,
+        destination_free_bytes: None,
+        space_margin_bytes: None,
+        space_status: None,
+    })
+}
+
+fn classify_disk_space(free_bytes: u64, required_bytes: u64) -> &'static str {
+    if free_bytes == 0 {
+        return "unknown";
+    }
+    if free_bytes < required_bytes {
+        return "insufficient";
+    }
+    let margin = free_bytes - required_bytes;
+    let headroom = (required_bytes / 100 * DISK_HEADROOM_PCT).max(DISK_HEADROOM_FLOOR);
+    if margin < headroom {
+        "tight"
+    } else {
+        "ok"
+    }
+}
+
+fn disk_space_warning(
+    status: &str,
+    destination: &std::path::Path,
+    free_bytes: Option<u64>,
+    required_bytes: u64,
+) -> Option<String> {
+    let free = free_bytes?;
+    let free_gib = free as f64 / 1_073_741_824.0;
+    let required_gib = required_bytes as f64 / 1_073_741_824.0;
+    match status {
+        "insufficient" => Some(format!(
+            "destino {} tem {:.1} GiB livres, mas o plano precisa de cerca de {:.1} GiB; o fatiamento pode falhar por falta de espaço",
+            destination.display(), free_gib, required_gib
+        )),
+        "tight" => Some(format!(
+            "destino {} tem {:.1} GiB livres para cerca de {:.1} GiB de saída; a folga é apertada",
+            destination.display(), free_gib, required_gib
+        )),
+        _ => None,
+    }
+}
+
+async fn disk_free_at(path: &std::path::Path) -> Option<u64> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let free_mb = sysmon::sample_disk_at(&path).free_mb;
+        (free_mb > 0).then_some(free_mb.saturating_mul(1_048_576))
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+async fn slice_plan(
+    _auth: ConnectionAuth,
+    State(state): State<GatewayState>,
+    Json(req): Json<SlicePlanRequest>,
+) -> Response {
+    let destination = state.shard_dir().await;
     if matches!(req.mode, SliceMode::TensorParallel) {
         let Some(tp_size) = req.tp_size else {
             return bad_request("informe o tamanho do grupo TP");
         };
         return match tensor_slice_plan(std::path::Path::new(&req.model_path), tp_size) {
-            Ok(plan) => Json(plan).into_response(),
+            Ok(mut plan) => {
+                let free = disk_free_at(&destination).await;
+                let status = classify_disk_space(free.unwrap_or(0), plan.model_bytes);
+                plan.destination_path = Some(destination.to_string_lossy().into_owned());
+                plan.destination_free_bytes = free;
+                plan.space_margin_bytes =
+                    free.map(|value| signed_space_margin(value, plan.model_bytes));
+                plan.space_status = Some(status);
+                if let Some(warning) =
+                    disk_space_warning(status, &destination, free, plan.model_bytes)
+                {
+                    plan.warnings.push(warning);
+                }
+                Json(plan).into_response()
+            }
             Err(error) => bad_request(error.to_string()),
         };
     }
@@ -3263,13 +3541,29 @@ async fn slice_plan(_auth: ConnectionAuth, Json(req): Json<SlicePlanRequest>) ->
         Ok(l) => l,
         Err(e) => return bad_request(e),
     };
-    let planned = match req.equal_parts {
-        Some(n) if (1..=64).contains(&n) => plan::plan_equal(&layout, n),
-        Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
-        None => plan::plan_by_size(&layout, &req.slices),
+    let planned = match req.range.as_ref() {
+        Some(range) => single_range_plan(&layout, range),
+        None => match req.equal_parts {
+            Some(n) if (1..=64).contains(&n) => plan::plan_equal(&layout, n),
+            Some(_) => return bad_request("escolha entre 1 e 64 fatias"),
+            None => plan::plan_by_size(&layout, &req.slices),
+        },
     };
     match planned {
-        Ok(p) => Json(p).into_response(),
+        Ok(mut plan) => {
+            let free = disk_free_at(&destination).await;
+            let status = classify_disk_space(free.unwrap_or(0), plan.model_bytes);
+            plan.destination_path = Some(destination.to_string_lossy().into_owned());
+            plan.destination_free_bytes = free;
+            plan.space_margin_bytes =
+                free.map(|value| signed_space_margin(value, plan.model_bytes));
+            plan.space_status = Some(status);
+            if let Some(warning) = disk_space_warning(status, &destination, free, plan.model_bytes)
+            {
+                plan.warnings.push(warning);
+            }
+            Json(plan).into_response()
+        }
         Err(e) => bad_request(e.to_string()),
     }
 }
@@ -3292,10 +3586,10 @@ async fn slice_locally(
             req.model_path
         ));
     }
-    if matches!(req.mode, SliceMode::Pipeline) && req.slices.is_empty() {
+    if matches!(req.mode, SliceMode::Pipeline) && req.range.is_none() && req.slices.is_empty() {
         return bad_request("nenhuma fatia na lista");
     }
-    if matches!(req.mode, SliceMode::Pipeline) && req.slices.len() > 64 {
+    if matches!(req.mode, SliceMode::Pipeline) && req.range.is_none() && req.slices.len() > 64 {
         return bad_request("no máximo 64 fatias");
     }
 
@@ -3305,18 +3599,30 @@ async fn slice_locally(
     };
 
     if matches!(req.mode, SliceMode::TensorParallel) {
+        if req.range.is_some() {
+            return bad_request("uma faixa específica só pode ser fatiada no modo pipeline");
+        }
         let Some(tp_size) = req.tp_size else {
             return bad_request("informe o tamanho do grupo TP");
         };
         if let Err(error) = tensor_slice_plan(&source, tp_size) {
             return bad_request(error.to_string());
         }
-        let source_sha256 = match source_model_sha256(&source).await {
-            Ok(hash) => hash,
-            Err(error) => {
-                return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
-            }
-        };
+        let tp_output_bytes =
+            match crate::splitter::estimate_tensor_parallel_output_bytes(&source, tp_size) {
+                Ok(bytes) => bytes,
+                Err(error) => return bad_request(error.to_string()),
+            };
+        let destination = state.shard_dir().await;
+        let destination_free = disk_free_at(&destination).await;
+        let destination_status =
+            classify_disk_space(destination_free.unwrap_or(0), tp_output_bytes);
+        let destination_warning = disk_space_warning(
+            destination_status,
+            &destination,
+            destination_free,
+            tp_output_bytes,
+        );
         let total_layers = layout.layer_count();
         let base_name = req
             .name
@@ -3340,21 +3646,34 @@ async fn slice_locally(
         let node_id = state.network.node_id.clone();
         let raiz = shard_dir.clone();
         tokio::spawn(async move {
-            match run_tp_slice(
-                state,
-                source,
-                shard_dir,
-                scratch,
-                base_name,
-                label,
-                total_layers,
-                node_id,
-                source_sha256,
-                tp_size,
-                &job_id,
-            )
-            .await
-            {
+            let result = async {
+                if let Some(warning) = destination_warning {
+                    set_job_phase(
+                        &job_id,
+                        "verificando espaço",
+                        &warning,
+                        Some(destination.to_string_lossy().into_owned()),
+                    )
+                    .await;
+                }
+                let source_sha256 = source_model_sha256_for_job(&source, &job_id).await?;
+                run_tp_slice(
+                    state,
+                    source,
+                    shard_dir,
+                    scratch,
+                    base_name,
+                    label,
+                    total_layers,
+                    node_id,
+                    source_sha256,
+                    tp_size,
+                    &job_id,
+                )
+                .await
+            }
+            .await;
+            match result {
                 Ok(manifest) => {
                     let msg = format!(
                         "{} shards TP em {} · pom {}",
@@ -3375,7 +3694,10 @@ async fn slice_locally(
 
     // The screen previews with the same function, but the decision is remade
     // here: a stale preview must not become a slicing run nobody approved.
-    let sized = match plan::plan_by_size(&layout, &req.slices) {
+    let sized = match match req.range.as_ref() {
+        Some(range) => single_range_plan(&layout, range),
+        None => plan::plan_by_size(&layout, &req.slices),
+    } {
         Ok(p) => p,
         Err(e) => return bad_request(e.to_string()),
     };
@@ -3389,6 +3711,20 @@ async fn slice_locally(
         );
     }
 
+    // Repeat the preview's check at the point of action: another process may
+    // have consumed the destination between the last keystroke and the click.
+    // This is an alert-only guard by design; the operator can still choose to
+    // proceed and the resulting failure will be recorded on the job.
+    let destination = state.shard_dir().await;
+    let destination_free = disk_free_at(&destination).await;
+    let destination_status = classify_disk_space(destination_free.unwrap_or(0), sized.model_bytes);
+    let destination_warning = disk_space_warning(
+        destination_status,
+        &destination,
+        destination_free,
+        sized.model_bytes,
+    );
+
     let total_layers = sized.total_layers;
     let ranges: Vec<(u32, u32)> = sized
         .ranges
@@ -3399,13 +3735,6 @@ async fn slice_locally(
     if ranges.is_empty() {
         return bad_request("este arquivo não declara camadas — não há o que fatiar");
     }
-    let source_sha256 = match source_model_sha256(&source).await {
-        Ok(hash) => hash,
-        Err(error) => {
-            return bad_request(format!("não foi possível identificar o modelo: {error:#}"))
-        }
-    };
-
     let base_name = req
         .name
         .as_deref()
@@ -3432,21 +3761,34 @@ async fn slice_locally(
     let node_id = state.network.node_id.clone();
     let raiz = shard_dir.clone();
     tokio::spawn(async move {
-        match run_slice(
-            state,
-            source,
-            shard_dir,
-            out_dir,
-            base_name,
-            label,
-            ranges,
-            total_layers,
-            node_id,
-            source_sha256,
-            &job_id,
-        )
-        .await
-        {
+        let result = async {
+            if let Some(warning) = destination_warning {
+                set_job_phase(
+                    &job_id,
+                    "verificando espaço",
+                    &warning,
+                    Some(destination.to_string_lossy().into_owned()),
+                )
+                .await;
+            }
+            let source_sha256 = source_model_sha256_for_job(&source, &job_id).await?;
+            run_slice(
+                state,
+                source,
+                shard_dir,
+                out_dir,
+                base_name,
+                label,
+                ranges,
+                total_layers,
+                node_id,
+                source_sha256,
+                &job_id,
+            )
+            .await
+        }
+        .await;
+        match result {
             Ok(m) => {
                 let msg = format!(
                     "{} fatia{} em {} · pom {}",
@@ -3471,7 +3813,7 @@ async fn slice_locally(
 /// group in the source model's unified manifest.
 #[allow(clippy::too_many_arguments)]
 async fn run_tp_slice(
-    state: GatewayState,
+    _state: GatewayState,
     source: std::path::PathBuf,
     shard_dir: std::path::PathBuf,
     scratch: std::path::PathBuf,
@@ -3487,11 +3829,11 @@ async fn run_tp_slice(
     let mut shards = Vec::with_capacity(tp_size as usize);
 
     for rank in 0..tp_size {
-        set_job(
+        set_job_phase(
             job_id,
-            "running",
-            "fatiando",
-            &format!("extraindo shard TP rank {}/{}", rank + 1, tp_size),
+            "empacotando cabeçalho",
+            &format!("preparando o shard TP rank {}/{}", rank + 1, tp_size),
+            Some(source.to_string_lossy().into_owned()),
         )
         .await;
 
@@ -3502,6 +3844,14 @@ async fn run_tp_slice(
                 tokio::spawn(async move { set_job_progress(&id, pct).await });
             })
             .await?;
+
+        set_job_phase(
+            job_id,
+            "verificando",
+            &format!("shard TP rank {} pronto; verificando e selando", rank + 1),
+            Some(outcome.output_path.clone()),
+        )
+        .await;
 
         shards.push(crate::pom::PomPart {
             sha256: outcome.sha256.clone(),
@@ -3515,8 +3865,6 @@ async fn run_tp_slice(
                 size: tp_size,
             }),
         });
-        enforce_shard_storage(&state, &outcome.output_path).await?;
-
         invalidate_catalog().await;
         if let Some(job) = jobs().write().await.get_mut(job_id) {
             job.outputs.push(outcome.output_path);
@@ -3541,6 +3889,35 @@ async fn run_tp_slice(
     Ok(manifest)
 }
 
+fn existing_layer_slice(
+    shard_dir: &std::path::Path,
+    source_sha256: &str,
+    start_layer: u32,
+    end_layer: u32,
+) -> Option<plan::SliceOutcome> {
+    let directory = crate::pom::locate_source_dir(shard_dir, source_sha256)?;
+    let part = crate::pom::load_dir(&directory)
+        .into_iter()
+        .flat_map(|manifest| manifest.parts)
+        .find(|part| {
+            part.start_layer == start_layer
+                && part.end_layer == end_layer
+                && crate::pom::part_path(&directory, &part.sha256)
+                    .ok()
+                    .is_some_and(|path| path.is_file())
+        })?;
+    let path = crate::pom::part_path(&directory, &part.sha256).ok()?;
+    let (actual_sha256, bytes) = crate::pom::hash_file(&path).ok()?;
+    (actual_sha256 == part.sha256 && bytes == part.bytes && bytes > 1024).then_some(
+        plan::SliceOutcome {
+            output_path: path.to_string_lossy().into_owned(),
+            bytes,
+            sha256: part.sha256,
+            reused: true,
+        },
+    )
+}
+
 /// Corta o modelo inteiro nas faixas pedidas e mescla as partes no manifesto v1.
 ///
 /// É **aqui** que um fatiamento vira uma coisa só: as partes saem nomeadas pelo
@@ -3549,7 +3926,7 @@ async fn run_tp_slice(
 /// ilegível - o manifesto é o que substitui a faixa que antes vivia no nome.
 #[allow(clippy::too_many_arguments)]
 async fn run_slice(
-    state: GatewayState,
+    _state: GatewayState,
     source: std::path::PathBuf,
     shard_dir: std::path::PathBuf,
     scratch: std::path::PathBuf,
@@ -3575,43 +3952,61 @@ async fn run_slice(
             index + 1,
             parts
         );
-        set_job(
+        set_job_phase(
             job_id,
-            "running",
-            "lendo",
-            &format!("{label} · lendo o modelo"),
+            "empacotando cabeçalho",
+            &format!("{label} · preparando os metadados da fatia"),
+            Some(source.to_string_lossy().into_owned()),
         )
         .await;
 
         let progress_job = job_id.to_string();
         let writing_label = label.clone();
         let first_report = Arc::new(AtomicBool::new(true));
-        let outcome = plan::extract_shard(
-            &source.to_string_lossy(),
-            &scratch,
-            // Rodada nova: ninguém sabe o hash antes de cortar.
-            None,
-            start,
-            end,
-            start == 0,
-            end + 1 >= total_layers,
-            move |pct| {
-                let id = progress_job.clone();
-                let overall = overall_progress(index, parts, pct);
-                let announce = first_report
-                    .swap(false, Ordering::Relaxed)
-                    .then(|| format!("{writing_label} · gravando"));
-                tokio::spawn(async move {
-                    if let Some(message) = announce {
-                        set_job(&id, "running", "gravando", &message).await;
-                    }
-                    set_job_progress(&id, overall).await;
-                });
-            },
-        )
-        .await?;
+        let outcome =
+            if let Some(existing) = existing_layer_slice(&shard_dir, &source_sha256, start, end) {
+                set_job_phase(
+                    job_id,
+                    "verificando",
+                    &format!("{label} · fatia idêntica já existe; conferida por hash"),
+                    Some(existing.output_path.clone()),
+                )
+                .await;
+                existing
+            } else {
+                plan::extract_shard(
+                    &source.to_string_lossy(),
+                    &scratch,
+                    None,
+                    start,
+                    end,
+                    start == 0,
+                    end + 1 >= total_layers,
+                    move |pct| {
+                        let id = progress_job.clone();
+                        let overall = overall_progress(index, parts, pct);
+                        let announce = first_report
+                            .swap(false, Ordering::Relaxed)
+                            .then(|| format!("{writing_label} · gravando"));
+                        tokio::spawn(async move {
+                            if let Some(message) = announce {
+                                set_job(&id, "running", "escrevendo", &message).await;
+                            }
+                            set_job_progress(&id, overall).await;
+                        });
+                    },
+                )
+                .await?
+            };
 
         set_job_progress(job_id, overall_progress(index + 1, parts, 0.0)).await;
+        set_job_phase(
+            job_id,
+            "verificando",
+            &format!("{label} · saída pronta; verificando e selando"),
+            Some(outcome.output_path.clone()),
+        )
+        .await;
         info!(
             "fatia {}/{parts} pronta: {} ({:.1} GB, {})",
             index + 1,
@@ -3632,12 +4027,6 @@ async fn run_slice(
             is_last: end + 1 >= total_layers,
             tp: None,
         });
-
-        // A retenção também precisa acontecer no fluxo de fatiamento isolado:
-        // o operador pode criar fatias agora e implantá-las somente depois.
-        // A saída recém-criada fica protegida, enquanto diretórios antigos
-        // elegíveis são removidos para manter o limite configurado.
-        enforce_shard_storage(&state, &outcome.output_path).await?;
 
         // Show up in the catalog as each one lands, not only at the end.
         invalidate_catalog().await;
@@ -3741,9 +4130,6 @@ pub(crate) async fn materialize_slice_ranges(
         }
     }
     let source = source;
-    let source_sha256 = source_model_sha256(&source)
-        .await
-        .map_err(|error| format!("não foi possível identificar o modelo inteiro: {error:#}"))?;
     let shard_dir = state.shard_dir().await;
     let scratch = crate::pom::scratch_dir(&shard_dir);
     let job_id = uuid::Uuid::new_v4().simple().to_string();
@@ -3756,6 +4142,15 @@ pub(crate) async fn materialize_slice_ranges(
             "preparando",
         ),
     );
+    let source_sha256 = match source_model_sha256_for_job(&source, &job_id).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            set_job(&job_id, "failed", "erro", &format!("{error:#}")).await;
+            return Err(format!(
+                "não foi possível identificar o modelo inteiro: {error:#}"
+            ));
+        }
+    };
     let ranges = req
         .ranges
         .iter()
@@ -5644,6 +6039,83 @@ mod tests {
     }
 
     #[test]
+    fn source_hash_reports_bytes_read_before_slicing() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-source-progress-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        let source_bytes = crate::splitter::test_gguf_bytes(4);
+        std::fs::write(&source, &source_bytes).unwrap();
+
+        let mut reports = Vec::new();
+        let digest = hash_source_with_progress(&source, |done, total| {
+            reports.push((done, total));
+        })
+        .unwrap();
+
+        assert!(!reports.is_empty());
+        assert_eq!(reports.first().unwrap().0, 0);
+        assert_eq!(
+            reports.last().unwrap(),
+            &(source_bytes.len() as u64, source_bytes.len() as u64)
+        );
+        assert_eq!(
+            digest,
+            crate::multipart::GgufSource::open(&source)
+                .unwrap()
+                .hash_sha256()
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn job_activity_exposes_phase_bytes_and_terminal_error() {
+        let id = format!("job-activity-{}", uuid::Uuid::new_v4().simple());
+        jobs()
+            .write()
+            .await
+            .insert(id.clone(), new_job(&id, "slice", "modelo", "preparando"));
+
+        set_job_phase(
+            &id,
+            "lendo modelo",
+            "lendo a fonte",
+            Some("/models/model.gguf".into()),
+        )
+        .await;
+        set_job_byte_progress(&id, "lendo modelo", 64, 128, None).await;
+        let running = jobs().read().await.get(&id).cloned().unwrap();
+        assert_eq!(running.step, "lendo modelo");
+        assert_eq!(running.bytes_processed, Some(64));
+        assert_eq!(running.total_bytes, Some(128));
+        assert_eq!(running.current_file.as_deref(), Some("/models/model.gguf"));
+
+        set_job(&id, "failed", "erro", "falha depois da primeira fatia").await;
+        let failed = jobs().read().await.get(&id).cloned().unwrap();
+        assert_eq!(failed.state, "failed");
+        assert_eq!(
+            failed.error.as_deref(),
+            Some("falha depois da primeira fatia")
+        );
+        assert!(failed.finished_at.is_some());
+
+        jobs().write().await.remove(&id);
+    }
+
+    #[test]
+    fn disk_space_status_distinguishes_insufficient_tight_and_safe() {
+        let gib = 1u64 << 30;
+        assert_eq!(classify_disk_space(90 * gib, 100 * gib), "insufficient");
+        assert_eq!(classify_disk_space(105 * gib, 100 * gib), "tight");
+        assert_eq!(classify_disk_space(120 * gib, 100 * gib), "ok");
+        assert_eq!(classify_disk_space(0, 100 * gib), "unknown");
+    }
+
+    #[test]
     fn tensor_slice_request_does_not_require_pipeline_slices() {
         let request: SliceRequest = serde_json::from_str(
             r#"{"model_path":"/models/model.gguf","mode":"tensor_parallel","tp_size":2}"#,
@@ -5653,6 +6125,126 @@ mod tests {
         assert!(request.slices.is_empty());
         assert_eq!(request.mode, SliceMode::TensorParallel);
         assert_eq!(request.tp_size, Some(2));
+    }
+
+    #[test]
+    fn single_range_request_does_not_require_a_size_list() {
+        let request: SliceRequest = serde_json::from_str(
+            r#"{"model_path":"/models/model.gguf","range":{"start_layer":4,"end_layer":7}}"#,
+        )
+        .unwrap();
+
+        assert!(request.slices.is_empty());
+        assert_eq!(request.range.unwrap().start_layer, 4);
+    }
+
+    #[test]
+    fn single_range_plan_is_exact_and_rejects_out_of_bounds_ranges() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-single-range-plan-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("model.gguf");
+        std::fs::write(&source, crate::splitter::test_gguf_bytes(4)).unwrap();
+        let layout = crate::gguf::read_layout(&source).unwrap();
+
+        let selected = single_range_plan(
+            &layout,
+            &SliceRange {
+                start_layer: 1,
+                end_layer: 2,
+            },
+        )
+        .unwrap();
+        assert_eq!(selected.ranges.len(), 1);
+        assert_eq!(
+            (selected.ranges[0].start_layer, selected.ranges[0].end_layer),
+            (1, 2)
+        );
+        assert_eq!(selected.model_bytes, selected.ranges[0].bytes);
+        assert!(!selected.complete);
+
+        let error = single_range_plan(
+            &layout,
+            &SliceRange {
+                start_layer: 1,
+                end_layer: 99,
+            },
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("fora do modelo"), "{error}");
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_range_reuse_reads_manifest_without_touching_other_parts() {
+        let root = std::env::temp_dir().join(format!(
+            "pom-existing-range-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        let source_sha256 = "a".repeat(64);
+        let directory = crate::pom::source_run_dir(&root, "model", &source_sha256);
+        std::fs::create_dir_all(&directory).unwrap();
+        let old_bytes = vec![1; 2048];
+        let other_bytes = vec![2; 2048];
+        let old_sha256 = hex::encode(Sha256::digest(&old_bytes));
+        let other_sha256 = hex::encode(Sha256::digest(&other_bytes));
+        let old = crate::pom::PomPart {
+            sha256: old_sha256,
+            bytes: 2048,
+            start_layer: 0,
+            end_layer: 1,
+            is_first: true,
+            is_last: false,
+            tp: None,
+        };
+        let other = crate::pom::PomPart {
+            sha256: other_sha256,
+            bytes: 2048,
+            start_layer: 2,
+            end_layer: 3,
+            is_first: false,
+            is_last: true,
+            tp: None,
+        };
+        std::fs::write(
+            crate::pom::part_path(&directory, &old.sha256).unwrap(),
+            old_bytes,
+        )
+        .unwrap();
+        std::fs::write(
+            crate::pom::part_path(&directory, &other.sha256).unwrap(),
+            other_bytes,
+        )
+        .unwrap();
+        let manifest = crate::pom::PomManifest::new(
+            crate::pom::PomModel {
+                name: "model".into(),
+                label: "model".into(),
+                total_layers: 4,
+                quant: None,
+            },
+            crate::pom::PomKind::Layers,
+            "test",
+            source_sha256.clone(),
+            vec![old.clone(), other.clone()],
+        );
+        crate::pom::write_atomic(&directory, &manifest).unwrap();
+
+        let reused = existing_layer_slice(&root, &source_sha256, 0, 1).unwrap();
+        assert!(reused.reused);
+        assert_eq!(reused.sha256, old.sha256);
+        assert!(crate::pom::part_path(&directory, &other.sha256)
+            .unwrap()
+            .is_file());
+        assert_eq!(crate::pom::load_dir(&directory)[0].parts.len(), 2);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

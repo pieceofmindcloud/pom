@@ -88,7 +88,10 @@ monitor de sistema. Nada aqui fala com peers; tudo é usado por `main.rs` e
   `deploy::free_memory_mb` lê o de **outras** máquinas para decidir se a fatia
   cabe.
 - `sample_disk` - `df -m` no project root (não no cwd); Windows
-  `GetDiskFreeSpaceExW`. É o que a tela usa para saber se outra fatia cabe.
+  `GetDiskFreeSpaceExW`. `sample_disk_at` recebe o destino configurado e mede
+  o volume que contém esse caminho, inclusive quando a pasta ainda não existe.
+  A tela usa essa variante para conferir se a saída de uma fatia cabe no disco
+  real apontado pelo operador.
 
 `sysmon.rs` também publica `GpuStat.temperature_c`: NVIDIA vem da mesma linha
 `nvidia-smi` que enumera VRAM e utilização, Radeon vem de `amdgpu`/hwmon, e

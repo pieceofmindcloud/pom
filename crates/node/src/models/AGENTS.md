@@ -57,13 +57,18 @@ transferência.
   `arch_boundaries` são válidos. `prefix_cut_granularity` só informa um passo
   quando todos os cortes têm a mesma distância; o consumidor usa a lista de
   cortes quando as fronteiras são irregulares.
+- `splitter.rs` - mapeia a fonte para ler o cabeçalho e os pesos sem manter fd
+  de GGUF aberto. A tabela lógica não é uma ordem de armazenamento: os payloads
+  selecionados são ordenados por `(part_index, src_offset)` antes da cópia para
+  evitar page faults regressivos em fonte maior que a RAM. A estimativa TP soma
+  a replicação de tensores compartilhados por rank e reserva o cabeçalho gerado.
 - `kv_budget.rs` - política pura de bytes do cache KV. Replica o tamanho de
   linha dos tipos suportados e recusa largura que não fecha bloco ou qualquer
   overflow, sem consultar FFI ou dispositivo.
 - `storage.rs` - calcula uso recursivo da pasta de fatias, registra e ignora
-  filhos ilegíveis, e remove diretórios gerados mais antigos quando o limite
-  configurado seria excedido. Falha na raiz continua sendo erro acionável; a
-  saída atual e o modelo ativo são protegidos.
+  filhos ilegíveis. A rotina de retenção continua disponível para uma ação
+  explícita, mas o fatiamento não a chama: gerar uma faixa não apaga fatias
+  anteriores em silêncio.
 - `provider.rs` - contrato `ModelProvider`, tipos comuns de descoberta,
   download, progresso, licença, armazenamento e manifesto.
 - `huggingface.rs` - implementação `HuggingFaceProvider` por HTTP nativo, com
@@ -98,6 +103,9 @@ mescladas na mesma pasta e no mesmo manifesto nomeado como a pasta; o catálogo
 só expõe as partes cujo arquivo existe no disco. `catalog::ShardSet` mantém as
 duas listas separadas e preserva `tp_rank`/`tp_size` para a UI agrupar por
 tamanho e exibir `1ofN`.
+Uma faixa avulsa encontra a pasta pelo `pom_id`, acrescenta sua parte ao
+manifesto existente e só reaproveita uma parte quando o arquivo confere por
+SHA-256 e tamanho.
 
 `deployment::DeploymentIdentity` persiste a prova do artefato que entrou em
 serviço: `pom_id` para uma rodada de fatias ou SHA-256 do GGUF inteiro. Registros

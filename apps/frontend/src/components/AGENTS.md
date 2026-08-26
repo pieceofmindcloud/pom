@@ -75,9 +75,9 @@ Per-file list:
   perfil passar a chegar do nó, este arquivo sai inteiro.
 - `SlicingJobsPanel.tsx` - Embedded slicing activity panel used by
   `SliceModels`. It reads `useJobs` (`GET /api/ui/jobs`) and renders one card
-  per job with state, progress and output paths only while at least one job is
-  running. Completed history stays available to the notification system, but
-  does not leave an empty activity card on the slicing screen.
+  per job with state, named phase, byte heartbeat, rate/ETA when available and
+  output paths. Completed and failed history remains on the slicing screen so
+  a failure cannot look like an eternal spinner; partial outputs are shown.
 - `Topbar.tsx` — Sticky header: `NodeChip` (hostname, short_id, peer count,
   coverage), o `ProfileSwitcher`, the bell (`Notifications`), and `NodeActions` — a menu to unload
   this node's slice (`POST /api/ui/unload`) or leave the network

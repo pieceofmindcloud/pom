@@ -131,6 +131,26 @@ o motivo concreto, sem byte count falso e sem plano de fatiamento. O hash usado
 para identidade de um modelo fonte é o SHA-256 da sequência ordenada de partes.
 Esse hash é calculado somente na fronteira de fatiamento ou transferência, nunca
 na resposta inicial do catálogo.
+
+O diagnóstico de leitura separa duas causas que pareciam iguais na medição de
+campo. `GgufSource::open` mapeia todas as partes com `mmap` e não mantém um fd de
+GGUF aberto para copiar pesos. O hash percorre as partes em ordem física uma vez.
+Já o extrator recebia a tabela de tensores na ordem lógica do GGUF; essa ordem
+não promete offsets crescentes e podia provocar page faults regressivos quando a
+fonte mapeada era maior que a RAM. `splitter::source_read_order` agora ordena os
+acessos por `(part_index, src_offset)`. Isso derruba a hipótese de uma passagem
+inteira por fatia como explicação única: há uma passagem lógica de hash e uma
+passagem pelos tensores selecionados, além de globais legitimamente repetidos em
+cada saída. A escrita de todas as faixas numa única passagem continua uma
+otimização separada, ainda não implementada. A medição de campo dá a escala:
+três partes de aproximadamente 41,8, 39,5 e 48,1 GB somam cerca de 129,3 GB
+para uma fonte de 119,4 GiB; com 276 GiB lidos enquanto só a primeira parte foi
+escrita, a taxa observada equivale a cerca de 2,3 passagens efetivas por faixa.
+Uma implementação que percorra a fonte uma vez em offsets crescentes e grave
+as três saídas em paralelo tenderia a reduzir a leitura projetada de mais de
+800 GiB para perto dos 120 GiB da fonte. É uma estimativa de I/O, não uma
+promessa de tempo: ainda há o custo de gerar três cabeçalhos e gravar cerca de
+129,3 GB.
 Transferências continuam sendo operações de arquivos POM individuais. O
 endpoint de envio recusa uma fonte inteira que declara multipart, com a
 orientação de manter o conjunto completo ou gerar fatias POM; a transferência
@@ -184,6 +204,17 @@ os ranks de uma vez e selar `tp_parts` no manifesto unificado. O rank guardado
 no manifesto é zero-based; a interface mostra a identificação operacional
 one-based `1ofN`, `2ofN` etc. O arquivo físico continua endereçado pelo hash do
 conteúdo, conforme a regra de armazenamento por hash.
+
+O endpoint de plano também aceita `range: { start_layer, end_layer }` para uma
+faixa avulsa. A tela oferece apenas inícios e fins derivados da arquitetura, e
+o backend repete a validação no momento do clique. A saída é uma parte
+independente, com a mesma reindexação de metadata por camada das demais fatias.
+`finalize_run` localiza o manifesto pelo hash da fonte e acrescenta a parte sem
+substituir as anteriores; uma faixa existente só é reaproveitada depois de
+conferir o SHA-256 do arquivo. O caminho de fatiamento não executa retenção
+automática que pudesse apagar uma faixa antiga em silêncio. Como a identidade da
+fonte ainda é calculada antes do corte, uma faixa menor reduz a escrita e o
+espaço final, mas não elimina a leitura completa do hash.
 
 ### O que a camada 0 significa
 
@@ -254,9 +285,11 @@ Não há compatibilidade com outro formato de manifesto.
    `compress_ratios`; a seleção é por posição, sem repetir um passo periódico.
 7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
-8. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),
-   chamando `on_progress(0..100)`; o progresso é do arquivo, não do trabalho
-   (100% de uma fatia é 1/N do serviço).
+8. Ordena os payloads por parte e offset físico, escreve com `ALIGN` de 32 bytes
+   e copia dados em blocos de `CHUNK` (8 MB), chamando `on_progress(0..100)`.
+   Esse progresso é do arquivo, não do trabalho (100% de uma fatia é 1/N do
+   serviço); o job da UI também expõe a fase de leitura/hash, bytes lidos,
+   arquivo atual, taxa e ETA quando há base para estimá-la.
 
 ### Reaproveitamento
 

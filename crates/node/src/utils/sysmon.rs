@@ -18,6 +18,7 @@
 //!   zero e a tela mostra isso como "não se aplica".
 
 use serde::Serialize;
+use std::path::Path;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -223,13 +224,23 @@ impl Default for DiskStat {
 pub fn sample_disk() -> DiskStat {
     // The slices live under the project root, which is not necessarily the
     // working directory — see `config::project_root`.
-    let cwd = crate::config::project_root();
-    let mount = cwd.to_string_lossy().to_string();
+    sample_disk_at(&crate::config::project_root())
+}
+
+/// Measure the volume that contains `path`, including when it is a configured
+/// destination on another disk. A not-yet-created destination is probed via
+/// its nearest existing parent, so planning never has to create directories.
+pub fn sample_disk_at(path: &Path) -> DiskStat {
+    let probe = path
+        .ancestors()
+        .find(|candidate| candidate.exists())
+        .unwrap_or(path);
+    let mount = path.to_string_lossy().to_string();
 
     // Windows não tem `df`; o volume que contém o diretório responde direto.
     #[cfg(windows)]
     {
-        let path = win::wide(&cwd);
+        let path = win::wide(probe);
         let (mut free_caller, mut total, mut free_total) = (0u64, 0u64, 0u64);
         let ok = unsafe {
             win::GetDiskFreeSpaceExW(path.as_ptr(), &mut free_caller, &mut total, &mut free_total)
@@ -254,7 +265,7 @@ pub fn sample_disk() -> DiskStat {
     {
         let out = std::process::Command::new("df")
             .arg("-m")
-            .arg(&cwd)
+            .arg(probe)
             .output()
             .ok()
             .and_then(|o| String::from_utf8(o.stdout).ok());

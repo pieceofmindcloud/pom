@@ -86,6 +86,14 @@ pub struct GgufInfo {
     /// sem carimbo é um shard de regra desconhecida, e regra desconhecida se
     /// regenera. Ver `splitter::TP_SHARD_FORMAT`.
     pub tp_stamp: Option<TpStamp>,
+    /// Contagem de tensores declarada no cabeçalho. O catálogo usa isto para
+    /// descrever uma parte sem abrir a fonte completa.
+    pub(crate) tensor_count: u64,
+    /// Campos `split.*` do cabeçalho, quando presentes. Eles são suficientes
+    /// para identificar a coleção multipart sem ler a tabela de tensores.
+    pub(crate) split_count: Option<u64>,
+    pub(crate) split_no: Option<u64>,
+    pub(crate) split_tensors_count: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -425,7 +433,7 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
         bail!("not a GGUF file (magic {magic:#x})");
     }
     let _version = r.u32()?;
-    let _n_tensors = r.u64()?;
+    let n_tensors = r.u64()?;
     let n_kv = r.u64()?;
     if n_kv > 100_000 {
         bail!("implausible GGUF kv count {n_kv}");
@@ -464,6 +472,11 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             k if k == crate::brand::gguf_key("tp_format") => tp_format = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_size") => tp_size = r.value_as_u32(vtype)?,
             k if k == crate::brand::gguf_key("tp_rank") => tp_rank = r.value_as_u32(vtype)?,
+            "split.count" => info.split_count = r.value_as_u32(vtype)?.map(u64::from),
+            "split.no" => info.split_no = r.value_as_u32(vtype)?.map(u64::from),
+            "split.tensors.count" => {
+                info.split_tensors_count = r.value_as_u32(vtype)?.map(u64::from)
+            }
             k if k == crate::brand::gguf_key("start_layer") => {
                 start_layer = r.value_as_u32(vtype)?
             }
@@ -507,6 +520,8 @@ pub fn read_info(path: &Path) -> Result<GgufInfo> {
             rank: rk,
         });
     }
+
+    info.tensor_count = n_tensors;
 
     Ok(info)
 }

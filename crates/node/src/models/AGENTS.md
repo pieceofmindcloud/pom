@@ -7,18 +7,21 @@ transferência.
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
   `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
   sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
-  `Catalog.metadata_complete`. Falha de leitura mantém o item pendente para
-  nova tentativa, em vez de publicar sucesso. As capacidades vêm do header e
-  de uma varredura leve dos nomes de tensores `nextn`; o cálculo completo de
-  layout continua em `gguf::read_capability_evidence` para callers que exigem
-  essa prova.
+  `Catalog.metadata_complete`. Falha de leitura marca `metadata_error` no item,
+  sem impedir os modelos válidos; depois de uma passagem terminal,
+  `metadata_complete` vira `true`. Nova tentativa só ocorre em um novo refresh
+  ou invalidação. As capacidades vêm do header e de uma varredura leve dos nomes
+  de tensores `nextn`; o cálculo completo de layout continua em
+  `gguf::read_capability_evidence` para callers que exigem essa prova.
   `discover` combina as duas fases para callers síncronos que ainda precisam da
   resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
-  manifestos ou do nome de uma fatia são apenas dados de identidade, e o
-  Para uma fonte GGUF multipart, enrich abre multipart::GgufSource, soma os
-  bytes das partes e expõe as partes físicas no catálogo; uma declaração
-  incompleta fica visível com erro concreto e tamanho desconhecido. A
-  identidade do modelo inteiro usa o hash da sequência completa de partes.
+  manifestos ou do nome de uma fatia são apenas dados de identidade.
+  Para uma fonte GGUF multipart, `enrich` lê os cabeçalhos e faz `stat` das
+  partes por `multipart::catalog_metadata`, sem abrir o mapeamento completo de
+  pesos; soma os bytes e expõe as partes físicas no catálogo. Uma declaração
+  incompleta fica visível com erro concreto e tamanho desconhecido. A identidade
+  do modelo inteiro usa o hash da sequência completa de partes somente na
+  fronteira de fatiamento ou transferência.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
   chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
   `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.

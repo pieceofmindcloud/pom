@@ -292,6 +292,132 @@ pub struct GgufSource {
     multipart: bool,
 }
 
+/// Resumo de uma fonte usado pelo catálogo. Diferente de [`GgufSource`], não
+/// mantém mappings nem valida offsets dos pesos: cada parte só é lida até o
+/// próprio cabeçalho e o restante vem de `stat`.
+#[derive(Debug, Clone)]
+pub(crate) struct CatalogPart {
+    pub index: u32,
+    pub path: PathBuf,
+    pub bytes: u64,
+    pub tensor_count: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CatalogMetadata {
+    pub multipart: bool,
+    pub parts: Vec<CatalogPart>,
+    pub source_bytes: u64,
+}
+
+/// Read only the metadata needed to list a GGUF multipart source.
+///
+/// The full [`GgufSource::open`] path remains reserved for slicing and layout
+/// consumers. In particular, catalog enrichment must not map or validate every
+/// tensor payload merely to show the model architecture and part sizes.
+pub(crate) fn catalog_metadata(
+    path: &Path,
+    first_info: &crate::gguf::GgufInfo,
+) -> Result<CatalogMetadata> {
+    let split_count = first_info.split_count.unwrap_or(1);
+    if split_count == 0 {
+        bail!("split.count não pode ser zero em {}", path.display());
+    }
+    if split_count == 1 {
+        if first_info.split_no.unwrap_or(0) != 0 {
+            bail!(
+                "split.no={:?} não é uma parte única válida",
+                first_info.split_no
+            );
+        }
+        return Ok(CatalogMetadata::default());
+    }
+    if first_info.split_no.unwrap_or(0) != 0 {
+        bail!(
+            "o GGUF multipart foi aberto pela parte split.no={:?}; abra a primeira parte (split.no=0)",
+            first_info.split_no
+        );
+    }
+    let expected_tensors = first_info
+        .split_tensors_count
+        .ok_or_else(|| anyhow::anyhow!("GGUF multipart sem split.tensors.count no cabeçalho"))?;
+    let (prefix, width, filename_total, filename_index) = multipart_filename(path).ok_or_else(|| {
+        anyhow::anyhow!(
+            "GGUF declara split.count={split_count}, mas o nome '{}' não identifica as partes como N-of-M.gguf",
+            path.display()
+        )
+    })?;
+    if filename_total != split_count {
+        bail!("nome do GGUF declara {filename_total} partes, mas split.count={split_count}");
+    }
+    let part_count = usize::try_from(split_count)
+        .map_err(|_| anyhow::anyhow!("split.count GGUF grande demais: {split_count}"))?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("gguf");
+    let mut parts = Vec::with_capacity(part_count);
+    for index in 0..part_count {
+        let part_path = if index == 0 {
+            path.to_path_buf()
+        } else {
+            let part_number = filename_index
+                .checked_add(index as u64)
+                .ok_or_else(|| anyhow::anyhow!("índice da parte GGUF excede u64"))?;
+            path.parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(format!(
+                    "{prefix}-{part_number:0width$}-of-{split_count:0width$}.{extension}"
+                ))
+        };
+        let part_info = if index == 0 {
+            first_info.clone()
+        } else {
+            crate::gguf::read_info(&part_path).with_context(|| {
+                format!(
+                    "ler cabeçalho da parte {} de {} do GGUF multipart ({})",
+                    index + 1,
+                    split_count,
+                    part_path.display()
+                )
+            })?
+        };
+        let bytes = std::fs::metadata(&part_path)
+            .with_context(|| format!("stat da parte GGUF {}", part_path.display()))?
+            .len();
+        if part_info.split_count != Some(split_count)
+            || part_info.split_no != Some(index as u64)
+            || part_info.split_tensors_count != Some(expected_tensors)
+        {
+            bail!(
+                "parte {} de {} tem split.count={:?}, split.no={:?}, split.tensors.count={:?}; esperado ({split_count}, {index}, {expected_tensors})",
+                index + 1,
+                split_count,
+                part_info.split_count,
+                part_info.split_no,
+                part_info.split_tensors_count
+            );
+        }
+        parts.push(CatalogPart {
+            index: u32::try_from(index)
+                .map_err(|_| anyhow::anyhow!("índice da parte GGUF grande demais"))?,
+            path: part_path,
+            bytes,
+            tensor_count: part_info.tensor_count,
+        });
+    }
+    let source_bytes = parts.iter().try_fold(0u64, |total, part| {
+        total
+            .checked_add(part.bytes)
+            .ok_or_else(|| anyhow::anyhow!("tamanho total do GGUF multipart excede u64"))
+    })?;
+    Ok(CatalogMetadata {
+        multipart: true,
+        parts,
+        source_bytes,
+    })
+}
+
 impl GgufSource {
     pub fn open(path: &Path) -> Result<Self> {
         let first = map_part(path)?;
@@ -444,11 +570,8 @@ impl GgufSource {
 }
 
 pub fn declared_split_count(path: &Path) -> Result<Option<u32>> {
-    let part = map_part(path)?;
-    let header = parse_header(part.map())?;
-    header
-        .fields
-        .count
+    crate::gguf::read_info(path)?
+        .split_count
         .map(|count| {
             u32::try_from(count)
                 .map_err(|_| anyhow::anyhow!("split.count GGUF grande demais: {count}"))
@@ -552,6 +675,36 @@ mod tests {
         assert_eq!(source.tensors()[0].byte_size, 16);
         assert_eq!(
             source.source_bytes(),
+            (first_bytes.len() + second_bytes.len()) as u64
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn catalog_metadata_reads_headers_without_opening_tensor_source() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!("pom-multipart-catalog-{nonce}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let first = dir.join("model-00001-of-00002.gguf");
+        let second = dir.join("model-00002-of-00002.gguf");
+        let first_bytes = header(0, 1, &[]);
+        std::fs::write(&first, &first_bytes).unwrap();
+        let mut second_bytes = header(1, 1, &[("blk.0.weight", 0)]);
+        second_bytes.extend_from_slice(&[7u8; 16]);
+        std::fs::write(&second, &second_bytes).unwrap();
+
+        let info = crate::gguf::read_info(&first).unwrap();
+        let metadata = catalog_metadata(&first, &info).unwrap();
+        assert!(metadata.multipart);
+        assert_eq!(metadata.parts.len(), 2);
+        assert_eq!(metadata.parts[0].tensor_count, 0);
+        assert_eq!(metadata.parts[1].tensor_count, 1);
+        assert_eq!(
+            metadata.source_bytes,
             (first_bytes.len() + second_bytes.len()) as u64
         );
 

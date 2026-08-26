@@ -543,8 +543,11 @@ impressão digital é só modelo + conjunto de faixas.
   modelo ainda em enriquecimento, peer silencioso ou peer antigo sem
   `metadata_complete` não bloqueia. Quando a própria seleção ainda não pode
   ser resolvida, o plano devolve um único `blocked` que nomeia a faixa ou o
-  modelo pendente. O enriquecimento registra início e conclusão e permite nova
-  tentativa após falha, sem transformar o inventário parcial em completo.
+  modelo pendente. O enriquecimento registra início e conclusão; um erro
+  terminal fica em `metadata_error` no modelo e não impede os demais, enquanto
+  `metadata_complete` vira `true` ao terminar a passagem. A resposta publicada
+  é reaproveitada pelas requisições; nova tentativa só ocorre em refresh por
+  TTL ou invalidação.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os

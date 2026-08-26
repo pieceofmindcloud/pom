@@ -236,10 +236,12 @@ behind an auth extractor.
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
   stale-while-revalidate). A primeira resposta do catálogo publica o inventário
   rápido de arquivos e `metadata_complete: false`; os cabeçalhos GGUF são lidos
-  em uma tarefa `spawn_blocking` e publicados somente se as pastas e o inventário
-  continuarem atuais. O enriquecimento registra início e conclusão; uma falha
-  mantém o item pendente e libera o estado para nova tentativa, sem publicar o
-  inventário parcial como completo. O survey de implantação só recusa uma
+  em uma tarefa `spawn_blocking` e publicados quando a geração do inventário
+  continua atual. O enriquecimento registra início e conclusão; uma falha
+  terminal marca `metadata_error` no item e não impede os demais, então a
+  passagem termina com `metadata_complete: true`. O resultado publicado é
+  reutilizado nas requisições da interface; nova leitura só ocorre em refresh
+  por TTL ou invalidação. O survey de implantação só recusa uma
   seleção que ainda não tem suas faixas resolvidas; em TP ele verifica cada
   rank selecionado. Enriquecimento de outro modelo, peer silencioso ou campo
   ausente em peer antigo não bloqueia. `merge_parts`

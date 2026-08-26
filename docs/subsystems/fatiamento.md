@@ -48,7 +48,11 @@ cortadas antes disso precisam ser refatiadas.
 por trás: `local_catalog` usa `CATALOG_TTL = 20 s` com stale-while-revalidate, e
 `warm_catalog` roda no arranque para um volume lento não segurar a porta do
 gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
-0,18 s com o aquecimento).
+0,18 s com o aquecimento). A primeira fase enumera e faz `stat`; a segunda lê
+somente os cabeçalhos necessários. Um erro terminal fica em `metadata_error` no
+modelo, sem impedir os demais, e a passagem publica `metadata_complete: true`.
+O resultado é reaproveitado nas requisições da interface; somente TTL ou
+invalidação cria uma nova geração.
 
 ## 2. Leitura do GGUF: cabeçalho e tensor table
 
@@ -59,7 +63,8 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
   (`attention.head_count_kv`, `key_length` e `value_length`). Cada item pode
   ser escalar ou array por camada. Quem decide se um arquivo é fatia é
   `catalog::InstalledModel::is_shard`; a cópia que existia em `GgufInfo` não
-  tinha chamador e saiu.
+  tinha chamador e saiu. O catálogo também lê os campos de multipart nesse
+  header, sem mapear nem validar o payload dos tensores.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
@@ -95,11 +100,13 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 ## 2.1 GGUF multipart
 
 `multipart.rs` trata um GGUF simples como um conjunto de uma parte e um GGUF
-com `split.count > 1` como uma fonte lógica. Ao abrir a primeira parte, valida
-`split.no`, `split.count` e `split.tensors.count`, reconstrói os caminhos
-`N-of-M.gguf` e mapeia os cabeçalhos de todas as partes com `mmap`. A tabela
-unificada guarda, para cada tensor, o índice da parte, o offset relativo à
-seção de dados e o tamanho calculado pela diferença entre offsets.
+com `split.count > 1` como uma fonte lógica. O catálogo valida `split.no`,
+`split.count` e `split.tensors.count`, reconstrói os caminhos `N-of-M.gguf` e
+lê somente o cabeçalho e o tamanho de cada parte. O caminho completo de
+`GgufSource` é reservado para layout e fatiamento: nele os cabeçalhos e tabelas
+de tensores são mapeados com `mmap`. A tabela unificada guarda, para cada tensor,
+o índice da parte, o offset relativo à seção de dados e o tamanho calculado pela
+diferença entre offsets.
 
 Nenhum peso é remontado em arquivo temporário: o fatiador escolhe os tensores
 pela faixa e copia cada um diretamente do mmap da parte que o contém. A mesma
@@ -112,6 +119,8 @@ publica o tamanho físico somado e a lista ordenada de partes. Se uma parte
 estiver ausente ou os campos declarados não fecharem, o modelo fica visível com
 o motivo concreto, sem byte count falso e sem plano de fatiamento. O hash usado
 para identidade de um modelo fonte é o SHA-256 da sequência ordenada de partes.
+Esse hash é calculado somente na fronteira de fatiamento ou transferência, nunca
+na resposta inicial do catálogo.
 Transferências continuam sendo operações de arquivos POM individuais. O
 endpoint de envio recusa uma fonte inteira que declara multipart, com a
 orientação de manter o conjunto completo ou gerar fatias POM; a transferência

@@ -307,8 +307,6 @@ struct CachedCatalog {
     catalog: Arc<Catalog>,
     /// A refresh is already running; a second one would only duplicate the work.
     refreshing: bool,
-    /// Header enrichment is running behind the fast inventory.
-    enriching: bool,
 }
 
 fn catalog_cache() -> &'static Mutex<Option<CachedCatalog>> {
@@ -340,7 +338,14 @@ async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
         Ok(catalog) => Arc::new(catalog),
         Err(e) => {
             warn!("enriquecimento do catálogo falhou: {e}");
-            fallback
+            let mut catalog = (*fallback).clone();
+            catalog.metadata_complete = true;
+            for model in &mut catalog.models {
+                model.metadata_error = Some(format!(
+                    "a tarefa de enriquecimento do catálogo falhou: {e}"
+                ));
+            }
+            Arc::new(catalog)
         }
     }
 }
@@ -362,20 +367,17 @@ fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
         if current.roots != roots || !Arc::ptr_eq(&current.catalog, &partial) {
             return;
         }
-        if !enriched.metadata_complete {
-            current.enriching = false;
-            warn!(
-                "enriquecimento do catálogo terminou sem publicar metadata_complete após {:.1}s",
-                started.elapsed().as_secs_f32()
-            );
-            return;
-        }
+        let failed = enriched
+            .models
+            .iter()
+            .filter(|model| model.metadata_error.is_some())
+            .count();
         current.catalog = enriched;
-        current.enriching = false;
         info!(
-            "metadados do catálogo prontos em {:.1}s - {} modelos",
+            "metadados do catálogo prontos em {:.1}s - {} modelos, {} falhas",
             started.elapsed().as_secs_f32(),
-            current.catalog.models.len()
+            current.catalog.models.len(),
+            failed
         );
     });
 }
@@ -395,7 +397,6 @@ fn spawn_refresh(roots: CatalogRoots) {
             roots: roots.clone(),
             catalog: catalog.clone(),
             refreshing: false,
-            enriching: true,
         });
         drop(guard);
         spawn_enrichment(roots, catalog);
@@ -435,10 +436,6 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
         let mut guard = catalog_cache().lock().await;
         if let Some(c) = guard.as_mut() {
             if c.roots == roots {
-                if !c.catalog.metadata_complete && !c.enriching {
-                    c.enriching = true;
-                    spawn_enrichment(roots.clone(), c.catalog.clone());
-                }
                 let stale = c.at.elapsed() >= CATALOG_TTL;
                 if stale && !c.refreshing {
                     c.refreshing = true;
@@ -455,7 +452,6 @@ async fn local_catalog(state: &GatewayState) -> Arc<Catalog> {
         roots: roots.clone(),
         catalog: catalog.clone(),
         refreshing: false,
-        enriching: true,
     });
     spawn_enrichment(roots, catalog.clone());
     catalog

@@ -16,7 +16,7 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
 import { Field, Input } from "./ui";
-import type { RuntimeParams } from "../lib/types";
+import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
 type Knob = {
@@ -78,10 +78,12 @@ export function Tick({
   on,
   label,
   onToggle,
+  disabled = false,
 }: {
   on: boolean;
   label: string;
   onToggle: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -89,6 +91,7 @@ export function Tick({
       role="checkbox"
       aria-checked={on}
       aria-label={label}
+      disabled={disabled}
       onClick={onToggle}
       className={`flex h-[18px] w-[18px] items-center justify-center rounded-[5px] border transition-colors duration-150 ${
         on
@@ -118,7 +121,7 @@ export function Switch({
     <div className={`flex items-start gap-2.5 ${disabled ? "opacity-55" : ""}`}>
       <span className="mt-0.5">
         {disabled ? (
-          <Tick on={false} label={label} onToggle={() => {}} />
+          <Tick on={false} label={label} onToggle={() => {}} disabled />
         ) : (
           <Tick on={checked} label={label} onToggle={() => onChange(!checked)} />
         )}
@@ -133,6 +136,45 @@ export function Switch({
   );
 }
 
+/** Renderiza uma opção somente depois que o backend provou sua capacidade. */
+export function CapabilitySwitch({
+  capability,
+  alwaysVisible = false,
+  ...props
+}: {
+  capability?: RuntimeCapability;
+  alwaysVisible?: boolean;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  label: string;
+  hint?: string;
+  disabled?: boolean;
+}) {
+  if (capability?.state === "unsupported" && !alwaysVisible) return null;
+  const unknown = capability?.state === "unknown";
+  const topologyWarning = capability?.reason.startsWith("controle visível");
+  const warning = capability?.warning;
+  const alertLead = unknown
+    ? "Capacidade não confirmada. Ligar é por conta e risco do usuário."
+    : topologyWarning
+      ? "A topologia limita esta opção; o controle continua acionável."
+      : "Capacidade limitada no runtime; o controle continua acionável.";
+  return (
+    <div className="space-y-1.5">
+      <Switch
+        {...props}
+        disabled={props.disabled}
+        hint={props.hint}
+      />
+      {(unknown || topologyWarning || warning) && capability && (
+        <p role="alert" className="rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-xs leading-relaxed text-amber">
+          {alertLead} Fonte: {capability.source}. {capability.reason}{warning ? ` ${warning}` : ""}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function RuntimeParamsForm({
   value,
   onChange,
@@ -143,11 +185,13 @@ export function RuntimeParamsForm({
    * um interruptor que não faz nada é pior que mostrar um desabilitado.
    */
   isTp = false,
+  capabilities,
 }: {
   value: RuntimeParams;
   onChange: (next: RuntimeParams) => void;
   disabled?: boolean;
   isTp?: boolean;
+  capabilities?: DeploymentCapabilities;
 }) {
   const { t } = useI18n();
   const [drafts, setDrafts] = useState<Record<string, string>>({});
@@ -194,35 +238,41 @@ export function RuntimeParamsForm({
       {/* `offload_kqv` não está aqui: ele é propriedade da memória de uma
           máquina, não do pipeline, e por isso vive na tabela de máquinas. */}
       <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
-        <Switch
+        <CapabilitySwitch
+          capability={capabilities?.fit_memory}
           checked={!isTp && (value.fit_memory ?? true)}
           onChange={(v) => onChange({ ...value, fit_memory: v })}
           disabled={disabled || isTp}
           label={t("deploy.fitMemory")}
           hint={t(isTp ? "deploy.fitMemoryTpHint" : "deploy.fitMemoryHint")}
         />
-        <Switch
+        <CapabilitySwitch
+          capability={capabilities?.no_thinking}
           checked={value.no_thinking ?? true}
           onChange={(v) => onChange({ ...value, no_thinking: v })}
           disabled={disabled}
           label={t("deploy.noThinking")}
           hint={t("deploy.noThinkingHint")}
         />
-        <Switch
+        <CapabilitySwitch
+          capability={capabilities?.no_embeddings}
+          alwaysVisible
           checked={value.no_embeddings ?? false}
           onChange={(v) => onChange({ ...value, no_embeddings: v })}
           disabled={disabled}
           label={t("deploy.noEmbeddings")}
           hint={t("deploy.noEmbeddingsHint")}
         />
-        <Switch
+        <CapabilitySwitch
+          capability={capabilities?.speculative_decoding}
           checked={value.speculative_decoding_enabled ?? false}
           onChange={(v) => onChange({ ...value, speculative_decoding_enabled: v })}
           disabled={disabled}
           label={t("deploy.speculative")}
           hint={t("deploy.speculativeHint")}
         />
-        <Switch
+        <CapabilitySwitch
+          capability={capabilities?.mtp}
           checked={value.mtp_enabled ?? false}
           onChange={(v) =>
             onChange({
@@ -237,13 +287,15 @@ export function RuntimeParamsForm({
         />
       </div>
 
-      {(value.speculative_decoding_enabled ?? false) && (
+      {(value.speculative_decoding_enabled ?? false) &&
+        capabilities?.speculative_decoding?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {SPECULATIVE_KNOBS.map((k) => numeric(k, true))}
         </div>
       )}
 
-      {(value.mtp_enabled ?? false) && (
+      {(value.mtp_enabled ?? false) &&
+        capabilities?.mtp?.state !== "unsupported" && (
         <div className="grid gap-4 border-t border-line pt-4 sm:grid-cols-2 xl:grid-cols-1">
           {MTP_KNOBS.map((k) => numeric(k, true))}
         </div>

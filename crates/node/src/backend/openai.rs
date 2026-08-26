@@ -2,7 +2,7 @@
 //!
 //! A protocol adapter, nothing more: it renders chat messages into the single
 //! prompt string the pipeline already accepts, calls
-//! [`crate::gateway::generate_stream`], and dresses the resulting tokens as
+//! [`crate::gateway::generate_stream_with_stops`], and dresses the resulting tokens as
 //! OpenAI responses. No inference behaviour is changed or duplicated here.
 //!
 //! Every node serves these routes, so any peer address works as an OpenAI base
@@ -12,7 +12,7 @@
 //! `POST /v1/chat/completions` (with `stream: true` SSE), `POST /v1/completions`.
 
 use crate::auth::ApiKeyAuth;
-use crate::gateway::{GatewayState, GenEvent};
+use crate::gateway::{GatewayState, GenEvent, GenerationInput, StopInput};
 use crate::tool_call::{
     parse_output, render_tool_call, render_tools_block, OutputPart, ScanEvent, TagScanner, ToolDef,
 };
@@ -187,6 +187,8 @@ pub struct ChatRequest {
     pub max_completion_tokens: Option<u32>,
     #[serde(default)]
     pub tools: Vec<ChatToolDef>,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
 }
 
 /// OpenAI wraps each tool in `{"type":"function","function":{...}}`, unlike
@@ -227,6 +229,8 @@ pub struct CompletionRequest {
     pub stream: bool,
     #[serde(default)]
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub stop: Option<StopInput>,
 }
 
 impl ChatRequest {
@@ -240,6 +244,38 @@ impl ChatRequest {
 
 // ── Prompt rendering ─────────────────────────────────────────────────────────
 
+/// Chave do cache de prefixo para uma conversa: o array de mensagens, não o
+/// texto renderizado.
+///
+/// O cache reconhece a continuação de uma conversa por prefixo textual
+/// (`PrefixCache::acquire` usa `starts_with`). O texto renderizado é frágil
+/// demais para esse papel: um `timestamp` no system, uma troca de template ou
+/// um rótulo novo movem o começo do prompt e derrubam o prefixo inteiro,
+/// mesmo quando a conversa só cresceu. O array de mensagens não move.
+///
+/// Esta chave só cresce: turno seguinte é a chave anterior mais os segmentos
+/// novos. As ferramentas vão na frente de propósito - trocar a lista de
+/// ferramentas muda o prompt inteiro e o prefixo tem mesmo que ser descartado.
+/// Os separadores são caracteres de controle (U+001E, U+001F) para que nenhum
+/// conteúdo de mensagem consiga forjar uma fronteira de segmento.
+pub fn conversation_cache_key(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
+    let mut key = String::new();
+    for tool in tools {
+        key.push_str("tool\u{1f}");
+        key.push_str(&tool.name);
+        key.push('\u{1f}');
+        key.push_str(&tool.input_schema.to_string());
+        key.push('\u{1e}');
+    }
+    for message in messages.iter().filter(|m| !m.is_empty()) {
+        key.push_str(&message.role);
+        key.push('\u{1f}');
+        key.push_str(&message.rendered_body());
+        key.push('\u{1e}');
+    }
+    key
+}
+
 /// Flatten a conversation (plus any declared tools) into the single prompt
 /// string the pipeline takes.
 ///
@@ -247,20 +283,21 @@ impl ChatRequest {
 /// emitting a second one here would nest one inside the other. Instead the
 /// turns are labelled in plain text and handed over as one user message.
 ///
-/// A lone user message with no tools passes through untouched, so a simple
-/// client behaves exactly like `POST /api/generate` does today.
+/// **Todo turno é rotulado, inclusive o primeiro.** Uma mensagem de usuário
+/// solitária já passou crua por aqui, e a partir da segunda entrava o rótulo:
+/// `"q1"` virava `"User: q1\n\nAssistant: …"`, de modo que o prompt do turno 1
+/// não era prefixo do prompt do turno 2 e o KV do turno anterior não servia
+/// para nada. A transição 1→2, o primeiro momento em que um chat poderia
+/// economizar, era a única que **nunca** podia acertar. Rotular sempre torna o
+/// prompt de um turno prefixo exato do prompt do seguinte, que é a propriedade
+/// sobre a qual o reuso inteiro se apoia (ver `crate::prefix_cache`).
+///
+/// Cliente que queira o texto cru, sem rótulo nenhum, tem `/v1/completions` e
+/// `POST /api/generate`, que passam o prompt adiante intocado.
 pub fn render_prompt(messages: &[ChatMessage], tools: &[ToolDef]) -> String {
     let non_empty: Vec<&ChatMessage> = messages.iter().filter(|m| !m.is_empty()).collect();
 
     let tools_block = render_tools_block(tools);
-
-    if tools_block.is_empty() {
-        if let [only] = non_empty.as_slice() {
-            if only.role == "user" {
-                return only.content.as_text();
-            }
-        }
-    }
 
     let mut system: Vec<String> = Vec::new();
     let mut turns: Vec<String> = Vec::new();
@@ -404,12 +441,16 @@ async fn chat_completions(
         _ => state.active_model().await,
     };
     let max_tokens = req.max_tokens();
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let tools: Vec<ToolDef> = req
         .tools
         .into_iter()
         .map(ChatToolDef::into_tool_def)
         .collect();
     let prompt = render_prompt(&req.messages, &tools);
+    // Chaveia o cache de prefixo pelas mensagens, não pelo texto renderizado -
+    // ver `conversation_cache_key`.
+    let cache_key = conversation_cache_key(&req.messages, &tools);
     let prompt_tokens = approx_tokens(&prompt);
 
     if let Some(cfg) = state.runtime.config().await {
@@ -440,6 +481,8 @@ async fn chat_completions(
             id,
             created,
             Mode::Chat,
+            stops,
+            Some(cache_key),
         )
     } else {
         blocking_response(
@@ -453,6 +496,8 @@ async fn chat_completions(
             created,
             prompt_tokens,
             Mode::Chat,
+            stops,
+            Some(cache_key),
         )
         .await
     }
@@ -471,6 +516,7 @@ async fn completions(
         .max_tokens
         .unwrap_or(DEFAULT_MAX_TOKENS)
         .clamp(1, HARD_MAX_TOKENS);
+    let stops = req.stop.map(StopInput::into_vec).unwrap_or_default();
     let prompt_tokens = approx_tokens(&req.prompt);
     let id = format!("cmpl-{}", uuid::Uuid::new_v4().simple());
     let created = chrono::Utc::now().timestamp();
@@ -486,6 +532,9 @@ async fn completions(
             id,
             created,
             Mode::Completion,
+            stops,
+            // Completion crua não tem conversa: o prefixo é o próprio texto.
+            None,
         )
     } else {
         blocking_response(
@@ -499,6 +548,8 @@ async fn completions(
             created,
             prompt_tokens,
             Mode::Completion,
+            stops,
+            None,
         )
         .await
     }
@@ -556,15 +607,21 @@ async fn blocking_response(
     created: i64,
     prompt_tokens: u32,
     mode: Mode,
+    stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
-    match crate::gateway::generate_blocking(
-        state,
+    match crate::gateway::generate_blocking_with_stops(
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+            cache_key,
+        },
     )
     .await
     {
@@ -598,6 +655,17 @@ async fn blocking_response(
                         "prompt_tokens": prompt_tokens,
                         "completion_tokens": summary.tokens_generated,
                         "total_tokens": prompt_tokens + summary.tokens_generated,
+                        // Quantos tokens do prompt o pipeline **não**
+                        // reprocessou, medido no lado que executa. Mesmo nome e
+                        // lugar que a OpenAI usa, para o cliente ler sem
+                        // adaptação. Ver `RequestTrace::cached_tokens`.
+                        "prompt_tokens_details": {
+                            "cached_tokens": summary
+                                .trace
+                                .as_ref()
+                                .map(|trace| trace.cached_tokens)
+                                .unwrap_or(0),
+                        },
                     },
                     // Not part of the OpenAI schema; kept so the hop chain that
                     // proves distributed execution stays visible to clients.
@@ -606,6 +674,8 @@ async fn blocking_response(
                         "tokens_per_sec": summary.tokens_per_sec,
                         "duration_ms": summary.duration_ms,
                         "partial": summary.partial,
+                        "finish_reason": summary.finish_reason,
+                        "stop_sequence": summary.stop_sequence,
                         "trace": summary.trace,
                     },
                 })),
@@ -623,6 +693,8 @@ fn finish_reason(
 ) -> &'static str {
     if saw_tool_call {
         "tool_calls"
+    } else if summary.finish_reason.as_deref() == Some("stop") {
+        "stop"
     } else if summary.tokens_generated >= max_tokens {
         "length"
     } else {
@@ -677,16 +749,22 @@ fn stream_response(
     id: String,
     created: i64,
     mode: Mode,
+    stops: Vec<String>,
+    cache_key: Option<String>,
 ) -> Response {
     let (tx, rx) = mpsc::channel::<GenEvent>(64);
-    crate::gateway::spawn_logged_generation(
-        state,
+    crate::gateway::spawn_logged_generation_with_stops(
         route,
         caller,
-        model.clone(),
-        prompt,
-        mode.applies_chat_template(),
-        max_tokens,
+        GenerationInput {
+            state,
+            model: model.clone(),
+            prompt,
+            chat_template: mode.applies_chat_template(),
+            max_tokens,
+            stops,
+            cache_key,
+        },
         tx,
     );
 
@@ -940,6 +1018,8 @@ fn chunk_json(
             "tokens_generated": summary.tokens_generated,
             "duration_ms": summary.duration_ms,
             "partial": summary.partial,
+            "finish_reason": summary.finish_reason,
+            "stop_sequence": summary.stop_sequence,
             "trace": summary.trace,
         });
     }
@@ -1097,6 +1177,7 @@ mod tests {
                 max_tokens: Some(1),
                 max_completion_tokens: None,
                 tools: Vec::new(),
+                stop: None,
             }),
         )
         .await;
@@ -1107,8 +1188,286 @@ mod tests {
             .unwrap()
             .clone()
             .expect("the chat request reached the inference head");
-        assert_eq!(meta["prompt"], "Oi, teste");
+        assert_eq!(meta["prompt"], "User: Oi, teste");
         assert_eq!(meta["chat_template"], true);
+    }
+
+    /// O que o cliente lê como economia é o que o pipeline **executou**. A
+    /// cabeça informa `cached_tokens` no pedaço 0 e o número atravessa
+    /// `PrefillOutcome` → `RequestTrace` → `usage`. Antes disto o cliente não
+    /// tinha como saber que o acerto de cache não estava economizando nada.
+    #[tokio::test]
+    async fn usage_reports_the_prefix_tokens_the_pipeline_actually_reused() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"status": "ok", "model_loaded": true}))
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                axum::routing::post(|_body: axum::body::Bytes| async move {
+                    let response = json!({
+                        "done": true,
+                        "more_chunks": false,
+                        "n_prompt_tokens": 40,
+                        "reuse_prefix": true,
+                        "cached_tokens": 33,
+                        "start_pos": 0,
+                        "next_pos": 40,
+                        "stable_len": 40,
+                        "token_id": 1,
+                        "text": "ok"
+                    });
+                    let bytes = crate::wire::encode_batch_single(
+                        &response,
+                        None,
+                        crate::wire::WireDtype::F16,
+                    )
+                    .unwrap();
+                    (
+                        StatusCode::OK,
+                        [("content-type", "application/octet-stream")],
+                        bytes,
+                    )
+                        .into_response()
+                }),
+            )
+            .route(
+                "/v1/session/rewind",
+                axum::routing::post(|| async {
+                    axum::Json(json!({"rewound": true, "n_past": 40}))
+                }),
+            )
+            .route(
+                "/v1/session/release",
+                axum::routing::post(|| async { StatusCode::OK }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut peer = crate::gateway::testkit::peer("head", "head", 8080);
+        peer.model = "lab".into();
+        peer.start_layer = 0;
+        peer.end_layer = 0;
+        peer.total_layers = 1;
+        peer.inference_port = Some(port);
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let response = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("lab".into()),
+                messages: vec![msg("user", "Oi, teste")],
+                stream: false,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+                stop: None,
+            }),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = crate::gateway::testkit::body_of(response).await;
+        assert_eq!(body["usage"]["prompt_tokens_details"]["cached_tokens"], 33);
+        assert_eq!(body["x_pom"]["trace"]["cached_tokens"], 33);
+        assert_eq!(body["x_pom"]["trace"]["input_tokens"], 40);
+    }
+
+    /// A resposta do primeiro chunk pode terminar no token 42 mesmo quando o
+    /// wire usa chunks de 512. O gateway não pode transformar a ausência de
+    /// `next_pos` em `chunk_index * 512`: antes da correção isso despachava o
+    /// chunk 1 na posição 512, o peer respondia 400 e o SSE expunha
+    /// `server_error` antes de concluir o fallback frio.
+    #[tokio::test]
+    async fn streaming_chat_falls_back_without_sending_a_chunk_index_position() {
+        let frames = std::sync::Arc::new(std::sync::Mutex::new(Vec::<serde_json::Value>::new()));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let app = axum::Router::new()
+            .route(
+                "/health",
+                axum::routing::get(|| async {
+                    axum::Json(json!({"status": "ok", "model_loaded": true}))
+                }),
+            )
+            .route(
+                "/v1/prefill",
+                axum::routing::post({
+                    let frames = frames.clone();
+                    move |body: axum::body::Bytes| {
+                        let frames = frames.clone();
+                        async move {
+                            let (meta, _) = crate::wire::decode_inference_request(&body).unwrap();
+                            frames.lock().unwrap().push(meta.clone());
+                            let chunk_index = meta["chunk_index"].as_u64().unwrap_or(0);
+                            let reuse = meta["reuse_prefix"].as_bool().unwrap_or(false);
+
+                            // Reproduce the captain's peer: the cached first
+                            // chunk confirms session position 42 but omits
+                            // next_pos. The old gateway invented 512 and
+                            // reached this explicit rejection on chunk 1.
+                            if reuse && chunk_index == 0 {
+                                let response = json!({
+                                    "done": false,
+                                    "more_chunks": true,
+                                    "n_prompt_tokens": 600,
+                                    "reuse_prefix": true,
+                                    "cached_tokens": 42,
+                                    "start_pos": 42,
+                                });
+                                let bytes = crate::wire::encode_batch_single(
+                                    &response,
+                                    None,
+                                    crate::wire::WireDtype::F16,
+                                )
+                                .unwrap();
+                                return (
+                                    StatusCode::OK,
+                                    [("content-type", "application/octet-stream")],
+                                    bytes,
+                                )
+                                    .into_response();
+                            }
+                            if chunk_index == 1 && meta["start_pos"] == 512 {
+                                return (
+                                    StatusCode::BAD_REQUEST,
+                                    "chunk fora de ordem: recebi 1 (pos 512) mas a sessão está em 42",
+                                )
+                                    .into_response();
+                            }
+
+                            let response = json!({
+                                "done": true,
+                                "more_chunks": false,
+                                "n_prompt_tokens": 42,
+                                "reuse_prefix": false,
+                                "cached_tokens": 0,
+                                "start_pos": 0,
+                                "next_pos": 42,
+                                "stable_len": 42,
+                                "token_id": 1,
+                                "text": "ok"
+                            });
+                            let bytes = crate::wire::encode_batch_single(
+                                &response,
+                                None,
+                                crate::wire::WireDtype::F16,
+                            )
+                            .unwrap();
+                            (
+                                StatusCode::OK,
+                                [("content-type", "application/octet-stream")],
+                                bytes,
+                            )
+                                .into_response()
+                        }
+                    }
+                }),
+            )
+            .route(
+                "/v1/session/rewind",
+                axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    axum::Json(json!({
+                        "rewound": true,
+                        "n_past": body["n_tokens"].clone(),
+                    }))
+                }),
+            )
+            .route(
+                "/v1/session/release",
+                axum::routing::post(|| async { StatusCode::OK }),
+            );
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+
+        let mut peer = crate::gateway::testkit::peer("whole", "whole", 8080);
+        peer.model = "whole-model".into();
+        peer.start_layer = 0;
+        peer.end_layer = 0;
+        peer.total_layers = 1;
+        peer.inference_port = Some(port);
+        let state = crate::gateway::testkit::state_with("eu", vec![peer]).await;
+        state
+            .runtime
+            .seed_config_for_test(crate::gateway::testkit::spec_config())
+            .await;
+
+        let stream_body = |response: Response| async move {
+            String::from_utf8(
+                axum::body::to_bytes(response.into_body(), 1 << 20)
+                    .await
+                    .unwrap()
+                    .to_vec(),
+            )
+            .unwrap()
+        };
+        let first = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state.clone()),
+            Json(ChatRequest {
+                model: Some("whole-model".into()),
+                messages: vec![msg("user", "primeiro")],
+                stream: true,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+                stop: None,
+            }),
+        )
+        .await;
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_body = stream_body(first).await;
+        assert!(first_body.contains("[DONE]"));
+        assert!(!first_body.contains("server_error"));
+
+        let second = chat_completions(
+            ApiKeyAuth(crate::reqlog::Caller::anonymous()),
+            State(state),
+            Json(ChatRequest {
+                model: Some("whole-model".into()),
+                messages: vec![
+                    msg("user", "primeiro"),
+                    msg("assistant", "ok"),
+                    msg("user", "segundo"),
+                ],
+                stream: true,
+                max_tokens: Some(1),
+                max_completion_tokens: None,
+                tools: Vec::new(),
+                stop: None,
+            }),
+        )
+        .await;
+        assert_eq!(second.status(), StatusCode::OK);
+        let second_body = stream_body(second).await;
+        assert!(second_body.contains("\"content\":\"\""));
+        assert!(second_body.contains("[DONE]"));
+        assert!(!second_body.contains("server_error"), "{second_body}");
+
+        let frames = frames.lock().unwrap();
+        assert!(frames
+            .iter()
+            .any(|meta| meta["chunk_index"] == 0 && meta["reuse_prefix"] == true));
+        assert!(frames
+            .iter()
+            .any(|meta| { meta["chunk_index"] == 0 && meta["reuse_prefix"] == false }));
+        assert!(
+            !frames
+                .iter()
+                .any(|meta| { meta["chunk_index"] == 1 && meta["start_pos"] == 512 }),
+            "posição derivada do índice enviada ao peer: {frames:?}"
+        );
     }
 
     #[tokio::test]
@@ -1132,6 +1491,7 @@ mod tests {
                 max_tokens: Some(32_000),
                 max_completion_tokens: None,
                 tools: Vec::new(),
+                stop: None,
             }),
         )
         .await;
@@ -1140,12 +1500,64 @@ mod tests {
     }
 
     #[test]
-    fn single_user_message_passes_through_unchanged() {
-        // Must stay byte-identical to what /api/generate would receive, so the
-        // simple path behaves the same in both APIs.
+    fn single_user_message_is_labelled_like_every_other_turn() {
+        // O rótulo vale desde o primeiro turno: é ele que faz o prompt de um
+        // turno ser prefixo exato do prompt do seguinte. Ver `render_prompt`.
         assert_eq!(
             render_prompt(&[msg("user", "O que e inferencia distribuida?")], &[]),
-            "O que e inferencia distribuida?"
+            "User: O que e inferencia distribuida?"
+        );
+    }
+
+    /// A propriedade de que o reuso de prefixo depende, afirmada diretamente:
+    /// acrescentar mensagens só acrescenta texto no fim.
+    #[test]
+    fn every_extra_turn_only_appends_to_the_previous_prompt() {
+        let turno1 = vec![msg("user", "1+1?")];
+        let turno2 = vec![
+            msg("user", "1+1?"),
+            msg("assistant", "2"),
+            msg("user", "e 2+2?"),
+        ];
+        let turno3 = {
+            let mut m = turno2.clone();
+            m.push(msg("assistant", "4"));
+            m.push(msg("user", "e 3+3?"));
+            m
+        };
+
+        let p1 = render_prompt(&turno1, &[]);
+        let p2 = render_prompt(&turno2, &[]);
+        let p3 = render_prompt(&turno3, &[]);
+
+        assert!(
+            p2.starts_with(&p1),
+            "turno 2 não continua o turno 1:\n{p1}\n---\n{p2}"
+        );
+        assert!(p3.starts_with(&p2), "turno 3 não continua o turno 2");
+        // E a chave do cache acompanha, que é o que `PrefixCache` consulta.
+        let k1 = conversation_cache_key(&turno1, &[]);
+        let k2 = conversation_cache_key(&turno2, &[]);
+        let k3 = conversation_cache_key(&turno3, &[]);
+        assert!(k2.starts_with(&k1));
+        assert!(k3.starts_with(&k2));
+    }
+
+    /// Trocar a lista de ferramentas move o começo do prompt, e o prefixo
+    /// **tem** que ser descartado - a chave precisa refletir isso.
+    #[test]
+    fn changing_the_tool_list_breaks_the_cache_key_on_purpose() {
+        let messages = vec![msg("user", "oi")];
+        let ferramenta = ToolDef {
+            name: "buscar".into(),
+            description: None,
+            input_schema: json!({"type": "object"}),
+        };
+        let sem = conversation_cache_key(&messages, &[]);
+        let com = conversation_cache_key(&messages, std::slice::from_ref(&ferramenta));
+        assert!(
+            !com.starts_with(&sem),
+            "a chave com ferramenta não pode continuar a sem"
         );
     }
 
@@ -1177,7 +1589,7 @@ mod tests {
     #[test]
     fn empty_messages_are_dropped() {
         let out = render_prompt(&[msg("system", "   "), msg("user", "oi")], &[]);
-        assert_eq!(out, "oi");
+        assert_eq!(out, "User: oi");
     }
 
     #[test]
@@ -1194,14 +1606,14 @@ mod tests {
             ]),
             tool_calls: None,
         };
-        assert_eq!(render_prompt(&[m], &[]), "linha 1\nlinha 2");
+        assert_eq!(render_prompt(&[m], &[]), "User: linha 1\nlinha 2");
     }
 
     #[test]
     fn parses_array_content_from_real_clients() {
         let raw = r#"{"messages":[{"role":"user","content":[{"type":"text","text":"oi"}]}]}"#;
         let req: ChatRequest = serde_json::from_str(raw).unwrap();
-        assert_eq!(render_prompt(&req.messages, &[]), "oi");
+        assert_eq!(render_prompt(&req.messages, &[]), "User: oi");
         assert!(!req.stream);
     }
 
@@ -1210,7 +1622,7 @@ mod tests {
         let raw =
             r#"{"messages":[{"role":"assistant","content":null},{"role":"user","content":"oi"}]}"#;
         let req: ChatRequest = serde_json::from_str(raw).unwrap();
-        assert_eq!(render_prompt(&req.messages, &[]), "oi");
+        assert_eq!(render_prompt(&req.messages, &[]), "User: oi");
     }
 
     /// Mirrors `chat_completions`'s own unwrap-the-wire-shape step.
@@ -1311,6 +1723,8 @@ mod tests {
             tokens_per_sec: 1.0,
             duration_ms: 10,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: None,
         };
         assert_eq!(finish_reason(&summary(5), 100, false), "stop");
@@ -1451,6 +1865,8 @@ mod tests {
             tokens_per_sec: 4.5,
             duration_ms: 2666,
             partial: false,
+            finish_reason: None,
+            stop_sequence: None,
             trace: Some(crate::prefill::RequestTrace::new(
                 "qwen35",
                 &[("no1", 0, 15)],

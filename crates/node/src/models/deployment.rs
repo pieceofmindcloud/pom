@@ -80,6 +80,16 @@ pub enum DeploymentKind {
 }
 
 /// Que modelo esta implantação serve.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DeploymentIdentity {
+    /// Hash do GGUF inteiro, calculado no arquivo escolhido pelo operador.
+    Sha256 { sha256: String },
+    /// Identidade do manifesto que produziu as fatias.
+    PomId { pom_id: String },
+}
+
+/// Que modelo esta implantação serve.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DeploymentModel {
     /// O rótulo que o operador vê e que as requisições nomeiam.
@@ -89,6 +99,11 @@ pub struct DeploymentModel {
     /// implantação ao artefato exato que ela está rodando. Ver `models/pom.rs`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pom_id: Option<String>,
+    /// Prova da identidade do artefato. Registros antigos não têm este campo
+    /// e não podem ser usados para desimplantar com segurança sem uma prova de
+    /// caminho no mesmo peer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<DeploymentIdentity>,
 }
 
 /// Um nó da implantação, e a configuração com que ele subiu.
@@ -365,6 +380,7 @@ mod tests {
                 label: rotulo.into(),
                 total_layers: 32,
                 pom_id: None,
+                identity: None,
             },
             "coordenador",
             nos,

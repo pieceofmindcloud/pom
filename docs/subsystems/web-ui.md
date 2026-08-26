@@ -61,16 +61,17 @@ conteúdo `immutable` por 1 ano.
 
 `src/components/nav.ts` tem o menu como dados (`NAV`: seções e folhas com
 `labelKey`, rota e `end`), consumido pela Sidebar e pelo roteador de
-`src/App.tsx`. Dentro de `Modelos`, a ordem é `Modelos inteiros`, `Fatiar
-modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
+`src/App.tsx`. Dentro de `Modelos`, a ordem é `Encontrar Modelos HF`, `Modelos
+inteiros`, `Fatiar modelos`, `Fatias`. O menu lateral pode ser minimizado: nesse estado mostra
 somente ícones, e as seções com folhas exibem um submenu ao passar o mouse ou
 receber foco. A escolha fica persistida no navegador. O `App` decide setup vs painel com `useIsSetupMode()` (probe de
 `/api/ui/node` com `auth: false`; 404 = só existe o router de setup). Rotas:
 
 - `/` -> Dashboard; `/chat` -> Chat (fora do `<Routes>`/transição porque é
   dono de um stream vivo e do scroll; desmontar para animar derrubaria tokens)
-- `/modelos` -> WholeModels; `/modelos/fatiar` -> SliceModels, com o painel de
-  jobs e progresso de fatiamento embutido
+- `/modelos` -> WholeModels; `/modelos/remotos` -> RemoteModels; e
+  `/modelos/fatiar` -> SliceModels, com o painel de jobs e progresso de
+  fatiamento embutido
 - `/fatias` -> Shards;
   `/fatias/implantar` -> redireciona para `/implantar` (link antigo)
 - `/implantar` -> DeployModel (entrada de primeiro nível para pôr fatias em
@@ -84,6 +85,29 @@ receber foco. A escolha fica persistida no navegador. O `App` decide setup vs pa
   `/config/keys/conexao` -> ConnectionKeys; `/config/armazenamento` -> ModelPaths
   (`/config/pastas` continua como alias)
 - `*` -> NotFound
+
+### Modelos remotos
+
+`RemoteModels` consulta primeiro `GET /api/ui/model-provider/status` e mostra
+se o CLI do Hugging Face está ausente, se a autenticação é necessária ou se a
+sessão está autenticada. Depois da busca, o detalhe resolve a licença pelo
+provider e exibe o marcador de modelo gated antes da confirmação de download;
+assim a tela não presume uma licença nem inicia uma operação protegida sem
+explicar a autenticação exigida.
+
+O título da tela é "Encontrar modelos no Hugging Face". O detalhe consulta
+`GET /api/ui/model-provider/storage` e mostra as pastas de modelos resolvidas da
+configuração antes de iniciar. O download escolhe uma dessas pastas; o job
+persistido em `GET /api/ui/jobs` registra o caminho final e o
+`ModelDownloadsPanel` mostra progresso, cancelamento e retry. Esse painel
+também aparece em `/transferencias`, junto das transferências de arquivos.
+
+Em `/config/rede`, o `HuggingFaceSettingsPanel` oferece o token opcional para
+modelos privados e gated. O campo é `password`, começa vazio e mostra apenas a
+máscara devolvida pelo backend. Salvar ou remover chama
+`/api/ui/model-provider/config`, invalida o status e faz o provider reler a
+credencial sem reiniciar o processo; a precedência segue a documentada em
+`api-http.md`.
 
 ### Perfis: o que cada um enxerga
 
@@ -267,7 +291,10 @@ guarda além das falas:
 
 - **A telemetria da execução chega fechada** (`ExecutionTelemetry`): a tabela
   de fases e as seções densas de rede e ambiente ficam embaixo da resposta;
-  abrir é um clique.
+  abrir é um clique. A linha de resumo mostra `N do cache` ao lado dos tokens
+  de entrada quando o turno reaproveitou o prefixo do turno anterior
+  (`trace.cached_tokens`); é o que o pipeline **executou**, não o que o cache
+  escolheu, e some quando não houve reuso - ver `inferencia.md`, seção 3.1.
 - **Trocar de modelo no meio vira um evento no fluxo** (`role: "event"`, que
   `turnsOnly` filtra antes de a conversa viajar na requisição). O seletor fica
   embaixo do campo de texto. `lib/chatModels.ts` remove desse seletor os ids
@@ -419,6 +446,22 @@ impressão digital é só modelo + conjunto de faixas.
   de execução separa a especulação por lookup do MTP; ao marcar MTP, a
   probabilidade mínima começa em `0,75`, mas continua sendo um campo editável
   pelo operador e o valor alterado segue no deploy. A seção
+  **Motor de inferência** aparece somente quando a metadata real do GGUF
+  informa mais de um expert. Ela persiste `inference_mode` como `auto`,
+  `dense` ou `moe` e envia a escolha nos modos modelo inteiro, pipeline
+  fatiado e Tensor Parallelism. Em modelo denso a seção fica oculta. Se a
+  combinação escolhida não for suportada, o seletor continua visível com a
+  razão explícita e o deploy fica bloqueado; a telemetria é a fonte de verdade
+  sobre o motor executado. As demais opções condicionais recebem
+  `DeployPlan.capabilities` do backend: `no_thinking` usa
+  `tokenizer.chat_template` e o vocabulário GGUF, MTP usa metadata/tensores
+  `nextn` do arquivo selecionado e usa o runtime do peer final apenas como
+  limitação, e lookup usa as capacidades runtime de todos os alvos. Ausência
+  comprovada no modelo oculta a opção; `unknown` deixa-a visível e acionável,
+  com fonte, motivo e risco. Limitação de runtime também é aviso acionável. O
+  switch `no_embeddings` permanece visível: ligado, peers comprovadamente
+  inseguros recusam a implantação de forma nominal e atômica; topologia
+  indeterminada pode seguir somente com aviso explícito.
   **Fatias** traz o interruptor "Juntar fatias vizinhas na mesma máquina"
   (`merge`), que é o que permite uma máquina ficar com duas faixas adjacentes:
   o nó as funde num arquivo só (`splitter::merge`) antes de subir, porque
@@ -473,7 +516,8 @@ impressão digital é só modelo + conjunto de faixas.
   nos dois casos sem painel (nada selecionado, resposta a caminho). O mapa
   mostra apenas hops entre estágios consecutivos, com RTT direcional e rolagem
   interna em viewport estreito para não cortar cards nem criar overflow na página.
-- **Transferir** (`Transfers`/`SendFile`/`Notifications`): ofertas pendentes
+- **Transferir** (`Transfers`/`SendFile`/`Notifications`): downloads de modelos
+  remotos com progresso e cancelamento, ofertas pendentes
   (aceitar/rejeitar direto no sino), transferências ativas (bytes, velocidade,
   ETA, cancelar) e concluídas. O envio ("enviar um arquivo desta máquina")
   oferece qualquer caminho legível via `POST /api/transfer/send`; o receptor

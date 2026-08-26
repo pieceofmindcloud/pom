@@ -1,7 +1,7 @@
 # Relatório de entrega: provider Hugging Face
 
 Data: 2026-08-24
-Branch: `fm/rdma-hf-provider`
+Branch: `fm/rdma-hf-warnings`
 Especificação: `/Users/jairpereira/Sites/firstmate/data/rdma-hf-provider/spec.md`
 
 ## 1. Arquitetura implementada
@@ -15,6 +15,12 @@ separados, cancelamento do processo, parsing JSON, caminho final do download e
 classificação de erros. `huggingface.rs` adapta esses resultados ao contrato,
 valida entradas e calcula o manifesto local. `LocalModelStorage` reutiliza o
 hash SHA-256 já usado por `models/pom.rs`.
+
+O backend usa `check_authentication` em
+`GET /api/ui/model-provider/status`, devolvendo o estado estruturado do CLI,
+versão, autenticação e usuário sem expor token. O detalhe remoto chama
+`get_license` antes de a UI oferecer o download, preserva o marcador `gated` e
+mostra a licença detectada ou desconhecida.
 
 O resultado é somente armazenamento, enumeração e hashing. Nenhum conteúdo
 baixado é executado, nenhum token é aceito como argumento e nenhuma opção de
@@ -58,9 +64,10 @@ execução remota é enviada.
   desconhecida retorna `detected: false`.
 - A telemetria usa `tracing` com provider, repositório, revisão, bytes,
   duração, status e tipo de erro, sem stdout, stderr ou credenciais.
-- Não foi adicionada rota HTTP ou tela nesta etapa, para evitar alterar
-  `gateway.rs`/`webui.rs` durante trabalho paralelo. A camada interna já está
-  pronta para uma integração posterior de jobs e UI por `ProgressSender`.
+- A rota HTTP e a tela consomem somente `ModelProvider`: status autenticado do
+  CLI, busca, detalhes com licença e downloads estruturados. `with_runner` é
+  restrito aos testes para injetar o executor fake; o processo real continua
+  sendo criado somente pelo runner de produção.
 
 ## 5. Comandos para teste manual
 
@@ -94,45 +101,32 @@ rtk cargo test -p node huggingface::tests -- --nocapture
 - Classificação de autenticação ausente, repositório inexistente, limite de
   requisições e falha de download.
 - Runner fake para CLI ausente, busca, GGUF, sucesso, falha e cancelamento.
+- Status estruturado para CLI ausente, sessão sem login e usuário autenticado;
+  falha do processo `card` preserva o fallback para `models info`.
 - Verificação de argumentos separados e ausência de token em erros/debug.
 
-Resultado verificável no ambiente desta execução:
+Resultado verificável nesta execução:
 
-- `rtk cargo test --workspace --exclude node`: passou, 13 testes em 6 suítes.
-- `rtk cargo fmt --all -- --check`: passou.
-- `rtk git diff --check`: passou.
-- `rtk cargo metadata --no-deps --format-version 1`: passou.
-
-Os testes do crate `node` não chegaram a compilar os módulos novos por causa
-da falha nativa descrita na seção seguinte.
+- `rtk cargo build -p node`: passou sem os avisos do provider Hugging Face.
+- `rtk cargo test -p node`: 752 passaram, 5 ignorados.
+- `rtk cargo fmt --check`: passou.
+- `rtk cargo clippy -p node`: código de saída zero; restam avisos preexistentes
+  em outros subsistemas, sem avisos nos arquivos alterados.
+- `rtk npm test`: 50 arquivos e 291 testes passaram.
+- `rtk npm run build`: TypeScript e Vite passaram; o Vite mantém o aviso
+  informativo de chunk acima de 500 kB.
 
 ## 7. Limitações conhecidas
 
-- `vendor/llama-cpp-sys-2/llama.cpp` é um symlink quebrado neste worktree. As
-  tentativas de `cargo test -p node`, `cargo test --workspace` e
-  `cargo build --release -p node` falharam antes da compilação Rust com:
-  `vendor/llama-cpp-sys-2/build.rs:440:27: Failed to obtain entry ...
-  Os { code: 2, kind: NotFound, message: "No such file or directory" }`.
-  Portanto não é possível afirmar que a suíte do `node` ou o binário nativo
-  estão verdes neste ambiente.
 - O progresso depende das linhas textuais fornecidas pelo CLI; bytes totais,
   arquivo atual e velocidade permanecem opcionais quando não puderem ser
   determinados com segurança.
-- Ainda não existe endpoint ou tela que consuma o provider. A integração
-  interna evita espalhar `hf`, mas a próxima camada precisa ligar seus jobs ao
-  canal de progresso existente.
-- O parser aceita mais de uma forma provável de JSON, mas mudanças futuras no
-  schema do CLI devem ser cobertas por fixtures antes de trocar o backend.
+- O chunk principal da UI ultrapassa 500 kB minificado; o build passa, mas uma
+  futura divisão por rotas pode reduzir o carregamento inicial.
 
 ## 8. Próximos passos
 
-1. Restaurar o checkout de `llama.cpp` e executar os testes focalizados do
-   `node`, a suíte completa e o build release.
-2. Criar uma camada de job no backend que consuma `ModelProvider` e encaminhe
-   `DownloadProgress` para `webui::set_job_progress`, sem expor `hf` à UI.
-3. Adicionar uma tela/API autenticada para busca, inspeção, escolha de GGUF e
-   download, preservando os tipos do contrato.
-4. Registrar o `ModelManifest` no catálogo local e conectá-lo ao fluxo de
+1. Registrar o `ModelManifest` no catálogo local e conectá-lo ao fluxo de
    fatiamento/implantação, sem distribuir pesos automaticamente nesta fase.
-5. Acrescentar fixtures para versões do CLI e testar também Windows/macOS em
+2. Acrescentar fixtures para versões do CLI e testar também Windows/macOS em
    CI quando o crate `node` puder ser compilado nessas plataformas.

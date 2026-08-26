@@ -16,14 +16,15 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { DeployPlan, DeployStep } from "../lib/types";
+import type { DeployPlan, DeployStep, Job } from "../lib/types";
 
 const post = vi.fn();
+let jobsResponse: { jobs: Job[] } = { jobs: [] };
 vi.mock("../lib/api", () => ({
   api: {
     get: vi.fn((url: string) =>
       url === "/api/ui/jobs"
-        ? Promise.resolve({ jobs: [] })
+        ? Promise.resolve(jobsResponse)
         : url === "/api/ui/cluster"
           ? Promise.resolve({ peers: [] })
           : url === "/api/ui/cache-types"
@@ -33,6 +34,9 @@ vi.mock("../lib/api", () => ({
                 choices: ["f32", "f16", "bf16", "q8_0", "q4_0", "q4_1", "iq4_nl", "q5_0", "q5_1"],
               })
           : undefined,
+    ),
+    getConditional: vi.fn((url: string) =>
+      Promise.resolve(url === "/api/ui/jobs" ? jobsResponse : { peers: [] }),
     ),
     post: (...args: unknown[]) => post(...args),
   },
@@ -207,6 +211,7 @@ function mount(metadata_complete = true) {
 describe("DeployModel", () => {
   beforeEach(() => {
     post.mockReset();
+    jobsResponse = { jobs: [] };
     localStorage.clear();
   });
   afterEach(cleanup);
@@ -340,6 +345,32 @@ describe("DeployModel", () => {
         kind: "shards",
       }));
     });
+  });
+
+  it("exibe o motivo de uma desimplantação automática que bloqueou o deploy", async () => {
+    const ok = planOutOfLayerOrder();
+    ok.blocked = null;
+    post.mockImplementation((url: string) =>
+      url === "/api/ui/deploy" ? Promise.resolve({ job_id: "job-failed" }) : Promise.resolve(ok),
+    );
+    jobsResponse = {
+      jobs: [{
+        id: "job-failed",
+        state: "failed",
+        step: "aguardando recursos ociosos",
+        message: "a máquina ksia não ficou ociosa dentro do limite; ficou ocupado: modelo=qwen",
+        progress: null,
+        outputs: [],
+        started_at: new Date().toISOString(),
+        finished_at: new Date().toISOString(),
+      }],
+    };
+    mount();
+
+    const deployButton = await screen.findByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((deployButton as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(deployButton);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/ksia não ficou ociosa/);
   });
 
   it("libera todas as faixas quando uma única máquina cobre o modelo", async () => {

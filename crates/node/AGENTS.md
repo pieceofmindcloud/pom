@@ -15,8 +15,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   com `POM_CUDA_GRAPHS=1` exige reconstruir o binário e VRAM livre adicional.
 - Dependências pesadas: `libp2p` 0.56 (tokio, tcp, dns, noise, yamux, identify,
   kad, mdns, gossipsub, relay, dcutr, autonat, request-response), `pkarr` 6,
-  `axum` 0.7, `reqwest` (json+stream), `tokio` full, `clap` 4 (derive),
+  `axum` 0.7, `reqwest` (json+stream), `url`, `tokio` full, `clap` 4 (derive),
   `socket2`, `tower-http` (compression-full), `routing-contract` (path).
+- O provider Hugging Face usa HTTP nativo via `reqwest`; não há executável `hf`,
+  runtime Python ou instalação externa no caminho normal.
 - `build = "build.rs"`.
 
 ## build.rs
@@ -36,6 +38,10 @@ workspace que faz o papel de crate-raiz para os módulos auxiliares
   preparar `<worktree>/llama.cpp` com um checkout que contenha `ggml` antes de
   rodar `cargo build -p node`. O procedimento completo está em
   `docs/subsystems/build-execucao.md`, seção "Preparar um worktree local".
+- Com a feature `cuda`, `build.rs` compila os kernels MoE com `CUDACXX`; em uma
+  validação da ksia, `CUDAARCHS=120` limita a arquitetura e `CCACHE=ccache`
+  envolve o `nvcc`. O procedimento e o target separado estão em
+  `docs/subsystems/build-execucao.md`.
 
 ## src/main.rs - fluxo de arranque e CLI
 
@@ -109,8 +115,8 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   (fatiamento por orçamento/tamanho), `splitter.rs` (split e merge),
   `memory.rs` (carregar camadas), `lastslice.rs` (fatia anotada com estado
   Pending/Serving), `ollama.rs` (`OllamaClient`), `provider.rs` (contrato
-  agnóstico de provider), `hf_cli.rs` (processo e parser isolado) e
-  `huggingface.rs` (`HuggingFaceProvider`).
+  agnóstico de provider) e `huggingface.rs` (`HuggingFaceProvider` HTTP
+  nativo).
 - `inference/` - servidor Rust e wire format: `infer_server.rs`
   (rotas de inferência, scheduler local + `should_draft`/`kv_can_shift`), `runtime.rs`
   (`NodeRuntime`/`NodeConfig`, supervisão em-processo + anotação da fatia),
@@ -120,7 +126,7 @@ separado). `advertised_ollama_port` (sobre `parse_ollama_port`) extrai a porta d
   `llama_mtp_shim.cpp` (predição multi-token pelo bloco `nextn` do modelo -
   outro mecanismo, e outra chave, que a especulação por lookup).
 - `backend/` - HTTP e estado: `gateway.rs` (`start_gateway`,
-  `generate_stream`), `webapp.rs` (serve a UI do disco), `webui.rs`
+  `generate_stream_with_stops`), `webapp.rs` (serve a UI do disco), `webui.rs`
   (rotas `/api/ui/*`), `auth.rs` (`ApiKeyAuth`, connection key), `admin.rs`,
   `deploy.rs`, `transfer.rs` (fatias por HTTP Range), `devupdate.rs`
   (atualizar/reiniciar), `openai.rs` (rotas OpenAI-compatíveis), `messages.rs`,

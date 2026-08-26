@@ -6,9 +6,10 @@ import { DownloadModelDialog } from "../components/DownloadModelDialog";
 import { ModelDownloadsPanel } from "../components/ModelDownloadsPanel";
 import { RemoteModelCard } from "../components/RemoteModelCard";
 import { RemoteModelDetails } from "../components/RemoteModelDetails";
+import { RemoteModelProviderStatus } from "../components/RemoteModelProviderStatus";
 import { Button, Empty, ErrorState, Field, Input, PageHeader, Panel, Select, Skeleton } from "../components/ui";
 import { useI18n } from "../i18n/provider";
-import { keys, useRemoteModelSearch } from "../lib/queries";
+import { keys, useRemoteModelProviderStatus, useRemoteModelSearch } from "../lib/queries";
 import type { RemoteGgufFile, RemoteModelDetails as RemoteModelDetailsData, RemoteModelSummary } from "../lib/types";
 
 const PAGE_SIZE = 20;
@@ -37,7 +38,15 @@ export function RemoteModels() {
   const [page, setPage] = useState(urlPage);
   const [detailsRepo, setDetailsRepo] = useState<string | null>(null);
   const [download, setDownload] = useState<{ file: RemoteGgufFile; details: RemoteModelDetailsData } | null>(null);
-  const search = useRemoteModelSearch({ query, ggufOnly, page, pageSize: PAGE_SIZE, sort });
+  const providerStatus = useRemoteModelProviderStatus();
+  const search = useRemoteModelSearch({
+    query,
+    ggufOnly,
+    page,
+    pageSize: PAGE_SIZE,
+    sort,
+    enabled: providerStatus.data?.cli.installed === true,
+  });
 
   useEffect(() => setInput(urlQuery), [urlQuery]);
 
@@ -97,6 +106,10 @@ export function RemoteModels() {
   return (
     <div className="space-y-5">
       <PageHeader title={t("remoteModels.title")} subtitle={t("remoteModels.subtitle")} />
+
+      {providerStatus.isLoading && <Panel className="px-4 py-3.5 sm:px-5"><Skeleton className="h-9 w-full" /></Panel>}
+      {providerStatus.isError && <ErrorState error={providerStatus.error} onRetry={() => void providerStatus.refetch()} />}
+      {providerStatus.data && <RemoteModelProviderStatus status={providerStatus.data} />}
 
       <ModelDownloadsPanel />
 

@@ -68,6 +68,9 @@ export interface SystemLoad {
  */
 export type ServerState = "disabled" | "starting" | "ready" | "failed";
 
+/** Motor que o backend afirma ter executado, sem inferência da interface. */
+export type ExecutionEngine = "llama.cpp" | "moe" | "unknown";
+
 export interface RuntimeStatus {
   state: ServerState;
   detail: string;
@@ -95,6 +98,8 @@ export interface NodeConfig {
   peer_count: number;
   peer_index: number;
   primary: boolean;
+  /** Persisted engine preference carried by the active deployment. */
+  inference_mode: InferenceMode;
   inference_port: number;
   n_gpu_layers: number;
   n_ctx: number;
@@ -229,6 +234,8 @@ export interface PeerRuntimeHealth {
   n_ubatch_effective: number;
   /** Real backend setting on this peer, not inferred from a zero timing. */
   profile_sync_enabled?: boolean;
+  /** Caminho selecionado pelo GGUF; o motor por requisição vem da trace. */
+  selected_path?: string;
   mtp_ready: boolean;
   /** `null` num nó cuja ponte de diagnóstico não respondeu. */
   placement: ModelPlacement | null;
@@ -304,6 +311,8 @@ export interface DiscoveredModel {
   path: string;
   size_bytes: number;
   architecture: string | null;
+  /** True only when the GGUF metadata reports more than one expert. */
+  is_moe?: boolean;
   total_layers: number | null;
   quant: string | null;
   shard_range: [number, number] | null;
@@ -537,6 +546,23 @@ export interface RemoteGgufFile {
 export interface RemoteStorage {
   available_bytes: number | null;
   destination_available: boolean;
+  destination_paths: string[];
+}
+
+export interface RemoteModelProviderStatus {
+  cli: {
+    installed: boolean;
+    version: string | null;
+    authenticated: boolean;
+    username: string | null;
+  };
+}
+
+/** Estado seguro do token: o segredo bruto nunca faz parte do contrato da UI. */
+export interface HuggingFaceTokenConfig {
+  configured: boolean;
+  masked: string | null;
+  source: "HF_TOKEN" | "HUGGING_FACE_HUB_TOKEN" | "pom.json" | "~/.cache/huggingface/token" | "none";
 }
 
 export interface RemoteModelDetails {
@@ -698,6 +724,8 @@ export interface SizePlan {
   mode?: "pipeline";
   total_layers: number;
   model_bytes: number;
+  /** Source GGUF size before embeddings and slice metadata are duplicated. */
+  source_model_bytes?: number;
   ranges: SizedRange[];
   covered_layers: number;
   complete: boolean;
@@ -739,6 +767,9 @@ export interface PlannedShard {
   end_layer: number;
   layers: number;
   weight_mb: number;
+  weight_bytes: number;
+  kv_bytes: number;
+  total_bytes: number;
   is_first: boolean;
   is_last: boolean;
   has_model: boolean;
@@ -902,6 +933,8 @@ export interface DeployLoadDistribution {
  * `n_gpu_layers` is the default a peer takes when it has no override of its own.
  */
 export interface RuntimeParams {
+  /** Engine preference; the runtime decides from GGUF metadata in auto mode. */
+  inference_mode: InferenceMode;
   n_gpu_layers: number;
   n_ctx: number;
   offload_kqv: boolean;
@@ -935,6 +968,26 @@ export interface RuntimeParams {
   mtp_min_probability: number;
 }
 
+export type CapabilityState = "supported" | "unsupported" | "unknown";
+
+export interface RuntimeCapability {
+  state: CapabilityState;
+  source: string;
+  reason: string;
+  /** Limitação de execução que não prova ausência no modelo selecionado. */
+  warning?: string;
+}
+
+export interface DeploymentCapabilities {
+  fit_memory: RuntimeCapability;
+  no_thinking: RuntimeCapability;
+  no_embeddings: RuntimeCapability;
+  speculative_decoding: RuntimeCapability;
+  mtp: RuntimeCapability;
+}
+
+export type InferenceMode = "auto" | "dense" | "moe";
+
 /** What the operator picked, as `POST /api/ui/deploy{,/plan}` accepts it. */
 export interface DeploySelection {
   start_layer: number;
@@ -950,6 +1003,31 @@ export interface DeploySelection {
    * cannot both be right about where it fits.
    */
   offload_kqv?: boolean | null;
+}
+
+/** Prefix cut selected from a whole GGUF proposer during deployment. */
+export interface WholeSliceSelection {
+  source_node_id: string;
+  target_node_id: string;
+  end_layer: number;
+}
+
+/** A cut accepted by the model's real GGUF layout. */
+export interface LayerCut {
+  end_layer: number;
+  layers: number;
+  size_bytes: number;
+  remainder_bytes: number;
+}
+
+export interface WholeLayerOptions {
+  source_node_id: string;
+  total_layers: number;
+  cuts: LayerCut[];
+  /** Set only when all valid cut distances share one common step. */
+  granularity: number | null;
+  rule: string;
+  reason?: string | null;
 }
 
 /**
@@ -989,6 +1067,16 @@ export interface DeployPlan {
    * the same default the node applies to a request without a `kind`.
    */
   kind?: DeployKind;
+  /** True only when the surveyed model's actual GGUF metadata is MoE. */
+  is_moe?: boolean;
+  /** Whether this plan can honor the selected inference mode. */
+  inference_mode_supported?: boolean;
+  /** Why the selected inference mode cannot be honored, when applicable. */
+  inference_mode_reason?: string | null;
+  /** Capacidades condicionais apuradas pelo backend para os alvos atuais. */
+  capabilities?: DeploymentCapabilities;
+  /** Real cut points reported by the peer holding the whole GGUF. */
+  layer_options?: WholeLayerOptions | null;
   /** `null` means no slice declares it and none starts at layer 0, which is a
    *  `blocked` plan rather than a model of zero layers. */
   total_layers: number | null;

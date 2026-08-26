@@ -78,6 +78,25 @@ llama_rs_status llama_rs_model_placement_json(const struct llama_model * model, 
 // O chamador é dono da string e a libera com `llama_rs_string_free`.
 llama_rs_status llama_rs_context_memory_json(const struct llama_context * ctx, char ** out_json);
 
+// CPU reference for the differential MoE proof. It uses the tensors loaded by
+// llama.cpp itself and returns the intermediate expert vectors in execution
+// order: gate, up, activation, down. The caller owns all output buffers.
+int llama_rs_moe_reference_expert(
+    const struct llama_model * model,
+    int32_t layer,
+    uint32_t expert,
+    const float * hidden,
+    size_t hidden_count,
+    int32_t activation,
+    float * gate,
+    size_t gate_capacity,
+    float * up,
+    size_t up_capacity,
+    float * activated,
+    size_t activated_capacity,
+    float * output,
+    size_t output_capacity);
+
 struct llama_rs_mtp_speculative * llama_rs_mtp_speculative_init(
     struct llama_context * ctx_tgt,
     struct llama_context * ctx_dft,

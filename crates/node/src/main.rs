@@ -9,6 +9,8 @@ mod admin;
 mod auth;
 #[path = "utils/brand.rs"]
 mod brand;
+#[path = "backend/capabilities.rs"]
+mod capabilities;
 #[path = "models/catalog.rs"]
 mod catalog;
 #[path = "inference/collective.rs"]
@@ -29,12 +31,12 @@ mod direct_lab;
 mod discovery;
 #[path = "utils/display.rs"]
 mod display;
+#[path = "inference/executor.rs"]
+mod executor;
 #[path = "backend/gateway.rs"]
 mod gateway;
 #[path = "models/gguf.rs"]
 mod gguf;
-#[path = "models/hf_cli.rs"]
-mod hf_cli;
 #[path = "models/huggingface.rs"]
 mod huggingface;
 #[path = "network/identity.rs"]
@@ -43,6 +45,8 @@ mod identity;
 mod infer_server;
 #[path = "network/infer_tunnel.rs"]
 mod infer_tunnel;
+#[path = "models/kv_budget.rs"]
+mod kv_budget;
 #[path = "models/lastslice.rs"]
 mod lastslice;
 #[path = "inference/llm.rs"]
@@ -57,6 +61,8 @@ mod model;
 mod model_provider;
 #[path = "backend/model_provider.rs"]
 mod model_provider_backend;
+#[path = "inference/moe/mod.rs"]
+pub(crate) mod moe;
 #[path = "inference/mtp.rs"]
 mod mtp;
 #[path = "network/network.rs"]
@@ -77,6 +83,14 @@ mod plan;
 mod pom;
 #[path = "inference/prefill.rs"]
 mod prefill;
+#[path = "inference/prefix_cache.rs"]
+mod prefix_cache;
+#[cfg(test)]
+#[path = "inference/prefix_cache_lab.rs"]
+mod prefix_cache_lab;
+#[cfg(test)]
+#[path = "inference/prefix_reuse_lab.rs"]
+mod prefix_reuse_lab;
 #[path = "inference/relay.rs"]
 mod relay;
 #[path = "backend/reqlog.rs"]
@@ -688,6 +702,7 @@ async fn main() -> Result<()> {
     // ── Runtime: owns the model configuration and the inference server ──────
     let auth_config: Arc<tokio::sync::RwLock<config::Config>> =
         Arc::new(tokio::sync::RwLock::new(app_config.clone()));
+    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
     // ── TLS entre peers ──────────────────────────────────────────────────────
     // O certificado é derivado da identidade que acabou de ser carregada e
     // nunca vai para o disco (ver `tls.rs`). Ele existe desde o arranque mesmo
@@ -736,6 +751,7 @@ async fn main() -> Result<()> {
             peer_index: 0,
             primary: args.gateway,
             tp: None,
+            inference_mode: Default::default(),
             inference_port: port,
             n_gpu_layers: args.n_gpu_layers,
             n_ctx: args.n_ctx,
@@ -794,6 +810,7 @@ async fn main() -> Result<()> {
             default_model: profile.name.clone(),
             local_assignment: assignment_shared.clone(),
             loads: Arc::new(LoadTracker::new()),
+            prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
             peer_http: peer_clients.clone(),
             runtime: node_runtime.clone(),
             gateway_port,
@@ -803,9 +820,12 @@ async fn main() -> Result<()> {
             tunnel_tx: Some(tunnel_tx.clone()),
             tls_server: tls_server.clone(),
             cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-            model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
-                huggingface::HuggingFaceProvider::new(),
-            ))),
+            model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+                Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                    hf_token_store.clone(),
+                )),
+                hf_token_store,
+            )),
         };
         let gw_port = gateway_port;
         tokio::spawn(async move {
@@ -1029,6 +1049,7 @@ async fn start_setup_mode(gateway_port: u16) -> Result<()> {
         shard_dir: None,
         shard_max_gb: crate::storage::DEFAULT_SHARD_MAX_GB,
         node_name: None,
+        huggingface_token: None,
     }));
 
     // The same interface the configured node serves, so setup is not a second
@@ -1354,6 +1375,7 @@ async fn start_gateway_only(
         };
 
     let auth_state: Arc<RwLock<config::Config>> = Arc::new(RwLock::new(app_config.clone()));
+    let hf_token_store = huggingface::HfTokenStore::new(app_config.huggingface_token.clone());
     let node_runtime = runtime::NodeRuntime::new_with_tls_and_auth(
         net.clone(),
         assignment_shared.clone(),
@@ -1400,6 +1422,7 @@ async fn start_gateway_only(
         default_model: String::new(),
         local_assignment: assignment_shared.clone(),
         loads: Arc::new(LoadTracker::new()),
+        prefix_cache: crate::prefix_cache::PrefixCache::default_arc(),
         peer_http: peer_clients.clone(),
         runtime: node_runtime.clone(),
         gateway_port,
@@ -1413,9 +1436,12 @@ async fn start_gateway_only(
         tunnel_tx: Some(tunnel_tx),
         tls_server: tls_server.clone(),
         cluster_cache: Arc::new(tokio::sync::Mutex::new(Default::default())),
-        model_service: Arc::new(model_provider_backend::ModelService::new(Arc::new(
-            huggingface::HuggingFaceProvider::new(),
-        ))),
+        model_service: Arc::new(model_provider_backend::ModelService::with_token_store(
+            Arc::new(huggingface::HuggingFaceProvider::new_with_token_store(
+                hf_token_store.clone(),
+            )),
+            hf_token_store,
+        )),
     };
 
     info!(

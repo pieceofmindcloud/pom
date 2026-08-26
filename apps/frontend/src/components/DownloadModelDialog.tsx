@@ -115,7 +115,15 @@ export function DownloadModelDialog({
           )}
         </div>
         <dl className="grid gap-3 sm:grid-cols-2">
-          <KeyValue label={t("remoteModels.destination")}>{t("remoteModels.destination")}</KeyValue>
+          <KeyValue label={t("remoteModels.destination")}>
+            {selectedDetails.storage.destination_paths.length > 0 ? (
+              <ul className="break-path space-y-1 font-mono text-xs">
+                {selectedDetails.storage.destination_paths.map((path) => <li key={path}>{path}</li>)}
+              </ul>
+            ) : (
+              t("remoteModels.destination")
+            )}
+          </KeyValue>
           <KeyValue label={t("remoteModels.requiredSpace")}>{bytes(selectedFile.size_bytes)}</KeyValue>
           <KeyValue label={t("remoteModels.availableSpace")}>
             {bytes(selectedDetails.storage.available_bytes)}

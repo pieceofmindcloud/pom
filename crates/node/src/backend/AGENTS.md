@@ -3,7 +3,7 @@
 ## What this folder is
 
 The HTTP backend of the `pom` node: every axum router and handler the
-binary serves. It owns the single generation path (`gateway::generate_stream`,
+binary serves. It owns the single generation path (`gateway::generate_stream_with_stops`,
 which routes to the **distributed pipeline** - there is no fallback to a local
 or peer Ollama, a missing plan fails the request), the gateway state all
 handlers share, the two protocol adapters (OpenAI and
@@ -22,16 +22,25 @@ behind an auth extractor.
   `authorization: Bearer` or `x-api-key`), `AuthState = Arc<RwLock<Config>>`.
   `is_valid_inference_token` aplica a mesma regra na porta 8181: a
   `connection_key` compartilhada ou uma API key ativa.
-- `gateway.rs` (1542) - `GatewayState`, `start_gateway`, `generate_stream` /
-  `generate_blocking` / `spawn_logged_generation`, prompt-budget math, the
+- `gateway.rs` - `GatewayState`, `start_gateway`, `generate_stream_with_stops` /
+  `generate_blocking_with_stops` / `spawn_logged_generation_with_stops`, o `StopMatcher` incremental,
+  prompt-budget math, the
   direct-reply relay route (`POST /v1/relay-result`), and the `testkit` test
   scaffold (peer/state_with/body_of).
 - `webapp.rs` (214) - serves the frontend bundle from disk with a narrow SPA
   fallback (`config::ui_dist_dir()`); nothing is compiled into the binary.
-- `model_provider.rs` - API agnóstica de busca, detalhes, espaço e downloads
-  remotos. Injeta `DynModelProvider`, usa `webui::Job` como estado persistente,
-  `CancellationToken` por download e semáforo de dois processos; não monta
-  comandos nem expõe token, stderr ou caminho local.
+- `model_provider.rs` - API agnóstica de status do CLI, autenticação, busca,
+  licença, detalhes, espaço e downloads remotos. Injeta `DynModelProvider`, usa
+  `webui::Job` como estado persistente, `CancellationToken` por download e
+  semáforo de dois processos; não monta comandos nem expõe token ou stderr.
+  Cada download escolhe a primeira pasta de modelos não vazia resolvida da
+  configuração, passa essa pasta ao provider e registra o destino no job. A
+  resposta de storage expõe as pastas elegíveis. O status estruturado em
+  `GET /api/ui/model-provider/status` permite à UI distinguir CLI ausente,
+  login necessário e sessão autenticada.
+  `GET` e `POST /api/ui/model-provider/config` expõem somente a máscara e a
+  fonte efetiva do token, e o POST salva o segredo no `pom.json` com modo
+  restrito e atualiza o `HfTokenStore` sem reinício.
   O handler clona o `ModelFile` antes de criar a task `'static`, não mantém
   empréstimos de respostas do provider em `tokio::spawn`, e as buscas de
   arquivos locais emprestam o nome a cada iteração.
@@ -44,11 +53,19 @@ behind an auth extractor.
   matching `If-None-Match` returns 304 without a body, and the cluster keeps
   a 2s fingerprinted snapshot cache that bypasses its TTL on known state
   changes.
+  `plan` reads the GGUF header from the node that owns `model_path` and, when
+  calculating budget-driven ranges, includes the configured context, sessions
+  and K/V cache types in the byte arithmetic. The response exposes weight,
+  KV and total bytes per shard; absent KV metadata is an explicit bad request.
   (local or forwarded to a peer).
 - `deploy.rs` - `/api/ui/deploy/*` + `POST /api/ui/undeploy`: survey de
   capacidade, estratégias simples/completa, RTT direcional, cobertura, carga projetada,
   escolha de máquinas e sequenciamento das cópias; re-surveys o cluster no
   deploy e mantém `group` técnico separado de `deployment_name` operacional.
+  Antes de transferir ou lançar, prova a identidade por `pom_id` ou hash do
+  GGUF, libera somente a implantação comprovadamente igual e aguarda cada peer
+  ficar ocioso dentro de um prazo; recusações de identidade, falhas de unload e
+  timeouts ficam no job com o peer e o motivo.
   Em `tensor_parallel`, prefere `shard_sets[].tp_parts`, monta `TpTarget` por
   rank e transfere pelo hash do arquivo original; o `apply` usa
   `skip_split: true` para não fatiar novamente. Sem `tp_parts`, mantém o caminho
@@ -105,7 +122,7 @@ behind an auth extractor.
   `prompt_budget_of(n_ctx, max_sessions, max_new_tokens)` - `n_ctx` is the
   complete window for each session; `max_sessions` multiplies the runtime KV
   reservation, and `n_batch` deliberately does NOT appear (prefill chunks the
-  prompt); `generate_stream`
+  prompt); `generate_stream_with_stops`
   builds a `crate::direct::DirectReply` from `reply_inbox` +
   `self_reply_urls(self_reply_hosts(), gateway_port)` and hands `direct` to the
   prefill and decode executors, so the tail can answer this node directly
@@ -123,7 +140,16 @@ behind an auth extractor.
   batching is owned by the inference process at that replica, not by a global
   gateway queue, so changing replicas mid-session would lose the local KV;
   emits `GenEvent::Token`/`Done(GenSummary { source: "pipeline:hop_chain", .. })`
-  /`Failed`; `generate_blocking` collapses it. `start_gateway` registers
+  /`Failed`; `generate_blocking_with_stops` collapses it. The terminal event
+  (`Done`/`Failed`) is held back until the end-of-turn bookkeeping
+  (`rewind_sessions` or `release_sessions`) has finished, because a chat sends
+  the next turn the instant the stream closes and used to arrive in the middle
+  of it; token events still go out live. A prefill that fails with the prefix
+  enabled is retried once from scratch - reusing is an optimisation, never a
+  reason for the request to fail. When the stream receiver closes,
+  `generate_stream_with_stops` cancels the prefill's local HTTP future and prevents the
+  next retry, hop or chunk; already accepted peer frames are cleaned up by the
+  normal session release. `start_gateway` registers
   `POST /api/generate` (+ alias `POST /generate`), `GET /peers`, `GET /health`,
   `POST /handshake` (session::handle_handshake), and `POST /v1/relay-result`
   (`crate::direct::RELAY_RESULT_PATH`, 1 MB body limit, deliberately no auth -
@@ -135,29 +161,44 @@ behind an auth extractor.
   touches the LAN: `peer(node_id, hostname, gateway_port)` builds a loopback
   `PeerInfo`, `state_with(node_id, peers)` the state, `body_of(response)` the
   JSON body (used by the transfer, deploy and webui tests).
+- `gateway.rs` - `/api/generate` aceita `max_tokens` opcional (padrão 512),
+  valida-o contra `NodeConfig.max_new_tokens` e conta o primeiro token do
+  prefill no orçamento total, sem o overshoot histórico de 513 tokens;
 - `openai.rs` - `DEFAULT_MAX_TOKENS=512`, `HARD_MAX_TOKENS=4096`;
-  `render_prompt` flattens the conversation into one user message (single
-  lone user message with no tools passes through byte-identical to
-  `/api/generate`); `approx_tokens` = chars/4; `model_ids` from peers + active
+  `render_prompt` flattens the conversation into one user message, labelling
+  **every** turn including the first, so one turn's prompt is an exact prefix of
+  the next one's - the property the prefix cache rests on; raw, unlabelled text
+  is what `/v1/completions` and `/api/generate` are for.
+  `conversation_cache_key` is what the prefix cache keys on (the message array,
+  not the rendered text) and travels as `GenerationInput::cache_key`.
+  `usage.prompt_tokens_details.cached_tokens` reports the prompt tokens the
+  pipeline did not reprocess, read from the trace - the executed number, not the
+  cache's choice; `approx_tokens` = chars/4; `model_ids` from peers + active
   model; `resolve_model` maps unknown names to the active model;
   `chat_completions`/`completions` -> `blocking_response` or `sse_stream`;
   `chat_message_json` (flat content + `tool_calls` array),
   `apply_scan_events_openai` (tool_call deltas), `chunk_json` (+
-  `x_pom` extension with source/tps/duration/partial/trace),
+  `x_pom` extension with source/tps/duration/partial/trace/finish_reason/stop_sequence),
   `cors_headers` (allow `*`). Routes: `GET /v1/models`, `GET /v1/models/:id`,
   `POST /v1/chat/completions` + OPTIONS, `POST /v1/completions` + OPTIONS.
 - `messages.rs` - Anthropic `POST /v1/messages` (+ OPTIONS) and
   `POST /v1/messages/count_tokens`; its own `render_prompt` (system/messages/
-  tools split), `content_blocks` for tool_use/tool_result, `stop_reason`
-  (end_turn / max_tokens / tool_use), `blocking_response` and `stream_response`
-  with the Anthropic SSE event names. `tool_choice` and `stop_sequences` are
-  parsed-and-ignored (serde drops unknown fields).
+  tools split, every turn labelled, same reason as `openai.rs`) and
+  `conversation_cache_key`; `usage.cache_read_input_tokens` carries the honoured
+  prefix reuse; `content_blocks` for tool_use/tool_result, `stop_reason`
+  (end_turn / max_tokens / tool_use / stop_sequence), `blocking_response` and
+  `stream_response` with the Anthropic SSE event names. `tool_choice` is
+  parsed-and-ignored; `stop_sequences` is applied by the gateway matcher.
 - `webui.rs` - `CATALOG_TTL=20s`, `CLUSTER_CACHE_TTL=2s` and
   `pub(crate) PEER_TIMEOUT=4s` (reused by
   deploy.rs). Registers the `/api/ui/*` routes: `node` (GET node_info),
+  `model-identity` (POST, prova um arquivo já catalogado por caminho canônico
+  e opcionalmente calcula seu SHA-256),
   `models` (GET, `hostname` = o nome anunciado pelo nó, **não** o do SO),
   `models/delete` (POST), `cluster` (GET), `cluster/models`
   (GET), `peer/:node_id/runtime` (GET), `paths` (GET+POST), `plan` (POST), `apply` (POST), `launch` (POST),
+  `model-layer-options` (POST, cortes reais do GGUF) e `slice-ranges` (POST,
+  materialização local de faixas escolhidas a partir de um modelo inteiro),
   `stop-inference` (POST), `slice` + `slice/plan` (POST), `jobs` (GET) +
   `jobs/:id` (GET), `unload` (POST), `release` (POST) + `release/candidate`
   (GET), `leave` (POST), `rejoin` (POST), `network/rtt` (GET autenticado),
@@ -229,6 +270,21 @@ behind an auth extractor.
   modelos inteiros para deixar o `llama.cpp` ajustar camadas à memória livre;
   `effective_params_for_kind` e o `apply` desligam o ajuste no tensor
   parallelism, que não suporta o fit automático em `split-mode tensor`.
+  `RuntimeParams.inference_mode` acompanha o pedido nos três tipos de deploy.
+  O survey leva `is_moe` do catálogo GGUF ao `DeployPlan`; somente metadata de
+  experts identifica MoE. O plano expõe `inference_mode_supported` e
+  `inference_mode_reason`: MoE em Tensor Parallelism é recusado explicitamente
+  enquanto esse caminho não for suportado.
+  O mesmo `DeployPlan` expõe `capabilities` em estado `supported`,
+  `unsupported` ou `unknown`, com origem, motivo e aviso opcional: thinking vem
+  do template e vocabulário GGUF, MTP primeiro do arquivo GGUF selecionado e
+  depois apenas adverte sobre o runtime do peer final, lookup vem das
+  capacidades runtime de todos os alvos, e fit-memory da estratégia. Ausência
+  comprovada no modelo oculta; runtime limitado ou evidência indeterminada
+  permanece acionável. O `no_embeddings` é avaliado por posição real na
+  cadeia; quando solicitado, `launch` valida todos os peers antes de parar
+  qualquer processo, recusando intermediários comprovadamente inseguros e
+  permitindo topologia indeterminada somente com o controle avisado.
 - `deploy.rs` - `overlapping_layers`, `split_position`. Routes: `POST
   /api/ui/deploy/plan` (read-only, cheap), `POST /api/ui/deploy` (re-surveys
   the cluster, refuses on `plan.blocked` or empty steps), `POST

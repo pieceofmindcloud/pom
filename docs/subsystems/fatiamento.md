@@ -52,9 +52,11 @@ gateway (medido: primeira carga fria de `/api/ui/models` caía de 11,9 s para
 `gguf.rs` lê o GGUF sem carregar pesos:
 
 - `read_info` - só o KV header: arquitetura, `block_count`, `pom.*`
-  (original/total), `shard_range`, `embedding_length`. Quem decide se um
-  arquivo é fatia é `catalog::InstalledModel::is_shard`; a cópia que existia em
-  `GgufInfo` não tinha chamador e saiu.
+  (original/total), `shard_range`, `embedding_length` e a geometria do cache
+  (`attention.head_count_kv`, `key_length` e `value_length`). Cada item pode
+  ser escalar ou array por camada. Quem decide se um arquivo é fatia é
+  `catalog::InstalledModel::is_shard`; a cópia que existia em `GgufInfo` não
+  tinha chamador e saiu.
 - `read_layout` - tensor table -> `GgufLayout` com bytes **reais** por camada
   (`layer_bytes`, `embedding_bytes`, `head_bytes`, `other_bytes`, `total_bytes`,
   `layer_kinds`). É o que torna o orçamento de memória honesto. Tipo ggml
@@ -98,6 +100,13 @@ alvo pedido, a faixa que saiu e o tamanho real.
   também tem que caber a cabeça de saída (`is_last_peer` muda o custo);
   `snap_end_layer` ajusta o corte para a fronteira de tipo. Avisa peer que fica
   sem camada e peer que não tem o modelo escolhido instalado.
+- `plan_split_with_kv` - caminho de `POST /api/ui/plan` que cobra o custo em
+  bytes para cada faixa: peso real da tensor table mais KV para
+  `n_ctx * max_sessions`, com os tipos K e V configurados. A reserva é aplicada
+  ao orçamento do peer antes da aritmética. O resultado traz
+  `weight_bytes`, `kv_bytes` e `total_bytes`; geometria GGUF ausente, largura
+  incompatível com bloco quantizado e overflow recusam o plano em vez de
+  produzir uma estimativa silenciosa.
 - `plan_by_size` - alvos em MB (`SizedSlice { target_mb }`) -> faixas
   (`SizedRange { index, start_layer, end_layer, layers, bytes, target_mb, is_rest,
   is_last, too_small, empty }`). `target_mb: None` = "o resto do modelo". Uma
@@ -112,6 +121,13 @@ alvo pedido, a faixa que saiu e o tamanho real.
 - O resultado de um `plan_by_size` é um `SizePlan`, serializado como prévia em
   `POST /api/ui/slice/plan` (a tela chama a cada tecla, com o layout em cache por
   arquivo).
+
+  `SizePlan.model_bytes` é a soma dos arquivos GGUF que as faixas vão escrever,
+  incluindo embeddings repetidos, tensores globais, cabeçalho, tabela de
+  tensores, alinhamento e o norm sintético das fatias não finais.
+  `source_model_bytes` conserva o tamanho do GGUF de origem para comparação.
+  O custo recusa nominalmente qualquer dtype GGML desconhecido; nenhum tipo
+  desconhecido entra como zero na prévia.
 
 `POST /api/ui/slice/plan` também aceita `{ mode: "tensor_parallel", tp_size }`.
 Nesse caso a resposta é um `TpSlicePlan` com um item por rank, todos cobrindo
@@ -128,6 +144,17 @@ fatia deve ir para a máquina com mais memória. É uma escolha do operador, nã
 plano: a tela nomeia os papéis ("processa o prompt" / "gera os tokens").
 
 ## 4. Execução do fatiamento
+
+### Cortes escolhidos durante a implantação
+
+O deploy de um modelo inteiro consulta `GgufLayout::valid_prefix_end_layers`
+antes de oferecer um slider. Em layout denso, todo fim de camada inteira é
+aceito; em layout híbrido, só são aceitos os fins derivados das fronteiras
+arquiteturais reais. `prefix_cut_granularity` é apenas uma descrição quando o
+espaçamento é uniforme: cortes irregulares continuam sendo representados pela
+lista explícita. `POST /api/ui/model-layer-options` expõe essa lista, e
+`POST /api/ui/slice-ranges` usa as faixas selecionadas para executar o mesmo
+fatiador local e selar o manifesto antes da transferência.
 
 `extract_shard` (`plan.rs`) roda `splitter::split` num `spawn_blocking` e apaga o
 arquivo parcial no erro - senão a próxima varredura o tomaria por fatia válida.
@@ -349,6 +376,8 @@ RAM física.
 | `GET /api/ui/models` | catálogo local (modelos + shard_sets + diretórios varridos) |
 | `POST /api/ui/slice/plan` | prévia de fatiamento (`plan_by_size`/`plan_equal`) |
 | `POST /api/ui/slice` | executa o fatiamento local (`slice_locally` -> `extract_shard`) |
+| `POST /api/ui/model-layer-options` | cortes de prefixo aceitos pelo GGUF inteiro selecionado |
+| `POST /api/ui/slice-ranges` | materializa faixas do GGUF inteiro e devolve caminhos por hash |
 | `POST /api/ui/plan` | plano por orçamento do cluster (delega ao peer dono do GGUF quando preciso) |
 | `POST /api/ui/apply` | aplica uma fatia (`skip_split`, `extract_shard` ou `merge_parts`) |
 

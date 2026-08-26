@@ -57,7 +57,7 @@ import { chatModelOptions } from "../lib/chatModels";
 import { useToast } from "../lib/toast";
 import { useI18n } from "../i18n/provider";
 import { localizeServerText } from "../i18n/locales";
-import type { ChatTelemetryNetwork, ClusterView, PeerRuntime } from "../lib/types";
+import type { ChatTelemetryNetwork, ClusterView, ExecutionEngine, PeerRuntime } from "../lib/types";
 
 /**
  * Something that happened to the conversation, on the line where it happened.
@@ -111,6 +111,32 @@ function memoryLabel(value: number | undefined, locale: string) {
 function rttLabel(value: number, locale: string) {
   if (!Number.isFinite(value)) return null;
   return `${new Intl.NumberFormat(locale === "pt-BR" ? "pt-BR" : "en-US", { maximumFractionDigits: 1 }).format(value)} ms`;
+}
+
+function engineLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  engine: ExecutionEngine | undefined,
+) {
+  switch (engine) {
+    case "llama.cpp": return t("chat.telemetry.engineLlamaCpp");
+    case "moe": return t("chat.telemetry.engineMoe");
+    default: return t("chat.telemetry.engineUnknown");
+  }
+}
+
+function executionLabel(
+  t: ReturnType<typeof useI18n>["t"],
+  phase: PhaseTrace,
+) {
+  const engine = engineLabel(t, phase.executed_engine);
+  if (phase.mixed_execution) {
+    const engines = (phase.executed_engines ?? []).map((value) => engineLabel(t, value)).join(" + ");
+    return `${t("chat.telemetry.engineMixed")}: ${engines || engine}`;
+  }
+  if (phase.engine_mismatch) {
+    return `${engine} · ${t("chat.telemetry.engineMismatch")}`;
+  }
+  return engine;
 }
 
 function ExecutionNetwork({
@@ -193,6 +219,7 @@ function ExecutionEnvironment({
             const gpuValue = gpuNames.length > 0 ? gpuNames.join(", ") : system?.gpu_kind || null;
             const placement = health?.placement;
             const counts = placement ? effectivePlacementCounts(placement.layers) : null;
+            const selectedPath = health?.selected_path ?? t("chat.telemetry.engineUnknown");
             const syncState = typeof health?.profile_sync_enabled === "boolean"
               ? health.profile_sync_enabled
                 ? t("chat.telemetry.profileSyncActive")
@@ -205,7 +232,10 @@ function ExecutionEnvironment({
                     <h4 className="truncate font-medium text-fg">{node?.hostname || peer?.short_id || nodeId.slice(0, 10)}</h4>
                     <p className="truncate font-mono text-[0.64rem] text-faint">{nodeId}</p>
                   </div>
-                  <span className="shrink-0 rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.profileSync", { state: syncState })}</span>
+                  <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                    <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.selectedPath", { value: selectedPath })}</span>
+                    <span className="rounded-full border border-line px-2 py-0.5 text-[0.62rem] text-faint">{t("chat.telemetry.profileSync", { state: syncState })}</span>
+                  </div>
                 </div>
                 <div className="mt-2 grid min-w-0 gap-2 text-[0.68rem] sm:grid-cols-2">
                   <div className="min-w-0">
@@ -358,7 +388,7 @@ export function ExecutionTelemetry({
 
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span><span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -387,6 +417,7 @@ export function ExecutionTelemetry({
           <tr className="border-b border-line/70 text-left">
             <th className="py-1 pr-3 font-normal">{t("chat.telemetry.hop")}</th>
             <th className="py-1 pr-3 font-normal">{t("chat.telemetry.phase")}</th>
+            <th className="py-1 pr-3 font-normal">{t("chat.telemetry.engineHeader")}</th>
             <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.calls")}</th>
             <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.gatewayHeader")}</th>
             <th className="py-1 pr-3 text-right font-normal">{t("chat.telemetry.backendHeader")}</th>
@@ -509,6 +540,7 @@ function PhaseRow({
         ? <td className="py-1 pr-3 align-top text-fg" rowSpan={4}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
         : null}
       <td className="py-1 pr-3">{label}</td>
+      <td className="py-1 pr-3">{executionLabel(t, phase)}</td>
       <td className="py-1 pr-3 text-right">{phase.calls}</td>
       <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
       <td className="py-1 pr-3 text-right">{phase.node_decode_ms} ms</td>
@@ -518,7 +550,7 @@ function PhaseRow({
       <td className="py-1 text-right">{bytes(phase.bytes_sent + phase.bytes_received)}</td>
     </tr>
     <tr className="text-faint">
-      <td className="pb-1.5 pr-3 align-top" colSpan={8}>
+      <td className="pb-1.5 pr-3 align-top" colSpan={9}>
         <span className="block">{t("chat.telemetry.nodeRow", { frame: phase.node_frame_decode_ms, prepare: phase.node_input_prepare_ms, queue: phase.node_queue_ms, engineWait: phase.node_lock_wait_ms, setup: phase.node_setup_ms, frameOut: phase.node_encode_ms })}{unattributed > 0 ? ` · ${t("chat.telemetry.unattributed", { ms: unattributed })}` : ""}</span>
         <span className="block">{t("chat.telemetry.backendRow", { enqueue: phase.node_backend_enqueue_ms, completion: phase.node_backend_completion_ms, d2hCapture: phase.node_residual_capture_d2h_sync_ms, p50: phase.node_p50_ms, p95: phase.node_p95_ms })}</span>
         <span className="block">{t("chat.telemetry.samplingRow", { access: phase.node_logits_access_ms, clone: phase.node_logits_clone_ms, penalty: phase.node_repetition_penalty_ms, softmax: phase.node_softmax_ms, topK: phase.node_top_k_ms, topP: phase.node_top_p_ms, selection: phase.node_selection_ms, text: phase.node_token_text_ms })}</span>
@@ -550,6 +582,7 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
     <tr className="border-t border-line/70">
       <td className="py-1 pr-3 align-top text-fg" rowSpan={2}>L{hop.start_layer}-L{hop.end_layer}<br /><span className="text-faint">{hop.node_id.slice(0, 10)}</span></td>
       <td className="py-1 pr-3">{t("chat.telemetry.legacyBoth")}</td>
+      <td className="py-1 pr-3">{engineLabel(t, hop.executed_engine)}</td>
       <td className="py-1 pr-3 text-right">{hop.calls}</td>
       <td className="py-1 pr-3 text-right">{gatewayMs} ms</td>
       <td className="py-1 pr-3 text-right">{hop.node_decode_ms} ms</td>
@@ -559,7 +592,7 @@ function LegacyHopRows({ hop }: { hop: LegacyHopTrace }) {
       <td className="py-1 text-right">{bytes(hop.bytes_sent + hop.bytes_received)}</td>
     </tr>
     <tr className="text-faint">
-      <td className="pb-1.5 pr-3 align-top" colSpan={8}>
+      <td className="pb-1.5 pr-3 align-top" colSpan={9}>
         <span className="block">{t("chat.telemetry.legacyNote", { prefillCalls: hop.prefill_calls, decodeCalls: hop.decode_calls })}</span>
         <span className="block">{t("chat.telemetry.legacyNodeRow", { frame: hop.node_frame_decode_ms, prepare: hop.node_input_prepare_ms, queue: hop.node_queue_ms, setup: hop.node_setup_ms, frameOut: hop.node_encode_ms, unattributed })}</span>
         <span className="block">{t("chat.telemetry.legacyDecodeRow", { decodeP50: hop.node_decode_p50_ms, decodeP95: hop.node_decode_p95_ms, encode: hop.client_encode_ms, headers: hop.response_headers_ms, body: hop.response_body_ms, decode: hop.client_decode_ms })}</span>

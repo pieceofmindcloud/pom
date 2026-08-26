@@ -20,6 +20,7 @@ dele é lá, não aqui.
 | `paralelismo.md` | pipeline parallelism, tensor parallelism, escolha por topologia e telemetria |
 | `fatiamento.md` | split/merge de GGUF, tabela de tipos ggml, planejamento por tamanho |
 | `implantacao.md` | pôr fatias em serviço, fusão, ordem do pipeline, ciclo de vida da fatia |
+| `freetoken-moe.md` | medições do goal FreeToken, orçamento de KV e caminho MoE próprio |
 | `transferencia.md` | puxar/oferecer arquivos entre máquinas, retomada, MD5, concessões |
 | `api-http.md` | todas as rotas, autenticação, `x_pom.source`, `gateway::testkit` |
 | `web-ui.md` | como a UI sobe, menu, modais, Painel, chat de teste, telas de fatiar/implantar |
@@ -75,6 +76,14 @@ RUST_LOG=debug ./target/release/pom ...
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
+**Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
+o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
+a arquitetura de cada máquina em `docs/subsystems/build-execucao.md`
+("Arquiteturas de GPU"). Em desenvolvimento, fixe só a arquitetura da máquina
+(`CUDAARCHS=120` na ksia; no salem são duas, `CUDAARCHS="120;86"`). A lista
+larga só vale para release. Trocar o valor invalida
+o build nativo anterior e o cargo não percebe a troca.
+
 A interface é **lida do disco** em `apps/frontend/dist` em tempo de execução
 (`config::ui_dist_dir()`, `$POM_UI_DIST` sobrescreve), não embutida no
 binário: `cargo build` não reconstrói a tela e não precisa de Node.
@@ -129,6 +138,13 @@ quebra o produto inteiro.
   O `v1` de `frame/v1-batch` identifica o primeiro contrato oficial atual, não
   uma obrigação de suportar um protocolo legado; mudanças futuras devem
   evoluir esse contrato de forma explícita. → `inferencia.md`
+- **A geração nunca acontece na sequência de KV do prompt.** Cada sessão de um
+  peer tem duas sequências: o prefill escreve na do prompt, a geração numa cópia
+  dela, e o fim do turno apaga a cópia inteira. Só remoção **total** de
+  sequência é usada, porque a parcial é recusada por motores recorrentes e
+  híbridos - e o cache de prefixo entre turnos é funcionalidade de produto, que
+  vale para todo modelo servido, não critério de elegibilidade. Retenção é ato
+  local do peer no EOS; `/v1/session/rewind` apenas confere. → `inferencia.md`
 - **A ordem do pipeline é a ordem das camadas**, e um nó pode servir várias
   faixas. `merge` apenas junta faixas adjacentes no mesmo nó. Sobreposição e
   buraco global são recusa. Quem fica com a camada 0 processa o prompt inteiro

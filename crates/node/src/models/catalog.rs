@@ -26,7 +26,7 @@
 //!   locations on Linux. Weights are blobs addressed by digest, so the friendly
 //!   name is recovered by reading the manifest tree.
 
-use crate::gguf::{self, GgufInfo};
+use crate::gguf::{self, GgufInfo, ModelCapabilityEvidence};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,9 @@ pub struct DiscoveredModel {
     pub path: String,
     pub size_bytes: u64,
     pub architecture: Option<String>,
+    /// True only when the GGUF header reports more than one expert.
+    #[serde(default)]
+    pub is_moe: bool,
     /// Layers of the *whole* model (shards report the original count).
     pub total_layers: Option<u32>,
     /// Quantisation tag parsed from the filename, e.g. "Q4_K_M".
@@ -98,6 +101,10 @@ pub struct DiscoveredModel {
     pub tp_rank: Option<u32>,
     #[serde(default)]
     pub tp_size: Option<u32>,
+    /// Evidência de capacidades derivada do header e da tabela de tensores do
+    /// GGUF. Ausente quando a leitura não pôde ser confirmada.
+    #[serde(default)]
+    pub capabilities: Option<ModelCapabilityEvidence>,
 }
 
 impl DiscoveredModel {
@@ -474,6 +481,7 @@ fn describe(
         path: path.to_string_lossy().into_owned(),
         size_bytes,
         architecture: None,
+        is_moe: false,
         total_layers,
         // Numa parte o nome do arquivo é o hash, e hash não tem tag de
         // quantização para achar: quem sabe é o manifesto.
@@ -489,6 +497,7 @@ fn describe(
         tensor_parallel: part.is_some_and(|c| c.tensor_parallel),
         tp_rank: part.and_then(|c| c.tp_rank),
         tp_size: part.and_then(|c| c.tp_size),
+        capabilities: None,
     })
 }
 
@@ -523,6 +532,8 @@ fn enrich_model(model: &mut DiscoveredModel) -> bool {
     }
 
     model.architecture = info.as_ref().and_then(|i| i.architecture.clone());
+    model.is_moe = info.as_ref().is_some_and(GgufInfo::is_moe);
+    model.capabilities = gguf::read_capability_evidence(path).ok();
     if model.shard_range.is_none() {
         model.shard_range = info.as_ref().and_then(|i| i.shard_range);
         model.total_layers = match (model.shard_range, info.as_ref()) {
@@ -1069,6 +1080,7 @@ mod tests {
             path: format!("/tmp/s_{start}_{end}.gguf"),
             size_bytes: 4096,
             architecture: None,
+            is_moe: false,
             total_layers: Some(total),
             quant: None,
             shard_range: Some((start, end)),
@@ -1079,6 +1091,7 @@ mod tests {
             tensor_parallel: false,
             tp_rank: None,
             tp_size: None,
+            capabilities: None,
         };
         let complete = build_shard_sets(&[mk(0, 15, 32), mk(16, 31, 32)]);
         assert!(complete[0].complete);
@@ -1099,6 +1112,7 @@ mod tests {
                 path: format!("/tmp/{id}.gguf"),
                 size_bytes: 4096,
                 architecture: None,
+                is_moe: false,
                 total_layers: Some(32),
                 quant: None,
                 shard_range: Some((start, end)),
@@ -1109,6 +1123,7 @@ mod tests {
                 tensor_parallel,
                 tp_rank: tensor_parallel.then_some(if id == "c" { 0 } else { 1 }),
                 tp_size: tensor_parallel.then_some(2),
+                capabilities: None,
             };
             if tensor_parallel {
                 model.name = format!("{id}-tp.gguf");
@@ -1219,6 +1234,7 @@ mod tests {
             path: format!("/tmp/qwen_{start}_{end}.gguf"),
             size_bytes: 4096,
             architecture: None,
+            is_moe: false,
             total_layers: None,
             quant: None,
             shard_range: Some((start, end)),
@@ -1229,6 +1245,7 @@ mod tests {
             tensor_parallel: false,
             tp_rank: None,
             tp_size: None,
+            capabilities: None,
         };
         let sets = build_shard_sets(&[mk(0, 15), mk(16, 31)]);
         assert_eq!(sets[0].total_layers, Some(32));

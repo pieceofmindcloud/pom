@@ -46,6 +46,13 @@ describe("formatMessage", () => {
     expect(formatMessage("pt-BR", "cluster.peerCount", { count: 1 })).toBe("1 nó");
     expect(formatMessage("pt-BR", "cluster.peerCount", { count: 2 })).toBe("2 nós");
   });
+
+  it("names the Hugging Face search entry and screen explicitly", () => {
+    expect(formatMessage("pt-BR", "nav.remoteModels")).toBe("Encontrar Modelos HF");
+    expect(formatMessage("pt-BR", "remoteModels.title")).toBe(
+      "Encontrar modelos no Hugging Face",
+    );
+  });
 });
 
 /**

@@ -6,13 +6,14 @@
 //!   POST /v1/step             — one autoregressive token step (optionally
 //!                                speculative — see `step_blocking`)
 //!   POST /v1/session/release  — free a session's KV slot
+//!   POST /v1/session/rewind   - keep the prompt and discard generated suffix
 //!   POST /v1/session/rollback — discard an unconfirmed speculative batch
 //!   GET  /health              — readiness probe
 //!
 //! Wire format is defined in [`crate::wire`] (binary framing, f16 on the wire).
 //! Decode calls run in `spawn_blocking` so they don't starve the tokio runtime.
 
-use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, SamplingConfig};
+use crate::llm::{sample_token_profiled, EngineConfig, LlmEngine, ModelCache, SamplingConfig};
 use crate::pipeline::PipelineStep;
 use crate::runtime::NodeConfig;
 use crate::wire::{self, WireDtype};
@@ -31,26 +32,104 @@ use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
     time::Instant,
 };
 use tokio::net::TcpListener;
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
-/// Upper bound for one binary f16 hidden-state frame received from a peer.
-///
-/// A normal 512-token chunk with a 4096-wide hidden state is 4 MiB before its
-/// small wire header. Keeping this limit explicit at 16 MiB allows the
-/// documented 8 MiB frame while still rejecting unbounded peer input.
-const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Upper bound for one binary f16 inference frame received from a peer. Keep
+/// it in lockstep with the wire validator; the relay splits coalesced payloads
+/// before this limit and the handler applies it before decoding the body.
+const INFERENCE_FRAME_BODY_LIMIT: usize = wire::MAX_FRAME_PAYLOAD_BYTES;
 const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
+
+/// Resolve a preferência persistida pelo deploy para o seletor operacional.
+///
+/// Uma escolha explícita na UI não pode ser sobrescrita por uma variável do
+/// processo. `Auto` continua aceitando `POM_INFERENCE_MODE` para preservar o
+/// override operacional existente; sem ele, `executor::select` decide pela
+/// metadata GGUF real.
+fn configured_inference_mode(
+    mode: crate::webui::InferenceMode,
+) -> Result<crate::executor::InferenceMode> {
+    match mode {
+        crate::webui::InferenceMode::Auto => crate::executor::InferenceMode::from_env(),
+        crate::webui::InferenceMode::Dense => Ok(crate::executor::InferenceMode::Dense),
+        crate::webui::InferenceMode::Moe => Ok(crate::executor::InferenceMode::Moe),
+    }
+}
 
 /// Timings measured on the inference node itself. The names deliberately name
 /// the boundary being measured instead of guessing whether a CUDA call is
 /// asynchronous. In particular, `residual_ms` contains the GPU -> host copy
 /// and the CUDA stream synchronization performed by `take_residual()`.
+#[derive(Default)]
+struct MoeTimings {
+    forward_us: u64,
+    executors: Vec<crate::moe::runtime::MoeExecutorKind>,
+    dtypes: Vec<u32>,
+    reasons: Vec<String>,
+    diagnostics: Option<crate::moe::runtime::MoeExecutorDiagnostics>,
+}
+
+impl MoeTimings {
+    fn record_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
+        if !self.executors.contains(&executor) {
+            self.executors.push(executor);
+        }
+    }
+
+    fn record_telemetry(&mut self, telemetry: &crate::moe::runtime::MoeExecutorTelemetry) {
+        self.record_executor(telemetry.executor);
+        for dtype in &telemetry.dtypes {
+            if !self.dtypes.contains(dtype) {
+                self.dtypes.push(*dtype);
+            }
+        }
+        if let Some(reason) = &telemetry.reason {
+            if !self.reasons.contains(reason) {
+                self.reasons.push(reason.clone());
+            }
+        }
+        if telemetry.diagnostics.is_some() {
+            self.diagnostics = telemetry.diagnostics.clone();
+        }
+    }
+
+    fn record_forward(&mut self, elapsed_us: u64) {
+        self.forward_us = self.forward_us.saturating_add(elapsed_us);
+    }
+
+    fn record_reason(&mut self, reason: &str) {
+        if !self.reasons.iter().any(|existing| existing == reason) {
+            self.reasons.push(reason.to_string());
+        }
+    }
+
+    fn merge(&mut self, other: &Self) {
+        self.forward_us = self.forward_us.saturating_add(other.forward_us);
+        for executor in &other.executors {
+            self.record_executor(*executor);
+        }
+        for dtype in &other.dtypes {
+            if !self.dtypes.contains(dtype) {
+                self.dtypes.push(*dtype);
+            }
+        }
+        for reason in &other.reasons {
+            if !self.reasons.contains(reason) {
+                self.reasons.push(reason.clone());
+            }
+        }
+        if other.diagnostics.is_some() {
+            self.diagnostics = other.diagnostics.clone();
+        }
+    }
+}
+
 #[derive(Default)]
 struct NodeTimings {
     frame_decode_us: u64,
@@ -80,10 +159,81 @@ struct NodeTimings {
     token_text_us: u64,
     sampling_us: u64,
     encode_us: u64,
+    selected_path: crate::executor::InferencePath,
+    executed_engines: Vec<crate::executor::ExecutionEngine>,
+    moe: MoeTimings,
     tp: Option<crate::tp::TpDecodeTelemetry>,
 }
 
 impl NodeTimings {
+    fn record_engine(&mut self, engine: crate::executor::ExecutionEngine) {
+        if engine != crate::executor::ExecutionEngine::Unknown
+            && !self.executed_engines.contains(&engine)
+        {
+            self.executed_engines.push(engine);
+        }
+    }
+
+    fn executed_engine(&self) -> crate::executor::ExecutionEngine {
+        match self.executed_engines.as_slice() {
+            [engine] => *engine,
+            _ => crate::executor::ExecutionEngine::Unknown,
+        }
+    }
+
+    fn mixed_execution(&self) -> bool {
+        self.executed_engines.len() > 1
+    }
+
+    fn engine_mismatch(&self) -> bool {
+        let expected = self.selected_path.execution_engine();
+        if self.mixed_execution() {
+            return !self.executed_engines.contains(&expected);
+        }
+        self.executed_engine() != expected
+    }
+
+    fn record_moe_executor(&mut self, executor: crate::moe::runtime::MoeExecutorKind) {
+        self.moe.record_executor(executor);
+    }
+
+    fn record_moe_telemetry(&mut self, telemetry: crate::moe::runtime::MoeExecutorTelemetry) {
+        self.moe.record_telemetry(&telemetry);
+    }
+
+    fn record_moe_forward(&mut self, elapsed_us: u64) {
+        self.moe.record_forward(elapsed_us);
+    }
+
+    fn record_moe_reason(&mut self, reason: &str) {
+        self.moe.record_reason(reason);
+    }
+
+    fn merge_moe(&mut self, other: &MoeTimings) {
+        self.moe.merge(other);
+    }
+
+    fn merge_engine_moe(&mut self, other: &crate::llm::DecodeTimings) {
+        if other.moe_forward_us != 0 {
+            self.record_moe_forward(other.moe_forward_us);
+            for executor in &other.moe_executors {
+                self.record_moe_executor(*executor);
+            }
+            if let Some(telemetry) = &other.moe_executor {
+                self.record_moe_telemetry(telemetry.clone());
+            }
+            self.record_engine(crate::executor::ExecutionEngine::Moe);
+        }
+    }
+
+    fn moe_executor(&self) -> &'static str {
+        match self.moe.executors.as_slice() {
+            [executor] => executor.as_str(),
+            [] => "not-run",
+            _ => "mixed",
+        }
+    }
+
     fn json(&self) -> Value {
         // Counters are kept in microseconds so a stage costing less than a
         // millisecond is not truncated to zero on every call and lost in the
@@ -111,6 +261,27 @@ impl NodeTimings {
             "token_text_ms": ms(self.token_text_us),
             "sampling_ms": ms(self.sampling_us),
             "encode_ms": ms(self.encode_us),
+            "moe_forward_ms": ms(self.moe.forward_us),
+            "moe_executor": self.moe_executor(),
+            "moe_executors": self
+                .moe
+                .executors
+                .iter()
+                .map(|executor| executor.as_str())
+                .collect::<Vec<_>>(),
+            "moe_executor_dtypes": self.moe.dtypes,
+            "moe_executor_reason": self.moe.reasons.first(),
+            "moe_executor_reasons": self.moe.reasons,
+            "moe_executor_diagnostics": self.moe.diagnostics,
+            "selected_path": self.selected_path.as_str(),
+            "executed_engine": self.executed_engine().as_str(),
+            "executed_engines": self
+                .executed_engines
+                .iter()
+                .map(|engine| engine.as_str())
+                .collect::<Vec<_>>(),
+            "engine_mismatch": self.engine_mismatch(),
+            "mixed_execution": self.mixed_execution(),
             "tp": self
                 .tp
                 .as_ref()
@@ -128,6 +299,14 @@ struct PrefillJob {
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    reuse_prefix: bool,
+    /// A decisão da cabeça que os hops intermediários só repassam. Um hop que
+    /// não tokeniza não pode substituir `true` por seu `PrefixDecision::default`.
+    cached_tokens: u32,
+    start_pos: Option<u32>,
+    /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
+    /// por quem tokenizou - ver `Session::stable_len`.
+    stable_len: Option<u32>,
     /// Bloco local onde parar, quando o remetente pediu menos que a fatia
     /// inteira. `None` é a fatia toda. Ver `resolve_exec_range`.
     capture_block: Option<u32>,
@@ -322,6 +501,17 @@ impl crate::relay::InProcessInference for InferenceAppState {
         Ok(match path {
             "/v1/prefill" => handle_prefill(State(self.clone()), headers, body).await,
             "/v1/step" => handle_step(State(self.clone()), headers, body).await,
+            "/v1/session/rewind" => {
+                let request = serde_json::from_slice(&body)
+                    .map_err(|e| anyhow::anyhow!("rewind inválido: {e}"))?;
+                handle_rewind(
+                    State(self.clone()),
+                    axum::http::HeaderMap::new(),
+                    Json(request),
+                )
+                .await
+                .into_response()
+            }
             _ => {
                 return Err(anyhow::anyhow!(
                     "rota de inferência em processo desconhecida: {path}"
@@ -468,6 +658,10 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.sid_key,
                 job.chunk_index,
                 job.chunk_size,
+                job.reuse_prefix,
+                job.cached_tokens,
+                job.start_pos,
+                job.stable_len,
                 job.is_last,
                 job.is_final_chunk,
                 job.wire_dtype,
@@ -502,6 +696,24 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
 
 fn inference_frame_body_limit() -> usize {
     INFERENCE_FRAME_BODY_LIMIT
+}
+
+fn lock_inference_state<T>(state: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
+    state
+        .lock()
+        .map_err(|_| anyhow::anyhow!("mutex do estado de inferência envenenado"))
+}
+
+fn finish_terminal_stream(
+    sessions: &mut HashMap<String, Session>,
+    sid_key: &str,
+    text: &mut String,
+) -> Result<()> {
+    let session = sessions
+        .get_mut(sid_key)
+        .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desconhecida"))?;
+    text.push_str(&session.finish_token_stream());
+    Ok(())
 }
 
 #[cfg(test)]
@@ -550,6 +762,161 @@ mod tests {
         assert_eq!(json["residual_ms"].as_f64(), Some(1.234));
         assert_eq!(json["sampling_ms"].as_f64(), Some(0.001));
         assert_ne!(json["backend_completion_ms"], serde_json::json!(0));
+    }
+
+    #[test]
+    fn telemetria_separa_caminho_selecionado_do_executor_real() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+
+        let value = timings.json();
+
+        assert_eq!(value["selected_path"], "moe/q4_0");
+        assert_eq!(value["executed_engine"], "llama.cpp");
+        assert_eq!(value["executed_engines"], serde_json::json!(["llama.cpp"]));
+        assert!(value["engine_mismatch"].as_bool().unwrap());
+        assert!(!value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn telemetria_detecta_execucao_mista_no_mesmo_hop() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+        timings.record_engine(crate::executor::ExecutionEngine::Moe);
+
+        let value = timings.json();
+
+        assert_eq!(value["executed_engine"], "unknown");
+        assert_eq!(
+            value["executed_engines"],
+            serde_json::json!(["llama.cpp", "moe"])
+        );
+        assert!(!value["engine_mismatch"].as_bool().unwrap());
+        assert!(value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn telemetria_expoe_backend_real_dos_experts_apos_forward() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_moe_executor(crate::moe::runtime::MoeExecutorKind::Cuda);
+        timings.record_moe_forward(12_345);
+
+        let value = timings.json();
+
+        assert_eq!(value["moe_executor"], "cuda");
+        assert_eq!(value["moe_executors"], serde_json::json!(["cuda"]));
+        assert_eq!(value["moe_forward_ms"].as_f64(), Some(12.345));
+    }
+
+    #[test]
+    fn telemetria_nomeia_dtype_e_motivo_do_executor_cpu() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+        timings.record_moe_telemetry(crate::moe::runtime::MoeExecutorTelemetry {
+            executor: crate::moe::runtime::MoeExecutorKind::CpuReference,
+            dtypes: vec![21, 22, 23],
+            reason: Some(
+                "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado".into(),
+            ),
+            diagnostics: None,
+        });
+
+        let value = timings.json();
+
+        assert_eq!(value["moe_executor"], "cpu-reference");
+        assert_eq!(
+            value["moe_executor_dtypes"],
+            serde_json::json!([21, 22, 23])
+        );
+        assert_eq!(
+            value["moe_executor_reason"],
+            "dtypes IQ3_S, IQ2_S e IQ4_XS sem ponte CUDA; CPUReference selecionado"
+        );
+    }
+
+    #[test]
+    fn modo_explicito_do_deploy_chega_ao_seletor_sem_ser_sobrescrito_pelo_ambiente() {
+        assert_eq!(
+            configured_inference_mode(crate::webui::InferenceMode::Dense).unwrap(),
+            crate::executor::InferenceMode::Dense
+        );
+        assert_eq!(
+            configured_inference_mode(crate::webui::InferenceMode::Moe).unwrap(),
+            crate::executor::InferenceMode::Moe
+        );
+    }
+
+    #[test]
+    fn hop_terminal_moe_publica_moe_apos_forward_real() {
+        let mut timings = NodeTimings {
+            selected_path: crate::executor::InferencePath::MoeQ4_0,
+            ..Default::default()
+        };
+
+        record_terminal_engine(&mut timings, crate::executor::InferencePath::MoeQ4_0, true);
+
+        let value = timings.json();
+        assert_eq!(value["executed_engine"], "moe");
+        assert_eq!(value["executed_engines"], serde_json::json!(["moe"]));
+        assert!(!value["engine_mismatch"].as_bool().unwrap());
+        assert!(!value["mixed_execution"].as_bool().unwrap());
+    }
+
+    #[test]
+    fn resposta_terminal_carrega_a_contagem_de_tokens_do_prompt() {
+        let value = terminal_prefill_meta(33, 7, 8, false);
+
+        assert_eq!(value["n_prompt_tokens"], 33);
+        assert_eq!(value["start_pos"], 7);
+        assert_eq!(value["next_pos"], 8);
+    }
+
+    #[test]
+    fn terminal_stream_cleanup_keeps_session_for_rewind() {
+        let mut sessions = HashMap::new();
+        let mut session = Session::new(0);
+        assert_eq!(session.feed_token_piece(b"ok"), "ok");
+        sessions.insert("conversation".to_string(), session);
+        let mut text = String::new();
+
+        finish_terminal_stream(&mut sessions, "conversation", &mut text).unwrap();
+
+        assert_eq!(text, "");
+        assert!(sessions.contains_key("conversation"));
+    }
+
+    #[test]
+    fn terminal_stream_cleanup_reports_unknown_session_without_panicking() {
+        let mut sessions = HashMap::new();
+        let mut text = String::new();
+
+        let error = finish_terminal_stream(&mut sessions, "gone", &mut text).unwrap_err();
+
+        assert!(error.to_string().contains("sessão 'gone' desconhecida"));
+    }
+
+    #[test]
+    fn poisoned_inference_lock_returns_an_error_instead_of_panicking() {
+        let state = Mutex::new(());
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = state.lock().unwrap();
+            panic!("simulate a local inference panic");
+        }));
+
+        let error = lock_inference_state(&state).unwrap_err();
+
+        assert!(error.to_string().contains("mutex do estado de inferência"));
     }
 
     #[tokio::test]
@@ -622,7 +989,7 @@ mod tests {
 
     /// Porta ocupada tem que falhar *antes* de o modelo ser carregado.
     ///
-    /// O `run` ligava o socket depois do `LlmEngine::load`, então cada uma das
+    /// O `run` ligava o socket depois do `LlmEngine::load_with_cache`, então cada uma das
     /// 10 tentativas do supervisor carregava um modelo inteiro na VRAM para
     /// descobrir, no fim, que a porta estava tomada - minutos por tentativa, e
     /// memória de GPU presa em cargas descartadas. O sintoma no log era
@@ -653,6 +1020,7 @@ mod tests {
             peer_count: 2,
             peer_index: 0,
             primary: true,
+            inference_mode: Default::default(),
             inference_port: port,
             n_gpu_layers: 99,
             n_ctx: 8192,
@@ -697,6 +1065,8 @@ mod tests {
             Arc::new(std::sync::atomic::AtomicBool::new(false)),
             None,
             None,
+            Arc::new(ModelCache::new()),
+            false,
         )
         .await
         .expect_err("porta ocupada devia falhar");
@@ -860,6 +1230,8 @@ mod relay_tests {
             "owns_tokens": true,
             "more_chunks": true,
             "n_prompt_tokens": 900,
+            "start_pos": 640,
+            "next_pos": 1152,
         });
         // What actually bubbled back from a tail that isn't the head.
         let mut bubbled = json!({"done": false, "more_chunks": false, "hop_timings": []});
@@ -868,6 +1240,8 @@ mod relay_tests {
 
         assert_eq!(bubbled["more_chunks"], true);
         assert_eq!(bubbled["n_prompt_tokens"], 900);
+        assert_eq!(bubbled["start_pos"], 640);
+        assert_eq!(bubbled["next_pos"], 1152);
     }
 
     /// A middle hop (never the head) must leave the bubbled response alone —
@@ -898,6 +1272,25 @@ mod relay_tests {
         let middle = json!({"owns_tokens": false, "more_chunks": false});
         assert!(is_final_chunk_for_forward(&middle, true));
         assert!(!is_final_chunk_for_forward(&middle, false));
+    }
+
+    #[test]
+    fn direct_prompt_progress_preserves_the_continuation_position() {
+        let inbound = json!({
+            "prompt_progress": {
+                "more_chunks": true,
+                "n_prompt_tokens": 1200,
+                "start_pos": 640,
+                "next_pos": 1152,
+            }
+        });
+        let mut result = json!({"done": false});
+
+        apply_prompt_progress(&inbound, &mut result);
+
+        assert_eq!(result["start_pos"], 640);
+        assert_eq!(result["next_pos"], 1152);
+        assert_eq!(result["n_prompt_tokens"], 1200);
     }
 
     #[test]
@@ -934,8 +1327,268 @@ mod relay_tests {
 
 // ── Session ───────────────────────────────────────────────────────────────────
 
+/// O que a cabeça **executou** com o prefixo retido no pedaço 0.
+///
+/// Viaja de volta ao gateway e adiante para os hops seguintes. A distinção
+/// importa: o gateway escolhe *tentar* reusar, a cabeça é quem decide se deu, e
+/// era exatamente essa diferença que a telemetria antiga não mostrava.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrefixDecision {
+    pub(crate) reused: bool,
+    pub(crate) cached_tokens: u32,
+}
+
+/// A regra do reuso, sem sessão nem motor por perto.
+///
+/// `retidos` são exatamente os tokens do prompt do turno anterior que estão no
+/// KV, e portanto seu tamanho tem que ser `n_past`. O prefixo serve quando
+/// esses tokens ainda abrem o prompt novo e sobra pelo menos um token para
+/// decodificar:
+/// aí o prefill continua da posição `n_past` e **nenhuma posição sai do KV**,
+/// que é a diferença entre funcionar em todo modelo e depender de o motor
+/// aceitar `llama_memory_seq_rm` parcial.
+///
+/// Note que a comparação é contra `n_past`, não contra o prompt retido inteiro:
+/// o que o turno anterior guardou no KV termina antes do rabicho volátil do
+/// template de conversa (ver `stable_prefix_len`). Divergir depois de `n_past`
+/// é o caso **normal** - é onde a conversa cresceu.
+///
+/// Recusa quando os `n_past` tokens não abrem mais o prompt novo (a conversa
+/// foi editada, trocou de template, mudou a lista de ferramentas), quando não
+/// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
+/// Recusar custa o reuso daquele turno e nunca a requisição.
+pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
+    if retidos.len() as u32 != n_past {
+        return PrefixDecision::default();
+    }
+    let comum = retidos
+        .iter()
+        .zip(novos)
+        .take_while(|(old, new)| old == new)
+        .count() as u32;
+    // O último token do novo prompt tem de ser decodificado: é dele que saem os
+    // logits do primeiro token gerado.
+    let cabe_decodificar = (n_past as usize) < novos.len();
+    if n_past > 0 && comum >= n_past && cabe_decodificar {
+        PrefixDecision {
+            reused: true,
+            cached_tokens: n_past,
+        }
+    } else {
+        PrefixDecision::default()
+    }
+}
+
+/// Quantos tokens do começo deste prompt continuam valendo quando a conversa
+/// crescer - a fronteira entre o que vale a pena reter e o que é deste turno.
+///
+/// **Medido, não presumido.** O template de conversa fecha o prompt com o
+/// rabicho que abre o turno do assistente (`<|im_end|>\n<|im_start|>assistant\n`
+/// no chatml, outra coisa noutro modelo). Esse rabicho fica no *fim* do prompt,
+/// então o prompt de um turno nunca é prefixo do prompt do turno seguinte: o
+/// texto novo entra antes dele. Medido no Ornith-1.0-35B: prompt de 50 tokens,
+/// 45 estáveis, 5 voláteis - e era exatamente por 5 tokens que todo reuso era
+/// recusado, com a retenção e o cache funcionando perfeitamente.
+///
+/// A sonda renderiza o mesmo prompt com a continuação que `render_prompt`
+/// acrescentaria e compara os tokens: o prefixo comum é, por construção, a
+/// parte que sobrevive. Vale para qualquer template e qualquer tokenizador,
+/// porque é medição e não suposição sobre o formato. Sonda conservadora custa
+/// alguns tokens de reuso; nunca corrompe, porque `plan_prefix_reuse` só
+/// aproveita o que está de fato no KV.
+fn stable_prefix_len(
+    engine: &crate::llm::LlmEngine,
+    texto: &str,
+    use_tmpl: bool,
+    no_think: bool,
+    tokens: &[i32],
+) -> usize {
+    // A forma exata do que o turno seguinte acrescenta - ver `render_prompt`.
+    const CONTINUACAO: &str = "\n\nAssistant: x";
+    let sondado = if use_tmpl {
+        match engine.apply_chat_template(
+            &[("user", &format!("{texto}{CONTINUACAO}"))],
+            true,
+            no_think,
+        ) {
+            Ok(rendered) => rendered,
+            // Sem sonda não há fronteira medida: não retenha nada que possa
+            // depender de um template que não conseguimos comparar.
+            Err(_) => return 0,
+        }
+    } else {
+        format!("{texto}{CONTINUACAO}")
+    };
+    let sondados = engine.tokenize(&sondado, !use_tmpl, true);
+    let comum = tokens
+        .iter()
+        .zip(&sondados)
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Reserve the final prompt token for `gen_seq`. Without this cap, a raw
+    // prompt whose continuation tokenizes independently could leave the whole
+    // prompt in `prompt_seq`, putting the first generated token back into the
+    // retained sequence.
+    retainable_prefix_len(comum, tokens.len())
+}
+
+fn retainable_prefix_len(common: usize, prompt_len: usize) -> usize {
+    common.min(prompt_len.saturating_sub(1))
+}
+
+/// A posição absoluta do KV em que este pedaço de prompt deve começar.
+///
+/// `start_pos` vem do peer que tokenizou. Ele só pode faltar no pedaço 0, onde
+/// a posição da própria sessão é a referência: zero numa sessão recomeçada,
+/// ou o fim do prefixo retido quando houve reuso. Para qualquer pedaço
+/// posterior, inferir a posição com `chunk_index * chunk_size` é incorreto:
+/// um pedaço anterior pode ter terminado no token 42, não no múltiplo 512.
+/// Recusar o frame sem posição nomeia a divergência e deixa o gateway fazer o
+/// fallback frio, em vez de misturar KV de sessões diferentes.
+fn expected_prefill_pos(
+    start_pos: Option<u32>,
+    chunk_index: u32,
+    session_n_past: u32,
+) -> Result<u32> {
+    match start_pos {
+        Some(position) => Ok(position),
+        None if chunk_index == 0 => Ok(session_n_past),
+        None => bail!(
+            "chunk {chunk_index} sem start_pos absoluto; não é seguro derivar a posição do índice"
+        ),
+    }
+}
+
+#[cfg(test)]
+mod prefix_rule_tests {
+    use super::*;
+
+    /// O caso do relatório: o cache acerta, o pedaço 0 é julgado por zero, e o
+    /// reuso é desfeito antes de decodificar.
+    #[test]
+    fn chunk_zero_of_a_hit_starts_where_the_retained_prefix_ends() {
+        assert_eq!(expected_prefill_pos(None, 0, 1523).unwrap(), 1523);
+    }
+
+    #[test]
+    fn chunk_zero_of_a_cold_session_starts_at_zero() {
+        assert_eq!(expected_prefill_pos(None, 0, 0).unwrap(), 0);
+    }
+
+    /// Do pedaço 1 em diante quem manda é a posição que o peer devolveu.
+    #[test]
+    fn later_chunks_follow_the_position_the_head_reported() {
+        assert_eq!(expected_prefill_pos(Some(1600), 1, 1600).unwrap(), 1600);
+        assert!(expected_prefill_pos(None, 2, 1024).is_err());
+    }
+
+    #[test]
+    fn partial_head_prefill_publishes_absolute_progress() {
+        let meta = partial_prefill_meta(true, 600, 42, 512);
+
+        assert_eq!(meta["done"], false);
+        assert_eq!(meta["more_chunks"], true);
+        assert_eq!(meta["n_prompt_tokens"], 600);
+        assert_eq!(meta["start_pos"], 42);
+        assert_eq!(meta["next_pos"], 512);
+    }
+
+    #[test]
+    fn a_conversation_that_only_grows_reuses_the_whole_previous_prompt() {
+        let turno1 = vec![10, 11, 12, 13];
+        let turno2 = vec![10, 11, 12, 13, 20, 21];
+        let d = plan_prefix_reuse(&turno1, 4, &turno2);
+        assert!(d.reused);
+        assert_eq!(d.cached_tokens, 4);
+    }
+
+    /// Divergência no meio exigiria encolher o KV. Recomeçar é a resposta, e
+    /// ela não custa nada além do reuso daquele turno.
+    #[test]
+    fn a_prompt_that_diverges_restarts_instead_of_shrinking_the_cache() {
+        let d = plan_prefix_reuse(&[10, 11, 12, 13], 4, &[10, 11, 99, 13, 20]);
+        assert!(!d.reused);
+        assert_eq!(d.cached_tokens, 0);
+    }
+
+    /// Prompt idêntico ao retido: não sobraria token para decodificar, e recuar
+    /// um só continuaria sendo remoção parcial. Recomeça.
+    #[test]
+    fn an_identical_prompt_restarts_because_nothing_would_be_left_to_decode() {
+        let tokens = vec![10, 11, 12, 13];
+        let d = plan_prefix_reuse(&tokens, 4, &tokens);
+        assert!(!d.reused);
+    }
+
+    #[test]
+    fn stable_frontier_always_leaves_a_prompt_token_for_generation() {
+        assert_eq!(retainable_prefix_len(9, 10), 9);
+        assert_eq!(retainable_prefix_len(10, 10), 9);
+        assert_eq!(retainable_prefix_len(1, 1), 0);
+        assert_eq!(retainable_prefix_len(0, 0), 0);
+    }
+
+    /// O KV pode ter menos posições que os tokens guardados (turno anterior
+    /// interrompido no meio do prefill). Reusar até `n_past` seria mentira
+    /// sobre o que está no cache.
+    #[test]
+    fn a_partially_ingested_prompt_is_not_offered_as_a_prefix() {
+        let d = plan_prefix_reuse(&[10, 11, 12, 13], 2, &[10, 11, 12, 13, 20]);
+        assert!(!d.reused, "o retido tem 4 tokens mas só 2 estão no KV");
+    }
+
+    #[test]
+    fn a_session_with_no_prompt_in_the_cache_is_not_a_hit() {
+        assert!(!plan_prefix_reuse(&[], 0, &[10, 11]).reused);
+    }
+
+    /// Cada sessão tem uma sequência de prompt e a de geração emparelhada com
+    /// ela - ver `llm::kv_seq_budget`. Os dois conjuntos não podem se cruzar.
+    #[test]
+    fn prompt_and_generation_sequences_never_collide() {
+        let max_sessions = 4u32;
+        let orcamento = crate::llm::kv_seq_budget(max_sessions);
+        assert_eq!(orcamento, 8);
+        let prompts: Vec<u32> = (0..max_sessions).collect();
+        let geracoes: Vec<u32> = prompts.iter().map(|s| s + max_sessions).collect();
+        for g in &geracoes {
+            assert!(
+                !prompts.contains(g),
+                "sequência {g} servindo aos dois papéis"
+            );
+            assert!(
+                *g < orcamento,
+                "sequência {g} fora do orçamento do contexto"
+            );
+        }
+    }
+}
+
+/// Uma conversa viva neste peer, com o KV do prompt separado do KV da geração.
+///
+/// **O prompt nunca é estendido.** `prompt_seq` recebe os pedaços do prompt e
+/// para aí; assim que o turno vai gerar, `open_generation` copia esse KV para
+/// `gen_seq` e todo token gerado cai na cópia. No fim do turno a cópia é
+/// apagada inteira - `kv_remove(gen, 0, -1)`, remoção total, que todo motor
+/// aceita - e `prompt_seq` continua exatamente com o prompt, pronto para o
+/// turno seguinte. É por isso que o reuso de prefixo não depende de o modelo
+/// aceitar remoção parcial de KV: nada precisa ser removido do meio.
 struct Session {
-    seq_id: u32,
+    /// Sequência do prompt. Só o prefill escreve nela.
+    prompt_seq: u32,
+    /// Sequência da geração deste turno, aberta na primeira decodificação de
+    /// token gerado. `None` entre turnos.
+    gen_seq: Option<u32>,
+    /// Quantos tokens de prompt estão no KV de `prompt_seq`. É a posição para
+    /// onde a sessão volta no fim do turno, e o que o gateway confirma no
+    /// `/v1/session/rewind`.
+    prompt_len: u32,
+    /// Onde acaba a parte do prompt que sobrevive ao turno seguinte, e portanto
+    /// onde a sequência de geração começa - ver `stable_prefix_len`. Tudo daqui
+    /// para a frente (o rabicho do template e os tokens gerados) vive na cópia
+    /// e some no fim do turno. `u32::MAX` é "ainda não sei", que mantém tudo na
+    /// sequência do prompt: é o estado dos hops antes de a cabeça informar.
+    stable_len: u32,
     n_past: u32,
     recent_tokens: Vec<i32>,
     /// Stored by the first peer so subsequent chunks don't re-tokenize.
@@ -944,19 +1597,33 @@ struct Session {
     /// between sessions because a byte prefix from one generation can only be
     /// completed by a later token in that same generation.
     utf8: crate::llm::Utf8Assembler,
+    /// `true` entre turnos: o KV guarda só o prompt e ninguém está gerando.
+    /// Uma sessão retida é cache reclamável - `alloc_seq` pode despejá-la
+    /// quando falta slot, e o turno seguinte apenas perde o reuso.
+    retained: bool,
     last_used: Instant,
 }
 
 impl Session {
     fn new(seq_id: u32) -> Self {
         Self {
-            seq_id,
+            prompt_seq: seq_id,
+            gen_seq: None,
+            prompt_len: 0,
+            stable_len: u32::MAX,
             n_past: 0,
             recent_tokens: Vec::new(),
             prompt_tokens: Vec::new(),
             utf8: crate::llm::Utf8Assembler::new(),
+            retained: false,
             last_used: Instant::now(),
         }
+    }
+
+    /// Onde a próxima decodificação escreve: a cópia de geração quando o turno
+    /// já está gerando, a sequência do prompt enquanto ele ainda entra.
+    fn seq_id(&self) -> u32 {
+        self.gen_seq.unwrap_or(self.prompt_seq)
     }
 
     fn feed_token_piece(&mut self, piece: &[u8]) -> String {
@@ -1013,6 +1680,8 @@ mod session_text_tests {
 
 struct InferState {
     engine: LlmEngine,
+    moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
+    moe_fallback_reason: Option<String>,
     sessions: HashMap<String, Session>,
     seq_pool: Vec<u32>,
     max_sessions: u32,
@@ -1023,6 +1692,7 @@ struct InferState {
     start_layer: u32,
     end_layer: u32,
     original_block_count: Option<u32>,
+    inference_path: crate::executor::InferencePath,
     /// Corte de confiança do rascunho MTP — ver `NodeConfig::mtp_min_probability`.
     mtp_min_probability: f32,
     /// Duração do último handshake TLS aceito por este servidor, em ms.
@@ -1040,6 +1710,127 @@ type SharedState = Arc<Mutex<InferState>>;
 
 fn use_chat_template(requested: Option<bool>, configured_default: bool) -> bool {
     requested.unwrap_or(configured_default)
+}
+
+fn record_terminal_engine(
+    timings: &mut NodeTimings,
+    path: crate::executor::InferencePath,
+    moe_forwarded: bool,
+) {
+    if path.is_moe() && moe_forwarded {
+        timings.record_engine(crate::executor::ExecutionEngine::Moe);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
+}
+
+/// Anota no meta o que este peer **executou** com o prefixo retido.
+///
+/// Só o pedaço 0 carrega a decisão, porque só ele pode reusar. Os hops
+/// seguintes obedecem a este campo em vez do pedido original do gateway: quem
+/// tokeniza é quem sabe se o prefixo servia, e um hop reusando enquanto a
+/// cabeça recomeçou (ou o contrário) desalinha as posições de todo o pipeline.
+fn apply_prefix_decision(
+    meta: &mut Value,
+    chunk_index: u32,
+    prefix: PrefixDecision,
+    requested_reuse: bool,
+    requested_cached_tokens: u32,
+    owns_tokens: bool,
+) {
+    if chunk_index != 0 {
+        return;
+    }
+    if owns_tokens {
+        meta["reuse_prefix"] = json!(prefix.reused);
+        meta["cached_tokens"] = json!(prefix.cached_tokens);
+    } else {
+        // Só a cabeça pode decidir se os tokens batem. Todos os hops
+        // intermediários devem transportar a decisão autoritativa recebida;
+        // recalculá-la como `false` faria o hop seguinte resetar a sessão e
+        // depois receber um hidden state com posição positiva.
+        meta["reuse_prefix"] = json!(requested_reuse);
+        meta["cached_tokens"] = json!(requested_cached_tokens);
+    }
+}
+
+#[cfg(test)]
+mod prefix_decision_tests {
+    use super::*;
+
+    #[test]
+    fn an_intermediate_hop_echoes_the_head_decision() {
+        let mut meta = json!({
+            "reuse_prefix": false,
+            "cached_tokens": 0,
+        });
+
+        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, false);
+
+        assert_eq!(meta["reuse_prefix"], true);
+        assert_eq!(meta["cached_tokens"], 42);
+    }
+
+    #[test]
+    fn the_token_owner_reports_what_it_executed() {
+        let mut meta = json!({
+            "reuse_prefix": true,
+            "cached_tokens": 99,
+        });
+
+        apply_prefix_decision(
+            &mut meta,
+            0,
+            PrefixDecision {
+                reused: false,
+                cached_tokens: 0,
+            },
+            true,
+            42,
+            true,
+        );
+
+        assert_eq!(meta["reuse_prefix"], false);
+        assert_eq!(meta["cached_tokens"], 0);
+    }
+}
+
+/// Anota no meta a fronteira medida por quem tokenizou, para os hops seguintes
+/// partirem o prompt na mesma posição. Ver `Session::stable_len`.
+fn apply_stable_len(meta: &mut Value, stable_len: u32) {
+    if stable_len != u32::MAX {
+        meta["stable_len"] = json!(stable_len);
+    }
+}
+
+fn partial_prefill_meta(
+    more_chunks: bool,
+    n_prompt_tokens: usize,
+    start_pos: u32,
+    next_pos: u32,
+) -> Value {
+    json!({
+        "done": false,
+        "more_chunks": more_chunks,
+        "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": start_pos,
+        "next_pos": next_pos,
+    })
+}
+
+fn terminal_prefill_meta(
+    n_prompt_tokens: usize,
+    start_pos: u32,
+    next_pos: u32,
+    done: bool,
+) -> Value {
+    json!({
+        "done": done,
+        "more_chunks": false,
+        "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": start_pos,
+        "next_pos": next_pos,
+    })
 }
 
 /// A porta de inferência aceita a credencial compartilhada do cluster ou uma
@@ -1078,12 +1869,20 @@ async fn require_inference_auth(
 }
 
 impl InferState {
-    fn new(engine: LlmEngine, cfg: &NodeConfig) -> Self {
+    fn new(
+        engine: LlmEngine,
+        cfg: &NodeConfig,
+        inference_path: crate::executor::InferencePath,
+        moe: Option<Arc<crate::moe::runtime::MoeRuntime>>,
+        moe_fallback_reason: Option<String>,
+    ) -> Self {
         let max_sessions = cfg.max_sessions.max(1);
         let seq_pool = (0..max_sessions).collect();
         Self {
             tls_handshake_ms: None,
             engine,
+            moe,
+            moe_fallback_reason,
             sessions: HashMap::new(),
             seq_pool,
             max_sessions,
@@ -1101,17 +1900,57 @@ impl InferState {
             start_layer: cfg.start_layer,
             end_layer: cfg.end_layer,
             original_block_count: None, // filled in after engine load
+            inference_path,
             mtp_min_probability: cfg.mtp_min_probability,
             tp: cfg.tp.clone(),
         }
     }
 
+    fn apply_moe_hidden(
+        &self,
+        hidden: Vec<f32>,
+        n_tokens: usize,
+        capture_block: Option<u32>,
+        timings: &mut NodeTimings,
+    ) -> Result<Vec<f32>> {
+        // A runtime object is not ownership. Only the explicitly selected MoE
+        // path may claim the boundary block; a dense model must never execute
+        // the sidecar merely because one was accidentally constructed.
+        if !self.inference_path.is_moe() {
+            return Ok(hidden);
+        }
+        if self.engine.moe_hook_enabled() {
+            return Ok(hidden);
+        }
+        let Some(moe) = self.moe.as_ref() else {
+            if let Some(reason) = self.moe_fallback_reason.as_deref() {
+                timings.record_moe_reason(reason);
+            }
+            return Ok(hidden);
+        };
+        let layer = capture_block.unwrap_or_else(|| moe.layers().saturating_sub(1));
+        let forward_started = Instant::now();
+        let output = moe
+            .forward_batch(layer, &hidden, n_tokens)
+            .map_err(|error| anyhow::anyhow!("forward MoE falhou: {error}"))?;
+        timings.record_moe_telemetry(moe.executor_telemetry());
+        timings.record_moe_forward(forward_started.elapsed().as_micros() as u64);
+        timings.record_engine(crate::executor::ExecutionEngine::Moe);
+        Ok(output)
+    }
+
     fn alloc_seq(&mut self) -> Option<u32> {
         if self.seq_pool.is_empty() {
-            let reaped = self.reap_idle();
-            if reaped == 0 {
-                return None;
-            }
+            self.reap_idle();
+        }
+        if self.seq_pool.is_empty() {
+            // Uma sessão retida é só cache de prompt entre turnos: devolvê-la
+            // custa o reuso de um turno, e não devolvê-la custa a requisição
+            // inteira ("seq pool esgotado"). O cache cede primeiro.
+            self.evict_retained();
+        }
+        if self.seq_pool.is_empty() {
+            return None;
         }
         Some(self.seq_pool.remove(0))
     }
@@ -1120,6 +1959,165 @@ impl InferState {
         if !self.seq_pool.contains(&seq_id) {
             self.seq_pool.push(seq_id);
         }
+    }
+
+    /// A sequência de geração que acompanha uma sequência de prompt.
+    ///
+    /// Par fixo, não sorteado de um pool: quem tem slot de prompt tem slot de
+    /// geração por construção, então abrir a geração nunca falha por falta de
+    /// slot. Ver `llm::kv_seq_budget`, que reserva as duas metades no contexto.
+    fn gen_seq_of(&self, prompt_seq: u32) -> u32 {
+        prompt_seq + self.max_sessions.max(1)
+    }
+
+    /// Despeja a sessão retida menos usada, devolvendo o slot dela.
+    fn evict_retained(&mut self) -> bool {
+        let Some(sid) = self
+            .sessions
+            .iter()
+            .filter(|(_, session)| session.retained)
+            .min_by_key(|(_, session)| session.last_used)
+            .map(|(sid, _)| sid.clone())
+        else {
+            return false;
+        };
+        info!(
+            "despejando prefixo retido da sessão {}… para liberar slot",
+            &sid[..8.min(sid.len())]
+        );
+        self.finish(&sid);
+        true
+    }
+
+    /// Abre a sequência de geração deste turno copiando o KV do prompt.
+    ///
+    /// Idempotente: chamado antes de cada decodificação de token gerado, faz
+    /// trabalho só na primeira. Depois disto nada mais escreve em
+    /// `prompt_seq`, que é o que torna o prefixo reutilizável sem remoção
+    /// parcial de KV - ver o doc de `Session`.
+    fn open_generation(&mut self, sid: &str) -> Result<()> {
+        let Some(session) = self.sessions.get(sid) else {
+            bail!("sessão '{sid}' desconhecida — faça o prefill antes");
+        };
+        if session.gen_seq.is_some() {
+            return Ok(());
+        }
+        let prompt_seq = session.prompt_seq;
+        let gen = self.gen_seq_of(prompt_seq);
+        // A cópia herda o que estiver na sequência de destino se ela não
+        // estiver limpa; limpar é remoção total, sempre aceita.
+        let _ = self.engine.kv_remove(gen, 0, -1);
+        self.engine.kv_copy_seq(prompt_seq, gen);
+        let session = self.sessions.get_mut(sid).expect("session exists");
+        session.gen_seq = Some(gen);
+        session.retained = false;
+        Ok(())
+    }
+
+    /// Decide, no pedaço 0, se o prefixo retido serve para este prompt - e
+    /// deixa a sessão coerente com a decisão.
+    ///
+    /// A regra é **só acrescentar**: o prefixo serve quando os tokens retidos
+    /// são exatamente um prefixo dos novos, e nem um token a mais. Assim o
+    /// prefill continua de onde parou e **nenhuma posição precisa sair do KV** -
+    /// que é a diferença entre funcionar em todo modelo e depender de o motor
+    /// aceitar `llama_memory_seq_rm` parcial. Qualquer outro caso (divergência
+    /// no meio, prompt idêntico ao retido, sessão sem prompt) recomeça a sessão
+    /// do zero, o que é uma perda de reuso naquele turno, nunca um erro.
+    ///
+    /// O último token do prompt nunca entra no prefixo aproveitado: é dele que
+    /// saem os logits do primeiro token gerado, então sempre sobra pelo menos
+    /// um token para decodificar.
+    fn adopt_prompt_prefix(
+        &mut self,
+        sid: &str,
+        tokens: Vec<i32>,
+        stable_len: u32,
+        requested_reuse: bool,
+    ) -> Result<PrefixDecision> {
+        let mut decision = PrefixDecision::default();
+        if requested_reuse {
+            let session = self.sessions.get(sid).ok_or_else(|| {
+                anyhow::anyhow!("sessão '{sid}' desconhecida no reuso de prefixo")
+            })?;
+            let retained = session
+                .prompt_tokens
+                .get(..session.n_past as usize)
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "sessão '{sid}' retém {} tokens, mas só conhece {}",
+                        session.n_past,
+                        session.prompt_tokens.len()
+                    )
+                })?;
+            decision = plan_prefix_reuse(retained, session.n_past, &tokens);
+            if !decision.reused {
+                let comum = retained
+                    .iter()
+                    .zip(&tokens)
+                    .take_while(|(old, new)| old == new)
+                    .count();
+                debug!(
+                    "prefixo da sessão {}… não serve: comum={comum} retido={} retidos={} novos={}",
+                    &sid[..8.min(sid.len())],
+                    session.n_past,
+                    session.prompt_tokens.len(),
+                    tokens.len()
+                );
+                self.get_or_create(sid, true)?;
+            }
+        }
+        let session = self
+            .sessions
+            .get_mut(sid)
+            .ok_or_else(|| anyhow::anyhow!("sessão '{sid}' desapareceu no prefill"))?;
+        session.prompt_tokens = tokens;
+        session.stable_len = stable_len;
+        session.retained = false;
+        Ok(decision)
+    }
+
+    /// Fecha o turno mantendo o prompt: apaga a sequência de geração inteira e
+    /// devolve a sessão à posição do fim do prompt.
+    ///
+    /// Só usa remoção **total** de sequência, que todo motor aceita - inclusive
+    /// os recorrentes/híbridos, onde `llama_memory_seq_rm` recusa qualquer
+    /// recuo parcial maior que a janela de snapshots (`n_rs_seq`). É a
+    /// substituição do rewind que era recusado em 75 das 176 requisições.
+    ///
+    /// Devolve quantos tokens de prompt ficaram retidos, ou `None` quando não
+    /// havia prompt para reter (aí a sessão é encerrada de vez).
+    fn retain_prompt(&mut self, sid: &str) -> Option<u32> {
+        let session = self.sessions.get(sid)?;
+        if session.prompt_len == 0 {
+            self.finish(sid);
+            return None;
+        }
+        let (gen_seq, prompt_len) = (session.gen_seq, session.prompt_len);
+        if let Some(gen) = gen_seq {
+            let _ = self.engine.kv_remove(gen, 0, -1);
+        }
+        let session = self.sessions.get_mut(sid).expect("session exists");
+        session.gen_seq = None;
+        session.n_past = prompt_len;
+        session.recent_tokens.clear();
+        let _ = session.finish_token_stream();
+        session.retained = true;
+        session.last_used = Instant::now();
+        Some(prompt_len)
+    }
+
+    /// Apaga o KV das duas sequências de uma sessão.
+    fn wipe_kv(&mut self, session: &Session) {
+        if let Some(gen) = session.gen_seq {
+            let _ = self.engine.kv_remove(gen, 0, -1);
+        }
+        // A sequência de geração pode ter sobrado de um turno anterior que não
+        // passou por aqui; limpar as duas é barato e não deixa célula presa.
+        let _ = self
+            .engine
+            .kv_remove(self.gen_seq_of(session.prompt_seq), 0, -1);
+        let _ = self.engine.kv_remove(session.prompt_seq, 0, -1);
     }
 
     fn reap_idle(&mut self) -> usize {
@@ -1142,11 +2140,11 @@ impl InferState {
                 info!(
                     "reclaiming idle session {}… (seq={})",
                     &sid[..8.min(sid.len())],
-                    s.seq_id
+                    s.prompt_seq
                 );
-                // Limpeza total da sequência, que todo modelo aceita.
-                let _ = self.engine.kv_remove(s.seq_id, 0, -1);
-                self.free_seq(s.seq_id);
+                // Limpeza total das sequências, que todo modelo aceita.
+                self.wipe_kv(&s);
+                self.free_seq(s.prompt_seq);
             }
         }
         count
@@ -1156,8 +2154,8 @@ impl InferState {
         if reset {
             if let Some(mut old) = self.sessions.remove(sid) {
                 let _ = old.finish_token_stream();
-                let _ = self.engine.kv_remove(old.seq_id, 0, -1);
-                self.free_seq(old.seq_id);
+                self.wipe_kv(&old);
+                self.free_seq(old.prompt_seq);
             }
             let seq = self.alloc_seq().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -1172,15 +2170,18 @@ impl InferState {
         })
     }
 
+    /// Encerra a sessão de vez: as duas sequências são apagadas e o slot volta
+    /// ao pool. O fim normal de um turno **não** passa por aqui - passa por
+    /// `retain_prompt`, que guarda o prompt. Aqui chegam a liberação explícita
+    /// do gateway, o cancelamento e a limpeza de erro.
     fn finish(&mut self, sid: &str) {
         if let Some(mut s) = self.sessions.remove(sid) {
-            // Normal EOS, explicit release, cancellation and error cleanup
-            // all pass here. The output path flushes before normal EOS calls
-            // this method; the cleanup cases deliberately discard the result
-            // after clearing it so no tail can leak into the next session.
+            // The output path flushes before the caller reaches this method;
+            // the cleanup cases deliberately discard the result after clearing
+            // it so no tail can leak into the next session.
             let _ = s.finish_token_stream();
-            let _ = self.engine.kv_remove(s.seq_id, 0, -1);
-            self.free_seq(s.seq_id);
+            self.wipe_kv(&s);
+            self.free_seq(s.prompt_seq);
         }
     }
 }
@@ -1198,6 +2199,8 @@ pub async fn run(
     batching_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     tls: Option<crate::serve::TlsServer>,
     auth: Option<crate::auth::AuthState>,
+    model_cache: Arc<ModelCache>,
+    reuse_weights: bool,
 ) -> Result<()> {
     // Derivado, não copiado do pedido: o caminho de linha de comando nunca
     // preenche `no_embeddings`, então sem isto o nó da última fatia instalava o
@@ -1221,12 +2224,49 @@ pub async fn run(
     let listener = bind_dual_stack(port).await?;
     info!("porta {port} ligada; carregando o modelo");
 
-    let need_embeddings = cfg.needs_residual_export();
+    let model_info = match crate::gguf::read_info(std::path::Path::new(&cfg.model_path)) {
+        Ok(info) => Some(info),
+        Err(error) => {
+            warn!("não foi possível ler metadados GGUF antes da carga: {error}");
+            None
+        }
+    };
+    let inference_mode = configured_inference_mode(cfg.inference_mode)?;
+    let inference_path = crate::executor::select(inference_mode, model_info.as_ref())?;
+    info!(
+        "caminho de inferência selecionado: {} (modo {:?})",
+        inference_path.as_str(),
+        inference_mode
+    );
+
+    // The terminal MoE hop also needs the captured boundary residual so its
+    // own executor can run before the response is sampled. Dense single-peer
+    // contexts keep the old fast path without installing the callback.
+    let need_embeddings = cfg.needs_residual_export() || inference_path.is_moe();
     // Maior largura de lote especulativo que este nó pode receber, dos dois
     // mecanismos (lookup e MTP) - é o que `cparams.n_rs_seq` precisa cobrir
     // para um modelo híbrido/recorrente aceitar desfazer um rascunho
     // recusado. Ver o doc de `EngineConfig::rs_seq_window`.
     let rs_seq_window = cfg.speculative_k.max(cfg.mtp_draft_tokens + 1);
+    let moe_plan = if inference_path.is_moe() {
+        Some(
+            crate::moe::runtime::MoeRuntime::external_executor_plan(&cfg.model_path).map_err(
+                |error| anyhow::anyhow!("planejamento de ownership MoE falhou: {error}"),
+            )?,
+        )
+    } else {
+        None
+    };
+    let moe_external_executor = moe_plan.as_ref().is_some_and(|plan| plan.enabled());
+    if let Some(plan) = moe_plan.as_ref().filter(|plan| !plan.enabled()) {
+        warn!(
+            reason = plan
+                .reason
+                .as_deref()
+                .unwrap_or("executor device não disponível"),
+            "experts permanecem no llama.cpp por falta de executor device"
+        );
+    }
     let engine_cfg = EngineConfig {
         n_ctx: crate::runtime::total_context_tokens(cfg.n_ctx, cfg.max_sessions)?,
         offload_kqv: cfg.offload_kqv,
@@ -1240,23 +2280,64 @@ pub async fn run(
         need_embeddings,
         mtp: cfg.mtp_effective(),
         rs_seq_window,
+        moe_external_executor,
+        moe_external_executor_layers: moe_plan
+            .as_ref()
+            .map(|plan| plan.layers.clone())
+            .unwrap_or_default(),
     };
 
     let model_path = cfg.model_path.clone();
-    let engine = tokio::task::spawn_blocking(move || LlmEngine::load(&model_path, &engine_cfg))
-        .await
-        .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
+    let mut engine = tokio::task::spawn_blocking(move || {
+        LlmEngine::load_with_cache(&model_path, &engine_cfg, &model_cache, reuse_weights)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("spawn_blocking: {e}"))??;
 
     // Só agora se sabe se a cabeça `nextn` existe: depende do GGUF, não da
     // configuração. Ver `Network::mtp_ready`.
     mtp_ready.store(engine.mtp_ready(), std::sync::atomic::Ordering::Relaxed);
 
-    let mut state_inner = InferState::new(engine, &cfg);
+    let moe = if inference_path.is_moe() && moe_external_executor {
+        let info = model_info.as_ref().ok_or_else(|| {
+            anyhow::anyhow!("caminho MoE exige metadados GGUF para preparar o router")
+        })?;
+        let experts = info
+            .expert_count
+            .ok_or_else(|| anyhow::anyhow!("caminho MoE exige expert_count no GGUF"))?;
+        let top_k = info.expert_used_count.unwrap_or(1).max(1) as usize;
+        let weights_bytes = std::fs::metadata(&cfg.model_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let cuda_compute_bytes = engine.cuda_compute_bytes();
+        Some(Arc::new(
+            crate::moe::runtime::MoeRuntime::open(
+                &cfg.model_path,
+                cfg.model_label.clone(),
+                experts,
+                top_k,
+                weights_bytes,
+                cuda_compute_bytes,
+            )
+            .map_err(|error| anyhow::anyhow!("runtime MoE indisponível: {error}"))?,
+        ))
+    } else {
+        None
+    };
+
+    if let Some(runtime) = moe.as_ref() {
+        runtime.start_device_warmup();
+        engine.set_moe_runtime(Arc::clone(runtime))?;
+    }
+    let moe_fallback_reason = moe_plan
+        .as_ref()
+        .filter(|plan| !plan.enabled())
+        .and_then(|plan| plan.reason.clone());
+    let mut state_inner = InferState::new(engine, &cfg, inference_path, moe, moe_fallback_reason);
     state_inner.tls_handshake_ms = tls.as_ref().map(|t| t.last_handshake_ms.clone());
-    state_inner.original_block_count =
-        crate::gguf::read_info(std::path::Path::new(&cfg.model_path))
-            .ok()
-            .and_then(|info| info.original_block_count);
+    state_inner.original_block_count = model_info
+        .as_ref()
+        .and_then(|info| info.original_block_count);
 
     // Fora do mutex do estado: o decode segura aquele lock e é de dentro dele
     // que o reduce espera a soma. Ver `handle_tp_reduce`.
@@ -1292,6 +2373,7 @@ pub async fn run(
             post(handle_step).layer(DefaultBodyLimit::max(inference_frame_body_limit())),
         )
         .route("/v1/session/release", post(handle_release))
+        .route("/v1/session/rewind", post(handle_rewind))
         .route("/v1/session/rollback", post(handle_rollback));
     let inference_routes = if let Some(auth) = auth.clone() {
         inference_routes.layer(middleware::from_fn_with_state(auth, require_inference_auth))
@@ -1345,6 +2427,19 @@ pub async fn run(
     })
     .await;
     crate::relay::clear_local_inference(generation).await;
+
+    // O aquecimento é cooperativo e pode estar lendo o GGUF enquanto o
+    // servidor é reconfigurado. Sinalize a parada antes de liberar o motor,
+    // para que nenhuma geração antiga continue admitindo experts no device.
+    if let Some(runtime) = app_state
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .moe
+        .clone()
+    {
+        runtime.cancel_device_warmup();
+    }
 
     if let Some(handle) = local_barrier_handle {
         crate::tp::clear_local_barrier(handle);
@@ -1456,9 +2551,11 @@ fn http_client() -> &'static crate::peer_client::PeerClients {
 /// `SentFrame::tls_handshake_ms` sobre por que isso é a verdade e não uma
 /// falha de medição.
 fn last_handshake_ms(state: &SharedState) -> u64 {
+    let Ok(state) = lock_inference_state(state) else {
+        warn!("não foi possível ler o último handshake: mutex do estado envenenado");
+        return 0;
+    };
     state
-        .lock()
-        .unwrap()
         .tls_handshake_ms
         .as_ref()
         .map(|v| v.load(std::sync::atomic::Ordering::Relaxed))
@@ -1623,10 +2720,13 @@ fn err500(msg: impl std::fmt::Display) -> Response {
 
 // ── /health ───────────────────────────────────────────────────────────────────
 
-async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoResponse {
+async fn handle_health(State(app): State<InferenceAppState>) -> Response {
     let scheduler = app.scheduler;
     let state = app.state;
-    let s = state.lock().unwrap();
+    let s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     // Keep in sync with network.rs's `self_announce`, gateway.rs's local peer
     // entry, and the capability constants in routing/pipeline.rs.
     let mut caps = vec![
@@ -1648,13 +2748,32 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         "start_layer": s.start_layer,
         "end_layer": s.end_layer,
         "original_block_count": s.original_block_count,
+        "selected_path": s.inference_path.as_str(),
         "hidden_dim": s.engine.n_embd,
         "vocab_size": s.engine.n_vocab,
         "max_sessions": s.max_sessions,
+        // Duas sequências de KV por sessão: a do prompt e a da geração. Ver
+        // `llm::kv_seq_budget`, que explica por que e o que custa.
+        "kv_seq_max": crate::llm::kv_seq_budget(s.max_sessions),
         "sessions_in_use": s.sessions.len(),
         "free_slots": s.seq_pool.len(),
+        // Sessões paradas no fim do prompt, esperando o turno seguinte. É o
+        // cache de prefixo visto do lado que o executa.
+        "sessions_retained": s.sessions.values().filter(|x| x.retained).count(),
+        "prefix_tokens_retained": s
+            .sessions
+            .values()
+            .filter(|x| x.retained)
+            .map(|x| x.prompt_len as u64)
+            .sum::<u64>(),
+        // Diagnóstico do motor: `kv_can_shift` é o K-shift do llama.cpp, e
+        // **não** governa remoção parcial de KV. O reuso de prefixo deste
+        // projeto não depende de nenhum dos dois - ver `Session`.
+        "kv_can_shift": s.engine.kv_can_shift(),
         "n_ctx_total": s.engine.n_ctx(),
-        "n_ctx_per_session": s.engine.n_ctx() / s.max_sessions.max(1),
+        // Cache unificado: a janela por sessão é o contexto inteiro. Ver
+        // `llm::kv_seq_budget`.
+        "n_ctx_per_session": s.engine.n_ctx(),
         "offload_kqv": s.engine.offload_kqv(),
         "cache_type_k": s.engine.cache_type_k().as_str(),
         "cache_type_v": s.engine.cache_type_v().as_str(),
@@ -1680,6 +2799,7 @@ async fn handle_health(State(app): State<InferenceAppState>) -> impl IntoRespons
         // operador, então nem a configuração nem o nome do arquivo respondem.
         "mtp_ready": s.engine.mtp_ready(),
     }))
+    .into_response()
 }
 
 // ── /v1/tp/reduce ────────────────────────────────────────────────────────────
@@ -1777,7 +2897,10 @@ fn replicate_session_call(
         return; // já é a réplica
     }
     let tp = {
-        let s = state.lock().unwrap();
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível replicar sessão: mutex do estado envenenado");
+            return;
+        };
         s.tp.clone()
     };
     let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
@@ -1793,6 +2916,37 @@ fn replicate_session_call(
     );
 }
 
+fn replicate_session_rewind(
+    state: &SharedState,
+    headers: &axum::http::HeaderMap,
+    session_id: &str,
+    n_tokens: u32,
+) {
+    if headers.get(crate::tp::TP_DECODE_HEADER).is_some() {
+        return;
+    }
+    let tp = {
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível replicar rewind: mutex do estado envenenado");
+            return;
+        };
+        s.tp.clone()
+    };
+    let Some(tp) = tp.filter(|t| t.size > 1 && t.rank == 0) else {
+        return;
+    };
+    let body = json!({ "session_id": session_id, "n_tokens": n_tokens })
+        .to_string()
+        .into_bytes();
+    crate::tp::broadcast_to(
+        &tp.members,
+        "/v1/session/rewind",
+        "session",
+        body,
+        Some("application/json"),
+    );
+}
+
 // ── /v1/session/release ───────────────────────────────────────────────────────
 
 #[derive(Deserialize)]
@@ -1804,14 +2958,17 @@ async fn handle_release(
     State(app): State<InferenceAppState>,
     headers: axum::http::HeaderMap,
     Json(req): Json<ReleaseRequest>,
-) -> impl IntoResponse {
+) -> Response {
     // A réplica não encerra sessão por conta própria (ver `tp::is_replica`),
     // então quem a libera é este release - que o gateway manda **só ao rank 0**,
     // porque o worker não é hop do pipeline. Sem repassar, a sessão do worker
     // fica segurando o slot para sempre e a requisição seguinte morre com
     // "seq pool esgotado (max 1 sessões simultâneas)" (18/08).
     replicate_session_call(&app.state, &headers, "/v1/session/release", &req.session_id);
-    let mut s = app.state.lock().unwrap();
+    let mut s = match lock_inference_state(&app.state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     let existed = s.sessions.contains_key(&req.session_id);
     s.finish(&req.session_id);
     let free = s.seq_pool.len();
@@ -1822,6 +2979,66 @@ async fn handle_release(
         "free_slots": free,
         "max_sessions": max,
     }))
+    .into_response()
+}
+
+// ── /v1/session/rewind ───────────────────────────────────────────────────────
+
+#[derive(Deserialize)]
+struct RewindRequest {
+    session_id: String,
+    n_tokens: u32,
+}
+
+/// Confirma que a sessão ficou parada no fim do prompt, pronta para o turno
+/// seguinte.
+///
+/// **Não recua nada.** A geração deste turno correu numa sequência de KV
+/// separada (ver `Session`), então reter o prompt é apagar essa sequência
+/// inteira - remoção total, que todo motor aceita. Antes daqui saía o
+/// `"este modelo não aceita recuar a sessão para o prompt"` que descartava o
+/// prefixo em 75 das 176 requisições de um dia de produção, e o
+/// `"sessão desconhecida"` de quando o EOS destruía a sessão antes deste
+/// pedido chegar.
+///
+/// Idempotente por construção: o fim normal do turno já reteve, e chamar de
+/// novo confere o mesmo estado. Só divergência real de contagem é recusa.
+async fn handle_rewind(
+    State(app): State<InferenceAppState>,
+    headers: axum::http::HeaderMap,
+    Json(req): Json<RewindRequest>,
+) -> Response {
+    let mut state = match lock_inference_state(&app.state) {
+        Ok(state) => state,
+        Err(error) => return err500(error),
+    };
+    let Some(prompt_len) = state
+        .sessions
+        .get(&req.session_id)
+        .map(|session| session.prompt_len)
+    else {
+        return Json(json!({ "rewound": false, "reason": "sessão desconhecida" })).into_response();
+    };
+    if req.n_tokens != prompt_len {
+        return Json(json!({
+            "rewound": false,
+            "reason": format!(
+                "prompt do gateway não bate com o desta sessão: {} != {prompt_len}",
+                req.n_tokens
+            ),
+        }))
+        .into_response();
+    }
+    let Some(retained) = state.retain_prompt(&req.session_id) else {
+        return Json(json!({
+            "rewound": false,
+            "reason": "sessão sem prompt para reter",
+        }))
+        .into_response();
+    };
+    drop(state);
+    replicate_session_rewind(&app.state, &headers, &req.session_id, req.n_tokens);
+    Json(json!({ "rewound": true, "n_past": retained })).into_response()
 }
 
 // ── /v1/session/rollback ─────────────────────────────────────────────────────
@@ -1846,14 +3063,19 @@ struct RollbackRequest {
 async fn handle_rollback(
     State(app): State<InferenceAppState>,
     Json(req): Json<RollbackRequest>,
-) -> impl IntoResponse {
-    let mut s = app.state.lock().unwrap();
+) -> Response {
+    let mut s = match lock_inference_state(&app.state) {
+        Ok(s) => s,
+        Err(error) => return err500(error),
+    };
     let Some((seq_id, n_past_after_batch)) = s
         .sessions
         .get(&req.session_id)
-        .map(|session| (session.seq_id, session.n_past))
+        // A sequência da geração: é lá que o lote especulativo escreveu, e o
+        // prompt fica intocado por construção.
+        .map(|session| (session.seq_id(), session.n_past))
     else {
-        return Json(json!({"rolled_back": false}));
+        return Json(json!({"rolled_back": false})).into_response();
     };
     let new_n_past = rollback_from(n_past_after_batch, req.batch_width, req.accept_count);
     if new_n_past < n_past_after_batch && !s.engine.kv_remove(seq_id, new_n_past as i32, -1) {
@@ -1865,12 +3087,13 @@ async fn handle_rollback(
             "rolled_back": false,
             "n_past": n_past_after_batch,
             "reason": "este modelo não aceita descartar posições do meio do cache",
-        }));
+        }))
+        .into_response();
     }
     if let Some(session) = s.sessions.get_mut(&req.session_id) {
         session.n_past = new_n_past;
     }
-    Json(json!({"rolled_back": true, "n_past": new_n_past}))
+    Json(json!({"rolled_back": true, "n_past": new_n_past})).into_response()
 }
 
 // ── /v1/prefill ───────────────────────────────────────────────────────────────
@@ -1892,7 +3115,10 @@ fn open_tp_decode(state: &SharedState, headers: &axum::http::HeaderMap, rota: &s
         return;
     }
     let tp = {
-        let s = state.lock().unwrap();
+        let Ok(s) = lock_inference_state(state) else {
+            warn!("não foi possível abrir decode TP: mutex do estado envenenado");
+            return;
+        };
         s.tp.clone()
     };
     let Some(tp) = tp.filter(|t| t.size > 1) else {
@@ -2020,6 +3246,22 @@ async fn handle_prefill(
         .get("chunk_size")
         .and_then(|v| v.as_u64())
         .unwrap_or(512) as u32;
+    let reuse_prefix = meta
+        .get("reuse_prefix")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let cached_tokens = meta
+        .get("cached_tokens")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let stable_len = meta
+        .get("stable_len")
+        .and_then(|value| value.as_u64())
+        .map(|value| value as u32);
+    let start_pos = meta
+        .get("start_pos")
+        .and_then(|v| v.as_u64())
+        .map(|value| value as u32);
     // Same next_hops-derives-is_last rule as handle_step — see its comment.
     let next_hops: Option<Vec<PipelineStep>> = meta
         .get("next_hops")
@@ -2076,11 +3318,11 @@ async fn handle_prefill(
     // não consegue rodar exatamente aquilo - nunca ajuste silencioso.
     let capture_block = {
         let (slice_start, slice_end) = {
-            let guard = state.lock().map_err(|_| ()).ok();
-            match guard {
-                Some(st) => (st.start_layer, st.end_layer),
-                None => return err500("estado de inferência indisponível"),
-            }
+            let st = match lock_inference_state(&state) {
+                Ok(st) => st,
+                Err(error) => return err500(error),
+            };
+            (st.start_layer, st.end_layer)
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
@@ -2093,6 +3335,10 @@ async fn handle_prefill(
         sid_key,
         chunk_index,
         chunk_size,
+        reuse_prefix,
+        cached_tokens,
+        start_pos,
+        stable_len,
         is_last,
         is_final_chunk,
         wire_dtype,
@@ -2191,10 +3437,16 @@ async fn handle_prefill(
             "session_id": sid_for_forward,
             "chunk_index": chunk_index,
             "chunk_size": chunk_size,
+            "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
             "is_final_chunk": is_final_chunk_for_forward(&local_meta, is_final_chunk),
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        for field in ["start_pos", "next_pos", "stable_len"] {
+            if let Some(value) = local_meta.get(field) {
+                forward[field] = value.clone();
+            }
+        }
         preserve_batch_identity(&meta, &mut forward);
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
@@ -2243,6 +3495,7 @@ async fn handle_prefill(
                 "session_id": sid_for_forward,
                 "chunk_index": chunk_index,
                 "chunk_size": chunk_size,
+                "reuse_prefix": reuse_prefix_for_forward(&local_meta, reuse_prefix, chunk_index),
                 "is_final_chunk": is_final_chunk_for_forward,
                 // O próximo hop recebe a própria sub-faixa, pelo mesmo motivo
                 // que este recebeu a sua: quem manda é que decide o pedaço.
@@ -2251,6 +3504,11 @@ async fn handle_prefill(
             });
             if let Some(tokens) = local_meta.get("tokens") {
                 relay_meta["tokens"] = tokens.clone();
+            }
+            for field in ["start_pos", "next_pos", "stable_len"] {
+                if let Some(value) = local_meta.get(field) {
+                    relay_meta[field] = value.clone();
+                }
             }
             preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
@@ -2289,6 +3547,27 @@ fn owns_tokens(local_meta: &Value) -> bool {
 /// Only the head (`owns_tokens`) can know whether this chunk was the last
 /// one — everyone else just passes through whatever `is_final_chunk` it was
 /// told, since it has no `prompt_tokens` of its own to check that against.
+/// Qual decisão de prefixo o hop seguinte deve obedecer.
+///
+/// A do peer que tokenizou, quando ele a informou (`reuse_prefix` no próprio
+/// meta), não a que o gateway pediu. A cabeça pode ter recomeçado a sessão -
+/// prefixo divergente, sessão despejada - e um hop reusando enquanto a cabeça
+/// recomeçou deixaria as posições do pipeline desalinhadas. Peer que não
+/// informa nada cai no pedido original, que é o comportamento anterior.
+pub(crate) fn reuse_prefix_for_forward(
+    local_meta: &Value,
+    requested: bool,
+    chunk_index: u32,
+) -> bool {
+    if chunk_index != 0 {
+        return false;
+    }
+    local_meta
+        .get("reuse_prefix")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(requested)
+}
+
 fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool) -> bool {
     if owns_tokens(local_meta) {
         !local_meta
@@ -2307,8 +3586,22 @@ fn is_final_chunk_for_forward(local_meta: &Value, received_is_final_chunk: bool)
 /// truncate every multi-chunk prompt on a ring pipeline after one chunk.
 pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mut Value) {
     if owns_tokens(local_meta) {
-        bubbled["more_chunks"] = local_meta["more_chunks"].clone();
-        bubbled["n_prompt_tokens"] = local_meta["n_prompt_tokens"].clone();
+        for field in [
+            "more_chunks",
+            "n_prompt_tokens",
+            "start_pos",
+            "next_pos",
+            // Quantos tokens do prompt não foram reprocessados, e se o prefixo
+            // foi de fato aproveitado. Só a cabeça sabe - a cauda responde
+            // sobre um prompt que ela nunca tokenizou.
+            "reuse_prefix",
+            "cached_tokens",
+            "stable_len",
+        ] {
+            if let Some(value) = local_meta.get(field) {
+                bubbled[field] = value.clone();
+            }
+        }
     }
 }
 
@@ -2321,6 +3614,12 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
         return json!({
             "more_chunks": local_meta["more_chunks"].clone(),
             "n_prompt_tokens": local_meta["n_prompt_tokens"].clone(),
+            "start_pos": local_meta["start_pos"].clone(),
+            "next_pos": local_meta["next_pos"].clone(),
+            // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
+            "reuse_prefix": local_meta["reuse_prefix"].clone(),
+            "cached_tokens": local_meta["cached_tokens"].clone(),
+            "stable_len": local_meta["stable_len"].clone(),
         });
     }
     inbound_meta
@@ -2336,7 +3635,15 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
     let Some(progress) = inbound_meta.get("prompt_progress") else {
         return;
     };
-    for field in ["more_chunks", "n_prompt_tokens"] {
+    for field in [
+        "more_chunks",
+        "n_prompt_tokens",
+        "start_pos",
+        "next_pos",
+        "reuse_prefix",
+        "cached_tokens",
+        "stable_len",
+    ] {
         if let Some(value) = progress.get(field) {
             if !value.is_null() {
                 result[field] = value.clone();
@@ -2363,6 +3670,10 @@ fn prefill_blocking(
     sid_key: String,
     chunk_index: u32,
     chunk_size: u32,
+    reuse_prefix: bool,
+    cached_tokens: u32,
+    start_pos: Option<u32>,
+    stable_len: Option<u32>,
     is_last: bool,
     is_final_chunk: bool,
     wire_dtype: WireDtype,
@@ -2379,6 +3690,7 @@ fn prefill_blocking(
     queued_at: Instant,
 ) -> Result<TimedReply> {
     let mut is_final_chunk = is_final_chunk;
+    let owns_prompt_tokens = prompt.is_some();
     let mut timings = NodeTimings {
         queue_us: queued_at.elapsed().as_micros() as u64,
         ..Default::default()
@@ -2386,13 +3698,28 @@ fn prefill_blocking(
     // O prefill espera no mesmo mutex do decode: um prompt grande de outra
     // sessão segura este aqui, e é a mesma espera invisível.
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    timings.selected_path = s.inference_path;
 
     // ── Session setup ────────────────────────────────────────────────────────
 
     let setup_started = Instant::now();
-    s.get_or_create(&sid_key, chunk_index == 0)?;
+    // Reusar exige a sessão viva aqui. Ela pode ter sido despejada ou reciclada
+    // desde o turno anterior; nesse caso este peer simplesmente recomeça, e é a
+    // resposta dele (`reuse_prefix` no meta) que os hops seguintes obedecem.
+    let want_reuse = reuse_prefix
+        && chunk_index == 0
+        && s.sessions
+            .get(&sid_key)
+            .is_some_and(|session| session.retained);
+    s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
+    let mut prefix = PrefixDecision::default();
+    // Quem não tokeniza recebe a fronteira de quem tokenizou, para partir o
+    // prompt na mesma posição - ver `Session::stable_len`.
+    if let Some(stable) = stable_len {
+        s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
+    }
 
     // First peer: tokenize the prompt on chunk 0.
     // We must not hold a &mut Session borrow while calling engine methods, so
@@ -2403,19 +3730,20 @@ fn prefill_blocking(
             let no_think = s.no_thinking;
             let formatted = if use_tmpl {
                 s.engine
-                    .apply_chat_template(&[("user", text)], true, no_think)
+                    .apply_chat_template(&[("user", text)], true, no_think)?
             } else {
                 text.clone()
             };
             let add_bos = !use_tmpl;
             let tokens = s.engine.tokenize(&formatted, add_bos, true);
-            s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
+            let stable = stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+            prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
         }
     }
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     // ── Rollback / order check ───────────────────────────────────────────────
-    let expected_pos = chunk_index * chunk_size;
+    let expected_pos = expected_prefill_pos(start_pos, chunk_index, s.sessions[&sid_key].n_past)?;
     {
         let session = s.sessions.get_mut(&sid_key).unwrap();
         if session.n_past > expected_pos {
@@ -2423,7 +3751,7 @@ fn prefill_blocking(
                 "refazendo chunk {chunk_index} da sessão {}… (pos {expected_pos})",
                 &sid_key[..8.min(sid_key.len())]
             );
-            let seq_id = session.seq_id;
+            let seq_id = session.seq_id();
             if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                 bail!(
                     "este modelo não aceita descartar posições do meio do cache, \
@@ -2442,11 +3770,22 @@ fn prefill_blocking(
     // ── Decode ───────────────────────────────────────────────────────────────
     // Extract the session values we need as plain integers, drop the borrow,
     // then call the engine (which needs &mut s.engine).
+    // A partir da fronteira, o prompt deixa de ser reutilizável e passa a viver
+    // na cópia de geração junto com os tokens gerados - ver `Session::stable_len`.
+    // Um pedaço nunca atravessa a fronteira: ele para nela, e o seguinte começa
+    // já na outra sequência.
+    let stable = s.sessions[&sid_key].stable_len;
+    if expected_pos >= stable {
+        s.open_generation(&sid_key)?;
+    }
     let (n_past, seq_id, tokens_for_chunk) = {
         let session = &s.sessions[&sid_key];
         let toks = if tensor.is_none() {
             let start = expected_pos as usize;
-            let end = (expected_pos + chunk_size) as usize;
+            let mut end = (expected_pos + chunk_size) as usize;
+            if expected_pos < stable {
+                end = end.min(stable as usize);
+            }
             session
                 .prompt_tokens
                 .get(start..end.min(session.prompt_tokens.len()))
@@ -2455,7 +3794,7 @@ fn prefill_blocking(
         } else {
             vec![]
         };
-        (session.n_past, session.seq_id, toks)
+        (session.n_past, session.seq_id(), toks)
     };
 
     // Onde parar, quando o remetente pediu menos que a fatia inteira. Antes do
@@ -2466,6 +3805,19 @@ fn prefill_blocking(
             bail!("{e}");
         }
     }
+
+    let input_was_hidden = tensor.is_some();
+    let selected_moe = s.inference_path.is_moe();
+    let mut moe_forwarded = false;
+    let tensor = if let Some((hidden, shape)) = tensor {
+        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
+        moe_forwarded = selected_moe
+            && s.engine.moe_external_executor_enabled()
+            && !s.engine.moe_hook_enabled();
+        Some((hidden, shape))
+    } else {
+        None
+    };
 
     let n_tokens;
     let decode_started = Instant::now();
@@ -2489,6 +3841,23 @@ fn prefill_blocking(
             .engine
             .decode_tokens(&tokens_for_chunk, n_past, seq_id, !is_last)?;
     }
+    if is_last
+        && selected_moe
+        && s.engine.moe_external_executor_enabled()
+        && !moe_forwarded
+        && !s.engine.moe_hook_enabled()
+    {
+        let residual = s.engine.take_residual(n_tokens)?;
+        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        moe_forwarded = true;
+    }
+    timings.merge_engine_moe(&engine_timing);
+    moe_forwarded |= engine_timing.moe_forward_us != 0;
+    if is_last {
+        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.tp = crate::tp::take_decode_telemetry();
     timings.backend_enqueue_us += engine_timing.enqueue_us;
@@ -2511,19 +3880,33 @@ fn prefill_blocking(
     if owns_tokens && !more {
         is_final_chunk = true;
     }
+    // A fronteira entre prompt e geração, anotada por cada peer no pedaço em
+    // que o prompt acaba. É para cá que o fim do turno devolve a sessão, e é o
+    // que o `/v1/session/rewind` confere. Hops do meio não tokenizam nada, e
+    // por isso recebem `is_final_chunk` da cabeça em vez de deduzi-lo.
+    if is_final_chunk {
+        let session = s.sessions.get_mut(&sid_key).unwrap();
+        session.prompt_len = n_past_now.min(session.stable_len);
+    }
 
     // ── Sampling / residual ──────────────────────────────────────────────────
     let sampling = s.sampling.clone();
-    let eos = s.engine.eos_token();
 
     if is_last {
         if !is_final_chunk {
             let encode_started = Instant::now();
-            let bytes = wire::encode(
-                &json!({"done": false, "more_chunks": more}),
-                None,
-                wire_dtype,
-            )?;
+            let mut partial =
+                partial_prefill_meta(more, total_tokens as usize, expected_pos, n_past_now);
+            apply_prefix_decision(
+                &mut partial,
+                chunk_index,
+                prefix,
+                reuse_prefix,
+                cached_tokens,
+                owns_prompt_tokens,
+            );
+            apply_stable_len(&mut partial, stable);
+            let bytes = wire::encode(&partial, None, wire_dtype)?;
             timings.encode_us += encode_started.elapsed().as_micros() as u64;
             return Ok(TimedReply { bytes, timings });
         }
@@ -2532,17 +3915,20 @@ fn prefill_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
-        let piece = s.engine.token_to_piece_bytes(next_id, false);
-        let mut text = s
-            .sessions
-            .get_mut(&sid_key)
-            .unwrap()
-            .feed_token_piece(&piece);
+        let mut text = if done {
+            String::new()
+        } else {
+            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            s.sessions
+                .get_mut(&sid_key)
+                .unwrap()
+                .feed_token_piece(&piece)
+        };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
-        let done = next_id == eos;
         if done {
-            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+            finish_terminal_stream(&mut s.sessions, &sid_key, &mut text)?;
         }
         s.sessions
             .get_mut(&sid_key)
@@ -2551,8 +3937,14 @@ fn prefill_blocking(
             .push(next_id);
         // A réplica de um grupo TP não encerra sessão: quem decide o fim da
         // geração é o rank 0. Ver `tp::is_replica`.
+        //
+        // Encerrar aqui destruía a sessão antes de o rewind do gateway chegar,
+        // e o rewind respondia "sessão desconhecida" - o prefixo nunca entrava
+        // no cache. O fim do turno agora **retém** o prompt: some só a
+        // sequência da geração. Liberar de vez continua sendo ato explícito do
+        // gateway (`/v1/session/release`).
         if done && !crate::tp::is_replica() {
-            s.finish(&sid_key);
+            s.retain_prompt(&sid_key);
         }
         timings.sampling_us += logits_access_us
             + sampling_timing.logits_clone_us
@@ -2571,17 +3963,39 @@ fn prefill_blocking(
         timings.selection_us += sampling_timing.selection_us;
         timings.token_text_us += token_text_us;
         let encode_started = Instant::now();
-        let bytes = wire::encode(
-            &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
-            None,
-            wire_dtype,
-        )?;
+        let n_prompt_tokens = s
+            .sessions
+            .get(&sid_key)
+            .ok_or_else(|| anyhow::anyhow!("sessão '{sid_key}' desapareceu antes da resposta"))?
+            .prompt_tokens
+            .len();
+        let mut reply = terminal_prefill_meta(
+            n_prompt_tokens,
+            expected_pos,
+            expected_pos + n_tokens as u32,
+            done,
+        );
+        apply_prefix_decision(
+            &mut reply,
+            chunk_index,
+            prefix,
+            reuse_prefix,
+            cached_tokens,
+            owns_prompt_tokens,
+        );
+        apply_stable_len(&mut reply, stable);
+        reply["token_id"] = json!(next_id);
+        reply["text"] = json!(text);
+        let bytes = wire::encode(&reply, None, wire_dtype)?;
         timings.encode_us += encode_started.elapsed().as_micros() as u64;
         return Ok(TimedReply { bytes, timings });
     }
 
     let residual_started = Instant::now();
-    let residual = s.engine.take_residual(n_tokens)?;
+    let mut residual = s.engine.take_residual(n_tokens)?;
+    if !input_was_hidden {
+        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+    }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let n_prompt_tokens = s.sessions[&sid_key].prompt_tokens.len();
     let n_embd = s.engine.n_embd;
@@ -2589,6 +4003,8 @@ fn prefill_blocking(
         "done": false,
         "more_chunks": more,
         "n_prompt_tokens": n_prompt_tokens,
+        "start_pos": expected_pos,
+        "next_pos": n_past_now,
         // Only meaningful when true: whether *this* peer is the one that
         // tokenized the prompt, i.e. whether `more_chunks`/`n_prompt_tokens`
         // above are its own authoritative determination rather than the
@@ -2598,6 +4014,15 @@ fn prefill_blocking(
         // `handle_prefill`.
         "owns_tokens": owns_tokens,
     });
+    apply_prefix_decision(
+        &mut reply_meta,
+        chunk_index,
+        prefix,
+        reuse_prefix,
+        cached_tokens,
+        owns_prompt_tokens,
+    );
+    apply_stable_len(&mut reply_meta, stable);
     // A composição real deste pedaço, para a cauda manter a cabeça `nextn` em
     // dia (ver o doc de `chunk_tokens`). A cabeça conhece os tokens; hops do
     // meio ecoam o que receberam.
@@ -2621,6 +4046,15 @@ struct PreparedPrefill {
     seq_id: u32,
     n_past: u32,
     n_tokens: usize,
+    start_pos: u32,
+    chunk_index: u32,
+    /// O que este peer executou com o prefixo retido - ver `apply_prefix_decision`.
+    prefix: PrefixDecision,
+    /// Decisão recebida da cabeça para ecoar quando este peer não tokeniza.
+    requested_reuse: bool,
+    requested_cached_tokens: u32,
+    /// A fronteira medida - ver `Session::stable_len`.
+    stable_len: u32,
     is_last: bool,
     is_final_chunk: bool,
     owns_tokens: bool,
@@ -2643,8 +4077,18 @@ fn prefill_batch_blocking(
 ) -> Vec<(oneshot::Sender<Result<TimedReply>>, Result<TimedReply>)> {
     let mut replies = Vec::with_capacity(jobs.len());
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => {
+            let message = error.to_string();
+            return jobs
+                .into_iter()
+                .map(|(_, reply)| (reply, Err(anyhow::anyhow!(message.clone()))))
+                .collect();
+        }
+    };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
 
     for (job, reply) in jobs {
@@ -2652,6 +4096,10 @@ fn prefill_batch_blocking(
             sid_key,
             chunk_index,
             chunk_size,
+            reuse_prefix,
+            cached_tokens,
+            start_pos,
+            stable_len,
             is_last,
             is_final_chunk,
             wire_dtype,
@@ -2664,28 +4112,42 @@ fn prefill_batch_blocking(
         } = job;
 
         let result = (|| -> Result<PreparedPrefill> {
-            s.get_or_create(&sid_key, chunk_index == 0)?;
+            // Mesmo contrato do caminho não-lotado (`prefill_blocking`): reuso
+            // só com a sessão viva, e quem tokeniza decide se o prefixo serve.
+            let want_reuse = reuse_prefix
+                && chunk_index == 0
+                && s.sessions
+                    .get(&sid_key)
+                    .is_some_and(|session| session.retained);
+            s.get_or_create(&sid_key, chunk_index == 0 && !want_reuse)?;
+            let mut prefix = PrefixDecision::default();
+            // Ver `prefill_blocking`: quem não tokeniza recebe a fronteira.
+            if let Some(stable) = stable_len {
+                s.sessions.get_mut(&sid_key).unwrap().stable_len = stable;
+            }
             if let Some(text) = prompt.as_deref() {
                 if chunk_index == 0 {
                     let use_tmpl = use_chat_template(chat_template, s.chat_template);
+                    let no_think = s.no_thinking;
                     let formatted = if use_tmpl {
                         s.engine
-                            .apply_chat_template(&[("user", text)], true, s.no_thinking)
+                            .apply_chat_template(&[("user", text)], true, no_think)?
                     } else {
                         text.to_string()
                     };
                     let tokens = s.engine.tokenize(&formatted, !use_tmpl, true);
-                    s.sessions.get_mut(&sid_key).unwrap().prompt_tokens = tokens;
+                    let stable =
+                        stable_prefix_len(&s.engine, text, use_tmpl, no_think, &tokens) as u32;
+                    prefix = s.adopt_prompt_prefix(&sid_key, tokens, stable, want_reuse)?;
                 }
             }
 
-            let expected_pos = chunk_index
-                .checked_mul(chunk_size)
-                .ok_or_else(|| anyhow::anyhow!("posição do chunk excede o limite numérico"))?;
+            let expected_pos =
+                expected_prefill_pos(start_pos, chunk_index, s.sessions[&sid_key].n_past)?;
             {
                 let session = s.sessions.get(&sid_key).unwrap();
                 if session.n_past > expected_pos {
-                    let seq_id = session.seq_id;
+                    let seq_id = session.seq_id();
                     if !s.engine.kv_remove(seq_id, expected_pos as i32, -1) {
                         bail!(
                             "este modelo não aceita descartar posições do meio do cache, \
@@ -2701,6 +4163,12 @@ fn prefill_batch_blocking(
                 }
             }
 
+            // Ver `prefill_blocking`: o pedaço para na fronteira, e daí em
+            // diante decodifica na cópia de geração.
+            let stable = s.sessions[&sid_key].stable_len;
+            if expected_pos >= stable {
+                s.open_generation(&sid_key)?;
+            }
             let (seq_id, n_past, prompt_tokens, input, n_tokens) = {
                 let session = &s.sessions[&sid_key];
                 if let Some((hidden, shape)) = tensor {
@@ -2722,7 +4190,7 @@ fn prefill_batch_blocking(
                         );
                     }
                     (
-                        session.seq_id,
+                        session.seq_id(),
                         session.n_past,
                         Vec::new(),
                         PreparedPrefillInput::Hidden(hidden),
@@ -2730,7 +4198,10 @@ fn prefill_batch_blocking(
                     )
                 } else {
                     let start = expected_pos as usize;
-                    let end = start.saturating_add(chunk_size as usize);
+                    let mut end = start.saturating_add(chunk_size as usize);
+                    if expected_pos < stable {
+                        end = end.min(stable as usize);
+                    }
                     let tokens = session
                         .prompt_tokens
                         .get(start..end.min(session.prompt_tokens.len()))
@@ -2741,7 +4212,7 @@ fn prefill_batch_blocking(
                     }
                     let n_tokens = tokens.len();
                     (
-                        session.seq_id,
+                        session.seq_id(),
                         session.n_past,
                         tokens.clone(),
                         PreparedPrefillInput::Tokens(tokens),
@@ -2757,6 +4228,12 @@ fn prefill_batch_blocking(
                 seq_id,
                 n_past,
                 n_tokens,
+                start_pos: expected_pos,
+                chunk_index,
+                prefix,
+                requested_reuse: reuse_prefix,
+                requested_cached_tokens: cached_tokens,
+                stable_len: stable,
                 is_last,
                 is_final_chunk,
                 owns_tokens,
@@ -2805,6 +4282,36 @@ fn prefill_batch_blocking(
             }
             return replies;
         }
+    }
+
+    let mut transform_error = None;
+    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
+    for (_, item) in &mut prepared {
+        if let PreparedPrefillInput::Hidden(hidden) = &mut item.input {
+            let mut transform_timings = NodeTimings::default();
+            match s.apply_moe_hidden(
+                std::mem::take(hidden),
+                item.n_tokens,
+                capture_block,
+                &mut transform_timings,
+            ) {
+                Ok(transformed) => *hidden = transformed,
+                Err(error) => {
+                    transform_error = Some(error);
+                    break;
+                }
+            }
+            if !transform_timings.moe.executors.is_empty() {
+                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
+            }
+        }
+    }
+    if let Some(error) = transform_error {
+        let message = error.to_string();
+        for (reply, _) in prepared {
+            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+        }
+        return replies;
     }
 
     let decode_result = match &prepared[0].1.input {
@@ -2871,24 +4378,47 @@ fn prefill_batch_blocking(
             if item.owns_tokens && !more {
                 is_final_chunk = true;
             }
+            // Ver `prefill_blocking`: a fronteira prompt/geração desta sessão.
+            if is_final_chunk {
+                let session = s.sessions.get_mut(&item.sid_key).unwrap();
+                session.prompt_len = n_past_now.min(session.stable_len);
+            }
 
             let mut timings = NodeTimings {
+                selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
-                lock_wait_us: lock_wait_us,
+                lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
                 backend_completion_us: engine_timings.backend_completion_us,
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
+            timings.merge_engine_moe(&engine_timings);
+            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
+                timings.merge_moe(&moe);
+                timings.record_engine(crate::executor::ExecutionEngine::Moe);
+            }
+            timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
 
             if item.is_last {
                 if !is_final_chunk {
                     let started = Instant::now();
-                    let bytes = wire::encode(
-                        &json!({"done": false, "more_chunks": more}),
-                        None,
-                        item.wire_dtype,
-                    )?;
+                    let mut meta = partial_prefill_meta(
+                        more,
+                        total_tokens as usize,
+                        item.start_pos,
+                        item.start_pos + item.n_tokens as u32,
+                    );
+                    apply_prefix_decision(
+                        &mut meta,
+                        item.chunk_index,
+                        item.prefix,
+                        item.requested_reuse,
+                        item.requested_cached_tokens,
+                        item.owns_tokens,
+                    );
+                    apply_stable_len(&mut meta, item.stable_len);
+                    let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                     timings.encode_us = started.elapsed().as_micros() as u64;
                     return Ok(TimedReply { bytes, timings });
                 }
@@ -2912,20 +4442,17 @@ fn prefill_batch_blocking(
                     .feed_token_piece(&piece);
                 let done = next_id == s.engine.eos_token();
                 if done {
-                    text.push_str(
-                        &s.sessions
-                            .get_mut(&item.sid_key)
-                            .unwrap()
-                            .finish_token_stream(),
-                    );
+                    finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
+                // Ver `prefill_blocking`: o fim do turno retém o prompt em vez
+                // de destruir a sessão.
                 if done && !crate::tp::is_replica() {
-                    s.finish(&item.sid_key);
+                    s.retain_prompt(&item.sid_key);
                 }
                 timings.logits_clone_us = sampling_timing.logits_clone_us;
                 timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
@@ -2940,25 +4467,55 @@ fn prefill_batch_blocking(
                     + sampling_timing.top_p_us
                     + sampling_timing.selection_us;
                 let token_text_started = Instant::now();
-                let bytes = wire::encode(
-                    &json!({"done": done, "token_id": next_id, "text": text, "more_chunks": false}),
-                    None,
-                    item.wire_dtype,
-                )?;
+                let mut meta = json!({
+                    "done": done,
+                    "token_id": next_id,
+                    "text": text,
+                    "more_chunks": false,
+                    "n_prompt_tokens": total_tokens,
+                    "start_pos": item.start_pos,
+                    "next_pos": item.start_pos + item.n_tokens as u32,
+                });
+                apply_prefix_decision(
+                    &mut meta,
+                    item.chunk_index,
+                    item.prefix,
+                    item.requested_reuse,
+                    item.requested_cached_tokens,
+                    item.owns_tokens,
+                );
+                apply_stable_len(&mut meta, item.stable_len);
+                let bytes = wire::encode(&meta, None, item.wire_dtype)?;
                 timings.token_text_us = token_text_started.elapsed().as_micros() as u64;
                 timings.encode_us = 0;
                 return Ok(TimedReply { bytes, timings });
             }
 
             let residual_started = Instant::now();
-            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedPrefillInput::Hidden(_));
+            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            if !input_was_hidden {
+                residual =
+                    s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
+            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let mut meta = json!({
                 "done": false,
                 "more_chunks": more,
                 "n_prompt_tokens": total_tokens,
+                "start_pos": item.start_pos,
+                "next_pos": n_past_now,
                 "owns_tokens": item.owns_tokens,
             });
+            apply_prefix_decision(
+                &mut meta,
+                item.chunk_index,
+                item.prefix,
+                item.requested_reuse,
+                item.requested_cached_tokens,
+                item.owns_tokens,
+            );
+            apply_stable_len(&mut meta, item.stable_len);
             if item.owns_tokens {
                 meta["tokens"] = json!(item.tokens_for_chunk);
             } else if let Some(tokens) = &item.chunk_tokens {
@@ -3009,8 +4566,18 @@ fn step_batch_blocking(
 
     let mut replies = Vec::with_capacity(jobs.len());
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = match lock_inference_state(&state) {
+        Ok(s) => s,
+        Err(error) => {
+            let message = error.to_string();
+            return jobs
+                .into_iter()
+                .map(|(_, reply)| (reply, Err(anyhow::anyhow!(message.clone()))))
+                .collect();
+        }
+    };
     let lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    let selected_path = s.inference_path;
     let mut prepared = Vec::with_capacity(jobs.len());
 
     for (job, reply) in jobs {
@@ -3025,11 +4592,14 @@ fn step_batch_blocking(
             ..
         } = job;
         let result = (|| -> Result<PreparedStep> {
+            // Tudo daqui em diante é token gerado, então nada mais toca a
+            // sequência do prompt - ver `InferState::open_generation`.
+            s.open_generation(&sid_key)?;
             let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
                 anyhow::anyhow!("sessão '{}' desconhecida - faça o prefill antes", sid_key)
             })?;
             session.last_used = Instant::now();
-            let seq_id = session.seq_id;
+            let seq_id = session.seq_id();
             let n_past = session.n_past;
             let input = if let Some((hidden, shape)) = tensor {
                 if shape[0] == 0 || shape[1] != s.engine.n_embd {
@@ -3111,6 +4681,35 @@ fn step_batch_blocking(
             return replies;
         }
     }
+    let mut transform_error = None;
+    let mut moe_input_items: HashMap<String, MoeTimings> = HashMap::new();
+    for (_, item) in &mut prepared {
+        if let PreparedStepInput::Hidden { hidden, n_tokens } = &mut item.input {
+            let mut transform_timings = NodeTimings::default();
+            match s.apply_moe_hidden(
+                std::mem::take(hidden),
+                *n_tokens,
+                capture_block,
+                &mut transform_timings,
+            ) {
+                Ok(transformed) => *hidden = transformed,
+                Err(error) => {
+                    transform_error = Some(error);
+                    break;
+                }
+            }
+            if !transform_timings.moe.executors.is_empty() {
+                moe_input_items.insert(item.sid_key.clone(), transform_timings.moe);
+            }
+        }
+    }
+    if let Some(error) = transform_error {
+        let message = error.to_string();
+        for (reply, _) in prepared {
+            replies.push((reply, Err(anyhow::anyhow!(message.clone()))));
+        }
+        return replies;
+    }
     let need_residual = prepared.iter().any(|(_, item)| !item.is_last);
     let decode_result = match &prepared[0].1.input {
         PreparedStepInput::Tokens { .. } => {
@@ -3170,6 +4769,7 @@ fn step_batch_blocking(
                 .saturating_add(item.n_tokens as u32);
             s.sessions.get_mut(&item.sid_key).unwrap().n_past = new_n_past;
             let mut timings = NodeTimings {
+                selected_path,
                 queue_us: item.queued_at.elapsed().as_micros() as u64,
                 lock_wait_us,
                 decode_us: engine_timings.enqueue_us,
@@ -3177,6 +4777,12 @@ fn step_batch_blocking(
                 residual_capture_d2h_sync_us: engine_timings.residual_capture_d2h_sync_us,
                 ..Default::default()
             };
+            timings.merge_engine_moe(&engine_timings);
+            if let Some(moe) = moe_input_items.remove(&item.sid_key) {
+                timings.merge_moe(&moe);
+                timings.record_engine(crate::executor::ExecutionEngine::Moe);
+            }
+            timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
 
             if item.is_last {
                 let logits_index = output
@@ -3200,20 +4806,16 @@ fn step_batch_blocking(
                 let token_text_us = token_text_started.elapsed().as_micros() as u64;
                 let done = next_id == s.engine.eos_token();
                 if done {
-                    text.push_str(
-                        &s.sessions
-                            .get_mut(&item.sid_key)
-                            .unwrap()
-                            .finish_token_stream(),
-                    );
+                    finish_terminal_stream(&mut s.sessions, &item.sid_key, &mut text)?;
                 }
                 s.sessions
                     .get_mut(&item.sid_key)
                     .unwrap()
                     .recent_tokens
                     .push(next_id);
+                // Fim de turno retém o prompt - ver `InferState::retain_prompt`.
                 if done && !crate::tp::is_replica() {
-                    s.finish(&item.sid_key);
+                    s.retain_prompt(&item.sid_key);
                 }
                 timings.logits_clone_us = sampling_timing.logits_clone_us;
                 timings.repetition_penalty_us = sampling_timing.repetition_penalty_us;
@@ -3240,7 +4842,12 @@ fn step_batch_blocking(
             }
 
             let residual_started = Instant::now();
-            let residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            let input_was_hidden = matches!(&item.input, PreparedStepInput::Hidden { .. });
+            let mut residual = output.residual_for(&item.sid_key, s.engine.n_embd)?;
+            if !input_was_hidden {
+                residual =
+                    s.apply_moe_hidden(residual, item.n_tokens, item.capture_block, &mut timings)?;
+            }
             timings.residual_us = residual_started.elapsed().as_micros() as u64;
             let tokens = match &item.input {
                 PreparedStepInput::Tokens { token } => vec![*token],
@@ -3381,9 +4988,9 @@ async fn handle_step(
     // A sub-faixa só é válida se este peer consegue executá-la exatamente.
     // Sem os campos, o contrato antigo continua rodando a fatia inteira.
     let capture_block = {
-        let (slice_start, slice_end) = match state.lock() {
+        let (slice_start, slice_end) = match lock_inference_state(&state) {
             Ok(st) => (st.start_layer, st.end_layer),
-            Err(_) => return err500("estado de inferência indisponível"),
+            Err(error) => return err500(error),
         };
         match resolve_exec_range(&meta, slice_start, slice_end) {
             Ok(block) => block,
@@ -3790,7 +5397,7 @@ fn issue_kind_label(kind: Option<crate::relay::SendIssueKind>) -> &'static str {
 /// `llm_arch_supports_rs_rollback` no llama.cpp) - sem isso `seq_rm`
 /// simplesmente recusa, `rollback_sessions` percebe pela resposta e encerra
 /// a geração com o que já foi confirmado (ver seu call site em
-/// `gateway::generate_stream`) em vez de deixar o `n_past` do nó divergir do
+/// `gateway::generate_stream_with_stops`) em vez de deixar o `n_past` do nó divergir do
 /// cache, que é o que produzia "inconsistent sequence positions".
 pub(crate) fn should_draft(speculate: Option<Speculate>, mtp_ready: bool) -> bool {
     match speculate {
@@ -4173,16 +5780,21 @@ fn step_blocking(
         ..Default::default()
     };
     let lock_started = Instant::now();
-    let mut s = state.lock().unwrap();
+    let mut s = lock_inference_state(&state)?;
     timings.lock_wait_us = lock_started.elapsed().as_micros() as u64;
+    timings.selected_path = s.inference_path;
 
     let setup_started = Instant::now();
+    // A geração deste turno corre numa cópia do KV do prompt: a partir daqui
+    // nada mais escreve na sequência do prompt, e é isso que a deixa
+    // reutilizável no turno seguinte sem remover nada do cache.
+    s.open_generation(&sid_key)?;
     let session = s.sessions.get_mut(&sid_key).ok_or_else(|| {
         anyhow::anyhow!("sessão '{}' desconhecida — faça o prefill antes", sid_key)
     })?;
     session.last_used = Instant::now();
     let n_past = session.n_past;
-    let seq_id = session.seq_id;
+    let seq_id = session.seq_id();
     timings.setup_us += setup_started.elapsed().as_micros() as u64;
 
     let n_tokens;
@@ -4204,6 +5816,18 @@ fn step_blocking(
             bail!("{error}");
         }
     }
+    let input_was_hidden = tensor.is_some();
+    let selected_moe = s.inference_path.is_moe();
+    let mut moe_forwarded = false;
+    let tensor = if let Some((hidden, shape)) = tensor {
+        let hidden = s.apply_moe_hidden(hidden, shape[0], capture_block, &mut timings)?;
+        moe_forwarded = selected_moe
+            && s.engine.moe_external_executor_enabled()
+            && !s.engine.moe_hook_enabled();
+        Some((hidden, shape))
+    } else {
+        None
+    };
     if let Some((hidden, shape)) = tensor {
         // Middle/last peer receiving a hidden state. `decode_hidden` already
         // handles any `n_tokens` — a speculative batch needs no special
@@ -4292,6 +5916,23 @@ fn step_blocking(
             mtp_k_echo = Some(k);
         }
     }
+    if is_last
+        && selected_moe
+        && s.engine.moe_external_executor_enabled()
+        && !moe_forwarded
+        && !s.engine.moe_hook_enabled()
+    {
+        let residual = s.engine.take_residual(n_tokens)?;
+        let _ = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+        moe_forwarded = true;
+    }
+    timings.merge_engine_moe(&engine_timing);
+    moe_forwarded |= engine_timing.moe_forward_us != 0;
+    if is_last {
+        record_terminal_engine(&mut timings, s.inference_path, moe_forwarded);
+    } else {
+        timings.record_engine(crate::executor::ExecutionEngine::LlamaCpp);
+    }
     timings.decode_us += decode_started.elapsed().as_micros() as u64;
     timings.backend_enqueue_us += engine_timing.enqueue_us;
     timings.backend_completion_us += engine_timing.backend_completion_us;
@@ -4327,12 +5968,16 @@ fn step_blocking(
                 let logits = s.engine.logits_ith(i as i32);
                 let (id, _timing) = sample_token_profiled(logits, &recent, &sampling);
                 recent.push(id);
-                pieces.push(s.engine.token_to_piece_bytes(id, false));
-                let is_eos = id == eos;
+                let is_stop = s.engine.is_generation_stop(&recent[..recent.len() - 1], id);
+                pieces.push(if is_stop {
+                    Vec::new()
+                } else {
+                    s.engine.token_to_piece_bytes(id, false)
+                });
                 sampled.push(id);
-                if is_eos {
-                    // Nothing past EOS is worth sampling — generation is over
-                    // regardless of what the rest of the draft guessed.
+                if is_stop {
+                    // Nothing past a model EOS or turn terminator is worth
+                    // sampling, regardless of what the rest of the draft guessed.
                     break;
                 }
             }
@@ -4348,7 +5993,12 @@ fn step_blocking(
 
             let keep = (accept_len + 1).min(sampled.len());
             let accepted_ids = &sampled[..keep];
-            let done = accepted_ids.last().copied() == Some(eos);
+            let done = accepted_ids.last().is_some_and(|id| {
+                *id == eos
+                    || (sampled.last() == Some(id)
+                        && s.engine
+                            .is_generation_stop(&recent[..recent.len() - 1], *id))
+            });
             // Only accepted positions may advance the session's byte stream.
             // Feeding rejected draft positions would leave their UTF-8 tail
             // in the next request even though those tokens never reached the
@@ -4364,7 +6014,8 @@ fn step_blocking(
                 })
                 .collect();
             if done {
-                let tail = s.sessions.get_mut(&sid_key).unwrap().finish_token_stream();
+                let mut tail = String::new();
+                finish_terminal_stream(&mut s.sessions, &sid_key, &mut tail)?;
                 if let Some(last) = accepted_texts.last_mut() {
                     last.push_str(&tail);
                 }
@@ -4405,9 +6056,10 @@ fn step_blocking(
                 .unwrap()
                 .recent_tokens
                 .extend_from_slice(accepted_ids);
-            // Ver a nota gêmea abaixo: réplica não encerra sessão.
+            // Ver a nota gêmea abaixo: réplica não encerra sessão. E o fim de
+            // turno retém o prompt - ver `InferState::retain_prompt`.
             if done && !crate::tp::is_replica() {
-                s.finish(&sid_key);
+                s.retain_prompt(&sid_key);
             }
 
             let accepted: Vec<Value> = accepted_ids
@@ -4436,17 +6088,20 @@ fn step_blocking(
         let logits = s.engine.logits_ith(n_tokens as i32 - 1);
         let logits_access_us = logits_access_started.elapsed().as_micros() as u64;
         let (next_id, sampling_timing) = sample_token_profiled(logits, &recent, &sampling);
+        let done = s.engine.is_generation_stop(&recent, next_id);
         let token_text_started = Instant::now();
-        let piece = s.engine.token_to_piece_bytes(next_id, false);
-        let mut text = s
-            .sessions
-            .get_mut(&sid_key)
-            .unwrap()
-            .feed_token_piece(&piece);
+        let mut text = if done {
+            String::new()
+        } else {
+            let piece = s.engine.token_to_piece_bytes(next_id, false);
+            s.sessions
+                .get_mut(&sid_key)
+                .unwrap()
+                .feed_token_piece(&piece)
+        };
         let token_text_us = token_text_started.elapsed().as_micros() as u64;
-        let done = next_id == eos;
         if done {
-            text.push_str(&s.sessions.get_mut(&sid_key).unwrap().finish_token_stream());
+            finish_terminal_stream(&mut s.sessions, &sid_key, &mut text)?;
         }
         s.sessions
             .get_mut(&sid_key)
@@ -4454,9 +6109,10 @@ fn step_blocking(
             .recent_tokens
             .push(next_id);
         // A réplica de um grupo TP não encerra sessão: quem decide o fim da
-        // geração é o rank 0. Ver `tp::is_replica`.
+        // geração é o rank 0. Ver `tp::is_replica`. E o fim de turno retém o
+        // prompt - ver `InferState::retain_prompt`.
         if done && !crate::tp::is_replica() {
-            s.finish(&sid_key);
+            s.retain_prompt(&sid_key);
         }
         timings.sampling_us += logits_access_us
             + sampling_timing.logits_clone_us
@@ -4513,7 +6169,10 @@ fn step_blocking(
     }
 
     let residual_started = Instant::now();
-    let residual = s.engine.take_residual(n_tokens)?;
+    let mut residual = s.engine.take_residual(n_tokens)?;
+    if !input_was_hidden {
+        residual = s.apply_moe_hidden(residual, n_tokens, capture_block, &mut timings)?;
+    }
     timings.residual_us += residual_started.elapsed().as_micros() as u64;
     let mut reply_meta = json!({"done": false});
     // Whoever called us needs this to keep threading it toward the tail —

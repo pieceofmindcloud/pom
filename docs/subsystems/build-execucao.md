@@ -48,6 +48,34 @@ cargo test               # testes do nó
   `cudaGraphLaunch` mesmo depois do warmup. Para habilitar esse recurso,
   somente quando houver VRAM livre comprovada, use
   `POM_CUDA_GRAPHS=1 cargo build --release --features cuda`.
+- O provider Hugging Face é HTTP nativo em Rust (`reqwest`): o build do POM não
+  instala `hf`, Python ou outro runtime externo.
+
+### Validação CUDA isolada na ksia
+
+A validação CUDA não deve escrever no checkout servido nem no diretório que o
+script de implantação usa. O checkout de validação é `/data/ftk-cuda-src`, com
+`llama.cpp` apontando para `/data/ftk-cuda-llama`, e o target separado é
+`/data/ftk-cuda-target`. Na ksia, `nvcc` existe em
+`/usr/local/cuda-12/bin`, mas não entra no `PATH` de uma sessão SSH não
+interativa. A invocação reproduzível é:
+
+```bash
+ssh ksia 'bash -lc "cd /data/ftk-cuda-src && \
+  export PATH=/usr/local/cuda-12/bin:\$PATH && \
+  export CUDAARCHS=120 && \
+  export CUDACXX=/usr/local/cuda-12/bin/nvcc && \
+  export CCACHE=ccache && \
+  CARGO_TARGET_DIR=/data/ftk-cuda-target \
+  cargo build --release --features vulkan,cuda"'
+```
+
+O `PATH` é necessário porque o `build.rs` executa o programa `nvcc`
+diretamente; `CUDACXX` também deve ser definido para os sub-builds que
+consumirem a convenção CMake. `CUDAARCHS=120` limita o kernel MoE à GPU da
+ksia. `CCACHE=ccache` faz o `build.rs` executar `ccache nvcc`; o target Rust
+continua em `/data/ftk-cuda-target`. `/data/ksia-target` fica reservado ao
+binário servido e nunca é usado para validar uma revisão.
 
 ## Identidade do produto (`brand.json`)
 
@@ -379,6 +407,39 @@ diferentes:
 Note o sufixo `a` de `120a`/`121a` na lista do llama.cpp: ele liga instruções
 específicas da arquitetura. O CMake só aceita esse sufixo a partir da 3.30, então
 numa máquina com CMake mais antigo o valor possível é `120`, sem o `a`.
+
+**Quanto custa a lista larga.** Medido na ksia em 25/08/2026, mesmo código, mesma
+máquina, ~141 objetos CUDA gerados uma vez por arquitetura:
+
+| Configuração | Tempo |
+|---|---|
+| dez arquiteturas (sem `CUDAARCHS`) | 24+ min, ainda não tinha terminado |
+| `CUDAARCHS=120` | 10m29s |
+| `CUDAARCHS=120` com ccache já povoado | 6m00s |
+
+Ou seja: **compilar sem `CUDAARCHS` é quase sempre desperdício**. A lista larga
+só se justifica para um binário que vai ser distribuído para hardware
+desconhecido - o caso do release.
+
+Arquitetura de cada máquina do cluster:
+
+| Máquina | GPU | `CUDAARCHS` |
+|---|---|---|
+| ksia | RTX 5060 Ti | `120` |
+| salem | duas arquiteturas | `"120;86"` |
+
+A ksia é `compute_120` e só isso. O salem tem **duas** arquiteturas e precisa
+das duas juntas - `86` sozinho não serve lá. Para validação e desenvolvimento
+local - o caso comum - use o valor da máquina em que está compilando.
+
+O `ccache` está instalado na ksia, com cache em `/data/ccache`, e o sistema de
+compilação do llama.cpp o detecta sozinho. Ele **não** acelera a parte Rust; só
+C/C++/CUDA, que é justamente o passo caro.
+
+**Pegadinha** (também anotada no `pom-ksia.sh` do operador, fora do
+repositório): trocar o valor de `CUDAARCHS` invalida o build nativo anterior, e o
+cargo sozinho não percebe a troca - o build nativo do llama.cpp precisa ser
+refeito à mão.
 
 ### O pacote
 

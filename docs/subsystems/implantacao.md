@@ -31,7 +31,10 @@ do modelo e nomes maiores que 128 caracteres são recusados. `group` continua
 sendo a identidade técnica usada pelo catálogo, gossip e roteamento. A estratégia
 simples usa o menor conjunto suficiente de peers; a completa prefere os cortes
 existentes mais finos e distribui a carga entre mais máquinas. Nenhuma estratégia
-cria limites novos de GGUF: para isso continua existindo a tela de Fatiar.
+de fatias cria limites novos de GGUF: para isso continua existindo a tela de
+Fatiar. O modo de modelo inteiro é a exceção controlada: quando o operador pede
+um prefixo para outro peer, o backend consulta as fronteiras reais do GGUF e
+materializa as faixas no peer que possui o arquivo.
 
 Três regras saem da arquitetura, não do gosto:
 
@@ -85,6 +88,23 @@ sentido **puxar**, que `transfer::safe_model_path` prende à pasta de fatias de
 quem envia. Um modelo inteiro mora quase sempre fora dela (biblioteca do LM
 Studio, store do Ollama), e por isso o `note` do passo avisa para mandar o
 arquivo pela tela de Transferências antes.
+
+### 1.1.1 Escolha de camadas a partir do modelo inteiro
+
+`POST /api/ui/deploy/plan` pode receber `whole_slice` com
+`{source_node_id, target_node_id, end_layer}`. A origem precisa anunciar o
+modelo inteiro selecionado. `model-layer-options` lê o GGUF nessa origem e
+devolve os fins de prefixo aceitos: qualquer fim de camada inteira em layout
+denso, ou somente as fronteiras arquiteturais de `arch_boundaries` em layout
+híbrido. O frontend usa esses pontos como posições do slider; nunca converte o
+slider em um passo fixo.
+
+Ao executar, `deploy` cria uma faixa virtual para o prefixo e outra para o
+restante, chama `slice-ranges` na origem e espera o fatiador selar um manifesto
+com `sha256` antes de iniciar `transfer/pull`. Se uma faixa já existir no
+destino, ela permanece na lista de camadas disponíveis e não há slider para
+ela. Falha ou ausência de leitura do GGUF é uma recusa nominal, com o motivo
+visível no inspetor.
 
 ## 1.2 Tensor parallel: grupo de ranks
 
@@ -333,6 +353,22 @@ fatias é o que a tela de Modelos faz, com o seu próprio pedido de confirmaçã
 - A liberação vai pelo `/api/ui/unload` do próprio peer (a mesma rota do botão de
   uma máquina só), que continua valendo para qualquer nó.
 
+## 7.1 Reimplantar o mesmo modelo
+
+`POST /api/ui/deploy` faz uma pré-verificação antes de copiar qualquer arquivo
+ou chamar `launch`. Para fatias, a prova é o `pom_id` do manifesto; para um GGUF
+inteiro, é o SHA-256 calculado no arquivo selecionado. O nome do modelo nunca é
+prova. Registros antigos sem identidade só podem usar o caminho canônico quando
+o caminho pertence ao mesmo peer; se não houver prova, a ação é recusada com o
+motivo visível e nenhuma máquina é descarregada.
+
+Quando a implantação ativa é comprovadamente a mesma, o fluxo chama
+`/api/ui/unload` em todos os peers correspondentes e consulta `/api/ui/node` até
+cada um anunciar `config: null`, estado `disabled` e nenhum modelo ou deployment
+ativo. A espera tem limite de 30 segundos por rodada; se um peer continuar
+ocupado, o job falha nomeando a máquina e seu último estado. Falha de unload
+também bloqueia a nova implantação e preserva no job o motivo retornado.
+
 ## 8. Aplicar e servir uma fatia (`webui.rs`)
 
 `POST /api/ui/apply` (aplicado pelo `deploy` a cada alvo) leva um `ApplyRequest`:
@@ -423,3 +459,13 @@ axum na loopback (no caso do undeploy, contando os hits em `/api/ui/unload`).
   recebeu o clique, não de quem foi chamado - as chamadas aos peers usam
   `/api/ui/unload`, que continua valendo para qualquer nó. Registrado também em
   `crates/node/src/backend/AGENTS.md` (Defeitos anotados).
+- **DEFEITO ANOTADO: interferência na bateria paralela do plano HTTP** -
+  `deploy::whole_route_tests::the_route_plans_a_whole_model_from_the_machines_own_catalog`
+  falha na bateria completa paralela, mas passa isoladamente e com
+  `--test-threads=1`. A causa é o par dessa rota com
+  `webui::a_lista_de_maquinas_para_implantar_tambem_e_pinada` ou
+  `webui::cluster_models_fala_com_os_peers_pelo_cliente_pinado`: esses testes
+  alteram o global `peer_client::TLS_ATIVO`; a rota não segura
+  `peer_client::POLITICA_GLOBAL`, então pode formar `https://` para o servidor
+  HTTP falso e interpretar a falha como catálogo sem o modelo. A falha também
+  ocorre na base `0adfa5b`, portanto não é regressão dos fixes do fatiador.

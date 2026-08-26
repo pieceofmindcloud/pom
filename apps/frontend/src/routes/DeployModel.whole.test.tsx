@@ -58,6 +58,19 @@ function wholePlan(target = "ksia"): DeployPlan {
   return {
     group: "qwen3.5-9b",
     kind: "whole",
+    layer_options: {
+      source_node_id: "ksia",
+      total_layers: 32,
+      cuts: [
+        { end_layer: 3, layers: 4, size_bytes: 700_000_000, remainder_bytes: 4_300_000_000 },
+        { end_layer: 7, layers: 8, size_bytes: 1_300_000_000, remainder_bytes: 3_700_000_000 },
+        { end_layer: 15, layers: 16, size_bytes: 2_500_000_000, remainder_bytes: 2_500_000_000 },
+        { end_layer: 31, layers: 32, size_bytes: 5_000_000_000, remainder_bytes: 0 },
+      ],
+      granularity: 4,
+      rule: "modelo híbrido: cortes apenas nas fronteiras arquiteturais reais do GGUF",
+      reason: null,
+    },
     total_layers: 32,
     total_layers_inferred: false,
     steps: [
@@ -144,6 +157,18 @@ function shardPlan(): DeployPlan {
 function tensorPlan(): DeployPlan {
   const p = wholePlan();
   p.kind = "tensor_parallel";
+  return p;
+}
+
+function moePlan(kind: DeployPlan["kind"] = "whole"): DeployPlan {
+  const p = wholePlan();
+  p.kind = kind;
+  p.is_moe = true;
+  p.inference_mode_supported = kind !== "tensor_parallel";
+  p.inference_mode_reason = kind === "tensor_parallel"
+    ? "Tensor Parallelism não suporta MoE nesta versão."
+    : null;
+  p.params = { ...p.params, inference_mode: "auto" };
   return p;
 }
 
@@ -387,6 +412,106 @@ describe("DeployModel · modelo inteiro", () => {
     });
   });
 
+  it("mostra cortes reais no slider e envia o prefixo para o destino", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    const slider = await screen.findByRole("slider", { name: /Camadas a enviar para mac/ });
+    expect(slider.getAttribute("max")).toBe("3");
+    expect(screen.getByText(/Passo real: 4 camadas/)).toBeTruthy();
+
+    fireEvent.change(slider, { target: { value: "0" } });
+    await waitFor(() => {
+      const request = planCalls().find(([, body]) => {
+        const typed = body as {
+          whole_slice?: { end_layer: number };
+          selection?: unknown[];
+        };
+        return typed.whole_slice?.end_layer === 3 && typed.selection?.length === 2;
+      });
+      expect(request?.[1]).toMatchObject({
+        whole_slice: {
+          source_node_id: "ksia",
+          target_node_id: "mac",
+          end_layer: 3,
+        },
+        selection: [
+          { start_layer: 0, end_layer: 3, target_node_id: "mac" },
+          { start_layer: 4, end_layer: 31, target_node_id: "ksia" },
+        ],
+      });
+    });
+  });
+
+  it("oculta o slider quando o destino já tem uma fatia", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
+      if (body?.kind === "whole") {
+        plan.available.push({
+          start_layer: 0,
+          end_layer: 3,
+          total_layers: 32,
+          name: "qwen3.5-9b L0-3",
+          size_bytes: 700_000_000,
+          holders: ["mac"],
+          selected: false,
+        });
+      }
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    const available = await screen.findByRole("button", { name: /Atribuir L0–3 a mac/ });
+    expect(available).toBeTruthy();
+    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
+    fireEvent.click(available);
+    await waitFor(() => {
+      const request = planCalls().find(([, body]) => {
+        const typed = body as { selection?: Array<{ target_node_id: string; end_layer: number }> };
+        return typed.selection?.some((row) => row.target_node_id === "mac" && row.end_layer === 3);
+      });
+      expect(request).toBeTruthy();
+    });
+  });
+
+  it("mostra por que não há slider quando a leitura do GGUF é indeterminada", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      const plan = body?.kind === "whole" ? wholePlan() : shardPlan();
+      if (body?.kind === "whole") {
+        plan.layer_options = {
+          source_node_id: "ksia",
+          total_layers: 32,
+          cuts: [],
+          granularity: null,
+          rule: "não foi possível confirmar as regras reais deste GGUF",
+          reason: "o peer não respondeu ao catálogo do GGUF",
+        };
+      }
+      return Promise.resolve(plan);
+    });
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(screen.getByText("Quantização")).toBeTruthy());
+    fireEvent.click(await screen.findByRole("button", { name: /mac RTT/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /Máquina: mac/ }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/peer não respondeu/);
+    expect(screen.queryByRole("slider", { name: /Camadas a enviar para mac/ })).toBeNull();
+  });
+
   it("adiciona uma réplica do modelo inteiro ao incluir outra máquina no mapa", async () => {
     answerPlans();
     mount();
@@ -501,6 +626,61 @@ describe("DeployModel · modelo inteiro", () => {
       const last = planCalls().at(-1)![1] as { params: RuntimeParams };
       expect(last.params.fit_memory).toBe(false);
     });
+  });
+
+  it("mantém o seletor de motor oculto para um modelo denso", async () => {
+    answerPlans();
+    mount();
+    chooseWhole();
+
+    await waitFor(() => expect(planCalls().length).toBeGreaterThan(0));
+    expect(screen.queryByRole("combobox", { name: "Motor de inferência" })).toBeNull();
+  });
+
+  it("mostra e envia a escolha do motor no modelo inteiro", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(moePlan(body.kind as DeployPlan["kind"]));
+    });
+    mount();
+    chooseWhole();
+
+    const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
+    fireEvent.change(selector, { target: { value: "moe" } });
+    await waitFor(() => {
+      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("moe");
+    });
+
+    const button = screen.getByRole("button", { name: /^Implantar$/ });
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(button);
+    await waitFor(() => {
+      const deploy = post.mock.calls.find(([url]) => url === "/api/ui/deploy");
+      expect(deploy?.[1]).toMatchObject({
+        kind: "whole",
+        params: { inference_mode: "moe" },
+      });
+    });
+  });
+
+  it("leva a escolha para fatias e mostra a limitação do Tensor Parallelism", async () => {
+    post.mockImplementation((url: string, body: { kind?: string }) => {
+      if (url === "/api/ui/deploy") return Promise.resolve({ job_id: "j1" });
+      return Promise.resolve(moePlan((body.kind ?? "shards") as DeployPlan["kind"]));
+    });
+    mount();
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+    const selector = await screen.findByRole("combobox", { name: "Motor de inferência" });
+    fireEvent.change(selector, { target: { value: "dense" } });
+    await waitFor(() => {
+      expect((planCalls().at(-1)![1] as { params: RuntimeParams }).params.inference_mode).toBe("dense");
+    });
+
+    chooseTensor();
+    fireEvent.click(await screen.findByRole("tab", { name: "Globais" }));
+    expect(screen.getByText("Tensor Parallelism não suporta MoE nesta versão.")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "Motor de inferência" })).toBeTruthy();
   });
 });
 

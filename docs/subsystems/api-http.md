@@ -48,11 +48,15 @@ haver chave.
 
 ### Base
 
-- **`POST /api/generate`** - `{ model?, prompt }`; resposta `GenerateResponse`
+- **`POST /api/generate`** - `{ model?, prompt, max_tokens?, stop? }`; resposta `GenerateResponse`
   com `response`, `source` (`"pipeline:<cadeia>"`, `"local"`,
   `"peer:<node_id>"` ou `"none"`/`"error"`), `tokens_generated`,
   `tokens_per_sec`, `duration_ms`, `trace`. Corpo aceito como bytes crus (não
-  exige `Content-Type: application/json`). `DEFAULT_MAX_TOKENS` = 512.
+  exige `Content-Type: application/json`). `max_tokens` é o orçamento total da
+  saída, incluindo o primeiro token que o prefill devolve; sem o campo, o
+  padrão é 512. O pedido precisa ser maior que zero e não pode exceder o
+  `max_new_tokens` da configuração do nó. Exceder esse limite responde 400
+  com o valor pedido e o valor configurado, nunca trunca em silêncio.
 - **`GET /peers`** - `{ peers: [PeerSummary], count }`. `PeerSummary` traz
   `node_id` (12 primeiros chars), `addr`, `model`, `layers`, `ollama_url`,
   `inference_url`, `load` (carga em voo).
@@ -71,25 +75,35 @@ haver chave.
 
 ### OpenAI (`/v1/*`)
 
-Camada de protocolo pura sobre `gateway::generate_stream`. `render_prompt`
-achata a conversa em um único texto; uma única mensagem `user` sem ferramentas
-passa byte a byte idêntica ao que `/api/generate` receberia. `DEFAULT_MAX_TOKENS`
+Camada de protocolo pura sobre `gateway::generate_stream_with_stops`.
+`render_prompt` achata a conversa em um único texto e **rotula todo turno,
+inclusive o primeiro** - é o que faz o prompt de um turno ser prefixo exato do
+prompt do seguinte, sem o que o cache de prefixo nunca acertaria na transição
+1→2. Texto cru, sem rótulo, é o que `/v1/completions` e `POST /api/generate`
+entregam. `usage.prompt_tokens_details.cached_tokens` informa quantos tokens de
+prompt o pipeline não reprocessou; é medida do executado, não da escolha do
+cache (ver `inferencia.md`, seção 3.1). `DEFAULT_MAX_TOKENS`
 512, teto `HARD_MAX_TOKENS` 4096. `stream: true` vira SSE. Antes de abrir o
 SSE em `/v1/chat/completions`, o adaptador faz a mesma guarda de orçamento de
 prompt do gateway e responde
 HTTP 413 quando o texto não cabe em `n_ctx - max_new_tokens`; isso evita que
 clientes que enviam erro como evento SSE, como OpenCode, fiquem presos numa
 resposta 200 sem conteúdo. Todas as respostas válidas levam a extensão `x_pom`
-(fora do schema) com a prova de execução distribuída. CORS `*` para harnesses
+(fora do schema) com a prova de execução distribuída. O campo OpenAI `stop`
+(string ou lista) passa pelo matcher incremental do gateway: um sufixo que
+ainda pode ser prefixo de uma parada fica retido e a própria parada nunca é
+enviada ao cliente. CORS `*` para harnesses
 de navegador.
 
 ### Anthropic (`/v1/messages`)
 
 Mesmo caminho de geração, próprio `render_prompt` (system/messages/tools
 separados), `content_blocks` para `tool_use`/`tool_result`, `stop_reason`
-(`end_turn`/`max_tokens`/`tool_use`), SSE com os nomes de evento Anthropic.
-`tool_choice` e `stop_sequences` são parseados e ignorados (serde descarta
-campos desconhecidos). `x_pom` vai na resposta não-streaming.
+(`end_turn`/`max_tokens`/`tool_use`/`stop_sequence`), SSE com os nomes de
+evento Anthropic. Também rotula todo turno, pelo mesmo motivo do OpenAI, e
+publica o reuso honrado em `usage.cache_read_input_tokens`. `stop_sequences` usa o mesmo matcher incremental e
+`stop_sequence` retorna a string que encerrou a saída. `tool_choice` continua
+parseado e ignorado. `x_pom` vai na resposta não-streaming.
 
 ### `/admin/*`
 
@@ -114,6 +128,36 @@ peers solicitados), `dev/update` +
 `dev/restart`, `network/advertise-addr`, `network/tls`. `leave` aceita
 `LeaveRequest { node_id }` opcional e **repassa** para o peer quando é um id
 alheio (o painel só fala com o próprio nó).
+
+As rotas remotas `/api/ui/model-provider/search`, `/details`, `/storage` e
+`/downloads` expõem o catálogo e os jobs do `ModelProvider` sem repassar
+comandos ou tokens do provider. `/storage` informa as pastas de modelos
+resolvidas da configuração. Um download escolhe a primeira pasta elegível,
+registra o caminho no `Job.local_path` e aparece em `GET /api/ui/jobs`, que é a
+fonte de progresso, cancelamento e retry da UI. **`GET /api/ui/model-provider/status`** exige
+`ConnectionAuth` e devolve `{ cli: { installed, version, authenticated,
+username } }`: CLI ausente é um estado estruturado, enquanto login necessário
+e sessão autenticada ficam distinguíveis para a UI. O detalhe do modelo consulta
+a licença no provider antes de a tela oferecer o download.
+
+As rotas `POST /api/ui/deploy/plan` e `POST /api/ui/deploy` carregam
+`params.inference_mode` (`auto`, `dense` ou `moe`) para os três modos de
+execução: modelo inteiro, pipeline fatiado e Tensor Parallelism. O planner
+também devolve `is_moe`, `inference_mode_supported` e
+`inference_mode_reason`. `is_moe` vem da metadata real de experts do GGUF,
+nunca do nome do arquivo. Em modelo denso a UI oculta a escolha; quando uma
+combinação ainda não é suportada, a razão permanece visível e o deploy é
+recusado para não apresentar uma preferência que não será respeitada.
+
+**`GET` e `POST /api/ui/model-provider/config`** exigem `ConnectionAuth` e
+controlam o token opcional do Hugging Face. O GET devolve somente
+`{ configured, masked, source }`, nunca o segredo. O POST recebe `{ token }` -
+`null` ou texto vazio remove o valor - grava `huggingface_token` no `pom.json`
+com permissão `0600` no Unix e atualiza o provider em memória, sem reinício.
+A precedência efetiva é `HF_TOKEN`, `HUGGING_FACE_HUB_TOKEN`, token do
+`pom.json` e, por último, o cache (`HF_TOKEN_PATH`, `HF_HOME/token` ou
+`~/.cache/huggingface/token`). Assim, variáveis existentes continuam vencendo,
+e a configuração explícita da UI vence o cache.
 
 **`POST /api/ui/network/tls`** - corpo `{ tls_required: bool }`, liga ou desliga
 o TLS entre peers do cluster inteiro. Responde **403 fora do nó principal**, e

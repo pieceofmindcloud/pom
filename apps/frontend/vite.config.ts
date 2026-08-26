@@ -57,6 +57,7 @@ function brandHtml(): Plugin {
  * to handle. Start one with `--no-discovery` so it stays out of the cluster.
  */
 const target = process.env.VITE_API_TARGET ?? "http://127.0.0.1:8080";
+const docsDirectory = fileURLToPath(new URL("./src/docs", import.meta.url)).replace(/\\/g, "/");
 
 /** Every path the node owns. Anything else is served by Vite itself. */
 const proxied = ["/api", "/v1", "/admin", "/peers", "/health", "/generate"];
@@ -96,5 +97,38 @@ export default defineConfig({
       ]),
     ),
   },
-  build: { outDir: "dist", sourcemap: false },
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          const normalizedId = id.split("?")[0].replace(/\\/g, "/");
+          if (normalizedId.startsWith(`${docsDirectory}/`) && normalizedId.endsWith(".md")) {
+            const relativePath = normalizedId.slice(docsDirectory.length + 1);
+            const chunkName = relativePath
+              .replace(/\.md$/, "")
+              .replace(/[^a-z0-9]+/gi, "-")
+              .toLowerCase();
+            return `docs-${chunkName}`;
+          }
+          if (!normalizedId.includes("/node_modules/")) return undefined;
+          if (normalizedId.includes("/framer-motion/") || normalizedId.includes("/motion-dom/")) {
+            return "vendor-motion";
+          }
+          if (normalizedId.includes("/lucide-react/")) return "vendor-icons";
+          if (
+            normalizedId.includes("/react/") ||
+            normalizedId.includes("/react-dom/") ||
+            normalizedId.includes("/react-router/") ||
+            normalizedId.includes("/react-router-dom/")
+          ) {
+            return "vendor-react";
+          }
+          if (normalizedId.includes("/@tanstack/react-query/")) return "vendor-query";
+          return undefined;
+        },
+      },
+    },
+  },
 });

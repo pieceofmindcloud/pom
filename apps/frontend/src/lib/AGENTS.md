@@ -14,11 +14,11 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `api.ts` - fetch wrapper over relative paths with connection-key auth,
   conditional JSON GETs with ETag caching, the SSE reader and the deployment
   registry actions (`listDeployments`, `redeployDeployment`,
-  `activateDeployment`).
+  `activateDeployment`), além do status autenticado do provider remoto.
 - `chatScroll.ts` - whether the chat viewport is near the bottom (auto-scroll policy).
 - `chatModels.ts` - presentation-only options for the test chat; hides deployment-qualified ids containing `@d-` while leaving the backend catalog unchanged.
 - `chatStore.ts` - conversation sessions persisted in `localStorage`, cross-tab synced; keeps the initial model mark and private request content for telemetry analysis.
-- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms` and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC`.
+- `chatStream.ts` - incremental parse of streaming deltas; `<think>`/`</think>` splitter and request trace types, including observed phase `round_trip_ms`, selected path, executed engine, mixed/mismatch flags and optional TP telemetry. Backend completion timing must not be used to infer `POM_PROFILE_SYNC` or the engine.
 - `telemetryAnalysis.ts` - pure diagnosis of TP, pipeline transport, engine queue and backend cost; derives the observed execution RTT, adjacent pipeline pairs and effective GPU/CPU/mixed layer counts from actual buffers.
 - `deleteModel.ts` - two-step delete of a GGUF with a warnings/force round trip.
 - `deployMemory.ts` - last deploy per model remembered in `localStorage` for the Deploy screen, including the operational name and strategy when available. Keys are namespaced by kind (`whole:<name>` for a whole model), because a shard set and a model routinely share a name.
@@ -31,6 +31,8 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `queries.ts` - every read the panel does, as react-query hooks with polling
   intervals. `useCluster`, `useJobs` and `useOffers` use conditional GETs;
   jobs and offers slow to 10s when idle and return to 2s while active.
+  `useModelDownloads` derives the `model_download` jobs from `/api/ui/jobs` and
+  is shared by the remote-model and transfers screens.
   `useCacheTypes` reads the installation-wide K/V cache representation from
   `/api/ui/cache-types`; saving it is an authenticated mutation owned by the
   deployment inspector, not a per-machine launch parameter.
@@ -53,12 +55,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `transferLabel.ts` - como uma fatia se nomeia na tela (modelo + camadas, hash de lado).
 - `modelProvider.ts` - serializa a busca remota, filtra jobs de download,
   calcula a cadência derivada e só calcula percentual quando o backend conhece
-  o total de bytes.
+  o total de bytes. `useRemoteModelProviderStatus` em `queries.ts` lê o estado
+  estruturado do CLI e da sessão Hugging Face antes da busca remota.
+- `api.ts` e `queries.ts` também expõem `getHuggingFaceTokenConfig`,
+  `saveHuggingFaceToken` e `useHuggingFaceTokenConfig`; o tipo de resposta
+  contém apenas `configured`, `masked` e `source`, nunca o token bruto.
 - `peerName.ts` - como uma **máquina** se nomeia na tela: `peerDisplayName` (nome anunciado, id curto só como último recurso) e `uniquePeerName` (desempate por id quando dois nós dividem hostname). Usado por `routes/Shards.tsx`.
 - `types.ts` - all API shapes served by the node, one authoritative source.
   `ShardSet.shards` is the pipeline `parts` array and `ShardSet.tp_parts` is
   the tensor-parallel array. TP `DiscoveredModel` entries carry `tp_rank` and
   `tp_size`, which the UI turns into one-based labels such as `1of4`.
+  `WholeLayerOptions` and `LayerCut` carry the GGUF-derived cut points used by
+  the whole-model deploy slider; `WholeSliceSelection` identifies the source,
+  destination and accepted prefix end sent back to the node.
   `tpPartsOf` normalizes a missing optional wire field to an empty list before
   catalog consumers iterate it.
 - `*.test.ts(x)` - unit tests exist for chatScroll, chatStream, deleteModel, deployMemory, wholeModels, networkGraph, networkLayout, networkPeers, transferStatus (run with `npm test`).
@@ -103,10 +112,19 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   `DeployPlan.tp_targets` describes pre-sliced TP ranks separately from
   pipeline steps, including the source hash/path used by a transfer.
   `RuntimeParams.fit_memory` enables llama.cpp memory fitting and is normalized
-  off for tensor parallel deployment.
+  off for tensor parallel deployment. `RuntimeParams.inference_mode` is the
+  persisted `auto`/`dense`/`moe` preference. `DeployPlan.is_moe` comes from the
+  node's GGUF expert metadata; the deploy screen must not infer MoE from a
+  filename. `inference_mode_supported` and `inference_mode_reason` keep an
+  unsupported path visible instead of presenting a misleading selection.
+  `DeployPlan.capabilities` is the backend tri-state contract for conditional
+  global controls, including source and reason. The UI does not infer model or
+  topology support from names; unknown remains visible but disabled.
 - `isWholeModel(m)` - a whole `.gguf` vs a slice (`shard_range == null`).
 - `SizedRange` / `SizePlan` / `TpSlicePlan` / `PlannedShard` / `SplitPlan` -
-  size-, tensor- and budget-driven slicing plans.
+  size-, tensor- and budget-driven slicing plans. Budget-driven shards expose
+  `weight_bytes`, `kv_bytes` and `total_bytes`; those are the byte arithmetic
+  returned by the node planner, not display-only estimates.
 - `UndeployOutcome` / `UndeployReport` - per-machine result of an undeploy: `released` is `true` only when that machine confirmed, `error` carries the reason otherwise.
 - `TransferOffer.md5` is documented as always empty: verifying the file is the receiver's job after accepting (`/api/transfer/manifest`), because computing the digest to offer held the notification up for the whole file read (3 min 23 s of MD5 on a 4.2 GB slice).
 
@@ -137,7 +155,14 @@ relative path (`api.ts`) and the browser never learns a peer's address.
 - `consumeChatDelta(previous, delta)` - pure state machine that separates `<think>` reasoning from visible content without leaking a split delimiter across chunk boundaries (partial suffix held in `pending`).
 - `finishChatStream(previous, metrics)` - flushes an incomplete trailing delimiter as literal text and records tokens/sec, duration and trace.
 - `isPhasedHop(hop)` - discriminates `PhasedHopTrace` (split prefill/decode) from `LegacyHopTrace` so the telemetry table can render both shapes.
-- Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry contract from `inference_server.py`/gateway.
+- Types `RequestTrace`, `PhaseTrace`, `HopTrace` - the per-hop telemetry
+  contract from `inference/prefill.rs`/gateway. `PhaseTrace.selected_path` is
+  the GGUF selection, while `executed_engine` and `executed_engines` are the
+  backend facts (`llama.cpp`, `moe` or unknown when absent). The mismatch and
+  mixed flags are evidence from the request, not a UI guess.
+  `RequestTrace.cached_tokens` is optional on purpose: a node that does not
+  report prefix reuse means "unknown", and the chat shows nothing rather than
+  claiming savings it cannot prove.
 
 ### deployMemory.ts
 - `rememberDeploy(group, memory)` / `recallDeploy(group)` - last deploy (selection, params, merge) per model group in `localStorage` `codai.deploy.last`, capped at 20 models, oldest dropped by `at`.
@@ -221,3 +246,10 @@ would go.
 - `components/Sidebar.tsx` uses `theme`.
 - `i18n/locales.ts` is imported by `api.ts` and `chatStore.ts` (`getActiveLocale`) for non-React localized strings.
 - Backend endpoints hit from this folder: `/api/ui/node`, `/api/ui/cluster`, `/api/ui/models`, `/api/ui/cluster/models`, `/api/ui/peer/:node_id/runtime`, `/api/ui/paths`, `/api/ui/jobs`, `/api/ui/requests`, `/api/ui/models/delete`, `/api/ui/deploy/node`, `/api/ui/deploy/node/remove`, `/api/ui/undeploy`, `/api/ui/leave`, `/api/ui/dev/update`, `/api/transfer/jobs`, `/api/transfer/offers`, `/admin/nodes`, `/admin/api-keys`, `/v1/models`.
+
+## Maintaining this file
+
+Keep this file for knowledge useful to almost every future agent session in this project.
+Do not repeat what the codebase already shows; point to the authoritative file or command instead.
+Prefer rewriting or pruning existing entries over appending new ones.
+When updating this file, preserve this bar for all agents and keep entries concise.

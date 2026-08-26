@@ -31,15 +31,39 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   token para N=2,3,4 com o gateway na cabeça/meio/cauda. O fixture anuncia
   somente capabilities que o endpoint falso implementa.
 - `infer_server.rs` (3400) - axum server: `/v1/prefill`, `/v1/step`,
-  `/v1/session/release`, `/v1/session/rollback`, `/health`; estado das sessões
-  e o branch de relay. Os handlers decodificam o frame e entregam comandos a
-  uma fila local limitada; o worker seleciona uma entrada por sessão e pode
-  chamar o decode multi-sequência. Cada `Session` mantém seu próprio
+  `/v1/session/release`, `/v1/session/rewind`, `/v1/session/rollback`,
+  `/health`; estado das sessões, seleção do caminho `dense/llama.cpp` ou
+  `moe/q4_0` e o branch de relay. O runtime MoE recebe hidden states antes do
+  decode local ou transforma o residual que vai para o próximo hop somente
+  quando o caminho selecionado é MoE; no hop terminal a captura do residual
+  também chama o bloco MoE antes de amostrar a resposta. O forward é marcado
+  depois de retornar. Atenção, logits e demais operações continuam no
+  `LlmEngine`, que fornece a fronteira de cálculo restante. Os
+  handlers publicam `selected_path`, `executed_engine`, `executed_engines`,
+  `moe_executor`, `moe_executors`, `moe_executor_dtypes`,
+  `moe_executor_reason` e `moe_forward_ms`, além das flags
+  `engine_mismatch`/`mixed_execution` em `node_timings`; `/health` publica
+  apenas o caminho selecionado, pois não representa uma requisição. O
+  estado é acessado por `lock_inference_state`: um mutex envenenado vira erro
+  HTTP ou falha da requisição em lote, nunca um novo panic em `unwrap`. EOS
+  fecha apenas o acumulador da resposta; a sessão permanece disponível para
+  rewind até o release explícito ou a coleta por ociosidade.
+  `PhaseTrace` transporta também `node_moe_forward_ms`, que é o custo do
+  forward externo fora de `llama_decode` e fecha a conta do backend. `cuda`
+  só é publicado depois do forward NVFP4 real; `cpu-reference` inclui os
+  dtypes GGML e o motivo da ausência de ponte CUDA. O `PhaseTrace` do gateway
+  preserva esses campos por hop e por fase; `not-run` expõe a ausência de
+  execução e não há fallback implícito para CPU.
+  Os handlers decodificam o frame e entregam
+  comandos a uma fila local limitada; o worker seleciona uma entrada por
+  sessão e pode chamar o decode multi-sequência. Cada `Session`
+  mantém seu próprio
   `Utf8Assembler`: `token_to_piece_bytes` preserva os bytes crus, só as
   posições aceitas alimentam o acumulador e o `flush` ocorre no EOS ou na
   limpeza de erro/cancelamento.
 - `llm.rs` (1500) - wrapper llama-cpp-sys-2: carga, decode, hidden state com
-  residual capture, sampling, cache KV tipado (`type_k`/`type_v`) e o dono da
+  residual capture, sampling, parada por EOS ou fim de turno do template GGUF,
+  renderer Gemma4 derivado de `tokenizer.chat_template`, cache KV tipado (`type_k`/`type_v`) e o dono da
   cabeça de rascunho `nextn` (`Option<MtpDrafter>`). `token_to_piece_bytes`
   devolve a peça sem conversão lossy para o acumulador da sessão.
   `decode_tokens_batch` e `decode_hidden_batch`
@@ -59,17 +83,185 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `crates/node/build.rs`.
 - `prefill.rs` (1688) - `run` (hub) / `run_ring` (anel) / `run_direct` (direto),
   `step_speculative`, as duas formas de resposta da especulação, traço de fases
-  por requisição.
+  por requisição. `Cancellation` cancela a operação do gateway quando o
+  consumidor desaparece, antes do próximo chunk ou hop e também durante a
+  espera HTTP; um frame já aceito pelo peer não recebe um novo header de fio.
+  O prefill de continuação carrega `reuse_prefix` no primeiro chunk e
+  `start_pos`/`next_pos` absolutos nos chunks seguintes, para que os peers que
+  recebem hidden state mantenham a mesma posição KV da cabeça. O chunk 0 pode
+  omitir `start_pos` porque a sessão fornece `n_past`; qualquer chunk posterior
+  sem posição é erro, nunca uma posição inventada pelo índice do chunk. O
+  `reuse_prefix` que os hops seguintes recebem é o que a **cabeça executou**,
+  lido da resposta dela (`cached_tokens_of`, `head_reused_prefix`), não o que o
+  gateway pediu. Intermediários em uma cadeia N-hop ecoam essa decisão em vez
+  de recalculá-la. A resposta parcial da cabeça, tanto no caminho individual
+  quanto no lote, também carrega `n_prompt_tokens`, `start_pos` e `next_pos`
+  absolutos, inclusive no primeiro chunk de um modelo inteiro.
+  `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
+  não foram reprocessados; `retained_tokens` devolve a fronteira estável que
+  ficou na `prompt_seq` e que o gateway confirma no rewind.
+- `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
+  ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
+  contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
+  mensagens (`openai::conversation_cache_key`), não do prompt renderizado.
+- `prefix_cache_lab.rs` - autoteste diferencial da política do cache, ou seja da
+  **escolha**. A referência acompanha lookup, insert, busy, release e eviction;
+  o proxy propositalmente quebra `cached_tokens` e a bateria precisa registrar a
+  divergência. Nenhum defeito de execução é alcançável por ele.
+- `prefix_reuse_lab.rs` - a bancada da **execução**: uma conversa de quatro
+  turnos pelo caminho de `/v1/chat/completions`, nos três transportes (hub,
+  anel, direto). Afirma que do turno 2 em diante
+  `cached_tokens > 0`, que o trabalho por turno para de crescer com a conversa,
+  registra o tempo até a primeira palavra e afirma que ele cai depois do turno
+  frio, além de verificar que nenhum hop recebeu pedido de remoção parcial de
+  KV. O contrato de posição repete anel e resposta direta com N=3 e N=5 hops;
+  o teste SSE de `openai.rs` reproduz a sessão em 42 sem `next_pos` e impede o
+  envio de chunk 1 em 512. Os hops falsos imitam o motor mais restrito que o
+  produto atende - o recorrente, que recusa remoção parcial - e mantêm a
+  fronteira estável do prompt separada da sequência de geração. A bancada usa
+  as funções de produção nos pontos de decisão
+  (`plan_prefix_reuse`, `reuse_prefix_for_forward`,
+  `overlay_head_authoritative_fields`, `prompt_progress_for_forward`).
+- `moe/` - executor próprio de experts. `cache.rs` mantém um LRU global por
+  chave de modelo/camada/expert/formato, com leases ativos e eviction apenas
+  ociosa; `admission.rs` calcula o orçamento a partir de memória livre medida;
+  no caminho CUDA, a admissão também preserva uma reserva derivada do compute
+  buffer CUDA medido pelo `llama.cpp`, com margem relativa e recusa nominal se
+  o relatório não existir ou o expert não couber;
+  `format_q4_0.rs` compartilha o parser GGUF, o inventário de dtypes e o
+  decoder Q4_0, `format_plain.rs` implementa os bancos escalares F32/F16/BF16,
+  `format_legacy_quants.rs` implementa Q4_1/Q5_0/Q5_1/Q8_0,
+  `format_low_bits.rs` implementa MXFP4/TQ1_0/TQ2_0/Q1_0/Q2_0,
+  `format_k_quants.rs` implementa Q2_K/Q3_K/Q4_K/Q5_K/Q6_K/Q8_K, `format_iq_quants.rs`
+  implementa IQ2_XXS/IQ2_XS/IQ3_XXS/IQ1_S/IQ4_NL/IQ3_S/IQ2_S/IQ4_XS/IQ1_M,
+  `format_nvfp4.rs` implementa o decoder NVFP4 em CPU; o rastro completo
+  `Nvfp4Trace`/`run_trace` fica restrito à prova diferencial de testes, enquanto
+  o runtime consome somente a saída do expert; `cuda.rs` mais
+  `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
+  feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
+  Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
+  descritores por papel e dtype para esses três IQ, sem converter a combinação
+  para um dtype global. A ponte escalar reutiliza o payload de
+  `format_plain.rs` e valida o cabeçalho antes do kernel.
+  K-quants e IQ-quants validam a convenção GGUF
+  `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
+  antes de entregar o payload ao cache. A expansão IQ usa as primitivas GGML
+  linkadas, enquanto cache, router e mat-vec permanecem no executor próprio.
+  `format_heterogeneous.rs` é a fronteira para GGUF UD e outros arquivos que
+  misturam dtypes: o inventário registra cada tensor por camada e papel, e o
+  decoder é escolhido pelo dtype daquele tensor. O callback recebe a metadata
+  do fork do llama.cpp e valida nome, geometria e dtype contra esse inventário;
+  uma combinação ausente ou não suportada recusa nomeando tensor e dtype.
+  `bandwidth.rs` transforma medições concorrentes CPU/transferência em uma
+  fração determinística dos misses; `coexecution.rs` divide por expert,
+  executa as duas lanes em paralelo e soma saídas com largura validada.
+  A ponte IQ CUDA tem diagnóstico diferencial por dtype e estágio nos testes
+  `executor_cuda_iq_preserva_iq3s_iq2s_e_iq4xs_do_decoder_cpu` e
+  `diagnostico_cuda_iq_divergencia_por_estagio`. A implementação da ponte não
+  é prova de correção por si só: a prova CUDA na `ksia` comparou IQ3_S, IQ2_S
+  e IQ4_XS contra o decoder CPU em `gate_up`, ativação e `down`, sem primeira
+  divergência. Os três dtypes podem ser publicados pelo dispatch somente após
+  essa prova; uma divergência futura deve reativar a recusa nominal, não cair
+  silenciosamente em outro formato.
+  Não usar um dtype global nem adicionar ramo por arquitetura ou modelo.
+  Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
+  camada: somente camadas com ponte device têm seus experts omitidos do
+  llama.cpp; dtypes sem cache device e combinações heterogêneas fora do
+  conjunto IQ priorizado ficam nativas e registram o motivo na telemetria. O
+  fork mantém a lista como metadata
+  copiada no modelo e o grafo escolhe external/native pela camada, nunca por
+  uma flag global que possa deixar experts sem executor.
+  A telemetria `moe_executor_diagnostics` expõe, quando o perfil CUDA está
+  ligado, chamadas, hits/misses do LRU, bytes H2D/D2H e tempos de alocação,
+  kernel, sincronização, liberação, busca/admissão e carregamento de experts no
+  host, preparação do lote e cópia dos resultados para vetores Rust. O perfil é opt-in por
+  `POM_MOE_CUDA_PROFILE=1` e serve para diagnóstico, não para alterar a
+  política do cache.
+  `cuda_kernels.cu` reproduz a convenção ggml de Q8_0 para as ativações,
+  acumulação inteira por subbloco NVFP4 e decodificação direta dos superblocos
+  Q4_K/Q6_K com SiLU no caminho K. O
+  caminho CUDA agrupa os experts ativos de uma rota em índices `(expert, linha)`;
+  depois do cache residente, o payload de peso é enviado uma vez por miss e o
+  lote recebe ponteiros de device nos hits. O lote de rotas para múltiplos
+  tokens envia ids, pesos e offsets uma vez por camada e agrega a saída no
+  device; o caminho unitário continua disponível para o executor residente.
+  O lote de rota usa seis lançamentos de kernel e duas sincronizações. O perfil publica `cuda_call_wall_ms`
+  como parede externa não sobreposta da chamada FFI, separada de H2D, kernel,
+  lançamentos, sincronização, D2H e liberação, que são submedições internas. O runtime
+  também publica `runtime_forward_ms`, `host_batch_prepare_ms`,
+  `host_result_copy_ms` e `host_aggregation_ms` para fechar a conta do forward
+  MoE sem somar relógios sobrepostos.
+  A descompactação NVFP4 e K-quant ainda ocorre no kernel a cada uso, mas os bytes quantizados
+  do expert ficam residentes no device entre usos quando a ponte CUDA e o
+  orçamento medido permitem. O cache frio de RAM e o cache quente de device têm
+  estatísticas separadas. Depois de qualquer mudança
+  CUDA, execute a build com
+  `--features vulkan,cuda` na ksia e repita tanto os testes CUDA diferenciais
+  quanto as provas reais `executor_cuda_nvfp4_lote_preserva_geometria_do_gguf_real`
+  e `nvfp4_matches_llama_cpp_from_first_layer_and_stage`.
+  Os loaders aceitam tanto `ffn_gate_up_exps.weight` fundido quanto
+  `ffn_gate_exps.weight` e `ffn_up_exps.weight` separados; `router.rs` e
+  `block.rs` fazem top-k e soma ponderada no bloco MoE. `runtime.rs` detecta o
+  dtype dos experts, seleciona o decoder validado e liga o bloco ao hidden state
+  nos caminhos unitário e batch. O teste ignorado
+  `mede_banda_h2d_d2h_do_lote_nvfp4`, executado explicitamente com
+  `POM_MOE_CUDA_PROFILE=1`, mede H2D, D2H, kernel e parede externa em
+  geometrias pequena e Gemma4 após o aquecimento do cache de device. O perfil
+  agora usa dois slots CUDA persistentes, streams separados e buffers host
+  pinned para alternar grupos de tokens; `buffer_mask`, `buffer_switches`,
+  `kernel_span_ms` e `transfer_span_ms` distinguem sobreposição de trabalho
+  apenas somado. `CudaTransferProfile` lê no runtime o sidecar opcional com as
+  quatro bandas medidas; a criação e persistência do sidecar pertencem às
+  bancadas de teste, e `runtime.rs` passa esse perfil ao NVFP4. Em uma rota
+  NVFP4 CUDA,
+  experts residentes ficam na GPU, misses são divididos pela fração medida e
+  as lanes CPU e GPU executam em paralelo; a telemetria publica chamadas de
+  cada lane e a fração escolhida. A validação CUDA e os números observados
+  vivem em `docs/subsystems/freetoken-moe.md`.
+  O wire continua em f16 e nenhum peso trafega; a costura não substitui ainda
+  atenção, demais camadas ou a amostragem do `LlmEngine`.
+  Quando a ponte CUDA existe, `MoeRuntime::start_device_warmup` percorre os
+  payloads canônicos por camada, expert, papel e dtype em uma thread separada,
+  usando a mesma admissão do cache residente. O orçamento continua derivado da
+  memória livre e da reserva do compute buffer medido; `warmup_status`, bytes,
+  candidatos e erros chegam em `moe_executor_diagnostics`. O prazo é
+  `POM_MOE_WARMUP_MAX_MS` (30 s por padrão) e `cancel_device_warmup` faz
+  cancelamento cooperativo entre payloads. Fontes sem ponte device não aquecem
+  nem removem experts do llama.cpp.
+  A prova numérica `nvfp4_matches_llama_cpp_from_first_layer_and_stage` é
+  ignorada por depender de GGUF real: com `POM_MOE_NUMERIC_MODEL` e
+  `POM_MOE_NUMERIC_ACTIVATION`, ela compara camada a camada `gate`, `up`,
+  ativação e `down` do decoder CPU com o oráculo ggml do llama.cpp antes de
+  qualquer comparação CUDA. O primeiro estágio divergente deve ser reportado,
+  não corrigido silenciosamente.
+  No NVFP4, o parser respeita a ordem GGUF `[input, output, experts]`: gate/up
+  são `[hidden, intermediate, experts]` e down é
+  `[intermediate, hidden, experts]`. A inversão desses eixos faz o runtime
+  recusar o residual com largura incompatível.
+- `executor.rs` - classifica a arquitetura GGUF e resolve o modo
+  `auto/dense/moe`. No `infer_server::run`, uma escolha explícita persistida no
+  deploy vence `POM_INFERENCE_MODE`; `auto` ainda aceita esse override e, sem
+  ele, usa a metadata GGUF. O caminho denso fica em `LlmEngine`, e o MoE
+  seleciona o runtime próprio por dtype. `ExecutionEngine` é a fonte única do
+  rótulo que sai na telemetria; ausente em peer antigo vira desconhecido na
+  interface.
 - `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
   próximo hop, envia um frame único e distribui respostas por `item_id`;
   `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
-  supervisa o servidor Rust embutido (`infer_server::run`), e mantém a
-  anotação da fatia servida (Pending → Serving via `/health`).
+  supervisa o servidor Rust embutido (`infer_server::run`), mantém um cache de
+  pesos entre gerações compatíveis e mantém a anotação da fatia servida
+  (Pending → Serving via `/health`). `stop` limpa o cache; uma troca de fatia
+  ou de parâmetros de carregamento também o invalida.
+  `NodeConfig.inference_mode` preserva a preferência `auto`/`dense`/`moe` que
+  veio do deploy; `infer_server::run` a entrega ao seletor antes de carregar o
+  modelo. O campo escolhido ainda não substitui a observação: a telemetria
+  continua sendo a fonte de verdade sobre o motor executado e deixa divergência
+  visível.
 - `spec_lab.rs` (613, `#![cfg(test)]`) - a bancada da especulação:
-  `generate_stream` de verdade contra hops falsos que decidem com
+  `generate_stream_with_stops` de verdade contra hops falsos que decidem com
   `should_draft`/`find_draft`/`longest_match` de produção, com `kv_can_shift`
   como botão. O fixture não anuncia batching, pois o endpoint falso atende
   frames unitários.
@@ -87,11 +279,11 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `graph splits = 66` (2 por camada) e o log do primeiro reduce.
 
   Uma **réplica não tem opinião** (`tp::is_replica`): ela contribui com a metade
-  dela em cada reduce e nada mais. Quem amostra o token, decide o fim da geração
-  e encerra a sessão é o rank 0. A amostragem é estocástica e o RNG de cada
-  processo é independente, então o worker amostrava EOS enquanto o rank 0
-  amostrava um token normal, apagava a sessão, e o step replicado seguinte
-  batia em "sessão desconhecida" - HTTP 400 (18/08).
+  dela em cada reduce e nada mais. Quem amostra o token e decide o fim da
+  geração é o rank 0. EOS apenas fecha o `Utf8Assembler` para a resposta; a
+  sessão física continua viva até o gateway decidir entre `/v1/session/rewind`
+  e `/v1/session/release`. Isso evita que uma réplica veja uma sessão removida
+  pelo rank 0 antes do rewind ou de um step já aceito.
 
   `register_tp_reduce`/`unregister_tp_reduce` **ligam e desligam** o nó do grupo,
   e desligar limpa tudo: estado, decode aberto, marca de réplica e falha
@@ -136,6 +328,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Sem o repasse a sessão do worker segurava o único slot e a **segunda**
   requisição morria com "seq pool esgotado" (18/08).
 
+  `/v1/session/rewind` segue a mesma regra de réplica, mas preserva a sessão:
+  remove somente o sufixo gerado e atualiza `n_past` em todos os ranks. O
+  gateway só publica o prefixo no cache depois de confirmar a resposta de cada
+  hop. O fim normal da geração não chama `InferState::finish`; essa remoção é
+  reservada ao release explícito e à coleta de sessões ociosas.
+
   Os handlers `handle_prefill` e `handle_step` também seguram
   `tp_batch_gate` no caminho de um frame com um único item. O gateway envia
   esse caso pelo `BatchCoordinator`, então o receptor precisa manter
@@ -161,6 +359,24 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 `infer_server.rs`:
 - `InferenceServer::new` + rotas - monta o router axum sobre o `LlmEngine` e o
   estado de sessões (sessions, seq_pool, max_sessions, sampling).
+- `Session` - **duas sequências de KV por sessão**: `prompt_seq`, onde o
+  prefill escreve até a fronteira estável medida, e `gen_seq`, aberta por
+  `open_generation` na primeira decodificação de token gerado, como cópia da
+  primeira. A cauda volátil do prompt e a geração ficam na cópia. `seq_id()`
+  devolve a que vale para o passo atual. É o que permite reter o prompt entre
+  turnos sem nunca remover posições do meio do KV; ver `llm::kv_seq_budget` para
+  o par de sequências e o que ele custa.
+- `retain_prompt` - fim de turno: apaga a sequência da geração inteira (remoção
+  total, que todo motor aceita) e devolve a sessão a `prompt_len`. O EOS chama
+  isto, **não** `finish`; destruir a sessão no EOS era o que fazia o rewind do
+  gateway chegar a uma "sessão desconhecida". `finish` continua sendo a
+  liberação de vez (release explícito, cancelamento, erro).
+- `plan_prefix_reuse` / `expected_prefill_pos` - a regra do reuso e a posição do
+  pedaço, puras e testadas em `prefix_rule_tests`. A regra é só-acrescentar:
+  fora dela, a sessão recomeça, o que custa o reuso do turno e nunca a
+  requisição.
+- `evict_retained` - uma sessão retida é cache reclamável: quando falta slot de
+  sequência, ela cede antes de a requisição falhar com "seq pool esgotado".
 - `handle_prefill`/`handle_step` - autenticação, decode do frame e envio para o
   scheduler local. O worker usa `prefill_batch_blocking` ou
   `step_batch_blocking` quando as entradas são compatíveis e mantém o caminho
@@ -202,13 +418,16 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
-  `INFERENCE_FRAME_BODY_LIMIT=16 MiB` corta frame impossível no body.
+  `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
 - `/health` anuncia `relay/v2-direct`, expõe `kv_can_shift`,
-  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`) e também o snapshot
-  do scheduler (`queue_depth`, limites, tamanho e tokens do último lote).
+  `profile_sync_enabled` (valor efetivo de `POM_PROFILE_SYNC`), o caminho
+  `selected_path` e também o snapshot do scheduler (`queue_depth`, limites,
+  tamanho e tokens do último lote). O motor observado sai por
+  `node_timings.executed_engine` e `executed_engines` em cada hop do
+  prefill/decode e é agregado no `RequestTrace` sem inferência da tela.
 - `should_draft` (e `find_draft`/`longest_match`) - a cabeça decide se
   rascunha: `speculate` pedido **e** `kv_can_shift`. Recusar é resposta
   legítima, não erro: a cabeça omite `draft` no quadro e a cauda responde no
@@ -216,8 +435,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   duas formas de resposta em `prefill.rs`).
 
 `llm.rs`:
-- `LlmEngine::load` - carga com `EngineConfig` (n_ctx total, n_batch,
-  n_gpu_layers, offload_kqv, fit_memory, max_sessions). O runtime transforma
+- `LlmEngine::load_with_cache` - carga com `EngineConfig` (n_ctx total, n_batch,
+  n_gpu_layers, offload_kqv, fit_memory, max_sessions e
+  `moe_external_executor`). O runtime transforma
   o contexto por sessão em `n_ctx * max_sessions` antes de criar o engine. Com
   `fit_memory=true` e o padrão de
   camadas GPU (`99`), chama a ponte `llama_rs_fit_params` do llama.cpp antes de
@@ -233,7 +453,13 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `LlmEngine::pool` (N contextos sobre um modelo só, `pool_tests` cobre como o
   total é repartido entre contextos de uma sessão) ainda **não tem chamador**:
   o servidor carrega um contexto com `load`, e o `#[allow(dead_code)]` no
-  `pool` é a marca disso.
+  `pool` é a marca disso. `LlmEngine::load_with_cache` usa o
+  `ModelCache` do runtime para criar apenas um contexto novo quando a
+  identidade da fatia e do carregamento de pesos não mudou; parâmetros de KV,
+  contexto, sessões, lote e sampling não forçam releitura do GGUF. O flag
+  `moe_external_executor` faz parte dessa identidade: quando ligado, o fork
+  mantém metadata dos experts roteados em contexto `no_alloc`, sem buffer de
+  pesos; uma carga densa/nativa nunca compartilha esse modelo metadata-only.
 - `LlmEngine::placement` / `LlmEngine::context_memory` - onde as camadas e o
   cache KV ficaram **de fato**, do llama.cpp, por
   `llama_rs_model_placement_json` e `llama_rs_context_memory_json`
@@ -448,7 +674,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `BatchFrame`/`BatchItem` - `frame_version=1`, vários itens nomeados no mesmo
   payload concatenado; `encode_batch`/`decode_batch` rejeitam dtype desconhecido,
   shape divergente, offsets fora do payload, sobreposição, item duplicado e
-  payload acima de 16 MiB.
+  payload acima de 64 MiB.
 - `encode_batch_items`/`decode_batch_items` são o caminho distribuído; um
   pedido de uma sessão usa o mesmo protocolo por meio de
   `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
@@ -456,7 +682,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
   o fio oficial é sempre `inference/frame-v1-batch`. `WireDtype{F32, F16}`
   continua com `as_str`/`parse`/`bytes_per_value`.
-- `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
+- `MAX_FRAME_PAYLOAD_BYTES=64 MiB`; o relay separa lotes pelo orçamento de
+  payload e não coalesce a cabeça quando a resposta pode carregar hidden state
+  sem que o tamanho apareça no request.
 
 ## Predição multi-token (MTP) - `mtp.rs`
 
@@ -553,18 +781,21 @@ unidade mas **não** tem número medido de ponta a ponta.
 
 ## Defeitos anotados
 
-- **A captura do residual assume a ordem do `split_simple`, que só vale com
-  `max_sessions = 1`.** `capture_callback` acumula um microlote por disparo e
-  `BatchLayout` reencontra cada item por deslocamento de linha; isso casa
-  porque o llama.cpp fatia o lote em índices crescentes e contíguos. Mas ele só
-  usa `split_simple` quando o cache KV tem um stream só, e
-  `n_stream = kv_unified ? 1 : n_seq_max` - o projeto nunca liga `kv_unified`
-  (o padrão do `llama_context_default_params` é `false`), então **com
-  `max_sessions > 1` o llama.cpp passa a usar `split_equal`**, que agrupa por
-  sequência e concatena os grupos: a ordem das linhas capturadas deixa de ser a
-  do lote, e o residual de cada item sai trocado - sem erro, só resposta
-  errada. O padrão de `max_sessions` é `1` (`runtime.rs`,
-  `default_max_sessions`), então o caminho de hoje é o correto; quem for
-  levantar esse número precisa resolver isto antes, ligando `kv_unified` ou
-  mapeando o microlote de volta às posições. Ver `split_equal` em
-  `llama.cpp/src/llama-batch.cpp` e o comentário de `accumulate_capture`.
+Nenhum no momento.
+
+O que estava anotado aqui - "a captura do residual assume a ordem do
+`split_simple`, que só vale com `max_sessions = 1`" - deixou de valer quando o
+cache de prefixo passou a exigir duas sequências de KV por sessão: os dois
+pontos que criam contexto agora ligam `kv_unified` incondicionalmente
+(`llm::kv_seq_budget`), e com `kv_unified` o cache tem um stream só
+(`n_stream = kv_unified ? 1 : n_seq_max`) qualquer que seja `max_sessions`. O
+llama.cpp continua, portanto, usando `split_simple`, que é a ordem de linhas que
+`BatchLayout` espera. Desligar `kv_unified` reintroduz o defeito em silêncio -
+está dito no doc de `accumulate_capture`.
+
+## Manutenção deste arquivo
+
+Este arquivo é um mapa de responsabilidades da pasta. Ao mudar uma interface
+de inferência ou uma invariável de sessão, atualize aqui e o README do
+subsistema no mesmo commit. Mantenha detalhes de implementação no código ou
+em `docs/subsystems/inferencia.md`, para que este índice continue curto.

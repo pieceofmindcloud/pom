@@ -76,6 +76,29 @@ RUST_LOG=debug ./target/release/pom ...
 cd apps/frontend && npm run build     # OBRIGATÓRIO após editar a UI
 ```
 
+## Preparo do build
+
+O build depende do fork do `llama.cpp` em `/llama.cpp`, ignorado pelo Git
+(ver `.gitignore`), alcançado por `vendor/llama-cpp-sys-2/llama.cpp`.
+Antes de compilar, confira e atualize o checkout na branch
+`pom-tensor-parallel`, pois o lado Rust acompanha a API desse fork:
+
+```bash
+git -C /llama.cpp remote -v
+git -C /llama.cpp switch pom-tensor-parallel
+git -C /llama.cpp pull --ff-only origin pom-tensor-parallel
+git -C /llama.cpp log -1 --oneline
+```
+
+Se faltarem `llama_moe_ffn_descriptor`, `llama_set_moe_ffn_callback` ou campos
+`moe_external_executor*` em `llama_model_params`, o checkout do fork está
+desatualizado - não é defeito preexistente do projeto. Em uma cópia nova, se o
+symlink estiver ausente, recrie-o com:
+
+```bash
+ln -s ../../llama.cpp vendor/llama-cpp-sys-2/llama.cpp
+```
+
 **Compilar com `--features cuda` sem `CUDAARCHS` é quase sempre desperdício**:
 o llama.cpp gera cada objeto CUDA para dez arquiteturas de GPU. Meça o custo e
 a arquitetura de cada máquina em `docs/subsystems/build-execucao.md`

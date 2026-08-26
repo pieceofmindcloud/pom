@@ -1983,7 +1983,7 @@ pub fn spawn_logged_generation_with_stops(
                 telemetry,
                 source,
                 hops,
-                prompt_tokens: Some(prompt_tokens),
+                prompt_tokens,
                 completion_tokens,
                 duration_ms,
                 status: audit_status,

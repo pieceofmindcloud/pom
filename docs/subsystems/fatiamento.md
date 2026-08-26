@@ -26,6 +26,9 @@ ela é e que faixa cobre. Ver `models/pom.rs`.
 - `describe` - a faixa vem do carimbo `pom.start_layer`/`pom.end_layer` que o
   fatiador grava no cabeçalho GGUF. Parte `-00002-of-00003` (`is_secondary_part`)
   é pulada.
+- Os walkers do catálogo continuam a descoberta quando uma entrada filha é
+  ilegível e registram o caminho e a causa em `debug`; uma raiz de catálogo
+  ausente continua sendo representada como inexistente.
 - `parse_quant` - quantização pelo nome de um modelo **inteiro**; uma parte
   herda a do `.pom`.
 - `build_shard_sets` - agrupa fatias pelo **modelo original** (`<modelo>-<hash

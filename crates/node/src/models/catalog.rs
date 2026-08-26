@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use tracing::debug;
 
 /// Deepest directory level walked when looking for `.gguf` files.
 const MAX_WALK_DEPTH: usize = 6;
@@ -332,12 +333,41 @@ fn find_gguf(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > MAX_WALK_DEPTH {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return;
+    let rd = match std::fs::read_dir(root) {
+        Ok(rd) => rd,
+        Err(error) => {
+            debug!(
+                path = %root.display(),
+                error = %error,
+                "ignorando diretório ilegível durante a descoberta de modelos"
+            );
+            return;
+        }
     };
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                debug!(
+                    path = %root.display(),
+                    error = %error,
+                    "ignorando entrada ilegível durante a descoberta de modelos"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
-        let Ok(ft) = entry.file_type() else { continue };
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(error) => {
+                debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "ignorando entrada cujo tipo não pôde ser lido durante a descoberta de modelos"
+                );
+                continue;
+            }
+        };
         if ft.is_dir() {
             find_gguf(&path, depth + 1, out);
         } else if path.extension().and_then(|e| e.to_str()) == Some("gguf") {
@@ -841,15 +871,41 @@ fn collect_files(root: &Path, depth: usize, out: &mut Vec<PathBuf>) {
     if depth > MAX_WALK_DEPTH {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(root) else {
-        return;
+    let rd = match std::fs::read_dir(root) {
+        Ok(rd) => rd,
+        Err(error) => {
+            debug!(
+                path = %root.display(),
+                error = %error,
+                "ignorando diretório ilegível durante a descoberta de manifests"
+            );
+            return;
+        }
     };
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                debug!(
+                    path = %root.display(),
+                    error = %error,
+                    "ignorando entrada ilegível durante a descoberta de manifests"
+                );
+                continue;
+            }
+        };
         let path = entry.path();
         match entry.file_type() {
             Ok(ft) if ft.is_dir() => collect_files(&path, depth + 1, out),
             Ok(ft) if ft.is_file() => out.push(path),
-            _ => {}
+            Ok(_) => {}
+            Err(error) => {
+                debug!(
+                    path = %path.display(),
+                    error = %error,
+                    "ignorando entrada cujo tipo não pôde ser lido durante a descoberta de manifests"
+                );
+            }
         }
     }
 }
@@ -909,10 +965,29 @@ fn scan_shard_dir(dir: &Path, out: &mut Vec<DiscoveredModel>, roots: &mut Vec<Sc
 /// o índice descreve o que existe.
 pub fn part_index(shard_dir: &Path) -> HashMap<PathBuf, PartContext> {
     let mut index = HashMap::new();
-    let Ok(rd) = std::fs::read_dir(shard_dir) else {
-        return index;
+    let rd = match std::fs::read_dir(shard_dir) {
+        Ok(rd) => rd,
+        Err(error) => {
+            debug!(
+                path = %shard_dir.display(),
+                error = %error,
+                "ignorando pasta de fatias ilegível durante a descoberta de manifests"
+            );
+            return index;
+        }
     };
-    for entrada in rd.flatten() {
+    for entrada in rd {
+        let entrada = match entrada {
+            Ok(entrada) => entrada,
+            Err(error) => {
+                debug!(
+                    path = %shard_dir.display(),
+                    error = %error,
+                    "ignorando entrada ilegível durante a indexação de fatias"
+                );
+                continue;
+            }
+        };
         let pasta = entrada.path();
         if !pasta.is_dir() {
             continue;

@@ -158,19 +158,20 @@ Run: `rtk git diff --check` e `rtk git status --short`.
 
 Expected: nenhum erro de whitespace e somente os arquivos desta tarefa, além do plano.
 
-- [ ] **Step 4: Rebase before push**
+- [x] **Step 4: Rebase before push**
 
 Run: `rtk git pull --rebase origin feat/implantar`.
 
-Expected: rebase concluído sem conflito não trivial; se houver conflito não trivial, registrar `blocked:` e parar.
+Resultado: rebase concluído sem conflitos.
 
-- [ ] **Step 5: Push without force**
+- [x] **Step 5: Push without force**
 
 Run: `rtk git push origin HEAD:feat/implantar`.
 
-Expected: o commit atual publicado em `origin/feat/implantar`, sem `--force` ou `--force-with-lease`.
+Resultado: `6b7020264cf08cf24fb4afb2deffe91e3cc84dca` publicado em
+`origin/feat/implantar` sem force.
 
-- [ ] **Step 6: Report completion**
+- [x] **Step 6: Report completion**
 
 Append one line to `/Users/jairpereira/Sites/firstmate/state/rdma-sessao-desconhecida-recuperar.status`:
 

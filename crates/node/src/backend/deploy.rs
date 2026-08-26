@@ -75,6 +75,8 @@ use crate::webui::{
 };
 
 const MIB: u64 = 1024 * 1024;
+const CATALOG_METADATA_PENDING: &str =
+    "o catálogo ainda está lendo os cabeçalhos GGUF; aguarde a atualização";
 
 pub fn routes() -> Router<GatewayState> {
     Router::new()
@@ -575,6 +577,7 @@ impl PairwiseRtt {
 struct Survey {
     machines: Vec<Machine>,
     pairwise_rtt: PairwiseRtt,
+    metadata_pending: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -686,6 +689,10 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
             .await;
 
             let body: serde_json::Value = models.ok()?.json().await.ok()?;
+            let metadata_complete = body
+                .get("metadata_complete")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false);
             let node: serde_json::Value = match node {
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
@@ -848,16 +855,19 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     held,
                 },
                 rtt_report,
+                metadata_complete,
             ))
         }
     });
 
     let mut machines = Vec::new();
+    let mut metadata_pending = false;
     for result in futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
     {
+        metadata_pending |= !result.2;
         if let Some(report) = &result.1 {
             if report.source_node_id == result.0.node_id {
                 for measurement in &report.measurements {
@@ -871,6 +881,7 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
     Survey {
         machines,
         pairwise_rtt,
+        metadata_pending,
     }
 }
 
@@ -2434,6 +2445,9 @@ async fn plan_endpoint(
             }
         }
     }
+    if survey.metadata_pending {
+        p.blocked = Some(CATALOG_METADATA_PENDING.to_string());
+    }
     Json(p).into_response()
 }
 
@@ -2450,6 +2464,9 @@ async fn deploy_endpoint(
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
     let survey = survey(&state, &req.group, req.kind).await;
+    if survey.metadata_pending {
+        return bad(json!({ "error": CATALOG_METADATA_PENDING }));
+    }
     let machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
     let deployment_name =
@@ -4579,6 +4596,7 @@ mod whole_route_tests {
                 }],
             }],
             "scanned": [],
+            "metadata_complete": true,
         })
     }
 
@@ -4644,6 +4662,20 @@ mod whole_route_tests {
         let available = body["available"].as_array().unwrap();
         assert_eq!(available.len(), 1, "só o modelo inteiro: {available:?}");
         assert_eq!(available[0]["name"], "qwen3.5-9b");
+    }
+
+    #[tokio::test]
+    async fn the_plan_waits_for_catalog_header_enrichment() {
+        let mut pending = catalog();
+        pending["metadata_complete"] = json!(false);
+        let port = catalog_machine(pending).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({ "group": "qwen3.5-9b", "kind": "whole" }),
+        )
+        .await;
+
+        assert_eq!(body["blocked"], CATALOG_METADATA_PENDING);
     }
 
     /// A pergunta padrão continua sendo a das fatias, e ela não enxerga o

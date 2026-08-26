@@ -172,7 +172,12 @@ behind an auth extractor.
   the job store (`Job`, `JOB_RETENTION=600s`,
   `jobs()`/`new_job`/`set_job`/`set_job_progress`),
   catalog caching (`CachedCatalog`, `warm_catalog` called at startup,
-  stale-while-revalidate), `merge_parts` (temp file with unique suffix, rename
+  stale-while-revalidate). A primeira resposta do catálogo publica o inventário
+  rápido de arquivos e `metadata_complete: false`; os cabeçalhos GGUF são lidos
+  em uma tarefa `spawn_blocking` e publicados somente se as pastas e o inventário
+  continuarem atuais. O survey de implantação recusa planejar ou executar
+  enquanto algum peer que respondeu ainda estiver enriquecendo. `merge_parts`
+  (arquivo temporário com sufixo único, rename
   at the end; reuses an already-complete output, preserves the source
   `pom_id`, and invalidates the catalog),
   `run_apply`/`run_slice`/`release_slice`, and `get_setup_key`/`save_setup`

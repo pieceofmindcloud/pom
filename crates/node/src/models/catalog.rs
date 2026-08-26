@@ -143,6 +143,8 @@ pub struct Catalog {
     /// Directories actually scanned — shown in the UI so an empty list is
     /// explainable rather than mysterious.
     pub scanned: Vec<ScannedRoot>,
+    /// False while the GGUF headers are being enriched asynchronously.
+    pub metadata_complete: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -422,22 +424,12 @@ fn describe(
     if size_bytes < 1024 {
         return None;
     }
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-
-    let info = cached_info(path, size_bytes, mtime);
     let filename = path.file_name()?.to_string_lossy().into_owned();
 
     // Projector sidecars (`mmproj-*`, architecture "clip") are not language
-    // models — they cannot be sliced or served, so they do not belong in a list
+    // models - they cannot be sliced or served, so they do not belong in a list
     // of things to run.
-    if info.as_ref().and_then(|i| i.architecture.as_deref()) == Some("clip")
-        || filename.starts_with("mmproj")
-    {
+    if filename.starts_with("mmproj") {
         return None;
     }
 
@@ -456,24 +448,16 @@ fn describe(
         Some(c) => Some((c.start_layer, c.end_layer)),
         // Sem manifesto, o carimbo do cabeçalho GGUF ainda identifica uma
         // fatia solta - é o que sobra de um `.pom` perdido.
-        None => info.as_ref().and_then(|i| i.shard_range),
+        None => None,
     };
     // A chave do conjunto é o manifesto do modelo original. Fatiar o mesmo
     // modelo duas vezes com cortes diferentes adiciona alternativas ao mesmo
     // inventário, que é exatamente o que o planejador pode escolher.
     let shard_group = part.map(|c| c.run_key.clone());
 
-    // For a slice, `block_count` counts the layers *inside the file*, not the
-    // model it came from. Only `pom.original_block_count` — written by
-    // split_model.py — is a real total. Older slices lack it, so report unknown
-    // rather than a number that is wrong; `build_shard_sets` infers it from the
-    // coverage of the whole set instead.
-    let total_layers = match (part, shard_range, info.as_ref()) {
-        (Some(c), _, _) => Some(c.total_layers),
-        (None, Some(_), Some(i)) => i.original_block_count,
-        (None, None, Some(i)) => i.total_layers(),
-        _ => None,
-    };
+    // Header-derived layer information is filled by `enrich` after the fast
+    // inventory is published. Manifest-backed slices already know their total.
+    let total_layers = part.map(|c| c.total_layers);
 
     // O nome que o operador lê. Numa parte ele vem do manifesto; sem manifesto
     // é o nome do arquivo, como sempre foi.
@@ -489,7 +473,7 @@ fn describe(
         source_label: source.label(),
         path: path.to_string_lossy().into_owned(),
         size_bytes,
-        architecture: info.as_ref().and_then(|i| i.architecture.clone()),
+        architecture: None,
         total_layers,
         // Numa parte o nome do arquivo é o hash, e hash não tem tag de
         // quantização para achar: quem sabe é o manifesto.
@@ -506,6 +490,48 @@ fn describe(
         tp_rank: part.and_then(|c| c.tp_rank),
         tp_size: part.and_then(|c| c.tp_size),
     })
+}
+
+fn file_mtime_fingerprint(meta: &std::fs::Metadata) -> u64 {
+    meta.modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_nanos().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
+}
+
+/// Read the header for one item after the fast inventory is already visible.
+/// Returns false when the file disappeared or is a projector sidecar.
+fn enrich_model(model: &mut DiscoveredModel) -> bool {
+    let path = Path::new(&model.path);
+    let Some(meta) = std::fs::metadata(path).ok() else {
+        return false;
+    };
+    model.size_bytes = meta.len();
+    if model.size_bytes < 1024 {
+        return false;
+    }
+    let filename = path
+        .file_name()
+        .map(|name| name.to_string_lossy())
+        .unwrap_or_default();
+    let info = cached_info(path, model.size_bytes, file_mtime_fingerprint(&meta));
+    if info.as_ref().and_then(|i| i.architecture.as_deref()) == Some("clip")
+        || filename.starts_with("mmproj")
+    {
+        return false;
+    }
+
+    model.architecture = info.as_ref().and_then(|i| i.architecture.clone());
+    if model.shard_range.is_none() {
+        model.shard_range = info.as_ref().and_then(|i| i.shard_range);
+        model.total_layers = match (model.shard_range, info.as_ref()) {
+            (Some(_), Some(header)) => header.original_block_count,
+            (None, Some(header)) => header.total_layers(),
+            _ => None,
+        };
+    }
+    true
 }
 
 /// LM Studio stores models as `<publisher>/<repo>/<file>.gguf`; show that.
@@ -950,13 +976,13 @@ fn build_shard_sets(models: &[DiscoveredModel]) -> Vec<ShardSet> {
     sets
 }
 
-/// Scan the configured directories and return what is installed here.
+/// Scan the configured directories without opening any GGUF header.
 ///
 /// `shard_dir` is where this node keeps its own slices; `model_dirs` are the
 /// libraries of whole models. The slice directory is scanned first so a file
 /// reachable from both is reported as a slice, which is the reading that
 /// decides whether a peer may pull it.
-pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
+pub fn discover_fast(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
     let mut models: Vec<DiscoveredModel> = Vec::new();
     let mut scanned: Vec<ScannedRoot> = Vec::new();
 
@@ -990,7 +1016,26 @@ pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
         models,
         shard_sets,
         scanned,
+        metadata_complete: false,
     }
+}
+
+/// Enrich an already published inventory with GGUF header information.
+///
+/// This stays synchronous so callers can run it in `spawn_blocking`; keeping
+/// it separate from `discover_fast` is what lets the HTTP catalog answer with
+/// names and paths while a slow volume is still being read.
+pub fn enrich(mut catalog: Catalog) -> Catalog {
+    catalog.models.retain_mut(enrich_model);
+    catalog.shard_sets = build_shard_sets(&catalog.models);
+    catalog.metadata_complete = true;
+    catalog
+}
+
+/// Full discovery for non-UI callers that still need a complete answer before
+/// continuing, such as transfer path resolution and existing tests.
+pub fn discover(model_dirs: &[PathBuf], shard_dir: &Path) -> Catalog {
+    enrich(discover_fast(model_dirs, shard_dir))
 }
 
 #[cfg(test)]
@@ -1189,6 +1234,33 @@ mod tests {
         assert_eq!(sets[0].total_layers, Some(32));
         assert!(sets[0].total_layers_inferred);
         assert!(sets[0].complete);
+    }
+
+    #[test]
+    fn fast_discovery_exposes_model_before_header_enrichment() {
+        let root =
+            std::env::temp_dir().join(format!("pom-cat-fast-{}", uuid::Uuid::new_v4().simple()));
+        let models = root.join("models");
+        let shards = root.join("shards");
+        std::fs::create_dir_all(&models).unwrap();
+        std::fs::create_dir_all(&shards).unwrap();
+        std::fs::write(
+            models.join("model.gguf"),
+            crate::splitter::test_gguf_bytes(8),
+        )
+        .unwrap();
+
+        let fast = discover_fast(&[models], &shards);
+        assert!(!fast.metadata_complete);
+        assert_eq!(fast.models.len(), 1);
+        assert_eq!(fast.models[0].name, "model.gguf");
+        assert_eq!(fast.models[0].total_layers, None);
+
+        let complete = enrich(fast);
+        assert!(complete.metadata_complete);
+        assert_eq!(complete.models[0].total_layers, Some(8));
+
+        std::fs::remove_dir_all(root).ok();
     }
 }
 

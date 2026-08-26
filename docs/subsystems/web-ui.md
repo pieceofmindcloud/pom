@@ -151,7 +151,9 @@ no Dashboard (`hidden`, para uma superfície futura).
   polling: `useNode` 4s (guarda a `connection_key`), `useCluster` 5s,
   catálogo local 30s, catálogo do cluster 60s, `useJobs` 2s enquanto há job
   rodando e 10s quando ocioso, `useTransfers` 2s, `useOffers` 2s enquanto
-  há oferta e 10s quando vazio, admin nodes 8s, log de requisições 3s.
+  há oferta e 10s quando vazio, admin nodes 8s, log de requisições 3s. O
+  catálogo usa polling de 2s enquanto `metadata_complete` é falso, depois
+  volta ao intervalo normal.
   `optional()` engole só 404 (nó antigo sem rota não é erro para mostrar).
   `types.ts` é a fonte única das formas que o nó serve (comentários apontam
   para o Rust).
@@ -455,6 +457,12 @@ impressão digital é só modelo + conjunto de faixas.
   A última implantação de cada modelo
   fica no `localStorage` (`deployMemory`) e volta preenchida após o primeiro
   plano, podada contra o que ainda existe.
+  A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
+  dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
+  tela mostra o inventário imediatamente e mantém o botão de implantação
+  bloqueado até todos os peers consultados declararem `metadata_complete: true`.
+  O endpoint de execução também repete essa guarda, então um caller direto não
+  consegue iniciar uma implantação com camadas ou fatias ainda desconhecidas.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os

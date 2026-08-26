@@ -5,6 +5,13 @@ por `main.rs` e pelos handlers de catálogo, fatiamento, implantação e
 transferência.
 
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
+  `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
+  sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
+  `Catalog.metadata_complete`. `discover` combina as duas fases para callers
+  síncronos que ainda precisam da resposta completa. O catálogo não calcula
+  hash de conteúdo: hashes vindos de manifestos ou do nome de uma fatia são
+  apenas dados de identidade, e o SHA-256 integral continua sendo trabalho de
+  manifesto/transferência.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
   chama o extrator de GGUF.
 - `storage.rs` - calcula uso recursivo da pasta de fatias e remove diretórios

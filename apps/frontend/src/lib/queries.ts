@@ -189,7 +189,13 @@ export function useLocalCatalog() {
   return useQuery({
     queryKey: keys.models,
     queryFn: () => api.get<CatalogResponse>("/api/ui/models", { auth: false }),
-    refetchInterval: 30_000,
+    // A fast inventory is useful immediately, but keep asking while the node
+    // is enriching GGUF headers so screens do not wait for the normal 30 s
+    // catalog cadence.
+    refetchInterval: (query) => {
+      const data = query.state.data as CatalogResponse | undefined;
+      return data?.metadata_complete === false ? 2_000 : 30_000;
+    },
     staleTime: 15_000,
   });
 }
@@ -200,7 +206,14 @@ export function useClusterCatalog(enabled = true) {
     queryFn: () =>
       api.get<{ peers: PeerCatalog[] }>("/api/ui/cluster/models", { auth: false }),
     enabled,
-    refetchInterval: 60_000,
+    // Each peer publishes independently. Poll faster until every successful
+    // peer reports complete metadata, then return to the quiet cadence.
+    refetchInterval: (query) => {
+      const data = query.state.data as { peers?: PeerCatalog[] } | undefined;
+      return data?.peers?.some((peer) => peer.metadata_complete === false)
+        ? 2_000
+        : 60_000;
+    },
     staleTime: 30_000,
   });
 }

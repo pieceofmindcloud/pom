@@ -119,6 +119,7 @@ relative path (`api.ts`) and the browser never learns a peer's address.
   sempre seria um fan-out por peer a cada ciclo do Painel, por uma seção quase
   sempre fechada.
 - `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s.
+- `useCluster()` 5s with conditional GET, `useLocalCatalog()` 30s (stale 15s), `useClusterCatalog(enabled)` 60s, `usePaths()` (stale 30s), `useCacheTypes()` (stale 30s), `useJobs()` 2s while running or 10s idle, `useTransfers()` 2s, `useOffers()` 2s while waiting or 10s idle, `useAdminNodes()` 8s, `useRequestLog({node_id, token})` 3s, `useServableModels()` 30s. Os dois catálogos mudam para polling de 2s enquanto `metadata_complete` é falso, então o inventário rápido é substituído pelos cabeçalhos sem esperar o intervalo normal.
 - `optional(promise, fallback)` - swallows only 404 (an older node lacking a route is not an error to surface); used by jobs/transfers/offers/request log.
 - `useOffers()` uses 2s while an offer is waiting and 10s when empty. An offer
   is a question waiting on a human, not a progress bar. With the sender no

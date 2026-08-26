@@ -110,6 +110,10 @@ Per-file list:
   `DeployModel.whole.test.tsx`, `../lib/wholeModels.test.ts`.
   On the first tensor request, `tpPayload` uses the first rank-0 holder as a
   provisional primary so the map can load; workers remain opt-in map members.
+  A lista de modelos pode aparecer antes do fim da leitura dos cabeçalhos GGUF.
+  Enquanto algum peer informa `metadata_complete: false`, a tela mantém o plano
+  visível, mas desabilita a implantação e explica que camadas e fatias estão
+  pendentes.
 - `DeployModel.tsx` - the slice shape: picks a slice set (`group`), lets the
   planner place ranges on the central map, and exposes a 19rem collapsible
   inspector. Its colored global section includes context, batching, sampling,

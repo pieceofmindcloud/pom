@@ -178,7 +178,7 @@ function planWithUnassignedMiddleRange(): DeployPlan {
   return plan;
 }
 
-function mount() {
+function mount(metadata_complete = true) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -189,6 +189,7 @@ function mount() {
         node_id: "ksia",
         hostname: "ksia",
         is_self: false,
+        metadata_complete,
         models: [],
         shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
       },
@@ -209,6 +210,19 @@ describe("DeployModel", () => {
     localStorage.clear();
   });
   afterEach(cleanup);
+
+  it("mantém o deploy bloqueado enquanto o catálogo enriquece os metadados", async () => {
+    const p = planOutOfLayerOrder();
+    post.mockResolvedValue(p);
+    mount(false);
+
+    await waitFor(() => {
+      expect(post).toHaveBeenCalledWith("/api/ui/deploy/plan", expect.anything());
+    });
+    const button = await screen.findByRole("button", { name: "Implantar" });
+    expect(button.hasAttribute("disabled")).toBe(true);
+    expect(screen.getByText(/metadados/i)).toBeTruthy();
+  });
 
   it("exibe e salva o tipo do cache KV no inspetor global da instalação", async () => {
     const p = planOutOfLayerOrder();

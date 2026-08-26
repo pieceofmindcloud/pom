@@ -76,9 +76,6 @@ use crate::webui::{
 };
 
 const MIB: u64 = 1024 * 1024;
-const CATALOG_METADATA_PENDING: &str =
-    "o catálogo ainda está lendo os cabeçalhos GGUF; aguarde a atualização";
-
 pub fn routes() -> Router<GatewayState> {
     Router::new()
         .route("/api/ui/deploy/plan", post(plan_endpoint))
@@ -610,7 +607,7 @@ impl PairwiseRtt {
 struct Survey {
     machines: Vec<Machine>,
     pairwise_rtt: PairwiseRtt,
-    metadata_pending: bool,
+    metadata_pending: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -658,13 +655,94 @@ impl Machine {
 /// `webui::catalogo_sob_tls_tests`.
 #[cfg(test)]
 pub(crate) async fn survey_for_tests(state: &GatewayState, group: &str) -> usize {
-    survey(state, group, DeployKind::Shards)
+    survey(state, group, DeployKind::Shards, None)
         .await
         .machines
         .len()
 }
 
-async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
+/// Whether a peer's partial catalog contains the model family being planned.
+///
+/// `metadata_complete` is deliberately not enough to answer this question:
+/// it describes the peer's whole catalog, while deployment only needs the
+/// selected ranges. The group presence also keeps a slow, unrelated model
+/// from turning into a refusal for this deployment.
+fn catalog_contains_group(body: &serde_json::Value, group: &str, kind: DeployKind) -> bool {
+    let in_shards = |set: &serde_json::Value| {
+        set.get("group").and_then(|value| value.as_str()) == Some(group)
+            || set.get("model_label").and_then(|value| value.as_str()) == Some(group)
+    };
+
+    match kind {
+        DeployKind::Shards => body
+            .get("shard_sets")
+            .and_then(|value| value.as_array())
+            .is_some_and(|sets| {
+                sets.iter()
+                    .any(|set| set.get("group").and_then(|value| value.as_str()) == Some(group))
+            }),
+        DeployKind::Whole => {
+            body.get("models")
+                .and_then(|value| value.as_array())
+                .is_some_and(|models| {
+                    models.iter().any(|model| {
+                        model.get("name").and_then(|value| value.as_str()) == Some(group)
+                    })
+                })
+                || body
+                    .get("shard_sets")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|sets| sets.iter().any(in_shards))
+        }
+        DeployKind::TensorParallel => {
+            body.get("shard_sets")
+                .and_then(|value| value.as_array())
+                .is_some_and(|sets| sets.iter().any(in_shards))
+                || body
+                    .get("models")
+                    .and_then(|value| value.as_array())
+                    .is_some_and(|models| {
+                        models.iter().any(|model| {
+                            model.get("name").and_then(|value| value.as_str()) == Some(group)
+                        })
+                    })
+        }
+    }
+}
+
+fn selected_metadata_pending_reason(
+    kind: DeployKind,
+    group: &str,
+    missing: &[(u32, u32)],
+) -> String {
+    match (kind, missing.first()) {
+        (DeployKind::Whole, _) => format!(
+            "a seleção de {group} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+        ),
+        (DeployKind::Shards, Some((start, end))) => format!(
+            "a seleção da fatia L{start}-{end} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+        ),
+        (DeployKind::TensorParallel, Some((start, end))) => format!(
+            "a seleção tensor-parallel L{start}-{end} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+        ),
+        (_, None) => format!(
+            "a seleção de {group} ainda aguarda os metadados do GGUF; aguarde a leitura desta seleção"
+        ),
+    }
+}
+
+async fn survey(
+    state: &GatewayState,
+    group: &str,
+    kind: DeployKind,
+    selection: Option<&[SelectedSlice]>,
+) -> Survey {
+    let selected_ranges = selection.map(|selected| {
+        selected
+            .iter()
+            .map(|slice| (slice.start_layer, slice.end_layer))
+            .collect::<Vec<_>>()
+    });
     let peers: Vec<PeerInfo> = state.all_peers().await;
     let self_id = state.network.node_id.clone();
     let mut route_rtt: std::collections::HashMap<String, f64> = state
@@ -727,10 +805,11 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
             .await;
 
             let body: serde_json::Value = models.ok()?.json().await.ok()?;
-            let metadata_complete = body
+            let metadata_pending_candidate = body
                 .get("metadata_complete")
                 .and_then(|value| value.as_bool())
-                .unwrap_or(false);
+                == Some(false)
+                && catalog_contains_group(&body, &group, kind);
             let node: serde_json::Value = match node {
                 Ok(r) => r.json().await.unwrap_or(json!({})),
                 Err(_) => json!({}),
@@ -936,19 +1015,19 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
                     held,
                 },
                 rtt_report,
-                metadata_complete,
+                metadata_pending_candidate,
             ))
         }
     });
 
     let mut machines = Vec::new();
-    let mut metadata_pending = false;
+    let mut metadata_pending_candidate = false;
     for result in futures::future::join_all(futures)
         .await
         .into_iter()
         .flatten()
     {
-        metadata_pending |= !result.2;
+        metadata_pending_candidate |= result.2;
         if let Some(report) = &result.1 {
             if report.source_node_id == result.0.node_id {
                 for measurement in &report.measurements {
@@ -958,6 +1037,22 @@ async fn survey(state: &GatewayState, group: &str, kind: DeployKind) -> Survey {
         }
         machines.push(result.0);
     }
+
+    let metadata_pending = selected_ranges.as_deref().and_then(|selected| {
+        if !metadata_pending_candidate {
+            return None;
+        }
+        let missing = selected
+            .iter()
+            .copied()
+            .filter(|(start, end)| {
+                !machines
+                    .iter()
+                    .any(|machine| machine.holds_ready(*start, *end).is_some())
+            })
+            .collect::<Vec<_>>();
+        (!missing.is_empty()).then(|| selected_metadata_pending_reason(kind, group, &missing))
+    });
 
     Survey {
         machines,
@@ -2989,7 +3084,7 @@ async fn plan_endpoint(
             Ok(name) => name,
             Err(error) => return bad(json!({ "error": error })),
         };
-    let survey = survey(&state, &req.group, req.kind).await;
+    let survey = survey(&state, &req.group, req.kind, req.selection.as_deref()).await;
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
     let layer_options = if req.kind == DeployKind::Whole {
@@ -3025,8 +3120,8 @@ async fn plan_endpoint(
             }
         }
     }
-    if survey.metadata_pending {
-        p.blocked = Some(CATALOG_METADATA_PENDING.to_string());
+    if let Some(reason) = survey.metadata_pending {
+        p.blocked = Some(reason);
     }
     Json(p).into_response()
 }
@@ -3043,9 +3138,9 @@ async fn deploy_endpoint(
     // meantime would otherwise be handed a slice. What is *not* recomputed is
     // the operator's choice — it is validated against the fresh survey and
     // refused if it no longer holds.
-    let survey = survey(&state, &req.group, req.kind).await;
-    if survey.metadata_pending {
-        return bad(json!({ "error": CATALOG_METADATA_PENDING }));
+    let survey = survey(&state, &req.group, req.kind, req.selection.as_deref()).await;
+    if let Some(reason) = survey.metadata_pending {
+        return bad(json!({ "error": reason }));
     }
     let mut machines = survey.machines;
     let pairwise_rtt = survey.pairwise_rtt;
@@ -4588,7 +4683,7 @@ async fn run(
 
     // Where each file ended up is the target's own business, so ask it rather
     // than assume a path on someone else's filesystem.
-    let machines = survey(&state, &plan.group, plan.kind).await.machines;
+    let machines = survey(&state, &plan.group, plan.kind, None).await.machines;
     let mut targets = launch_targets(
         &plan.steps,
         &machines,
@@ -5320,7 +5415,7 @@ async fn add_node_endpoint(
 
     // Re-varre em vez de confiar na tela: a previa pode ter um minuto, e uma
     // maquina que saiu nesse meio tempo receberia uma fatia.
-    let machines = survey(&state, &req.group, req.kind).await.machines;
+    let machines = survey(&state, &req.group, req.kind, None).await.machines;
     let Some(target) = machines.iter().find(|m| m.node_id == req.target_node_id) else {
         return bad(json!({ "error": "a maquina escolhida nao esta no cluster" }));
     };
@@ -6057,17 +6152,103 @@ mod whole_route_tests {
     }
 
     #[tokio::test]
-    async fn the_plan_waits_for_catalog_header_enrichment() {
+    async fn the_plan_ignores_unrelated_catalog_enrichment() {
         let mut pending = catalog();
         pending["metadata_complete"] = json!(false);
         let port = catalog_machine(pending).await;
         let body = plan_body(
             state_seeing_only(port).await,
-            json!({ "group": "qwen3.5-9b", "kind": "whole" }),
+            json!({
+                "group": "qwen3.5-9b",
+                "kind": "whole",
+                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+            }),
         )
         .await;
 
-        assert_eq!(body["blocked"], CATALOG_METADATA_PENDING);
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+    }
+
+    #[tokio::test]
+    async fn the_plan_names_metadata_missing_from_the_selected_model() {
+        let mut pending = catalog();
+        pending["metadata_complete"] = json!(false);
+        pending["models"][0]["total_layers"] = serde_json::Value::Null;
+        let port = catalog_machine(pending).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({
+                "group": "qwen3.5-9b",
+                "kind": "whole",
+                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+            }),
+        )
+        .await;
+
+        let blocked = body["blocked"].as_str().unwrap_or_default();
+        assert!(blocked.contains("seleção de qwen3.5-9b"), "{blocked}");
+        assert!(blocked.contains("metadados do GGUF"), "{blocked}");
+    }
+
+    #[tokio::test]
+    async fn the_plan_does_not_wait_for_an_old_peer_without_catalog_state() {
+        let mut legacy = catalog();
+        legacy.as_object_mut().unwrap().remove("metadata_complete");
+        let port = catalog_machine(legacy).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({
+                "group": "qwen3.5-9b",
+                "kind": "whole",
+                "selection": [{ "start_layer": 0, "end_layer": 31 }]
+            }),
+        )
+        .await;
+
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+    }
+
+    #[tokio::test]
+    async fn a_complete_selected_shard_set_is_ready_during_other_enrichment() {
+        let mut pending = catalog();
+        pending["metadata_complete"] = json!(false);
+        pending["shard_sets"][0]["complete"] = json!(true);
+        let port = catalog_machine(pending).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({
+                "group": "qwen",
+                "kind": "shards",
+                "selection": [{ "start_layer": 0, "end_layer": 15 }]
+            }),
+        )
+        .await;
+
+        assert!(body["blocked"].is_null(), "{}", body["blocked"]);
+    }
+
+    #[tokio::test]
+    async fn an_unresolved_selected_shard_names_the_missing_range() {
+        let mut pending = catalog();
+        pending["metadata_complete"] = json!(false);
+        pending["shard_sets"][0]["complete"] = json!(true);
+        let port = catalog_machine(pending).await;
+        let body = plan_body(
+            state_seeing_only(port).await,
+            json!({
+                "group": "qwen",
+                "kind": "shards",
+                "selection": [
+                    { "start_layer": 0, "end_layer": 15 },
+                    { "start_layer": 16, "end_layer": 31 }
+                ]
+            }),
+        )
+        .await;
+
+        let blocked = body["blocked"].as_str().unwrap_or_default();
+        assert!(blocked.contains("L16-31"), "{blocked}");
+        assert!(blocked.contains("metadados do GGUF"), "{blocked}");
     }
 
     /// A pergunta padrão continua sendo a das fatias, e ela não enxerga o

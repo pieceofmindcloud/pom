@@ -502,10 +502,13 @@ impressão digital é só modelo + conjunto de faixas.
   plano, podada contra o que ainda existe.
   A resposta inicial do catálogo pode conter somente nome, caminho, tamanho e
   dados do manifesto, enquanto o nó lê os cabeçalhos GGUF em background. A
-  tela mostra o inventário imediatamente e mantém o botão de implantação
-  bloqueado até todos os peers consultados declararem `metadata_complete: true`.
-  O endpoint de execução também repete essa guarda, então um caller direto não
-  consegue iniciar uma implantação com camadas ou fatias ainda desconhecidas.
+  tela mostra o inventário imediatamente. O botão e o endpoint de execução
+  verificam somente os metadados necessários para a seleção atual: outro
+  modelo ainda em enriquecimento, peer silencioso ou peer antigo sem
+  `metadata_complete` não bloqueia. Quando a própria seleção ainda não pode
+  ser resolvida, o plano devolve um único `blocked` que nomeia a faixa ou o
+  modelo pendente. O enriquecimento registra início e conclusão e permite nova
+  tentativa após falha, sem transformar o inventário parcial em completo.
   **O botão cinza sempre diz por quê.** A comparação entre o plano do nó e as
   linhas da tela (`sameRows`) ordena os dois lados por camada, porque a tela
   mantém as linhas nessa ordem e o nó monta a resposta do jeito dele; e os

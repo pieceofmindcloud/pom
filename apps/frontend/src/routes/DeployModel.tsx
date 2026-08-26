@@ -326,8 +326,6 @@ export function DeployModel() {
   const { t } = useI18n();
   const cluster = useClusterCatalog();
   const liveCluster = useCluster();
-  const metadataPending =
-    cluster.data?.peers.some((peer) => peer.metadata_complete === false) ?? false;
   const [group, setGroup] = useState("");
   const [deploymentName, setDeploymentName] = useState("");
   const [strategy, setStrategy] = useState<DeployStrategy>("simple");
@@ -1069,7 +1067,6 @@ export function DeployModel() {
 
   const job = jobs.data?.jobs.find((j) => j.id === jobId);
   const canDeploy =
-    !metadataPending &&
     validated &&
     !p?.blocked &&
     p?.inference_mode_supported !== false &&
@@ -1091,9 +1088,7 @@ export function DeployModel() {
    */
   const whyNot: string | null = canDeploy
     ? null
-    : metadataPending
-      ? t("deploy.metadataPending")
-      : rows.length === 0 && !isWhole
+    : rows.length === 0 && !isWhole
       ? t("deploy.whyNotEmpty")
       : syncing || !p
         ? t("deploy.whyNotChecking")
@@ -1234,14 +1229,6 @@ export function DeployModel() {
               Implantar
             </Button>
           </div>
-          {metadataPending && (
-            <div
-              role="status"
-              className="mt-2 rounded-md border border-amber/25 bg-amber/[0.06] px-2.5 py-1.5 text-[0.68rem] text-amber"
-            >
-              {t("deploy.metadataPendingDetail")}
-            </div>
-          )}
           {whyNot && <p className="mt-2 text-right text-[0.7rem] text-muted">{whyNot}</p>}
         </div>
 

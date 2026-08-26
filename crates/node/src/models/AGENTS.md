@@ -7,11 +7,14 @@ transferência.
 - `catalog.rs` - descobre modelos inteiros e fatias nas pastas configuradas.
   `discover_fast` enumera arquivos e lê apenas `stat`/metadados do sistema,
   sem abrir o conteúdo GGUF; `enrich` lê os cabeçalhos depois e marca
-  `Catalog.metadata_complete`. `discover` combina as duas fases para callers
-  síncronos que ainda precisam da resposta completa. O catálogo não calcula
-  hash de conteúdo: hashes vindos de manifestos ou do nome de uma fatia são
-  apenas dados de identidade, e o SHA-256 integral continua sendo trabalho de
-  manifesto/transferência.
+  `Catalog.metadata_complete`. As capacidades são derivadas do header nessa
+  passagem; quando a prova exige a tabela de tensores, o catálogo mantém o
+  estado indeterminado, enquanto `gguf::read_capability_evidence` continua
+  disponível para callers que exigem essa prova.
+  `discover` combina as duas fases para callers síncronos que ainda precisam da
+  resposta completa. O catálogo não calcula hash de conteúdo: hashes vindos de
+  manifestos ou do nome de uma fatia são apenas dados de identidade, e o
+  SHA-256 integral continua sendo trabalho de manifesto/transferência.
 - `plan.rs` - calcula faixas por orçamento ou por tamanho real de camada e
   chama o extrator de GGUF. O endpoint de orçamento usa `GgufInfo` e
   `kv_budget.rs` para somar peso e KV em bytes antes de aceitar uma faixa.

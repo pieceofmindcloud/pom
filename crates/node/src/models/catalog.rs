@@ -533,7 +533,16 @@ fn enrich_model(model: &mut DiscoveredModel) -> bool {
 
     model.architecture = info.as_ref().and_then(|i| i.architecture.clone());
     model.is_moe = info.as_ref().is_some_and(GgufInfo::is_moe);
-    model.capabilities = gguf::read_capability_evidence(path).ok();
+    // The catalog's second phase must finish after one header pass. Reading
+    // the whole tensor table here made a slow external volume hold
+    // `metadata_complete` false for the entire catalog, even though the
+    // selected shard ranges already came from their manifests. Tensor-table
+    // MTP evidence remains available through `gguf::read_capability_evidence`;
+    // the catalog reports unknown when the header does not prove it.
+    model.capabilities = info.as_ref().map(|header| ModelCapabilityEvidence {
+        thinking: header.thinking_capability(),
+        mtp: header.nextn_predict_layers.map(|layers| layers > 0),
+    });
     if model.shard_range.is_none() {
         model.shard_range = info.as_ref().and_then(|i| i.shard_range);
         model.total_layers = match (model.shard_range, info.as_ref()) {

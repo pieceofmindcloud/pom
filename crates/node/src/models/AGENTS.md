@@ -111,14 +111,17 @@ mesma fatia servida. Os tipos globais do cache KV (`cache_type_k` e
 `cache_type_v`) também são serializados no estado efetivo, mas o `NodeRuntime`
 os repõe a partir do `pom.json` antes de carregar o modelo.
 
-O fatiador trata arrays GGUF sob o namespace da arquitetura como metadata por
-camada quando o comprimento é pelo menos a contagem original de blocos e os
-reescreve para a faixa local. O llama.cpp lê os primeiros block_count elementos
-desses vetores; por isso valores extras não são preservados na fatia.
-Comprimento 1 é broadcast e permanece igual; arrays estruturais de rope e
-namespaces globais não são arrays por camada. Um comprimento positivo menor que
-block_count é recusa nominal com chave e tamanho, para que metadata nova não
-seja copiada cru para uma fatia que não carrega.
+O fatiador primeiro classifica arrays GGUF pelo namespace: somente arrays sob o
+namespace da arquitetura, exceto os arrays estruturais de rope, podem ser
+metadata por camada. Nesses arrays, comprimento pelo menos igual à contagem
+original de blocos é recortado para a faixa local, preservando a ampliação que
+suporta vetores como `compress_ratios` com cauda extra. O llama.cpp lê os
+primeiros `block_count` elementos desses vetores; por isso valores extras não
+são preservados na fatia. Arrays globais, inclusive `tokenizer.ggml.tokens` e
+arrays de strings, são copiados intactos antes de qualquer comparação de
+comprimento. Comprimento 1 é broadcast e permanece igual; um comprimento
+positivo menor que `block_count` em array da arquitetura é recusa nominal com
+chave e tamanho.
 
 ## Manutenção deste arquivo
 

@@ -236,11 +236,15 @@ Não há compatibilidade com outro formato de manifesto.
    fatia, a partir de quais camadas **absolutas** realmente têm o tensor -
    nunca reimplementando a fórmula do llama.cpp. Modelo comum não ganha a
    chave. `merge` faz o mesmo sobre a numeração 0-based do arquivo unido.
-6. Todo array escalar sob o namespace da arquitetura cujo comprimento é pelo
-   menos `block_count` é recortado pelos índices absolutos da faixa e gravado
-   com a contagem local. Comprimento 1 continua broadcast; comprimento menor
-   que `block_count` é recusa nominal. Isso inclui vetores com cabeçalho ou
-   cauda especial: a seleção é por posição, sem repetir um passo periódico.
+6. Primeiro se decide se o array é por camada: ele precisa estar sob o
+   namespace da arquitetura e não ser um array estrutural de rope. Só então um
+   array escalar cujo comprimento é pelo menos `block_count` é recortado pelos
+   índices absolutos da faixa e gravado com a contagem local. Comprimento 1
+   continua broadcast; comprimento menor que `block_count` é recusa nominal.
+   Arrays globais, como `tokenizer.ggml.tokens`, inclusive arrays de strings,
+   são copiados intactos antes da comparação de comprimento. A regra `>=`
+   permanece para vetores da arquitetura com cauda extra, como
+   `compress_ratios`; a seleção é por posição, sem repetir um passo periódico.
 7. Grava `pom.original_block_count/start_layer/end_layer` no KV - a metadata
    que torna o total de camadas confiável para as fatias novas.
 8. Escreve com `ALIGN` de 32 bytes e copia dados em blocos de `CHUNK` (8 MB),

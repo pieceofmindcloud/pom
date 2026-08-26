@@ -578,32 +578,37 @@ pub fn split(
             continue;
         }
         if let Some(array) = entry.array {
-            let original = original_block_count.ok_or_else(|| {
-                anyhow::anyhow!(
-                    "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
-                    key,
-                    array.count
-                )
-            })?;
-            if array.count >= original as u64 {
-                let (slice_start, slice_end) =
-                    layer_slice_bounds(array.count, original, start_layer, n_split)?;
-                let sliced = encode_array_slice(
-                    mm,
-                    entry,
-                    slice_start as u32,
-                    (slice_end - slice_start) as u32,
-                )?;
-                kv_out.push(KvOut::Encoded(sliced));
-                continue;
-            }
-            if array.count != 1 && !is_global_array(key, &arch) {
-                bail!(
-                    "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
-                    key,
-                    array.count,
-                    original
-                );
+            // Only architecture-namespaced arrays are candidates for per-layer
+            // slicing. Global arrays such as tokenizer.ggml.tokens must remain
+            // byte-for-byte intact, even when their length exceeds block_count.
+            if !is_global_array(key, &arch) {
+                let original = original_block_count.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "array metadata '{}' tem comprimento {}, mas o GGUF não declara a contagem original de blocos",
+                        key,
+                        array.count
+                    )
+                })?;
+                if array.count >= original as u64 {
+                    let (slice_start, slice_end) =
+                        layer_slice_bounds(array.count, original, start_layer, n_split)?;
+                    let sliced = encode_array_slice(
+                        mm,
+                        entry,
+                        slice_start as u32,
+                        (slice_end - slice_start) as u32,
+                    )?;
+                    kv_out.push(KvOut::Encoded(sliced));
+                    continue;
+                }
+                if array.count != 1 {
+                    bail!(
+                        "array metadata '{}' tem comprimento {}; esperado 1 ou pelo menos {} (contagem original de blocos)",
+                        key,
+                        array.count,
+                        original
+                    );
+                }
             }
         }
         kv_out.push(KvOut::Raw(entry.start, entry.end));
@@ -2213,6 +2218,75 @@ mod tests {
         None
     }
 
+    fn kv_raw(mm: &[u8], want: &str) -> Option<Vec<u8>> {
+        let mut r = R { data: mm, pos: 0 };
+        if r.u32().ok()? != GGUF_MAGIC {
+            return None;
+        }
+        r.u32().ok()?;
+        r.u64().ok()?;
+        let n_kv = r.u64().ok()?;
+        for _ in 0..n_kv {
+            let start = r.pos;
+            let key = r.string().ok()?;
+            let vtype = r.u32().ok()?;
+            r.skip_value(vtype).ok()?;
+            if key == want {
+                return Some(mm[start..r.pos].to_vec());
+            }
+        }
+        None
+    }
+
+    fn with_global_string_array(base: &[u8], count: usize) -> (Vec<u8>, Vec<u8>) {
+        let mut r = R { data: base, pos: 0 };
+        assert_eq!(r.u32().unwrap(), GGUF_MAGIC);
+        r.u32().unwrap();
+        r.u64().unwrap();
+        let n_kv = r.u64().unwrap();
+        for _ in 0..n_kv {
+            r.string().unwrap();
+            let vtype = r.u32().unwrap();
+            r.skip_value(vtype).unwrap();
+        }
+        let kv_end = r.pos;
+        let n_tensors = u64::from_le_bytes(base[8..16].try_into().unwrap());
+        for _ in 0..n_tensors {
+            r.string().unwrap();
+            let dimensions = r.u32().unwrap();
+            for _ in 0..dimensions {
+                r.u64().unwrap();
+            }
+            r.u32().unwrap();
+            r.u64().unwrap();
+        }
+        let data_start = align_up(r.pos as u64) as usize;
+
+        let string = |value: &str| {
+            let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
+            bytes.extend_from_slice(value.as_bytes());
+            bytes
+        };
+        let mut array = string("tokenizer.ggml.tokens");
+        array.extend_from_slice(&T_ARR.to_le_bytes());
+        array.extend_from_slice(&T_STR.to_le_bytes());
+        array.extend_from_slice(&(count as u64).to_le_bytes());
+        for index in 0..count {
+            array.extend_from_slice(&string(&format!("token-{index}")));
+        }
+
+        let mut out = base[..24].to_vec();
+        out[16..24].copy_from_slice(&(n_kv + 1).to_le_bytes());
+        out.extend_from_slice(&base[24..kv_end]);
+        out.extend_from_slice(&array);
+        out.extend_from_slice(&base[kv_end..data_start]);
+        while out.len() % ALIGN != 0 {
+            out.push(0);
+        }
+        out.extend_from_slice(&base[data_start..]);
+        (out, array)
+    }
+
     fn unknown_layer_array_gguf() -> Vec<u8> {
         let string = |value: &str| {
             let mut bytes = (value.len() as u64).to_le_bytes().to_vec();
@@ -2293,6 +2367,25 @@ mod tests {
             kv_bool_array(&bytes, "llama.attention.sliding_window_pattern"),
             Some(vec![false, true])
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn global_string_array_is_copied_without_layer_slicing() {
+        let dir =
+            std::env::temp_dir().join(format!("pom-global-string-array-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let whole = dir.join("whole.gguf");
+        let out = dir.join("slice.gguf");
+        let (bytes, expected) = with_global_string_array(&test_gguf_bytes(1), 248_320);
+        std::fs::write(&whole, bytes).unwrap();
+
+        let layout = crate::gguf::read_layout(&whole).unwrap();
+        split(&whole, &out, 0, 0, true, true, |_| {}).unwrap();
+        let output = std::fs::read(&out).unwrap();
+
+        assert_eq!(layout.slice_bytes(0, 0, true), output.len() as u64);
+        assert_eq!(kv_raw(&output, "tokenizer.ggml.tokens"), Some(expected));
         let _ = std::fs::remove_dir_all(dir);
     }
 

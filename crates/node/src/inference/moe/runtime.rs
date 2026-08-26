@@ -531,6 +531,17 @@ fn make_external_executor_plan(
         .map(|dtype| format!("{dtype} ({})", ggml_type_name(*dtype)))
         .collect::<Vec<_>>()
         .join(", ");
+    let unsupported_dtype_list = dtypes
+        .iter()
+        .filter(|dtype| !cuda_heterogeneous_dtype_supported(**dtype))
+        .map(|dtype| format!("{dtype} ({})", ggml_type_name(*dtype)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let unsupported_dtype_list = if unsupported_dtype_list.is_empty() {
+        dtype_list.clone()
+    } else {
+        unsupported_dtype_list
+    };
     let single_dtype = dtypes.len() == 1;
     let bridge_supported = match detected {
         ExpertFormat::F32 | ExpertFormat::F16 | ExpertFormat::Bf16 => cuda_compiled,
@@ -548,9 +559,9 @@ fn make_external_executor_plan(
         ExpertFormat::Heterogeneous => {
             cuda_compiled
                 && !dtypes.is_empty()
-                && dtypes.iter().all(|dtype| {
-                    IqQuantFormat::from_dtype(*dtype).is_ok_and(|format| format.cuda_supported())
-                })
+                && dtypes
+                    .iter()
+                    .all(|dtype| cuda_heterogeneous_dtype_supported(*dtype))
         }
         _ => false,
     };
@@ -568,7 +579,7 @@ fn make_external_executor_plan(
         )
     } else if detected == ExpertFormat::Heterogeneous {
         format!(
-            "executor CUDA recusado para dtypes heterogêneos [{dtype_list}]: há tensor(es) sem ponte CUDA numericamente validada; experts permanecem no llama.cpp"
+            "executor CUDA recusado para dtypes heterogêneos [{unsupported_dtype_list}]: tensor(es) com esses dtypes não têm ponte CUDA numericamente validada; experts permanecem no llama.cpp"
         )
     } else if detected == ExpertFormat::Nvfp4 && nvfp4_cpu_requested {
         format!(
@@ -584,6 +595,11 @@ fn make_external_executor_plan(
         dtypes,
         reason: Some(reason),
     }
+}
+
+fn cuda_heterogeneous_dtype_supported(dtype: u32) -> bool {
+    KQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
+        || IqQuantFormat::from_dtype(dtype).is_ok_and(|format| format.cuda_supported())
 }
 
 impl MoeRuntime {
@@ -1122,9 +1138,11 @@ impl MoeRuntime {
                     )));
                 }
                 #[cfg(feature = "cuda")]
-                let device_cache = if source.dtypes().iter().all(|dtype| {
-                    IqQuantFormat::from_dtype(*dtype).is_ok_and(|format| format.cuda_supported())
-                }) {
+                let device_cache = if source
+                    .dtypes()
+                    .iter()
+                    .all(|dtype| cuda_heterogeneous_dtype_supported(*dtype))
+                {
                     Some(create_measured_device_cache(cuda_compute_bytes)?)
                 } else {
                     None
@@ -1439,7 +1457,23 @@ impl MoeRuntime {
         let reason = match executor {
             MoeExecutorKind::Cuda => None,
             MoeExecutorKind::CpuReference => {
-                let names = dtypes
+                let unsupported = if matches!(&self.source, MoeSource::Heterogeneous(_))
+                    && cfg!(feature = "cuda")
+                {
+                    dtypes
+                        .iter()
+                        .filter(|dtype| !cuda_heterogeneous_dtype_supported(**dtype))
+                        .copied()
+                        .collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                };
+                let reason_dtypes = if unsupported.is_empty() {
+                    &dtypes
+                } else {
+                    &unsupported
+                };
+                let names = reason_dtypes
                     .iter()
                     .map(|dtype| {
                         format!("{} ({dtype})", super::format_q4_0::ggml_type_name(*dtype))
@@ -1828,10 +1862,10 @@ mod tests {
     }
 
     #[test]
-    fn dtypes_heterogeneos_nao_externalizam_parcialmente() {
+    fn dtypes_heterogeneos_com_dtype_nao_validado_ficam_nativos() {
         let plan = make_external_executor_plan(
             ExpertFormat::Heterogeneous,
-            vec![12, 21, 23],
+            vec![12, 18, 23],
             3,
             true,
             false,
@@ -1839,9 +1873,18 @@ mod tests {
         assert!(!plan.enabled());
         assert_eq!(plan.layers, vec![0, 0, 0]);
         let reason = plan.reason.unwrap();
-        assert!(reason.contains("12 (Q4_K)"));
-        assert!(reason.contains("21 (IQ3_S)"));
-        assert!(reason.contains("23 (IQ4_XS)"));
+        assert!(reason.contains("[18 (IQ3_XXS)]"));
+        assert!(!reason.contains("12 (Q4_K)"));
+        assert!(!reason.contains("23 (IQ4_XS)"));
+    }
+
+    #[test]
+    fn dtypes_k_heterogeneos_com_ponte_externalizam_todas_as_camadas() {
+        let plan =
+            make_external_executor_plan(ExpertFormat::Heterogeneous, vec![12, 14], 3, true, false);
+        assert!(plan.enabled());
+        assert_eq!(plan.layers, vec![1, 1, 1]);
+        assert!(plan.reason.is_none());
     }
 
     #[test]
@@ -1857,7 +1900,7 @@ mod tests {
         assert_eq!(plan.layers, vec![0, 0, 0]);
         let reason = plan.reason.unwrap();
         assert!(reason.contains("18 (IQ3_XXS)"));
-        assert!(reason.contains("23 (IQ4_XS)"));
+        assert!(!reason.contains("23 (IQ4_XS)"));
     }
 
     #[test]

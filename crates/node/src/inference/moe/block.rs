@@ -969,7 +969,7 @@ pub struct HeterogeneousMoeBlock {
     top_k: usize,
     cache: Arc<ExpertCache>,
     #[cfg(feature = "cuda")]
-    cuda: Option<super::cuda::HeterogeneousIqCudaExecutor>,
+    cuda: Option<super::cuda::HeterogeneousCudaExecutor>,
 }
 
 impl HeterogeneousMoeBlock {
@@ -1004,7 +1004,7 @@ impl HeterogeneousMoeBlock {
             layer,
             top_k,
             cache,
-            cuda: Some(super::cuda::HeterogeneousIqCudaExecutor::new_with_cache(
+            cuda: Some(super::cuda::HeterogeneousCudaExecutor::new_with_cache(
                 hidden,
                 intermediate,
                 device_cache,
@@ -1021,7 +1021,7 @@ impl HeterogeneousMoeBlock {
     pub fn cuda_diagnostics(&self) -> super::cuda::Nvfp4CudaDiagnostics {
         self.cuda.as_ref().map_or_else(
             Default::default,
-            super::cuda::HeterogeneousIqCudaExecutor::diagnostics,
+            super::cuda::HeterogeneousCudaExecutor::diagnostics,
         )
     }
 
@@ -1029,7 +1029,7 @@ impl HeterogeneousMoeBlock {
     pub fn resident_cache_stats(&self) -> super::cache::DeviceCacheStats {
         self.cuda.as_ref().map_or_else(
             Default::default,
-            super::cuda::HeterogeneousIqCudaExecutor::resident_cache_stats,
+            super::cuda::HeterogeneousCudaExecutor::resident_cache_stats,
         )
     }
 
@@ -1144,6 +1144,7 @@ impl HeterogeneousMoeBlock {
         let output = cuda
             .run_route_batch_resident(
                 &descriptors,
+                experts,
                 token_ids,
                 weights,
                 token_offsets,

@@ -157,8 +157,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `cuda_kernels.cu` fornecem executores CUDA dirigidos por dtype quando a
   feature `cuda` está ligada: NVFP4, F32 (0), F16 (1), BF16 (30), Q4_K (12),
   Q6_K (14) e IQ3_S (21), IQ2_S (22), IQ4_XS (23). A ponte heterogênea usa
-  descritores por papel e dtype para esses três IQ, sem converter a combinação
-  para um dtype global. A ponte escalar reutiliza o payload de
+  descritores por papel e dtype para Q4_K/Q6_K e esses três IQ, sem converter a
+  combinação para um dtype global. O hook comum recebe a rota do llama.cpp em
+  `[expert_slot, token]`; `llm.rs` a transpõe para `[token, expert_slot]` antes
+  do runtime. A ponte escalar reutiliza o payload de
   `format_plain.rs` e valida o cabeçalho antes do kernel.
   K-quants e IQ-quants validam a convenção GGUF
   `[columns, rows, experts]` e aceitam bancos gate/up fundidos ou separados
@@ -184,7 +186,8 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   Antes da carga, `MoeRuntime::external_executor_plan` publica ownership por
   camada: somente camadas com ponte device têm seus experts omitidos do
   llama.cpp; dtypes sem cache device e combinações heterogêneas fora do
-  conjunto IQ priorizado ficam nativas e registram o motivo na telemetria. O
+  conjunto Q4_K/Q6_K/IQ3_S/IQ2_S/IQ4_XS ficam nativas e registram o dtype que
+  barrou na telemetria. O
   fork mantém a lista como metadata
   copiada no modelo e o grafo escolhe external/native pela camada, nunca por
   uma flag global que possa deixar experts sem executor.

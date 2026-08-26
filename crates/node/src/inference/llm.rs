@@ -153,6 +153,20 @@ unsafe extern "C" fn moe_ffn_callback(
             .to_string_lossy()
             .into_owned()
     };
+    let (selected_experts, weights) = match normalize_moe_route(
+        &architecture,
+        descriptor.layer,
+        selected_experts,
+        weights,
+        n_tokens,
+        used,
+    ) {
+        Ok(route) => route,
+        Err(error) => {
+            state.fail(error.to_string());
+            return false;
+        }
+    };
     if descriptor.gate_up_bias.present != 0
         || descriptor.gate_bias.present != 0
         || descriptor.up_bias.present != 0
@@ -250,8 +264,8 @@ unsafe extern "C" fn moe_ffn_callback(
         .forward_batch_with_route(crate::moe::runtime::MoeRouteBatch {
             layer: descriptor.layer as u32,
             hidden,
-            selected_experts,
-            weights,
+            selected_experts: &selected_experts,
+            weights: &weights,
             tokens: n_tokens,
             expert_count,
             expert_count_used: used,
@@ -285,6 +299,81 @@ unsafe extern "C" fn moe_ffn_callback(
         telemetry.executors.push(executor);
     }
     true
+}
+
+fn normalize_moe_route(
+    architecture: &str,
+    layer: i32,
+    selected_experts: &[i32],
+    weights: &[f32],
+    n_tokens: usize,
+    expert_count_used: usize,
+) -> Result<(Vec<i32>, Vec<f32>)> {
+    let expected = n_tokens
+        .checked_mul(expert_count_used)
+        .ok_or_else(|| anyhow::anyhow!("overflow na rota MoE"))?;
+    if selected_experts.len() != expected || weights.len() != expected {
+        bail!(
+            "tensor(es) de rota MoE têm {} ids e {} pesos, esperado {expected}",
+            selected_experts.len(),
+            weights.len()
+        );
+    }
+
+    let mut selected = Vec::with_capacity(expected);
+    let mut normalized = Vec::with_capacity(expected);
+    for token in 0..n_tokens {
+        for slot in 0..expert_count_used {
+            let source = slot * n_tokens + token;
+            let expert = selected_experts[source];
+            if expert < 0 {
+                bail!(
+                    "tensor ffn_moe_selected_experts da arquitetura {architecture}, camada {layer}, token {token}, slot {slot} tem expert negativo {expert}"
+                );
+            }
+            let weight = weights[source];
+            if !weight.is_finite() {
+                let kind = if weight.is_nan() { "NaN" } else { "infinito" };
+                bail!(
+                    "tensor ffn_moe_weights da arquitetura {architecture}, camada {layer}, token {token}, slot {slot}, expert {expert} tem valor não finito ({kind})"
+                );
+            }
+            selected.push(expert);
+            normalized.push(weight);
+        }
+    }
+    Ok((selected, normalized))
+}
+
+#[cfg(test)]
+mod moe_route_tests {
+    use super::*;
+
+    #[test]
+    fn rota_do_llama_cpp_expert_major_vira_token_major() {
+        let selected_experts = [10, 11, 12, 20, 21, 22];
+        let weights = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+
+        let (selected, normalized) =
+            normalize_moe_route("qwen35moe", 7, &selected_experts, &weights, 3, 2).unwrap();
+
+        assert_eq!(selected, vec![10, 20, 11, 21, 12, 22]);
+        assert_eq!(normalized, vec![0.1, 0.4, 0.2, 0.5, 0.3, 0.6]);
+    }
+
+    #[test]
+    fn rota_nao_finita_identifica_tensor_token_slot_e_expert() {
+        let error = normalize_moe_route("qwen35moe", 4, &[13, 27], &[f32::INFINITY, 0.5], 1, 2)
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("ffn_moe_weights"));
+        assert!(error.contains("camada 4"));
+        assert!(error.contains("token 0"));
+        assert!(error.contains("slot 0"));
+        assert!(error.contains("expert 13"));
+        assert!(error.contains("infinito"));
+    }
 }
 
 unsafe extern "C" fn capture_callback(

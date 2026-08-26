@@ -14,7 +14,9 @@ Two files carry all of it: a static message table and a small provider. Tests:
 - `locales.ts` - the `messages` dictionary (the exact key count is checked in
   `locales.test.ts`, en block first, pt-BR block second) plus locale resolution
   and formatting functions. The slice screen has messages for pipeline and
-  tensor-parallel modes, including grouped `1ofN` rank labels.
+  tensor-parallel modes, including grouped `1ofN` rank labels. Deploy metadata
+  refusals are rendered from the backend's selection-specific `blocked` reason;
+  there is no second global catalog warning in this table.
 - O grupo `remoteModels.*` cobre status do CLI e da autenticação, busca,
   detalhes, licença desconhecida, confirmação, fila, progresso, cancelamento,
   retry e erros do provider nas duas línguas. Não coloque texto do CLI ou

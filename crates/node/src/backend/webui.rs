@@ -343,6 +343,12 @@ async fn enrich_catalog(partial: Arc<Catalog>) -> Arc<Catalog> {
 /// Publish header metadata only if the inventory it enriches is still current.
 fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
     tokio::spawn(async move {
+        let started = Instant::now();
+        info!(
+            "iniciando enriquecimento do catálogo - {} modelos, {} conjuntos de fatias",
+            partial.models.len(),
+            partial.shard_sets.len()
+        );
         let enriched = enrich_catalog(partial.clone()).await;
         let mut guard = catalog_cache().lock().await;
         let Some(current) = guard.as_mut() else {
@@ -351,9 +357,21 @@ fn spawn_enrichment(roots: CatalogRoots, partial: Arc<Catalog>) {
         if current.roots != roots || !Arc::ptr_eq(&current.catalog, &partial) {
             return;
         }
+        if !enriched.metadata_complete {
+            current.enriching = false;
+            warn!(
+                "enriquecimento do catálogo terminou sem publicar metadata_complete após {:.1}s",
+                started.elapsed().as_secs_f32()
+            );
+            return;
+        }
         current.catalog = enriched;
         current.enriching = false;
-        info!("metadados do catálogo prontos");
+        info!(
+            "metadados do catálogo prontos em {:.1}s - {} modelos",
+            started.elapsed().as_secs_f32(),
+            current.catalog.models.len()
+        );
     });
 }
 
@@ -1473,7 +1491,7 @@ async fn cluster_models(State(state): State<GatewayState>) -> impl IntoResponse 
                 "metadata_complete": v
                     .get("metadata_complete")
                     .and_then(|value| value.as_bool())
-                    .unwrap_or(false),
+                    .map_or(serde_json::Value::Null, serde_json::Value::Bool),
             })),
             // Um peer que não respondeu continua sendo uma máquina com nome:
             // a tabela local de peers guarda o que ele anunciou. Sem isto o

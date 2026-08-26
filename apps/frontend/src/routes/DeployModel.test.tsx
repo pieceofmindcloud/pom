@@ -182,7 +182,7 @@ function planWithUnassignedMiddleRange(): DeployPlan {
   return plan;
 }
 
-function mount(metadata_complete = true) {
+function mount(metadata_complete: boolean | undefined = true) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, refetchInterval: false } },
   });
@@ -193,7 +193,7 @@ function mount(metadata_complete = true) {
         node_id: "ksia",
         hostname: "ksia",
         is_self: false,
-        metadata_complete,
+        ...(metadata_complete === undefined ? {} : { metadata_complete }),
         models: [],
         shard_sets: [{ group: "qwen", shards: [], tp_parts: [] }],
       },
@@ -216,8 +216,9 @@ describe("DeployModel", () => {
   });
   afterEach(cleanup);
 
-  it("mantém o deploy bloqueado enquanto o catálogo enriquece os metadados", async () => {
+  it("mostra um único aviso quando a seleção ainda aguarda metadados", async () => {
     const p = planOutOfLayerOrder();
+    p.blocked = "a seleção da fatia L0-7 ainda aguarda os metadados do GGUF";
     post.mockResolvedValue(p);
     mount(false);
 
@@ -226,7 +227,47 @@ describe("DeployModel", () => {
     });
     const button = await screen.findByRole("button", { name: "Implantar" });
     expect(button.hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText(/metadados/i)).toBeTruthy();
+    expect(screen.queryByText(/A lista de modelos já está disponível/)).toBeNull();
+    expect(screen.getAllByText(/metadados do GGUF/)).toHaveLength(1);
+  });
+
+  it("libera uma seleção completa enquanto outro modelo ainda enriquece", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount(false);
+
+    await waitFor(() => {
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    });
+    expect(screen.queryByText(/metadados do GGUF/i)).toBeNull();
+  });
+
+  it("não bloqueia uma seleção completa quando um peer antigo não informa o estado", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = null;
+    post.mockResolvedValue(p);
+    mount(undefined);
+
+    await waitFor(() => {
+      const button = screen.getByRole("button", { name: /^Implantar$/ });
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    });
+  });
+
+  it("mantém a seleção incompleta bloqueada com a faixa que falta no aviso", async () => {
+    const p = planOutOfLayerOrder();
+    p.blocked = "a seleção da fatia L8-15 ainda aguarda os metadados do GGUF";
+    p.complete = false;
+    post.mockResolvedValue(p);
+    mount(false);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Não dá para implantar deste jeito/)).toBeTruthy();
+    });
+    expect(screen.getByText(/L8-15/)).toBeTruthy();
+    expect((screen.getByRole("button", { name: /^Implantar$/ }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("exibe e salva o tipo do cache KV no inspetor global da instalação", async () => {

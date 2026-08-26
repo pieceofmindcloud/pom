@@ -75,7 +75,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   constroem um `llama_batch` com sequências independentes e devolvem o layout
   para mapear logits e residuais por item.
 - `scheduler.rs` - limites de admissão, janela de microbatch e seleção FIFO
-  round robin. Cada processo cria sua própria fila; réplicas da mesma faixa não
+  round robin. A janela tem default de 0 ms para não atrasar uma chamada
+  isolada, mas continua configurável para workloads que priorizam coalescer
+  chegadas. Cada processo cria sua própria fila; réplicas da mesma faixa não
   compartilham scheduler, KV ou capacidade de fila.
 - `mtp.rs` (445) - predição multi-token (MTP): contexto de rascunho
   `ctx_type = LLAMA_CONTEXT_TYPE_MTP` sobre **os mesmos pesos**, e o algoritmo
@@ -253,9 +255,10 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   seleciona o runtime próprio por dtype. `ExecutionEngine` é a fonte única do
   rótulo que sai na telemetria; ausente em peer antigo vira desconhecido na
   interface.
-- `relay.rs` - `BatchCoordinator` agrupa chamadas concorrentes para o mesmo
-  próximo hop, envia um frame único e distribui respostas por `item_id`;
-  `bubble_hop_timings` mantém a telemetria por salto.
+- `relay.rs` - `BatchCoordinator` agenda o flush imediatamente e ainda agrupa
+  chamadas concorrentes para o mesmo próximo hop no mesmo ciclo do executor;
+  envia um frame único e distribui respostas por `item_id`. Não há mais um
+  timer fixo no relay; `bubble_hop_timings` mantém a telemetria por salto.
 - `runtime.rs` - `NodeConfig`/`NodeRuntime`: aplica a fatia, injeta os tipos de
   cache globais do `pom.json` e guarda o
   `deployment_name` operacional separado de `model_label`, sobe e
@@ -394,8 +397,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   `pipeline.rs` preserva os node IDs das réplicas escolhidas durante a sessão.
 - `spawn_scheduler`/`run_scheduler` - worker único por contexto llama.cpp,
   com backpressure antes de alocar sessão e resposta `429 Retry-After` quando
-  a fila atingiu o limite. O `/health` expõe os limites e os últimos contadores
-  de lote.
+  a fila atingiu o limite. Com `batch_window_ms=0`, o primeiro item segue ao
+  worker sem espera temporizada; um valor positivo mantém a janela de coleta.
+  O `/health` expõe os limites e os últimos contadores de lote.
 - bloco de resposta direta (nos dois handlers, quando `direct_reply_to(&meta)`
   existe) - acumula `hop_timings` na ida (`direct::accumulate` +
   `direct::hop_entry`); cauda (`next_hops` vazio): spawna `direct::deliver_result`

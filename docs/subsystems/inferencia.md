@@ -220,10 +220,12 @@ codificação em trânsito. Formato:
   decoder valida versão, dtype, tamanho derivado do shape, limites e
   sobreposição antes de expor qualquer tensor.
 - Uma requisição individual usa o mesmo frame por meio de
-  `encode_batch_single`. O relay mantém uma janela curta de 4 ms e agrupa
-  chamadas compatíveis para o mesmo próximo hop, modelo, implantação,
-  configuração, fase e rota. O peer receptor distribui os itens
-  concorrentemente para o scheduler local e devolve os resultados pelo
+  `encode_batch_single`. O relay agenda o flush imediatamente e agrupa, quando
+  possível, chamadas concorrentes para o mesmo próximo hop, modelo,
+  implantação, configuração, fase e rota no mesmo ciclo do executor. Assim
+  uma chamada isolada não espera um timer fixo, enquanto chamadas que já
+  chegaram juntas ainda compartilham o frame. O peer receptor distribui os
+  itens concorrentemente para o scheduler local e devolve os resultados pelo
   `item_id` original.
 - O produto ainda não foi lançado, portanto não há fallback, adapter ou
   código de compatibilidade para formatos v1/v2 anteriores.
@@ -458,8 +460,20 @@ Cada processo de inferência possui um scheduler próprio para o contexto
 `llama.cpp`. Ele recebe os frames depois da autenticação e do decode do wire,
 aplica backpressure antes de criar uma sessão e responde `429` com
 `Retry-After: 1` quando `max_queue_requests` foi atingido. O padrão é fila 128,
-janela de coleta de 4 ms, `max_batch_sequences` limitado por `max_sessions` e
-`max_batch_tokens` limitado por `n_batch`.
+janela de coleta de 0 ms, `max_batch_sequences` limitado por `max_sessions` e
+`max_batch_tokens` limitado por `n_batch`. Uma janela positiva continua
+disponível na configuração para workloads que priorizam formar microbatches.
+
+Na telemetria de cada hop, `queue_ms` começa no `queued_at` marcado pelo
+handler imediatamente antes de `SchedulerHandle::submit_prefill` ou
+`submit_step`, e termina na entrada do worker, antes de adquirir o mutex do
+estado e do motor. O atraso fixo vinha do `tokio::time::sleep(cfg.batch_window)`
+em `run_scheduler` quando a fila ainda não estava cheia. `lock_wait_ms` começa
+depois e mede a espera pelo mutex separadamente, portanto não deve ser usado
+como explicação para uma fila uniforme entre GPUs diferentes. Com o default de
+0 ms não há espera temporizada; um valor positivo mantém exatamente a janela
+opt-in. O relay tinha ainda um `sleep` fixo de 4 ms fora dessa métrica, agora
+substituído por flush assíncrono imediato.
 
 Quando as entradas são compatíveis, o worker monta um único `llama_batch` com
 uma sequência física por sessão. Prefill e decode de tokens ficam em uma lane;

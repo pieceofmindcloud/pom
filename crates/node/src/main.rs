@@ -770,7 +770,7 @@ async fn main() -> Result<()> {
             max_sessions: args.max_sessions,
             batching_enabled: true,
             max_queue_requests: 128,
-            batch_window_ms: 4,
+            batch_window_ms: 0,
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: args.prefill_chunk_tokens,

@@ -124,12 +124,11 @@ struct BatchCall {
 
 /// Coalesces independent requests that are about to cross the same pipeline
 /// edge. The queue is process-local on purpose: each peer owns its own
-/// transport and its own llama context. A short window is enough to combine
-/// requests arriving in the same scheduler tick without making one request
-/// wait behind an unrelated generation.
+/// transport and its own llama context. The flush is scheduled immediately,
+/// so calls already concurrent in this executor turn can still share a frame
+/// without imposing a fixed delay on a lone request.
 pub struct BatchCoordinator {
     pending: Mutex<HashMap<BatchKey, Vec<BatchCall>>>,
-    window: Duration,
 }
 
 impl BatchCoordinator {
@@ -138,7 +137,6 @@ impl BatchCoordinator {
         INSTANCE.get_or_init(|| {
             Arc::new(Self {
                 pending: Mutex::new(HashMap::new()),
-                window: Duration::from_millis(4),
             })
         })
     }
@@ -224,7 +222,6 @@ impl BatchCoordinator {
         if should_flush {
             let coordinator = self.clone();
             tokio::spawn(async move {
-                tokio::time::sleep(coordinator.window).await;
                 coordinator.flush(key).await;
             });
         }

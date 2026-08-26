@@ -1907,7 +1907,7 @@ fn d_max_queue_requests() -> u32 {
     128
 }
 fn d_batch_window_ms() -> u32 {
-    4
+    0
 }
 fn d_max_batch_sequences() -> u32 {
     u32::MAX
@@ -5459,7 +5459,7 @@ mod tests {
         assert_eq!(p.n_batch, 512);
         assert!(p.batching_enabled);
         assert_eq!(p.max_queue_requests, 128);
-        assert_eq!(p.batch_window_ms, 4);
+        assert_eq!(p.batch_window_ms, 0);
         assert_eq!(p.max_batch_sequences, u32::MAX);
         assert_eq!(p.max_batch_tokens, u32::MAX);
         assert!(p.no_thinking);

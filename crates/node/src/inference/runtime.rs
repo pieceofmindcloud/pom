@@ -265,7 +265,7 @@ fn default_max_queue_requests() -> u32 {
     128
 }
 fn default_batch_window_ms() -> u32 {
-    4
+    0
 }
 fn default_max_batch_sequences() -> u32 {
     u32::MAX

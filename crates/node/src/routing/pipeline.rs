@@ -838,6 +838,7 @@ mod ipv6_tests {
         let error = plan_of(vec![step(&[CAP_FRAME_DTYPE_F8]), missing])
             .validate_wire_dtype(crate::wire::WireDtype::F8)
             .unwrap_err();
+        let error = error.to_string();
         assert!(error.contains("old-peer"), "erro inesperado: {error}");
         assert!(error.contains("f8"), "erro inesperado: {error}");
     }

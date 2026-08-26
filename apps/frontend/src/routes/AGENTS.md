@@ -283,9 +283,12 @@ Key logic carriers:
   closed-by-default telemetry table: per-hop prefill/decode phases, selected
   path versus backend-reported executed engine, mixed/mismatch evidence,
   gateway vs backend vs residual vs transport timing, bytes per hop; renders the legacy (pre-phase-split) hop shape separately, an
-  optional TP collective table and a pure diagnosis card. The AI action sends
+  optional TP collective table, per-traversal transport identity/RTT/bytes,
+  prefix reuse counters, overlap counters and a pure diagnosis card. The AI action sends
   both tables as private request content, while the initial model is shown as
   a non-turn mark before chat messages.
+- `DeployModel` and `Deployments` use `RuntimeParamsForm` for the shared runtime
+  knobs, including the bounded `prefill_max_inflight_chunks` overlap limit.
 - `DeployModel.rowsOf`/`sameRows` (DeployModel.tsx) — the selection model:
   merged steps expand back into per-slice rows and the planner answer is compared
   with the displayed rows after sorting by layer.

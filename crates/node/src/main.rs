@@ -255,6 +255,10 @@ struct Args {
     #[arg(long, default_value = "512")]
     prefill_chunk_tokens: u32,
 
+    /// Máximo de pedaços do prefill em voo durante a sobreposição.
+    #[arg(long, default_value = "2")]
+    prefill_max_inflight_chunks: u32,
+
     /// Predição multi-token pelo bloco `nextn` do modelo (MTP), quando ele
     /// tiver um e este nó servir o modelo inteiro. Não é a "decodificação
     /// especulativa" por lookup — ver `src/inference/mtp.rs`.
@@ -775,6 +779,7 @@ async fn main() -> Result<()> {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: args.prefill_chunk_tokens,
+            prefill_max_inflight_chunks: args.prefill_max_inflight_chunks,
             max_new_tokens: args.max_new_tokens,
             temperature: args.temperature,
             top_p: args.top_p,

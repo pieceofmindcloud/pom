@@ -58,6 +58,8 @@ behind an auth extractor.
   calculating budget-driven ranges, includes the configured context, sessions
   and K/V cache types in the byte arithmetic. The response exposes weight,
   KV and total bytes per shard; absent KV metadata is an explicit bad request.
+  `RuntimeParams.prefill_max_inflight_chunks` is persisted with the other
+  inference knobs and controls the bounded prefill overlap window.
   GGUF multipart sources are read through models::multipart::GgufSource:
   slice plans and extraction use all tensor parts, and model identity hashes
   the complete ordered set. An incomplete set is a concrete bad request, so
@@ -149,6 +151,11 @@ behind an auth extractor.
   prefill and decode executors, so the tail can answer this node directly
   (log says `resposta=direta|anel|hub`: direta when `direct` is Some and the
   plan supports direct reply, anel for `relay/v1-chain`, hub as the fallback);
+  prefill in hub and direct paths overlaps calculation and transmission with a
+  bounded default window of two chunks (`prefill_max_inflight_chunks`, also
+  exposed as `--prefill-max-inflight-chunks`), while the ring remains ordered by
+  its nested response contract; the request trace reports overlap, prefix reuse
+  and transport per traversal;
   MTP on a sliced plan (`mtp_enabled` + `plan.supports_mtp()` + >= 2 hops):
   the tail drafts on its own reply (`next_draft`), the gateway stores it and
   injects it as `speculate.draft` on the next round, and the head only

@@ -1855,6 +1855,9 @@ pub struct RuntimeParams {
     /// Prompt tokens per round trip through the pipeline.
     #[serde(default = "d_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
+    /// Máximo de pedaços de prefill em voo durante a sobreposição.
+    #[serde(default = "d_prefill_max_inflight_chunks")]
+    pub prefill_max_inflight_chunks: u32,
     #[serde(default = "d_temp")]
     pub temperature: f32,
     #[serde(default = "d_top_p")]
@@ -1923,6 +1926,9 @@ fn d_max_batch_tokens() -> u32 {
 fn d_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
 }
+fn d_prefill_max_inflight_chunks() -> u32 {
+    crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32
+}
 fn d_temp() -> f32 {
     0.7
 }
@@ -1972,6 +1978,7 @@ impl Default for RuntimeParams {
             max_batch_sequences: d_max_batch_sequences(),
             max_batch_tokens: d_max_batch_tokens(),
             prefill_chunk_tokens: d_prefill_chunk(),
+            prefill_max_inflight_chunks: d_prefill_max_inflight_chunks(),
             temperature: d_temp(),
             top_p: d_top_p(),
             top_k: d_top_k(),
@@ -2012,6 +2019,7 @@ impl From<&NodeConfig> for RuntimeParams {
             max_batch_sequences: c.max_batch_sequences,
             max_batch_tokens: c.max_batch_tokens,
             prefill_chunk_tokens: c.prefill_chunk_tokens,
+            prefill_max_inflight_chunks: c.prefill_max_inflight_chunks,
             temperature: c.temperature,
             top_p: c.top_p,
             top_k: c.top_k,

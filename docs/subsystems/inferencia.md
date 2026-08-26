@@ -303,6 +303,24 @@ decodificado na própria posição e o estado oculto viaja sozinho.
   contrato de fio não ganhou um cancelamento remoto; depois disso o gateway
   libera as sessões dos peers alcançados.
 
+**Sobreposição H1.** Nos caminhos hub e resposta direta, quando há mais de um
+hop, o gateway calcula o pedaço seguinte enquanto o estado oculto do pedaço
+atual atravessa os hops. `PrefillOverlapWindow` limita a dois pedaços em voo
+por requisição por padrão, preserva a ordem dos resultados e aceita
+`prefill_max_inflight_chunks` em `pom.json` ou `--prefill-max-inflight-chunks`.
+O valor efetivo é limitado a 1 ou 2: 1 desliga a sobreposição e 2 é a janela
+atual máxima. Uma falha cancela o par inteiro e uma desconexão do cliente
+interrompe as duas operações; no modo direto, uma sequência UUID e uma fila
+por peer também impedem que um repasse posterior chegue antes do anterior.
+O modo anel permanece serializado pelo contrato de resposta aninhada, para não
+abrir uma segunda requisição na mesma sessão sem a confirmação da anterior.
+
+H1 reduz o tempo até o primeiro token ao esconder parte da transmissão atrás
+de cálculo que já aconteceria. Ela **não reduz os bytes**: os 126 MB de um
+prompt de 30.000 tokens continuam atravessando cada fronteira. O ganho esperado
+é aproximadamente `max(cálculo, transmissão)`, não uma compressão ou economia
+de rede.
+
 ### 3.1 Cache de prefixo entre turnos
 
 O gateway mantém um `PrefixCache` global com leases por sessão. A chave combina
@@ -356,6 +374,15 @@ de executar. No pedaço 0 a posição sem campo é onde a sessão está - julgá
 por `chunk_index * chunk_size` = 0 apagava o KV reaproveitado uma linha depois
 de aproveitá-lo. Nos pedaços seguintes, campo ausente é erro e provoca o
 fallback frio, em vez de fabricar 512 para uma sessão que está em 42.
+
+O acerto parcial é observado, mas não aplicado como KV parcial. Se os primeiros
+tokens coincidem e a divergência exigiria encolher a sequência retida, a cabeça
+informa `prefix_match_tokens` e recomeça a sessão a frio; `cached_tokens` fica
+zero e `prompt_tokens_transmitted` volta a ser o prompt inteiro. Isso evita
+resposta errada em motores recorrentes ou híbridos que recusam remoção parcial.
+`prefix_reuse_status` distingue `full`, `partial-cold`, `full-cold`, `miss` e
+`cold`; quando uma perda de sessão exige a repetição fria, o gateway publica
+`session-lost-cold`.
 
 Se um peer perder a sessão durante o prefill - por coleta de ociosidade,
 reinício do processo ou remoção explícita -, ele devolve "sessão desconhecida".
@@ -422,7 +449,9 @@ públicas não mudaram, mas a economia agora é **publicada**:
 `usage.prompt_tokens_details.cached_tokens` (OpenAI),
 `usage.cache_read_input_tokens` (Anthropic) e `x_pom.trace.cached_tokens`
 reportam tokens de prompt que o pipeline não reprocessou - medida do executado,
-não da escolha. `/health` publica `sessions_retained`,
+não da escolha. O trace também publica `prefix_match_tokens`,
+`prefix_reuse_status` e `prompt_tokens_transmitted`, para separar candidato
+comum de tokens realmente poupados. `/health` publica `sessions_retained`,
 `prefix_tokens_retained` e `kv_seq_max`.
 
 `prefix_cache_lab.rs` compara cada operação do cache em memória com uma
@@ -624,9 +653,12 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
   existe); falhou em todas, o gateway fecha no prazo - não há terceira via.
   `deliver_failure` entrega um `RelayFailure` no lugar do resultado, para o
   gateway nomear o nó que morreu em vez de esperar o prazo inteiro.
-- `forward_direct`: o repasse corre em task própria (quem chamou já foi aceito).
-  Falhou o repasse, o próprio hop denuncia direto ao gateway nomeando o nó que
-  realmente morreu.
+- `forward_direct`: o repasse corre em task própria (quem chamou já foi aceito),
+  mas a sequência de prefill espera o `chunk_index` predecessor antes de
+  transmitir. Assim, a computação do próximo pedaço pode acontecer em paralelo
+  sem permitir que um estado oculto posterior seja aplicado primeiro. Falhou o
+  repasse, o próprio hop denuncia direto ao gateway nomeando o nó que realmente
+  morreu.
 - Falha que chega com `error` no lugar do token (`direct_failure`) nomeia o hop
   morto e marca **esse** (não a cabeça) com `routes.mark_failure`.
 
@@ -637,13 +669,16 @@ wire-codificado), fora do caminho crítico - quem espera é o gateway, no ticket
 (`apply_prompt_progress`). Errar isso trunca todo prompt de mais de um pedaço
 no primeiro, em silêncio.
 
-**Telemetria** (`direct::hop_entry`/`accumulate`/`credit_transport`): cada hop
-descreve a si mesmo na ida (`bytes_sent` = quadro que entrou; `round_trip_ms` =
-`processing_ms`, porque a perna de rede não é observável por ninguém no modo
-direto). A lista viaja cabeça→cauda e a cauda a entrega junto do resultado. O
-transporte não atribuído (total menos a soma dos `processing_ms` declarados) vai
-para o `round_trip_ms` da **cabeça**, e os `bytes_received` do resultado para a
-cauda. O número somado continua certo; dividido por hop, ele não existe.
+**Telemetria** (`direct::hop_entry`/`accumulate`/`record_transport`): cada hop
+descreve a si mesmo na ida e o chamador envia uma evidência separada da
+travessia. `transport_traversals` contém uma entrada por chamada, em ordem,
+com `transport` (`local`, `libp2p-tunnel` ou `https`), `transport_fallback`,
+tempo e bytes enviados e recebidos. O trace copia cada entrada para o hop e
+fase correspondentes, sem lançar o residual no primeiro hop. Se uma evidência
+não chegar em até 2 segundos depois do resultado, o pedido segue com
+`transport_trace_complete=false` e a UI deixa a ausência visível. Um hop local
+na mesma máquina pode ter zero de rede corretamente; isso não é uma atribuição
+ao primeiro hop.
 
 ## 5. Decodificação especulativa
 
@@ -886,8 +921,15 @@ portanto um pedido de 64 nunca gera 65 por somar uma rodada extra de decode.
 
 ## 10. O canal de cada salto na telemetria
 
-`SentFrame` e `PhaseTrace` carregam dois campos sobre o transporte, e eles
-aparecem numa linha própria da tabela de telemetria do Chat.
+`SentFrame` e `PhaseTrace` carregam a identidade do transporte e a medição de
+cada travessia, e eles aparecem numa linha própria da tabela de telemetria do
+Chat.
+
+- **`transport_calls`** - uma entrada por travessia, sem agregar os hops
+  seguintes: transporte escolhido, indicação de fallback HTTPS, RTT e bytes
+  enviados e recebidos. O caminho direto recebe essas entradas por mensagens
+  autenticadas pelo ticket e espera no máximo 2 segundos depois do resultado;
+  `transport_trace_complete=false` deixa a perda explícita.
 
 - **`tls` / `tls_calls`** - se o salto foi cifrado. Na `PhaseTrace` é uma
   **contagem**, não um booleano: uma fase soma várias chamadas, e se só parte

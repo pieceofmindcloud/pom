@@ -52,6 +52,7 @@ const params: RuntimeParams = {
   max_new_tokens: 512,
   max_sessions: 1,
   prefill_chunk_tokens: 512,
+  prefill_max_inflight_chunks: 2,
   temperature: 0.7,
   top_p: 0.95,
   top_k: 40,

@@ -92,6 +92,7 @@ type NumericRuntimeKey =
   | "max_new_tokens"
   | "max_sessions"
   | "prefill_chunk_tokens"
+  | "prefill_max_inflight_chunks"
   | "temperature"
   | "top_p"
   | "top_k"
@@ -104,6 +105,7 @@ const GLOBAL_NUMERIC_KNOBS: Array<{ key: NumericRuntimeKey; label: string; step?
   { key: "max_new_tokens", label: "Máx. tokens" },
   { key: "max_sessions", label: "Sessões" },
   { key: "prefill_chunk_tokens", label: "Chunk prefill" },
+  { key: "prefill_max_inflight_chunks", label: "Chunks em voo" },
   { key: "temperature", label: "Temperatura", step: "0.05" },
   { key: "top_p", label: "Top-p", step: "0.01" },
   { key: "top_k", label: "Top-k" },

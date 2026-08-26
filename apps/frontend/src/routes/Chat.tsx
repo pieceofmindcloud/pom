@@ -45,7 +45,7 @@ import {
 } from "../lib/chatStore";
 import { bytes, since } from "../lib/format";
 import { isPhasedHop } from "../lib/chatStream";
-import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace } from "../lib/chatStream";
+import type { LegacyHopTrace, PhasedHopTrace, PhaseTrace, RequestTrace, TransportTrace } from "../lib/chatStream";
 import {
   useChatTelemetryNetwork,
   useCluster,
@@ -388,7 +388,9 @@ export function ExecutionTelemetry({
 
   return <details className="w-full rounded-lg border border-line bg-raised px-3 py-2 text-[0.72rem] text-muted">
     <summary className="cursor-pointer font-medium text-fg">{t("chat.telemetry.title")} {source ? `· ${source}` : ""}</summary>
-    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 font-mono"><span>{t("chat.telemetry.tokensIn", { count: trace.input_tokens })}</span>{trace.cached_tokens ? <span title={t("chat.telemetry.tokensCachedHint")}>{t("chat.telemetry.tokensCached", { count: trace.cached_tokens })}</span> : null}{trace.prefix_match_tokens != null ? <span>{t("chat.telemetry.prefixCandidate", { count: trace.prefix_match_tokens })}</span> : null}{trace.prompt_tokens_transmitted != null ? <span>{t("chat.telemetry.tokensTransmitted", { count: trace.prompt_tokens_transmitted })}</span> : null}{trace.prefix_reuse_status ? <span>{t("chat.telemetry.prefixStatus", { status: trace.prefix_reuse_status })}</span> : null}<span>{t("chat.telemetry.tokensOut", { count: trace.output_tokens })}</span><span>{t("chat.telemetry.prefillMs", { ms: trace.prefill_ms })}</span><span>{rttTotalMs == null ? t("chat.telemetry.rttTotalMissing") : t("chat.telemetry.rttTotal", { ms: rttTotalMs })}</span><span>{networkTotalMs == null ? t("chat.telemetry.networkTotalMissing") : t("chat.telemetry.networkTotal", { ms: networkTotalMs })}</span><span>{bytes(trace.total_bytes_sent + trace.total_bytes_received)}</span></div>
+    {trace.prefill_overlap_enabled && <p className="mt-1 font-mono text-[0.68rem] text-faint">{t("chat.telemetry.overlap", { chunks: trace.prefill_overlapped_chunks ?? 0, limit: trace.prefill_max_inflight_chunks ?? 2 })}</p>}
+    {trace.transport_trace_complete === false && <p className="mt-1 text-[0.68rem] text-amber-300">{t("chat.telemetry.transportTraceIncomplete")}</p>}
     <div className={clsx("mt-3 rounded-lg border px-3 py-2.5", analysis.severity === "critical" ? "border-rose/35 bg-rose/[0.06]" : analysis.severity === "warning" ? "border-amber/35 bg-amber/[0.06]" : "border-line/70 bg-surface/40")}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
@@ -513,6 +515,22 @@ function tlsLine(
   return t("chat.telemetry.tlsOn", { handshake: phase.tls_handshake_ms });
 }
 
+function transportLine(
+  t: ReturnType<typeof useI18n>["t"],
+  phase: PhaseTrace,
+) {
+  const calls = phase.transport_calls ?? [];
+  if (calls.length === 0) return t("chat.telemetry.transportMissing");
+  return calls.map((call: TransportTrace, index) => t("chat.telemetry.transportCall", {
+    index: index + 1,
+    transport: call.transport,
+    fallback: call.fallback ? "fallback" : "",
+    rtt: call.round_trip_ms,
+    sent: bytes(call.bytes_sent),
+    received: bytes(call.bytes_received),
+  })).join(" · ");
+}
+
 function PhaseRow({
   hop,
   label,
@@ -572,6 +590,7 @@ function PhaseRow({
           <span className="block">{t("chat.telemetry.hiddenState", { sent: bytes(hiddenStateSent), received: bytes(hiddenStateReceived), dtype: phase.hidden_state_dtype })}</span>
         )}
         <span className="block">{tlsLine(t, phase)}</span>
+        <span className="block break-words">{transportLine(t, phase)}</span>
       </td>
     </tr>
   </>;

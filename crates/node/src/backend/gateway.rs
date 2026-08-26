@@ -1044,13 +1044,25 @@ async fn generate_stream_inner(
     // Chunk size, wire precision, and the speculative-decoding knobs all come
     // from the node's configuration, so they're operator knobs rather than
     // constants baked into the protocol.
-    let (chunk_tokens, dtype, lookup_enabled, lookup_k, speculative_m, mtp_enabled, mtp_k) = {
+    let (
+        chunk_tokens,
+        max_inflight_chunks,
+        dtype,
+        lookup_enabled,
+        lookup_k,
+        speculative_m,
+        mtp_enabled,
+        mtp_k,
+    ) = {
         let cfg = state.runtime.config().await;
         let n_batch = cfg.as_ref().map(|c| c.n_batch).unwrap_or(512);
         (
             cfg.as_ref()
                 .map(|c| c.prefill_chunk_tokens)
                 .unwrap_or(crate::prefill::DEFAULT_CHUNK_TOKENS),
+            cfg.as_ref()
+                .map(|c| c.prefill_max_inflight_chunks as usize)
+                .unwrap_or(crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS),
             cfg.as_ref()
                 .map(|c| c.hidden_state_dtype)
                 .unwrap_or_default(),
@@ -1129,7 +1141,7 @@ async fn generate_stream_inner(
         // morre com posições fora de ordem. A segunda vai fria, que é
         // exatamente o comportamento de antes desta funcionalidade existir.
         let prefill_attempt = |reuse: bool| {
-            crate::prefill::run(
+            crate::prefill::run_with_options(
                 &plan,
                 model,
                 &session_id,
@@ -1143,6 +1155,7 @@ async fn generate_stream_inner(
                 state.tunnel_tx.as_ref(),
                 &cancellation,
                 reuse,
+                max_inflight_chunks,
             )
         };
         let mut prefill_result = prefill_attempt(reuse_prefix).await;
@@ -1166,7 +1179,10 @@ async fn generate_stream_inner(
             }
         }
         let first = match prefill_result {
-            Ok(o) => {
+            Ok(mut o) => {
+                if unknown_session_recovery_attempted {
+                    o.trace.prefix_reuse_status = Some("session-lost-cold".to_owned());
+                }
                 info!(
                     "📥 prompt de {} tokens em {} pedaço(s), {} do cache · {:.1}s até a primeira palavra",
                     o.prompt_tokens,
@@ -2592,6 +2608,8 @@ mod budget_tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             max_new_tokens: max_new,
             temperature: 0.7,
             top_p: 0.9,
@@ -2878,6 +2896,8 @@ pub(crate) mod testkit {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             max_new_tokens: 256,
             temperature: 0.7,
             top_p: 0.9,

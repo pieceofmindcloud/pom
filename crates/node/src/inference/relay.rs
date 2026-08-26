@@ -69,6 +69,40 @@ pub(crate) async fn set_test_local_inference(local: Option<LocalInference>) {
 /// call site's own comment for which applies.
 pub const CHUNK_ATTEMPTS: u32 = 3;
 
+/// Transporte que realmente carregou um frame de inferência.
+///
+/// `tls` continua separado porque o túnel libp2p é cifrado por Noise, mas não
+/// é TLS. O nome do transporte é a evidência necessária para comparar o
+/// caminho de inferência com o caminho HTTP de arquivos.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum InferenceTransport {
+    Local,
+    Libp2pTunnel,
+    Https,
+    Unknown,
+}
+
+impl InferenceTransport {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Libp2pTunnel => "libp2p-tunnel",
+            Self::Https => "https",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    pub fn from_wire(value: &str) -> Self {
+        match value {
+            "local" => Self::Local,
+            "libp2p-tunnel" => Self::Libp2pTunnel,
+            "https" => Self::Https,
+            _ => Self::Unknown,
+        }
+    }
+}
+
 /// One hop's response, plus the client-observable timing a caller needs to
 /// build its own bookkeeping from (a `RequestTrace` hop entry in
 /// `prefill.rs`, or a `hop_timings` array entry in `infer_server.rs`).
@@ -101,6 +135,11 @@ pub struct SentFrame {
     /// de medição: é custo de estabelecimento de conexão, não custo por token,
     /// e a tela precisa dizer isso - ver `Chat.tsx`.
     pub tls_handshake_ms: u64,
+    /// Transporte escolhido para esta travessia, sem agregar os hops
+    /// seguintes.
+    pub transport: InferenceTransport,
+    /// True quando HTTPS foi usado depois de uma falha de transporte no túnel.
+    pub transport_fallback: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -354,6 +393,8 @@ async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
                 client_decode_ms: response.client_decode_ms,
                 tls: response.tls,
                 tls_handshake_ms,
+                transport: response.transport,
+                transport_fallback: response.transport_fallback,
             });
         }
         Ok::<_, anyhow::Error>(output)
@@ -396,6 +437,8 @@ impl SentFrame {
             "client_decode_ms": self.client_decode_ms,
             "tls": self.tls,
             "tls_handshake_ms": self.tls_handshake_ms,
+            "transport": self.transport.as_str(),
+            "transport_fallback": self.transport_fallback,
             "node_timings": self.meta.get("node_timings").cloned().unwrap_or(json!({})),
         })
     }
@@ -652,6 +695,8 @@ async fn send_frame_in_process(
         client_decode_ms,
         tls: false,
         tls_handshake_ms,
+        transport: InferenceTransport::Local,
+        transport_fallback: false,
     })
 }
 
@@ -672,7 +717,7 @@ pub async fn send_frame(
 ) -> Result<SentFrame> {
     send_frame_with_protocol(
         clients, peer_id, base_url, path, meta, tensor, dtype, encoding, false, attempts,
-        peer_label, on_issue,
+        peer_label, false, on_issue,
     )
     .await
 }
@@ -690,6 +735,7 @@ async fn send_frame_with_protocol(
     use_batch_frame: bool,
     attempts: u32,
     peer_label: &str,
+    transport_fallback: bool,
     mut on_issue: impl FnMut(SendIssue),
 ) -> Result<SentFrame> {
     // O cliente sai do cache por peer: com o cluster em TLS ele carrega o
@@ -765,6 +811,8 @@ async fn send_frame_with_protocol(
                     response_headers_ms,
                     response_body_ms,
                     client_decode_ms,
+                    transport: InferenceTransport::Https,
+                    transport_fallback,
                 });
             }
             Ok(r) => {
@@ -816,6 +864,8 @@ struct BatchTransportResponse {
     response_body_ms: u64,
     client_decode_ms: u64,
     tls: bool,
+    transport: InferenceTransport,
+    transport_fallback: bool,
 }
 
 /// Send one already encoded batch. The batch coordinator uses this function
@@ -855,6 +905,8 @@ async fn send_batch_body(
             response_body_ms: 0,
             client_decode_ms: 0,
             tls: false,
+            transport: InferenceTransport::Local,
+            transport_fallback: false,
         });
     }
 
@@ -868,6 +920,7 @@ async fn send_batch_body(
         tunnel.is_some(),
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
+    let mut transport_fallback = false;
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
         match send_batch_via_tunnel(
@@ -884,6 +937,7 @@ async fn send_batch_body(
             Ok(response) => return Ok(response),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
             Err(error) => {
+                transport_fallback = true;
                 warn!("{peer_label}: libp2p batch falhou ({error}), tentando HTTPS direto")
             }
         }
@@ -924,6 +978,8 @@ async fn send_batch_body(
                     response_body_ms,
                     client_decode_ms,
                     tls: url.starts_with("https://"),
+                    transport: InferenceTransport::Https,
+                    transport_fallback,
                 });
             }
             Ok(response) => {
@@ -1000,6 +1056,8 @@ async fn send_batch_via_tunnel(
         response_body_ms: 0,
         client_decode_ms: 0,
         tls: false,
+        transport: InferenceTransport::Libp2pTunnel,
+        transport_fallback: false,
     })
 }
 
@@ -1285,6 +1343,7 @@ pub async fn send_frame_or_tunnel(
         crate::infer_tunnel::is_local_node(&step.node_id),
     );
     let use_batch_frame = step.supports(crate::pipeline::CAP_FRAME_BATCH);
+    let mut transport_fallback = false;
 
     if let (true, Some(tunnel), Some(peer_id)) = (can_use_tunnel, tunnel, peer_id) {
         let auth = clients.inference_token().await;
@@ -1305,7 +1364,10 @@ pub async fn send_frame_or_tunnel(
         {
             Ok(sent) => return Ok(sent),
             Err(error) if error.downcast_ref::<HttpRefusal>().is_some() => return Err(error),
-            Err(error) => warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto"),
+            Err(error) => {
+                transport_fallback = true;
+                warn!("{peer_label}: libp2p falhou ({error}), tentando HTTPS direto")
+            }
         }
     }
 
@@ -1321,6 +1383,7 @@ pub async fn send_frame_or_tunnel(
         use_batch_frame,
         attempts,
         peer_label,
+        transport_fallback,
         on_issue,
     )
     .await
@@ -1494,6 +1557,8 @@ async fn send_frame_via_tunnel_with_auth(
         response_headers_ms: round_trip_ms,
         response_body_ms,
         client_decode_ms,
+        transport: InferenceTransport::Libp2pTunnel,
+        transport_fallback: false,
     })
 }
 
@@ -1723,6 +1788,12 @@ mod tests {
             client_decode_ms: 1,
             tls,
             tls_handshake_ms: handshake,
+            transport: if tls {
+                InferenceTransport::Https
+            } else {
+                InferenceTransport::Unknown
+            },
+            transport_fallback: false,
         }
     }
 
@@ -1749,6 +1820,22 @@ mod tests {
         let e = frame(false, 0).as_hop_timing_entry();
         assert_eq!(e["tls"], false);
         assert_eq!(e["tls_handshake_ms"], 0);
+    }
+
+    #[test]
+    fn hop_timing_expone_transporte_e_medidas_da_travessia() {
+        let e = SentFrame {
+            transport: InferenceTransport::Https,
+            transport_fallback: true,
+            ..frame(false, 0)
+        }
+        .as_hop_timing_entry();
+
+        assert_eq!(e["transport"], "https");
+        assert_eq!(e["transport_fallback"], true);
+        assert_eq!(e["round_trip_ms"], 12);
+        assert_eq!(e["bytes_sent"], 100);
+        assert_eq!(e["bytes_received"], 200);
     }
     use tokio::sync::mpsc;
 

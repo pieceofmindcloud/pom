@@ -117,6 +117,11 @@ pub struct NodeConfig {
     /// Prompt tokens pushed through the pipeline per round trip.
     #[serde(default = "default_prefill_chunk")]
     pub prefill_chunk_tokens: u32,
+    /// Máximo de pedaços de prefill mantidos em voo durante a sobreposição.
+    /// O runtime limita o valor efetivo a dois para conter memória em enlaces
+    /// lentos; dois é o padrão que habilita uma etapa de lookahead segura.
+    #[serde(default = "default_prefill_max_inflight_chunks")]
+    pub prefill_max_inflight_chunks: u32,
     pub max_new_tokens: u32,
     pub temperature: f32,
     pub top_p: f32,
@@ -209,6 +214,7 @@ impl NodeConfig {
             max_batch_sequences: p.max_batch_sequences,
             max_batch_tokens: p.max_batch_tokens,
             prefill_chunk_tokens: p.prefill_chunk_tokens,
+            prefill_max_inflight_chunks: p.prefill_max_inflight_chunks,
             temperature: p.temperature,
             top_p: p.top_p,
             top_k: p.top_k,
@@ -279,6 +285,9 @@ fn default_max_batch_tokens() -> u32 {
 }
 fn default_prefill_chunk() -> u32 {
     crate::prefill::DEFAULT_CHUNK_TOKENS
+}
+fn default_prefill_max_inflight_chunks() -> u32 {
+    crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32
 }
 fn default_offload_kqv() -> bool {
     true
@@ -1579,6 +1588,8 @@ mod tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,

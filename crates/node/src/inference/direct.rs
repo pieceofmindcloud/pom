@@ -61,6 +61,11 @@ pub const RELAY_RESULT_PATH: &str = "/v1/relay-result";
 /// isso não está lento, está morto, e a sessão precisa ser liberada.
 pub const DIRECT_REPLY_DEADLINE: Duration = Duration::from_secs(600);
 
+/// Tempo máximo para a telemetria das travessias chegar depois do resultado.
+/// É deliberadamente curto e independente do prazo da inferência: faltar uma
+/// amostra não pode prender um pedido por dez minutos.
+const DIRECT_TRACE_GRACE: Duration = Duration::from_secs(2);
+
 /// Tentativas de entrega do resultado direto, por URL candidata.
 const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -72,7 +77,15 @@ const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
 /// gateway que abre a requisição; o handler de `/v1/relay-result` só procura o
 /// ticket aqui.
 #[derive(Clone, Default)]
-pub struct ReplyInbox(Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>);
+pub struct ReplyInbox(Arc<Mutex<HashMap<String, ReplyState>>>);
+
+struct ReplyState {
+    sender: oneshot::Sender<Value>,
+    expected_transport: usize,
+    transport: Vec<Option<Value>>,
+    pending_result: Option<Value>,
+    transport_trace_expired: bool,
+}
 
 impl ReplyInbox {
     pub fn new() -> Self {
@@ -83,9 +96,29 @@ impl ReplyInbox {
     /// qualquer caminho de saída — é o que impede um ticket órfão de segurar
     /// memória depois de um erro ou de um prazo estourado.
     pub fn register(&self) -> Ticket {
+        self.register_with_expected_transport(0)
+    }
+
+    /// Abre um ticket que também espera uma evidência por travessia.
+    ///
+    /// A resposta direta chega por um POST separado dos acks. O resultado é
+    /// retido por uma janela curta para que a telemetria não seja publicada
+    /// antes da última travessia, mas o prazo é finito: uma falha de medição
+    /// aparece como `transport_trace_complete=false`, nunca como um pedido
+    /// pendurado indefinidamente.
+    pub fn register_with_expected_transport(&self, expected_transport: usize) -> Ticket {
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = oneshot::channel();
-        self.0.lock().unwrap().insert(id.clone(), tx);
+        self.0.lock().unwrap().insert(
+            id.clone(),
+            ReplyState {
+                sender: tx,
+                expected_transport,
+                transport: vec![None; expected_transport],
+                pending_result: None,
+                transport_trace_expired: false,
+            },
+        );
         Ticket {
             id,
             inbox: self.clone(),
@@ -96,10 +129,75 @@ impl ReplyInbox {
     /// Entrega um resultado. `false` quando o ticket não existe mais — o
     /// gateway já desistiu, e quem entregou precisa saber que chegou tarde.
     pub fn deliver(&self, ticket: &str, meta: Value) -> bool {
-        let tx = self.0.lock().unwrap().remove(ticket);
-        match tx {
-            Some(tx) => tx.send(meta).is_ok(),
+        let mut state = self.0.lock().unwrap();
+        let Some(entry) = state.get_mut(ticket) else {
+            return false;
+        };
+        if entry.expected_transport > 0
+            && !entry.transport_trace_expired
+            && entry.transport.iter().any(Option::is_none)
+        {
+            let schedule_expiry = entry.pending_result.is_none();
+            entry.pending_result = Some(meta);
+            drop(state);
+            if schedule_expiry {
+                let inbox = self.clone();
+                let expiry_id = ticket.to_owned();
+                tokio::spawn(async move {
+                    tokio::time::sleep(DIRECT_TRACE_GRACE).await;
+                    inbox.expire_transport_trace(&expiry_id);
+                });
+            }
+            return true;
+        }
+        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        let meta = complete_transport_trace(&entry, meta);
+        meta_sender_send(meta, entry.sender)
+    }
+
+    /// Registra a resposta de uma travessia sem transformá-la em resultado.
+    /// Retorna `false` quando o ticket já expirou ou foi removido.
+    pub fn record_transport(&self, ticket: &str, hop_index: usize, meta: Value) -> bool {
+        let mut state = self.0.lock().unwrap();
+        let Some(entry) = state.get_mut(ticket) else {
+            return false;
+        };
+        if hop_index >= entry.expected_transport {
+            return false;
+        }
+        entry.transport[hop_index] = Some(meta);
+        let ready = entry.pending_result.is_some()
+            && (entry.transport_trace_expired || entry.transport.iter().all(Option::is_some));
+        if !ready {
+            return true;
+        }
+        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        let meta = entry
+            .pending_result
+            .clone()
+            .map(|meta| complete_transport_trace(&entry, meta));
+        match meta {
+            Some(meta) => meta_sender_send(meta, entry.sender),
             None => false,
+        }
+    }
+
+    fn expire_transport_trace(&self, ticket: &str) {
+        let mut state = self.0.lock().unwrap();
+        let Some(entry) = state.get_mut(ticket) else {
+            return;
+        };
+        entry.transport_trace_expired = true;
+        if entry.pending_result.is_none() {
+            return;
+        }
+        let entry = state.remove(ticket).expect("ticket ainda está no inbox");
+        if let Some(meta) = entry
+            .pending_result
+            .clone()
+            .map(|meta| complete_transport_trace(&entry, meta))
+        {
+            let _ = meta_sender_send(meta, entry.sender);
         }
     }
 
@@ -111,6 +209,22 @@ impl ReplyInbox {
     pub fn outstanding(&self) -> usize {
         self.0.lock().unwrap().len()
     }
+}
+
+fn complete_transport_trace(entry: &ReplyState, mut meta: Value) -> Value {
+    if entry.expected_transport == 0 {
+        return meta;
+    }
+    let traversals: Vec<Value> = entry.transport.iter().flatten().cloned().collect();
+    meta["transport_traversals"] = json!(traversals);
+    meta["transport_trace_complete"] = json!(
+        entry.expected_transport == meta["transport_traversals"].as_array().map_or(0, Vec::len)
+    );
+    meta
+}
+
+fn meta_sender_send(meta: Value, sender: oneshot::Sender<Value>) -> bool {
+    sender.send(meta).is_ok()
 }
 
 /// Um quadro em voo. Removido do inbox no `Drop`.
@@ -168,9 +282,40 @@ impl DirectReply {
         self.inbox.register()
     }
 
+    pub fn ticket_for_hops(&self, expected_hops: usize) -> Ticket {
+        self.inbox.register_with_expected_transport(expected_hops)
+    }
+
     pub fn reply_to(&self, ticket: &str) -> Value {
         json!({ "urls": self.urls, "ticket": ticket, "node_id": self.node_id })
     }
+
+    pub fn record_transport(
+        &self,
+        ticket: &str,
+        hop_index: usize,
+        sent: &crate::relay::SentFrame,
+    ) -> bool {
+        self.inbox
+            .record_transport(ticket, hop_index, transport_receipt(hop_index, sent))
+    }
+}
+
+fn transport_receipt(hop_index: usize, sent: &crate::relay::SentFrame) -> Value {
+    json!({
+        "hop_index": hop_index,
+        "transport": sent.transport.as_str(),
+        "transport_fallback": sent.transport_fallback,
+        "round_trip_ms": sent.round_trip_ms,
+        "bytes_sent": sent.bytes_sent,
+        "bytes_received": sent.bytes_received,
+        "tls": sent.tls,
+        "tls_handshake_ms": sent.tls_handshake_ms,
+        "client_encode_ms": sent.client_encode_ms,
+        "response_headers_ms": sent.response_headers_ms,
+        "response_body_ms": sent.response_body_ms,
+        "client_decode_ms": sent.client_decode_ms,
+    })
 }
 
 /// URLs de gateway deste nó, na ordem em que um peer deve tentá-las.
@@ -250,6 +395,19 @@ pub fn handle_relay_result(inbox: &ReplyInbox, body: Bytes) -> Response {
     else {
         return (StatusCode::BAD_REQUEST, "resultado sem ticket").into_response();
     };
+    if meta
+        .get("transport_update")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let Some(hop_index) = meta.get("hop_index").and_then(Value::as_u64) else {
+            return (StatusCode::BAD_REQUEST, "telemetria sem índice de hop").into_response();
+        };
+        if inbox.record_transport(&ticket, hop_index as usize, meta) {
+            return (StatusCode::OK, "ok").into_response();
+        }
+        return (StatusCode::GONE, "ticket desconhecido").into_response();
+    }
     // Os bytes que atravessaram a rede na volta. Só quem recebeu sabe.
     meta["result_bytes"] = json!(body.len());
     if inbox.deliver(&ticket, meta) {
@@ -273,6 +431,22 @@ pub async fn await_result<F>(ack: F, ticket: &mut Ticket, head_label: &str) -> R
 where
     F: Future<Output = Result<crate::relay::SentFrame>>,
 {
+    await_result_with_ack(ack, ticket, head_label, |_| {}).await
+}
+
+/// Espera o resultado e executa uma ação síncrona quando o ack da cabeça
+/// chega. O ack é observado mesmo se o POST final vencer a corrida, para que
+/// a travessia cabeça→primeiro hop não desapareça da telemetria.
+pub async fn await_result_with_ack<F, C>(
+    ack: F,
+    ticket: &mut Ticket,
+    head_label: &str,
+    mut on_ack: C,
+) -> Result<Value>
+where
+    F: Future<Output = Result<crate::relay::SentFrame>>,
+    C: FnMut(&crate::relay::SentFrame),
+{
     tokio::pin!(ack);
     let deadline = tokio::time::sleep(DIRECT_REPLY_DEADLINE);
     tokio::pin!(deadline);
@@ -282,7 +456,13 @@ where
         tokio::select! {
             biased;
             got = &mut ticket.rx => {
-                return got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"));
+                let result = got.map_err(|_| anyhow!("resultado direto perdido antes de chegar"))?;
+                if !acked {
+                    if let Ok(Ok(frame)) = tokio::time::timeout(DIRECT_TRACE_GRACE, &mut ack).await {
+                        on_ack(&frame);
+                    }
+                }
+                return Ok(result);
             }
             sent = &mut ack, if !acked => {
                 acked = true;
@@ -291,8 +471,11 @@ where
                     // resposta inteira. Vale como resultado — é o que mantém
                     // um cluster meio atualizado funcionando mesmo se a
                     // negociação de capacidade escapar.
-                    Ok(frame) if frame.meta.get("token_id").is_some() => return Ok(frame.meta),
-                    Ok(_) => {}
+                    Ok(frame) if frame.meta.get("token_id").is_some() => {
+                        on_ack(&frame);
+                        return Ok(frame.meta)
+                    }
+                    Ok(frame) => on_ack(&frame),
                     Err(e) => return Err(e),
                 }
             }
@@ -320,6 +503,27 @@ pub fn result_failure(meta: &Value) -> Option<crate::relay::RelayFailure> {
 /// descobre qual funciona. Falhou em todos, o gateway fecha no prazo — não há
 /// terceira via, e inventar uma seria pior que a espera.
 pub async fn deliver_result(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    meta: Value,
+) -> bool {
+    deliver_meta(http, reply_to, meta).await
+}
+
+/// Entrega uma evidência de transporte pelo mesmo retorno autenticado do
+/// resultado. O POST é pequeno e fica fora dos bytes da travessia medida.
+pub async fn deliver_transport(
+    http: &crate::peer_client::PeerClients,
+    reply_to: &Value,
+    hop_index: usize,
+    sent: &crate::relay::SentFrame,
+) -> bool {
+    let mut meta = transport_receipt(hop_index, sent);
+    meta["transport_update"] = json!(true);
+    deliver_meta(http, reply_to, meta).await
+}
+
+async fn deliver_meta(
     http: &crate::peer_client::PeerClients,
     reply_to: &Value,
     mut meta: Value,
@@ -404,11 +608,8 @@ pub async fn deliver_failure(
 /// `RequestTrace::record_hop_from_json` já espera.
 ///
 /// `bytes_sent` é o quadro que **entrou** neste hop, que é exatamente o que o
-/// anterior pôs no fio. `round_trip_ms` fica igual ao `processing_ms` porque a
-/// perna de rede de cada hop não é observável por ninguém no modo direto: quem
-/// manda não espera a resposta, e quem recebe não tem o relógio de quem
-/// mandou. O gateway conhece o total, e é ele que lança o transporte que
-/// sobrou — ver `credit_transport`.
+/// anterior pôs no fio. A chamada que originou a entrada envia uma evidência
+/// posterior com o relógio e o transporte observados no cliente.
 pub fn hop_entry(processing_ms: &Value, node_timings: &Value, inbound_bytes: usize) -> Value {
     json!({
         "round_trip_ms": processing_ms.clone(),
@@ -454,29 +655,24 @@ pub fn accumulate(inbound_meta: &Value, entry: Value) -> Vec<Value> {
     hops
 }
 
-/// Fecha a telemetria com o que só o gateway sabe: quanto a cadeia inteira
-/// gastou de relógio e quantos bytes voltaram.
-///
-/// O transporte não atribuído (total menos a soma do que cada hop declarou de
-/// si) vai para a entrada da cabeça. Não é a perna dela — é a cadeia inteira,
-/// e está aí porque nenhuma perna é medível de dentro do modo direto. Somado,
-/// o número continua certo; dividido por hop, ele não existe. O nome honesto
-/// disso está no doc de `hop_entry`.
-pub fn credit_transport(hops: &mut [Value], total_ms: u64, result_bytes: u64) {
-    let declared: u64 = hops
-        .iter()
-        .map(|h| h.get("processing_ms").and_then(Value::as_u64).unwrap_or(0))
-        .sum();
-    if let Some(first) = hops.first_mut() {
-        let own = first
-            .get("processing_ms")
-            .and_then(Value::as_u64)
-            .unwrap_or(0);
-        first["round_trip_ms"] = json!(own + total_ms.saturating_sub(declared));
-    }
-    if let Some(last) = hops.last_mut() {
-        last["bytes_received"] = json!(result_bytes);
-    }
+/// Substitui a estimativa de um hop pela medição da chamada que o originou.
+/// O índice é a posição do destino na cadeia, por isso nenhum tempo de uma
+/// travessia pode ser lançado no primeiro hop por conveniência.
+pub fn attach_transport(hops: &mut [Value], destination: usize, sent: &crate::relay::SentFrame) {
+    let Some(hop) = hops.get_mut(destination) else {
+        return;
+    };
+    hop["round_trip_ms"] = json!(sent.round_trip_ms);
+    hop["bytes_sent"] = json!(sent.bytes_sent);
+    hop["bytes_received"] = json!(sent.bytes_received);
+    hop["client_encode_ms"] = json!(sent.client_encode_ms);
+    hop["response_headers_ms"] = json!(sent.response_headers_ms);
+    hop["response_body_ms"] = json!(sent.response_body_ms);
+    hop["client_decode_ms"] = json!(sent.client_decode_ms);
+    hop["tls"] = json!(sent.tls);
+    hop["tls_handshake_ms"] = json!(sent.tls_handshake_ms);
+    hop["transport"] = json!(sent.transport.as_str());
+    hop["transport_fallback"] = json!(sent.transport_fallback);
 }
 
 #[cfg(test)]
@@ -494,6 +690,35 @@ mod tests {
 
         let got = (&mut ticket.rx).await.expect("resultado");
         assert_eq!(got["token_id"], 7);
+    }
+
+    #[tokio::test]
+    async fn a_result_waits_for_each_transport_receipt_and_marks_the_hop() {
+        let inbox = ReplyInbox::new();
+        let mut ticket = inbox.register_with_expected_transport(2);
+        let id = ticket.id().to_string();
+
+        assert!(inbox.deliver(&id, json!({"token_id": 7})));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut ticket.rx)
+                .await
+                .is_err()
+        );
+        assert!(inbox.record_transport(
+            &id,
+            1,
+            json!({"hop_index": 1, "transport": "https", "round_trip_ms": 23})
+        ));
+        assert!(inbox.record_transport(
+            &id,
+            0,
+            json!({"hop_index": 0, "transport": "libp2p-tunnel", "round_trip_ms": 11})
+        ));
+
+        let got = (&mut ticket.rx).await.expect("resultado");
+        assert_eq!(got["transport_trace_complete"], true);
+        assert_eq!(got["transport_traversals"][0]["hop_index"], 0);
+        assert_eq!(got["transport_traversals"][1]["hop_index"], 1);
     }
 
     /// O guarda tem que limpar o inbox sozinho: o caminho de erro e o de prazo
@@ -583,16 +808,36 @@ mod tests {
     }
 
     #[test]
-    fn the_unattributed_transport_lands_in_the_total_exactly_once() {
+    fn a_direct_transport_receipt_updates_only_its_destination_hop() {
         let mut hops = vec![
             hop_entry(&json!(10), &json!({}), 1_000),
             hop_entry(&json!(20), &json!({}), 2_000),
         ];
-        credit_transport(&mut hops, 100, 87);
+        let sent = crate::relay::SentFrame {
+            meta: json!({ "processing_ms": 20, "node_timings": {} }),
+            tensor: None,
+            round_trip_ms: 47,
+            bytes_sent: 2_000,
+            bytes_received: 123,
+            hidden_state_bytes_sent: 0,
+            hidden_state_bytes_received: 0,
+            hidden_state_dtype: crate::wire::WireDtype::F16,
+            client_encode_ms: 3,
+            response_headers_ms: 4,
+            response_body_ms: 5,
+            client_decode_ms: 6,
+            tls: false,
+            tls_handshake_ms: 0,
+            transport: crate::relay::InferenceTransport::Libp2pTunnel,
+            transport_fallback: false,
+        };
 
-        // 100 de relógio, 30 declarados pelos hops → 70 de transporte.
-        assert_eq!(hops[0]["round_trip_ms"], 80);
-        assert_eq!(hops[1]["round_trip_ms"], 20);
-        assert_eq!(hops[1]["bytes_received"], 87);
+        attach_transport(&mut hops, 1, &sent);
+
+        assert_eq!(hops[0]["round_trip_ms"], 10);
+        assert_eq!(hops[1]["round_trip_ms"], 47);
+        assert_eq!(hops[1]["bytes_sent"], 2_000);
+        assert_eq!(hops[1]["bytes_received"], 123);
+        assert_eq!(hops[1]["transport"], "libp2p-tunnel");
     }
 }

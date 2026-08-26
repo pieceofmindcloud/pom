@@ -303,6 +303,8 @@ struct PrefillJob {
     /// A decisão da cabeça que os hops intermediários só repassam. Um hop que
     /// não tokeniza não pode substituir `true` por seu `PrefixDecision::default`.
     cached_tokens: u32,
+    /// Candidato de prefixo comum, inclusive quando a decisão foi fria.
+    prefix_match_tokens: u32,
     start_pos: Option<u32>,
     /// Fronteira entre o prompt reutilizável e o rabicho deste turno, decidida
     /// por quem tokenizou - ver `Session::stable_len`.
@@ -492,6 +494,133 @@ struct InferenceAppState {
     /// complete inbound batches so a second request cannot replace that id
     /// while the first batch is waiting for its workers.
     tp_batch_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Keeps direct prefill forwarding in chunk order while the next chunk is
+    /// already being computed by the preceding hop.
+    direct_forward_order: DirectForwardOrder,
+}
+
+#[derive(Clone, Default)]
+struct DirectForwardOrder {
+    sequences: Arc<Mutex<HashMap<String, Arc<DirectForwardSequence>>>>,
+}
+
+struct DirectForwardSequence {
+    next_chunk: Mutex<u32>,
+    failed: Mutex<Option<String>>,
+    notify: tokio::sync::Notify,
+}
+
+struct DirectForwardTurn {
+    owner: DirectForwardOrder,
+    key: String,
+    sequence: Arc<DirectForwardSequence>,
+    chunk_index: u32,
+}
+
+impl DirectForwardOrder {
+    fn ensure_sequence(&self, key: &str) -> Result<()> {
+        let mut sequences = self
+            .sequences
+            .lock()
+            .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+        sequences.entry(key.to_owned()).or_insert_with(|| {
+            Arc::new(DirectForwardSequence {
+                next_chunk: Mutex::new(0),
+                failed: Mutex::new(None),
+                notify: tokio::sync::Notify::new(),
+            })
+        });
+        Ok(())
+    }
+
+    async fn wait_turn(
+        &self,
+        key: impl Into<String>,
+        chunk_index: u32,
+    ) -> Result<DirectForwardTurn> {
+        let key = key.into();
+        let sequence = {
+            let mut sequences = self
+                .sequences
+                .lock()
+                .map_err(|_| anyhow::anyhow!("ordem do repasse direto corrompida"))?;
+            if let Some(sequence) = sequences.get(&key) {
+                sequence.clone()
+            } else if chunk_index == 0 {
+                let sequence = Arc::new(DirectForwardSequence {
+                    next_chunk: Mutex::new(0),
+                    failed: Mutex::new(None),
+                    notify: tokio::sync::Notify::new(),
+                });
+                sequences.insert(key.clone(), sequence.clone());
+                sequence
+            } else {
+                return Err(anyhow::anyhow!(
+                    "chunk direto {chunk_index} chegou sem o chunk predecessor"
+                ));
+            }
+        };
+
+        loop {
+            let notified = sequence.notify.notified();
+            if let Some(error) = sequence
+                .failed
+                .lock()
+                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?
+                .clone()
+            {
+                return Err(anyhow::anyhow!(error));
+            }
+            let next_chunk = *sequence
+                .next_chunk
+                .lock()
+                .map_err(|_| anyhow::anyhow!("estado de ordem do repasse corrompido"))?;
+            if next_chunk == chunk_index {
+                drop(notified);
+                return Ok(DirectForwardTurn {
+                    owner: self.clone(),
+                    key,
+                    sequence,
+                    chunk_index,
+                });
+            }
+            if chunk_index < next_chunk {
+                return Err(anyhow::anyhow!(
+                    "chunk direto {chunk_index} chegou depois de {next_chunk}"
+                ));
+            }
+            notified.await;
+        }
+    }
+}
+
+impl DirectForwardTurn {
+    fn finish(self, success: bool, terminal: bool) {
+        if success {
+            if let Ok(mut next_chunk) = self.sequence.next_chunk.lock() {
+                if *next_chunk == self.chunk_index {
+                    *next_chunk += 1;
+                }
+            }
+        } else if let Ok(mut failed) = self.sequence.failed.lock() {
+            *failed = Some(format!(
+                "repasse direto falhou no chunk {}",
+                self.chunk_index
+            ));
+        }
+        self.sequence.notify.notify_waiters();
+
+        if terminal || !success {
+            if let Ok(mut sequences) = self.owner.sequences.lock() {
+                if sequences
+                    .get(&self.key)
+                    .is_some_and(|current| Arc::ptr_eq(current, &self.sequence))
+                {
+                    sequences.remove(&self.key);
+                }
+            }
+        }
+    }
 }
 
 #[async_trait::async_trait]
@@ -660,6 +789,7 @@ fn execute_one_command(state: SharedState, command: InferenceCommand) {
                 job.chunk_size,
                 job.reuse_prefix,
                 job.cached_tokens,
+                job.prefix_match_tokens,
                 job.start_pos,
                 job.stable_len,
                 job.is_last,
@@ -1036,6 +1166,8 @@ mod tests {
             max_batch_sequences: u32::MAX,
             max_batch_tokens: u32::MAX,
             prefill_chunk_tokens: crate::prefill::DEFAULT_CHUNK_TOKENS,
+            prefill_max_inflight_chunks:
+                crate::prefill::PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS as u32,
             n_batch: 512,
             max_new_tokens: 256,
             temperature: 0.7,
@@ -1339,6 +1471,9 @@ mod relay_tests {
 pub(crate) struct PrefixDecision {
     pub(crate) reused: bool,
     pub(crate) cached_tokens: u32,
+    /// Quantos tokens abriram o prefixo retido, mesmo quando a divergência
+    /// obrigou o prefill a recomeçar a frio.
+    pub(crate) matched_tokens: u32,
 }
 
 /// A regra do reuso, sem sessão nem motor por perto.
@@ -1361,14 +1496,17 @@ pub(crate) struct PrefixDecision {
 /// sobraria token para decodificar, e quando a sessão não tem prompt no KV.
 /// Recusar custa o reuso daquele turno e nunca a requisição.
 pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> PrefixDecision {
-    if retidos.len() as u32 != n_past {
-        return PrefixDecision::default();
-    }
     let comum = retidos
         .iter()
         .zip(novos)
         .take_while(|(old, new)| old == new)
         .count() as u32;
+    if retidos.len() as u32 != n_past {
+        return PrefixDecision {
+            matched_tokens: comum.min(n_past),
+            ..PrefixDecision::default()
+        };
+    }
     // O último token do novo prompt tem de ser decodificado: é dele que saem os
     // logits do primeiro token gerado.
     let cabe_decodificar = (n_past as usize) < novos.len();
@@ -1376,9 +1514,13 @@ pub(crate) fn plan_prefix_reuse(retidos: &[i32], n_past: u32, novos: &[i32]) -> 
         PrefixDecision {
             reused: true,
             cached_tokens: n_past,
+            matched_tokens: n_past,
         }
     } else {
-        PrefixDecision::default()
+        PrefixDecision {
+            matched_tokens: comum.min(n_past),
+            ..PrefixDecision::default()
+        }
     }
 }
 
@@ -1512,6 +1654,7 @@ mod prefix_rule_tests {
         let d = plan_prefix_reuse(&[10, 11, 12, 13], 4, &[10, 11, 99, 13, 20]);
         assert!(!d.reused);
         assert_eq!(d.cached_tokens, 0);
+        assert_eq!(d.matched_tokens, 2);
     }
 
     /// Prompt idêntico ao retido: não sobraria token para decodificar, e recuar
@@ -1739,6 +1882,7 @@ fn apply_prefix_decision(
     prefix: PrefixDecision,
     requested_reuse: bool,
     requested_cached_tokens: u32,
+    requested_prefix_match_tokens: u32,
     owns_tokens: bool,
 ) {
     if chunk_index != 0 {
@@ -1747,6 +1891,7 @@ fn apply_prefix_decision(
     if owns_tokens {
         meta["reuse_prefix"] = json!(prefix.reused);
         meta["cached_tokens"] = json!(prefix.cached_tokens);
+        meta["prefix_match_tokens"] = json!(prefix.matched_tokens);
     } else {
         // Só a cabeça pode decidir se os tokens batem. Todos os hops
         // intermediários devem transportar a decisão autoritativa recebida;
@@ -1754,12 +1899,47 @@ fn apply_prefix_decision(
         // depois receber um hidden state com posição positiva.
         meta["reuse_prefix"] = json!(requested_reuse);
         meta["cached_tokens"] = json!(requested_cached_tokens);
+        meta["prefix_match_tokens"] = json!(requested_prefix_match_tokens);
     }
 }
 
 #[cfg(test)]
 mod prefix_decision_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn direct_forward_waits_for_the_previous_chunk() {
+        let order = DirectForwardOrder::default();
+        let first = order.wait_turn("prefill-1", 0).await.unwrap();
+        let waiter_order = order.clone();
+        let second = tokio::spawn(async move {
+            waiter_order.wait_turn("prefill-1", 1).await.map(|turn| {
+                turn.finish(true, true);
+                1
+            })
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        assert!(!second.is_finished());
+        first.finish(true, false);
+        assert_eq!(second.await.unwrap().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn direct_forward_failure_reaches_the_next_chunk() {
+        let order = DirectForwardOrder::default();
+        let first = order.wait_turn("prefill-2", 0).await.unwrap();
+        let waiter_order = order.clone();
+        let second = tokio::spawn(async move { waiter_order.wait_turn("prefill-2", 1).await });
+
+        tokio::task::yield_now().await;
+        first.finish(false, false);
+        let error = match second.await.unwrap() {
+            Ok(_) => panic!("o chunk seguinte não pode ultrapassar uma falha"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("repasse direto falhou"));
+    }
 
     #[test]
     fn an_intermediate_hop_echoes_the_head_decision() {
@@ -1768,10 +1948,11 @@ mod prefix_decision_tests {
             "cached_tokens": 0,
         });
 
-        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, false);
+        apply_prefix_decision(&mut meta, 0, PrefixDecision::default(), true, 42, 17, false);
 
         assert_eq!(meta["reuse_prefix"], true);
         assert_eq!(meta["cached_tokens"], 42);
+        assert_eq!(meta["prefix_match_tokens"], 17);
     }
 
     #[test]
@@ -1787,9 +1968,11 @@ mod prefix_decision_tests {
             PrefixDecision {
                 reused: false,
                 cached_tokens: 0,
+                matched_tokens: 0,
             },
             true,
             42,
+            0,
             true,
         );
 
@@ -2359,6 +2542,7 @@ pub async fn run(
         state,
         scheduler,
         tp_batch_gate: Arc::new(tokio::sync::Mutex::new(())),
+        direct_forward_order: DirectForwardOrder::default(),
     };
     crate::relay::install_local_inference(generation, Arc::new(app_state.clone())).await;
 
@@ -3253,6 +3437,11 @@ async fn handle_prefill(
         .get("chunk_index")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    let prefill_sequence_id = meta
+        .get("prefill_sequence_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let direct_forward_order = app.direct_forward_order.clone();
     let chunk_size = meta
         .get("chunk_size")
         .and_then(|v| v.as_u64())
@@ -3265,6 +3454,14 @@ async fn handle_prefill(
         .get("cached_tokens")
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
+    let prefix_match_tokens = meta
+        .get("prefix_match_tokens")
+        .or_else(|| {
+            meta.get("prompt_progress")
+                .and_then(|v| v.get("prefix_match_tokens"))
+        })
+        .and_then(|v| v.as_u64())
+        .unwrap_or(cached_tokens as u64) as u32;
     let stable_len = meta
         .get("stable_len")
         .and_then(|value| value.as_u64())
@@ -3356,6 +3553,7 @@ async fn handle_prefill(
         chunk_size,
         reuse_prefix,
         cached_tokens,
+        prefix_match_tokens,
         start_pos,
         stable_len,
         is_last,
@@ -3473,6 +3671,9 @@ async fn handle_prefill(
             "prompt_progress": prompt_progress_for_forward(&meta, &local_meta),
             "hop_timings": hop_timings,
         });
+        if let Some(sequence_id) = &prefill_sequence_id {
+            forward["prefill_sequence_id"] = json!(sequence_id);
+        }
         for field in ["start_pos", "next_pos", "stable_len"] {
             if let Some(value) = local_meta.get(field) {
                 forward[field] = value.clone();
@@ -3482,7 +3683,22 @@ async fn handle_prefill(
         if let Some(tokens) = local_meta.get("tokens") {
             forward["tokens"] = tokens.clone();
         }
-        tokio::spawn(forward_direct(
+        if chunk_index == 0 {
+            if let Some(sequence_id) = &prefill_sequence_id {
+                if let Err(error) = direct_forward_order.ensure_sequence(sequence_id) {
+                    let failure = crate::relay::RelayFailure {
+                        failed_node_id: hops[0].node_id.clone(),
+                        kind: "protocol".into(),
+                        message: error.to_string(),
+                    };
+                    tokio::spawn(async move {
+                        crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+                    });
+                    return direct_ack();
+                }
+            }
+        }
+        tokio::spawn(forward_direct_ordered(
             hops,
             "/v1/prefill",
             forward,
@@ -3491,8 +3707,13 @@ async fn handle_prefill(
             wire_dtype,
             crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
             reply_to,
+            Some(direct_forward_order),
+            prefill_sequence_id,
+            Some(chunk_index),
         ));
-        return direct_ack();
+        let progress =
+            owns_tokens(&local_meta).then(|| prompt_progress_for_forward(&meta, &local_meta));
+        return direct_ack_with_progress(progress);
     }
 
     let should_relay = next_hops.as_ref().is_some_and(|h| !h.is_empty()) && local_tensor.is_some();
@@ -3541,6 +3762,9 @@ async fn handle_prefill(
                 if let Some(value) = local_meta.get(field) {
                     relay_meta[field] = value.clone();
                 }
+            }
+            if let Some(value) = local_meta.get("prefix_match_tokens") {
+                relay_meta["prefix_match_tokens"] = value.clone();
             }
             preserve_batch_identity(&meta, &mut relay_meta);
             relay_meta
@@ -3629,6 +3853,7 @@ pub(crate) fn overlay_head_authoritative_fields(local_meta: &Value, bubbled: &mu
             // sobre um prompt que ela nunca tokenizou.
             "reuse_prefix",
             "cached_tokens",
+            "prefix_match_tokens",
             "stable_len",
         ] {
             if let Some(value) = local_meta.get(field) {
@@ -3652,6 +3877,7 @@ pub(crate) fn prompt_progress_for_forward(inbound_meta: &Value, local_meta: &Val
             // Ver `overlay_head_authoritative_fields`: só a cabeça sabe.
             "reuse_prefix": local_meta["reuse_prefix"].clone(),
             "cached_tokens": local_meta["cached_tokens"].clone(),
+            "prefix_match_tokens": local_meta["prefix_match_tokens"].clone(),
             "stable_len": local_meta["stable_len"].clone(),
         });
     }
@@ -3675,6 +3901,7 @@ pub(crate) fn apply_prompt_progress(inbound_meta: &Value, result: &mut Value) {
         "next_pos",
         "reuse_prefix",
         "cached_tokens",
+        "prefix_match_tokens",
         "stable_len",
     ] {
         if let Some(value) = progress.get(field) {
@@ -3705,6 +3932,7 @@ fn prefill_blocking(
     chunk_size: u32,
     reuse_prefix: bool,
     cached_tokens: u32,
+    prefix_match_tokens: u32,
     start_pos: Option<u32>,
     stable_len: Option<u32>,
     is_last: bool,
@@ -3936,6 +4164,7 @@ fn prefill_blocking(
                 prefix,
                 reuse_prefix,
                 cached_tokens,
+                prefix_match_tokens,
                 owns_prompt_tokens,
             );
             apply_stable_len(&mut partial, stable);
@@ -4014,6 +4243,7 @@ fn prefill_blocking(
             prefix,
             reuse_prefix,
             cached_tokens,
+            prefix_match_tokens,
             owns_prompt_tokens,
         );
         apply_stable_len(&mut reply, stable);
@@ -4053,6 +4283,7 @@ fn prefill_blocking(
         prefix,
         reuse_prefix,
         cached_tokens,
+        prefix_match_tokens,
         owns_prompt_tokens,
     );
     apply_stable_len(&mut reply_meta, stable);
@@ -4086,6 +4317,7 @@ struct PreparedPrefill {
     /// Decisão recebida da cabeça para ecoar quando este peer não tokeniza.
     requested_reuse: bool,
     requested_cached_tokens: u32,
+    requested_prefix_match_tokens: u32,
     /// A fronteira medida - ver `Session::stable_len`.
     stable_len: u32,
     is_last: bool,
@@ -4131,6 +4363,7 @@ fn prefill_batch_blocking(
             chunk_size,
             reuse_prefix,
             cached_tokens,
+            prefix_match_tokens,
             start_pos,
             stable_len,
             is_last,
@@ -4266,6 +4499,7 @@ fn prefill_batch_blocking(
                 prefix,
                 requested_reuse: reuse_prefix,
                 requested_cached_tokens: cached_tokens,
+                requested_prefix_match_tokens: prefix_match_tokens,
                 stable_len: stable,
                 is_last,
                 is_final_chunk,
@@ -4448,6 +4682,7 @@ fn prefill_batch_blocking(
                         item.prefix,
                         item.requested_reuse,
                         item.requested_cached_tokens,
+                        item.requested_prefix_match_tokens,
                         item.owns_tokens,
                     );
                     apply_stable_len(&mut meta, item.stable_len);
@@ -4515,6 +4750,7 @@ fn prefill_batch_blocking(
                     item.prefix,
                     item.requested_reuse,
                     item.requested_cached_tokens,
+                    item.requested_prefix_match_tokens,
                     item.owns_tokens,
                 );
                 apply_stable_len(&mut meta, item.stable_len);
@@ -4546,6 +4782,7 @@ fn prefill_batch_blocking(
                 item.prefix,
                 item.requested_reuse,
                 item.requested_cached_tokens,
+                item.requested_prefix_match_tokens,
                 item.owns_tokens,
             );
             apply_stable_len(&mut meta, item.stable_len);
@@ -5347,7 +5584,15 @@ pub(crate) fn direct_reply_to(meta: &Value) -> Option<Value> {
 /// aceite, e nada mais. A resposta de verdade não passa por aqui — ver
 /// [`crate::direct`].
 pub(crate) fn direct_ack() -> Response {
-    match wire::encode_batch_single(&json!({"accepted": true}), None, WireDtype::F16) {
+    direct_ack_with_progress(None)
+}
+
+pub(crate) fn direct_ack_with_progress(progress: Option<Value>) -> Response {
+    let mut meta = json!({"accepted": true});
+    if let Some(progress) = progress {
+        meta["prompt_progress"] = progress;
+    }
+    match wire::encode_batch_single(&meta, None, WireDtype::F16) {
         Ok(bytes) => (
             StatusCode::OK,
             [("content-type", "application/octet-stream")],
@@ -5368,15 +5613,60 @@ pub(crate) fn direct_ack() -> Response {
 pub(crate) async fn forward_direct(
     hops: Vec<PipelineStep>,
     path: &'static str,
-    mut base_meta: Value,
+    base_meta: Value,
     residual: Vec<f32>,
     shape: [usize; 2],
     dtype: WireDtype,
     attempts: u32,
     reply_to: Value,
 ) {
+    forward_direct_ordered(
+        hops, path, base_meta, residual, shape, dtype, attempts, reply_to, None, None, None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn forward_direct_ordered(
+    hops: Vec<PipelineStep>,
+    path: &'static str,
+    mut base_meta: Value,
+    residual: Vec<f32>,
+    shape: [usize; 2],
+    dtype: WireDtype,
+    attempts: u32,
+    reply_to: Value,
+    order: Option<DirectForwardOrder>,
+    sequence_id: Option<String>,
+    chunk_index: Option<u32>,
+) {
     let next = hops[0].clone();
     let remaining = &hops[1..];
+    let terminal = base_meta
+        .get("is_final_chunk")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let turn = match (order, sequence_id, chunk_index) {
+        (Some(order), Some(sequence_id), Some(chunk_index)) => {
+            match order.wait_turn(sequence_id, chunk_index).await {
+                Ok(turn) => Some(turn),
+                Err(error) => {
+                    let failure = crate::relay::RelayFailure {
+                        failed_node_id: next.node_id.clone(),
+                        kind: "protocol".into(),
+                        message: error.to_string(),
+                    };
+                    crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+                    return;
+                }
+            }
+        }
+        _ => None,
+    };
+    let destination_hop = base_meta
+        .get("hop_timings")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
     base_meta["is_last"] = json!(remaining.is_empty());
     base_meta["scale"] = json!(1.0);
     base_meta["next_hops"] = json!(remaining);
@@ -5400,18 +5690,31 @@ pub(crate) async fn forward_direct(
     )
     .await;
 
-    if let Err(e) = sent {
-        let failure =
-            crate::relay::extract_relay_failure(&e).unwrap_or_else(|| crate::relay::RelayFailure {
-                failed_node_id: next.node_id.clone(),
-                kind: issue_kind_label(last_issue_kind).to_string(),
-                message: e.to_string(),
+    match sent {
+        Ok(sent) => {
+            if let Some(turn) = turn {
+                turn.finish(true, terminal);
+            }
+            crate::direct::deliver_transport(http_client(), &reply_to, destination_hop, &sent)
+                .await;
+        }
+        Err(e) => {
+            if let Some(turn) = turn {
+                turn.finish(false, false);
+            }
+            let failure = crate::relay::extract_relay_failure(&e).unwrap_or_else(|| {
+                crate::relay::RelayFailure {
+                    failed_node_id: next.node_id.clone(),
+                    kind: issue_kind_label(last_issue_kind).to_string(),
+                    message: e.to_string(),
+                }
             });
-        warn!(
-            "repasse direto para {} falhou: {} — avisando o gateway",
-            failure.failed_node_id, failure.message
-        );
-        crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+            warn!(
+                "repasse direto para {} falhou: {} - avisando o gateway",
+                failure.failed_node_id, failure.message
+            );
+            crate::direct::deliver_failure(http_client(), &reply_to, failure).await;
+        }
     }
 }
 

@@ -114,6 +114,8 @@ export interface NodeConfig {
   n_batch: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
+  /** Maximum number of prefills overlapping per request. */
+  prefill_max_inflight_chunks: number;
   max_new_tokens: number;
   temperature: number;
   top_p: number;
@@ -986,6 +988,8 @@ export interface RuntimeParams {
   max_new_tokens: number;
   max_sessions: number;
   prefill_chunk_tokens: number;
+  /** Maximum number of prefill chunks allowed in flight. */
+  prefill_max_inflight_chunks: number;
   temperature: number;
   top_p: number;
   top_k: number;

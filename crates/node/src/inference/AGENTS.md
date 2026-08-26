@@ -106,7 +106,14 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   absolutos, inclusive no primeiro chunk de um modelo inteiro.
   `PrefillOutcome::cached_tokens` devolve ao gateway quantos tokens de prompt
   não foram reprocessados; `retained_tokens` devolve a fronteira estável que
-  ficou na `prompt_seq` e que o gateway confirma no rewind.
+  ficou na `prompt_seq` e que o gateway confirma no rewind. Hub e resposta
+  direta sobrepõem cálculo e transmissão com `PrefillOverlapWindow`, limitada
+  a 2 pedaços em voo por padrão e configurável por
+  `prefill_max_inflight_chunks`; a janela cancela o par em erro, preserva a
+  ordem e interrompe envios em voo quando o pedido é cancelado. O modo anel
+  continua serializado pelo contrato aninhado. A telemetria também registra
+  `prefix_match_tokens`, `prefix_reuse_status`, `prompt_tokens_transmitted` e
+  transporte por travessia.
 - `prefix_cache.rs` - cache global de sessões KV por modelo e rota, com leases
   ocupados, maior prefixo textual e LRU apenas entre entradas ociosas. Ele não
   contém peso, tensor ou transporte de arquivo. A chave textual vem do array de
@@ -525,9 +532,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   e é por isso que o custo por token deixa de depender de onde mora a camada 0.
 - `direct_failure` - resultado que chega com `error` no lugar do token nomeia o
   hop que morreu e marca **esse** (não a cabeça) com `routes.mark_failure`.
-- `record_direct_hops` + `direct::credit_transport` - telemetria da ida dobrada
-  no `RequestTrace`; o transporte não atribuído vai para a entrada da cabeça
-  (ver o doc de `direct::hop_entry`).
+- `record_direct_hops` - dobra no `RequestTrace` o `hop_timings` e as evidências
+  por travessia recebidas no modo direto; não inventa atribuição para o primeiro
+  hop quando a medição não existe.
 - `step_speculative` - **NÃO** estendida ao desvio direto: continua no anel/hub
   (não recebe o parâmetro `direct`).
 - `speculative_step_from_meta` - interpreta a resposta da cauda, e aqui está o
@@ -557,11 +564,15 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   conserva a ida e volta observada de cada chamada para a soma do RTT da execução,
   enquanto `node_lock_wait_ms` separa "nó lento" de "nó ocupado". Os campos
   derivados de `NodeTimings` preservam frações de milissegundo. Isso é telemetria
-  do gateway/SSE e não muda o frame entre peers.
+  do gateway/SSE e não muda o frame entre peers. Cada `PhaseTrace` lista
+  `transport_calls` com transporte, fallback, RTT e bytes; `transport_trace_complete`
+  denuncia recibos ausentes.
 
 `relay.rs`:
 - `send_frame` - HTTP para o próximo hop com o corpo wire-codificado;
-  `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`.
+  `SentFrame{round_trip_ms, bytes_sent/received, encode/headers/body/decode ms}`
+  também identifica `transport` (`local`, `libp2p-tunnel` ou `https`) e se o
+  HTTPS foi fallback depois de falha do túnel.
 - O transporte normal tenta o túnel libp2p/Noise antes do cliente HTTP pinado;
   `TunnelRequest::get("/health")` é reservado para a medição de RTT de
   topologia. O `round_trip_ms` de `SentFrame` inclui processamento remoto e
@@ -606,15 +617,12 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   terceira via.
 - `deliver_failure` - entrega um `RelayFailure` no lugar do resultado para o
   gateway nomear o nó morto em vez de esperar o prazo inteiro.
-- `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: `bytes_sent`
-  é o quadro que entrou, `round_trip_ms` = `processing_ms` porque a perna de
-  rede não é observável por ninguém no modo direto; a lista viaja cabeça→cauda
-  e a cauda a entrega junto do resultado.
-- `credit_transport` - fecha a telemetria com o que só o gateway sabe: o
-  transporte não atribuído (total menos a soma dos `processing_ms` declarados)
-  vai para o `round_trip_ms` da **cabeça**, e os `bytes_received` do resultado
-  para a cauda. O número somado continua certo; dividido por hop, ele não
-  existe.
+- `hop_entry`/`accumulate` - cada hop descreve a si mesmo na ida: a lista viaja
+  cabeça→cauda e a cauda a entrega junto do resultado.
+- `record_transport`/`deliver_transport` - o chamador entrega uma evidência
+  separada por travessia, com transporte, RTT e bytes. O inbox aguarda essas
+  evidências por uma janela curta depois do resultado e marca a trace como
+  incompleta quando alguma não chega.
 
 `direct_lab.rs`:
 - A "lei": **o custo por token não depende de onde está a cabeça da pipeline.**

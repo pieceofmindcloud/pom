@@ -34,6 +34,7 @@ export const KNOBS: Knob[] = [
   { key: "max_new_tokens", min: 16 },
   { key: "max_sessions", min: 1, max: 16 },
   { key: "prefill_chunk_tokens", min: 32, step: 32 },
+  { key: "prefill_max_inflight_chunks", min: 1, max: 2 },
   { key: "temperature", min: 0, max: 2, step: 0.05 },
   { key: "top_p", min: 0, max: 1, step: 0.05 },
   { key: "top_k", min: 0 },

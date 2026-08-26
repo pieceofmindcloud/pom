@@ -16,11 +16,29 @@ export interface RequestTrace {
    *  da sessão do turno anterior. Medida do executado, não da escolha do
    *  cache. Ausente em trace de nó antigo. */
   cached_tokens?: number;
+  /** Prefixo comum encontrado antes de decidir se o KV podia ser reaproveitado. */
+  prefix_match_tokens?: number;
+  /** Resultado executado do reuso: full, cold, miss ou perda de sessão. */
+  prefix_reuse_status?: string;
+  /** Tokens que cruzaram a fronteira de inferência nesta execução. */
+  prompt_tokens_transmitted?: number;
   output_tokens: number;
   prefill_ms: number;
   total_bytes_sent: number;
   total_bytes_received: number;
   hops: HopTrace[];
+  transport_trace_complete?: boolean;
+  prefill_overlap_enabled?: boolean;
+  prefill_max_inflight_chunks?: number;
+  prefill_overlapped_chunks?: number;
+}
+
+export interface TransportTrace {
+  transport: "local" | "libp2p-tunnel" | "https" | "unknown";
+  fallback: boolean;
+  round_trip_ms: number;
+  bytes_sent: number;
+  bytes_received: number;
 }
 
 export interface TpTelemetry {
@@ -67,6 +85,8 @@ export interface PhaseTrace {
    * ficam no pool. É custo de estabelecimento, não custo por token.
    */
   tls_handshake_ms: number;
+  /** Cada travessia observada deste hop, sem crédito residual. */
+  transport_calls?: TransportTrace[];
   node_frame_decode_ms: number;
   node_input_prepare_ms: number;
   node_queue_ms: number;

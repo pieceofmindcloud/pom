@@ -31,7 +31,7 @@ use std::sync::{
     Arc,
 };
 use std::time::Instant;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::info;
 
 /// Prompt tokens pushed through the pipeline per round trip.
@@ -107,6 +107,77 @@ where
     }
 }
 
+/// Janela de sobreposição do prefill.
+///
+/// Dois pedaços são suficientes para esconder uma transmissão atrás do
+/// cálculo seguinte sem deixar um enlace lento acumular estado sem limite.
+/// O valor é deliberadamente limitado a dois até existir uma fila por estágio
+/// que possa provar ordem e pressão de memória para mais itens.
+#[derive(Clone, Debug)]
+pub(crate) struct PrefillOverlapWindow {
+    max_inflight_chunks: usize,
+    permits: Arc<Semaphore>,
+}
+
+impl PrefillOverlapWindow {
+    pub(crate) const DEFAULT_MAX_INFLIGHT_CHUNKS: usize = 2;
+    pub(crate) const MAX_INFLIGHT_CHUNKS: usize = 2;
+
+    pub(crate) fn new(requested: usize) -> Self {
+        let max_inflight_chunks = requested.clamp(1, Self::MAX_INFLIGHT_CHUNKS);
+        Self {
+            max_inflight_chunks,
+            permits: Arc::new(Semaphore::new(max_inflight_chunks)),
+        }
+    }
+
+    pub(crate) fn max_inflight_chunks(&self) -> usize {
+        self.max_inflight_chunks
+    }
+
+    pub(crate) async fn acquire(&self) -> Result<OwnedSemaphorePermit> {
+        self.permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| anyhow!("janela de sobreposição foi encerrada"))
+    }
+
+    /// Executa duas operações em paralelo, mas devolve sempre o primeiro
+    /// resultado antes do segundo. Se uma falhar, a outra é descartada e os
+    /// permits são liberados junto com ela.
+    pub(crate) async fn join_ordered<F, G, A, B>(&self, first: F, second: G) -> Result<(A, B)>
+    where
+        F: Future<Output = Result<A>>,
+        G: Future<Output = Result<B>>,
+    {
+        let first_permit = self.acquire().await?;
+        if self.max_inflight_chunks == 1 {
+            let first = {
+                let _permit = first_permit;
+                first.await?
+            };
+            let second_permit = self.acquire().await?;
+            let second = {
+                let _permit = second_permit;
+                second.await?
+            };
+            return Ok((first, second));
+        }
+
+        let second_permit = self.acquire().await?;
+        let first = async move {
+            let _permit = first_permit;
+            first.await
+        };
+        let second = async move {
+            let _permit = second_permit;
+            second.await
+        };
+        tokio::try_join!(first, second)
+    }
+}
+
 /// Attempts per chunk before the request is given up on. Lives in `relay.rs`
 /// (`crate::relay::CHUNK_ATTEMPTS`) since a ring-mode relaying hop needs the
 /// same number for its own outbound prefill calls — a prefill chunk is
@@ -155,6 +226,65 @@ pub struct TlsHop {
     pub handshake_ms: u64,
 }
 
+/// Uma travessia observada de um frame entre dois processos. Os valores são
+/// por chamada, não créditos residuais atribuídos ao primeiro hop.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct TransportTrace {
+    pub transport: crate::relay::InferenceTransport,
+    pub fallback: bool,
+    pub round_trip_ms: u64,
+    pub bytes_sent: u64,
+    pub bytes_received: u64,
+}
+
+impl TransportTrace {
+    fn unknown(round_trip_ms: u64, bytes_sent: u64, bytes_received: u64) -> Self {
+        Self {
+            transport: crate::relay::InferenceTransport::Unknown,
+            fallback: false,
+            round_trip_ms,
+            bytes_sent,
+            bytes_received,
+        }
+    }
+
+    fn from_sent(sent: &crate::relay::SentFrame) -> Self {
+        Self {
+            transport: sent.transport,
+            fallback: sent.transport_fallback,
+            round_trip_ms: sent.round_trip_ms,
+            bytes_sent: sent.bytes_sent,
+            bytes_received: sent.bytes_received,
+        }
+    }
+
+    fn from_json(entry: &serde_json::Value) -> Self {
+        Self {
+            transport: entry
+                .get("transport")
+                .and_then(|value| value.as_str())
+                .map(crate::relay::InferenceTransport::from_wire)
+                .unwrap_or(crate::relay::InferenceTransport::Unknown),
+            fallback: entry
+                .get("transport_fallback")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            round_trip_ms: entry
+                .get("round_trip_ms")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            bytes_sent: entry
+                .get("bytes_sent")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+            bytes_received: entry
+                .get("bytes_received")
+                .and_then(|value| value.as_u64())
+                .unwrap_or(0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct PhaseTrace {
     /// Time the peer reported for itself (`processing_ms` on the wire).
@@ -189,6 +319,8 @@ pub struct PhaseTrace {
     /// Quase sempre zero: o handshake acontece uma vez por conexão e as
     /// conexões ficam no pool. É custo de estabelecimento, não custo por token.
     pub tls_handshake_ms: u64,
+    /// Cada chamada que cruzou este hop, em ordem de observação.
+    pub transport_calls: Vec<TransportTrace>,
     pub node_frame_decode_ms: f64,
     pub node_input_prepare_ms: f64,
     pub node_queue_ms: f64,
@@ -249,6 +381,10 @@ pub struct PhaseTrace {
 }
 
 impl PhaseTrace {
+    fn record_transport(&mut self, transport: TransportTrace) {
+        self.transport_calls.push(transport);
+    }
+
     fn record(
         &mut self,
         round_trip_ms: u64,
@@ -478,6 +614,8 @@ impl PhaseTrace {
         self.client_decode_ms += next.client_decode_ms;
         self.tls_calls += next.tls_calls;
         self.tls_handshake_ms += next.tls_handshake_ms;
+        self.transport_calls
+            .extend_from_slice(&next.transport_calls);
         self.node_frame_decode_ms += next.node_frame_decode_ms;
         self.node_input_prepare_ms += next.node_input_prepare_ms;
         self.node_queue_ms += next.node_queue_ms;
@@ -552,6 +690,16 @@ pub struct RequestTrace {
     /// exatamente esta a lacuna que fazia o cache parecer estar funcionando -
     /// o log dizia "sessão reusada" e a economia era nenhuma.
     pub cached_tokens: u32,
+    /// Candidato comum com o prefixo retido. Pode ser maior que zero mesmo
+    /// quando a divergência fez o peer reiniciar a sessão a frio.
+    pub prefix_match_tokens: u32,
+    /// Resultado observável da tentativa: `full`, `partial-cold`, `miss` ou
+    /// `cold`. O gateway troca por `session-lost-cold` quando precisou
+    /// reconstruir a sessão após um peer perder seu estado.
+    pub prefix_reuse_status: Option<String>,
+    /// Tokens que realmente precisaram atravessar a fronteira de inferência.
+    /// Em um turno frio, ou após uma divergência parcial, é o prompt inteiro.
+    pub prompt_tokens_transmitted: u32,
     pub output_tokens: u32,
     pub prefill_ms: u64,
     pub total_bytes_sent: u64,
@@ -560,6 +708,10 @@ pub struct RequestTrace {
     pub issues: Vec<TraceIssue>,
     pub dropped_issues: u32,
     pub complete: bool,
+    pub transport_trace_complete: bool,
+    pub prefill_overlap_enabled: bool,
+    pub prefill_max_inflight_chunks: u32,
+    pub prefill_overlapped_chunks: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -686,6 +838,9 @@ impl RequestTrace {
             model: model.into(),
             input_tokens: 0,
             cached_tokens: 0,
+            prefix_match_tokens: 0,
+            prefix_reuse_status: None,
+            prompt_tokens_transmitted: 0,
             output_tokens: 0,
             prefill_ms: 0,
             total_bytes_sent: 0,
@@ -693,6 +848,10 @@ impl RequestTrace {
             issues: Vec::new(),
             dropped_issues: 0,
             complete: false,
+            transport_trace_complete: true,
+            prefill_overlap_enabled: false,
+            prefill_max_inflight_chunks: 1,
+            prefill_overlapped_chunks: 0,
             hops: steps
                 .iter()
                 .map(|(node_id, start_layer, end_layer)| HopTrace {
@@ -712,6 +871,43 @@ impl RequestTrace {
         } else {
             self.dropped_issues += 1;
         }
+    }
+
+    fn record_prefix_decision(&mut self, meta: &serde_json::Value, requested: bool) {
+        self.prefix_match_tokens = meta
+            .get("prefix_match_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32;
+        let reused = meta
+            .get("reuse_prefix")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let prompt_tokens = meta
+            .get("n_prompt_tokens")
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0) as u32;
+        self.prefix_reuse_status = Some(
+            if reused {
+                "full"
+            } else if self.prefix_match_tokens > 0
+                && (prompt_tokens == 0 || self.prefix_match_tokens < prompt_tokens)
+            {
+                "partial-cold"
+            } else if self.prefix_match_tokens > 0 {
+                "full-cold"
+            } else if requested {
+                "miss"
+            } else {
+                "cold"
+            }
+            .to_owned(),
+        );
+    }
+
+    fn finish_prompt(&mut self, prompt_tokens: u32, cached_tokens: u32) {
+        self.input_tokens = prompt_tokens;
+        self.cached_tokens = cached_tokens;
+        self.prompt_tokens_transmitted = prompt_tokens.saturating_sub(cached_tokens);
     }
 
     pub fn from_plan(model: &str, plan: &PipelinePlan) -> Self {
@@ -798,6 +994,15 @@ impl RequestTrace {
         );
     }
 
+    fn record_transport(&mut self, hop: usize, phase: Phase, transport: TransportTrace) {
+        let Some(entry) = self.hops.get_mut(hop) else {
+            return;
+        };
+        match phase {
+            Phase::Prefill => entry.prefill.record_transport(transport),
+            Phase::Decode => entry.decode.record_transport(transport),
+        }
+    }
     /// Same accumulation as `record_hop`, reading the numbers from one
     /// `hop_timings` array entry instead of taking them as call arguments —
     /// this is what lets ring mode reconstruct the identical trace hub mode
@@ -834,6 +1039,9 @@ impl RequestTrace {
             get("hidden_state_bytes_received"),
             dtype,
         );
+        if entry.get("transport").is_some() {
+            self.record_transport(hop, phase, TransportTrace::from_json(entry));
+        }
     }
 
     fn record_hidden_state(
@@ -861,6 +1069,15 @@ impl RequestTrace {
     pub fn merge(&mut self, other: &RequestTrace) {
         self.total_bytes_sent += other.total_bytes_sent;
         self.total_bytes_received += other.total_bytes_received;
+        self.transport_trace_complete &= other.transport_trace_complete;
+        if self.prefix_reuse_status.is_none() {
+            self.prefix_reuse_status = other.prefix_reuse_status.clone();
+        }
+        self.prefill_overlap_enabled |= other.prefill_overlap_enabled;
+        self.prefill_max_inflight_chunks = self
+            .prefill_max_inflight_chunks
+            .max(other.prefill_max_inflight_chunks);
+        self.prefill_overlapped_chunks += other.prefill_overlapped_chunks;
         for (current, next) in self.hops.iter_mut().zip(&other.hops) {
             current.prefill.merge(&next.prefill);
             current.decode.merge(&next.decode);
@@ -976,10 +1193,47 @@ pub async fn run(
     cancellation: &Cancellation,
     reuse_prefix: bool,
 ) -> Result<PrefillOutcome> {
+    run_with_options(
+        plan,
+        model,
+        session_id,
+        prompt,
+        chat_template,
+        chunk_size,
+        dtype,
+        http,
+        routes,
+        direct,
+        tunnel,
+        cancellation,
+        reuse_prefix,
+        PrefillOverlapWindow::DEFAULT_MAX_INFLIGHT_CHUNKS,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn run_with_options(
+    plan: &PipelinePlan,
+    model: &str,
+    session_id: &str,
+    prompt: &str,
+    chat_template: bool,
+    chunk_size: u32,
+    dtype: WireDtype,
+    http: &crate::peer_client::PeerClients,
+    routes: &crate::route::RouteTable,
+    direct: Option<&crate::direct::DirectReply>,
+    tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    reuse_prefix: bool,
+    max_inflight_chunks: usize,
+) -> Result<PrefillOutcome> {
     check_cancelled(cancellation)?;
     plan.validate_wire_dtype(dtype)?;
     let chunk_size = chunk_size.max(1);
     let n_peers = plan.steps.len();
+    let overlap_window = PrefillOverlapWindow::new(max_inflight_chunks);
     if n_peers == 0 {
         return Err(anyhow!("pipeline sem peers"));
     }
@@ -998,6 +1252,7 @@ pub async fn run(
             tunnel,
             cancellation,
             reuse_prefix,
+            overlap_window.clone(),
         )
         .await;
     }
@@ -1015,6 +1270,7 @@ pub async fn run(
             tunnel,
             cancellation,
             reuse_prefix,
+            overlap_window.clone(),
         )
         .await;
     }
@@ -1025,46 +1281,51 @@ pub async fn run(
     let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
+    trace.prefill_overlap_enabled = overlap_window.max_inflight_chunks() > 1 && n_peers > 1;
+    trace.prefill_max_inflight_chunks = overlap_window.max_inflight_chunks() as u32;
+    let mut pending_head: Option<(serde_json::Value, Option<(Vec<f32>, [usize; 2])>)> = None;
 
     loop {
         check_cancelled(cancellation)?;
-        // ── First peer: it owns the tokenizer and decides whether more remain.
-        let head_meta = head_prefill_meta(
-            session_id,
-            chunk_index,
-            chunk_size,
-            n_peers == 1,
-            (chunk_index == 0).then_some(prompt),
-            chat_template,
-            reuse_prefix && chunk_index == 0,
-            next_start_pos,
-        );
-
-        let (mut meta, mut tensor) = send_chunk(
-            http,
-            routes,
-            &plan.steps[0],
-            tunnel,
-            &head_meta,
-            None,
-            dtype,
-            dtype.frame_encoding(),
-            chunk_index,
-            &mut trace,
-            0,
-            Phase::Prefill,
-            cancellation,
-        )
-        .await?;
+        // A resposta da cabeça do próximo pedaço pode já estar pronta: ela foi
+        // calculada enquanto o pedaço anterior atravessava os demais hops.
+        let (meta, tensor) = if let Some(next) = pending_head.take() {
+            next
+        } else {
+            let head_meta = head_prefill_meta(
+                session_id,
+                chunk_index,
+                chunk_size,
+                n_peers == 1,
+                (chunk_index == 0).then_some(prompt),
+                chat_template,
+                reuse_prefix && chunk_index == 0,
+                next_start_pos,
+            );
+            send_chunk(
+                http,
+                routes,
+                &plan.steps[0],
+                tunnel,
+                &head_meta,
+                None,
+                dtype,
+                dtype.frame_encoding(),
+                chunk_index,
+                &mut trace,
+                0,
+                Phase::Prefill,
+                cancellation,
+            )
+            .await?
+        };
 
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
-        // A decisão da cabeça, lida do meta dela e não do que este gateway
-        // pediu: os hops seguintes obedecem a esta, e a telemetria reporta
-        // esta. Ver `infer_server::apply_prefix_decision`.
         let head_reused = if chunk_index == 0 {
             cached_tokens = cached_tokens_of(&meta);
+            trace.record_prefix_decision(&meta, reuse_prefix);
             head_reused_prefix(&meta, reuse_prefix)
         } else {
             false
@@ -1080,55 +1341,83 @@ pub async fn run(
         } else {
             chunk_start_pos
         };
-        // A fronteira medida pela cabeça, para os hops partirem o prompt na
-        // mesma posição - ver `infer_server::Session::stable_len`.
         let chunk_stable_len = meta.get("stable_len").and_then(|value| value.as_u64());
 
-        // ── The rest of the pipeline, carrying this chunk's hidden state.
-        for (i, step) in plan.steps.iter().enumerate().skip(1) {
-            check_cancelled(cancellation)?;
-            let is_last = i == n_peers - 1;
-            let Some((values, shape)) = tensor.take() else {
-                return Err(anyhow!(
-                    "peer {} não devolveu estado oculto no pedaço {chunk_index}",
-                    plan.steps[i - 1].node_id
-                ));
-            };
-            let mut body_meta = json!({
-                "session_id": session_id,
-                "chunk_index": chunk_index,
-                "chunk_size": chunk_size,
-                "is_last": is_last,
-                "is_final_chunk": is_final_chunk,
-                "reuse_prefix": head_reused,
-                "start_pos": chunk_start_pos,
-                "scale": 1.0,
-            });
-            if let Some(stable) = chunk_stable_len {
-                body_meta["stable_len"] = json!(stable);
-            }
-            if let Some(tokens) = meta.get("tokens") {
-                body_meta["tokens"] = tokens.clone();
-            }
-            let (m, t) = send_chunk(
+        let should_overlap = more && n_peers > 1 && overlap_window.max_inflight_chunks() > 1;
+        if should_overlap {
+            let mut next_head_trace = RequestTrace::from_plan(model, plan);
+            let next_head_meta = head_prefill_meta(
+                session_id,
+                chunk_index + 1,
+                chunk_size,
+                n_peers == 1,
+                None,
+                chat_template,
+                false,
+                Some(chunk_next_pos),
+            );
+            let current = forward_hub_chunk(
+                plan,
+                session_id,
+                chunk_index,
+                chunk_size,
+                head_reused,
+                is_final_chunk,
+                chunk_start_pos,
+                chunk_stable_len,
+                meta,
+                tensor,
+                dtype,
                 http,
                 routes,
-                step,
                 tunnel,
-                &body_meta,
-                Some((&values, shape)),
+                cancellation,
+            );
+            let next = send_chunk(
+                http,
+                routes,
+                &plan.steps[0],
+                tunnel,
+                &next_head_meta,
+                None,
                 dtype,
                 dtype.frame_encoding(),
-                chunk_index,
-                &mut trace,
-                i,
+                chunk_index + 1,
+                &mut next_head_trace,
+                0,
                 Phase::Prefill,
                 cancellation,
-            )
-            .await?;
-            meta = m;
-            tensor = t;
+            );
+            let ((_current_meta, _current_tensor, current_trace), next_head) =
+                overlap_window.join_ordered(current, next).await?;
+            trace.merge(&current_trace);
+            trace.merge(&next_head_trace);
+            trace.prefill_overlapped_chunks += 1;
+            pending_head = Some(next_head);
+            next_start_pos = None;
+            chunk_index += 1;
+            continue;
         }
+
+        let (meta, _tensor, downstream_trace) = forward_hub_chunk(
+            plan,
+            session_id,
+            chunk_index,
+            chunk_size,
+            head_reused,
+            is_final_chunk,
+            chunk_start_pos,
+            chunk_stable_len,
+            meta,
+            tensor,
+            dtype,
+            http,
+            routes,
+            tunnel,
+            cancellation,
+        )
+        .await?;
+        trace.merge(&downstream_trace);
 
         if is_final_chunk {
             let token_id = meta
@@ -1153,8 +1442,7 @@ pub async fn run(
                 cached_tokens,
                 chunks,
                 trace: {
-                    trace.input_tokens = prompt_tokens;
-                    trace.cached_tokens = cached_tokens;
+                    trace.finish_prompt(prompt_tokens, cached_tokens);
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
@@ -1164,6 +1452,79 @@ pub async fn run(
         next_start_pos = Some(chunk_next_pos);
         chunk_index += 1;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn forward_hub_chunk(
+    plan: &PipelinePlan,
+    session_id: &str,
+    chunk_index: u32,
+    chunk_size: u32,
+    head_reused: bool,
+    is_final_chunk: bool,
+    chunk_start_pos: u32,
+    chunk_stable_len: Option<u64>,
+    mut meta: serde_json::Value,
+    mut tensor: Option<(Vec<f32>, [usize; 2])>,
+    dtype: WireDtype,
+    http: &crate::peer_client::PeerClients,
+    routes: &crate::route::RouteTable,
+    tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+) -> Result<(
+    serde_json::Value,
+    Option<(Vec<f32>, [usize; 2])>,
+    RequestTrace,
+)> {
+    let mut trace = RequestTrace::from_plan("prefill", plan);
+    for (i, step) in plan.steps.iter().enumerate().skip(1) {
+        check_cancelled(cancellation)?;
+        let is_last = i == plan.steps.len() - 1;
+        let Some((values, shape)) = tensor.take() else {
+            return Err(anyhow!(
+                "peer {} não devolveu estado oculto no pedaço {chunk_index}",
+                plan.steps[i - 1].node_id
+            ));
+        };
+        let mut body_meta = json!({
+            "session_id": session_id,
+            "chunk_index": chunk_index,
+            "chunk_size": chunk_size,
+            "is_last": is_last,
+            "is_final_chunk": is_final_chunk,
+            "reuse_prefix": head_reused,
+            "start_pos": chunk_start_pos,
+            "scale": 1.0,
+        });
+        if let Some(stable) = chunk_stable_len {
+            body_meta["stable_len"] = json!(stable);
+        }
+        if let Some(tokens) = meta.get("tokens") {
+            body_meta["tokens"] = tokens.clone();
+        }
+        if let Some(prefix_match_tokens) = meta.get("prefix_match_tokens") {
+            body_meta["prefix_match_tokens"] = prefix_match_tokens.clone();
+        }
+        let (next_meta, next_tensor) = send_chunk(
+            http,
+            routes,
+            step,
+            tunnel,
+            &body_meta,
+            Some((&values, shape)),
+            dtype,
+            step.frame_encoding(),
+            chunk_index,
+            &mut trace,
+            i,
+            Phase::Prefill,
+            cancellation,
+        )
+        .await?;
+        meta = next_meta;
+        tensor = next_tensor;
+    }
+    Ok((meta, tensor, trace))
 }
 
 /// Same chunk-by-chunk loop as `run`, but each chunk makes exactly one
@@ -1186,6 +1547,7 @@ async fn run_ring(
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
     reuse_prefix: bool,
+    _overlap_window: PrefillOverlapWindow,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -1251,6 +1613,7 @@ async fn run_ring(
         // que ela executou, para a telemetria. Ver `cached_tokens_of`.
         if chunk_index == 0 {
             cached_tokens = cached_tokens_of(&sent.meta);
+            trace.record_prefix_decision(&sent.meta, reuse_prefix);
         }
         let more = sent
             .meta
@@ -1293,8 +1656,7 @@ async fn run_ring(
                 cached_tokens,
                 chunks,
                 trace: {
-                    trace.input_tokens = prompt_tokens;
-                    trace.cached_tokens = cached_tokens;
+                    trace.finish_prompt(prompt_tokens, cached_tokens);
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
@@ -1328,6 +1690,7 @@ async fn run_direct(
     tunnel: Option<&TunnelOutboundSender>,
     cancellation: &Cancellation,
     reuse_prefix: bool,
+    overlap_window: PrefillOverlapWindow,
 ) -> Result<PrefillOutcome> {
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
@@ -1335,84 +1698,123 @@ async fn run_direct(
     let mut chunk_index: u32 = 0;
     let mut prompt_tokens: u32 = 0;
     let mut cached_tokens: u32 = 0;
-    let mut next_start_pos: Option<u32> = None;
     let started = Instant::now();
     let mut trace = RequestTrace::from_plan(model, plan);
+    trace.prefill_overlap_enabled =
+        overlap_window.max_inflight_chunks() > 1 && !next_hops.is_empty();
+    trace.prefill_max_inflight_chunks = overlap_window.max_inflight_chunks() as u32;
+    let prefill_sequence_id = uuid::Uuid::new_v4().to_string();
+    let mut pending: Option<(crate::direct::Ticket, crate::relay::SentFrame)> = None;
 
     loop {
         check_cancelled(cancellation)?;
-        let mut ticket = direct.ticket();
-        let mut head_meta = head_prefill_meta(
-            session_id,
-            chunk_index,
-            chunk_size,
-            next_hops.is_empty(),
-            (chunk_index == 0).then_some(prompt),
-            chat_template,
-            reuse_prefix && chunk_index == 0,
-            next_start_pos,
-        );
-        head_meta["next_hops"] = json!(next_hops);
-        head_meta["reply_to"] = direct.reply_to(ticket.id());
-        head_meta["exec_start"] = json!(head.exec_start);
-        head_meta["exec_end"] = json!(head.exec_end);
-
-        let dispatched = Instant::now();
-        let ack = cancelable(
-            cancellation,
-            crate::relay::send_frame_or_tunnel(
-                http,
-                head,
-                tunnel,
-                "/v1/prefill",
-                &head_meta,
-                None,
+        let (mut ticket, head_sent) = if let Some(pending) = pending.take() {
+            pending
+        } else {
+            let ticket = direct.ticket_for_hops(plan.steps.len());
+            let ticket_id = ticket.id().to_owned();
+            let head_sent = dispatch_direct_prefill(
+                plan,
+                session_id,
+                prompt,
+                chat_template,
+                chunk_size,
                 dtype,
-                dtype.frame_encoding(),
-                crate::relay::CHUNK_ATTEMPTS, // prefill chunks are KV-rollback-safe to retry
+                chunk_index,
+                reuse_prefix && chunk_index == 0,
+                None,
+                http,
+                routes,
+                direct,
+                tunnel,
+                cancellation,
+                ticket.id(),
+                &prefill_sequence_id,
+            )
+            .await?;
+            direct.record_transport(&ticket_id, 0, &head_sent);
+            (ticket, head_sent)
+        };
+
+        let more_from_head = head_sent
+            .meta
+            .get("more_chunks")
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
+        let next_pos_from_head = if more_from_head {
+            Some(required_prefill_position(
+                &head_sent.meta,
+                "next_pos",
+                chunk_index,
+            )?)
+        } else {
+            None
+        };
+        let current = cancelable(
+            cancellation,
+            crate::direct::await_result_with_ack(
+                std::future::ready(Ok(head_sent)),
+                &mut ticket,
                 &head.node_id,
-                |_issue| {},
+                |_| {},
             ),
         );
-        let meta = cancelable(
-            cancellation,
-            crate::direct::await_result(ack, &mut ticket, &head.node_id),
-        )
-        .await
-        .map_err(|e| {
-            if !is_cancelled(&e) {
-                routes.mark_failure(&head.node_id, &head.inference_url);
-            }
-            ring_relay_error(&head.node_id, e)
-        })?;
+        let should_overlap =
+            more_from_head && !next_hops.is_empty() && overlap_window.max_inflight_chunks() > 1;
+        let (meta, next_pending) = if should_overlap {
+            let next_ticket = direct.ticket_for_hops(plan.steps.len());
+            let next_ticket_id = next_ticket.id().to_owned();
+            let next = cancelable(
+                cancellation,
+                dispatch_direct_prefill(
+                    plan,
+                    session_id,
+                    prompt,
+                    chat_template,
+                    chunk_size,
+                    dtype,
+                    chunk_index + 1,
+                    false,
+                    next_pos_from_head,
+                    http,
+                    routes,
+                    direct,
+                    tunnel,
+                    cancellation,
+                    next_ticket.id(),
+                    &prefill_sequence_id,
+                ),
+            );
+            let (meta, next_sent) = overlap_window.join_ordered(current, next).await?;
+            direct.record_transport(&next_ticket_id, 0, &next_sent);
+            (meta, Some((next_ticket, next_sent)))
+        } else {
+            (
+                current.await.map_err(|e| {
+                    if !is_cancelled(&e) {
+                        routes.mark_failure(&head.node_id, &head.inference_url);
+                    }
+                    ring_relay_error(&head.node_id, e)
+                })?,
+                None,
+            )
+        };
         if let Some(error) = direct_failure(plan, routes, &meta) {
             return Err(error);
         }
-        record_direct_hops(
-            &mut trace,
-            Phase::Prefill,
-            &meta,
-            dispatched.elapsed().as_millis() as u64,
-        );
+        record_direct_hops(&mut trace, Phase::Prefill, &meta);
 
         if let Some(n) = meta.get("n_prompt_tokens").and_then(|v| v.as_u64()) {
             prompt_tokens = n as u32;
         }
-        // A cabeça repassa a própria decisão adiante (`forward` em
-        // `handle_prefill`); a cauda a devolve em `prompt_progress`.
         if chunk_index == 0 {
             cached_tokens = cached_tokens_of(&meta);
+            trace.record_prefix_decision(&meta, reuse_prefix);
         }
         let more = meta
             .get("more_chunks")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        let chunk_next_pos = if more {
-            required_prefill_position(&meta, "next_pos", chunk_index)?
-        } else {
-            0
-        };
-
+            .unwrap_or(more_from_head);
         if !more {
             let token_id = meta
                 .get("token_id")
@@ -1437,17 +1839,79 @@ async fn run_direct(
                 cached_tokens,
                 chunks,
                 trace: {
-                    trace.input_tokens = prompt_tokens;
-                    trace.cached_tokens = cached_tokens;
+                    trace.finish_prompt(prompt_tokens, cached_tokens);
                     trace.prefill_ms = started.elapsed().as_millis() as u64;
                     trace
                 },
             });
         }
 
-        next_start_pos = Some(chunk_next_pos);
+        if next_pending.is_some() {
+            pending = next_pending;
+        }
         chunk_index += 1;
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_direct_prefill(
+    plan: &PipelinePlan,
+    session_id: &str,
+    prompt: &str,
+    chat_template: bool,
+    chunk_size: u32,
+    dtype: WireDtype,
+    chunk_index: u32,
+    reuse_prefix: bool,
+    start_pos: Option<u32>,
+    http: &crate::peer_client::PeerClients,
+    routes: &crate::route::RouteTable,
+    direct: &crate::direct::DirectReply,
+    tunnel: Option<&TunnelOutboundSender>,
+    cancellation: &Cancellation,
+    ticket: &str,
+    prefill_sequence_id: &str,
+) -> Result<crate::relay::SentFrame> {
+    let head = &plan.steps[0];
+    let next_hops = &plan.steps[1..];
+    let mut head_meta = head_prefill_meta(
+        session_id,
+        chunk_index,
+        chunk_size,
+        next_hops.is_empty(),
+        (chunk_index == 0).then_some(prompt),
+        chat_template,
+        reuse_prefix,
+        start_pos,
+    );
+    head_meta["next_hops"] = json!(next_hops);
+    head_meta["reply_to"] = direct.reply_to(ticket);
+    head_meta["prefill_sequence_id"] = json!(prefill_sequence_id);
+    head_meta["exec_start"] = json!(head.exec_start);
+    head_meta["exec_end"] = json!(head.exec_end);
+    cancelable(
+        cancellation,
+        crate::relay::send_frame_or_tunnel(
+            http,
+            head,
+            tunnel,
+            "/v1/prefill",
+            &head_meta,
+            None,
+            dtype,
+            head.frame_encoding(),
+            crate::relay::CHUNK_ATTEMPTS,
+            &head.node_id,
+            |_issue| {},
+        ),
+    )
+    .await
+    .map_err(|e| {
+        if !is_cancelled(&e) {
+            routes.mark_failure(&head.node_id, &head.inference_url);
+        }
+        ring_relay_error(&head.node_id, e)
+    })
 }
 
 /// A cadeia respondeu, mas com a falha de um hop no lugar do resultado.
@@ -1475,28 +1939,68 @@ fn direct_failure(
     ))
 }
 
-/// Dobra a telemetria acumulada na ida para dentro do `RequestTrace`, na mesma
-/// forma que o anel produzia na volta — ver `crate::direct::credit_transport`
-/// para o que só o gateway sabe e por que ele lança onde lança.
-fn record_direct_hops(
-    trace: &mut RequestTrace,
-    phase: Phase,
-    meta: &serde_json::Value,
-    total_ms: u64,
-) {
+/// Dobra a telemetria acumulada na ida para dentro do `RequestTrace`.
+///
+/// O modo direto recebe uma evidência por travessia em uma mensagem separada.
+/// Sem essa lista, o tempo total não pode ser dividido com segurança entre os
+/// hops e o trace deve permanecer incompleto em vez de inventar uma atribuição.
+fn record_direct_hops(trace: &mut RequestTrace, phase: Phase, meta: &serde_json::Value) {
     let mut hops: Vec<serde_json::Value> = meta
         .get("hop_timings")
         .and_then(|v| v.as_array())
         .cloned()
         .unwrap_or_default();
-    let result_bytes = meta
-        .get("result_bytes")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
-    crate::direct::credit_transport(&mut hops, total_ms, result_bytes);
+    if let Some(traversals) = meta
+        .get("transport_traversals")
+        .and_then(|value| value.as_array())
+    {
+        if traversals.len() != hops.len() {
+            trace.transport_trace_complete = false;
+        }
+        for traversal in traversals {
+            let Some(destination) = traversal.get("hop_index").and_then(|value| value.as_u64())
+            else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
+            let Some(hop) = hops.get_mut(destination as usize) else {
+                trace.transport_trace_complete = false;
+                continue;
+            };
+            for field in [
+                "round_trip_ms",
+                "bytes_sent",
+                "bytes_received",
+                "client_encode_ms",
+                "response_headers_ms",
+                "response_body_ms",
+                "client_decode_ms",
+                "tls",
+                "tls_handshake_ms",
+                "transport",
+                "transport_fallback",
+            ] {
+                if let Some(value) = traversal.get(field) {
+                    hop[field] = value.clone();
+                }
+            }
+        }
+    } else {
+        trace.transport_trace_complete = false;
+    }
     for (i, entry) in hops.iter().enumerate() {
         trace.record_hop_from_json(i, phase, entry);
     }
+    if let Some(complete) = meta
+        .get("transport_trace_complete")
+        .and_then(|value| value.as_bool())
+    {
+        trace.transport_trace_complete &= complete;
+    }
+    trace.total_bytes_received += meta
+        .get("result_bytes")
+        .and_then(|value| value.as_u64())
+        .unwrap_or(0);
 }
 
 /// One chunk to one peer, retried on transport failure.
@@ -1572,6 +2076,7 @@ async fn send_chunk(
         e
     })?;
     trace.record_hop_from_sent(hop, phase, &sent);
+    trace.record_transport(hop, phase, TransportTrace::from_sent(&sent));
     Ok((sent.meta, sent.tensor))
 }
 
@@ -1769,7 +2274,8 @@ async fn step_direct(
     let mut trace = RequestTrace::from_plan(model, plan);
     let head = &plan.steps[0];
     let next_hops = &plan.steps[1..];
-    let mut ticket = direct.ticket();
+    let mut ticket = direct.ticket_for_hops(plan.steps.len());
+    let ticket_id = ticket.id().to_owned();
     let mut body_meta = json!({
         "session_id": session_id,
         "is_last": next_hops.is_empty(),
@@ -1783,7 +2289,6 @@ async fn step_direct(
         body_meta["speculate"] = spec.to_meta();
     }
 
-    let dispatched = Instant::now();
     let ack = crate::relay::send_frame_or_tunnel(
         http,
         head,
@@ -1797,22 +2302,19 @@ async fn step_direct(
         &head.node_id,
         |_issue| {},
     );
-    let meta = crate::direct::await_result(ack, &mut ticket, &head.node_id)
-        .await
-        .map_err(|e| {
-            routes.mark_failure(&head.node_id, &head.inference_url);
-            ring_relay_error(&head.node_id, e)
-        })?;
+    let meta = crate::direct::await_result_with_ack(ack, &mut ticket, &head.node_id, |sent| {
+        direct.record_transport(&ticket_id, 0, sent);
+    })
+    .await
+    .map_err(|e| {
+        routes.mark_failure(&head.node_id, &head.inference_url);
+        ring_relay_error(&head.node_id, e)
+    })?;
     if let Some(error) = direct_failure(plan, routes, &meta) {
         return Err(error);
     }
 
-    record_direct_hops(
-        &mut trace,
-        Phase::Decode,
-        &meta,
-        dispatched.elapsed().as_millis() as u64,
-    );
+    record_direct_hops(&mut trace, Phase::Decode, &meta);
 
     speculative_step_from_meta(&meta, trace)
 }
@@ -2692,5 +3194,117 @@ mod tests {
         }
         assert_eq!(trace.issues.len(), 32);
         assert_eq!(trace.dropped_issues, 1);
+    }
+
+    #[tokio::test]
+    async fn overlap_preserva_ordem_mesmo_quando_o_segundo_termina_primeiro() {
+        let window = PrefillOverlapWindow::new(2);
+        let completions = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let first_completions = completions.clone();
+        let first = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            first_completions.lock().unwrap().push(0);
+            Ok::<_, anyhow::Error>(0u8)
+        };
+        let second_completions = completions.clone();
+        let second = async move {
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+            second_completions.lock().unwrap().push(1);
+            Ok::<_, anyhow::Error>(1u8)
+        };
+
+        let (first, second) = window.join_ordered(first, second).await.unwrap();
+        assert_eq!((first, second), (0, 1));
+        assert_eq!(*completions.lock().unwrap(), vec![1, 0]);
+    }
+
+    #[tokio::test]
+    async fn limite_de_pedacos_em_voo_e_respeitado() {
+        let window = PrefillOverlapWindow::new(2);
+        assert_eq!(PrefillOverlapWindow::new(0).max_inflight_chunks(), 1);
+        assert_eq!(PrefillOverlapWindow::new(99).max_inflight_chunks(), 2);
+        let first = window.acquire().await.unwrap();
+        let second = window.acquire().await.unwrap();
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), window.acquire())
+                .await
+                .is_err()
+        );
+
+        drop(first);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(10), window.acquire())
+                .await
+                .is_ok()
+        );
+        drop(second);
+    }
+
+    #[tokio::test]
+    async fn erro_no_meio_do_par_deixa_a_janela_reutilizavel() {
+        let window = PrefillOverlapWindow::new(2);
+        let error = window
+            .join_ordered(async { Ok::<_, anyhow::Error>(()) }, async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                Err::<(), _>(anyhow!("falha no envio do pedaço 1"))
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("falha no envio"));
+        let _first = window.acquire().await.unwrap();
+        let _second = window.acquire().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelamento_interrompe_os_pedacos_em_voo() {
+        let window = PrefillOverlapWindow::new(2);
+        let cancellation = Cancellation::new();
+        let cancel_for_first = cancellation.clone();
+        let cancel_for_second = cancellation.clone();
+        let first = async move {
+            cancelable(&cancel_for_first, async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+        };
+        let second = async move {
+            cancelable(&cancel_for_second, async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok::<_, anyhow::Error>(())
+            })
+            .await
+        };
+        let owned_window = window.clone();
+        let running = async move { owned_window.join_ordered(first, second).await };
+        let task = tokio::spawn(running);
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        cancellation.cancel();
+        let error = task.await.unwrap().unwrap_err();
+
+        assert!(is_cancelled(&error));
+        let _first = window.acquire().await.unwrap();
+        let _second = window.acquire().await.unwrap();
+    }
+
+    #[test]
+    fn trace_distingue_prefixo_candidato_de_tokens_realmente_reaproveitados() {
+        let mut trace = RequestTrace::new("qwen", &[("head", 0, 15)]);
+        trace.record_prefix_decision(
+            &json!({
+                "reuse_prefix": false,
+                "cached_tokens": 0,
+                "prefix_match_tokens": 2,
+            }),
+            false,
+        );
+        trace.finish_prompt(5, 0);
+
+        assert_eq!(trace.prefix_match_tokens, 2);
+        assert_eq!(trace.cached_tokens, 0);
+        assert_eq!(trace.prompt_tokens_transmitted, 5);
     }
 }

@@ -285,7 +285,8 @@ Key logic carriers:
   representa uma implantação ainda não aplicada.
 - `RuntimeParamsForm.tsx` - formulário compartilhado dos parâmetros globais de
   inferência usados pelo Deploy Studio e pela tela de implantações registradas;
-  mantém os ajustes por máquina fora do bloco global. `CapabilitySwitch` usa o
+  inclui o limite de chunks de prefill em voo e mantém os ajustes por máquina
+  fora do bloco global. `CapabilitySwitch` usa o
   estado tri-state retornado pelo plano: oculta incompatíveis, mantém
   indeterminados visíveis, acionáveis e com alerta de risco, e preserva sempre o
   controle `no_embeddings`.

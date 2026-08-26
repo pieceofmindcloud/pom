@@ -25,6 +25,10 @@ Per-file list:
   `ErrorState` (renders `localizeServerText` on the error message),
   `Mono`/`ScrollX`/`Footnote`/`KeyValue`. Everything is token-based class names
   (e.g. `bg-iris`, `border-line`) with `clsx`, no runtime styling.
+- `AlertTooltip` (ui.tsx) - aviso compacto usado no inspetor: o ícone âmbar é
+  focável e acionável por foco ou clique, e o texto completo é renderizado em
+  portal fixo, com quebra explícita de palavras para mensagens longas e ids sem
+  espaços.
 - `Markdown.tsx` — memoized assistant-answer renderer: `ReactMarkdown` with
   `remark-gfm` + `rehype-highlight` (auto-detect language), inline vs fenced
   code split, every fenced block gets a copy button (answers here are mostly

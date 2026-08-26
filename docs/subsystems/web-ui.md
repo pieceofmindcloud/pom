@@ -477,8 +477,14 @@ impressão digital é só modelo + conjunto de faixas.
   e o progresso vem de `GET /api/ui/jobs`. O mapa usa os mesmos primitives do
   canvas do Painel: pontos no fundo, cards arrastáveis, zoom, Fit, Organizar e
   Redefinir, com posições persistidas por implantação. O inspetor tem 19rem,
-  pode ser recolhido pela borda esquerda, separa visualmente propriedades
-  globais e da máquina selecionada, e permite atribuir ao peer uma faixa que
+  pode ser recolhido pela borda esquerda, começa diretamente pelas abas
+  Globais e Máquina, sem título próprio e sem o padding externo `p-3`, e separa
+  visualmente propriedades globais e da máquina selecionada. Avisos de
+  capacidade ficam como ícones âmbar ao lado do controle: o texto completo,
+  incluindo fonte e motivo, abre por hover, foco ou clique em um portal fixo que
+  quebra palavras e identificadores sem espaços sem criar overflow horizontal.
+  O conjunto de alertas permanece distribuído junto dos respectivos controles,
+  em vez de formar uma fileira de cartões. O inspetor permite atribuir ao peer uma faixa que
   ele já possui trocando a faixa ativa daquele peer sem mover outra máquina. A mesma faixa em dois
   peers é uma rota paralela válida, não uma troca. Clicar de novo numa faixa já
   atribuída tira a seleção - o mesmo botão é o caminho de ida e de volta. A

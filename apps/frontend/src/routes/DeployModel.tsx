@@ -1295,16 +1295,8 @@ export function DeployModel() {
           </div>
 
           {inspectorOpen ? <>
-            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45 p-3">
-            <div className="mb-3 flex items-center justify-between gap-2 border-b border-line pb-2">
-              <div>
-                <p className="eyebrow">Inspetor</p>
-                <p className="mt-0.5 text-[0.7rem] text-fg">Propriedades</p>
-              </div>
-              <ServerCog className="h-3.5 w-3.5 text-faint" />
-            </div>
-
-            <div role="tablist" aria-label="Propriedades da implantação" className="mb-3 flex border-b border-line">
+            <aside className="relative min-h-0 overflow-y-auto border-l border-line bg-surface/45">
+            <div role="tablist" aria-label="Propriedades da implantação" className="sticky top-0 z-10 flex border-b border-line bg-surface/95 backdrop-blur-sm">
               <button
                 type="button"
                 role="tab"

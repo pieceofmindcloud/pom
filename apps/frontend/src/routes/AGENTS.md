@@ -141,6 +141,10 @@ Per-file list:
   be assigned to the selected peer. Choosing a range replaces that peer's
   active range; the same range on a second peer remains a replica. Coverage is
   a compact footer indicator. The inspector uses Global/Machine tab bars.
+  O inspetor começa diretamente pelas abas Globais e Máquina, sem o título
+  anterior e sem padding externo; alertas de capacidade aparecem como ícones
+  âmbar ao lado do controle e abrem a mensagem inteira por hover, foco ou
+  clique, inclusive quando a origem contém identificadores sem espaços.
   `fit_memory` is on by default for shards and whole-model deployment, and the
   screen disables it for tensor parallelism because llama.cpp cannot auto-fit
   `split-mode tensor`.

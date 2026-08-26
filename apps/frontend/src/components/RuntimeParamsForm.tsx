@@ -15,7 +15,7 @@
  */
 import { useState } from "react";
 import { Check } from "lucide-react";
-import { Field, Input } from "./ui";
+import { AlertTooltip, Field, Input } from "./ui";
 import type { DeploymentCapabilities, RuntimeCapability, RuntimeParams } from "../lib/types";
 import { useI18n } from "../i18n/provider";
 
@@ -159,17 +159,29 @@ export function CapabilitySwitch({
     : topologyWarning
       ? "A topologia limita esta opção; o controle continua acionável."
       : "Capacidade limitada no runtime; o controle continua acionável.";
+  const alertMessage = capability
+    ? `${alertLead} Fonte: ${capability.source}. ${capability.reason}${warning ? ` ${warning}` : ""}`
+    : "";
   return (
     <div className="space-y-1.5">
-      <Switch
-        {...props}
-        disabled={props.disabled}
-        hint={props.hint}
-      />
       {(unknown || topologyWarning || warning) && capability && (
-        <p role="alert" className="rounded-md border border-amber/25 bg-amber/10 px-2 py-1.5 text-xs leading-relaxed text-amber">
-          {alertLead} Fonte: {capability.source}. {capability.reason}{warning ? ` ${warning}` : ""}
-        </p>
+        <div className="flex min-w-0 items-start justify-between gap-2">
+          <div className="min-w-0 flex-1">
+            <Switch
+              {...props}
+              disabled={props.disabled}
+              hint={props.hint}
+            />
+          </div>
+          <AlertTooltip label={props.label} message={alertMessage} />
+        </div>
+      )}
+      {!unknown && !topologyWarning && !warning && (
+        <Switch
+          {...props}
+          disabled={props.disabled}
+          hint={props.hint}
+        />
       )}
     </div>
   );

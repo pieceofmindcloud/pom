@@ -414,7 +414,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
   KV não confirmado da especulação; sessão desconhecida é no-op (não erro);
   o gateway fan-out para todos os hops.
 - `reap_idle`/`SESSION_IDLE_TIMEOUT_SECS=900` - sessão ociosa é liberada;
-  `INFERENCE_FRAME_BODY_LIMIT=16 MiB` corta frame impossível no body.
+  `INFERENCE_FRAME_BODY_LIMIT=64 MiB` corta frame impossível no body.
 - `tcp_nodelay(true)` no `axum::serve` - ver nota gêmea em
   `gateway::start_gateway`: sem isto, o ack de resposta direta (escrita pequena)
   fica preso no Nagle.
@@ -670,7 +670,7 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `BatchFrame`/`BatchItem` - `frame_version=1`, vários itens nomeados no mesmo
   payload concatenado; `encode_batch`/`decode_batch` rejeitam dtype desconhecido,
   shape divergente, offsets fora do payload, sobreposição, item duplicado e
-  payload acima de 16 MiB.
+  payload acima de 64 MiB.
 - `encode_batch_items`/`decode_batch_items` são o caminho distribuído; um
   pedido de uma sessão usa o mesmo protocolo por meio de
   `encode_batch_single`/`decode_batch_single`. Não existe fallback para frames
@@ -678,7 +678,9 @@ controlada, pois coordena seus ranks e seu túnel de transporte neste diretório
 - `FrameEncoding::F16` permanece somente como marcador de chamadas internas;
   o fio oficial é sempre `inference/frame-v1-batch`. `WireDtype{F32, F16}`
   continua com `as_str`/`parse`/`bytes_per_value`.
-- `MAX_FRAME_PAYLOAD_BYTES=16 MiB`.
+- `MAX_FRAME_PAYLOAD_BYTES=64 MiB`; o relay separa lotes pelo orçamento de
+  payload e não coalesce a cabeça quando a resposta pode carregar hidden state
+  sem que o tamanho apareça no request.
 
 ## Predição multi-token (MTP) - `mtp.rs`
 

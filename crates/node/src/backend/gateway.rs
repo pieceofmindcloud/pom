@@ -1050,7 +1050,12 @@ async fn generate_stream_inner(
         let mut prefill_result = prefill_attempt(reuse_prefix).await;
         if reuse_prefix {
             if let Err(e) = &prefill_result {
-                if !crate::prefill::is_cancelled(e) {
+                if crate::relay::is_frame_size_error(e) {
+                    warn!(
+                        "prefill com prefixo falhou por limite de frame ({e}); \
+                         não é recuperável repetindo o mesmo chunk"
+                    );
+                } else if !crate::prefill::is_cancelled(e) {
                     warn!("prefill com prefixo reaproveitado falhou ({e}); repetindo do zero");
                     prefill_result = prefill_attempt(false).await;
                 }

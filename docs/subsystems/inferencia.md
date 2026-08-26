@@ -227,8 +227,12 @@ codificação em trânsito. Formato:
   `item_id` original.
 - O produto ainda não foi lançado, portanto não há fallback, adapter ou
   código de compatibilidade para formatos v1/v2 anteriores.
-- `MAX_FRAME_PAYLOAD_BYTES = 16 MiB` limita payload no decode; o handler axum
-  aplica o mesmo teto no body (`INFERENCE_FRAME_BODY_LIMIT`).
+- `MAX_FRAME_PAYLOAD_BYTES = 64 MiB` limita payload no decode; o handler axum
+  aplica o mesmo teto no body (`INFERENCE_FRAME_BODY_LIMIT`). O relay separa
+  lotes de tensores pelo orçamento restante do frame e não agrupa uma cabeça
+  que pode devolver hidden state quando o tamanho da resposta não aparece no
+  request. Uma recusa determinística de tamanho não repete o mesmo prefill a
+  frio.
 - O decode sempre devolve o tensor como f32: precisão reduzida é propriedade do
   fio, nunca da matemática (f16 é a precisão da GPU mesmo, então não custa
   qualidade - diferente do int8, considerado e recusado).

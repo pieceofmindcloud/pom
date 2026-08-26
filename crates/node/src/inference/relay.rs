@@ -243,80 +243,113 @@ impl BatchCoordinator {
         if calls.is_empty() {
             return;
         }
-        let batch_id = uuid::Uuid::new_v4().to_string();
-        let items: Vec<wire::BatchPayloadItem> = calls
+        let payloads = calls
             .iter()
-            .map(|call| wire::BatchPayloadItem {
-                item_id: call.item_id.clone(),
-                session_id: call
-                    .meta
-                    .get("session_id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("__session__")
-                    .to_string(),
-                meta: call.meta.clone(),
-                tensor: call.tensor.clone(),
-                dtype: call.dtype,
+            .map(|call| {
+                wire::tensor_payload_len(
+                    call.tensor
+                        .as_ref()
+                        .map(|(values, shape)| (values.as_slice(), *shape)),
+                    call.dtype,
+                )
+                .unwrap_or(wire::MAX_BATCH_PAYLOAD_BYTES.saturating_add(1))
             })
-            .collect();
-        let result = async {
-            let body = wire::encode_batch_items(&key.path, batch_id, &items)?;
-            let first = calls.first().expect("non-empty calls");
-            let response = send_batch_body(
-                &first.clients,
-                &first.step,
-                first.tunnel.as_ref(),
-                first.local.clone(),
-                &first.path,
-                body,
-                first.attempts,
-                &first.peer_label,
-            )
-            .await?;
-            let (_, decoded) = wire::decode_batch_items(&response.body)?;
-            let mut by_id = decoded
-                .into_iter()
-                .map(|item| (item.item_id.clone(), item))
-                .collect::<HashMap<_, _>>();
-            let mut output = Vec::with_capacity(calls.len());
-            for call in &calls {
-                let item = by_id
-                    .remove(&call.item_id)
-                    .ok_or_else(|| anyhow!("resposta batch não contém o item {}", call.item_id))?;
-                let tls_handshake_ms = item
-                    .meta
-                    .get("tls_handshake_ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                output.push(SentFrame {
-                    meta: item.meta,
-                    tensor: item.tensor,
-                    round_trip_ms: response.round_trip_ms,
-                    bytes_sent: response.bytes_sent / calls.len() as u64,
-                    bytes_received: response.body.len() as u64 / calls.len() as u64,
-                    client_encode_ms: response.client_encode_ms,
-                    response_headers_ms: response.response_headers_ms,
-                    response_body_ms: response.response_body_ms,
-                    client_decode_ms: response.client_decode_ms,
-                    tls: response.tls,
-                    tls_handshake_ms,
-                });
-            }
-            Ok::<_, anyhow::Error>(output)
-        }
-        .await;
+            .collect::<Vec<_>>();
+        let groups = partition_batch_payloads(&payloads);
+        let mut slots = calls.into_iter().map(Some).collect::<Vec<_>>();
+        let groups = groups
+            .into_iter()
+            .map(|indices| {
+                indices
+                    .into_iter()
+                    .map(|index| slots[index].take().expect("batch call assigned once"))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
 
-        match result {
-            Ok(outputs) => {
-                for (call, output) in calls.into_iter().zip(outputs) {
-                    let _ = call.reply.send(Ok(output));
-                }
+        futures::future::join_all(
+            groups
+                .into_iter()
+                .map(|calls| flush_batch_group(key.path.clone(), calls)),
+        )
+        .await;
+    }
+}
+
+async fn flush_batch_group(path: String, calls: Vec<BatchCall>) {
+    let batch_id = uuid::Uuid::new_v4().to_string();
+    let items: Vec<wire::BatchPayloadItem> = calls
+        .iter()
+        .map(|call| wire::BatchPayloadItem {
+            item_id: call.item_id.clone(),
+            session_id: call
+                .meta
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or("__session__")
+                .to_string(),
+            meta: call.meta.clone(),
+            tensor: call.tensor.clone(),
+            dtype: call.dtype,
+        })
+        .collect();
+    let result = async {
+        let body = wire::encode_batch_items(&path, batch_id, &items)?;
+        let first = calls.first().expect("non-empty calls");
+        let response = send_batch_body(
+            &first.clients,
+            &first.step,
+            first.tunnel.as_ref(),
+            first.local.clone(),
+            &first.path,
+            body,
+            first.attempts,
+            &first.peer_label,
+        )
+        .await?;
+        let (_, decoded) = wire::decode_batch_items(&response.body)?;
+        let mut by_id = decoded
+            .into_iter()
+            .map(|item| (item.item_id.clone(), item))
+            .collect::<HashMap<_, _>>();
+        let mut output = Vec::with_capacity(calls.len());
+        for call in &calls {
+            let item = by_id
+                .remove(&call.item_id)
+                .ok_or_else(|| anyhow!("resposta batch não contém o item {}", call.item_id))?;
+            let tls_handshake_ms = item
+                .meta
+                .get("tls_handshake_ms")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            output.push(SentFrame {
+                meta: item.meta,
+                tensor: item.tensor,
+                round_trip_ms: response.round_trip_ms,
+                bytes_sent: response.bytes_sent / calls.len() as u64,
+                bytes_received: response.body.len() as u64 / calls.len() as u64,
+                client_encode_ms: response.client_encode_ms,
+                response_headers_ms: response.response_headers_ms,
+                response_body_ms: response.response_body_ms,
+                client_decode_ms: response.client_decode_ms,
+                tls: response.tls,
+                tls_handshake_ms,
+            });
+        }
+        Ok::<_, anyhow::Error>(output)
+    }
+    .await;
+
+    match result {
+        Ok(outputs) => {
+            for (call, output) in calls.into_iter().zip(outputs) {
+                let _ = call.reply.send(Ok(output));
             }
-            Err(error) => {
-                let message = error.to_string();
-                for call in calls {
-                    let _ = call.reply.send(Err(message.clone()));
-                }
+        }
+        Err(error) => {
+            let message = error.to_string();
+            for call in calls {
+                let _ = call.reply.send(Err(message.clone()));
             }
         }
     }
@@ -416,6 +449,61 @@ impl std::fmt::Display for HttpRefusal {
 }
 
 impl std::error::Error for HttpRefusal {}
+
+/// A frame-size refusal is deterministic for the current chunk. Retrying the
+/// same prefix, or repeating it cold, cannot change its encoded dimensions.
+pub fn is_frame_size_error(error: &anyhow::Error) -> bool {
+    if error
+        .downcast_ref::<HttpRefusal>()
+        .is_some_and(|refusal| refusal.status == 413)
+    {
+        return true;
+    }
+    let text = error.to_string();
+    text.contains("payload do batch excede limite")
+        || text.contains("payload do tensor excede limite")
+        || text.contains("corpo do frame excede limite")
+}
+
+/// The request payload does not reveal the size of a hidden-state response
+/// produced by a head hop. Coalescing such calls could create a response batch
+/// larger than the wire limit even when every request was tiny. Ring frames
+/// already carry their downstream route and return metadata, so they remain
+/// safe to coalesce; hub frames without a tensor are sent one at a time.
+fn can_coalesce_frame(path: &str, meta: &Value, tensor: Option<(&[f32], [usize; 2])>) -> bool {
+    let hidden_response = tensor.is_none()
+        && matches!(path, "/v1/prefill" | "/v1/step")
+        && meta.get("is_last").and_then(Value::as_bool) == Some(false)
+        && !meta
+            .get("next_hops")
+            .and_then(Value::as_array)
+            .is_some_and(|hops| !hops.is_empty());
+    !hidden_response
+}
+
+/// Partition item indexes so every coalesced tensor payload leaves room for
+/// the batch header. An item larger than the budget remains alone and fails
+/// with the precise single-frame error during encoding.
+fn partition_batch_payloads(payloads: &[usize]) -> Vec<Vec<usize>> {
+    let mut groups = Vec::new();
+    let mut current = Vec::new();
+    let mut current_bytes = 0usize;
+
+    for (index, bytes) in payloads.iter().copied().enumerate() {
+        if !current.is_empty()
+            && current_bytes.saturating_add(bytes) > wire::MAX_BATCH_PAYLOAD_BYTES
+        {
+            groups.push(std::mem::take(&mut current));
+            current_bytes = 0;
+        }
+        current.push(index);
+        current_bytes = current_bytes.saturating_add(bytes);
+    }
+    if !current.is_empty() {
+        groups.push(current);
+    }
+    groups
+}
 
 /// If `send_frame` failed because a relaying peer reported (via
 /// `RelayFailure`) that *its* next hop was the real problem, return that —
@@ -1056,7 +1144,8 @@ pub async fn send_frame_or_tunnel(
     } else {
         None
     };
-    let can_batch = step.supports(crate::pipeline::CAP_FRAME_BATCH)
+    let can_batch = can_coalesce_frame(path, meta, tensor)
+        && step.supports(crate::pipeline::CAP_FRAME_BATCH)
         && !meta.get("reply_to").is_some_and(|value| !value.is_null())
         && meta.get("speculate").is_none()
         && meta.get("draft").is_none()
@@ -1326,6 +1415,44 @@ async fn send_frame_via_tunnel_with_auth(
 mod tests {
     use super::*;
     use crate::infer_tunnel::TunnelResponse;
+
+    #[test]
+    fn outbound_hidden_responses_are_not_coalesced_without_a_size_signal() {
+        assert!(!can_coalesce_frame(
+            "/v1/prefill",
+            &json!({"is_last": false}),
+            None,
+        ));
+        assert!(can_coalesce_frame(
+            "/v1/prefill",
+            &json!({"is_last": true}),
+            None,
+        ));
+        assert!(can_coalesce_frame(
+            "/v1/prefill",
+            &json!({"is_last": false, "next_hops": ["tail"]}),
+            None,
+        ));
+    }
+
+    #[test]
+    fn tensor_batches_are_split_before_the_frame_payload_limit() {
+        let item = wire::MAX_BATCH_PAYLOAD_BYTES / 2 + 1;
+        let groups = partition_batch_payloads(&[item, item, 1]);
+
+        assert_eq!(groups, vec![vec![0], vec![1, 2]]);
+    }
+
+    #[test]
+    fn frame_size_refusals_are_not_retried_as_a_cold_prefix() {
+        let error = anyhow::Error::new(HttpRefusal {
+            status: 500,
+            body: "payload do batch excede limite de 67108864 bytes".into(),
+            peer_label: "peer-x".into(),
+        });
+
+        assert!(is_frame_size_error(&error));
+    }
 
     #[tokio::test]
     async fn direct_bytes_fallback_tries_the_next_advertised_address() {

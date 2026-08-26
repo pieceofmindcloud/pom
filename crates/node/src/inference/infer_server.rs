@@ -40,12 +40,10 @@ use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 use tracing::{debug, info, warn};
 
 const SESSION_IDLE_TIMEOUT_SECS: u64 = 900;
-/// Upper bound for one binary f16 hidden-state frame received from a peer.
-///
-/// A normal 512-token chunk with a 4096-wide hidden state is 4 MiB before its
-/// small wire header. Keeping this limit explicit at 16 MiB allows the
-/// documented 8 MiB frame while still rejecting unbounded peer input.
-const INFERENCE_FRAME_BODY_LIMIT: usize = 16 * 1024 * 1024;
+/// Upper bound for one binary f16 inference frame received from a peer. Keep
+/// it in lockstep with the wire validator; the relay splits coalesced payloads
+/// before this limit and the handler applies it before decoding the body.
+const INFERENCE_FRAME_BODY_LIMIT: usize = wire::MAX_FRAME_PAYLOAD_BYTES;
 const BATCH_CHILD_HEADER: &str = "x-pom-batch-child";
 
 /// Resolve a preferência persistida pelo deploy para o seletor operacional.
